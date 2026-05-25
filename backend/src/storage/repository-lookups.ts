@@ -137,7 +137,7 @@ export function loadSystemAccountsByIds(systemAccountIds: Array<string | undefin
   const ids = uniqueIds(systemAccountIds)
   if (!ids.length) return new Map()
   const rows = loadRowsByIds<SystemAccountSummaryRow>(ids, (chunk) => `
-    SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
+    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
     FROM system_accounts
     WHERE id IN (${sqlPlaceholders(chunk.length)})
   `)

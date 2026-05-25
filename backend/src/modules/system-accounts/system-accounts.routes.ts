@@ -17,7 +17,8 @@ const createSchema = z.object({
   password: z.string().min(4),
   role: z.enum(['admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
-  mustChangePassword: z.boolean().optional()
+  mustChangePassword: z.boolean().optional(),
+  imageGenerationEnabled: z.boolean().optional()
 })
 
 const updateSchema = z.object({
@@ -26,7 +27,8 @@ const updateSchema = z.object({
   password: z.string().min(4).optional(),
   role: z.enum(['admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
-  mustChangePassword: z.boolean().optional()
+  mustChangePassword: z.boolean().optional(),
+  imageGenerationEnabled: z.boolean().optional()
 })
 
 systemAccountsRouter.get('/', requireAdmin, (req, res) => {
@@ -97,6 +99,7 @@ systemAccountsRouter.post('/', requireAdmin, mutationGuard({
             safeChange('displayName', '用户名称', undefined, account.displayName),
             safeChange('role', '角色', undefined, account.role),
             safeChange('status', '状态', undefined, account.status),
+            safeChange('imageGenerationEnabled', '支持图像生成', undefined, account.imageGenerationEnabled),
             safeChange('password', '登录密码', undefined, parsed.data.password)
           ],
           viewers: viewer(account.id, 'admin_managed_my_resource')
@@ -147,7 +150,8 @@ systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
               description: '说明',
               role: '角色',
               status: '状态',
-              mustChangePassword: '下次登录改密'
+              mustChangePassword: '下次登录改密',
+              imageGenerationEnabled: '支持图像生成'
             }),
             ...(parsed.data.password ? [safeChange('password', '登录密码', undefined, parsed.data.password)] : [])
           ],

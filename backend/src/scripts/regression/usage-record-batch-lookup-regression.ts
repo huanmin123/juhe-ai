@@ -66,9 +66,10 @@ try {
     return originalPrepare(sql)
   }) as typeof database.prepare
 
+  const batchRecords = Array.from({ length: 5 }, (_, index) => buildUsageRecord(index, apiKey.id, group.id, account.id))
   try {
     repositories.createUsageRecordsBatch([
-      ...Array.from({ length: 5 }, (_, index) => buildUsageRecord(index, apiKey.id, group.id, account.id)),
+      ...batchRecords,
       buildUsageRecord(99, 'missing-api-key', group.id, account.id)
     ])
   } finally {
@@ -77,7 +78,7 @@ try {
 
   assert.deepEqual(selectCounts, { apiKeys: 1, groups: 1, accounts: 1 }, '批量使用记录写入应一次性预加载 API Key、分组和账户归属')
   assert.equal(usageRecordCount(), 5, '不存在的 API Key 仍应被跳过，其余使用记录应正常写入')
-  const detail = repositories.getUsageRecordDetail('usage_batch_lookup_3', access)
+  const detail = repositories.getUsageRecordDetail(batchRecords[3].id ?? '', access)
   assert(detail, '批量写入的使用记录详情应可读取')
   assert.equal(detail.systemAccountId, 'sys_admin', '使用记录应保留归属系统账户')
   assert.equal(detail.apiKeyId, apiKey.id, '使用记录应保留 API Key')
@@ -108,13 +109,13 @@ try {
     assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 1, 'retryOnFailure=false 不应在返回后立刻异步重试使用记录')
     await waitForRetryDelay()
     assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 1, 'retryOnFailure=false 不应在默认重试延迟后异步重试使用记录')
-    assert.equal(usageRecordExists('usage_batch_lookup_101'), 0, '失败后使用记录不应被后台定时器偷偷写入')
+    assert.equal(usageRecordExists(retryRecord.id ?? ''), 0, '失败后使用记录不应被后台定时器偷偷写入')
   } finally {
     recordDatabase.prepare = originalRecordPrepare
   }
   usageRecordQueue.flushAllUsageRecordQueue()
   assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 0, '恢复后保留的使用记录应可继续 flush 完成')
-  assert.equal(usageRecordExists('usage_batch_lookup_101'), 1, '恢复后应写入保留的使用记录')
+  assert.equal(usageRecordExists(retryRecord.id ?? ''), 1, '恢复后应写入保留的使用记录')
 
   console.log('使用记录批量查询回归通过：批量写入预加载归属，避免逐条查询 API Key/分组/账户')
 } finally {
@@ -127,8 +128,9 @@ try {
 }
 
 function buildUsageRecord(index: number, apiKeyId: string, groupId: string, accountId: string): UsageRecordInput {
+  const createdAt = new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString()
   return {
-    id: `usage_batch_lookup_${index}`,
+    id: usageRecordShards.generateUsageRecordId(createdAt, `batch-lookup-${index}`),
     traceId: `trace-usage-batch-lookup-${index}`,
     apiKeyId,
     groupId,
@@ -143,7 +145,7 @@ function buildUsageRecord(index: number, apiKeyId: string, groupId: string, acco
     inputTokens: 10 + index,
     outputTokens: 20 + index,
     costUsd: 0.001,
-    createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString()
+    createdAt
   }
 }
 

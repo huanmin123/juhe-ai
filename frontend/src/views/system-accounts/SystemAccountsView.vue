@@ -6,13 +6,16 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1080" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileAccounts" @mobile-refresh="refreshMobileAccounts">
+    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1190" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileAccounts" @mobile-refresh="refreshMobileAccounts">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
           <a-tag :color="record.role === 'admin' ? 'geekblue' : 'default'">{{ record.role === 'admin' ? '管理员' : '用户' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="record.status === 'active' ? 'green' : 'red'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'imageGenerationEnabled'">
+          <a-tag :color="record.imageGenerationEnabled ? 'green' : 'default'">{{ record.imageGenerationEnabled ? '支持' : '不支持' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'mustChangePassword'">
           <a-tag :color="record.mustChangePassword ? 'warning' : 'success'">{{ record.mustChangePassword ? '提醒' : '不提醒' }}</a-tag>
@@ -34,6 +37,7 @@
             <div class="mobile-list-card-tags">
               <a-tag :color="record.role === 'admin' ? 'geekblue' : 'default'">{{ record.role === 'admin' ? '管理员' : '用户' }}</a-tag>
               <a-tag :color="record.status === 'active' ? 'green' : 'red'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
+              <a-tag :color="record.imageGenerationEnabled ? 'green' : 'default'">{{ record.imageGenerationEnabled ? '支持图像' : '禁用图像' }}</a-tag>
               <a-tag :color="record.mustChangePassword ? 'warning' : 'success'">{{ record.mustChangePassword ? '提醒改密' : '不提醒改密' }}</a-tag>
             </div>
           </div>
@@ -80,6 +84,9 @@
         </a-form-item>
         <a-form-item label="登录后提醒改密">
           <a-switch v-model:checked="form.mustChangePassword" checked-children="是" un-checked-children="否" />
+        </a-form-item>
+        <a-form-item label="支持图像生成">
+          <a-switch v-model:checked="form.imageGenerationEnabled" checked-children="支持" un-checked-children="不支持" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -128,7 +135,8 @@ const form = reactive({
   password: '',
   role: 'user' as SystemAccountRole,
   status: 'active' as SystemAccountStatus,
-  mustChangePassword: true
+  mustChangePassword: true,
+  imageGenerationEnabled: false
 })
 
 const roleOptions = [
@@ -146,6 +154,7 @@ const columns = [
   { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 180 },
   { title: '角色', key: 'role', width: 110 },
   { title: '状态', key: 'status', width: 100 },
+  { title: '图像生成', key: 'imageGenerationEnabled', width: 110 },
   { title: '改密提醒', key: 'mustChangePassword', width: 110 },
   { title: '最后登录', key: 'lastLoginAt', width: 180 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
@@ -186,7 +195,7 @@ const {
 
 function openCreate() {
   editingId.value = undefined
-  Object.assign(form, { username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true })
+  Object.assign(form, { username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true, imageGenerationEnabled: false })
   modalOpen.value = true
 }
 
@@ -199,7 +208,8 @@ function openEdit(record: SystemAccountSummary) {
     password: '',
     role: record.role,
     status: record.status,
-    mustChangePassword: record.mustChangePassword
+    mustChangePassword: record.mustChangePassword,
+    imageGenerationEnabled: record.imageGenerationEnabled
   })
   modalOpen.value = true
 }
@@ -237,7 +247,8 @@ const handleSave = submitAction('system_accounts.save', async () => {
       description: form.description,
       role: form.role,
       status: form.status,
-      mustChangePassword: form.mustChangePassword
+      mustChangePassword: form.mustChangePassword,
+      imageGenerationEnabled: form.imageGenerationEnabled
     }
     if (editingId.value) {
       await api.systemAccounts.update(editingId.value, basePayload)

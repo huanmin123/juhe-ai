@@ -105,7 +105,7 @@ export async function exchangeOpenAIAuthCode(input: {
 export async function refreshOpenAIOAuthToken(input: { refreshToken: string; clientId?: string; proxyUrl?: string; signal?: AbortSignal }): Promise<OpenAITokenInfo> {
   const refreshToken = normalizeString(input.refreshToken)
   if (!refreshToken) {
-    throw new Error('refresh_token 不能为空')
+    throw new Error('刷新令牌不能为空')
   }
   const clientId = normalizeString(input.clientId) || OPENAI_OAUTH_CLIENT_ID
   return requestOpenAIToken({
@@ -142,7 +142,7 @@ export function extractCodeAndState(input: { callbackUrl?: string; code?: string
 
   const callbackUrl = normalizeString(input.callbackUrl)
   if (!callbackUrl) {
-    throw new Error('callback_url 或 code/state 不能为空')
+    throw new Error('回调地址或授权码参数不能为空')
   }
   const url = new URL(callbackUrl)
   const code = normalizeString(url.searchParams.get('code'))
@@ -179,12 +179,12 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
 
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorDescription = normalizeString(payload.error_description) || normalizeString(payload.error) || text
-    throw new Error(`OpenAI OAuth Token 请求失败：HTTP ${response.statusCode} ${errorDescription}`)
+    throw new Error(`OpenAI OAuth 令牌请求失败：HTTP ${response.statusCode}${errorDescription ? `，${errorDescription}` : ''}`)
   }
 
   const accessToken = normalizeString(payload.access_token)
   if (!accessToken) {
-    throw new Error('OpenAI OAuth Token 响应缺少 access_token')
+    throw new Error('OpenAI OAuth 令牌响应缺少访问令牌')
   }
   const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : Number(payload.expires_in ?? 0)
   const idToken = normalizeString(payload.id_token)
@@ -241,7 +241,7 @@ async function performTokenRequest(bodyText: string, proxyUrl?: string, signal?:
     })
     request.on('response', cleanupAbortSignal)
     request.on('close', cleanupAbortSignal)
-    request.on('timeout', () => request.destroy(new Error('OpenAI OAuth Token 请求超时')))
+    request.on('timeout', () => request.destroy(new Error('OpenAI OAuth 令牌请求超时')))
     request.end(bodyText)
   })
   return response

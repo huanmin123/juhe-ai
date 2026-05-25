@@ -14,6 +14,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'active',
       password_hash TEXT NOT NULL,
       must_change_password INTEGER NOT NULL DEFAULT 0,
+      image_generation_enabled INTEGER NOT NULL DEFAULT 0,
       last_login_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -247,6 +248,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       local_last_error_message TEXT,
       local_super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
+      local_stream_failure_count INTEGER NOT NULL DEFAULT 0,
+      local_stream_failure_window_started_at TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -263,10 +266,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       description TEXT,
       key_hash TEXT NOT NULL UNIQUE,
       key_prefix TEXT NOT NULL,
-      key_secret_encrypted TEXT,
+      key_secret_encrypted TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       group_id TEXT NOT NULL,
-      group_authorization_id TEXT,
       expires_at TEXT,
       rate_limit INTEGER,
       quota_limit INTEGER,
@@ -275,8 +277,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       last_used_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (group_id) REFERENCES groups(id),
-      FOREIGN KEY (group_authorization_id) REFERENCES resource_authorizations(id)
+      FOREIGN KEY (group_id) REFERENCES groups(id)
     );
 
     CREATE TABLE IF NOT EXISTS system_settings (
@@ -361,7 +362,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_group_accounts_account_scope_enabled ON group_accounts(account_id, system_account_id, enabled);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_scope_enabled_updated ON group_accounts(system_account_id, account_id, enabled, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_api_keys_group ON api_keys(group_id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_group_authorization ON api_keys(group_authorization_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
@@ -381,33 +381,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, published_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
-
-    DROP INDEX IF EXISTS idx_accounts_notes_lookup;
-    DROP INDEX IF EXISTS idx_accounts_system_account_notes_lookup;
-    DROP INDEX IF EXISTS idx_api_keys_key_prefix_lookup;
-    DROP INDEX IF EXISTS idx_api_keys_system_account_key_prefix_lookup;
-    DROP INDEX IF EXISTS idx_api_keys_description_lookup;
-    DROP INDEX IF EXISTS idx_api_keys_system_account_description_lookup;
-    DROP INDEX IF EXISTS idx_proxy_profiles_host_lookup;
-    DROP INDEX IF EXISTS idx_proxy_profiles_type_lookup;
   `)
-  addColumnIfMissing(database, 'accounts', 'cooldown_retest_observation_started_at', 'TEXT')
-  dropColumnIfExists(database, 'group_accounts', 'weight')
-  dropColumnIfExists(database, 'group_accounts', 'soft_concurrency_limit')
+  ensureColumn(database, 'system_accounts', 'image_generation_enabled', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'group_accounts', 'local_stream_failure_count', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'group_accounts', 'local_stream_failure_window_started_at', 'TEXT')
 }
 
-function addColumnIfMissing(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
-  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
-  if (columns.some((column) => column.name === columnName)) {
-    return
-  }
-  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
-}
-
-function dropColumnIfExists(database: DatabaseSync, tableName: string, columnName: string): void {
-  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
-  if (!columns.some((column) => column.name === columnName)) {
-    return
-  }
-  database.exec(`ALTER TABLE ${tableName} DROP COLUMN ${columnName}`)
+function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {
+  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
+  if (rows.some((row) => row.name === column)) return
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }

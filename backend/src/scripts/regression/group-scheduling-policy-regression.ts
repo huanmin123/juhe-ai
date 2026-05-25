@@ -44,6 +44,7 @@ try {
       perApiKeyQueueLimit: 10,
       clientIpConcurrencyLimit: 4,
       clientIpConcurrencyOverflowMode: 'queue',
+      imageLaneMaxConcurrency: 0,
       breakAffinityOnSoftLimit: false,
       fastFirstEnabled: false
     }
@@ -58,6 +59,7 @@ try {
   assert.equal(highConcurrencyGroup.schedulingPolicy?.perApiKeyQueueLimit, 1000, '单 Key 队列上限默认应跟随分组队列上限')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.clientIpConcurrencyLimit, 4, '单 IP 并发上限应允许按分组配置')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.clientIpConcurrencyOverflowMode, 'queue', '单 IP 超限模式应允许切换为排队等待')
+  assert.equal(highConcurrencyGroup.schedulingPolicy?.imageLaneMaxConcurrency, 0, '图像通道上限 0 应保留为自动预留文本槽策略')
 
   const stored = database
     .prepare('SELECT group_type, scheduling_policy_json FROM groups WHERE id = ?')
@@ -71,6 +73,7 @@ try {
   assert.equal(storedPolicy.fastFirstEnabled, true, '默认开启策略不应按请求关闭')
   assert.equal(storedPolicy.clientIpConcurrencyLimit, 4, '单 IP 并发上限应写入 JSON 配置')
   assert.equal(storedPolicy.clientIpConcurrencyOverflowMode, 'queue', '单 IP 超限模式应写入 JSON 配置')
+  assert.equal(storedPolicy.imageLaneMaxConcurrency, 0, '图像通道上限 0 应按自动策略写入 JSON 配置')
 
   const runtimeAccess = repositories.resolveGroupUsageAccessMetadata(highConcurrencyGroup.id, 'sys_admin')
   assert.equal(runtimeAccess?.groupType, 'high_concurrency')
@@ -80,6 +83,7 @@ try {
   assert.equal(runtimeAccess?.schedulingPolicy?.perApiKeyQueueLimit, 1000)
   assert.equal(runtimeAccess?.schedulingPolicy?.clientIpConcurrencyLimit, 4)
   assert.equal(runtimeAccess?.schedulingPolicy?.clientIpConcurrencyOverflowMode, 'queue')
+  assert.equal(runtimeAccess?.schedulingPolicy?.imageLaneMaxConcurrency, 0)
 
   const options = repositories.listGroupOptions(access, { keyword: highConcurrencyGroup.name })
   assert.equal(options[0]?.groupType, 'high_concurrency', '分组选项应携带分组类型')

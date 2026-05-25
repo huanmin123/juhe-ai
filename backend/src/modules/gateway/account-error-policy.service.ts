@@ -1,6 +1,15 @@
 import type { AccountStatus } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
-import { clearAccountFailureStateResult, getSettings, markAccountCooldown, markAccountDisabledByFailure } from '../../storage/repositories.js'
+import {
+  clearAccountFailureStateResult,
+  clearAuthorizedAccountBindingFailureStateByContext,
+  getSettings,
+  markAccountCooldown,
+  markAccountDisabledByFailure,
+  markAuthorizedAccountBindingCooldownByContext,
+  markAuthorizedAccountBindingDisabledByFailure,
+  type AuthorizedAccountBindingRuntimeTarget
+} from '../../storage/repositories.js'
 import { calculateOpenAICodexRateLimitResetAt } from './openai-codex-usage.service.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 
@@ -21,6 +30,16 @@ export interface AccountErrorPolicyAccount {
   id: string
   type?: string
   credentials: Record<string, unknown>
+  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+  bindingSystemAccountId?: string
+  groupOwnerSystemAccountId?: string
+  boundGroupId?: string
+  accountAuthorizationId?: string
+  status?: AccountStatus
+  cooldownUntil?: string
+  lastErrorMessage?: string
+  streamFailureCount?: number
+  streamFailureWindowStartedAt?: string
 }
 
 export interface AccountErrorPolicyDecision {
@@ -54,7 +73,7 @@ export function readGatewaySettings(): GatewaySettings {
 }
 
 export function applyAccountErrorHandling(
-  account: AccountErrorPolicyAccount & { status?: AccountStatus; cooldownUntil?: string; lastErrorMessage?: string },
+  account: AccountErrorPolicyAccount,
   input: {
     success: boolean
     statusCode?: number
@@ -74,11 +93,18 @@ export function applyAccountErrorHandling(
     if (account.status === 'rate_limited' && input.trafficSource !== 'manual_account_test') {
       return { action: 'none', changed: false, accountStatus: account.status }
     }
-    const shouldClear = (account.status !== undefined && account.status !== 'active') || Boolean(account.cooldownUntil) || Boolean(account.lastErrorMessage)
+    const shouldClear = (account.status !== undefined && account.status !== 'active')
+      || Boolean(account.cooldownUntil)
+      || Boolean(account.lastErrorMessage)
+      || Boolean(account.streamFailureCount)
+      || Boolean(account.streamFailureWindowStartedAt)
     if (!shouldClear) {
       return { action: 'none', changed: false, accountStatus: account.status }
     }
-    const result = clearAccountFailureStateResult(account.id, undefined, { allowErrorRestore: false })
+    const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+    const result = authorizedTarget
+      ? clearAuthorizedAccountBindingFailureStateByContext(authorizedTarget, { allowErrorRestore: false })
+      : clearAccountFailureStateResult(account.id, undefined, { allowErrorRestore: false })
     return { action: 'none', changed: result.changed, accountStatus: result.account?.status ?? account.status }
   }
 
@@ -165,12 +191,39 @@ export function applyAccountErrorPolicySideEffect(
   if (decision.action === 'cooldown') {
     const minutes = Math.max(1, decision.cooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes)
     const until = decision.cooldownUntil ?? new Date(Date.now() + minutes * 60_000).toISOString()
-    return markAccountCooldown(account.id, until, reason, decision.cooldownStatus ?? 'temporary_unavailable')
+    const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+    return authorizedTarget
+      ? markAuthorizedAccountBindingCooldownByContext({
+          ...authorizedTarget,
+          cooldownUntil: until,
+          reason,
+          status: decision.cooldownStatus ?? 'temporary_unavailable'
+        })
+      : markAccountCooldown(account.id, until, reason, decision.cooldownStatus ?? 'temporary_unavailable')
   }
   if (decision.action === 'disable') {
-    return markAccountDisabledByFailure(account.id, reason)
+    const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+    return authorizedTarget
+      ? markAuthorizedAccountBindingDisabledByFailure({ ...authorizedTarget, reason })
+      : markAccountDisabledByFailure(account.id, reason)
   }
   return undefined
+}
+
+function authorizedAccountBindingRuntimeTarget(account: AccountErrorPolicyAccount): AuthorizedAccountBindingRuntimeTarget | undefined {
+  if (account.accountAccessType !== 'account_authorized') {
+    return undefined
+  }
+  const systemAccountId = account.bindingSystemAccountId ?? account.groupOwnerSystemAccountId
+  if (!systemAccountId || !account.boundGroupId || !account.accountAuthorizationId) {
+    return undefined
+  }
+  return {
+    accountId: account.id,
+    systemAccountId,
+    groupId: account.boundGroupId,
+    accountAuthorizationId: account.accountAuthorizationId
+  }
 }
 
 export function parseErrorPayload(text: string, headers: Headers): Record<string, unknown> {

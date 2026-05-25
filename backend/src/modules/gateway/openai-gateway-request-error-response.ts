@@ -2,8 +2,6 @@ import type { Response } from 'express'
 
 import { responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { gatewayErrorPayload, sendGatewayErrorResponse } from './openai-gateway-responses.js'
-import { parseClientVisibleUpstreamErrorForAudit, sendRawUpstreamErrorResponse } from './openai-gateway-error-helpers.js'
-import { UpstreamRejectedRequestError } from './openai-gateway-failure-dispatch.js'
 import { isUpstreamRequestAbortedError } from './openai-gateway-upstream.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 
@@ -29,23 +27,6 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
     if (!res.writableEnded && !res.destroyed) {
       res.end()
     }
-    return true
-  }
-
-  if (error instanceof UpstreamRejectedRequestError) {
-    const auditError = parseClientVisibleUpstreamErrorForAudit(error.response, error.message)
-    sendRawUpstreamErrorResponse(res, error.response)
-    auditCapture.finalize({
-      outcome: 'upstream_failed',
-      success: false,
-      statusCode: error.response.statusCode,
-      responseHeaders: responseHeadersToObject(res),
-      responseBody: error.response.bodyText,
-      responsePartType: 'gateway_error',
-      errorPhase: 'upstream_response',
-      errorCode: auditError.errorCode,
-      errorMessage: auditError.errorMessage
-    })
     return true
   }
 

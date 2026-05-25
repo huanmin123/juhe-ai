@@ -22,6 +22,7 @@ export interface SystemAccountSummary {
   role: SystemAccountRole
   status: SystemAccountStatus
   mustChangePassword: boolean
+  imageGenerationEnabled: boolean
   lastLoginAt?: string
   createdAt: string
   updatedAt: string

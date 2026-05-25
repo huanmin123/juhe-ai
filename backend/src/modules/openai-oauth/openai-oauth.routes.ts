@@ -75,7 +75,7 @@ const reauthorizeFromRefreshTokenSchema = z.object({
 openAIOAuthRouter.post('/auth-url', (req, res) => {
   const parsed = authUrlSchema.safeParse(req.body ?? {})
   if (!parsed.success) {
-    res.status(400).json(badRequest('OpenAI OAuth 授权链接参数无效'))
+    res.status(400).json(badRequest('OpenAI 授权链接参数无效'))
     return
   }
   res.json(ok(generateOpenAIAuthURL()))
@@ -101,7 +101,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = createFromCodeSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('OpenAI OAuth 授权码参数无效'))
+    res.status(400).json(badRequest('OpenAI 授权码参数无效'))
     return
   }
   if (parsed.data.groupId && !isOpenAIGroup(parsed.data.groupId, requestAccess)) {
@@ -150,7 +150,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI OAuth 授权码交换失败' })
+    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI 授权码交换失败' })
   }
 })
 
@@ -171,7 +171,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = createFromRefreshTokenSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('OpenAI Refresh Token 参数无效'))
+    res.status(400).json(badRequest('OpenAI 刷新令牌参数无效'))
     return
   }
   if (parsed.data.groupId && !isOpenAIGroup(parsed.data.groupId, requestAccess)) {
@@ -217,7 +217,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI Refresh Token 授权失败' })
+    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI 刷新令牌授权失败' })
   }
 })
 
@@ -260,7 +260,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI OAuth Token 刷新失败' })
+    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI 访问令牌刷新失败' })
   }
 })
 
@@ -273,7 +273,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = reauthorizeFromCodeSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('OpenAI OAuth 重新授权参数无效'))
+    res.status(400).json(badRequest('OpenAI 重新授权参数无效'))
     return
   }
   const account = findEditableOpenAIOAuthAccount(req.params.id, requestAccess)
@@ -316,7 +316,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = reauthorizeFromRefreshTokenSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('OpenAI Refresh Token 参数无效'))
+    res.status(400).json(badRequest('OpenAI 刷新令牌参数无效'))
     return
   }
   const account = findEditableOpenAIOAuthAccount(req.params.id, requestAccess)
@@ -344,7 +344,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
     }, req)
     res.json(ok(updated))
   } catch (error) {
-    handleOAuthAccountUpdateError(error, res, 'OpenAI OAuth Refresh Token 重新授权失败')
+    handleOAuthAccountUpdateError(error, res, 'OpenAI 刷新令牌重新授权失败')
   }
 })
 

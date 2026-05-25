@@ -71,6 +71,12 @@
       :resource-select-disabled="createResourceSelectDisabled"
       :resource-type-options="createResourceTypeOptions"
       :saving="authorizationCreating"
+      :target-group-disabled="createTargetGroupDisabled"
+      :target-group-loading="createTargetGroupOptionsLoading"
+      :target-group-placeholder="createTargetGroupPlaceholder"
+      :target-group-tip="createTargetGroupTip"
+      :target-group-visible="createTargetGroupVisible"
+      :target-groups="createTargetGroups"
       :disabled-date="disabledAuthorizationExpireDate"
       :teams="createTeams"
       :grantee-loading="createGranteeOptionsLoading"
@@ -82,6 +88,8 @@
       @owner-search="handleCreateOwnerSearch"
       @resource-dropdown="handleCreateResourceDropdown"
       @resource-search="handleCreateResourceSearch"
+      @target-group-dropdown="handleCreateTargetGroupDropdown"
+      @target-group-search="handleCreateTargetGroupSearch"
       @ok="createAuthorization"
     />
 
@@ -153,6 +161,7 @@ const accounts = ref<AccountOptionSummary[]>([])
 const groups = ref<GroupOptionSummary[]>([])
 const createAccounts = ref<AccountOptionSummary[]>([])
 const createGroups = ref<GroupOptionSummary[]>([])
+const createTargetGroups = ref<GroupOptionSummary[]>([])
 const teams = ref<SystemTeamPrincipalSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
 const createOwnerUsers = ref<SystemAccountPrincipalSummary[]>([])
@@ -161,12 +170,14 @@ const createTeams = ref<SystemTeamPrincipalSummary[]>([])
 const createOwnerUsersLoading = ref(false)
 const createResourceOptionsLoading = ref(false)
 const createGranteeOptionsLoading = ref(false)
+const createTargetGroupOptionsLoading = ref(false)
 const filterResourceOptionsLoading = ref(false)
 const filterTeamOptionsLoading = ref(false)
 const filterUserOptionsLoading = ref(false)
 const createOwnerSearchKeyword = ref('')
 const createResourceSearchKeyword = ref('')
 const createGranteeSearchKeyword = ref('')
+const createTargetGroupSearchKeyword = ref('')
 const filterResourceSearchKeyword = ref('')
 const filterTeamSearchKeyword = ref('')
 const filterUserSearchKeyword = ref('')
@@ -184,6 +195,8 @@ let createOwnerResourceRequestId = 0
 let createResourceSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let createGranteeRequestId = 0
 let createGranteeSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let createTargetGroupRequestId = 0
+let createTargetGroupSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let filterResourceRequestId = 0
 let filterResourceSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let filterTeamRequestId = 0
@@ -287,6 +300,8 @@ const createForm = reactive<AuthorizationCreateFormModel>({
   resourceGroup: undefined,
   granteeType: 'system_account' as 'system_account' | 'team',
   granteeId: '' as string,
+  targetGroupId: '' as string,
+  targetGroup: undefined,
   remark: '',
   expiresAt: undefined as Dayjs | undefined,
   quotaLimits: createQuotaLimitForm()
@@ -336,6 +351,16 @@ const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'syste
 const selectedCreateAccount = computed(() => createForm.resourceType === 'account'
   ? createOwnedAccounts.value.find((account) => account.id === createForm.resourceId)
   : undefined)
+const createTargetGroupVisible = computed(() => createForm.resourceType === 'account' && createForm.granteeType === 'system_account')
+const createTargetGroupDisabled = computed(() => !createForm.resourceId || !createForm.granteeId || !selectedCreateAccount.value?.providerCode)
+const createTargetGroupPlaceholder = computed(() => {
+  if (!createForm.resourceId) return '请先选择 AI 账户'
+  if (!createForm.granteeId) return '请先选择被授权用户'
+  return '默认使用目标用户默认分组'
+})
+const createTargetGroupTip = computed(() => createTargetGroups.value.length
+  ? '授权成功后会把该账户加入所选目标分组；清空则使用目标用户默认分组。'
+  : '目标用户暂无同供应商分组时，保存后会自动创建默认 OpenAI 分组。')
 const activeFilterCount = computed(() => {
   let count = 0
   if (!isManagementView.value && filters.sourceType !== 'all') count += 1
@@ -416,6 +441,7 @@ function validateAuthorizationExpiresAt(expiresAt: Dayjs | undefined, accountExp
 
 watch(() => createForm.granteeType, () => {
   createForm.granteeId = ''
+  resetCreateTargetGroupState()
   createGranteeSearchKeyword.value = ''
   clearCreateGranteeSearchTimer()
   void loadCreateGranteeOptions()
@@ -425,10 +451,19 @@ watch(() => createForm.resourceType, () => {
   createForm.resourceId = ''
   createForm.resourceAccount = undefined
   createForm.resourceGroup = undefined
+  resetCreateTargetGroupState()
   createResourceSearchKeyword.value = ''
   clearCreateResourceSearchTimer()
   void loadCreateResourceOptions()
 })
+
+watch(
+  () => [createForm.resourceType, createForm.granteeType, createForm.granteeId, selectedCreateAccount.value?.providerCode, selectedCreateAccount.value?.id] as const,
+  () => {
+    resetCreateTargetGroupState()
+    void loadCreateTargetGroupOptions()
+  }
+)
 
 async function loadMetaData() {
   accounts.value = []
@@ -475,6 +510,8 @@ function openCreateModal() {
   createForm.resourceGroup = undefined
   createForm.granteeType = 'system_account'
   createForm.granteeId = ''
+  createForm.targetGroupId = ''
+  createForm.targetGroup = undefined
   createForm.remark = ''
   createForm.expiresAt = undefined
   createForm.quotaLimits = createQuotaLimitForm()
@@ -483,12 +520,14 @@ function openCreateModal() {
   void loadCreateOwnerOptions()
   void loadCreateResourceOptions()
   void loadCreateGranteeOptions()
+  void loadCreateTargetGroupOptions()
 }
 
 function handleCreateOwnerChange() {
   createForm.resourceId = ''
   createForm.resourceAccount = undefined
   createForm.resourceGroup = undefined
+  resetCreateTargetGroupState()
   createResourceSearchKeyword.value = ''
   createGranteeSearchKeyword.value = ''
   clearCreateResourceSearchTimer()
@@ -528,6 +567,16 @@ function handleCreateGranteeDropdown(open: boolean) {
 
 function handleCreateGranteeSearch(value: string) {
   scheduleCreateGranteeSearch(value)
+}
+
+function handleCreateTargetGroupDropdown(open: boolean) {
+  if (open) {
+    void loadCreateTargetGroupOptions()
+  }
+}
+
+function handleCreateTargetGroupSearch(value: string) {
+  scheduleCreateTargetGroupSearch(value)
 }
 
 function handleFilterResourceSearch(value: string) {
@@ -737,6 +786,51 @@ async function loadCreateGranteeOptions(keyword?: string): Promise<void> {
   }
 }
 
+async function loadCreateTargetGroupOptions(keyword?: string): Promise<void> {
+  const granteeSystemAccountId = createForm.granteeType === 'system_account' ? createForm.granteeId : ''
+  const providerCode = selectedCreateAccount.value?.providerCode
+  if (!createTargetGroupVisible.value || !granteeSystemAccountId || !providerCode) {
+    createTargetGroupRequestId += 1
+    createTargetGroupOptionsLoading.value = false
+    createTargetGroups.value = []
+    return
+  }
+  const search = normalizeSearchKeyword(keyword)
+  const requestKey = JSON.stringify(['create-target-group', isManagementView.value ? 'management' : 'self', granteeSystemAccountId, providerCode, search ?? '', createForm.targetGroupId ?? ''])
+  const cachedGroups = authorizationGroupOptionCache.get(requestKey)
+  if (cachedGroups) {
+    createTargetGroupRequestId += 1
+    createTargetGroupOptionsLoading.value = false
+    rememberGroupLabels(cachedGroups)
+    syncCreateTargetGroup(cachedGroups)
+    selectDefaultCreateTargetGroup(cachedGroups)
+    createTargetGroups.value = cachedGroups
+    return
+  }
+  const requestId = ++createTargetGroupRequestId
+  createTargetGroupOptionsLoading.value = true
+  try {
+    let nextGroups = isManagementView.value
+      ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
+      : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
+    nextGroups = await ensureSelectedAuthorizationGranteeGroupOption(nextGroups, createForm.targetGroupId, granteeSystemAccountId, providerCode)
+    if (requestId !== createTargetGroupRequestId) return
+    rememberGroupLabels(nextGroups)
+    syncCreateTargetGroup(nextGroups)
+    selectDefaultCreateTargetGroup(nextGroups)
+    authorizationGroupOptionCache.set(requestKey, nextGroups)
+    createTargetGroups.value = nextGroups
+  } catch (error) {
+    if (requestId !== createTargetGroupRequestId) return
+    console.error(error)
+    message.error('加载目标分组失败')
+  } finally {
+    if (requestId === createTargetGroupRequestId) {
+      createTargetGroupOptionsLoading.value = false
+    }
+  }
+}
+
 async function loadFilterResourceOptions(keyword?: string): Promise<void> {
   if (!isManagementView.value) {
     accounts.value = []
@@ -904,6 +998,15 @@ function scheduleCreateGranteeSearch(value: string) {
   }, remoteSearchDelayMs)
 }
 
+function scheduleCreateTargetGroupSearch(value: string) {
+  createTargetGroupSearchKeyword.value = value
+  clearCreateTargetGroupSearchTimer()
+  createTargetGroupSearchTimer = window.setTimeout(() => {
+    createTargetGroupSearchTimer = undefined
+    void loadCreateTargetGroupOptions(createTargetGroupSearchKeyword.value)
+  }, remoteSearchDelayMs)
+}
+
 function scheduleFilterResourceSearch(value: string) {
   filterResourceSearchKeyword.value = value
   clearFilterResourceSearchTimer()
@@ -952,6 +1055,13 @@ function clearCreateGranteeSearchTimer() {
   }
 }
 
+function clearCreateTargetGroupSearchTimer() {
+  if (createTargetGroupSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(createTargetGroupSearchTimer)
+    createTargetGroupSearchTimer = undefined
+  }
+}
+
 function clearFilterResourceSearchTimer() {
   if (filterResourceSearchTimer && typeof window !== 'undefined') {
     window.clearTimeout(filterResourceSearchTimer)
@@ -977,9 +1087,20 @@ function resetCreateOptionSearchState() {
   createOwnerSearchKeyword.value = ''
   createResourceSearchKeyword.value = ''
   createGranteeSearchKeyword.value = ''
+  createTargetGroupSearchKeyword.value = ''
   clearCreateOwnerSearchTimer()
   clearCreateResourceSearchTimer()
   clearCreateGranteeSearchTimer()
+  clearCreateTargetGroupSearchTimer()
+  resetCreateTargetGroupState()
+}
+
+function resetCreateTargetGroupState() {
+  createForm.targetGroupId = ''
+  createForm.targetGroup = undefined
+  createTargetGroups.value = []
+  createTargetGroupSearchKeyword.value = ''
+  clearCreateTargetGroupSearchTimer()
 }
 
 function syncCreateResourceGroup(nextGroups = createGroups.value): void {
@@ -1008,6 +1129,22 @@ function syncCreateResourceAccount(nextAccounts = createAccounts.value): void {
   createForm.resourceGroup = undefined
   createForm.resourceAccount = selectedAccountFromOptions(createForm.resourceId, nextAccounts, createForm.resourceAccount)
   rememberAccountSelection(createForm.resourceAccount)
+}
+
+function syncCreateTargetGroup(nextGroups = createTargetGroups.value): void {
+  if (!createTargetGroupVisible.value) {
+    createForm.targetGroup = undefined
+    return
+  }
+  createForm.targetGroup = selectedGroupFromOptions(createForm.targetGroupId, nextGroups, createForm.targetGroup)
+}
+
+function selectDefaultCreateTargetGroup(nextGroups = createTargetGroups.value): void {
+  if (createForm.targetGroupId || createTargetGroupSearchKeyword.value.trim()) return
+  const defaultGroup = nextGroups.find((group) => group.enabled && group.isDefault) ?? nextGroups.find((group) => group.enabled)
+  if (!defaultGroup) return
+  createForm.targetGroupId = defaultGroup.id
+  createForm.targetGroup = { id: defaultGroup.id, name: defaultGroup.name }
 }
 
 function syncFilterResourceAccount(nextAccounts = accounts.value): void {
@@ -1099,6 +1236,19 @@ async function ensureSelectedGroupOption(options: GroupOptionSummary[], selected
   }
 }
 
+async function ensureSelectedAuthorizationGranteeGroupOption(options: GroupOptionSummary[], selectedId: string | undefined, granteeSystemAccountId: string, providerCode: string): Promise<GroupOptionSummary[]> {
+  const id = selectedId?.trim()
+  if (!id || options.some((item) => item.id === id)) return options
+  try {
+    const selected = isManagementView.value
+      ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, ids: [id], limit: 1, preferDefault: true })
+      : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, ids: [id], limit: 1, preferDefault: true })
+    return mergeOptionsById(selected, options)
+  } catch {
+    return options
+  }
+}
+
 async function ensureSelectedSystemAccountPrincipal(options: SystemAccountPrincipalSummary[], selectedId?: string): Promise<SystemAccountPrincipalSummary[]> {
   const id = selectedId?.trim()
   if (!id || options.some((item) => item.id === id)) return options
@@ -1175,6 +1325,7 @@ const createAuthorization = submitAction('authorizations.create', async () => {
       resourceId: createForm.resourceId,
       granteeType: createForm.granteeType,
       granteeId: createForm.granteeId,
+      targetGroupId: createTargetGroupVisible.value ? createForm.targetGroupId || undefined : undefined,
       remark: createForm.remark.trim() || undefined,
       expiresAt,
       limits: quotaLimitsPayload(createForm.quotaLimits)

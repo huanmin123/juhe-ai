@@ -71,6 +71,14 @@ export function accountCooldownText(account: AccountSummary) {
   return `暂停至 ${formatDateTime(account.cooldownUntil)}`
 }
 
+export function sourceAccountStatusText(account: AccountSummary): string {
+  const sourceStatus = account.sourceStatus ? statusText(account.sourceStatus) : '正常'
+  if (account.sourceCooldownUntil && isFutureTime(account.sourceCooldownUntil)) {
+    return `${sourceStatus}，暂停至 ${formatDateTime(account.sourceCooldownUntil)}`
+  }
+  return sourceStatus
+}
+
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
   if (isAuthorizedAccount(account) && account.authorizationExpiresAt) {
@@ -88,6 +96,12 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   }
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
     lines.push('授权额度已用完，当前调用会被拦截')
+  }
+  if (isAuthorizedAccount(account) && account.sourceStatus) {
+    lines.push(`授权来源状态：${sourceAccountStatusText(account)}`)
+  }
+  if (isAuthorizedAccount(account) && account.sourceSchedulable === false) {
+    lines.push('授权来源已暂停调度')
   }
   if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
@@ -132,7 +146,12 @@ export function isTemporaryAccountStatus(account: AccountSummary) {
 
 export function isCoolingDown(account: AccountSummary) {
   if (!account.cooldownUntil) return false
-  const time = new Date(account.cooldownUntil).getTime()
+  return isFutureTime(account.cooldownUntil)
+}
+
+function isFutureTime(value?: string): boolean {
+  if (!value) return false
+  const time = new Date(value).getTime()
   return Number.isFinite(time) && time > Date.now()
 }
 
@@ -143,6 +162,11 @@ export function isAccountPackageExpired(account: AccountSummary) {
 }
 
 export function isAccountPackageExpiredStatus(account: AccountSummary): boolean {
+  if (isAuthorizedAccount(account)) {
+    return isAccountPackageExpired(account)
+      || account.sourceLastErrorCode === 'account_expired'
+      || account.sourceLastErrorMessage?.includes('账户套餐已过期') === true
+  }
   return isAccountPackageExpired(account)
     || account.lastErrorCode === 'account_expired'
     || account.lastErrorMessage?.includes('账户套餐已过期') === true

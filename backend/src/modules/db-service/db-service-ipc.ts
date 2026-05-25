@@ -99,7 +99,7 @@ export function attachDbServiceProcess(child: ChildProcess, options: { onReady?:
       dbServicePid = undefined
       dbServiceHttpHost = undefined
       dbServiceHttpPort = undefined
-      failPendingRequests(new Error('DB service 已退出'))
+      failPendingRequests(new Error('本地数据库服务已退出'))
     }
   })
 }
@@ -113,20 +113,20 @@ export async function requestDbService<T extends DbServiceOperation>(
   }
 
   if (unavailableCircuitOpenUntilMs > Date.now()) {
-    throw new Error('DB service 暂时不可用，请稍后重试')
+    throw new Error('本地数据库服务暂时不可用，请稍后重试')
   }
 
   const child = dbServiceProcess
   if (!child || !child.connected || !dbServiceReady) {
     openUnavailableCircuit()
     if (child && !child.connected) {
-      markDbServiceIpcBroken(new Error('DB service IPC 已断开'), child)
+      markDbServiceIpcBroken(new Error('本地数据库服务通信已断开'), child)
     }
-    throw new Error('DB service 未就绪')
+    throw new Error('本地数据库服务未就绪，请稍后重试')
   }
   if (pendingRequests.size >= maxPendingRequests) {
     failedRequestCount += 1
-    throw new Error('DB service 请求队列已满')
+    throw new Error('本地数据库服务请求队列已满，请稍后重试')
   }
 
   const requestId = randomUUID()
@@ -144,7 +144,7 @@ export async function requestDbService<T extends DbServiceOperation>(
         }
         timedOutRequestCount += 1
         pendingRequests.delete(requestId)
-        const timeoutError = new DbServiceRequestTimedOutError('DB service 请求超时')
+        const timeoutError = new DbServiceRequestTimedOutError('本地数据库服务请求超时，请稍后重试')
         pending.reject(timeoutError)
       }, options.timeoutMs ?? requestTimeoutMs)
       pendingRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
@@ -386,7 +386,7 @@ function finishPendingRequest(requestId: string, response: Partial<DbServiceChil
     return
   }
 
-  pending.reject(new DbServiceOperationFailedError(typeof response.errorMessage === 'string' ? response.errorMessage : 'DB service 请求失败'))
+  pending.reject(new DbServiceOperationFailedError(typeof response.errorMessage === 'string' ? response.errorMessage : '本地数据库服务请求失败'))
 }
 
 function failPendingRequests(error: Error): void {
@@ -557,7 +557,7 @@ function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServer
 
 function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMessage): void {
   if (!child.connected) {
-    markDbServiceIpcBroken(new Error('DB service IPC 已断开'), child)
+    markDbServiceIpcBroken(new Error('本地数据库服务通信已断开'), child)
     return
   }
   try {

@@ -49,7 +49,15 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
   providerCode: 'account_rows.provider_code COLLATE NOCASE',
   systemAccount: 'system_account_sort_name COLLATE NOCASE',
   concurrency: 'account_rows.concurrency_limit',
-  status: 'account_rows.status COLLATE NOCASE',
+  status: `CASE
+    WHEN account_rows.access_type = 'authorized'
+      AND group_bindings.local_status = 'temporary_unavailable'
+      AND group_bindings.local_cooldown_until IS NOT NULL
+      AND group_bindings.local_cooldown_until <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    THEN 'active'
+    WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_status, 'active')
+    ELSE account_rows.status
+  END COLLATE NOCASE`,
   accountExpiresAt: 'COALESCE(account_rows.authorization_expires_at, account_rows.account_expires_at)',
   lastUsedAt: 'account_rows.last_used_at'
 }

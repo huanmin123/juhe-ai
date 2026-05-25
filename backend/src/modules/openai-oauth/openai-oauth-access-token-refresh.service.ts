@@ -96,7 +96,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
     const credentials = current.credentials
     const refreshToken = stringCredential(credentials, 'refresh_token')
     if (!refreshToken) {
-      throw new Error('OpenAI OAuth 缺少 refresh_token')
+      throw new Error('OpenAI OAuth 账户缺少刷新令牌')
     }
 
     if (credentialsChanged(account.credentials, credentials) && !isAccessTokenExpiredOrMissing(credentials, Date.now())) {
@@ -163,7 +163,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
     }
   }
 
-  throw new Error('OpenAI OAuth Access Token 刷新失败')
+  throw new Error('OpenAI OAuth 访问令牌刷新失败')
 }
 
 async function persistOpenAIOAuthCredentialsViaDbService(accountId: string, credentials: Record<string, unknown>): Promise<boolean> {
@@ -234,13 +234,13 @@ export async function refreshDueOpenAIOAuthAccessTokens(
         accountName: account.name,
         failureCount: failureState.count,
         accessTokenExpiredOrMissing: expiredOrMissing
-      }), 'OpenAI OAuth Access Token 刷新失败')
+      }), 'OpenAI OAuth 访问令牌刷新失败')
 
       if (failureState.count >= oauthTokenRefreshFailureThreshold) {
         const updated = markAccountException(
           account.id,
           oauthTokenRefreshFailedErrorCode,
-          `OpenAI OAuth Access Token 连续 ${failureState.count} 次刷新失败：${message}`,
+          `OpenAI OAuth 访问令牌连续 ${failureState.count} 次刷新失败：${message}`,
           { preserveDisabled: false }
         )
         if (updated) {
@@ -447,7 +447,7 @@ function stringCredential(credentials: Record<string, unknown>, key: string): st
 }
 
 function errorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : 'OpenAI OAuth Access Token 刷新失败'
+  const message = error instanceof Error ? error.message : 'OpenAI OAuth 访问令牌刷新失败'
   return message.length > 240 ? `${message.slice(0, 237)}...` : message
 }
 

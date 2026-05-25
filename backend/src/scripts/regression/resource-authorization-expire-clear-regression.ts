@@ -221,13 +221,16 @@ try {
   const ownerPausedBinding = repositories.setAccountGroup(ownerPausedAccount.id, granteeQuotaGroup.id, granteeAccess)
   assert.equal(ownerPausedBinding?.boundGroupId, granteeQuotaGroup.id, '所有者停调账户应能先绑定到被授权人的分组')
   const ownerPausedAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerPausedAccount.id)
-  assert.equal(ownerPausedAuthorizedAccount?.schedulable, false, '所有者停调后被授权账户视图也应不可调度')
-  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAccount.id, {
+  assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '授权账户本地状态应和所有者停调状态隔离')
+  assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, false, '所有者停调应作为授权来源状态返回')
+  assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '所有者停调不应影响被授权账户本地可调度状态')
+  const ownerPausedDispatch = repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAccount.id, {
     fallbackEnabled: true
-  }, granteeAccess), /账户暂时不可调用/, '所有者停调后不应允许被授权用户开启本地调度标记')
+  }, granteeAccess)
+  assert.equal(ownerPausedDispatch?.fallbackEnabled, true, '所有者停调不应阻断被授权用户开启本地调度标记')
   const ownerPausedTestAccount = repositories.findAccountForTest(ownerPausedAccount.id, granteeAccess)
   assert(ownerPausedTestAccount, '所有者停调账户仍应能被解析出来用于测试前置校验')
-  assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), '账户暂时不可调用，恢复前不会参与调度', '测试接口应在实际调用前拦截所有者停调账户')
+  assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), undefined, '测试接口不应因所有者停调拦截被授权账户')
 
   const teamQuotaAccount = repositories.createAccount({
     providerCode: 'openai',

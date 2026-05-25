@@ -21,6 +21,76 @@ type AccountRowQuerySettings = {
 }
 const accountQualityDatabaseAlias = 'account_quality_records'
 
+function authorizedAccountLocalRuntimeStatusExpression(groupBindingsAlias = 'group_bindings'): string {
+  return `CASE
+    WHEN ${groupBindingsAlias}.local_status = 'temporary_unavailable'
+      AND ${groupBindingsAlias}.local_cooldown_until IS NOT NULL
+      AND ${groupBindingsAlias}.local_cooldown_until <= ?
+    THEN 'active'
+    ELSE COALESCE(${groupBindingsAlias}.local_status, 'active')
+  END`
+}
+
+function accountEffectiveStatusFilterExpression(): string {
+  return `CASE
+    WHEN account_rows.access_type = 'authorized' THEN ${authorizedAccountLocalRuntimeStatusExpression()}
+    ELSE account_rows.status
+  END`
+}
+
+function authorizedBindingAvailableExpression(): string {
+  return `group_bindings.group_id IS NOT NULL
+    AND group_bindings.account_authorization_id IS NOT NULL
+    AND group_bindings.account_authorization_id = account_rows.authorization_id`
+}
+
+function authorizedSharedResourceAvailableExpression(): string {
+  return `(account_rows.account_expires_at IS NULL OR account_rows.account_expires_at > ?)`
+}
+
+function authorizedBindingUnavailableExpression(): string {
+  return `group_bindings.group_id IS NULL
+    OR group_bindings.account_authorization_id IS NULL
+    OR group_bindings.account_authorization_id <> account_rows.authorization_id`
+}
+
+function accountEffectiveSchedulableExpression(): string {
+  return `CASE
+    WHEN account_rows.access_type = 'authorized' THEN
+      CASE
+        WHEN ${authorizedBindingAvailableExpression()}
+          AND ${accountEffectiveStatusFilterExpression()} = 'active'
+          AND ${authorizedSharedResourceAvailableExpression()}
+        THEN 1
+        ELSE 0
+      END
+    WHEN account_rows.status = 'active'
+      AND account_rows.schedulable = 1
+      AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ?)
+    THEN 1
+    ELSE 0
+  END`
+}
+
+function accountCoolingFilterExpression(): string {
+  return `CASE
+    WHEN account_rows.access_type = 'authorized' THEN
+      CASE
+        WHEN ${authorizedBindingAvailableExpression()}
+          AND (
+            ${accountEffectiveStatusFilterExpression()} IN ('rate_limited', 'temporary_unavailable')
+            OR (group_bindings.local_cooldown_until IS NOT NULL AND group_bindings.local_cooldown_until > ?)
+          )
+        THEN 1
+        ELSE 0
+      END
+    WHEN account_rows.status IN ('rate_limited', 'temporary_unavailable')
+      OR (account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ?)
+    THEN 1
+    ELSE 0
+  END`
+}
+
 export function listAccountRowsForAccess(access: AccessScope | undefined, options: NormalizedAccountListOptions): AccountListRow[] {
   return queryAccountRowsForAccess(access, options, undefined, false).rows
 }
@@ -321,6 +391,8 @@ function groupBindingSelectColumns(): string {
           group_bindings.local_status AS bound_group_local_status,
           group_bindings.local_cooldown_until AS bound_group_local_cooldown_until,
           group_bindings.local_last_error_message AS bound_group_local_last_error_message,
+          group_bindings.local_stream_failure_count AS bound_group_local_stream_failure_count,
+          group_bindings.local_stream_failure_window_started_at AS bound_group_local_stream_failure_window_started_at,
           group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled,
           group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled`
 }
@@ -371,20 +443,31 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
   }
   const statuses = accountStatusFilterValues(options.status)
   if (statuses.length === 1) {
-    clauses.push('account_rows.status = ?')
-    params.push(statuses[0])
+    clauses.push(`${accountEffectiveStatusFilterExpression()} = ?`)
+    params.push(nowIso(), statuses[0])
   } else if (statuses.length > 1) {
-    clauses.push(`account_rows.status IN (${statuses.map(() => '?').join(', ')})`)
-    params.push(...statuses)
+    clauses.push(`${accountEffectiveStatusFilterExpression()} IN (${statuses.map(() => '?').join(', ')})`)
+    params.push(nowIso(), ...statuses)
   }
   if (options.schedulable === 'enabled') {
-    clauses.push("account_rows.status = 'active' AND account_rows.schedulable = 1 AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ?)")
-    params.push(nowIso())
+    clauses.push(`${accountEffectiveSchedulableExpression()} = 1`)
+    const current = nowIso()
+    params.push(current, current, current)
   } else if (options.schedulable === 'disabled') {
-    clauses.push("(account_rows.status = 'disabled' OR account_rows.schedulable <> 1)")
+    clauses.push(`(
+      (account_rows.access_type = 'authorized' AND (
+        ${authorizedBindingUnavailableExpression()}
+        OR ${accountEffectiveStatusFilterExpression()} IN ('disabled', 'error')
+        OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ?)
+      ))
+      OR (account_rows.access_type <> 'authorized' AND (account_rows.status = 'disabled' OR account_rows.schedulable <> 1))
+    )`)
+    const current = nowIso()
+    params.push(current, current)
   } else if (options.schedulable === 'cooling') {
-    clauses.push("(account_rows.status IN ('rate_limited', 'temporary_unavailable') OR (account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ?))")
-    params.push(nowIso())
+    clauses.push(`${accountCoolingFilterExpression()} = 1`)
+    const current = nowIso()
+    params.push(current, current, current)
   }
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',

@@ -45,7 +45,7 @@ export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
 export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
-export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'dataset', 'usage')
+export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 
 const localEnv = loadLocalEnv(localEnvPath)
 

@@ -174,6 +174,8 @@ export type AccountListRow = AccountRow & {
   bound_group_local_status?: AccountStatus | null
   bound_group_local_cooldown_until?: string | null
   bound_group_local_last_error_message?: string | null
+  bound_group_local_stream_failure_count?: number | null
+  bound_group_local_stream_failure_window_started_at?: string | null
   bound_group_local_super_priority_enabled?: number | null
   bound_group_local_fallback_enabled?: number | null
   quality_score?: number | null

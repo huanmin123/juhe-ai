@@ -31,14 +31,17 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
   if (account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
     lines.push('授权额度已用完，当前调用会被拦截。')
   }
-  if (isAccountPackageExpiredStatus(account)) {
+  const sourceUnavailable = authorizedAccountSourceUnavailableText(account)
+  if (sourceUnavailable) {
+    lines.push(`${sourceUnavailable}。`)
+  } else if (isAccountPackageExpiredStatus(account)) {
     lines.push('账户已到期，当前不可用。')
   } else if (isAuthorizedAccount(account) && account.status === 'disabled') {
-    lines.push(account.localStatus === 'disabled' ? '账户已停用，当前不可用。' : '账户所有者已停用该账户，当前不可用。')
+    lines.push('账户已停用，当前不可用。')
   } else if (isAuthorizedAccount(account) && account.status === 'error') {
-    lines.push('账户处于异常状态，当前不可用。')
+    lines.push('授权账户本地状态异常，当前不可用。')
   } else if (isTemporaryAccountStatus(account) || (isAuthorizedAccount(account) && !account.schedulable)) {
-    lines.push('账户暂时不可调用，恢复前不会参与调度。')
+    lines.push(isAuthorizedAccount(account) ? '授权账户在当前分组暂时不可调用，恢复前不会参与调度。' : '账户暂时不可调用，恢复前不会参与调度。')
   }
   if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人。')
@@ -85,7 +88,7 @@ function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
     account.authorizationQuotaExceeded
     || isAuthorizationExpired(account)
     || isAuthorizationBindingUnavailable(account)
-    || isAccountPackageExpiredStatus(account)
+    || authorizedAccountSourceUnavailableText(account)
     || account.status === 'disabled'
     || account.status === 'error'
     || isTemporaryAccountStatus(account)
@@ -136,14 +139,29 @@ export function canRestoreException(account: AccountSummary): boolean {
 export function authorizedAccountUnavailableText(account: AccountSummary): string | undefined {
   if (!isAuthorizedAccount(account)) return undefined
   if (account.permissions?.canUse === false) return '当前授权账户无可用权限'
+  if (!account.boundGroupId) return '授权账户需要先绑定到你的分组'
   if (isAuthorizationExpired(account)) return '授权已到期，当前账户不能调用'
   if (isAuthorizationBindingUnavailable(account)) return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
-  if (isAccountPackageExpiredStatus(account)) return '账户已到期，当前不可用'
   if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
-  if (account.status === 'disabled') return account.localStatus === 'disabled' ? '账户已停用，当前不可用' : '账户所有者已停用该账户，当前不可用'
-  if (account.status === 'error') return '账户处于异常状态，当前不可用'
-  if (isTemporaryAccountStatus(account) || !account.schedulable) return '账户暂时不可调用，恢复前不会参与调度'
+  if (account.status === 'disabled') return '账户已停用，当前不可用'
+  if (account.status === 'error') return '授权账户本地状态异常，当前不可用'
+  if (isTemporaryAccountStatus(account) || isFutureTime(account.localCooldownUntil)) return '授权账户在当前分组暂时不可调用，恢复前不会参与调度'
+  const sourceUnavailable = authorizedAccountSourceUnavailableText(account)
+  if (sourceUnavailable) return sourceUnavailable
+  if (!account.schedulable) return '授权账户暂时不可调用，恢复前不会参与调度'
   return undefined
+}
+
+export function authorizedAccountSourceUnavailableText(account: AccountSummary): string | undefined {
+  if (!isAuthorizedAccount(account)) return undefined
+  if (isAccountPackageExpiredStatus(account)) return '授权来源账户已到期，当前不可用'
+  return undefined
+}
+
+function isFutureTime(value?: string): boolean {
+  if (!value) return false
+  const time = Date.parse(value)
+  return Number.isFinite(time) && time > Date.now()
 }
 
 export function canUseAuthorizedAccount(account: AccountSummary): boolean {
@@ -158,10 +176,20 @@ export function canTestAccount(account: AccountSummary): boolean {
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
     if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account) || isAccountPackageExpiredStatus(account)) return false
-    if (account.authorizationQuotaExceeded || account.status === 'error' || isTemporaryAccountStatus(account)) return false
-    return account.schedulable || account.status === 'disabled'
+    if (account.authorizationQuotaExceeded || account.status === 'error') return false
+    const localFailureState = hasAuthorizedLocalFailureState(account)
+    if (isTemporaryAccountStatus(account) && !localFailureState) return false
+    return account.schedulable || account.status === 'disabled' || localFailureState
   }
   return account.permissions?.canUse !== false
+}
+
+function hasAuthorizedLocalFailureState(account: AccountSummary): boolean {
+  return Boolean(
+    (account.localStatus && account.localStatus !== 'active' && account.localStatus !== 'disabled')
+    || account.localCooldownUntil
+    || account.localLastErrorMessage
+  )
 }
 
 export function canManageGroupAccounts(group: { accessType?: string; permissions?: Pick<ResourcePermissions, 'canManageAccounts'> }): boolean {

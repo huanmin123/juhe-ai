@@ -522,10 +522,10 @@ function validateAccountBasics(account: NormalizedImportAccount, context: Import
     account.messages.push('账户状态仅支持 active 或 disabled')
   }
   if (account.type === 'api_key' && !text(account.credentials.api_key)) {
-    account.messages.push('API Key 账户必须填写 credentials.api_key')
+    account.messages.push('API Key 账户必须填写密钥')
   }
   if (account.type === 'oauth' && !text(account.credentials.refresh_token) && !text(account.credentials.access_token)) {
-    account.messages.push('OAuth 账户必须填写 credentials.refresh_token 或 credentials.access_token')
+    account.messages.push('OAuth 账户必须填写刷新令牌或访问令牌')
   }
   if (account.concurrencyLimit !== undefined && account.concurrencyLimit < 1) {
     account.messages.push('concurrencyLimit 必须大于 0')

@@ -41,7 +41,7 @@ export function isOpenAIStreamContentType(contentType: string): boolean {
 
 export const gatewayStreamClientRetryErrorCode = 'upstream_retryable_error'
 
-export const gatewayStreamClientRetryMessage = 'Upstream returned a retryable stream failure before output. Please retry.'
+export const gatewayStreamClientRetryMessage = '上游流式响应在输出前失败，请重试'
 
 export function writeGatewayStreamFailureEvent(res: Response, message: string, code?: string): Buffer | undefined {
   return buildGatewayStreamFailureEvent(message, code)

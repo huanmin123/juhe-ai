@@ -2,7 +2,6 @@ import type { Request } from 'express'
 
 import { errorLogFields } from '../../shared/logger.js'
 import { getRequestLogger } from '../../shared/request-context.js'
-import { retryDelayMs, shouldRetryPolicyAttempt, type RetryPolicy } from '../../shared/retry-policy.js'
 import {
   decideAccountErrorPolicy,
   parseErrorPayload,
@@ -15,11 +14,9 @@ import {
 } from './openai-gateway-account-effects.js'
 import { readUpstreamBodyLimited } from './openai-gateway-body.js'
 import {
-  buildUpstreamFailureSignature,
-  headersFromObjectForPolicy,
-  type ClientVisibleUpstreamErrorResponse,
-  type UpstreamFailureSignature
+  headersFromObjectForPolicy
 } from './openai-gateway-error-helpers.js'
+import { suppressGatewayAccountLocally } from './gateway-account-side-effects.service.js'
 import { forgetOpenAIAccountForSession } from './openai-gateway-session-affinity.service.js'
 import {
   isEffectiveOpenAIStreamRequest,
@@ -35,7 +32,6 @@ import { isCooldownRetestTrafficSource } from './openai-gateway-traffic-source.j
 import {
   rememberFailedProxyForDispatch,
   shouldRecordAbortedUpstreamAttempt,
-  waitBeforeTemporaryUnschedulableRetry
 } from './openai-gateway-dispatch-helpers.js'
 import {
   rememberClientIpAccountPendingFailure,
@@ -46,25 +42,6 @@ import {
   recordGatewayProxyFailure
 } from './openai-gateway-proxy-health.service.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
-
-export class UpstreamRejectedRequestError extends Error {
-  constructor(
-    message: string,
-    readonly lastAttempt: UpstreamAttempt,
-    readonly response: ClientVisibleUpstreamErrorResponse,
-    readonly failureSignature?: UpstreamFailureSignature,
-    readonly confirmedAccountIds: string[] = []
-  ) {
-    super(message)
-  }
-}
-
-export interface DeferredAccountFailure {
-  account: UpstreamAccount
-  signature?: UpstreamFailureSignature
-  lastAttempt: UpstreamAttempt
-  response?: ClientVisibleUpstreamErrorResponse
-}
 
 export type AccountFailureInput = {
   success: false
@@ -87,12 +64,9 @@ interface HandleFailedUpstreamResponseInput {
   attemptStartedAt: number
   attemptIndex: number
   auditAttemptIndex: number
-  retryPolicy: RetryPolicy
   sessionAffinityKey?: string
   signal?: AbortSignal
   lastAttempt?: UpstreamAttempt
-  deferredAccountFailures: DeferredAccountFailure[]
-  requestFailureSignatureConfirmationThreshold: number
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
 }
 
@@ -106,7 +80,7 @@ interface HandleUpstreamRequestErrorInput {
   attemptStartedAt: number
   attemptIndex: number
   auditAttemptIndex: number
-  retryPolicy: RetryPolicy
+  settings: GatewaySettings
   sessionAffinityKey?: string
   signal?: AbortSignal
   lastAttempt?: UpstreamAttempt
@@ -130,11 +104,8 @@ export async function handleFailedUpstreamResponse(
     attemptStartedAt,
     attemptIndex,
     auditAttemptIndex,
-    retryPolicy,
     sessionAffinityKey,
     signal,
-    deferredAccountFailures,
-    requestFailureSignatureConfirmationThreshold,
     clientIpAccountAvoidanceTracker
   } = input
 
@@ -213,44 +184,19 @@ export async function handleFailedUpstreamResponse(
     parsedError = parseErrorPayload(responseBodyText, response.headers)
   }
 
-  if (hasAccountErrorPolicyDecision(account, failureInput)) {
-    forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-    applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
-    return { action: 'skip_account', lastAttempt }
-  }
-
-  if (shouldRetryPolicyAttempt(attemptIndex, retryPolicy)) {
-    logGatewayFailureWarning(usageContext, {
-      event: 'gateway_upstream_same_account_retry_scheduled',
-      accountId: account.id,
-      accountName: account.name,
-      accountType: account.type,
-      upstreamUrl,
-      attemptIndex,
-      nextAttemptIndex: attemptIndex + 1,
-      statusCode: response.status,
-      retryDelayMs: retryDelayMs(retryPolicy, attemptIndex + 1),
-      retryIntervalSeconds: settings.temporaryUnschedulableRetryIntervalSeconds
-    }, '上游未知失败未命中策略，先按短重试策略同账号重试')
-    await waitBeforeTemporaryUnschedulableRetry(retryPolicy, attemptIndex + 1)
-    return { action: 'retry', lastAttempt }
-  }
-
-  deferUnknownAccountFailureOrRejectRequest(
-    deferredAccountFailures,
-    {
-      account,
-      signature: buildUpstreamFailureSignature(response.headers, responseBodyText),
-      lastAttempt,
-      response: responseBodyRead.truncated ? undefined : {
-        statusCode: response.status,
-        headers: response.headers,
-        body: responseBody,
-        bodyText: responseBodyText
-      }
-    },
-    requestFailureSignatureConfirmationThreshold
+  forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+  suppressGatewayAccountLocally(
+    account,
+    settings,
+    responseBodyRead.truncated
+      ? `上游账号返回非成功状态：HTTP ${response.status}`
+      : `上游账号返回非成功状态：HTTP ${response.status}`
   )
+
+  if (hasAccountErrorPolicyDecision(account, failureInput)) {
+    applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
+  }
+
   rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
     statusCode: response.status,
     errorCode: stringValue(parsedError.code) || undefined,
@@ -276,7 +222,7 @@ export async function handleUpstreamRequestError(
     attemptStartedAt,
     attemptIndex,
     auditAttemptIndex,
-    retryPolicy,
+    settings,
     sessionAffinityKey,
     signal,
     failedProxyDispatchKeys,
@@ -339,10 +285,6 @@ export async function handleUpstreamRequestError(
     startedAt: attemptStartedAt,
     errorMessage: message
   })
-  if (shouldRetryPolicyAttempt(attemptIndex, retryPolicy)) {
-    await waitBeforeTemporaryUnschedulableRetry(retryPolicy, attemptIndex + 1)
-    return { action: 'retry', lastAttempt }
-  }
   if (isRealUpstreamUrl(upstreamUrl)) {
     rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
       errorPhase: 'upstream_request',
@@ -351,6 +293,7 @@ export async function handleUpstreamRequestError(
     })
   }
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+  suppressGatewayAccountLocally(account, settings, `上游账号请求异常：${message}`)
   if (isHighConfidenceProxyRequestError(error)) {
     recordGatewayProxyFailure(account, message)
   }
@@ -377,56 +320,9 @@ export function formatUpstreamRequestErrorMessage(error: unknown): string {
   return '请求失败'
 }
 
-export function flushDeferredAccountFailures(deferredAccountFailures: DeferredAccountFailure[], sessionAffinityKey?: string): void {
-  while (deferredAccountFailures.length > 0) {
-    const failure = deferredAccountFailures.shift()
-    if (!failure) {
-      continue
-    }
-    forgetOpenAIAccountForSession(sessionAffinityKey, failure.account.id)
-  }
-}
-
 function hasAccountErrorPolicyDecision(account: UpstreamAccount, input: AccountFailureInput): boolean {
   const headers = input.headers instanceof Headers ? input.headers : headersFromObjectForPolicy(input.headers)
   return Boolean(decideAccountErrorPolicy(account, input.statusCode, headers, Buffer.from(input.bodyText), input.settings))
-}
-
-function deferUnknownAccountFailureOrRejectRequest(
-  deferredAccountFailures: DeferredAccountFailure[],
-  failure: DeferredAccountFailure,
-  confirmationThreshold: number
-): void {
-  const matchedFailures = failure.signature
-    ? deferredAccountFailures.filter((item) => item.account.id !== failure.account.id && item.signature?.key === failure.signature?.key)
-    : []
-  const confirmedFailures = [...matchedFailures, failure]
-  const confirmedAccountIds = [...new Set(confirmedFailures.map((item) => item.account.id))]
-  const threshold = Math.max(2, Math.trunc(confirmationThreshold))
-
-  if (failure.signature && failure.response && confirmedAccountIds.length >= threshold) {
-    const firstFailure = matchedFailures[0]
-    logGatewayFailureWarning(undefined, {
-      event: 'gateway_request_failure_signature_confirmed',
-      firstAccountId: firstFailure?.account.id,
-      firstAccountName: firstFailure?.account.name,
-      lastAccountId: failure.account.id,
-      lastAccountName: failure.account.name,
-      confirmedAccountIds,
-      confirmationThreshold: threshold,
-      statusCode: failure.lastAttempt.status,
-      failureSignature: failure.signature.label
-    }, '多个上游账号返回一致错误，按请求级失败返回客户端')
-    throw new UpstreamRejectedRequestError(
-      '多个上游账号返回一致错误，判定为请求级失败：' + failure.signature.label,
-      failure.lastAttempt,
-      failure.response,
-      failure.signature,
-      confirmedAccountIds
-    )
-  }
-
-  deferredAccountFailures.push(failure)
 }
 
 function logGatewayFailureWarning(

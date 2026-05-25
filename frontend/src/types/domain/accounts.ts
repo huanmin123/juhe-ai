@@ -95,6 +95,13 @@ export interface AccountSummary {
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
+  streamFailureCount?: number
+  streamFailureWindowStartedAt?: string
+  sourceStatus?: AccountStatus
+  sourceSchedulable?: boolean
+  sourceCooldownUntil?: string
+  sourceLastErrorCode?: string
+  sourceLastErrorMessage?: string
   localStatus?: AccountStatus
   localCooldownUntil?: string
   localLastErrorMessage?: string
@@ -143,6 +150,9 @@ export type AccountOptionSummary = Pick<
   | 'name'
   | 'type'
   | 'status'
+  | 'sourceStatus'
+  | 'sourceSchedulable'
+  | 'sourceCooldownUntil'
   | 'accessType'
   | 'accountAuthorizationId'
   | 'authorizationStatus'
@@ -293,6 +303,7 @@ export interface GroupSummary {
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
+  authorizationSources?: AuthorizationSourceSummary[]
   permissions?: ResourcePermissions
 }
 

@@ -74,6 +74,21 @@
           @search="$emit('grantee-search', $event)"
         />
       </a-form-item>
+      <a-form-item v-if="targetGroupVisible" label="目标分组">
+        <GroupSelect
+          v-model:value="form.targetGroupId"
+          v-model:selected-group="form.targetGroup"
+          allow-clear
+          :disabled="targetGroupDisabled"
+          :filter-option="false"
+          :groups="targetGroups"
+          :loading="targetGroupLoading"
+          :placeholder="targetGroupPlaceholder"
+          @dropdown-visible-change="$emit('target-group-dropdown', $event)"
+          @search="$emit('target-group-search', $event)"
+        />
+        <div class="form-help">{{ targetGroupTip }}</div>
+      </a-form-item>
       <a-form-item label="说明">
         <a-textarea v-model:value="form.remark" :rows="3" placeholder="可选，填写授权用途或范围说明" />
       </a-form-item>
@@ -98,7 +113,7 @@ import type { Dayjs } from 'dayjs'
 import AccountSelect from '@/components/AccountSelect.vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import type { GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import RequestQuotaFields from '../shared/RequestQuotaFields.vue'
 import type { AuthorizationCreateFormModel } from './authorizationFormTypes'
 
@@ -118,6 +133,12 @@ const props = defineProps<{
   resourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }>
   saving?: boolean
   disabledDate?: (date: Dayjs) => boolean
+  targetGroupLoading?: boolean
+  targetGroupDisabled: boolean
+  targetGroupPlaceholder: string
+  targetGroupTip: string
+  targetGroupVisible: boolean
+  targetGroups: GroupOptionSummary[]
   teams: SystemTeamPrincipalSummary[]
   granteeLoading?: boolean
   users: SystemAccountPrincipalSummary[]
@@ -138,6 +159,8 @@ defineEmits<{
   (event: 'owner-search', value: string): void
   (event: 'resource-dropdown', open: boolean): void
   (event: 'resource-search', value: string): void
+  (event: 'target-group-dropdown', open: boolean): void
+  (event: 'target-group-search', value: string): void
 }>()
 </script>
 

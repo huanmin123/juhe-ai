@@ -84,7 +84,7 @@ async function normalizeOpenAIOAuthCodexBody(
       if (error instanceof OpenAIOAuthCodexAdapterError) {
         throw error
       }
-      throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须是有效的 JSON 对象')
+      throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
     }
   }
 
@@ -105,7 +105,7 @@ async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortS
 
   const bodyState = getGatewayRequestBodyState(req)
   if (bodyState?.jsonParseStatus === 'invalid_json') {
-    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须是有效的 JSON 对象')
+    throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
   }
 
   const rawBody = (req as GatewayRawBodyRequest).rawBody
@@ -118,7 +118,7 @@ async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortS
       if (error instanceof OpenAIOAuthCodexAdapterError) {
         throw error
       }
-      throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须是有效的 JSON 对象')
+      throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
     }
   }
 

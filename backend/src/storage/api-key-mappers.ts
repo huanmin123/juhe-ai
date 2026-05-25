@@ -12,12 +12,11 @@ export interface ApiKeyRow {
   name: string
   description: string | null
   key_prefix: string
-  key_secret_encrypted: string | null
+  key_secret_encrypted: string
   status: 'active' | 'disabled'
   group_id: string
   group_name?: string | null
   group_owner_system_account_name?: string | null
-  group_authorization_id: string | null
   expires_at: string | null
   quota_limits_json: string | null
 }
@@ -40,17 +39,16 @@ export function apiKeySummariesFromRows(rows: ApiKeyRow[], access?: AccessScope,
     groupId: row.group_id,
     groupName: row.group_name ?? undefined,
     groupOwnerSystemAccountName: row.group_owner_system_account_name ?? undefined,
-    groupAuthorizationId: row.group_authorization_id ?? undefined,
     expiresAt: row.expires_at ?? undefined,
     quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
     usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
   }))
 }
 
-function decryptApiKeySecret(value: string | null | undefined): string {
-  if (!value) {
-    return ''
-  }
+function decryptApiKeySecret(value: string): string {
   const decrypted = decryptJson<{ key?: unknown }>(value)
-  return typeof decrypted.key === 'string' ? decrypted.key : ''
+  if (typeof decrypted.key !== 'string' || decrypted.key.length === 0) {
+    throw new Error('API Key 密文缺少完整密钥')
+  }
+  return decrypted.key
 }

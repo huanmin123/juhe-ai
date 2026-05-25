@@ -5,6 +5,8 @@
       v-model:date-range="dateRangeFilter"
       v-model:group-id="groupFilter"
       v-model:group-selection="groupFilterSelection"
+      v-model:client-ip="clientIpFilter"
+      v-model:model="modelFilter"
       v-model:result="resultFilter"
       v-model:status-code="statusCodeFilter"
       v-model:system-account-id="systemAccountFilter"
@@ -204,8 +206,10 @@ type TableSortOrder = 'ascend' | 'descend' | null
 type TraceTarget = 'audit' | 'runtime'
 type UsageRecordsPageState = {
   accountNameFilter: string
+  clientIpFilter: string
   dateRangeFilter?: [string, string]
   groupFilter?: GroupSelection
+  modelFilter: string
   pagination: { current: number; pageSize: number }
   resultFilter: 'all' | 'success' | 'failed'
   sortState: { field: UsageRecordSortField; order: TableSortOrder }
@@ -218,8 +222,10 @@ type UsageRecordsPageState = {
 const pageSize = 20
 const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
   accountNameFilter: '',
+  clientIpFilter: '',
   dateRangeFilter: undefined,
   groupFilter: undefined,
+  modelFilter: '',
   pagination: { current: 1, pageSize },
   resultFilter: 'all',
   sortState: { field: 'createdAt', order: 'descend' },
@@ -228,12 +234,14 @@ const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
   systemAccountFilterSelection: undefined,
   trafficSourceFilter: 'all'
 })
-const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 6 })
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 8 })
 const initialPageState = pageStateCache.read()
 
 const accountNameFilter = ref(initialPageState.accountNameFilter)
+const clientIpFilter = ref(initialPageState.clientIpFilter ?? '')
 const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseDateRange(initialPageState.dateRangeFilter))
 const groupFilterSelection = ref<GroupSelection | undefined>(initialPageState.groupFilter)
+const modelFilter = ref(initialPageState.modelFilter ?? '')
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -316,8 +324,10 @@ const trafficSourceOptions = [
 const activeFilterCount = computed(() => {
   let count = 0
   if (accountNameFilter.value.trim()) count += 1
+  if (clientIpFilter.value.trim()) count += 1
   if (dateRangeFilter.value) count += 1
   if (groupFilter.value) count += 1
+  if (modelFilter.value.trim()) count += 1
   if (resultFilter.value !== 'all') count += 1
   if (statusCodeFilter.value) count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
@@ -327,6 +337,8 @@ const activeFilterCount = computed(() => {
 const advancedFilterCount = computed(() => {
   let count = 0
   if (groupFilter.value) count += 1
+  if (clientIpFilter.value.trim()) count += 1
+  if (modelFilter.value.trim()) count += 1
   if (statusCodeFilter.value) count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (trafficSourceFilter.value !== 'all') count += 1
@@ -505,8 +517,10 @@ function normalizeOptionKeyword(value?: string): string | undefined {
 function resetFilters(): void {
   const defaults = defaultUsageRecordsPageState()
   accountNameFilter.value = defaults.accountNameFilter
+  clientIpFilter.value = defaults.clientIpFilter
   dateRangeFilter.value = parseDateRange(defaults.dateRangeFilter)
   groupFilterSelection.value = defaults.groupFilter
+  modelFilter.value = defaults.modelFilter
   resultFilter.value = defaults.resultFilter
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
@@ -591,9 +605,11 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     page: pageState.current,
     pageSize: pageState.pageSize,
     accountKeyword: accountNameFilter.value.trim() || undefined,
+    clientIp: clientIpFilter.value.trim() || undefined,
     startDate: dateRange?.[0],
     endDate: dateRange?.[1],
     groupId: groupFilter.value,
+    model: modelFilter.value.trim() || undefined,
     result: resultFilter.value,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId,
@@ -637,8 +653,10 @@ function traceTargetPath(target: TraceTarget): string {
 function snapshotPageState(): UsageRecordsPageState {
   return {
     accountNameFilter: accountNameFilter.value,
+    clientIpFilter: clientIpFilter.value,
     dateRangeFilter: dateRangeParam(dateRangeFilter.value),
     groupFilter: groupFilterSelection.value,
+    modelFilter: modelFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     resultFilter: resultFilter.value,
     sortState: sortState.value,

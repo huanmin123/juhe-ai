@@ -16,14 +16,19 @@ import {
   checkGatewayAuthorizationQuotaAsync,
   checkGatewayAuthorizationQuotaBatchAsync
 } from './authorization-quota.service.js'
-import { responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
-import { filterLocallySuppressedGatewayAccounts } from './gateway-account-side-effects.service.js'
+import { type AuditCaptureContext } from './audit-capture.service.js'
+import {
+  filterLocallySuppressedGatewayAccounts,
+  waitForLocalAccountSuppressionRelease,
+  type LocalAccountSuppressionFilterResult
+} from './gateway-account-side-effects.service.js'
 import {
   createClientIpAccountAvoidanceTracker,
   orderOpenAIAccountsByClientIpAccountAvoidance,
   type ClientIpAccountAvoidanceTracker
 } from './openai-gateway-client-ip-account-avoidance.service.js'
 import { getGatewayRequestBodyState } from './openai-gateway-request-body.js'
+import { type OpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
 import {
   orderOpenAIAccountsByCodexTurnAvoidance
 } from './openai-gateway-codex-turn-retry.service.js'
@@ -40,36 +45,34 @@ import {
   type GatewayClientIpErrorCircuitReason
 } from './openai-gateway-client-ip-error-circuit.service.js'
 import {
-  inspectRequestErrorSignatureCache,
-  type RequestErrorSignatureCacheHit
-} from './openai-gateway-request-error-signature-cache.service.js'
-import {
   orderOpenAIAccountsByGatewayProxyHealth
 } from './openai-gateway-proxy-health.service.js'
-import {
-  parseClientVisibleUpstreamErrorForAudit,
-  sendRawUpstreamErrorResponse
-} from './openai-gateway-error-helpers.js'
 import { waitForHighConcurrencyGroupCapacity } from './openai-gateway-high-concurrency-queue.service.js'
 import { finalizeGatewayAuthFailureAudit, sendOpenAIModelsGatewayResponse } from './openai-gateway-fixed-responses.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from './openai-gateway-failure-response.js'
+import {
+  imageGenerationDisabledCode,
+  imageGenerationDisabledMessage,
+  isImageGenerationDisabledForApiKey
+} from './openai-gateway-image-permission.js'
 import { filterGatewayAccountsByRequestedModel, gatewayModelFilterFailureMessage } from './openai-gateway-model-filter.js'
 import { gatewayErrorPayload } from './openai-gateway-responses.js'
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { isOpenAIModelsRequest, type UpstreamAccount } from './openai-gateway-route-helpers.js'
 import {
-  areOpenAIHighConcurrencyAccountsHardBusy,
+  areOpenAIHighConcurrencyAccountsBusyForLane,
   orderOpenAIAccountsBySessionAffinity,
   resolveOpenAIGatewaySessionAffinityKey
 } from './openai-gateway-session-affinity.service.js'
 import { requestModel, type UsageRequestSnapshot } from './openai-gateway-usage.js'
 import {
   groupUsageMetadata,
-  recordGatewayFailure,
   type GatewayFailureUsageContext
 } from './openai-gateway-usage-records.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
+import type { GroupSchedulingPolicy } from '../../domain/types.js'
 
+const defaultLocalAccountSuppressionWaitMs = 60_000
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
   groupId: string
@@ -82,6 +85,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   disableSessionAffinity?: boolean
   trafficSource?: OpenAIGatewayTrafficSource
   settingsOverride?: Partial<GatewaySettings>
+  requestLane?: OpenAIGatewayRequestLane
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -104,6 +108,8 @@ export interface OpenAIGatewayDispatchContext {
   sessionAffinityKey?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
+  requestLane: OpenAIGatewayRequestLane
+  groupSchedulingPolicy?: GroupSchedulingPolicy
   releaseClientIpConcurrency: () => void
 }
 
@@ -140,6 +146,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewaySettings ?? await readCachedGatewaySettingsAsync(),
     options.settingsOverride
   )
+  const requestLane = options.requestLane ?? 'text'
   const trafficSource = options.trafficSource ?? 'gateway'
   const gatewayClientIp = trafficSource === 'gateway' ? clientIp : undefined
   const { systemAccountId, apiKeyId, groupId } = identity
@@ -159,7 +166,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     trafficSource
   })
 
-  const groupAccess = runtimeGroupAccess ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
   const baseUsageContext = buildGatewayUsageContext({
     traceId,
     clientIp,
@@ -217,6 +223,54 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     return undefined
   }
+  if (apiKeyUnavailable) {
+    const statusCode = 401
+    const responsePayload = gatewayErrorPayload('API Key 不可用或已过期', 'invalid_api_key')
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: baseUsageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'authorization',
+        errorCode: 'invalid_api_key',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
+  if (isImageGenerationDisabledForApiKey(apiKeyRecord, requestLane)) {
+    const statusCode = 403
+    const responsePayload = gatewayErrorPayload(imageGenerationDisabledMessage, 'forbidden', imageGenerationDisabledCode)
+    auditCapture.addGatewayMetadata({
+      label: 'system_account_image_generation_permission',
+      metadata: {
+        allowed: false
+      }
+    })
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: baseUsageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'authorization',
+        errorCode: imageGenerationDisabledCode,
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
+
+  const groupAccess = runtimeGroupAccess ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
   const clientStrategy = resolveOpenAIGatewayClientStrategy(req, {
     systemAccountId,
     apiKeyId,
@@ -255,28 +309,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     return undefined
   }
-
-  if (apiKeyUnavailable) {
-    const statusCode = 401
-    const responsePayload = gatewayErrorPayload('API Key 不可用或已过期', 'invalid_api_key')
-    sendGatewayFailureResponse({
-      req,
-      res,
-      auditCapture,
-      usageContext: baseUsageContext,
-      startedAt,
-      statusCode,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'authorization',
-        errorCode: 'invalid_api_key',
-        errorMessage: responsePayload.error.message
-      }
-    })
-    return undefined
-  }
-
   const groupUsageFields = groupUsageMetadata(groupAccess)
   const usageContext = buildGatewayUsageContext({
     traceId,
@@ -429,39 +461,26 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  const cachedRequestError = inspectRequestErrorSignatureCache(req, {
-    systemAccountId,
-    apiKeyId,
-    groupId,
-    clientIp: gatewayClientIp,
-    endpoint
-  })
-  if (cachedRequestError) {
-    sendCachedRequestErrorSignatureResponse({
-      req,
-      res,
-      auditCapture,
-      usageContext,
-      startedAt,
-      hit: cachedRequestError
-    })
-    return undefined
-  }
-
   const orderedCandidateAccounts = orderOpenAIAccountsBySessionAffinity(
     modelFilter.accounts,
     sessionAffinityKey,
     dispatchOrderingOptions
   )
-  const localSuppressionFilter = filterLocallySuppressedGatewayAccounts(orderedCandidateAccounts)
-  if (localSuppressionFilter.suppressedCount > 0) {
-    logger.warn({
-      event: 'gateway_local_account_suppression_applied',
-      suppressedCount: localSuppressionFilter.suppressedCount,
-      bypassedAllSuppressed: localSuppressionFilter.bypassedAllSuppressed,
-      groupId,
-      systemAccountId
-    }, '网关本地短期屏蔽账号已应用到候选列表')
+  const localSuppressionFilter = await resolveLocalSuppressionFilter({
+    req,
+    res,
+    auditCapture,
+    usageContext,
+    startedAt,
+    accounts: orderedCandidateAccounts,
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    signal,
+    groupSchedulingPolicy: groupAccess.schedulingPolicy
+  })
+  if (!localSuppressionFilter) {
+    return undefined
   }
 
   const proxyHealthOrder = orderOpenAIAccountsByGatewayProxyHealth(localSuppressionFilter.accounts)
@@ -632,7 +651,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
-  if (areOpenAIHighConcurrencyAccountsHardBusy(accounts, dispatchOrderingOptions)) {
+  const laneAwareDispatchOrderingOptions = {
+    ...dispatchOrderingOptions,
+    requestLane
+  }
+
+  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
     accounts = orderOpenAIAccountsBySessionAffinity(
       refreshGatewayAccountCurrentConcurrency(accounts),
       sessionAffinityKey,
@@ -640,18 +664,23 @@ export async function prepareOpenAIGatewayDispatchContext(
     )
   }
 
-  if (areOpenAIHighConcurrencyAccountsHardBusy(accounts, dispatchOrderingOptions)) {
+  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
     const queueWait = await waitForHighConcurrencyGroupCapacity({
       systemAccountId,
       groupId,
       apiKeyId,
       accountIds: accounts.map((account) => account.id),
+      accountConcurrencyLimits: Object.fromEntries(accounts.map((account) => [account.id, account.concurrencyLimit])),
+      lane: requestLane,
       policy: groupAccess.schedulingPolicy,
       signal
     })
     auditCapture.addGatewayMetadata({
       label: 'high_concurrency_group_queue',
-      metadata: queueWait
+      metadata: {
+        ...queueWait,
+        lane: requestLane
+      }
     })
     if (signal?.aborted || res.writableEnded) {
       releaseClientIpConcurrency()
@@ -664,7 +693,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     )
   }
 
-  if (areOpenAIHighConcurrencyAccountsHardBusy(accounts, dispatchOrderingOptions)) {
+  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
     const statusCode = 429
     const responsePayload = gatewayErrorPayload('分组繁忙，请稍后重试', 'rate_limit_exceeded')
     releaseClientIpConcurrency()
@@ -693,8 +722,107 @@ export async function prepareOpenAIGatewayDispatchContext(
     sessionAffinityKey,
     clientStrategy,
     clientIpAccountAvoidanceTracker,
+    requestLane,
+    groupSchedulingPolicy: groupAccess.schedulingPolicy,
     releaseClientIpConcurrency
   }
+}
+
+async function resolveLocalSuppressionFilter(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  accounts: UpstreamAccount[]
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+  signal?: AbortSignal
+  groupSchedulingPolicy?: GroupSchedulingPolicy
+}): Promise<LocalAccountSuppressionFilterResult<UpstreamAccount> | undefined> {
+  const filter = filterLocallySuppressedGatewayAccounts(input.accounts)
+  if (filter.suppressedCount > 0) {
+    logger.warn({
+      event: filter.allSuppressed
+        ? 'gateway_local_account_suppression_waiting'
+        : 'gateway_local_account_suppression_applied',
+      suppressedCount: filter.suppressedCount,
+      suppressedAccountIds: filter.suppressedAccountIds,
+      allSuppressed: filter.allSuppressed,
+      nextRetryAfterMs: filter.nextRetryAfterMs,
+      groupId: input.groupId,
+      systemAccountId: input.systemAccountId,
+      apiKeyId: input.apiKeyId
+    }, filter.allSuppressed
+      ? '候选上游账号均处于本地短期屏蔽，进入等待'
+      : '网关本地短期屏蔽账号已应用到候选列表')
+    input.auditCapture.addGatewayMetadata({
+      label: 'local_account_suppression',
+      metadata: {
+        suppressedCount: filter.suppressedCount,
+        suppressedAccountIds: filter.suppressedAccountIds,
+        allSuppressed: filter.allSuppressed,
+        nextRetryAfterMs: filter.nextRetryAfterMs
+      }
+    })
+  }
+
+  if (!filter.allSuppressed) {
+    return filter
+  }
+
+  const waitResult = await waitForLocalAccountSuppressionRelease(input.accounts, {
+    maxWaitMs: localAccountSuppressionMaxWaitMs(input.groupSchedulingPolicy),
+    signal: input.signal
+  })
+  input.auditCapture.addGatewayMetadata({
+    label: 'local_account_suppression_wait',
+    metadata: {
+      ready: waitResult.ready,
+      reason: waitResult.ready ? undefined : waitResult.reason,
+      waitedMs: waitResult.waitedMs,
+      remainingSuppressedCount: waitResult.filter.suppressedCount,
+      nextRetryAfterMs: waitResult.filter.nextRetryAfterMs
+    }
+  })
+
+  if (input.signal?.aborted || input.res.writableEnded) {
+    return undefined
+  }
+  if (waitResult.ready) {
+    logger.info({
+      event: 'gateway_local_account_suppression_released',
+      waitedMs: waitResult.waitedMs,
+      remainingSuppressedCount: waitResult.filter.suppressedCount,
+      groupId: input.groupId,
+      systemAccountId: input.systemAccountId,
+      apiKeyId: input.apiKeyId
+    }, '本地短期屏蔽等待结束，已有上游账号可重新调度')
+    return waitResult.filter
+  }
+
+  const statusCode = 503
+  const responsePayload = gatewayErrorPayload('所有上游账户正在临时隔离，请稍后重试', 'service_unavailable')
+  if (!input.res.headersSent && waitResult.filter.nextRetryAfterMs !== undefined) {
+    input.res.setHeader('Retry-After', String(Math.max(1, Math.ceil(waitResult.filter.nextRetryAfterMs / 1000))))
+  }
+  sendGatewayFailureResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    usageContext: input.usageContext,
+    startedAt: input.startedAt,
+    statusCode,
+    responsePayload,
+    audit: {
+      outcome: 'gateway_failed',
+      errorPhase: 'dispatch',
+      errorCode: 'service_unavailable',
+      errorMessage: responsePayload.error.message
+    }
+  })
+  return undefined
 }
 
 function refreshGatewayAccountCurrentConcurrency(accounts: UpstreamAccount[]): UpstreamAccount[] {
@@ -752,6 +880,13 @@ function clientIpConcurrencyFailureMessage(decision: ClientIpConcurrencyDecision
   return '当前 IP 并发已达到分组限制，请稍后重试'
 }
 
+function localAccountSuppressionMaxWaitMs(policy?: GroupSchedulingPolicy): number {
+  const value = policy?.maxQueueWaitMs
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.trunc(value))
+    : defaultLocalAccountSuppressionWaitMs
+}
+
 function recordClientIpRequestErrorSample(input: {
   auditCapture: AuditCaptureContext
   systemAccountId: string
@@ -784,62 +919,6 @@ function recordClientIpRequestErrorSample(input: {
       retryAfterSeconds: result.retryAfterSeconds,
       failureCount: result.failureCount
     }
-  })
-}
-
-function sendCachedRequestErrorSignatureResponse(input: {
-  req: Request
-  res: Response
-  auditCapture: AuditCaptureContext
-  usageContext: GatewayFailureUsageContext
-  startedAt: number
-  hit: RequestErrorSignatureCacheHit
-}): void {
-  const auditError = parseClientVisibleUpstreamErrorForAudit(
-    input.hit.response,
-    '多个上游账号返回一致错误，已按请求级错误短路'
-  )
-  logger.warn({
-    event: 'gateway_request_error_signature_cache_hit',
-    statusCode: input.hit.response.statusCode,
-    failureSignature: input.hit.failureSignatureLabel,
-    confirmedAccountIds: input.hit.confirmedAccountIds,
-    cachedAt: input.hit.cachedAt,
-    systemAccountId: input.usageContext.systemAccountId,
-    apiKeyId: input.usageContext.apiKeyId,
-    groupId: input.usageContext.groupId,
-    clientIp: input.usageContext.clientIp,
-    endpoint: input.usageContext.endpoint
-  }, '已命中请求级错误签名短路缓存，直接返回最近确认的上游错误')
-  input.auditCapture.addGatewayMetadata({
-    label: 'request_error_signature_cache',
-    metadata: {
-      hit: true,
-      failureSignature: input.hit.failureSignatureLabel,
-      confirmedAccountIds: input.hit.confirmedAccountIds,
-      cachedAt: input.hit.cachedAt
-    }
-  })
-  recordGatewayFailure(input.req, input.usageContext, {
-    statusCode: input.hit.response.statusCode,
-    startedAt: input.startedAt,
-    responsePayload: gatewayErrorPayload(
-      auditError.errorMessage,
-      auditError.errorCode ?? 'upstream_request_error'
-    ),
-    errorMessage: auditError.errorMessage
-  })
-  sendRawUpstreamErrorResponse(input.res, input.hit.response)
-  input.auditCapture.finalize({
-    outcome: 'upstream_failed',
-    success: false,
-    statusCode: input.hit.response.statusCode,
-    responseHeaders: responseHeadersToObject(input.res),
-    responseBody: input.hit.response.bodyText,
-    responsePartType: 'gateway_error',
-    errorPhase: 'upstream_response',
-    errorCode: auditError.errorCode,
-    errorMessage: auditError.errorMessage
   })
 }
 

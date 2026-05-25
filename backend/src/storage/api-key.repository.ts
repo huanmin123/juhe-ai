@@ -86,7 +86,6 @@ function apiKeyListColumns(): string {
     'api_keys.group_id',
     'groups.name AS group_name',
     'system_accounts.display_name AS group_owner_system_account_name',
-    'api_keys.group_authorization_id',
     'api_keys.expires_at',
     'api_keys.quota_limits_json'
   ].join(', ')
@@ -129,10 +128,10 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   try {
     getDatabase()
       .prepare(`
-        INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, null, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
+      .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
       throw new Error(`API Key 名称已存在：${record.name}`)
@@ -174,8 +173,8 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   assertApiKeyNameAvailable(systemAccountId, next.name, id)
   try {
     getDatabase()
-      .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_authorization_id = ?, expires_at = ?, quota_limits_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-      .run(next.name, next.description ?? null, next.status, next.groupId, null, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
+      .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, expires_at = ?, quota_limits_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+      .run(next.name, next.description ?? null, next.status, next.groupId, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
       throw new Error(`API Key 名称已存在：${next.name}`)

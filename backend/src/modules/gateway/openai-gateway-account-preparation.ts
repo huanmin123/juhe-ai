@@ -4,6 +4,7 @@ import { getRequestLogger } from '../../shared/request-context.js'
 import { shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
+import { suppressGatewayAccountLocally } from './gateway-account-side-effects.service.js'
 import { applyAccountErrorHandlingWithCacheInvalidation } from './openai-gateway-account-effects.js'
 import {
   failedProxyDispatchReason,
@@ -67,6 +68,7 @@ export function handleUnavailableProxyProfile(
     errorMessage: message
   })
   applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
+  suppressGatewayAccountLocally(account, settings, message)
   recordGatewayProxyFailure(account, message)
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return lastAttempt

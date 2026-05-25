@@ -11,6 +11,8 @@ export interface AuthorizationCreateFormModel {
   resourceGroup?: GroupSelection
   granteeType: 'system_account' | 'team'
   granteeId: string
+  targetGroupId: string
+  targetGroup?: GroupSelection
   remark: string
   expiresAt?: Dayjs
   quotaLimits: RequestQuotaFormModel

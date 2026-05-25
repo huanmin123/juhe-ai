@@ -25,6 +25,7 @@ export interface UsageRequestSnapshot {
   traceId: string
   headers: Record<string, string | string[]>
   body?: unknown
+  bodyOmission?: unknown
 }
 
 export interface UsageResponseSnapshot {
@@ -32,6 +33,7 @@ export interface UsageResponseSnapshot {
   statusCode?: number
   headers?: Record<string, string>
   bodyText?: string
+  bodyOmission?: unknown
   errorMessage?: string
   generatedBy?: 'gateway'
   lastUpstreamAttempt?: {
@@ -112,6 +114,7 @@ export function buildUsageResponseSnapshot(input: {
   statusCode?: number
   headers?: Headers | Record<string, string>
   bodyText?: string
+  bodyOmission?: unknown
   errorMessage?: string
   generatedBy?: 'gateway'
 }): UsageResponseSnapshot {
@@ -120,6 +123,7 @@ export function buildUsageResponseSnapshot(input: {
     statusCode: input.statusCode,
     headers: input.headers instanceof Headers ? headersToSafeObject(input.headers) : input.headers ? sanitizeStringHeaderRecord(input.headers) : undefined,
     bodyText: input.bodyText,
+    bodyOmission: input.bodyOmission,
     errorMessage: input.errorMessage,
     generatedBy: input.generatedBy
   }

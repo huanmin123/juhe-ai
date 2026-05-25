@@ -6,7 +6,10 @@ import { dirname, resolve } from 'node:path'
 import {
   parseOpenAIUsageFromJsonBuffer
 } from '../../modules/gateway/openai-gateway-usage.js'
-import { inspectOpenAIStreamText } from '../../modules/gateway/openai-gateway-stream-inspection.js'
+import {
+  inspectOpenAIStreamText,
+  OpenAIStreamInspector
+} from '../../modules/gateway/openai-gateway-stream-inspection.js'
 import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { retryDelayMs, retryAttemptCount, sequenceRetryPolicy } from '../../shared/retry-policy.js'
@@ -141,6 +144,58 @@ const oversizedStreamInspection = inspectOpenAIStreamText(`data: ${'x'.repeat(30
 assert.equal(oversizedStreamInspection.skipped, true)
 assert.equal(oversizedStreamInspection.failedReceived, false)
 assert.equal(oversizedStreamInspection.terminalReceived, false)
+
+const largeImageLightweightInspector = new OpenAIStreamInspector()
+const largeImageLightweightInspection = largeImageLightweightInspector.pushChunk(Buffer.from([
+  'event: response.image_generation_call.partial_image',
+  `data: {"type":"response.image_generation_call.partial_image","item_id":"ig_light","partial_image_b64":"${'a'.repeat(300 * 1024)}"}`,
+  '',
+  'event: response.completed',
+  'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":11}}}',
+  ''
+].join('\n'), 'utf8'))
+assert.equal(largeImageLightweightInspection.skipped, false)
+assert.equal(largeImageLightweightInspection.imageOutputReceived, true)
+assert.equal(largeImageLightweightInspection.terminalReceived, true)
+assert.deepEqual(defined(largeImageLightweightInspection.usage), {
+  inputTokens: 7,
+  outputTokens: 11
+})
+
+const imageContinuationInspector = new OpenAIStreamInspector()
+imageContinuationInspector.pushText([
+  'event: response.image_generation_call.partial_image',
+  'data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"aaaa"}',
+  ''
+].join('\n'))
+const imageContinuationInspection = imageContinuationInspector.pushChunk(
+  Buffer.from(`data: ${'x'.repeat(300 * 1024)}`, 'utf8'),
+  { lightweightImageStream: true }
+)
+assert.equal(imageContinuationInspection.skipped, false)
+assert.equal(imageContinuationInspection.imageOutputReceived, true)
+
+const splitImageTerminalInspector = new OpenAIStreamInspector()
+splitImageTerminalInspector.pushText([
+  'event: response.image_generation_call.partial_image',
+  'data: {"type":"response.image_generation_call.partial_image","partial_image_b64":"aaaa"}',
+  ''
+].join('\n'))
+const splitImageTerminalPrefix = splitImageTerminalInspector.pushChunk(
+  Buffer.from('event: image_generation.completed\ndata: {"type":"image_generation.completed","b64_json":"'),
+  { lightweightImageStream: true }
+)
+assert.equal(splitImageTerminalPrefix.imageOutputReceived, true)
+assert.equal(splitImageTerminalPrefix.terminalReceived, false, '携带图片正文的终止事件拆包时不应在事件边界前提前结束')
+const splitImageTerminalComplete = splitImageTerminalInspector.pushChunk(
+  Buffer.from(`${'a'.repeat(300 * 1024)}","usage":{"input_tokens":9,"output_tokens":13}}\n\n`),
+  { lightweightImageStream: true }
+)
+assert.equal(splitImageTerminalComplete.terminalReceived, true)
+assert.deepEqual(defined(splitImageTerminalComplete.usage), {
+  inputTokens: 9,
+  outputTokens: 13
+})
 
 const gpt41Cost = estimateProviderCostUsd({
   providerCode: 'openai',
@@ -330,7 +385,8 @@ assert.match(gatewayResponseFinalizationSource, /errorMessage:\s*'上游响应�
 
 const gatewayFailureDispatchSource = readSource('modules/gateway/openai-gateway-failure-dispatch.ts')
 assert.match(gatewayFailureDispatchSource, /shouldRecordAbortedUpstreamAttempt/)
-assert.match(gatewayFailureDispatchSource, /shouldRetryPolicyAttempt/)
+assert.match(gatewayFailureDispatchSource, /suppressGatewayAccountLocally/)
+assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryPolicyAttempt/)
 assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryAttempt\(/)
 
 const retryPolicySource = readSource('shared/retry-policy.ts')
@@ -338,12 +394,13 @@ assert.match(retryPolicySource, /export function retryAttemptCount/)
 assert.match(retryPolicySource, /export function shouldRetryPolicyAttempt/)
 
 const gatewayDispatchHelpersSource = readSource('modules/gateway/openai-gateway-dispatch-helpers.ts')
-assert.match(gatewayDispatchHelpersSource, /temporaryUnschedulableRetryPolicy/)
-assert.match(gatewayDispatchHelpersSource, /waitForRetryDelay\(policy, retryNumber\)/)
+assert.doesNotMatch(gatewayDispatchHelpersSource, /temporaryUnschedulableRetryPolicy/)
+assert.doesNotMatch(gatewayDispatchHelpersSource, /gateway_temporary_unschedulable_same_account_retry/)
 
 const gatewayUpstreamDispatchSource = readSource('modules/gateway/openai-gateway-upstream-dispatch.ts')
-assert.match(gatewayUpstreamDispatchSource, /const retryPolicy = temporaryUnschedulableRetryPolicy\(settings\)/)
-assert.match(gatewayUpstreamDispatchSource, /retryAttemptCount\(retryPolicy\)/)
+assert.match(gatewayUpstreamDispatchSource, /const maxAttemptCount = 1/)
+assert.doesNotMatch(gatewayUpstreamDispatchSource, /temporaryUnschedulableRetryPolicy/)
+assert.doesNotMatch(gatewayUpstreamDispatchSource, /retryAttemptCount\(retryPolicy\)/)
 assert.doesNotMatch(gatewayUpstreamDispatchSource, /normalizeRetryCount\(settings\.temporaryUnschedulableRetryAttempts\)/)
 
 const oauthAccessTokenRefreshSource = readSource('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')

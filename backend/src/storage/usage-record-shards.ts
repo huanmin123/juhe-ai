@@ -26,7 +26,7 @@ export function usageRecordShardCount(): number {
 }
 
 export function usageRecordShardRoot(): string {
-  if (normalize(runtimeConfig.usageShardRoot).toLowerCase() === normalize(defaultUsageShardRoot).toLowerCase()) {
+  if (isDefaultUsageShardRoot(runtimeConfig.usageShardRoot)) {
     return resolve(dirname(runtimeConfig.datasetDatabasePath), 'usage-shards')
   }
   return resolve(runtimeConfig.usageShardRoot)
@@ -128,20 +128,21 @@ export function queryUsageRecordShardById<T extends Record<string, unknown>>(
   const directLocation = parsedShardId || createdAt
     ? usageRecordShardLocationForRecord(id, createdAt)
     : undefined
-  if (directLocation && existsSync(directLocation.filePath)) {
-    const row = getUsageRecordShardDatabase(directLocation)
-      .prepare(selectSql)
-      .get(...params) as T | undefined
-    if (row) return row
+  if (!directLocation) {
+    for (const location of listUsageRecordShardLocations()) {
+      const row = getUsageRecordShardDatabase(location)
+        .prepare(selectSql)
+        .get(...params) as T | undefined
+      if (row) return row
+    }
+    return undefined
   }
-  for (const location of listUsageRecordShardLocations()) {
-    if (directLocation?.shardKey === location.shardKey) continue
-    const row = getUsageRecordShardDatabase(location)
-      .prepare(selectSql)
-      .get(...params) as T | undefined
-    if (row) return row
+  if (!existsSync(directLocation.filePath)) {
+    return undefined
   }
-  return undefined
+  return getUsageRecordShardDatabase(directLocation)
+    .prepare(selectSql)
+    .get(...params) as T | undefined
 }
 
 export function updateUsageRecordCacheReadCost(input: {
@@ -193,6 +194,11 @@ function usageRecordShardLocation(bucketDateKey: string, shardIdInput: number): 
     `usage-${bucketDateKey}-s${formatShardId(shardId)}.sqlite3`
   )
   return { shardKey, bucketDate, bucketDateKey, shardId, filePath }
+}
+
+function isDefaultUsageShardRoot(value: string): boolean {
+  const normalized = normalize(value).toLowerCase()
+  return normalized === normalize(defaultUsageShardRoot).toLowerCase()
 }
 
 function parseUsageRecordShardId(id: string): { bucketDateKey: string; shardId: number } | undefined {
@@ -327,12 +333,9 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_records_model_created_sort ON usage_records(model, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_model_created_sort ON usage_records(system_account_id, model, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_traffic_source_created ON usage_records(traffic_source, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_client_ip_created_sort ON usage_records(client_ip, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_client_ip_created_sort ON usage_records(system_account_id, client_ip, created_at, id);
   `)
-
-  const columns = database.prepare('PRAGMA table_info(usage_records)').all() as Array<{ name?: string }>
-  if (!columns.some((column) => column.name === 'traffic_source')) {
-    database.exec("ALTER TABLE usage_records ADD COLUMN traffic_source TEXT NOT NULL DEFAULT 'gateway'")
-  }
 
   void usageRecordShardSchemaVersion
 }

@@ -27,6 +27,7 @@ export interface SystemAccountSummary {
   role: SystemAccountRole
   status: SystemAccountStatus
   mustChangePassword: boolean
+  imageGenerationEnabled: boolean
   lastLoginAt?: string
   createdAt: string
   updatedAt: string
@@ -321,6 +322,11 @@ export interface AccountSummary {
   cooldownRetestLastStatusCode?: number
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
+  sourceStatus?: AccountStatus
+  sourceSchedulable?: boolean
+  sourceCooldownUntil?: string
+  sourceLastErrorCode?: string
+  sourceLastErrorMessage?: string
   localStatus?: AccountStatus
   localCooldownUntil?: string
   localLastErrorMessage?: string
@@ -358,6 +364,9 @@ export type AccountOptionSummary = Pick<
   | 'name'
   | 'type'
   | 'status'
+  | 'sourceStatus'
+  | 'sourceSchedulable'
+  | 'sourceCooldownUntil'
   | 'accessType'
   | 'accountAuthorizationId'
   | 'authorizationStatus'
@@ -558,6 +567,7 @@ export interface GroupSchedulingPolicy {
   perApiKeyQueueLimit?: number
   clientIpConcurrencyLimit?: number
   clientIpConcurrencyOverflowMode?: 'reject' | 'queue'
+  imageLaneMaxConcurrency?: number
 }
 
 export interface GroupSummary {
@@ -748,7 +758,6 @@ export interface ApiKeySummary {
   status: 'active' | 'disabled'
   groupId: string
   groupName?: string
-  groupAuthorizationId?: string
   groupOwnerSystemAccountName?: string
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits

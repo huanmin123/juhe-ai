@@ -70,6 +70,7 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
     clauses.push('ur.status_code = ?')
     params.push(options.statusCode)
   }
+  pushPrefixFilter(clauses, params, 'ur.client_ip', options?.clientIp)
   const groupId = options?.groupId?.trim()
   if (groupId) {
     clauses.push('ur.group_id = ?')
@@ -122,4 +123,11 @@ function escapeLikePrefix(value: string): string {
 
 function isHttpStatusCode(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
+}
+
+function pushPrefixFilter(clauses: string[], params: UsageRecordFilterValue[], column: string, value?: string): void {
+  const text = value?.trim()
+  if (!text) return
+  clauses.push(`${column} >= ? AND ${column} < ?`)
+  params.push(text, `${text}\uffff`)
 }

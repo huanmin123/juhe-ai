@@ -26,6 +26,7 @@ export interface OpenAIStreamEventClassification {
   terminal: boolean
   failed: boolean
   visibleOutput: boolean
+  imageOutput: boolean
   estimatedOutputTokens: number
   usage: ParsedUsage
   usageFound: boolean
@@ -94,12 +95,16 @@ export function classifyOpenAIStreamEvent(
   const estimatedOutputTokens = data
     ? estimateOpenAIStreamEventOutputTokens(data, event.eventType, priorEstimatedOutputTokens)
     : 0
+  const imageOutput = Boolean(data && openAIStreamEventHasImageOutput(data, event.eventType))
   const visibleOutput = Boolean(data && (estimatedOutputTokens > 0 || openAIStreamEventHasVisibleOutput(data, event.eventType)))
   const terminal = event.eventType === '[DONE]'
     || event.eventType === 'response.completed'
     || event.eventType === 'response.done'
     || event.eventType === 'response.failed'
+    || event.eventType === 'image_generation.completed'
+    || event.eventType === 'image_generation.failed'
   const failed = event.eventType === 'response.failed'
+    || event.eventType === 'image_generation.failed'
   const usage = data ? extractEventUsage(data) : {}
   const usageFound = hasAnyUsageValue(usage)
 
@@ -108,6 +113,7 @@ export function classifyOpenAIStreamEvent(
     terminal,
     failed,
     visibleOutput,
+    imageOutput,
     estimatedOutputTokens,
     usage,
     usageFound,
@@ -148,6 +154,9 @@ export function openAIStreamEventHasVisibleOutput(event: Record<string, unknown>
   if (eventType === 'response.completed' || eventType === 'response.done') {
     return estimateTokensFromOutputValue((event.response as Record<string, unknown> | undefined)?.output) > 0
   }
+  if (isOpenAIImageStreamEventType(eventType)) {
+    return true
+  }
   const choices = Array.isArray(event.choices) ? event.choices : []
   return choices.some((choice) => {
     if (typeof choice !== 'object' || choice === null) return false
@@ -156,6 +165,26 @@ export function openAIStreamEventHasVisibleOutput(event: Record<string, unknown>
     const delta = objectValue(row.delta)
     return Boolean(delta && hasMeaningfulChoiceDelta(delta))
   })
+}
+
+export function openAIStreamEventHasImageOutput(event: Record<string, unknown>, eventType: string): boolean {
+  if (isOpenAIImageStreamEventType(eventType)) {
+    return true
+  }
+  const item = objectValue(event.item)
+  if (item?.type === 'image_generation_call') {
+    return true
+  }
+  const response = objectValue(event.response)
+  const output = Array.isArray(response?.output) ? response.output : undefined
+  return Boolean(output?.some((entry) => objectValue(entry)?.type === 'image_generation_call'))
+}
+
+export function isOpenAIImageStreamEventType(eventType: string): boolean {
+  return eventType.startsWith('response.image_generation_call.')
+    || eventType === 'image_generation.partial_image'
+    || eventType === 'image_generation.completed'
+    || eventType === 'image_generation.failed'
 }
 
 export function estimateOpenAIRequestInputTokens(req: Request): number | undefined {
@@ -302,6 +331,8 @@ const requestTokenEstimateSkippedKeys = new Set([
 const binaryPayloadEstimateSkippedKeys = new Set([
   'data',
   'b64_json',
+  'partial_image_b64',
+  'result',
   'file_data',
   'audio',
   'image'

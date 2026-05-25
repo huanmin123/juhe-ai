@@ -42,28 +42,31 @@ try {
   const apiKey = repositories.createApiKeyRecord({ name: '分片写入回归 Key', groupId: group.id }, access)
   const createdAtBase = Date.now() - 60_000
   const recordsLength = 40
-  const records = Array.from({ length: recordsLength }, (_, index) => ({
-    id: `usage_shard_routing_${String(index).padStart(2, '0')}`,
-    traceId: `trace-usage-shard-routing-${index}`,
-    apiKeyId: apiKey.id,
-    groupId: group.id,
-    accountId: account.id,
-    endpoint: '/v1/responses',
-    providerCode: 'openai',
-    model: index % 2 === 0 ? 'gpt-5.5' : 'gpt-5.5-mini',
-    stream: false,
-    statusCode: 200,
-    success: true,
-    inputTokens: 10 + index,
-    outputTokens: 20 + index,
-    costUsd: Number(((recordsLength - index) / 1000).toFixed(6)),
-    createdAt: new Date(createdAtBase + index).toISOString()
-  }))
+  const records = Array.from({ length: recordsLength }, (_, index) => {
+    const createdAt = new Date(createdAtBase + index).toISOString()
+    return {
+      id: usageRecordShards.generateUsageRecordId(createdAt, `routing-${index}`),
+      traceId: `trace-usage-shard-routing-${index}`,
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      accountId: account.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: index % 2 === 0 ? 'gpt-5.5' : 'gpt-5.5-mini',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      inputTokens: 10 + index,
+      outputTokens: 20 + index,
+      costUsd: Number(((recordsLength - index) / 1000).toFixed(6)),
+      createdAt
+    }
+  })
 
   repositories.createUsageRecordsBatch(records)
   repositories.createUsageRecordsBatch(records)
 
-  assert.equal(datasetUsageRecordCount(), 0, '新 usage 不应再写入数据集目录库的旧 usage_records 单表')
+  assert.equal(datasetUsageRecordTableExists(), false, '数据集目录库不应再创建旧 usage_records 单表')
   assert.equal(shardUsageRecordCount(), records.length, '新 usage 应写入 usage shard，重复投递应保持幂等')
   assert(usageRecordShards.listUsageRecordShardLocations().length > 1, '固定 4 个 shard 时批量记录应分散到多个 SQLite 文件')
 
@@ -80,7 +83,7 @@ try {
     '使用记录列表应跨 shard 合并并保持 cost_usd ASC 排序'
   )
   const detail = repositories.getUsageRecordDetail(records[7].id, access)
-  assert.equal(detail?.traceId, records[7].traceId, '旧格式显式 id 也应能通过受控 shard 扫描读取详情')
+  assert.equal(detail?.traceId, records[7].traceId, '使用记录详情应通过新格式 usage id 直接定位 shard')
 
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(1000), records.length, '统计聚合应从 usage shard 读取完整业务记录')
   assert.equal(apiKeyStatsTotal(apiKey.id), records.length, 'API Key 统计应按 shard 输入聚合到统计结果库')
@@ -97,8 +100,9 @@ try {
       base_url: 'https://api.openai.com/v1'
     }
   }, access)
+  const staleCreatedAt = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
   repositories.createUsageRecordsBatch([{
-    id: 'usage_shard_stale_request_shape',
+    id: usageRecordShards.generateUsageRecordId(staleCreatedAt, 'stale-request-shape'),
     traceId: 'trace-usage-shard-stale-request-shape',
     apiKeyId: apiKey.id,
     accountId: staleShapeAccount.id,
@@ -108,7 +112,7 @@ try {
     stream: false,
     statusCode: 200,
     success: true,
-    createdAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
+    createdAt: staleCreatedAt
   }])
   assert.equal(
     repositories.findRecentOpenAIRequestShapeForAccount(staleShapeAccount.id),
@@ -116,7 +120,7 @@ try {
     '恢复探活请求形态学习应限制最近窗口，避免扫描全历史 shard'
   )
 
-  console.log('使用记录分片写入回归通过：新 usage 落到多个 shard，旧单表不再热写，统计可从 shard 聚合')
+  console.log('使用记录分片写入回归通过：新 usage 落到多个 shard，数据集目录库不再创建单表，统计可从 shard 聚合')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -126,11 +130,11 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function datasetUsageRecordCount(): number {
+function datasetUsageRecordTableExists(): boolean {
   const row = databaseModule.getDatasetDatabase()
-    .prepare('SELECT COUNT(*) AS total FROM usage_records')
-    .get() as { total?: number } | undefined
-  return Number(row?.total ?? 0)
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'usage_records'")
+    .get() as { name?: string } | undefined
+  return row?.name === 'usage_records'
 }
 
 function shardUsageRecordCount(): number {

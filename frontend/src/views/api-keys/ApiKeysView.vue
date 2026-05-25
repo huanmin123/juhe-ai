@@ -461,9 +461,7 @@ function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
 
 function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
   if (apiKey.key) return apiKey.key
-  return apiKey.keyPrefix
-    ? `历史密钥只保留前缀 ${apiKey.keyPrefix}，请重新创建后复制完整密钥`
-    : '历史密钥缺少可解密明文，请重新创建后复制完整密钥'
+  return apiKey.keyPrefix ? `${apiKey.keyPrefix}...` : '密钥不可还原'
 }
 
 function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {

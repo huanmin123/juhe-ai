@@ -29,7 +29,6 @@ export interface ApiKeySummary {
   status: 'active' | 'disabled'
   groupId: string
   groupName?: string
-  groupAuthorizationId?: string
   groupOwnerSystemAccountName?: string
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits

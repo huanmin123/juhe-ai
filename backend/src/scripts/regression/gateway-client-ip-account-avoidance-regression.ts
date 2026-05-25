@@ -93,7 +93,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assertAccountsStillActive(seeded)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, 'IP 级账号回避不应触发全局本地账号屏蔽')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '测试清理后不应残留进程级本地账号屏蔽')
 
     console.log('IP 级账号回避回归通过：同 IP 在前序账号失败且后续账号成功后短期避让失败账号，不影响其他 IP，账号不冷却')
   } finally {
@@ -127,6 +127,8 @@ async function assertClientIpAvoidsFailedAccountAfterSwitch(
 
   const snapshotAfterPrime = clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest()
   assert(snapshotAfterPrime.some((entry) => entry.accountId === seeded.firstAccountId && entry.clientIp === ipA), 'IP A 首次切号成功后应记录第一账号短期回避')
+  assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 1, '首账号上游失败后应同步进入进程级本地屏蔽')
+  accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
   const followupText = await requestChatCompletion(baseUrl, seeded.apiKey, ipA, 'ip-a-followup')
   assert.match(followupText, /ok from second/, `IP A 后续请求应优先避开第一账号并命中第二账号：${followupText}`)

@@ -41,7 +41,6 @@ import {
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
 } from './openai-gateway-upstream-dispatch.js'
-import { UpstreamRejectedRequestError } from './openai-gateway-failure-dispatch.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import { recordClientIpErrorCircuitSample } from './openai-gateway-client-ip-error-circuit.service.js'
@@ -50,9 +49,7 @@ import {
   normalizeOpenAIGatewayTrafficSource,
   type OpenAIGatewayTrafficSource
 } from './openai-gateway-traffic-source.js'
-import {
-  rememberRequestErrorSignatureCache
-} from './openai-gateway-request-error-signature-cache.service.js'
+import { resolveOpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -86,7 +83,7 @@ function dbServiceUnavailableMessage(error: unknown): string | undefined {
   if (!(error instanceof Error)) {
     return undefined
   }
-  return /^DB service (暂时不可用|未就绪|请求超时|请求队列已满|已退出)/.test(error.message)
+  return /^本地数据库服务(暂时不可用|未就绪|请求超时|请求队列已满|已退出)/.test(error.message)
     ? error.message
     : undefined
 }
@@ -109,6 +106,7 @@ export async function handleOpenAIGatewayRequest(
   const traceId = getTraceId() ?? createTraceId()
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
+  const requestLane = resolveOpenAIGatewayRequestLane(req)
   const trafficSource = normalizeOpenAIGatewayTrafficSource(options.trafficSource)
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
   const auditCapture = createAuditCapture({
@@ -134,7 +132,7 @@ export async function handleOpenAIGatewayRequest(
     req,
     res,
     auditCapture,
-    options: { ...options, trafficSource },
+    options: { ...options, trafficSource, requestLane },
     startedAt,
     traceId,
     clientIp,
@@ -167,7 +165,9 @@ export async function handleOpenAIGatewayRequest(
       auditCapture,
       sessionAffinityKey,
       abortController.signal,
-      clientIpAccountAvoidanceTracker
+      clientIpAccountAvoidanceTracker,
+      requestLane,
+      preflight.groupSchedulingPolicy
     )
     const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
 
@@ -234,7 +234,6 @@ export async function handleOpenAIGatewayRequest(
     }
   } catch (error) {
     recordKnownClientIpRequestError(error, gatewayUsageContext, auditCapture)
-    rememberKnownRequestErrorSignature(req, error, gatewayUsageContext, auditCapture)
     if (handleGatewayRequestKnownErrorResponse({
       res,
       auditCapture,
@@ -270,52 +269,6 @@ export async function handleOpenAIGatewayRequest(
   } finally {
     releaseClientIpSlot()
   }
-}
-
-function rememberKnownRequestErrorSignature(
-  req: Request,
-  error: unknown,
-  usageContext: GatewayFailureUsageContext,
-  auditCapture: ReturnType<typeof createAuditCapture>
-): void {
-  if (!(error instanceof UpstreamRejectedRequestError) || !error.failureSignature) {
-    return
-  }
-  const cached = rememberRequestErrorSignatureCache({
-    req,
-    scope: {
-      systemAccountId: usageContext.systemAccountId,
-      apiKeyId: usageContext.apiKeyId,
-      groupId: usageContext.groupId,
-      clientIp: usageContext.clientIp,
-      endpoint: usageContext.endpoint
-    },
-    signature: error.failureSignature,
-    confirmedAccountIds: error.confirmedAccountIds,
-    response: error.response
-  })
-  if (!cached) {
-    return
-  }
-  getRequestLogger().warn({
-    event: 'gateway_request_error_signature_cache_stored',
-    statusCode: error.response.statusCode,
-    failureSignature: error.failureSignature.label,
-    confirmedAccountIds: error.confirmedAccountIds,
-    systemAccountId: usageContext.systemAccountId,
-    apiKeyId: usageContext.apiKeyId,
-    groupId: usageContext.groupId,
-    clientIp: usageContext.clientIp,
-    endpoint: usageContext.endpoint
-  }, '请求级同签名错误已写入短 TTL 缓存')
-  auditCapture.addGatewayMetadata({
-    label: 'request_error_signature_cache',
-    metadata: {
-      stored: true,
-      failureSignature: error.failureSignature.label,
-      confirmedAccountIds: error.confirmedAccountIds
-    }
-  })
 }
 
 function once(callback: () => void): () => void {

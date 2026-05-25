@@ -10,6 +10,12 @@ import {
   sendGatewayJsonError
 } from './openai-gateway-responses.js'
 import {
+  imageGenerationDisabledCode,
+  imageGenerationDisabledMessage,
+  isImageGenerationDisabledForApiKey
+} from './openai-gateway-image-permission.js'
+import { resolveOpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
+import {
   inspectGatewayPreAuthCircuit,
   recordGatewayPreAuthFailure,
   type GatewayCircuitDecision,
@@ -33,6 +39,10 @@ export async function preResolveOpenAIGatewayRuntime(
     const runtime = await resolveGatewayRuntimeAsync(req, res, { closeConnectionOnAuthFailure: true })
     if (!runtime?.apiKey) {
       recordEarlyGatewayAuthFailure(req, res)
+      return
+    }
+    if (isImageGenerationDisabledForApiKey(runtime.apiKey, resolveOpenAIGatewayRequestLane(req))) {
+      sendEarlyImageGenerationDisabledResponse(req, res)
       return
     }
     req.gatewayRuntime = runtime
@@ -77,7 +87,7 @@ export async function resolveGatewayRuntimeAsync(
       endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
     }, '网关认证失败')
     prepareEarlyAuthFailureResponse(res, options)
-    sendGatewayJsonError(res, 401, gatewayErrorPayload('缺少 Bearer Token', 'invalid_request_error'))
+    sendGatewayJsonError(res, 401, gatewayErrorPayload('缺少访问令牌', 'invalid_request_error'))
     return undefined
   }
 
@@ -160,7 +170,7 @@ function recordEarlyGatewayAuthFailure(req: Request, res: Response): void {
   const locals = res.locals as Record<string, unknown>
   const authErrorMessage = typeof locals.gatewayAuthFailureErrorMessage === 'string'
     ? locals.gatewayAuthFailureErrorMessage
-    : extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少 Bearer Token'
+    : extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少访问令牌'
   const authErrorCode = typeof locals.gatewayAuthFailureErrorCode === 'string'
     ? locals.gatewayAuthFailureErrorCode
     : 'invalid_request_error'
@@ -177,6 +187,33 @@ function recordEarlyGatewayAuthFailure(req: Request, res: Response): void {
     errorPhase: 'auth',
     errorCode: authErrorCode,
     errorMessage: authErrorMessage,
+    clientIp: context?.clientIp ?? extractClientIp(req),
+    userAgent: req.header('user-agent')
+  })
+}
+
+function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): void {
+  if (!res.headersSent) {
+    sendGatewayJsonError(
+      res,
+      403,
+      gatewayErrorPayload(imageGenerationDisabledMessage, 'forbidden', imageGenerationDisabledCode)
+    )
+  }
+  const context = getRequestContext()
+  recordDroppedAuditCapture({
+    traceId: context?.traceId ?? createTraceId(),
+    auditOutcome: 'gateway_failed',
+    success: false,
+    bytes: 0,
+    reason: 'gateway_permission_rejected',
+    method: req.method,
+    path: req.originalUrl.split('?')[0] || req.path,
+    queryString: req.originalUrl.includes('?') ? req.originalUrl.split('?').slice(1).join('?') : undefined,
+    statusCode: 403,
+    errorPhase: 'authorization',
+    errorCode: imageGenerationDisabledCode,
+    errorMessage: imageGenerationDisabledMessage,
     clientIp: context?.clientIp ?? extractClientIp(req),
     userAgent: req.header('user-agent')
   })

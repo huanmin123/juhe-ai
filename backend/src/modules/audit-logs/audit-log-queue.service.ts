@@ -51,7 +51,7 @@ export function recordDroppedAuditCapture(input: {
   auditOutcome: string
   success: boolean
   bytes: number
-  reason: 'active_capture_overflow' | 'gateway_auth_rejected' | 'gateway_body_rejected'
+  reason: 'active_capture_overflow' | 'gateway_auth_rejected' | 'gateway_body_rejected' | 'gateway_permission_rejected'
   method?: string
   path?: string
   queryString?: string
@@ -81,7 +81,7 @@ export function recordDroppedAuditCapture(input: {
     sampleReason: input.reason,
     captureStatus: input.reason === 'gateway_body_rejected'
       ? 'overflow'
-      : input.reason === 'gateway_auth_rejected'
+      : input.reason === 'gateway_auth_rejected' || input.reason === 'gateway_permission_rejected'
         ? 'complete'
         : 'dropped',
     startedAt: timestamp,

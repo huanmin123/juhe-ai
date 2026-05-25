@@ -9,6 +9,7 @@ export interface SystemAccountRow {
   status: SystemAccountStatus
   password_hash: string
   must_change_password: number
+  image_generation_enabled: number
   last_login_at: string | null
   created_at: string
   updated_at: string
@@ -25,6 +26,7 @@ export function systemAccountSummaryFromRow(row: SystemAccountSummaryRow): Syste
     role: row.role,
     status: row.status,
     mustChangePassword: row.must_change_password === 1,
+    imageGenerationEnabled: row.image_generation_enabled === 1,
     lastLoginAt: row.last_login_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at

@@ -22,6 +22,37 @@ interface LocalAccountSuppression {
   reason: string
 }
 
+type SuppressibleGatewayAccount = {
+  id: string
+  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+  bindingSystemAccountId?: string
+  groupOwnerSystemAccountId?: string
+  boundGroupId?: string
+  accountAuthorizationId?: string
+}
+
+export interface LocalAccountSuppressionFilterResult<T> {
+  accounts: T[]
+  suppressedCount: number
+  allSuppressed: boolean
+  suppressedAccountIds: string[]
+  nextRetryAtMs?: number
+  nextRetryAfterMs?: number
+}
+
+export type LocalAccountSuppressionWaitResult<T> =
+  | {
+    ready: true
+    waitedMs: number
+    filter: LocalAccountSuppressionFilterResult<T>
+  }
+  | {
+    ready: false
+    reason: 'timeout' | 'aborted'
+    waitedMs: number
+    filter: LocalAccountSuppressionFilterResult<T>
+  }
+
 export interface GatewayAccountSideEffectState {
   queueLength: number
   processing: boolean
@@ -58,25 +89,99 @@ export function enqueueGatewayStreamFailureSideEffect(operation: StreamFailureOp
   enqueueAccountSideEffect(operation)
 }
 
-export function filterLocallySuppressedGatewayAccounts<T extends { id: string }>(accounts: T[]): {
+export function suppressGatewayAccountLocally(
+  account: SuppressibleGatewayAccount | string,
+  settings: GatewaySettings | undefined,
+  reason = '上游账号请求失败'
+): void {
+  suppressLocalAccount(gatewayAccountRuntimeKey(account), localSuppressionMs(settings), reason)
+}
+
+export function filterLocallySuppressedGatewayAccounts<T extends SuppressibleGatewayAccount>(
   accounts: T[]
-  suppressedCount: number
-  bypassedAllSuppressed: boolean
-} {
+): LocalAccountSuppressionFilterResult<T> {
   cleanupExpiredLocalSuppressions()
-  const filtered = accounts.filter((account) => !localAccountSuppressions.has(account.id))
-  const suppressedCount = accounts.length - filtered.length
-  if (filtered.length === 0 && accounts.length > 0) {
-    return {
-      accounts,
-      suppressedCount,
-      bypassedAllSuppressed: true
+  const now = Date.now()
+  const filtered: T[] = []
+  const suppressedAccountIds: string[] = []
+  let nextRetryAtMs: number | undefined
+  for (const account of accounts) {
+    const suppression = localAccountSuppressions.get(gatewayAccountRuntimeKey(account))
+    if (!suppression) {
+      filtered.push(account)
+      continue
     }
+    suppressedAccountIds.push(account.id)
+    nextRetryAtMs = nextRetryAtMs === undefined
+      ? suppression.untilMs
+      : Math.min(nextRetryAtMs, suppression.untilMs)
   }
+  const suppressedCount = suppressedAccountIds.length
   return {
     accounts: filtered,
     suppressedCount,
-    bypassedAllSuppressed: false
+    allSuppressed: filtered.length === 0 && accounts.length > 0,
+    suppressedAccountIds,
+    nextRetryAtMs,
+    nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - now)
+  }
+}
+
+export async function waitForLocalAccountSuppressionRelease<T extends SuppressibleGatewayAccount>(
+  accounts: T[],
+  input: {
+    maxWaitMs: number
+    signal?: AbortSignal
+  }
+): Promise<LocalAccountSuppressionWaitResult<T>> {
+  const startedAtMs = Date.now()
+  let filter = filterLocallySuppressedGatewayAccounts(accounts)
+  if (!filter.allSuppressed) {
+    return {
+      ready: true,
+      waitedMs: 0,
+      filter
+    }
+  }
+
+  const maxWaitMs = Math.max(0, Math.trunc(input.maxWaitMs))
+  while (filter.allSuppressed) {
+    if (input.signal?.aborted) {
+      return {
+        ready: false,
+        reason: 'aborted',
+        waitedMs: Date.now() - startedAtMs,
+        filter
+      }
+    }
+    const elapsedMs = Date.now() - startedAtMs
+    const remainingWaitMs = maxWaitMs - elapsedMs
+    if (remainingWaitMs <= 0) {
+      return {
+        ready: false,
+        reason: 'timeout',
+        waitedMs: elapsedMs,
+        filter
+      }
+    }
+    const retryAfterMs = filter.nextRetryAfterMs ?? remainingWaitMs
+    const waitMs = Math.min(remainingWaitMs, Math.max(1, retryAfterMs))
+    await waitForRetryDelayMs(waitMs, { signal: input.signal })
+    filter = filterLocallySuppressedGatewayAccounts(accounts)
+  }
+
+  if (filter.accounts.length > 0) {
+    return {
+      ready: true,
+      waitedMs: Date.now() - startedAtMs,
+      filter
+    }
+  }
+  return {
+    ready: false,
+    reason: 'timeout',
+    waitedMs: Date.now() - startedAtMs,
+    filter
   }
 }
 
@@ -100,6 +205,14 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
 
 export async function flushGatewayAccountSideEffectsForTest(): Promise<void> {
   await flushGatewayAccountSideEffects()
+}
+
+export function suppressGatewayAccountLocallyForTest(accountId: string, durationMs: number, reason = '测试本地屏蔽'): void {
+  suppressLocalAccount(accountId, Math.max(0, Math.trunc(durationMs)), reason)
+}
+
+export function clearGatewayLocalAccountSuppressionsForTest(): void {
+  localAccountSuppressions.clear()
 }
 
 export async function flushGatewayAccountSideEffects(): Promise<void> {
@@ -216,11 +329,11 @@ async function executeAccountSideEffect(operation: AccountSideEffectOperation): 
   if (operation.type === 'apply_account_error_handling') {
     const result = await requestDbService(operation)
     if (operation.input.success && result.accountStatus === 'active') {
-      clearLocalAccountSuppression(operation.account.id)
+      clearLocalAccountSuppression(gatewayAccountRuntimeKey(operation.account))
     }
     if (result.changed) {
       if (result.accountStatus === 'rate_limited' || result.accountStatus === 'temporary_unavailable') {
-        suppressLocalAccount(operation.account.id, localSuppressionMs(operation.input.settings), result.reason ?? operation.input.errorMessage ?? '上游账号请求失败')
+        suppressLocalAccount(gatewayAccountRuntimeKey(operation.account), localSuppressionMs(operation.input.settings), result.reason ?? operation.input.errorMessage ?? '上游账号请求失败')
       }
       clearGatewayRuntimeCache()
     }
@@ -228,7 +341,11 @@ async function executeAccountSideEffect(operation: AccountSideEffectOperation): 
   }
   const result = await requestDbService(operation)
   if (result.triggered) {
-    suppressLocalAccount(operation.input.accountId, localSuppressionMsFromMinutes(operation.input.cooldownMinutes), operation.input.reason)
+    suppressLocalAccount(
+      gatewayAccountRuntimeKey(operation.input.account ?? operation.input.accountId),
+      localSuppressionMsFromMinutes(operation.input.cooldownMinutes),
+      operation.input.reason
+    )
     clearGatewayRuntimeCache()
   }
 }
@@ -252,6 +369,21 @@ function dropExpiredSideEffects(now: number): void {
 
 function sortSideEffectQueue(): void {
   sideEffectQueue.sort((left, right) => left.nextAttemptAtMs - right.nextAttemptAtMs || left.enqueuedAtMs - right.enqueuedAtMs)
+}
+
+function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string): string {
+  if (typeof account === 'string') {
+    return account
+  }
+  if (account.accountAccessType === 'account_authorized') {
+    const systemAccountId = account.bindingSystemAccountId ?? account.groupOwnerSystemAccountId ?? ''
+    const groupId = account.boundGroupId ?? ''
+    const authorizationId = account.accountAuthorizationId ?? ''
+    if (systemAccountId && groupId && authorizationId) {
+      return `${account.id}:authorized:${systemAccountId}:${groupId}:${authorizationId}`
+    }
+  }
+  return account.id
 }
 
 function suppressLocalAccount(accountId: string, durationMs: number, reason: string): void {

@@ -3,11 +3,13 @@ import http from 'node:http'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { fetchFirstAvailableUpstream, UpstreamAttemptError } from '../../modules/gateway/openai-gateway-upstream-dispatch.js'
+import { resolveOpenAIGatewayRequestLane } from '../../modules/gateway/openai-gateway-request-lane.js'
 import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../../modules/gateway/audit-capture.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/openai-gateway-usage-records.js'
@@ -65,9 +67,17 @@ const auditCapture = {
 } as unknown as AuditCaptureContext
 
 let holdAndReleaseServer: http.Server | undefined
+let hitAccountIds: string[] = []
 
 try {
   clearAccountConcurrency()
+  assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/images/generations')), 'image', 'OpenAI 图片接口应识别为图像通道')
+  assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/responses', { model: 'gpt-image-1', prompt: 'x' })), 'image', 'gpt-image 模型应识别为图像通道')
+  assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/chat/completions', { model: 'dall-e-3', prompt: 'x' })), 'image', 'dall-e 模型应识别为图像通道')
+  assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/responses', { model: 'gpt-5.5', tools: [{ type: 'image_generation' }] })), 'image', 'Responses 图像生成工具应识别为图像通道')
+  assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/responses', { model: 'gpt-5.5', tool_choice: { type: 'image_generation' } })), 'image', 'Responses 对象形态 tool_choice 应识别为图像通道')
+  assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/responses', { model: 'gpt-5.5', input: [{ content: [{ type: 'input_text', text: 'hi' }] }] })), 'text', '普通文本 Responses 请求应保持文本通道')
+
   const holdAndReleaseUpstream = await createHoldAndReleaseServer()
   holdAndReleaseServer = holdAndReleaseUpstream.server
   const retryAccount = buildAccount({
@@ -131,7 +141,150 @@ try {
 
   heldSlot.release()
   clearAccountConcurrency()
-  console.log('网关并发准备回归通过：短等释放的账号会继续复用，持续饱和的账号会记录失败用量并退出')
+
+  const imageLaneAccount = buildAccount({
+    id: 'acct_image_lane_reserved_text',
+    name: '图像通道预留文本槽账号',
+    concurrencyLimit: 2,
+    type: 'api_key',
+    baseUrl: holdAndReleaseUpstream.baseUrl
+  })
+  const heldImageSlot = tryAcquireAccountConcurrency(imageLaneAccount.id, imageLaneAccount.concurrencyLimit, { lane: 'image', laneLimit: 1 })
+  assert.equal(heldImageSlot.acquired, true, '测试前应先占用图像通道槽')
+
+  await assert.rejects(
+    fetchFirstAvailableUpstream(
+      buildRequest({
+        originalUrl: '/v1/images/generations',
+        path: '/images/generations',
+        body: { model: 'gpt-image-1', prompt: 'draw a small gateway diagram' }
+      }),
+      [imageLaneAccount],
+      settings,
+      usageContext,
+      auditCapture,
+      undefined,
+      new AbortController().signal,
+      undefined,
+      'image'
+    ),
+    (error: unknown) => error instanceof UpstreamAttemptError
+      && error.lastAttempt?.upstreamUrl === 'concurrency:limit'
+      && error.message.includes('账户图像通道并发已达到上限 1/1')
+      && error.message.includes('已为文本通道保留并发槽')
+  )
+
+  usageRecordQueue.flushAllUsageRecordQueue()
+  const imageLaneFailureUsage = latestUsageRecordForAccount(imageLaneAccount.id)
+  assert.equal(imageLaneFailureUsage?.success, 0, '图像通道满也应写入失败使用记录')
+  assert.match(imageLaneFailureUsage?.error_message ?? '', /图像通道并发已达到上限/, '图像通道满使用记录应保留错误原因')
+
+  const textResultWhileImageHeld = await fetchFirstAvailableUpstream(
+    buildRequest(),
+    [imageLaneAccount],
+    settings,
+    usageContext,
+    auditCapture,
+    undefined,
+    new AbortController().signal,
+    undefined,
+    'text'
+  )
+  assert.equal(textResultWhileImageHeld.response.status, 200, '图像通道满时文本请求仍应使用预留并发槽')
+  await drainAndRelease(textResultWhileImageHeld)
+  heldImageSlot.release()
+  clearAccountConcurrency()
+
+  const configuredImageLaneAccount = buildAccount({
+    id: 'acct_image_lane_configured',
+    name: '图像通道自定义上限账号',
+    concurrencyLimit: 3,
+    type: 'api_key',
+    baseUrl: holdAndReleaseUpstream.baseUrl
+  })
+  const configuredHeldImageSlotA = tryAcquireAccountConcurrency(configuredImageLaneAccount.id, configuredImageLaneAccount.concurrencyLimit, { lane: 'image', laneLimit: 2 })
+  const configuredHeldImageSlotB = tryAcquireAccountConcurrency(configuredImageLaneAccount.id, configuredImageLaneAccount.concurrencyLimit, { lane: 'image', laneLimit: 2 })
+  assert.equal(configuredHeldImageSlotA.acquired, true, '自定义图像通道上限测试前应占用第一个图像槽')
+  assert.equal(configuredHeldImageSlotB.acquired, true, '自定义图像通道上限测试前应占用第二个图像槽')
+  await assert.rejects(
+    fetchFirstAvailableUpstream(
+      buildRequest({
+        originalUrl: '/v1/images/generations',
+        path: '/images/generations',
+        body: { model: 'gpt-image-1', prompt: 'draw another gateway diagram' }
+      }),
+      [configuredImageLaneAccount],
+      settings,
+      usageContext,
+      auditCapture,
+      undefined,
+      new AbortController().signal,
+      undefined,
+      'image',
+      { imageLaneMaxConcurrency: 2 }
+    ),
+    (error: unknown) => error instanceof UpstreamAttemptError
+      && error.lastAttempt?.upstreamUrl === 'concurrency:limit'
+      && error.message.includes('账户图像通道并发已达到上限 2/2')
+  )
+  const configuredTextResult = await fetchFirstAvailableUpstream(
+    buildRequest(),
+    [configuredImageLaneAccount],
+    settings,
+    usageContext,
+    auditCapture,
+    undefined,
+    new AbortController().signal,
+    undefined,
+    'text',
+    { imageLaneMaxConcurrency: 2 }
+  )
+  assert.equal(configuredTextResult.response.status, 200, '自定义图像通道满时文本请求仍应使用剩余总并发槽')
+  await drainAndRelease(configuredTextResult)
+  configuredHeldImageSlotA.release()
+  configuredHeldImageSlotB.release()
+  clearAccountConcurrency()
+
+  const imageLaneBusyAccount = buildAccount({
+    id: 'acct_image_lane_busy_order',
+    name: '图像通道已满排序账号',
+    concurrencyLimit: 2,
+    type: 'api_key',
+    baseUrl: `${holdAndReleaseUpstream.baseUrl}/accounts/acct_image_lane_busy_order`
+  })
+  const imageLaneAvailableAccount = buildAccount({
+    id: 'acct_image_lane_available_order',
+    name: '图像通道可用排序账号',
+    concurrencyLimit: 2,
+    type: 'api_key',
+    baseUrl: `${holdAndReleaseUpstream.baseUrl}/accounts/acct_image_lane_available_order`
+  })
+  const busyOrderSlot = tryAcquireAccountConcurrency(imageLaneBusyAccount.id, imageLaneBusyAccount.concurrencyLimit, { lane: 'image', laneLimit: 1 })
+  assert.equal(busyOrderSlot.acquired, true, '排序测试前应占用第一个账号图像通道')
+  hitAccountIds = []
+  const orderedImageResult = await fetchFirstAvailableUpstream(
+    buildRequest({
+      originalUrl: '/v1/images/generations',
+      path: '/images/generations',
+      body: { model: 'gpt-image-1', prompt: 'route to available image lane' }
+    }),
+    [imageLaneBusyAccount, imageLaneAvailableAccount],
+    settings,
+    usageContext,
+    auditCapture,
+    undefined,
+    new AbortController().signal,
+    undefined,
+    'image'
+  )
+  assert.equal(orderedImageResult.account.id, imageLaneAvailableAccount.id, '图像请求应优先选择图像通道仍可用的账号')
+  assert.deepEqual(hitAccountIds, [imageLaneAvailableAccount.id], '图像通道已满账号不应先短等并尝试上游')
+  await drainAndRelease(orderedImageResult)
+  busyOrderSlot.release()
+  hitAccountIds = []
+  clearAccountConcurrency()
+
+  console.log('网关并发准备回归通过：短等复用、饱和失败记录、图像通道预留文本槽、自定义图像通道上限和图像 lane 排序均符合预期')
 } finally {
   clearAccountConcurrency()
   holdAndReleaseServer?.close()
@@ -153,7 +306,11 @@ function latestUsageRecordForAccount(accountId: string): { account_id?: string; 
 }
 
 async function createHoldAndReleaseServer(): Promise<{ server: http.Server; baseUrl: string }> {
-  const server = http.createServer((_req, res) => {
+  const server = http.createServer((req, res) => {
+    const accountId = /\/accounts\/([^/]+)/.exec(req.url ?? '')?.[1]
+    if (accountId) {
+      hitAccountIds.push(accountId)
+    }
     res.writeHead(200, {
       'content-type': 'application/json; charset=utf-8'
     })
@@ -175,13 +332,23 @@ async function createHoldAndReleaseServer(): Promise<{ server: http.Server; base
   }
 }
 
-function buildRequest(): Parameters<typeof fetchFirstAvailableUpstream>[0] {
+async function drainAndRelease(result: Awaited<ReturnType<typeof fetchFirstAvailableUpstream>>): Promise<void> {
+  for await (const _chunk of result.response.body ?? []) {
+  }
+  result.releaseConcurrency()
+}
+
+function buildRequest(input: {
+  originalUrl?: string
+  path?: string
+  body?: unknown
+} = {}): Parameters<typeof fetchFirstAvailableUpstream>[0] {
   return {
     method: 'POST',
-    originalUrl: '/v1/chat/completions',
-    path: '/chat/completions',
+    originalUrl: input.originalUrl ?? '/v1/chat/completions',
+    path: input.path ?? '/chat/completions',
     headers: { 'content-type': 'application/json' },
-    body: {
+    body: input.body ?? {
       model: 'gpt-5.5',
       messages: [{ role: 'user', content: 'hi' }]
     },
@@ -190,6 +357,14 @@ function buildRequest(): Parameters<typeof fetchFirstAvailableUpstream>[0] {
       return Array.isArray(value) ? value.join(', ') : value
     }
   } as Parameters<typeof fetchFirstAvailableUpstream>[0]
+}
+
+function buildLaneRequest(path: string, body: unknown = {}): Request {
+  return {
+    path,
+    originalUrl: path,
+    body
+  } as Request
 }
 
 function buildAccount(input: {

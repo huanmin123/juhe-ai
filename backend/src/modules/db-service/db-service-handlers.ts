@@ -1,12 +1,15 @@
 import {
   clearGatewayApiKeyValidationCache,
   clearAccountStreamFailureState,
+  clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
   listOpenAIAccountsForGroup,
   listPublicGlobalSettings,
   recordAccountStreamFailure,
+  recordAuthorizedAccountBindingStreamFailure,
   resolveGroupUsageAccessMetadata,
   resolveProxyUrlForProfile,
+  type OpenAIAccountSecret,
   updateAccount,
   validateGatewayApiKey
 } from '../../storage/repositories.js'
@@ -122,14 +125,24 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return result
     }
     case 'record_account_stream_failure': {
-      const result = recordAccountStreamFailure(operation.input)
+      const authorizedTarget = authorizedBindingRuntimeTarget(operation.input.account)
+      const result = authorizedTarget
+        ? recordAuthorizedAccountBindingStreamFailure({
+            ...operation.input,
+            ...authorizedTarget
+          })
+        : recordAccountStreamFailure(operation.input)
       if (result.triggered) {
         clearGatewayRuntimeCacheLocal()
       }
       return { count: result.count, triggered: result.triggered }
     }
     case 'clear_account_stream_failure_state': {
-      const changed = clearAccountStreamFailureState(operation.accountId)
+      const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
+      const accountId = operation.account?.id ?? operation.accountId
+      const changed = authorizedTarget
+        ? clearAuthorizedAccountBindingStreamFailureState(authorizedTarget)
+        : accountId ? clearAccountStreamFailureState(accountId) : false
       if (changed) {
         clearGatewayRuntimeCacheLocal()
       }
@@ -151,6 +164,34 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return buildDbServiceRuntimeSnapshot()
     default:
       return assertNever(operation)
+  }
+}
+
+function authorizedBindingRuntimeTarget(account: OpenAIAccountSecret | undefined): {
+    accountId: string
+    systemAccountId: string
+    groupId: string
+    accountAuthorizationId: string
+  } | undefined {
+  if (!account || typeof account !== 'object') return undefined
+  const candidate = account as {
+    id?: string
+    accountAccessType?: string
+    bindingSystemAccountId?: string
+    groupOwnerSystemAccountId?: string
+    boundGroupId?: string
+    accountAuthorizationId?: string
+  }
+  if (candidate.accountAccessType !== 'account_authorized') return undefined
+  const systemAccountId = candidate.bindingSystemAccountId ?? candidate.groupOwnerSystemAccountId
+  if (!candidate.id || !systemAccountId || !candidate.boundGroupId || !candidate.accountAuthorizationId) {
+    return undefined
+  }
+  return {
+    accountId: candidate.id,
+    systemAccountId,
+    groupId: candidate.boundGroupId,
+    accountAuthorizationId: candidate.accountAuthorizationId
   }
 }
 

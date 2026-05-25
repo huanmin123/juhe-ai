@@ -104,12 +104,16 @@ interface AccountOptionRow {
   name: string
   type: string
   status: AccountStatus
+  schedulable: number
   account_expires_at: string | null
+  cooldown_until?: string | null
   priority: number
   created_at: string
   access_type: 'owner' | 'authorized'
   authorization_id: string | null
   authorization_status: AuthorizationStatus | null
+  local_status?: AccountStatus | null
+  local_cooldown_until?: string | null
 }
 
 export type { AccountListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
@@ -495,9 +499,16 @@ function accountDispatchUnavailableMessage(account: AccountSummary, options: { r
     if (options.requireAuthorizedBinding && !account.boundGroupId) return '授权账户需要先绑定到你的分组'
     if (account.groupBindStatus === 'authorization_unavailable') return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
     if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
+    if (account.status === 'disabled') return '当前分组已停用该授权账户，当前不可用'
+    if (account.status === 'error') return '授权账户本地状态异常，当前不可用'
+    if (isCoolingAccountStatus(account.status) || isLaterIso(account.cooldownUntil, nowIso())) return '授权账户在当前分组暂时不可调用，恢复前不会参与调度'
+    const sourceUnavailableMessage = authorizedAccountSourceUnavailableMessage(account)
+    if (sourceUnavailableMessage) return sourceUnavailableMessage
+    if (!account.schedulable) return '授权账户暂时不可调用，恢复前不会参与调度'
+    return undefined
   }
   if (isAccountExpired(account.accountExpiresAt) || account.lastErrorCode === 'account_expired') return '账户已到期，当前不可用'
-  if (account.status === 'disabled') return account.accessType === 'authorized' && account.localStatus === 'disabled' ? '当前分组已停用该授权账户，当前不可用' : '账户已停用，当前不可用'
+  if (account.status === 'disabled') return '账户已停用，当前不可用'
   if (account.status === 'error') return '账户处于异常状态，当前不可用'
   if (isCoolingAccountStatus(account.status) || !account.schedulable || isLaterIso(account.cooldownUntil, nowIso())) return '账户暂时不可调用，恢复前不会参与调度'
   return undefined
@@ -509,12 +520,22 @@ export function accountTestUnavailableMessage(account: AccountSummary): string |
   if (!account.boundGroupId) return '授权账户需要先绑定到你的分组'
   if (account.groupBindStatus === 'authorization_unavailable') return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
   if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
-  if (isAccountExpired(account.accountExpiresAt) || account.lastErrorCode === 'account_expired') return '账户已到期，当前不可用'
+  const sourceUnavailableMessage = authorizedAccountSourceUnavailableMessage(account)
+  if (sourceUnavailableMessage) return sourceUnavailableMessage
   if (account.status === 'error') return '账户处于异常状态，当前不可用'
   if (isCoolingAccountStatus(account.status) || (!account.schedulable && account.status !== 'disabled') || isLaterIso(account.cooldownUntil, nowIso())) {
+    if (canTestAuthorizedLocalFailureState(account)) {
+      return undefined
+    }
     return '账户暂时不可调用，恢复前不会参与调度'
   }
   return undefined
+}
+
+function canTestAuthorizedLocalFailureState(account: AccountSummary): boolean {
+  if (account.accessType !== 'authorized' || !account.boundGroupId) return false
+  if (!account.localStatus || account.localStatus === 'active' || account.localStatus === 'disabled') return false
+  return isAuthorizedSourceAvailable(account)
 }
 
 function disableExpiredAccounts(access?: AccessScope): void {
@@ -598,14 +619,21 @@ function normalizedGroupAccountLocalStatus(value: unknown): AccountStatus | unde
   return normalizeAccountStatus(value, 'active')
 }
 
-function authorizedAccountEffectiveStatus(ownerStatus: AccountStatus, localStatus: AccountStatus | undefined, localCooldownUntil: string | null | undefined): AccountStatus {
-  if (ownerStatus !== 'active') {
-    return ownerStatus
-  }
+function authorizedAccountLocalRuntimeStatus(localStatus: AccountStatus | undefined, localCooldownUntil: string | null | undefined): AccountStatus {
   if (localStatus === 'temporary_unavailable' && localCooldownUntil && !isLaterIso(localCooldownUntil, nowIso())) {
     return 'active'
   }
   return localStatus ?? 'active'
+}
+
+function authorizedAccountSourceUnavailableMessage(account: AccountSummary): string | undefined {
+  if (account.accessType !== 'authorized') return undefined
+  if (isAccountExpired(account.accountExpiresAt)) return '授权来源账户已到期，当前不可用'
+  return undefined
+}
+
+function isAuthorizedSourceAvailable(account: AccountSummary): boolean {
+  return !authorizedAccountSourceUnavailableMessage(account)
 }
 
 function authorizedBindingSystemAccountId(access?: AccessScope): string {
@@ -832,6 +860,10 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
   const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
+    const localStatus = normalizedGroupAccountLocalStatus(row.local_status)
+    const effectiveStatus = isAuthorizedView
+      ? authorizedAccountLocalRuntimeStatus(localStatus, row.local_cooldown_until)
+      : row.status
     return {
       id: row.id,
       systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
@@ -841,7 +873,10 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
       providerCode: row.provider_code,
       name: row.name,
       type: row.type,
-      status: row.status,
+      status: effectiveStatus,
+      sourceStatus: isAuthorizedView ? row.status : undefined,
+      sourceSchedulable: isAuthorizedView ? row.schedulable === 1 : undefined,
+      sourceCooldownUntil: isAuthorizedView ? row.cooldown_until ?? undefined : undefined,
       accessType: row.access_type ?? 'owner',
       accountAuthorizationId: row.authorization_id ?? undefined,
       authorizationStatus: row.authorization_status ?? undefined,
@@ -873,7 +908,7 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   if (!ownerSystemAccountId && canAccessAll(access)) {
     const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
     return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS local_status, NULL AS local_cooldown_until
       FROM accounts
       WHERE 1 = 1${filters.clause}
     `, filters.params)
@@ -881,7 +916,7 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   if (!viewerSystemAccountId) {
     const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
     return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS local_status, NULL AS local_cooldown_until
       FROM accounts
       WHERE 1 = 1${filters.clause}
     `, filters.params)
@@ -889,21 +924,27 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
 
   const ownerId = ownerSystemAccountId ?? viewerSystemAccountId
   const ownerFilters = buildAccountOptionFilters(options, 'accounts.system_account_id')
-  const authorizedFilters = buildAccountOptionFilters(options, '?', [viewerSystemAccountId])
+  const authorizedFilters = buildAccountOptionFilters(options, '?', [viewerSystemAccountId], true)
   return queryRows(`
-    SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+    SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS local_status, NULL AS local_cooldown_until
     FROM accounts
     WHERE accounts.system_account_id = ?${ownerFilters.clause}
     UNION ALL
-    SELECT ${accountOptionSelectColumns()}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+    SELECT ${accountOptionSelectColumns()}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status,
+      option_group_bindings.local_status AS local_status,
+      option_group_bindings.local_cooldown_until AS local_cooldown_until
     FROM resource_authorizations ra
     INNER JOIN accounts ON accounts.id = ra.resource_id
+    LEFT JOIN group_accounts option_group_bindings
+      ON option_group_bindings.account_id = accounts.id
+      AND option_group_bindings.system_account_id = ?
+      AND option_group_bindings.enabled = 1
     WHERE ra.resource_type = 'account'
       AND ra.grantee_system_account_id = ?
       AND ra.status = 'active'
       AND (ra.expires_at IS NULL OR ra.expires_at > ?)
       AND accounts.system_account_id <> ?${authorizedFilters.clause}
-  `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, nowIso(), ownerId, ...authorizedFilters.params])
+  `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerId, ...authorizedFilters.params])
 }
 
 function accountOptionSelectColumns(): string {
@@ -914,7 +955,9 @@ function accountOptionSelectColumns(): string {
     'accounts.name',
     'accounts.type',
     'accounts.status',
+    'accounts.schedulable',
     'accounts.account_expires_at',
+    'accounts.cooldown_until',
     'accounts.priority',
     'accounts.created_at'
   ].join(', ')
@@ -923,7 +966,8 @@ function accountOptionSelectColumns(): string {
 function buildAccountOptionFilters(
   options: ReturnType<typeof normalizeAccountOptionListOptions>,
   groupBindingSystemAccountExpression: string,
-  groupBindingSystemAccountParams: string[] = []
+  groupBindingSystemAccountParams: string[] = [],
+  authorizedView = false
 ): { clause: string; params: AccountOptionFilterValue[] } {
   const clauses: string[] = []
   const params: AccountOptionFilterValue[] = []
@@ -960,21 +1004,62 @@ function buildAccountOptionFilters(
     params.push(options.type)
   }
   const statuses = accountStatusFilterValues(options.status)
+  const authorizedStatusExpression = `CASE
+    WHEN option_group_bindings.local_status = 'temporary_unavailable'
+      AND option_group_bindings.local_cooldown_until IS NOT NULL
+      AND option_group_bindings.local_cooldown_until <= ?
+    THEN 'active'
+    ELSE COALESCE(option_group_bindings.local_status, 'active')
+  END`
   if (statuses.length === 1) {
-    clauses.push('accounts.status = ?')
+    clauses.push(authorizedView ? `${authorizedStatusExpression} = ?` : 'accounts.status = ?')
+    if (authorizedView) params.push(nowIso())
     params.push(statuses[0])
   } else if (statuses.length > 1) {
-    clauses.push(`accounts.status IN (${statuses.map(() => '?').join(', ')})`)
+    clauses.push(authorizedView
+      ? `${authorizedStatusExpression} IN (${statuses.map(() => '?').join(', ')})`
+      : `accounts.status IN (${statuses.map(() => '?').join(', ')})`)
+    if (authorizedView) params.push(nowIso())
     params.push(...statuses)
   }
   if (options.schedulable === 'enabled') {
-    clauses.push("accounts.status = 'active' AND accounts.schedulable = 1 AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)")
-    params.push(nowIso())
+    if (authorizedView) {
+      clauses.push(`option_group_bindings.group_id IS NOT NULL
+        AND option_group_bindings.account_authorization_id IS NOT NULL
+        AND option_group_bindings.account_authorization_id = ra.id
+        AND ${authorizedStatusExpression} = 'active'
+        AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)`)
+      const current = nowIso()
+      params.push(current, current)
+    } else {
+      clauses.push("accounts.status = 'active' AND accounts.schedulable = 1 AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)")
+      params.push(nowIso())
+    }
   } else if (options.schedulable === 'disabled') {
-    clauses.push("(accounts.status = 'disabled' OR accounts.schedulable <> 1)")
+    if (authorizedView) {
+      clauses.push(`(option_group_bindings.group_id IS NULL
+        OR option_group_bindings.account_authorization_id IS NULL
+        OR option_group_bindings.account_authorization_id <> ra.id
+        OR ${authorizedStatusExpression} IN ('disabled', 'error')
+        OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ?))`)
+      const current = nowIso()
+      params.push(current, current)
+    } else {
+      clauses.push("(accounts.status = 'disabled' OR accounts.schedulable <> 1)")
+    }
   } else if (options.schedulable === 'cooling') {
-    clauses.push("(accounts.status IN ('rate_limited', 'temporary_unavailable') OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ?))")
-    params.push(nowIso())
+    if (authorizedView) {
+      clauses.push(`option_group_bindings.group_id IS NOT NULL
+        AND option_group_bindings.account_authorization_id IS NOT NULL
+        AND option_group_bindings.account_authorization_id = ra.id
+        AND (${authorizedStatusExpression} IN ('rate_limited', 'temporary_unavailable')
+          OR (option_group_bindings.local_cooldown_until IS NOT NULL AND option_group_bindings.local_cooldown_until > ?))`)
+      const current = nowIso()
+      params.push(current, current)
+    } else {
+      clauses.push("(accounts.status IN ('rate_limited', 'temporary_unavailable') OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ?))")
+      params.push(nowIso())
+    }
   }
   return {
     clause: clauses.length ? ` AND ${clauses.join(' AND ')}` : '',
@@ -1022,11 +1107,16 @@ function accountSummariesFromRows(
       ? accountGroupBindingFromRow(row, groupBindingSystemAccountId) ?? accountGroupBinding(row.id, groupBindingSystemAccountId)
       : undefined
     const authorizedLocalStatus = normalizedGroupAccountLocalStatus(row.bound_group_local_status)
-    const effectiveAuthorizedStatus = isAuthorizedView && groupBinding
-      ? authorizedAccountEffectiveStatus(row.status, authorizedLocalStatus, row.bound_group_local_cooldown_until)
+    const effectiveAuthorizedStatus = isAuthorizedView
+      ? authorizedAccountLocalRuntimeStatus(authorizedLocalStatus, row.bound_group_local_cooldown_until)
       : row.status
+    const sourceUnavailableForAuthorized = isAuthorizedView && (
+      isAccountExpired(row.account_expires_at)
+      || !groupBinding
+      || groupBinding.groupBindStatus !== 'bound'
+    )
     const effectiveAuthorizedSchedulable = isAuthorizedView
-      ? row.schedulable === 1 && row.status === 'active' && effectiveAuthorizedStatus === 'active'
+      ? !sourceUnavailableForAuthorized && effectiveAuthorizedStatus === 'active'
       : row.schedulable === 1
     return {
       id: row.id,
@@ -1063,14 +1153,23 @@ function accountSummariesFromRows(
       schedulable: effectiveAuthorizedSchedulable,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : row.cooldown_until ?? undefined,
-      lastErrorCode: isAuthorizedView ? (effectiveAuthorizedStatus === row.status ? row.last_error_code ?? undefined : undefined) : row.last_error_code ?? undefined,
+      lastErrorCode: isAuthorizedView ? undefined : row.last_error_code ?? undefined,
       lastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : row.last_error_message ?? undefined,
       cooldownRetestFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: isAuthorizedView ? undefined : row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: isAuthorizedView ? undefined : row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: isAuthorizedView ? undefined : optionalNumber(row.cooldown_retest_last_status_code),
-      streamFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.stream_failure_count ?? 0)),
-      streamFailureWindowStartedAt: isAuthorizedView ? undefined : row.stream_failure_window_started_at ?? undefined,
+      streamFailureCount: isAuthorizedView
+        ? Math.max(0, Number(row.bound_group_local_stream_failure_count ?? 0))
+        : Math.max(0, Number(row.stream_failure_count ?? 0)),
+      streamFailureWindowStartedAt: isAuthorizedView
+        ? row.bound_group_local_stream_failure_window_started_at ?? undefined
+        : row.stream_failure_window_started_at ?? undefined,
+      sourceStatus: isAuthorizedView ? row.status : undefined,
+      sourceSchedulable: isAuthorizedView ? row.schedulable === 1 : undefined,
+      sourceCooldownUntil: isAuthorizedView ? row.cooldown_until ?? undefined : undefined,
+      sourceLastErrorCode: isAuthorizedView ? row.last_error_code ?? undefined : undefined,
+      sourceLastErrorMessage: isAuthorizedView ? row.last_error_message ?? undefined : undefined,
       localStatus: isAuthorizedView ? authorizedLocalStatus : undefined,
       localCooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : undefined,
       localLastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : undefined,
@@ -1923,6 +2022,231 @@ export function clearAccountFailureStateResult(
   return { account: findAccountSummary(id, access), changed }
 }
 
+export function clearAuthorizedAccountBindingFailureState(
+  id: string,
+  access?: AccessScope
+): AccountFailureStateClearResult {
+  const current = findAccountSummary(id, access)
+  if (!current || current.accessType !== 'authorized' || !current.boundGroupId || !current.accountAuthorizationId) {
+    return { account: current, changed: false }
+  }
+  if (current.localStatus === 'disabled') {
+    return { account: current, changed: false }
+  }
+  const hasLocalFailureState = (current.localStatus !== undefined && current.localStatus !== 'active')
+    || Boolean(current.localCooldownUntil)
+    || Boolean(current.localLastErrorMessage)
+    || Boolean(current.streamFailureCount)
+    || Boolean(current.streamFailureWindowStartedAt)
+  if (!hasLocalFailureState) {
+    return { account: current, changed: false }
+  }
+
+  const systemAccountId = authorizedBindingSystemAccountId(access)
+  const now = nowIso()
+  const result = getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_status = 'active',
+          local_cooldown_until = NULL,
+          local_last_error_message = NULL,
+          local_stream_failure_count = 0,
+          local_stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id = ?
+        AND local_status <> 'disabled'
+        AND (
+          local_status <> 'active'
+          OR local_cooldown_until IS NOT NULL
+          OR local_last_error_message IS NOT NULL
+          OR local_stream_failure_count > 0
+          OR local_stream_failure_window_started_at IS NOT NULL
+        )
+    `)
+    .run(now, id, systemAccountId, current.boundGroupId, current.accountAuthorizationId)
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    refreshGroupAccountStatsAfterWrite({ groupIds: [current.boundGroupId], reason: 'authorized_account_test_restored' })
+    invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_test_restored')
+  }
+
+  return { account: findAccountSummary(id, { systemAccountId, role: 'user' }), changed }
+}
+
+export interface AuthorizedAccountBindingRuntimeTarget {
+  accountId: string
+  systemAccountId?: string
+  groupId?: string
+  accountAuthorizationId?: string
+}
+
+function normalizedAuthorizedAccountBindingRuntimeTarget(
+  input: AuthorizedAccountBindingRuntimeTarget
+): Required<AuthorizedAccountBindingRuntimeTarget> | undefined {
+  const accountId = input.accountId?.trim()
+  const systemAccountId = input.systemAccountId?.trim()
+  const groupId = input.groupId?.trim()
+  const accountAuthorizationId = input.accountAuthorizationId?.trim()
+  if (!accountId || !systemAccountId || !groupId || !accountAuthorizationId) {
+    return undefined
+  }
+  return { accountId, systemAccountId, groupId, accountAuthorizationId }
+}
+
+export function clearAuthorizedAccountBindingFailureStateByContext(
+  input: AuthorizedAccountBindingRuntimeTarget,
+  options: ClearAccountFailureStateOptions = {}
+): AccountFailureStateClearResult {
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target) {
+    return { changed: false }
+  }
+  const now = nowIso()
+  const result = getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_status = 'active',
+          local_cooldown_until = NULL,
+          local_last_error_message = NULL,
+          local_stream_failure_count = 0,
+          local_stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id = ?
+        AND local_status <> 'disabled'
+        AND (? = 1 OR local_status <> 'error')
+        AND (
+          local_status <> 'active'
+          OR local_cooldown_until IS NOT NULL
+          OR local_last_error_message IS NOT NULL
+          OR local_stream_failure_count > 0
+          OR local_stream_failure_window_started_at IS NOT NULL
+        )
+    `)
+    .run(now, target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId, options.allowErrorRestore === false ? 0 : 1)
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], reason: 'authorized_account_restored' })
+    invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_restored')
+  }
+  return {
+    account: findAccountSummary(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' }),
+    changed
+  }
+}
+
+export function markAuthorizedAccountBindingCooldownByContext(
+  input: AuthorizedAccountBindingRuntimeTarget & { cooldownUntil: string; reason: string; status?: AccountStatus }
+): AccountSummary | undefined {
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target) {
+    return undefined
+  }
+  const cooldownStatus: AccountStatus = input.status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
+  const cooldownUntil = cooldownStatus === 'temporary_unavailable'
+    ? initialTemporaryUnavailableCooldownUntil()
+    : input.cooldownUntil
+  const now = nowIso()
+  const result = getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_status = ?,
+          local_cooldown_until = ?,
+          local_last_error_message = ?,
+          local_stream_failure_count = 0,
+          local_stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id = ?
+        AND local_status NOT IN ('disabled', 'error')
+    `)
+    .run(cooldownStatus, cooldownUntil, input.reason || null, now, target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], reason: 'authorized_account_cooldown' })
+  invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_cooldown')
+  return findAccountSummary(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
+}
+
+export function markAuthorizedAccountBindingDisabledByFailure(
+  input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
+): AccountSummary | undefined {
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target) {
+    return undefined
+  }
+  const now = nowIso()
+  const result = getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_status = 'error',
+          local_cooldown_until = NULL,
+          local_last_error_message = ?,
+          local_stream_failure_count = 0,
+          local_stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id = ?
+        AND local_status <> 'disabled'
+    `)
+    .run(input.reason || null, now, target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], reason: 'authorized_account_exception' })
+  invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_exception')
+  return findAccountSummary(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
+}
+
+export function clearAuthorizedAccountBindingStreamFailureState(input: AuthorizedAccountBindingRuntimeTarget): boolean {
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target) {
+    return false
+  }
+  const result = getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_stream_failure_count = 0,
+          local_stream_failure_window_started_at = NULL,
+          local_last_error_message = CASE
+            WHEN local_status = 'active' THEN NULL
+            ELSE local_last_error_message
+          END,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id = ?
+        AND local_status NOT IN ('disabled', 'error')
+        AND (
+          local_stream_failure_count > 0
+          OR local_stream_failure_window_started_at IS NOT NULL
+          OR (local_status = 'active' AND local_last_error_message IS NOT NULL)
+        )
+    `)
+    .run(nowIso(), target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_stream_failure_cleared')
+  }
+  return changed
+}
+
 export function clearAccountStreamFailureState(id: string): boolean {
   const result = getDatabase()
     .prepare(`
@@ -2234,7 +2558,7 @@ function markAuthorizedAccountBindingTemporaryUnavailable(
   reason: string,
   access?: AccessScope
 ): AccountSummary | undefined {
-  if (!account.boundGroupId) {
+  if (!account.boundGroupId || !account.accountAuthorizationId) {
     return undefined
   }
   const systemAccountId = authorizedBindingSystemAccountId(access)
@@ -2245,14 +2569,16 @@ function markAuthorizedAccountBindingTemporaryUnavailable(
       SET local_status = 'temporary_unavailable',
           local_cooldown_until = ?,
           local_last_error_message = ?,
+          local_stream_failure_count = 0,
+          local_stream_failure_window_started_at = NULL,
           updated_at = ?
       WHERE account_id = ?
         AND system_account_id = ?
         AND group_id = ?
         AND enabled = 1
-        AND account_authorization_id IS NOT NULL
+        AND account_authorization_id = ?
     `)
-    .run(cooldownUntil, reason || null, now, account.id, systemAccountId, account.boundGroupId)
+    .run(cooldownUntil, reason || null, now, account.id, systemAccountId, account.boundGroupId, account.accountAuthorizationId)
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
@@ -2446,7 +2772,7 @@ export function updateAuthorizedAccountBindingDispatch(
 ): AccountSummary | undefined {
   const systemAccountId = authorizedBindingSystemAccountId(access)
   const current = findAccountSummary(accountId, access)
-  if (current?.accessType !== 'authorized' || !current.boundGroupId) {
+  if (current?.accessType !== 'authorized' || !current.boundGroupId || !current.accountAuthorizationId) {
     throw new Error('授权账户需要先绑定到你的分组')
   }
   const enablingDispatchFlag = input.superPriorityEnabled === true || input.fallbackEnabled === true
@@ -2479,11 +2805,14 @@ export function updateAuthorizedAccountBindingDispatch(
           local_last_error_message = ?,
           local_super_priority_enabled = ?,
           local_fallback_enabled = ?,
+          local_stream_failure_count = ?,
+          local_stream_failure_window_started_at = ?,
           updated_at = ?
       WHERE account_id = ?
         AND system_account_id = ?
+        AND group_id = ?
         AND enabled = 1
-        AND account_authorization_id IS NOT NULL
+        AND account_authorization_id = ?
     `)
     .run(
       nextLocalStatus,
@@ -2491,9 +2820,13 @@ export function updateAuthorizedAccountBindingDispatch(
       shouldClearLocalFailureState ? null : current.localLastErrorMessage ?? null,
       nextSuperPriority ? 1 : 0,
       nextFallback ? 1 : 0,
+      shouldClearLocalFailureState ? 0 : current.streamFailureCount ?? 0,
+      shouldClearLocalFailureState ? null : current.streamFailureWindowStartedAt ?? null,
       now,
       accountId,
-      systemAccountId
+      systemAccountId,
+      current.boundGroupId,
+      current.accountAuthorizationId
     )
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
@@ -2521,7 +2854,7 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   if (!sourceAccount || !targetAccount) {
     return undefined
   }
-  if (!sourceAccount.boundGroupId || !targetAccount.boundGroupId || sourceAccount.boundGroupId !== targetAccount.boundGroupId) {
+  if (!sourceAccount.boundGroupId || !sourceAccount.accountAuthorizationId || !targetAccount.boundGroupId || sourceAccount.boundGroupId !== targetAccount.boundGroupId) {
     throw new Error('目标账户必须和当前账户在你的同一个分组内')
   }
   if (sourceAccount.providerCode !== targetAccount.providerCode) {
@@ -2542,14 +2875,16 @@ function migrateAuthorizedAccountBindingTraffic(input: {
       SET local_status = ?,
           local_cooldown_until = ?,
           local_last_error_message = ?,
+          local_stream_failure_count = 0,
+          local_stream_failure_window_started_at = NULL,
           updated_at = ?
       WHERE account_id = ?
         AND system_account_id = ?
         AND group_id = ?
         AND enabled = 1
-        AND account_authorization_id IS NOT NULL
+        AND account_authorization_id = ?
     `)
-    .run(sourceLocalStatus, sourceCooldownUntil, manualTrafficMigrationReason, now, sourceAccount.id, systemAccountId, sourceAccount.boundGroupId)
+    .run(sourceLocalStatus, sourceCooldownUntil, manualTrafficMigrationReason, now, sourceAccount.id, systemAccountId, sourceAccount.boundGroupId, sourceAccount.accountAuthorizationId)
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
@@ -2668,6 +3003,89 @@ export function recordAccountStreamFailure(input: {
   refreshGroupAccountStatsAfterWrite({ accountIds: [input.accountId], reason: 'stream_failure_threshold' })
 
   return { count, triggered: true, account: findAccountSummary(input.accountId) }
+}
+
+export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAccountBindingRuntimeTarget & {
+  thresholdCount: number
+  thresholdWindowMinutes: number
+  action: 'cooldown' | 'disable' | 'none'
+  cooldownMinutes: number
+  reason: string
+}): { count: number; triggered: boolean; account?: AccountSummary } {
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target) {
+    return { count: 0, triggered: false }
+  }
+  const row = getDatabase()
+    .prepare(`
+      SELECT local_status, local_stream_failure_count, local_stream_failure_window_started_at
+      FROM group_accounts
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id = ?
+      LIMIT 1
+    `)
+    .get(target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId) as unknown as {
+      local_status?: AccountStatus | null
+      local_stream_failure_count?: number | null
+      local_stream_failure_window_started_at?: string | null
+    } | undefined
+  if (!row) {
+    return { count: 0, triggered: false }
+  }
+  const localStatus = normalizeAccountStatus(row.local_status, 'active')
+  const currentAccount = () => findAccountSummary(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
+  if (isHardUnavailableAccountStatus(localStatus)) {
+    return { count: Math.max(0, Number(row.local_stream_failure_count ?? 0)), triggered: false, account: currentAccount() }
+  }
+
+  const now = new Date()
+  const nowIsoValue = now.toISOString()
+  const thresholdMs = Math.max(1, input.thresholdWindowMinutes) * 60_000
+  const startedAt = row.local_stream_failure_window_started_at ? new Date(row.local_stream_failure_window_started_at) : undefined
+  const windowValid = startedAt !== undefined && !Number.isNaN(startedAt.getTime()) && now.getTime() - startedAt.getTime() < thresholdMs
+  const count = windowValid ? Math.max(0, Number(row.local_stream_failure_count ?? 0)) + 1 : 1
+  const windowStartedAt = windowValid ? row.local_stream_failure_window_started_at ?? nowIsoValue : nowIsoValue
+
+  getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_stream_failure_count = ?,
+          local_stream_failure_window_started_at = ?,
+          local_last_error_message = ?,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id = ?
+    `)
+    .run(count, windowStartedAt, input.reason || null, nowIsoValue, target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+
+  const triggered = count >= Math.max(1, input.thresholdCount) && input.action !== 'none'
+  if (!triggered) {
+    return { count, triggered: false, account: currentAccount() }
+  }
+
+  if (input.action === 'cooldown') {
+    const until = new Date(now.getTime() + Math.max(1, input.cooldownMinutes) * 60_000).toISOString()
+    markAuthorizedAccountBindingCooldownByContext({
+      ...target,
+      cooldownUntil: until,
+      reason: input.reason,
+      status: 'temporary_unavailable'
+    })
+  } else {
+    markAuthorizedAccountBindingDisabledByFailure({
+      ...target,
+      reason: input.reason
+    })
+  }
+
+  refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], reason: 'authorized_stream_failure_threshold' })
+  return { count, triggered: true, account: currentAccount() }
 }
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
@@ -3139,12 +3557,85 @@ export function listAuthorizationGranteeTeams(access?: AccessScope, options: Aut
   return rows.map(systemTeamPrincipalSummaryFromRow)
 }
 
+interface AuthorizationGranteeGroupOptionListOptions extends AuthorizationPrincipalOptionListOptions {
+  granteeSystemAccountId?: string
+  providerCode?: string
+  preferDefault?: boolean
+}
+
+export function listAuthorizationGranteeGroups(access?: AccessScope, options: AuthorizationGranteeGroupOptionListOptions = {}): GroupOptionSummary[] {
+  void access
+  const granteeSystemAccountId = optionalString(options.granteeSystemAccountId)
+  if (!granteeSystemAccountId) return []
+  const grantee = findSystemAccountById(granteeSystemAccountId)
+  if (!grantee || grantee.status !== 'active') return []
+  const filter = buildAuthorizationGranteeGroupFilter(options, granteeSystemAccountId)
+  const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
+  const rows = getDatabase()
+    .prepare(`
+      SELECT ${authorizationGranteeGroupSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+      FROM groups
+      ${filter.clause}
+      ${options.preferDefault === false ? 'ORDER BY groups.updated_at DESC, groups.id DESC' : 'ORDER BY groups.is_default DESC, groups.updated_at DESC, groups.id DESC'}
+      ${limitClause.clause}
+    `)
+    .all(...filter.params, ...limitClause.params) as unknown as GroupListRow[]
+  return buildGroupOptionSummaries(rows, access).map((group) => ({
+    ...group,
+    permissions: authorizedPermissions()
+  }))
+}
+
+function authorizationGranteeGroupSelectColumns(): string {
+  return [
+    'id',
+    'system_account_id',
+    'name',
+    'provider_code',
+    'description',
+    'enabled',
+    'is_default',
+    'group_type',
+    'scheduling_policy_json',
+    'created_at',
+    'updated_at'
+  ].map((column) => `groups.${column}`).join(', ')
+}
+
 function buildSystemAccountPrincipalFilter(options: AuthorizationPrincipalOptionListOptions): { clause: string; params: string[] } {
   return buildPrincipalFilter(options, buildSystemAccountPrincipalKeywordFilter)
 }
 
 function buildSystemTeamPrincipalFilter(options: AuthorizationPrincipalOptionListOptions): { clause: string; params: string[] } {
   return buildPrincipalFilter(options, buildSystemTeamPrincipalKeywordFilter)
+}
+
+function buildAuthorizationGranteeGroupFilter(options: AuthorizationGranteeGroupOptionListOptions, granteeSystemAccountId: string): { clause: string; params: string[] } {
+  const clauses = ['groups.system_account_id = ?', 'groups.enabled = 1']
+  const params = [granteeSystemAccountId]
+  const ids = normalizeTextList(options.ids)
+  if (ids.length) {
+    clauses.push(`groups.id IN (${sqlPlaceholders(ids.length)})`)
+    params.push(...ids)
+  }
+  const providerCode = optionalString(options.providerCode)
+  if (providerCode) {
+    clauses.push('groups.provider_code COLLATE NOCASE = ?')
+    params.push(providerCode)
+  }
+  const keyword = optionalString(options.keyword)
+  if (keyword) {
+    const prefix = `${escapeLikePrefix(keyword)}%`
+    clauses.push(`(
+      groups.name COLLATE NOCASE = ?
+      OR groups.name LIKE ? ESCAPE '\\'
+    )`)
+    params.push(keyword, prefix)
+  }
+  return {
+    clause: `WHERE ${clauses.join(' AND ')}`,
+    params
+  }
 }
 
 function buildPrincipalFilter(
@@ -3352,6 +3843,10 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
   const expiresAt = optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at)
   validateResourceAuthorizationExpiresAt(resourceType, resourceId, expiresAt, Date.parse(now))
   const actor = currentSystemAccountId(access)
+  const targetGroupId = optionalString(input.targetGroupId ?? input.target_group_id)
+  if (targetGroupId && (resourceType !== 'account' || granteeType !== 'system_account')) {
+    throw new Error('只有授权 AI 账户给个人时可以指定目标分组')
+  }
   let createdGrantId: string | undefined
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -3371,7 +3866,7 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
       if (granteeId === ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
       const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
       createdGrantId = grant.id
-      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {

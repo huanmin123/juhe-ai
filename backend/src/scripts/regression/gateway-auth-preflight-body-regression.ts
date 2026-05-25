@@ -116,6 +116,12 @@ try {
     assert.equal(rawBodyMiddlewareHitCount, 0, '无效 API Key 不应进入 raw body 读取链路')
     assert.equal(fakeChild.sentOperationCount, 1, '无效 API Key 只需要一次运行配置读取')
 
+    const disabledImage = await postJson(`${baseUrl}/v1/images/generations`, body, apiKey.key)
+    assert.equal(disabledImage.status, 403, '未开启图像生成权限的 API Key 应在读取 body 前返回 403')
+    assert.match(disabledImage.text, /当前用户图像生成被禁用了，请联系管理员开启/, '图像生成权限禁用应返回中文错误')
+    assert.equal(rawBodyMiddlewareHitCount, 0, '路径可识别的图像请求被禁用时不应读取 raw body')
+    assert.equal(fakeChild.sentOperationCount, 2, '图像权限早拒绝只需要复用一次运行配置读取')
+
     const valid = await postJson(`${baseUrl}/v1/responses`, body, apiKey.key)
     assert.equal(valid.status, 200, '合法 API Key 应继续进入网关 body 读取链路')
     assert.equal(rawBodyMiddlewareHitCount, 1, '合法请求应读取一次 raw body')

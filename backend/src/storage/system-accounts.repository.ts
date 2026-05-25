@@ -56,7 +56,7 @@ export interface SessionWithAccount {
 export function listSystemAccounts(): SystemAccountSummary[] {
   const rows = getDatabase()
     .prepare(`
-      SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
+      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
       FROM system_accounts
       ORDER BY created_at ASC, id ASC
     `)
@@ -69,7 +69,7 @@ export function listSystemAccountsPage(options: SystemAccountListOptions = {}): 
   const keywordFilter = buildSystemAccountListKeywordFilter(normalized.keyword)
   const rows = getDatabase()
     .prepare(`
-      SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
+      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
       FROM system_accounts
       ${keywordFilter.clause}
       ORDER BY updated_at DESC, id DESC
@@ -183,7 +183,7 @@ function escapeLikePrefix(value: string): string {
 export function findSystemAccountById(id: string): SystemAccountSummary | undefined {
   const row = getDatabase()
     .prepare(`
-      SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
+      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
       FROM system_accounts
       WHERE id = ?
     `)
@@ -193,7 +193,7 @@ export function findSystemAccountById(id: string): SystemAccountSummary | undefi
 
 export function findSystemAccountByUsername(username: string): (SystemAccountSummary & { passwordHash: string }) | undefined {
   const row = getDatabase().prepare(`
-    SELECT id, username, display_name, description, role, status, password_hash, must_change_password, last_login_at, created_at, updated_at
+    SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
     FROM system_accounts
     WHERE lower(username) = lower(?)
   `).get(username) as unknown as SystemAccountRow | undefined
@@ -234,6 +234,7 @@ export function createSystemAccount(input: {
   role?: SystemAccountRole
   status?: SystemAccountStatus
   mustChangePassword?: boolean
+  imageGenerationEnabled?: boolean
 }): SystemAccountSummary {
   const now = nowIso()
   const id = newId('sysacc')
@@ -250,6 +251,7 @@ export function createSystemAccount(input: {
     role: input.role ?? 'user',
     status: input.status ?? 'active',
     mustChangePassword: input.mustChangePassword ?? true,
+    imageGenerationEnabled: input.imageGenerationEnabled ?? false,
     createdAt: now,
     updatedAt: now
   }
@@ -258,10 +260,10 @@ export function createSystemAccount(input: {
     database
       .prepare(`
         INSERT INTO system_accounts (
-          id, username, display_name, description, role, status, password_hash, must_change_password, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, hashPassword(input.password), summary.mustChangePassword ? 1 : 0, now, now)
+      .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, hashPassword(input.password), summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now)
     ensureDefaultOpenAIGroupForSystemAccount(summary.id, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -278,6 +280,7 @@ export function updateSystemAccount(id: string, input: {
   role?: SystemAccountRole
   status?: SystemAccountStatus
   mustChangePassword?: boolean
+  imageGenerationEnabled?: boolean
   password?: string
 }): SystemAccountSummary | undefined {
   const current = findSystemAccountById(id)
@@ -291,7 +294,8 @@ export function updateSystemAccount(id: string, input: {
     description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
     role: input.role ?? current.role,
     status: input.status ?? current.status,
-    mustChangePassword: input.mustChangePassword ?? current.mustChangePassword
+    mustChangePassword: input.mustChangePassword ?? current.mustChangePassword,
+    imageGenerationEnabled: input.imageGenerationEnabled ?? current.imageGenerationEnabled
   }
   const now = nowIso()
   ensureSystemAccountDisplayNameUnique(next.displayName, id)
@@ -299,23 +303,23 @@ export function updateSystemAccount(id: string, input: {
     getDatabase()
       .prepare(`
         UPDATE system_accounts
-        SET display_name = ?, description = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, updated_at = ?
+        SET display_name = ?, description = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, image_generation_enabled = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.displayName, next.description ?? null, next.role, next.status, hashPassword(input.password), next.mustChangePassword ? 1 : 0, now, id)
+      .run(next.displayName, next.description ?? null, next.role, next.status, hashPassword(input.password), next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, now, id)
   } else {
     getDatabase()
       .prepare(`
         UPDATE system_accounts
-        SET display_name = ?, description = ?, role = ?, status = ?, must_change_password = ?, updated_at = ?
+        SET display_name = ?, description = ?, role = ?, status = ?, must_change_password = ?, image_generation_enabled = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, now, id)
+      .run(next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, now, id)
   }
   invalidateSystemAccountLookupCache(id)
-  if (next.status !== current.status) {
+  if (next.status !== current.status || next.imageGenerationEnabled !== current.imageGenerationEnabled) {
     clearGatewayApiKeyValidationCache()
-    notifyGatewayRuntimeCacheInvalidation('system_account_status_changed')
+    notifyGatewayRuntimeCacheInvalidation(next.status !== current.status ? 'system_account_status_changed' : 'system_account_image_generation_changed')
   }
   return { ...next, updatedAt: now }
 }
@@ -356,6 +360,7 @@ export function findSessionByToken(token: string): (SessionWithAccount & { token
         sa.status,
         sa.password_hash,
         sa.must_change_password,
+        sa.image_generation_enabled,
         sa.last_login_at,
         sa.created_at,
         sa.updated_at

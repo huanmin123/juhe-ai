@@ -26,12 +26,6 @@
         :options="resultOptions"
         @update:value="handleResultUpdate"
       />
-      <a-select
-        :value="trafficSource"
-        class="filter-select toolbar-select responsive-list-inline-filter"
-        :options="trafficSourceOptions"
-        @update:value="handleTrafficSourceUpdate"
-      />
     </template>
     <template #advanced-filters>
       <a-form layout="vertical" class="advanced-filter-form">
@@ -53,6 +47,12 @@
         </a-form-item>
         <a-form-item label="状态码">
           <a-input :value="statusCode" allow-clear placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
+        </a-form-item>
+        <a-form-item label="模型">
+          <a-input :value="model" allow-clear placeholder="完整模型名称" @update:value="handleModelUpdate" @press-enter="emit('search')" />
+        </a-form-item>
+        <a-form-item label="IP">
+          <a-input :value="clientIp" allow-clear placeholder="客户端 IP 前缀" @update:value="handleClientIpUpdate" @press-enter="emit('search')" />
         </a-form-item>
         <a-form-item label="来源">
           <a-select :value="trafficSource" :options="trafficSourceOptions" @update:value="handleTrafficSourceUpdate" />
@@ -116,6 +116,14 @@
         <span>状态码</span>
         <a-input :value="statusCode" allow-clear placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
       </label>
+      <label class="mobile-filter-field">
+        <span>模型</span>
+        <a-input :value="model" allow-clear placeholder="完整模型名称" @update:value="handleModelUpdate" @press-enter="emit('search')" />
+      </label>
+      <label class="mobile-filter-field">
+        <span>IP</span>
+        <a-input :value="clientIp" allow-clear placeholder="客户端 IP 前缀" @update:value="handleClientIpUpdate" @press-enter="emit('search')" />
+      </label>
       <label v-if="isManagementView" class="mobile-filter-field">
         <span>系统账户</span>
         <SystemPrincipalSelect
@@ -163,6 +171,7 @@ type DateRangeValue = Array<Dayjs | null | undefined> | null | undefined
 defineProps<{
   activeFilterCount: number
   advancedFilterCount: number
+  clientIp: string
   dateRange?: [Dayjs, Dayjs]
   groupId?: string
   groupOptions: GroupOptionSummary[]
@@ -170,6 +179,7 @@ defineProps<{
   groupSelection?: GroupSelection
   isManagementView: boolean
   keyword: string
+  model: string
   refreshLoading: boolean
   result: ResultFilter
   resultOptions: Array<FilterOption<ResultFilter>>
@@ -192,10 +202,12 @@ const emit = defineEmits<{
   (event: 'system-account-change'): void
   (event: 'system-account-dropdown', open: boolean): void
   (event: 'system-account-search', value: string): void
+  (event: 'update:clientIp', value: string): void
   (event: 'update:dateRange', value?: [Dayjs, Dayjs]): void
   (event: 'update:groupId', value: string | undefined): void
   (event: 'update:groupSelection', value?: GroupSelection): void
   (event: 'update:keyword', value: string): void
+  (event: 'update:model', value: string): void
   (event: 'update:result', value: ResultFilter): void
   (event: 'update:statusCode', value: string): void
   (event: 'update:systemAccountId', value: string): void
@@ -220,6 +232,30 @@ function handleStatusCodeUpdate(value: SelectValue) {
       ? value
       : ''
   emit('update:statusCode', nextValue)
+  if (!nextValue) {
+    emit('search')
+  }
+}
+
+function handleClientIpUpdate(value: SelectValue) {
+  const nextValue = typeof value === 'number'
+    ? String(value)
+    : typeof value === 'string'
+      ? value
+      : ''
+  emit('update:clientIp', nextValue)
+  if (!nextValue) {
+    emit('search')
+  }
+}
+
+function handleModelUpdate(value: SelectValue) {
+  const nextValue = typeof value === 'number'
+    ? String(value)
+    : typeof value === 'string'
+      ? value
+      : ''
+  emit('update:model', nextValue)
   if (!nextValue) {
     emit('search')
   }

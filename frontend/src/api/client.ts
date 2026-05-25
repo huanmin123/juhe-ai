@@ -78,6 +78,7 @@ import type {
   UsageRecordSummary,
   UsageRecordTrafficSource
 } from '@/types/domain'
+import { extractResponseErrorMessage, localizeTransportErrorMessage } from '@/shared/apiError'
 
 interface ApiResponse<T> {
   data: T
@@ -197,6 +198,7 @@ export interface UsageRecordListParams extends ListParams {
   page?: number
   pageSize?: number
   accountKeyword?: string
+  clientIp?: string
   result?: 'success' | 'failed' | 'all'
   statusCode?: number
   groupId?: string
@@ -320,6 +322,12 @@ interface AuthorizationPrincipalOptionsParams {
   ids?: string[]
   keyword?: string
   limit?: number
+}
+
+interface AuthorizationGranteeGroupOptionsParams extends AuthorizationPrincipalOptionsParams {
+  granteeSystemAccountId: string
+  providerCode?: string
+  preferDefault?: boolean
 }
 
 export interface AuthorizationUsageParams extends AuthorizationScopeParams {
@@ -474,10 +482,9 @@ async function readFetchErrorMessage(response: Response): Promise<string> {
   const text = await response.text()
   if (!text.trim()) return `请求失败：HTTP ${response.status}`
   try {
-    const json = JSON.parse(text) as { message?: string; data?: { message?: string } }
-    return json.message || json.data?.message || text
+    return extractResponseErrorMessage(JSON.parse(text) as unknown) ?? text
   } catch {
-    return text
+    return localizeTransportErrorMessage(text, `请求失败：HTTP ${response.status}`)
   }
 }
 
@@ -498,7 +505,8 @@ export const api = {
   },
   authorizationOptions: {
     granteeAccounts: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemAccountPrincipalSummary[]>(http.get('/authorization-options/grantee-accounts', { params: authorizationPrincipalOptionsParams(params) })),
-    granteeTeams: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemTeamPrincipalSummary[]>(http.get('/authorization-options/grantee-teams', { params: authorizationPrincipalOptionsParams(params) }))
+    granteeTeams: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemTeamPrincipalSummary[]>(http.get('/authorization-options/grantee-teams', { params: authorizationPrincipalOptionsParams(params) })),
+    granteeGroups: (params: AuthorizationGranteeGroupOptionsParams) => unwrap<GroupOptionSummary[]>(http.get('/authorization-options/grantee-groups', { params: authorizationGranteeGroupOptionsParams(params) }))
   },
   announcements: {
     publicList: (params?: AnnouncementListParams) => unwrap<AnnouncementSummary[]>(http.get('/announcements/public', { params })),
@@ -513,7 +521,8 @@ export const api = {
   },
   myAuthorizationOptions: {
     granteeAccounts: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemAccountPrincipalSummary[]>(http.get('/my-authorization-options/grantee-accounts', { params: authorizationPrincipalOptionsParams(params) })),
-    granteeTeams: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemTeamPrincipalSummary[]>(http.get('/my-authorization-options/grantee-teams', { params: authorizationPrincipalOptionsParams(params) }))
+    granteeTeams: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemTeamPrincipalSummary[]>(http.get('/my-authorization-options/grantee-teams', { params: authorizationPrincipalOptionsParams(params) })),
+    granteeGroups: (params: AuthorizationGranteeGroupOptionsParams) => unwrap<GroupOptionSummary[]>(http.get('/my-authorization-options/grantee-groups', { params: authorizationGranteeGroupOptionsParams(params) }))
   },
   providers: {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
@@ -584,6 +593,7 @@ export const api = {
       resourceId: string
       granteeType: 'system_account' | 'team'
       granteeId: string
+      targetGroupId?: string
       remark?: string
       expiresAt?: string
       limits?: RequestQuotaLimits
@@ -603,6 +613,7 @@ export const api = {
       resourceId: string
       granteeType: 'system_account' | 'team'
       granteeId: string
+      targetGroupId?: string
       remark?: string
       expiresAt?: string
       limits?: RequestQuotaLimits
@@ -825,6 +836,14 @@ function authorizationPrincipalOptionsParams(params?: AuthorizationPrincipalOpti
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.limit) output.limit = params.limit
   return Object.keys(output).length ? output : undefined
+}
+
+function authorizationGranteeGroupOptionsParams(params: AuthorizationGranteeGroupOptionsParams): Record<string, unknown> {
+  const output = authorizationPrincipalOptionsParams(params) ?? {}
+  output.granteeSystemAccountId = params.granteeSystemAccountId
+  if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
+  if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
+  return output
 }
 
 function systemAccountOptionsParams(params?: SystemAccountOptionsParams): Record<string, unknown> | undefined {

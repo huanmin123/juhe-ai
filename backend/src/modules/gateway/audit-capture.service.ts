@@ -176,6 +176,33 @@ export class AuditCaptureContext {
     })
   }
 
+  omitPayloadBodies(input: AddGatewayMetadataInput): void {
+    if (!this.enabled) return
+    let omittedPayloadCount = 0
+    let omittedBodyBytes = 0
+    for (const payload of this.payloads) {
+      if (payload.partType === 'gateway_metadata' || payload.body === undefined) {
+        continue
+      }
+      omittedPayloadCount += 1
+      omittedBodyBytes += payloadBodyByteLength(payload.body)
+      payload.body = undefined
+      payload.contentEncoding = undefined
+    }
+    if (omittedPayloadCount > 0) {
+      this.recalculateApproximateBytes()
+    }
+    this.addGatewayMetadata({
+      label: input.label,
+      metadata: {
+        ...input.metadata,
+        auditBodyPayloadsOmitted: true,
+        omittedPayloadCount,
+        omittedBodyBytes
+      }
+    })
+  }
+
   startAttempt(input: StartAttemptInput): string {
     if (!this.enabled) return ''
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
@@ -322,6 +349,10 @@ export class AuditCaptureContext {
     this.approximateBytes = nextApproximateBytes
     this.sequenceIndex += 1
   }
+
+  private recalculateApproximateBytes(): void {
+    this.approximateBytes = this.payloads.reduce((total, payload) => total + estimatePayloadBytes(payload), 0)
+  }
 }
 
 export function createAuditCapture(input: AuditCaptureContextInput): AuditCaptureContext {
@@ -375,9 +406,13 @@ function sampleBucketForTraceId(traceId: string): number {
 
 function estimatePayloadBytes(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): number {
   const body = payload.body
-  const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0
+  const bodyBytes = payloadBodyByteLength(body)
   const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
   return bodyBytes + headerBytes + 512
+}
+
+function payloadBodyByteLength(body: Buffer | string | undefined): number {
+  return Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0
 }
 
 function estimateHeadersBytes(headers: Record<string, string | string[]>): number {

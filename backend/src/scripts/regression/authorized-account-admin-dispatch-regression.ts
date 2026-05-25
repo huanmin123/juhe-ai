@@ -60,6 +60,9 @@ interface AccountSummary {
   boundGroupId?: string
   bindingSystemAccountId?: string
   ownerSystemAccountId?: string
+  sourceStatus?: string
+  sourceSchedulable?: boolean
+  schedulable?: boolean
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   localStatus?: string
@@ -99,6 +102,7 @@ interface SeedState {
   granteeCookie: string
   ownerAccountId: string
   ownerErrorAccountId: string
+  ownerPausedAccountId: string
   ownerId: string
   granteeGroupId: string
   granteeTargetAccountId: string
@@ -146,7 +150,68 @@ try {
   )
   assert.equal(locallyDisabled.status, 'disabled', '被授权用户应能在自己的分组内停用授权账户')
   assert.equal(locallyDisabled.localStatus, 'disabled', '授权账户停用应只写入本地绑定状态')
+  assert.equal(locallyDisabled.sourceStatus, 'active', '授权账户停用响应应保留归属账户来源状态')
   assert.equal(repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const }).find((account) => account.id === seed.ownerAccountId)?.status, 'active', '本地停用授权账户不应修改账户所有者原账户状态')
+  const granteeDisabledAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    '/__aisys__/api/my-accounts?page=1&pageSize=20',
+    seed.granteeCookie
+  )
+  const granteeDisabledAccount = granteeDisabledAccounts.items.find((account) => account.id === seed.ownerAccountId)
+  assert.equal(granteeDisabledAccount?.status, 'disabled', '被授权用户停用后重新拉取列表应显示停用')
+  assert.equal(granteeDisabledAccount?.localStatus, 'disabled', '被授权用户列表应保留授权账户本地停用状态')
+  assert.equal(granteeDisabledAccount?.sourceStatus, 'active', '被授权用户列表应把归属账户状态隔离为来源状态')
+  assert.equal(granteeDisabledAccount?.schedulable, false, '本地停用后授权账户在被授权用户视角不可调度')
+  const adminGranteeDisabledAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    `/__aisys__/api/accounts?systemAccountId=${seed.granteeId}&page=1&pageSize=20`,
+    seed.adminCookie
+  )
+  const adminGranteeDisabledAccount = adminGranteeDisabledAccounts.items.find((account) => account.id === seed.ownerAccountId)
+  assert.equal(adminGranteeDisabledAccount?.status, 'disabled', '管理员查看被授权用户作用域时应显示授权账户本地停用')
+  assert.equal(adminGranteeDisabledAccount?.localStatus, 'disabled', '管理员查看被授权用户作用域时应带出授权账户本地状态')
+  const adminGranteeDisabledStatusFilteredAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    `/__aisys__/api/accounts?systemAccountId=${seed.granteeId}&page=1&pageSize=20&status=disabled`,
+    seed.adminCookie
+  )
+  assert.equal(adminGranteeDisabledStatusFilteredAccounts.items.some((account) => account.id === seed.ownerAccountId), true, '管理员按停用状态筛选被授权用户作用域时应能看到本地停用的授权账户')
+  const granteeDisabledStatusFilteredAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    '/__aisys__/api/my-accounts?page=1&pageSize=20&status=disabled',
+    seed.granteeCookie
+  )
+  assert.equal(granteeDisabledStatusFilteredAccounts.items.some((account) => account.id === seed.ownerAccountId), true, '被授权用户按停用状态筛选时应能看到本地停用的授权账户')
+  const granteeActiveStatusFilteredAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    '/__aisys__/api/my-accounts?page=1&pageSize=20&status=active',
+    seed.granteeCookie
+  )
+  assert.equal(granteeActiveStatusFilteredAccounts.items.some((account) => account.id === seed.ownerAccountId), false, '被授权用户按正常状态筛选时不应继续看到本地停用的授权账户')
+  const granteeSchedulableEnabledAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    '/__aisys__/api/my-accounts?page=1&pageSize=20&schedulable=enabled',
+    seed.granteeCookie
+  )
+  assert.equal(granteeSchedulableEnabledAccounts.items.some((account) => account.id === seed.ownerAccountId), false, '被授权用户按可调度筛选时不应看到本地停用的授权账户')
+  const granteeSchedulableDisabledAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    '/__aisys__/api/my-accounts?page=1&pageSize=20&schedulable=disabled',
+    seed.granteeCookie
+  )
+  assert.equal(granteeSchedulableDisabledAccounts.items.some((account) => account.id === seed.ownerAccountId), true, '被授权用户按不可调度筛选时应看到本地停用的授权账户')
+  const granteeDisabledOptions = await getEnvelope<AccountSummary[]>(
+    baseUrl,
+    '/__aisys__/api/my-accounts/options?status=disabled&limit=20',
+    seed.granteeCookie
+  )
+  assert.equal(granteeDisabledOptions.some((account) => account.id === seed.ownerAccountId && account.status === 'disabled' && account.sourceStatus === 'active'), true, '账户选项应按授权本地状态筛选和展示')
+  const ownerAfterGranteeDisabledAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    `/__aisys__/api/accounts?systemAccountId=${seed.ownerId}&page=1&pageSize=20`,
+    seed.adminCookie
+  )
+  assert.equal(ownerAfterGranteeDisabledAccounts.items.find((account) => account.id === seed.ownerAccountId)?.status, 'active', '授权账户本地停用不应影响所有者列表状态')
   const locallyEnabled = await patchEnvelope<AccountSummary>(
     baseUrl,
     `/__aisys__/api/my-accounts/${seed.ownerAccountId}/authorized-dispatch`,
@@ -197,6 +262,43 @@ try {
   assert.equal(granteeLimitedTest.modelsUrl, undefined, '被授权用户测试结果不应暴露模型 URL 诊断')
   assert.equal(granteeLimitedTest.proxyUrl, undefined, '被授权用户测试结果不应暴露代理诊断')
   assert.equal(granteeLimitedTest.tokenRefreshed, undefined, '被授权用户测试结果不应暴露所有者 token 刷新诊断')
+
+  const ownerPausedByOwner = repositories.updateAccount(seed.ownerPausedAccountId, { status: 'disabled' }, { systemAccountId: seed.ownerId, role: 'user' as const })
+  assert.equal(ownerPausedByOwner?.status, 'disabled', '归属人应能停用自己的主账户')
+  assert.equal(ownerPausedByOwner?.schedulable, false, '归属人停用主账户后主账户自身不可调度')
+  const ownerPausedAuthorizedAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    '/__aisys__/api/my-accounts?page=1&pageSize=20',
+    seed.granteeCookie
+  )
+  const ownerPausedAuthorizedAccount = ownerPausedAuthorizedAccounts.items.find((account) => account.id === seed.ownerPausedAccountId)
+  assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '归属人停用主账户不应改变被授权账户本地状态')
+  assert.equal(ownerPausedAuthorizedAccount?.sourceStatus, 'disabled', '归属人停用主账户只应作为授权来源状态展示')
+  assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, false, '归属人停用主账户只应作为授权来源调度状态展示')
+  assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '归属人停用主账户不应阻断被授权账户本地调度')
+  const ownerPausedEnabledAccounts = await getEnvelope<AccountListResult>(
+    baseUrl,
+    '/__aisys__/api/my-accounts?page=1&pageSize=20&schedulable=enabled',
+    seed.granteeCookie
+  )
+  assert.equal(ownerPausedEnabledAccounts.items.some((account) => account.id === seed.ownerPausedAccountId), true, '归属人停用主账户后授权副本仍应出现在可调度筛选中')
+  const ownerPausedDispatch = await patchEnvelope<AccountSummary>(
+    baseUrl,
+    `/__aisys__/api/my-accounts/${seed.ownerPausedAccountId}/authorized-dispatch`,
+    seed.granteeCookie,
+    { fallbackEnabled: true }
+  )
+  assert.equal(ownerPausedDispatch.status, 'active', '归属人停用主账户后本地调度操作仍应返回授权副本状态')
+  assert.equal(ownerPausedDispatch.fallbackEnabled, true, '归属人停用主账户不应阻断被授权用户开启本地备用')
+  const ownerPausedGatewayAccounts = repositories.listOpenAIAccountsForGroup(seed.granteeGroupId, seed.granteeId)
+  assert.equal(ownerPausedGatewayAccounts.some((account) => account.id === seed.ownerPausedAccountId && account.accountAccessType === 'account_authorized'), true, '网关调度应保留归属人停用后的授权账户副本')
+  const ownerPausedTest = await postEnvelope<AccountTestResult>(
+    baseUrl,
+    `/__aisys__/api/my-accounts/${seed.ownerPausedAccountId}/test`,
+    seed.granteeCookie,
+    { model: 'gpt-5.5', prompt: 'hi' }
+  )
+  assert.equal(ownerPausedTest.success, true, `归属人停用主账户后被授权用户仍应能测试授权副本：${ownerPausedTest.message}`)
 
   const granteeLimitedErrorTest = await postEnvelope<AccountTestResult>(
     baseUrl,
@@ -323,6 +425,12 @@ function seedData(mockBaseUrl: string): SeedState {
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch-error', base_url: mockBaseUrl }
   }, ownerAccess)
+  const ownerPausedAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '管理员代操作归属人停用账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-admin-authorized-dispatch-owner-disabled', base_url: mockBaseUrl }
+  }, ownerAccess)
   const granteeTargetAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '管理员代操作迁移目标账户',
@@ -346,18 +454,27 @@ function seedData(mockBaseUrl: string): SeedState {
     granteeId: grantee.id,
     remark: '管理员代操作调度错误脱敏回归'
   }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: ownerPausedAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '管理员代操作归属人停用隔离回归'
+  }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '管理员代操作被授权分组',
     providerCode: 'openai'
   }, granteeAccess)
   assert(repositories.setAccountGroup(ownerAccount.id, granteeGroup.id, granteeAccess), '授权账户绑定到被授权用户分组失败')
   assert(repositories.setAccountGroup(ownerErrorAccount.id, granteeGroup.id, granteeAccess), '错误脱敏授权账户绑定到被授权用户分组失败')
+  assert(repositories.setAccountGroup(ownerPausedAccount.id, granteeGroup.id, granteeAccess), '归属人停用隔离授权账户绑定到被授权用户分组失败')
   assert(repositories.setAccountGroup(granteeTargetAccount.id, granteeGroup.id, granteeAccess), '迁移目标账户绑定到被授权用户分组失败')
   return {
     adminCookie: sessionCookie(admin.id),
     granteeCookie: sessionCookie(grantee.id),
     ownerAccountId: ownerAccount.id,
     ownerErrorAccountId: ownerErrorAccount.id,
+    ownerPausedAccountId: ownerPausedAccount.id,
     ownerId: owner.id,
     granteeGroupId: granteeGroup.id,
     granteeTargetAccountId: granteeTargetAccount.id,

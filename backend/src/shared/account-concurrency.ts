@@ -1,12 +1,17 @@
 const currentConcurrencyByAccountId = new Map<string, number>()
 const inFlightSlotsByAccountId = new Map<string, Map<number, AccountInFlightSlot>>()
-const releaseListeners = new Set<(accountId: string) => void>()
+const releaseListeners = new Set<(event: AccountConcurrencyReleaseEvent) => void>()
 let nextSlotId = 1
+
+export type AccountConcurrencyLane = 'text' | 'image'
 
 export interface AccountConcurrencySlot {
   acquired: boolean
   current: number
   limit: number
+  lane: AccountConcurrencyLane
+  laneCurrent: number
+  laneLimit: number
   release: () => void
   markFirstOutput: () => void
 }
@@ -15,6 +20,7 @@ interface AccountInFlightSlot {
   slotId: number
   startedAtMs: number
   firstOutputAtMs?: number
+  lane: AccountConcurrencyLane
 }
 
 export interface AccountInFlightStats {
@@ -24,14 +30,34 @@ export interface AccountInFlightStats {
   oldestInFlightMs: number
 }
 
-export function tryAcquireAccountConcurrency(accountId: string, concurrencyLimit: number): AccountConcurrencySlot {
+export interface AccountConcurrencyAcquireOptions {
+  lane?: AccountConcurrencyLane
+  laneLimit?: number
+}
+
+export interface AccountConcurrencyReleaseEvent {
+  accountId: string
+  lane: AccountConcurrencyLane
+}
+
+export function tryAcquireAccountConcurrency(
+  accountId: string,
+  concurrencyLimit: number,
+  options: AccountConcurrencyAcquireOptions = {}
+): AccountConcurrencySlot {
   const limit = normalizeConcurrencyLimit(concurrencyLimit)
+  const lane = normalizeConcurrencyLane(options.lane)
+  const laneLimit = normalizeLaneLimit(options.laneLimit, limit, lane)
   const current = getAccountCurrentConcurrency(accountId)
-  if (current >= limit) {
+  const laneCurrent = getAccountCurrentConcurrency(accountId, lane)
+  if (current >= limit || laneCurrent >= laneLimit) {
     return {
       acquired: false,
       current,
       limit,
+      lane,
+      laneCurrent,
+      laneLimit,
       release: noop,
       markFirstOutput: noop
     }
@@ -41,13 +67,16 @@ export function tryAcquireAccountConcurrency(accountId: string, concurrencyLimit
   const slotId = nextSlotId
   nextSlotId += 1
   const accountSlots = inFlightSlotsByAccountId.get(accountId) ?? new Map<number, AccountInFlightSlot>()
-  accountSlots.set(slotId, { slotId, startedAtMs: Date.now() })
+  accountSlots.set(slotId, { slotId, startedAtMs: Date.now(), lane })
   inFlightSlotsByAccountId.set(accountId, accountSlots)
   let released = false
   return {
     acquired: true,
     current: current + 1,
     limit,
+    lane,
+    laneCurrent: laneCurrent + 1,
+    laneLimit,
     markFirstOutput: () => markAccountConcurrencyFirstOutput(accountId, slotId),
     release: () => {
       if (released) return
@@ -57,14 +86,25 @@ export function tryAcquireAccountConcurrency(accountId: string, concurrencyLimit
   }
 }
 
-export function getAccountCurrentConcurrency(accountId: string): number {
+export function getAccountCurrentConcurrency(accountId: string, lane?: AccountConcurrencyLane): number {
+  if (lane) {
+    const slots = inFlightSlotsByAccountId.get(accountId)
+    if (!slots) return 0
+    let count = 0
+    for (const slot of slots.values()) {
+      if (slot.lane === lane) {
+        count += 1
+      }
+    }
+    return count
+  }
   return Math.max(0, Math.trunc(currentConcurrencyByAccountId.get(accountId) ?? 0))
 }
 
-export function loadAccountCurrentConcurrencyByIds(accountIds: string[]): Map<string, number> {
+export function loadAccountCurrentConcurrencyByIds(accountIds: string[], lane?: AccountConcurrencyLane): Map<string, number> {
   const result = new Map<string, number>()
   for (const accountId of new Set(accountIds.filter(Boolean))) {
-    result.set(accountId, getAccountCurrentConcurrency(accountId))
+    result.set(accountId, getAccountCurrentConcurrency(accountId, lane))
   }
   return result
 }
@@ -104,7 +144,7 @@ export function loadAccountInFlightStatsByIds(accountIds: string[], input: {
   return result
 }
 
-export function subscribeAccountConcurrencyRelease(listener: (accountId: string) => void): () => void {
+export function subscribeAccountConcurrencyRelease(listener: (event: AccountConcurrencyReleaseEvent) => void): () => void {
   releaseListeners.add(listener)
   return () => {
     releaseListeners.delete(listener)
@@ -145,7 +185,9 @@ function markAccountConcurrencyFirstOutput(accountId: string, slotId: number): v
 
 function releaseAccountConcurrency(accountId: string, slotId: number): void {
   const slots = inFlightSlotsByAccountId.get(accountId)
+  let releasedLane: AccountConcurrencyLane = 'text'
   if (slots) {
+    releasedLane = slots.get(slotId)?.lane ?? releasedLane
     slots.delete(slotId)
     if (slots.size === 0) {
       inFlightSlotsByAccountId.delete(accountId)
@@ -157,13 +199,13 @@ function releaseAccountConcurrency(accountId: string, slotId: number): void {
   } else {
     currentConcurrencyByAccountId.set(accountId, current - 1)
   }
-  notifyAccountConcurrencyReleased(accountId)
+  notifyAccountConcurrencyReleased({ accountId, lane: releasedLane })
 }
 
-function notifyAccountConcurrencyReleased(accountId: string): void {
+function notifyAccountConcurrencyReleased(event: AccountConcurrencyReleaseEvent): void {
   for (const listener of releaseListeners) {
     try {
-      listener(accountId)
+      listener(event)
     } catch {
       // Release must never fail because a scheduler observer failed.
     }
@@ -172,6 +214,21 @@ function notifyAccountConcurrencyReleased(accountId: string): void {
 
 function normalizeConcurrencyLimit(value: number): number {
   return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 1
+}
+
+function normalizeConcurrencyLane(value: unknown): AccountConcurrencyLane {
+  return value === 'image' ? 'image' : 'text'
+}
+
+function normalizeLaneLimit(value: unknown, concurrencyLimit: number, lane: AccountConcurrencyLane): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.min(concurrencyLimit, Math.max(1, Math.trunc(numeric)))
+  }
+  if (lane === 'image' && concurrencyLimit > 1) {
+    return concurrencyLimit - 1
+  }
+  return concurrencyLimit
 }
 
 function normalizePositiveDuration(value: number, fallback: number): number {

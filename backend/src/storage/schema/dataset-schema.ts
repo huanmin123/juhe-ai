@@ -6,47 +6,6 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     PRAGMA journal_mode = WAL;
 
-    CREATE TABLE IF NOT EXISTS usage_records (
-          id TEXT PRIMARY KEY,
-          system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
-          trace_id TEXT NOT NULL,
-          traffic_source TEXT NOT NULL DEFAULT 'gateway',
-          client_ip TEXT,
-          api_key_id TEXT,
-          group_id TEXT,
-          account_id TEXT,
-          endpoint TEXT,
-          provider_code TEXT,
-          model TEXT,
-          stream INTEGER NOT NULL DEFAULT 0,
-          status_code INTEGER,
-          success INTEGER NOT NULL DEFAULT 0,
-          first_token_ms INTEGER,
-          duration_ms INTEGER,
-          input_tokens INTEGER,
-          output_tokens INTEGER,
-          cache_read_tokens INTEGER,
-          cache_read_cost_usd REAL,
-          input_image_tokens INTEGER,
-          output_image_tokens INTEGER,
-          cost_usd REAL,
-          error_code TEXT,
-          error_message TEXT,
-          request_snapshot_json TEXT,
-          response_snapshot_json TEXT,
-          account_owner_system_account_id TEXT,
-          group_owner_system_account_id TEXT,
-          account_access_type TEXT,
-          group_access_type TEXT,
-          account_authorization_id TEXT,
-          account_authorization_source_type TEXT,
-          account_authorization_source_team_id TEXT,
-          group_authorization_id TEXT,
-          group_authorization_source_type TEXT,
-          group_authorization_source_team_id TEXT,
-          created_at TEXT NOT NULL
-        );
-
     CREATE TABLE IF NOT EXISTS model_check_runs (
           id TEXT PRIMARY KEY,
           system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
@@ -366,48 +325,6 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           updated_at TEXT NOT NULL
         );
 
-    CREATE INDEX IF NOT EXISTS idx_usage_records_created_at ON usage_records(created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_account_owner ON usage_records(account_owner_system_account_id, account_id, created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_group_owner ON usage_records(group_owner_system_account_id, group_id, created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_group_real_usage ON usage_records(group_id, created_at, api_key_id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_group_created_sort ON usage_records(group_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_group_created_sort ON usage_records(system_account_id, group_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_account_authorization ON usage_records(account_authorization_id, created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_group_authorization ON usage_records(group_authorization_id, created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_first_token_sort ON usage_records(first_token_ms, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_duration_sort ON usage_records(duration_ms, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_cost_sort ON usage_records(cost_usd, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_first_token_sort ON usage_records(system_account_id, first_token_ms, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_duration_sort ON usage_records(system_account_id, duration_ms, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_cost_sort ON usage_records(system_account_id, cost_usd, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_api_key_created_sort ON usage_records(api_key_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_account_created_sort ON usage_records(account_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_model_created_sort ON usage_records(model, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_model_created_sort ON usage_records(system_account_id, model, created_at, id);
-
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_created ON model_check_runs(created_at DESC, id DESC);
 
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_created ON model_check_runs(system_account_id, created_at DESC, id DESC);
@@ -540,20 +457,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_usage_record_shards_bucket ON usage_record_shards(bucket_date, shard_id);
   `)
-  addColumnIfMissing(database, 'usage_records', 'traffic_source', "TEXT NOT NULL DEFAULT 'gateway'")
-  addColumnIfMissing(database, 'audit_logs', 'traffic_source', "TEXT NOT NULL DEFAULT 'gateway'")
-  addColumnIfMissing(database, 'account_record_cleanup_targets', 'authorization_ids_json', "TEXT NOT NULL DEFAULT '[]'")
-  addColumnIfMissing(database, 'account_record_cleanup_targets', 'team_scope_ids_json', "TEXT NOT NULL DEFAULT '[]'")
   database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_usage_records_traffic_source_created ON usage_records(traffic_source, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_traffic_source_created ON audit_logs(traffic_source, created_at, id);
   `)
-}
-
-function addColumnIfMissing(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
-  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
-  if (columns.some((column) => column.name === columnName)) {
-    return
-  }
-  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
 }

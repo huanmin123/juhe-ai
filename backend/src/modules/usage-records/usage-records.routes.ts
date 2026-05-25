@@ -65,6 +65,7 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
     sortBy,
     sortOrder,
     accountKeyword: optionalQueryText(query.accountKeyword ?? query.keyword ?? query.accountName),
+    clientIp: optionalQueryText(query.clientIp),
     result,
     statusCode: isHttpStatusCode(rawStatusCode) ? rawStatusCode : undefined,
     groupId: optionalQueryText(query.groupId),

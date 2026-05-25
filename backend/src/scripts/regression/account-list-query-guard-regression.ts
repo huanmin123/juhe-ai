@@ -18,10 +18,9 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, businessSchema] = await Promise.all([
+const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js'),
-  import('../../storage/schema/business-schema.js')
+  import('../../storage/repositories.js')
 ])
 
 try {
@@ -152,7 +151,6 @@ try {
   ]) {
     assertBusinessIndexExists(indexName)
   }
-  assertObsoleteAccountNotesIndexesDroppedBySchema()
   for (const indexName of [
     'idx_accounts_notes_lookup',
     'idx_accounts_system_account_notes_lookup'
@@ -196,15 +194,6 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
-}
-
-function assertObsoleteAccountNotesIndexesDroppedBySchema(): void {
-  const database = databaseModule.getDatabase()
-  database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_accounts_notes_lookup ON accounts(notes COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_system_account_notes_lookup ON accounts(system_account_id, notes COLLATE NOCASE, id);
-  `)
-  businessSchema.applyBusinessSchema(database)
 }
 
 function assertBusinessIndexMissing(indexName: string): void {

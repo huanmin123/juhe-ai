@@ -35,7 +35,7 @@ export function finalizeGatewayAuthFailureAudit(
   res: Response,
   auditCapture: AuditCaptureContext
 ): void {
-  const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少 Bearer Token'
+  const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少访问令牌'
   const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error')
   auditCapture.finalize({
     outcome: 'gateway_failed',

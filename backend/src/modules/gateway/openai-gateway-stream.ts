@@ -3,7 +3,10 @@ import type { Response } from 'express'
 import { getRequestLogger } from '../../shared/request-context.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import { emptyUsage, type ParsedUsage } from './openai-gateway-usage.js'
-import { OpenAIStreamInspector } from './openai-gateway-stream-inspection.js'
+import {
+  OpenAIStreamInspector,
+  type OpenAIStreamInspection
+} from './openai-gateway-stream-inspection.js'
 import {
   isUpstreamRequestAbortedError,
   readStreamChunkWithAbort,
@@ -33,11 +36,27 @@ export interface StreamPipeResult {
   firstTokenMs?: number
   usage: ParsedUsage
   outputReceived: boolean
+  imageOutputReceived: boolean
   estimatedOutputTokens?: number
   responseBodyText?: string
   auditResponseBody?: Buffer
   auditUpstreamBody?: Buffer
   streamIntercept?: StreamInterceptDecision
+  bodyOmission?: StreamBodyOmissionSummary
+}
+
+export interface StreamBodyOmissionSummary {
+  omitted: true
+  reason: 'image_stream_payload'
+  message: string
+  totalUpstreamBytes: number
+  totalResponseBytes: number
+  sseEventCount: number
+  lastSseEventType?: string
+  recentSseEventTypes: string[]
+  imageOutputReceived: boolean
+  terminalReceived: boolean
+  failedReceived: boolean
 }
 
 class StreamCompletedAfterTerminalSignal extends Error {
@@ -96,10 +115,38 @@ export async function pipeUpstreamStream(
   let lastBackpressureLogAt = 0
   let clientClosed = false
   let terminalEventWritten = false
+  let bodyCaptureOmitted = false
   const closeIterator = () => {
     clientClosed = true
     void closeAsyncIterator(iterator)
   }
+  const omitBodyCaptureIfImageStream = (
+    inspection: ReturnType<OpenAIStreamInspector['snapshot']>,
+    input: { eofPendingFlush?: boolean } = {}
+  ) => {
+    if (!inspection.imageOutputReceived || bodyCaptureOmitted) {
+      return
+    }
+    bodyCaptureOmitted = true
+    upstreamCapture.clear()
+    responseCapture.clear()
+    diagnosticCapture.clear()
+    streamLogger.info({
+      event: 'gateway_stream_body_capture_omitted',
+      reason: 'image_stream_payload',
+      elapsedMs: Date.now() - startedAt,
+      chunkIndex,
+      totalUpstreamBytes,
+      totalResponseBytes,
+      sseEventCount: inspection.eventCount,
+      lastSseEventType: inspection.lastEventType,
+      recentSseEventTypes: inspection.recentEventTypes,
+      eofPendingFlush: input.eofPendingFlush
+    }, '网关识别到图像流输出，已省略流式响应正文捕获，仅保留元信息')
+  }
+  const bodyOmissionFor = (inspection: OpenAIStreamInspection) => bodyCaptureOmitted
+    ? streamBodyOmissionSummary(inspection, totalUpstreamBytes, totalResponseBytes)
+    : undefined
   res.once('close', closeIterator)
 
   streamLogger.info({
@@ -139,21 +186,29 @@ export async function pipeUpstreamStream(
         firstTokenMs = lastUpstreamActivityAt - startedAt
         options.onFirstOutput?.()
       }
-      upstreamCapture.push(buffer)
+      if (!bodyCaptureOmitted) {
+        upstreamCapture.push(buffer)
+      }
       const interceptResult = interceptor.pushChunk(buffer)
       if (interceptResult.parserSkipped && !interceptParserSkipLogged) {
         interceptParserSkipLogged = true
-        streamLogger.warn({
+        streamLogger.info({
           event: 'gateway_stream_intercept_parser_skipped'
-        }, '网关流式兜底解析超过上限，已停止改写判断并继续原样转发')
+        }, '网关流式事件过大，兜底拦截停止解析并继续原样转发')
       }
       let latestInspection = inspector.snapshot()
       let chunkSseEventCount = 0
       let chunkWriteMs = 0
+      let chunkCanEndAfterTerminal = false
       for (const outbound of interceptResult.chunks) {
-        responseCapture.push(outbound)
-        diagnosticCapture.push(outbound)
-        latestInspection = inspector.pushChunk(outbound)
+        if (!bodyCaptureOmitted) {
+          responseCapture.push(outbound)
+          diagnosticCapture.push(outbound)
+        }
+        latestInspection = inspector.pushChunk(outbound, {
+          lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
+        })
+        omitBodyCaptureIfImageStream(latestInspection)
         if (latestInspection.skipped && !parserSkipLogged) {
           parserSkipLogged = true
           streamLogger.warn({
@@ -163,7 +218,8 @@ export async function pipeUpstreamStream(
         }
         const outboundSseEventCount = latestInspection.eventCount - lastSseEventCount
         chunkSseEventCount += outboundSseEventCount
-        inspector.drainEventSummaries()
+        const eventSummaries = inspector.drainEventSummaries()
+        chunkCanEndAfterTerminal = chunkCanEndAfterTerminal || eventSummaries.some((summary) => summary.canEndStream)
         lastSseEventCount = latestInspection.eventCount
         if (latestInspection.skipped) {
           lastSseEventActivityAt = undefined
@@ -175,7 +231,7 @@ export async function pipeUpstreamStream(
         const writeMs = Date.now() - writeStartedAt
         chunkWriteMs += writeMs
         totalResponseBytes += outbound.length
-        if (latestInspection.terminalReceived && !latestInspection.failedReceived) {
+        if (latestInspection.terminalReceived && !latestInspection.failedReceived && chunkCanEndAfterTerminal) {
           terminalEventWritten = true
           throw new StreamCompletedAfterTerminalSignal()
         }
@@ -247,23 +303,29 @@ export async function pipeUpstreamStream(
           rewriteErrorCode: decision.rewriteErrorCode,
           outputSeen: decision.outputSeen
         }, '网关已拦截上游流式错误并改写为客户端可重试事件')
-        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens)
+        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, bodyOmissionFor(latestInspection))
       }
     }
 
     const eofInterceptResult = interceptor.flushPendingOnEof()
     if (eofInterceptResult.parserSkipped && !interceptParserSkipLogged) {
       interceptParserSkipLogged = true
-      streamLogger.warn({
+      streamLogger.info({
         event: 'gateway_stream_intercept_parser_skipped'
-      }, '网关流式兜底解析超过上限，已停止改写判断并继续原样转发')
+      }, '网关流式事件过大，兜底拦截停止解析并继续原样转发')
     }
     if (eofInterceptResult.chunks.length > 0 || eofInterceptResult.intercepted) {
       let latestInspection = inspector.snapshot()
+      let eofCanEndAfterTerminal = false
       for (const outbound of eofInterceptResult.chunks) {
-        responseCapture.push(outbound)
-        diagnosticCapture.push(outbound)
-        latestInspection = inspector.pushChunk(outbound)
+        if (!bodyCaptureOmitted) {
+          responseCapture.push(outbound)
+          diagnosticCapture.push(outbound)
+        }
+        latestInspection = inspector.pushChunk(outbound, {
+          lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
+        })
+        omitBodyCaptureIfImageStream(latestInspection, { eofPendingFlush: true })
         if (latestInspection.skipped && !parserSkipLogged) {
           parserSkipLogged = true
           streamLogger.warn({
@@ -272,7 +334,8 @@ export async function pipeUpstreamStream(
           }, '网关流式解析超过上限，已停止解析并继续转发')
         }
         const outboundSseEventCount = latestInspection.eventCount - lastSseEventCount
-        inspector.drainEventSummaries()
+        const eventSummaries = inspector.drainEventSummaries()
+        eofCanEndAfterTerminal = eofCanEndAfterTerminal || eventSummaries.some((summary) => summary.canEndStream)
         lastSseEventCount = latestInspection.eventCount
         if (latestInspection.skipped) {
           lastSseEventActivityAt = undefined
@@ -281,7 +344,7 @@ export async function pipeUpstreamStream(
         }
         const writeResult = await writeResponseChunk(res, outbound)
         totalResponseBytes += outbound.length
-        if (latestInspection.terminalReceived && !latestInspection.failedReceived) {
+        if (latestInspection.terminalReceived && !latestInspection.failedReceived && eofCanEndAfterTerminal) {
           terminalEventWritten = true
           endResponse(res)
           streamLogger.info({
@@ -298,7 +361,7 @@ export async function pipeUpstreamStream(
             outputEventCount: latestInspection.outputEventCount,
             eofPendingFlush: true
           }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
-          return streamResult(true, '已完成', undefined, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens)
+          return streamResult(true, '已完成', undefined, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, bodyOmissionFor(latestInspection))
         }
         const writeNow = Date.now()
         if (
@@ -337,13 +400,14 @@ export async function pipeUpstreamStream(
           outputSeen: decision.outputSeen,
           eofPendingFlush: true
         }, '网关已在上游 EOF 时拦截未收尾流式错误并改写为客户端可重试事件')
-        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens)
+        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, bodyOmissionFor(latestInspection))
       }
     }
   } catch (error) {
     await closeAsyncIterator(iterator)
     if (error instanceof StreamCompletedAfterTerminalSignal) {
       const inspection = inspector.finish()
+      omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
       endResponse(res)
       streamLogger.info({
         event: 'gateway_stream_finished_success_after_terminal',
@@ -358,10 +422,11 @@ export async function pipeUpstreamStream(
         outputReceived: inspection.outputReceived,
         outputEventCount: inspection.outputEventCount
       }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
-      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
     }
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
       const inspection = inspector.finish()
+      omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
       if (inspection.terminalReceived && !inspection.failedReceived) {
         endResponse(res)
         streamLogger.info({
@@ -381,7 +446,7 @@ export async function pipeUpstreamStream(
           skipReason: inspection.skipReason,
           errorMessage: error instanceof Error ? error.message : String(error)
         }, '客户端在 OpenAI 终止事件后关闭连接，按成功流式响应收尾')
-        return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+        return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
       }
       streamLogger.warn({
         event: 'gateway_stream_aborted',
@@ -406,6 +471,7 @@ export async function pipeUpstreamStream(
     }
     const rawMessage = error instanceof Error ? error.message : '上游流式响应已中断'
     const inspection = inspector.finish()
+    omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
     streamLogger.warn({
       event: 'gateway_stream_pipe_error',
       elapsedMs: Date.now() - startedAt,
@@ -430,7 +496,7 @@ export async function pipeUpstreamStream(
         elapsedMs: Date.now() - startedAt,
         rawMessage
       }, '网关已收到终止事件，忽略终止后的流式异常')
-      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
     }
     const message = inspection.errorMessage ?? rawMessage
     const errorCode = streamClientFailureCode(
@@ -446,8 +512,10 @@ export async function pipeUpstreamStream(
       }, '网关准备补发 response.failed')
       const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode)
       if (failureEvent) {
-        responseCapture.push(failureEvent)
-        diagnosticCapture.push(failureEvent)
+        if (!bodyCaptureOmitted) {
+          responseCapture.push(failureEvent)
+          diagnosticCapture.push(failureEvent)
+        }
         totalResponseBytes += failureEvent.length
         streamLogger.warn({
           event: 'gateway_stream_failure_event_written',
@@ -463,12 +531,13 @@ export async function pipeUpstreamStream(
       }
     }
     endResponse(res)
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
   } finally {
     res.off('close', closeIterator)
   }
 
   const inspection = inspector.finish()
+  omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
   if (inspection.skipped) {
     endResponse(res)
     const success = completed && !inspection.failedReceived
@@ -493,7 +562,7 @@ export async function pipeUpstreamStream(
       failedReceived: inspection.failedReceived,
       skipReason: inspection.skipReason
     }, '网关流式解析已跳过，按原始转发结果结束')
-    return streamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+    return streamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
   }
   if (!inspection.terminalReceived) {
     const message = '上游流在 OpenAI 终止事件前结束'
@@ -515,8 +584,10 @@ export async function pipeUpstreamStream(
     }, '上游 EOF 前未收到 OpenAI 终止事件')
     const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode)
     if (failureEvent) {
-      responseCapture.push(failureEvent)
-      diagnosticCapture.push(failureEvent)
+      if (!bodyCaptureOmitted) {
+        responseCapture.push(failureEvent)
+        diagnosticCapture.push(failureEvent)
+      }
       totalResponseBytes += failureEvent.length
       streamLogger.warn({
         event: 'gateway_stream_missing_terminal_failure_event_written',
@@ -529,7 +600,7 @@ export async function pipeUpstreamStream(
       }, '网关因缺少终止事件补发 response.failed 失败或响应已结束')
     }
     endResponse(res)
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
   }
 
   endResponse(res)
@@ -556,7 +627,7 @@ export async function pipeUpstreamStream(
       sseEventTypeCounts: inspection.eventTypeCounts,
       recentSseEventTypes: inspection.recentEventTypes
     }, '网关流式响应以失败结束')
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
   }
 
   streamLogger.info({
@@ -572,7 +643,7 @@ export async function pipeUpstreamStream(
     outputReceived: inspection.outputReceived,
     outputEventCount: inspection.outputEventCount
   }, '网关流式响应已成功结束')
-  return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+  return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
 }
 
 function readNextStreamChunk(
@@ -690,7 +761,9 @@ function streamResult(
   diagnosticCapture: LimitedBufferCapture,
   streamIntercept?: StreamInterceptDecision,
   outputReceived = false,
-  estimatedOutputTokens?: number
+  estimatedOutputTokens?: number,
+  imageOutputReceived = false,
+  bodyOmission?: StreamBodyOmissionSummary
 ): StreamPipeResult {
   return {
     completed,
@@ -699,11 +772,33 @@ function streamResult(
     firstTokenMs,
     usage,
     outputReceived,
+    imageOutputReceived,
     estimatedOutputTokens,
-    responseBodyText: diagnosticCapture.toDiagnosticText(),
-    auditResponseBody: responseCapture.completeBuffer(),
-    auditUpstreamBody: upstreamCapture.completeBuffer(),
-    streamIntercept
+    responseBodyText: bodyOmission ? undefined : diagnosticCapture.toDiagnosticText(),
+    auditResponseBody: bodyOmission ? undefined : responseCapture.completeBuffer(),
+    auditUpstreamBody: bodyOmission ? undefined : upstreamCapture.completeBuffer(),
+    streamIntercept,
+    bodyOmission
+  }
+}
+
+function streamBodyOmissionSummary(
+  inspection: OpenAIStreamInspection,
+  totalUpstreamBytes: number,
+  totalResponseBytes: number
+): StreamBodyOmissionSummary {
+  return {
+    omitted: true,
+    reason: 'image_stream_payload',
+    message: '图像流正文已省略，避免在日志和审计中保存图片字节',
+    totalUpstreamBytes,
+    totalResponseBytes,
+    sseEventCount: inspection.eventCount,
+    lastSseEventType: inspection.lastEventType,
+    recentSseEventTypes: inspection.recentEventTypes,
+    imageOutputReceived: inspection.imageOutputReceived,
+    terminalReceived: inspection.terminalReceived,
+    failedReceived: inspection.failedReceived
   }
 }
 

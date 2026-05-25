@@ -11,6 +11,7 @@ type NumericPolicyKey =
   | 'maxQueueSize'
   | 'perApiKeyQueueLimit'
   | 'clientIpConcurrencyLimit'
+  | 'imageLaneMaxConcurrency'
 
 type BooleanPolicyKey =
   | 'fastFirstEnabled'
@@ -32,7 +33,8 @@ export const DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY: Required<GroupSch
   maxQueueSize: 1_000,
   perApiKeyQueueLimit: 1_000,
   clientIpConcurrencyLimit: 0,
-  clientIpConcurrencyOverflowMode: 'reject'
+  clientIpConcurrencyOverflowMode: 'reject',
+  imageLaneMaxConcurrency: 0
 }
 
 export function normalizeGroupType(value: unknown): GroupType {
@@ -60,7 +62,8 @@ export function resolveGroupSchedulingPolicy(groupType: GroupType, value: unknow
     maxQueueSize,
     perApiKeyQueueLimit: resolvePerApiKeyQueueLimit(input.perApiKeyQueueLimit, maxQueueSize),
     clientIpConcurrencyLimit: numericPolicy(input.clientIpConcurrencyLimit, 'clientIpConcurrencyLimit'),
-    clientIpConcurrencyOverflowMode: clientIpConcurrencyOverflowMode(input.clientIpConcurrencyOverflowMode)
+    clientIpConcurrencyOverflowMode: clientIpConcurrencyOverflowMode(input.clientIpConcurrencyOverflowMode),
+    imageLaneMaxConcurrency: numericPolicy(input.imageLaneMaxConcurrency, 'imageLaneMaxConcurrency')
   }
 }
 
@@ -90,6 +93,19 @@ export function effectiveSoftConcurrencyLimit(input: {
   return Math.min(hardLimit, Math.max(1, Math.trunc(base)))
 }
 
+export function effectiveImageLaneConcurrencyLimit(input: {
+  accountConcurrencyLimit: number
+  policy?: GroupSchedulingPolicy
+}): number {
+  const hardLimit = positiveInteger(input.accountConcurrencyLimit, 1, 1_000_000)
+  const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
+  const configured = policy.imageLaneMaxConcurrency ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.imageLaneMaxConcurrency
+  if (configured > 0) {
+    return Math.min(hardLimit, Math.max(1, Math.trunc(configured)))
+  }
+  return hardLimit > 1 ? hardLimit - 1 : hardLimit
+}
+
 function objectValue(value: unknown): Record<string, unknown> {
   if (typeof value === 'string' && value.trim()) {
     try {
@@ -104,7 +120,7 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function numericPolicy(value: unknown, key: NumericPolicyKey): number {
   const max = key === 'maxQueueWaitMs' ? 3_600_000 : 1_000_000
-  const min = key === 'breakAffinityOnQueueWaitMs' || key === 'clientIpConcurrencyLimit' ? 0 : 1
+  const min = key === 'breakAffinityOnQueueWaitMs' || key === 'clientIpConcurrencyLimit' || key === 'imageLaneMaxConcurrency' ? 0 : 1
   return boundedInteger(value, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY[key], min, max)
 }
 
@@ -122,7 +138,8 @@ function resolvePersistedGroupSchedulingPolicy(groupType: GroupType, value: unkn
     defaultSoftConcurrency: input.defaultSoftConcurrency,
     maxQueueWaitMs: input.maxQueueWaitMs,
     clientIpConcurrencyLimit: input.clientIpConcurrencyLimit,
-    clientIpConcurrencyOverflowMode: input.clientIpConcurrencyOverflowMode
+    clientIpConcurrencyOverflowMode: input.clientIpConcurrencyOverflowMode,
+    imageLaneMaxConcurrency: input.imageLaneMaxConcurrency
   })
 }
 

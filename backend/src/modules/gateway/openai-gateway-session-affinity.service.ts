@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
 import { createAppCache } from '../../shared/cache.js'
-import { loadAccountInFlightStatsByIds } from '../../shared/account-concurrency.js'
-import { DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY, effectiveSoftConcurrencyLimit, resolveGroupSchedulingPolicy } from '../../domain/group-scheduling.js'
+import { getAccountCurrentConcurrency, loadAccountInFlightStatsByIds } from '../../shared/account-concurrency.js'
+import { DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY, effectiveImageLaneConcurrencyLimit, effectiveSoftConcurrencyLimit, resolveGroupSchedulingPolicy } from '../../domain/group-scheduling.js'
 import type { GroupSchedulingPolicy, GroupType } from '../../domain/types.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { OpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
 
 interface SessionBinding {
   accountId: string
@@ -80,6 +81,30 @@ export function areOpenAIHighConcurrencyAccountsHardBusy(accounts: OpenAIAccount
   return options.groupType === 'high_concurrency'
     && accounts.length > 0
     && accounts.every((account) => accountCurrentConcurrency(account) >= accountHardConcurrencyLimit(account))
+}
+
+export function areOpenAIHighConcurrencyAccountsBusyForLane(
+  accounts: OpenAIAccountSecret[],
+  options: OpenAIAccountDispatchOrderingOptions & { requestLane?: OpenAIGatewayRequestLane } = {}
+): boolean {
+  if (options.groupType !== 'high_concurrency' || accounts.length === 0) {
+    return false
+  }
+  return accounts.every((account) => {
+    const hardLimit = accountHardConcurrencyLimit(account)
+    const currentConcurrency = accountCurrentConcurrency(account)
+    if (currentConcurrency >= hardLimit) {
+      return true
+    }
+    if (options.requestLane !== 'image') {
+      return false
+    }
+    const imageLaneLimit = effectiveImageLaneConcurrencyLimit({
+      accountConcurrencyLimit: hardLimit,
+      policy: options.schedulingPolicy
+    })
+    return getAccountCurrentConcurrency(account.id, 'image') >= imageLaneLimit
+  })
 }
 
 function orderOpenAIPersonalAccountsBySessionAffinity(

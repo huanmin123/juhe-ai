@@ -311,9 +311,8 @@ async function confirmImport() {
 function parseImportJson(): unknown | undefined {
   try {
     return JSON.parse(importText.value)
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    message.error(`JSON 解析失败：${detail}`)
+  } catch {
+    message.error('JSON 解析失败，请检查格式是否完整')
     return undefined
   }
 }

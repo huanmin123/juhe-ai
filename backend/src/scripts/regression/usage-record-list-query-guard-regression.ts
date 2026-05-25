@@ -84,6 +84,7 @@ try {
       endpoint: '/v1/responses',
       providerCode: 'openai',
       model: 'gpt-5.5',
+      clientIp: '127.0.0.1',
       stream: false,
       statusCode: 200,
       success: true,
@@ -98,6 +99,7 @@ try {
       endpoint: '/v1/responses',
       providerCode: 'openai',
       model: 'gpt-5.5-mini',
+      clientIp: '127.0.0.2',
       stream: false,
       statusCode: 200,
       success: true,
@@ -112,6 +114,7 @@ try {
       endpoint: '/v1/responses',
       providerCode: 'openai',
       model: 'gpt-4.1',
+      clientIp: '10.0.0.3',
       stream: false,
       statusCode: 200,
       success: true,
@@ -126,6 +129,7 @@ try {
       endpoint: '/v1/responses',
       providerCode: 'openai',
       model: 'gpt-5.5-other-group',
+      clientIp: '127.0.1.4',
       stream: false,
       statusCode: 200,
       success: true,
@@ -194,6 +198,9 @@ try {
 
     const groupFiltered = repositories.listUsageRecords(access, { groupId: group.id, page: 1, pageSize: 10 })
     assert.deepEqual(groupFiltered.items.map((item) => item.id), ['usage_list_query_guard_middle_name', 'usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '分组筛选应只返回目标分组的使用记录')
+
+    const clientIpPrefix = repositories.listUsageRecords(access, { clientIp: '127.0.0.', page: 1, pageSize: 10 })
+    assert.deepEqual(clientIpPrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '客户端 IP 筛选应按右侧前缀匹配')
   } finally {
     recordDatabase.prepare = originalPrepare
     for (const restore of shardPrepareRestorers) restore()
@@ -209,6 +216,7 @@ try {
   assert(usageRecordListCalls.length >= 2, '回归应捕获使用记录列表 SQL')
   for (const call of usageRecordListCalls) {
     assert(!/\bur\.model\s+LIKE\s+\?/i.test(call.sql), 'model 筛选不应在 usage_records 上使用 LIKE')
+    assert(!/\bur\.client_ip\s+LIKE\s+\?/i.test(call.sql), '客户端 IP 筛选不应在 usage_records 上使用 LIKE')
     assert(!/\bur\.account_id\s+(?:=|LIKE)\s+\?/i.test(call.sql), '使用记录账号名称搜索不应直接按 account_id 精确或前缀匹配')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '使用记录列表不应向大表筛选传入前导通配符参数')
   }
@@ -240,10 +248,26 @@ try {
     ORDER BY ur.created_at DESC, ur.id DESC
     LIMIT ?
   `, ['sys_admin', group.id, 10], 'idx_usage_records_system_account_group_created_sort')
+  assertQueryPlanUsesIndex(`
+    SELECT id
+    FROM usage_records ur
+    WHERE ur.client_ip >= ? AND ur.client_ip < ?
+    ORDER BY ur.created_at DESC, ur.id DESC
+    LIMIT ?
+  `, ['127.0.0.', '127.0.0.\uffff', 10], 'idx_usage_records_client_ip_created_sort')
+  assertQueryPlanUsesIndex(`
+    SELECT id
+    FROM usage_records ur
+    WHERE ur.system_account_id = ? AND ur.client_ip >= ? AND ur.client_ip < ?
+    ORDER BY ur.created_at DESC, ur.id DESC
+    LIMIT ?
+  `, ['sys_admin', '127.0.0.', '127.0.0.\uffff', 10], 'idx_usage_records_system_account_client_ip_created_sort')
 
+  const recentShapeCompactCreatedAt = new Date(Date.now() - 60_000).toISOString()
+  const recentShapeMiddleEndpointCreatedAt = new Date(Date.now() - 30_000).toISOString()
   repositories.createUsageRecordsBatch([
     {
-      id: 'usage_recent_shape_compact',
+      id: usageRecordShards.generateUsageRecordId(recentShapeCompactCreatedAt, 'recent-shape-compact'),
       traceId: 'trace-usage-recent-shape-compact',
       apiKeyId: apiKey.id,
       groupId: group.id,
@@ -254,10 +278,10 @@ try {
       stream: true,
       statusCode: 200,
       success: true,
-      createdAt: '2026-01-02T00:00:03.000Z'
+      createdAt: recentShapeCompactCreatedAt
     },
     {
-      id: 'usage_recent_shape_middle_endpoint',
+      id: usageRecordShards.generateUsageRecordId(recentShapeMiddleEndpointCreatedAt, 'recent-shape-middle-endpoint'),
       traceId: 'trace-usage-recent-shape-middle-endpoint',
       apiKeyId: apiKey.id,
       groupId: group.id,
@@ -268,7 +292,7 @@ try {
       stream: true,
       statusCode: 200,
       success: true,
-      createdAt: '2026-01-02T00:00:04.000Z'
+      createdAt: recentShapeMiddleEndpointCreatedAt
     }
   ])
 
@@ -316,7 +340,7 @@ try {
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '最近请求形态不应传入前导通配符参数')
   }
 
-  console.log('使用记录列表查询防护回归通过：model 精确匹配，accountKeyword 和最近请求形态都不再对 usage_records 做前导通配符扫描')
+  console.log('使用记录列表查询防护回归通过：model 精确匹配，clientIp 前缀范围匹配，accountKeyword 和最近请求形态都不再对 usage_records 做前导通配符扫描')
 } finally {
   try {
     databaseModule.closeStorageDatabases()
@@ -326,7 +350,9 @@ try {
 }
 
 function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
-  const details = databaseModule.getDatasetDatabase()
+  const location = usageRecordShards.listUsageRecordShardLocations()[0]
+  assert(location, '查询计划验证需要至少一个 usage shard')
+  const details = usageRecordShards.getUsageRecordShardDatabase(location)
     .prepare(`EXPLAIN QUERY PLAN ${sql}`)
     .all(...params)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))

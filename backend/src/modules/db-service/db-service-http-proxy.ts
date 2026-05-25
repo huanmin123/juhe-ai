@@ -121,6 +121,6 @@ function headerText(value: string | string[] | undefined): string | undefined {
 
 function sendDbServiceUnavailable(res: Response): void {
   res.status(503).json({
-    message: 'DB service 未就绪或内部系统 API 不可用，请稍后重试'
+    message: '本地数据库服务未就绪或内部系统接口不可用，请稍后重试'
   })
 }

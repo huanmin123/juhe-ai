@@ -72,7 +72,7 @@ export function activeTeamMemberRows(teamId: string, database = getDatabase()): 
   `).all(teamId) as unknown as SystemTeamMemberRow[]
 }
 
-export function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
+export function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; targetGroupId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
   if (input.granteeSystemAccountId === input.ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
   const existing = input.database.prepare('SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1').get(input.resourceType, input.resourceId, input.granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
   const authorizationId = existing?.id ?? newId('rauth')
@@ -138,17 +138,18 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
   refreshResourceAuthorizationEffectiveSource(authorizationId, input.actor, input.now, input.database)
   const row = input.database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
   if (!row) throw new Error('创建资源授权失败')
-  bindActiveAccountAuthorizationToGranteeDefaultGroup(input.database, row, input.now)
+  bindActiveAccountAuthorizationToGranteeGroup(input.database, row, input.now, input.targetGroupId)
   return row
 }
 
-function bindActiveAccountAuthorizationToGranteeDefaultGroup(database: DatabaseSync, authorization: ResourceAuthorizationRow, now: string): void {
+function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, authorization: ResourceAuthorizationRow, now: string, targetGroupId?: string): void {
   if (authorization.resource_type !== 'account') return
   if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
   const account = database
     .prepare('SELECT provider_code, system_account_id FROM accounts WHERE id = ?')
     .get(authorization.resource_id) as unknown as { provider_code?: string; system_account_id?: string } | undefined
   if (!account?.provider_code || account.system_account_id === authorization.grantee_system_account_id) return
+  const requestedGroupId = targetGroupId?.trim()
   const existingBinding = database
     .prepare(`
       SELECT group_id
@@ -160,9 +161,15 @@ function bindActiveAccountAuthorizationToGranteeDefaultGroup(database: DatabaseS
       LIMIT 1
     `)
     .get(authorization.resource_id, authorization.grantee_system_account_id) as unknown as { group_id?: string } | undefined
-  if (existingBinding?.group_id) return
-  const defaultGroupId = defaultGroupIdForAuthorizationBinding(database, account.provider_code, authorization.grantee_system_account_id, now)
-  if (!defaultGroupId) return
+  if (existingBinding?.group_id && (!requestedGroupId || existingBinding.group_id === requestedGroupId)) return
+  const bindGroupId = groupIdForAuthorizationBinding(database, account.provider_code, authorization.grantee_system_account_id, now, requestedGroupId)
+  if (!bindGroupId) return
+  if (existingBinding?.group_id && existingBinding.group_id !== bindGroupId) {
+    database
+      .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
+      .run(authorization.resource_id, authorization.grantee_system_account_id)
+    invalidateGroupAccountIdsCache(existingBinding.group_id)
+  }
   database
     .prepare(`
       INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
@@ -173,8 +180,27 @@ function bindActiveAccountAuthorizationToGranteeDefaultGroup(database: DatabaseS
         enabled = 1,
         updated_at = excluded.updated_at
     `)
-    .run(authorization.grantee_system_account_id, defaultGroupId, authorization.resource_id, authorization.id, now, now)
-  invalidateGroupAccountIdsCache(defaultGroupId)
+    .run(authorization.grantee_system_account_id, bindGroupId, authorization.resource_id, authorization.id, now, now)
+  invalidateGroupAccountIdsCache(bindGroupId)
+}
+
+function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, now: string, targetGroupId?: string): string | undefined {
+  if (targetGroupId) {
+    const group = database
+      .prepare('SELECT id, system_account_id, provider_code, enabled FROM groups WHERE id = ? LIMIT 1')
+      .get(targetGroupId) as unknown as { id?: string; system_account_id?: string; provider_code?: string; enabled?: number } | undefined
+    if (!group?.id || group.system_account_id !== systemAccountId) {
+      throw new Error('目标分组不存在或不属于被授权用户')
+    }
+    if (group.provider_code !== providerCode) {
+      throw new Error('目标分组供应商与授权账户不一致')
+    }
+    if (group.enabled !== 1) {
+      throw new Error('目标分组已停用，请选择启用分组')
+    }
+    return group.id
+  }
+  return defaultGroupIdForAuthorizationBinding(database, providerCode, systemAccountId, now)
 }
 
 function defaultGroupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, now: string): string | undefined {

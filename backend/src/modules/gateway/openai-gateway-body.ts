@@ -258,6 +258,12 @@ export class LimitedBufferCapture {
     return this.buffer()
   }
 
+  clear(): void {
+    this.chunks = []
+    this.size = 0
+    this.truncated = false
+  }
+
   toText(): string | undefined {
     if (this.chunks.length === 0) {
       return undefined

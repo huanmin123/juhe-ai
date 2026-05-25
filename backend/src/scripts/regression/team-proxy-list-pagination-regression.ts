@@ -18,10 +18,9 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, businessSchema] = await Promise.all([
+const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js'),
-  import('../../storage/schema/business-schema.js')
+  import('../../storage/repositories.js')
 ])
 
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -216,7 +215,6 @@ try {
   }
   assertBusinessIndexExists('idx_system_teams_name_lookup')
   assertBusinessIndexExists('idx_proxy_profiles_name_lookup')
-  assertObsoleteProxySearchIndexesDroppedBySchema()
   assertBusinessIndexMissing('idx_proxy_profiles_host_lookup')
   assertBusinessIndexMissing('idx_proxy_profiles_type_lookup')
 
@@ -235,15 +233,6 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
-}
-
-function assertObsoleteProxySearchIndexesDroppedBySchema(): void {
-  const database = databaseModule.getDatabase()
-  database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_proxy_profiles_host_lookup ON proxy_profiles(host, id);
-    CREATE INDEX IF NOT EXISTS idx_proxy_profiles_type_lookup ON proxy_profiles(type COLLATE NOCASE, id);
-  `)
-  businessSchema.applyBusinessSchema(database)
 }
 
 function assertBusinessIndexMissing(indexName: string): void {

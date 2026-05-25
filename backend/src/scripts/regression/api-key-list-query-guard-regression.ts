@@ -18,10 +18,9 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, businessSchema] = await Promise.all([
+const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js'),
-  import('../../storage/schema/business-schema.js')
+  import('../../storage/repositories.js')
 ])
 
 try {
@@ -116,7 +115,6 @@ try {
   }
   assertBusinessIndexExists('idx_api_keys_name_lookup')
   assertBusinessIndexExists('idx_api_keys_system_account_name_lookup')
-  assertObsoleteApiKeySearchIndexesDroppedBySchema()
   assertBusinessIndexMissing('idx_api_keys_key_prefix_lookup')
   assertBusinessIndexMissing('idx_api_keys_system_account_key_prefix_lookup')
   assertBusinessIndexMissing('idx_api_keys_description_lookup')
@@ -137,17 +135,6 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
-}
-
-function assertObsoleteApiKeySearchIndexesDroppedBySchema(): void {
-  const database = databaseModule.getDatabase()
-  database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix_lookup ON api_keys(key_prefix, id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_key_prefix_lookup ON api_keys(system_account_id, key_prefix, id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_description_lookup ON api_keys(description COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_description_lookup ON api_keys(system_account_id, description COLLATE NOCASE, id);
-  `)
-  businessSchema.applyBusinessSchema(database)
 }
 
 function assertBusinessIndexMissing(indexName: string): void {

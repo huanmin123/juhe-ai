@@ -68,6 +68,7 @@ export interface UsageRecordListOptions {
   sortOrder?: UsageRecordSortDirection
   limit?: number
   accountKeyword?: string
+  clientIp?: string
   result?: 'success' | 'failed' | 'all'
   statusCode?: number
   groupId?: string

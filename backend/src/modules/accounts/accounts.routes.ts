@@ -4,7 +4,7 @@ import { z } from 'zod'
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, clearAuthorizedAccountBindingFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -694,6 +694,7 @@ accountsRouter.post('/:id/test', async (req, res) => {
   try {
     const diagnostics = requestAccess?.role === 'admin' || account.accessType !== 'authorized' ? 'full' : 'limited'
     const { prompt: _ignoredPrompt, ...testOptions } = parsed.data ?? {}
+    let accountTestStatusChanges: ReturnType<typeof safeChange>[] | undefined
     let result = await testOpenAIAccount(account, {
       ...testOptions,
       signal: abortController.signal,
@@ -703,9 +704,21 @@ accountsRouter.post('/:id/test', async (req, res) => {
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
+    if (result.success && shouldClearAuthorizedAccountTestLocalFailure(account)) {
+      const restored = clearAuthorizedAccountBindingFailureState(account.id, requestAccess)
+      if (restored.changed && restored.account) {
+        accountTestStatusChanges = accountTestStatusLogChanges(account, restored.account)
+        result = {
+          ...result,
+          accountStatusChanged: accountTestStatusChanges.length > 0,
+          accountStatus: restored.account.status
+        }
+      }
+    }
     if (shouldMarkAccountTestFailureAsTemporaryUnavailable(account, result)) {
       const updatedAccount = markAccountTestTemporaryUnavailable(account, accountTestFailureCooldownReason(result), requestAccess)
       if (updatedAccount && updatedAccount.status !== result.accountStatus) {
+        accountTestStatusChanges = accountTestStatusLogChanges(account, updatedAccount)
         result = {
           ...result,
           accountStatusChanged: updatedAccount.status !== account.status,
@@ -726,7 +739,7 @@ accountsRouter.post('/:id/test', async (req, res) => {
         resourceId: account.id,
         resourceName: account.name,
         summary: `账户测试更新状态：${account.name}`,
-        changes: [safeChange('status', '状态', account.status, result.accountStatus)],
+        changes: accountTestStatusChanges ?? [safeChange('status', '状态', account.status, result.accountStatus)],
         viewers: viewer(ownerSystemAccountId, 'resource_owner')
       }, req)
     }
@@ -738,6 +751,35 @@ accountsRouter.post('/:id/test', async (req, res) => {
     throw error
   }
 })
+
+function shouldClearAuthorizedAccountTestLocalFailure(account: AccountSummary): boolean {
+  if (account.accessType !== 'authorized') return false
+  if (account.localStatus === 'disabled') return false
+  return Boolean(
+    (account.localStatus && account.localStatus !== 'active')
+    || account.localCooldownUntil
+    || account.localLastErrorMessage
+  )
+}
+
+function accountTestStatusLogChanges(before: AccountSummary, after: AccountSummary): ReturnType<typeof safeChange>[] {
+  const changes: ReturnType<typeof safeChange>[] = []
+  if (before.status !== after.status) {
+    changes.push(safeChange('status', '状态', before.status, after.status))
+  }
+  if (before.accessType === 'authorized' || after.accessType === 'authorized') {
+    if ((before.localStatus ?? 'active') !== (after.localStatus ?? 'active')) {
+      changes.push(safeChange('localStatus', '本地状态', before.localStatus ?? 'active', after.localStatus ?? 'active'))
+    }
+    if ((before.localCooldownUntil ?? null) !== (after.localCooldownUntil ?? null)) {
+      changes.push(safeChange('localCooldownUntil', '本地冷却结束时间', before.localCooldownUntil, after.localCooldownUntil))
+    }
+    if ((before.localLastErrorMessage ?? null) !== (after.localLastErrorMessage ?? null)) {
+      changes.push(safeChange('localLastErrorMessage', '本地错误信息', before.localLastErrorMessage, after.localLastErrorMessage))
+    }
+  }
+  return changes
+}
 
 function shouldMarkAccountTestFailureAsTemporaryUnavailable(account: AccountSummary, result: { success: boolean; statusCode?: number; message?: string; accountStatusChanged?: boolean; accountStatus?: string }): boolean {
   if (result.success) return false

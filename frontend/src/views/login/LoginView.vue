@@ -36,7 +36,6 @@
 </template>
 
 <script setup lang="ts">
-import axios from 'axios'
 import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -44,6 +43,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { loadCaptcha, login } from '@/composables/useAuth'
 import { appBrand, loadGlobalBrandSettings } from '@/composables/useAppBrand'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import type { CaptchaChallengeSummary } from '@/types/domain'
 
 import LoginBackground from './LoginBackground.vue'
@@ -150,10 +150,7 @@ async function refreshCaptcha(): Promise<void> {
 }
 
 function getLoginErrorMessage(error: unknown): string {
-  if (axios.isAxiosError<{ message?: string }>(error)) {
-    return error.response?.data?.message ?? '登录失败，请检查账号、密码或验证码'
-  }
-  return '登录失败，请检查账号、密码或验证码'
+  return extractApiErrorMessage(error, '登录失败，请检查账号、密码或验证码')
 }
 
 onMounted(async () => {

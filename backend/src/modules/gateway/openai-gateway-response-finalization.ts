@@ -30,7 +30,10 @@ import {
   sendGatewayErrorResponse
 } from './openai-gateway-responses.js'
 import { type UpstreamAccount } from './openai-gateway-route-helpers.js'
-import { pipeUpstreamStream } from './openai-gateway-stream.js'
+import {
+  pipeUpstreamStream,
+  type StreamBodyOmissionSummary
+} from './openai-gateway-stream.js'
 import { isCodexRetryableAfterOutputStreamFailureCode } from './openai-gateway-stream-intercept.js'
 import {
   copyResponseHeaders,
@@ -45,7 +48,8 @@ import {
   parseOpenAIUsageFromJsonBuffer,
   parseOpenAIUsageFromJsonTextFragment,
   requestModel,
-  type ParsedUsage
+  type ParsedUsage,
+  type UsageRequestSnapshot
 } from './openai-gateway-usage.js'
 import { applyOpenAIStreamUsageFallback } from './openai-gateway-stream-inspection.js'
 import { recordGatewayProxySuccess } from './openai-gateway-proxy-health.service.js'
@@ -62,6 +66,7 @@ export type UpstreamResponseHandlingResult =
     usage: ParsedUsage
     firstTokenMs?: number
     responseBodyText?: string
+    bodyOmission?: StreamBodyOmissionSummary
     errorPayload: Record<string, unknown>
   }
 
@@ -226,6 +231,12 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       metadata: streamInterceptAuditMetadata(streamResult.streamIntercept)
     })
   }
+  if (streamResult.bodyOmission) {
+    auditCapture.omitPayloadBodies({
+      label: 'stream_body_omission',
+      metadata: { ...streamResult.bodyOmission }
+    })
+  }
   if (shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)) {
     const codexTurnFailure = rememberCodexTurnStreamFailure(clientStrategy, account.id, {
       errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
@@ -253,6 +264,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     errorMessage: streamResult.completed ? undefined : streamResult.message
   })
   if (!streamResult.completed) {
+    const requestSnapshot = usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, streamResult.bodyOmission)
     forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
     recordCompletedUpstreamAttempt(req, {
       ...usageContext,
@@ -264,12 +276,13 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       startedAt,
       usage: streamUsageFallback.usage,
       errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
-      requestSnapshot: usageContext.requestSnapshot,
+      requestSnapshot,
       responseSnapshot: buildUsageResponseSnapshot({
         upstreamUrl,
         statusCode: upstreamResponse.status,
         headers: upstreamResponse.headers,
-        bodyText: streamResult.responseBodyText,
+        bodyText: streamResult.bodyOmission ? undefined : streamResult.responseBodyText,
+        bodyOmission: streamResult.bodyOmission,
         errorMessage: streamResult.message
       }),
       errorMessage: streamResult.message
@@ -295,6 +308,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     usage: streamUsageFallback.usage,
     firstTokenMs: streamResult.firstTokenMs,
     responseBodyText: streamResult.responseBodyText,
+    bodyOmission: streamResult.bodyOmission,
     errorPayload: {}
   }
 }
@@ -313,6 +327,21 @@ function shouldRememberCodexTurnStreamFailure(
       streamResult.errorCode === gatewayStreamClientRetryErrorCode
       || streamResult.streamIntercept?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
     )
+}
+
+function usageRequestSnapshotWithBodyOmission(
+  requestSnapshot: UsageRequestSnapshot,
+  bodyOmission: StreamBodyOmissionSummary | undefined
+): UsageRequestSnapshot {
+  if (!bodyOmission) {
+    return requestSnapshot
+  }
+  const metadataOnlySnapshot: UsageRequestSnapshot = { ...requestSnapshot }
+  delete metadataOnlySnapshot.body
+  return {
+    ...metadataOnlySnapshot,
+    bodyOmission
+  }
 }
 
 export async function handleNonStreamUpstreamResponse(input: HandleUpstreamResponseInput): Promise<UpstreamResponseHandlingResult> {
@@ -519,7 +548,7 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
       })
     }
     if (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage) {
-      clearAccountStreamFailureStateWithCacheInvalidation(account.id)
+      clearAccountStreamFailureStateWithCacheInvalidation(account)
     }
   }
 
@@ -534,10 +563,17 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
     usage: result.usage,
     errorCode: typeof result.errorPayload.code === 'string' ? result.errorPayload.code : undefined,
     errorMessage: typeof result.errorPayload.message === 'string' ? result.errorPayload.message : undefined,
-    requestSnapshot: upstreamResponse.ok ? undefined : usageContext.requestSnapshot,
-    responseSnapshot: upstreamResponse.ok
-      ? undefined
-      : buildUsageResponseSnapshot({
+    requestSnapshot: result.bodyOmission
+      ? usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, result.bodyOmission)
+      : upstreamResponse.ok ? undefined : usageContext.requestSnapshot,
+    responseSnapshot: result.bodyOmission
+      ? buildUsageResponseSnapshot({
+        upstreamUrl,
+        statusCode: upstreamResponse.status,
+        headers: upstreamResponse.headers,
+        bodyOmission: result.bodyOmission
+      })
+      : upstreamResponse.ok ? undefined : buildUsageResponseSnapshot({
         upstreamUrl,
         statusCode: upstreamResponse.status,
         headers: upstreamResponse.headers,

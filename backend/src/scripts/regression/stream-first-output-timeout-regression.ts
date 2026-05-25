@@ -93,6 +93,11 @@ async function main(): Promise<void> {
     const firstChunkIdleCredential = createScenarioCredential(upstreamBaseUrl, '首段后空闲')
     const fragmentedSseEventCredential = createScenarioCredential(upstreamBaseUrl, '完整事件等待')
     const parserSkippedCredential = createScenarioCredential(upstreamBaseUrl, '解析跳过后原样转发')
+    const largeImageEventCredential = createScenarioCredential(upstreamBaseUrl, '大图事件后完成')
+    const largeImagePartialCredential = createScenarioCredential(upstreamBaseUrl, '大图 partial 事件后完成')
+    const largeImageApiEventCredential = createScenarioCredential(upstreamBaseUrl, 'Image API 大图完成')
+    const largeImageApiSplitCredential = createScenarioCredential(upstreamBaseUrl, 'Image API 大图拆包完成')
+    const largeImageApiEofCredential = createScenarioCredential(upstreamBaseUrl, 'Image API 大图 EOF')
     const missingTerminalCredential = createScenarioCredential(upstreamBaseUrl, '缺少终止事件')
     const heartbeatCredential = createScenarioCredential(upstreamBaseUrl, '心跳刷新')
     const clientCloseAfterTerminalCredential = createScenarioCredential(upstreamBaseUrl, '终止后客户端关闭')
@@ -165,6 +170,58 @@ async function main(): Promise<void> {
       parserSkippedResult.durationMs >= 1200 && parserSkippedResult.durationMs < 5000,
       `解析跳过后原样转发没有持续到上游 EOF，耗时 ${parserSkippedResult.durationMs}ms`
     )
+
+    const largeImageTraceId = traceIdForSampledSuccessBucket('large-image-event')
+    const largeImageEventResult = await requestStreamScenario(baseUrl, largeImageEventCredential.apiKey.key, 'large-image-event-then-completed', largeImageTraceId)
+    assert(largeImageEventResult.streamText.includes('response.image_generation_call.completed'), `客户端未收到大图事件：${largeImageEventResult.streamText}`)
+    assert(largeImageEventResult.streamText.includes('response.completed'), `大图事件后未继续识别完成事件：${largeImageEventResult.streamText}`)
+    assert(!largeImageEventResult.streamText.includes('response.failed'), `大图事件后不应补发失败事件：${largeImageEventResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertSuccessfulUsageRecord(largeImageEventCredential.account.id)
+    assertUsageRecordBodyOmitted(largeImageEventCredential.account.id, largeImageTraceId)
+    auditLogQueue.flushAllAuditLogQueue()
+    await assertImageStreamAuditBodyOmitted(largeImageTraceId, 'response.image_generation_call.completed')
+
+    const largeImagePartialTraceId = traceIdForSampledSuccessBucket('large-image-partial')
+    const largeImagePartialResult = await requestStreamScenario(baseUrl, largeImagePartialCredential.apiKey.key, 'large-image-partial-then-completed', largeImagePartialTraceId)
+    assert(largeImagePartialResult.streamText.includes('response.image_generation_call.partial_image'), `客户端未收到大图 partial 事件：${largeImagePartialResult.streamText}`)
+    assert(largeImagePartialResult.streamText.includes('response.completed'), `大图 partial 事件后未继续识别完成事件：${largeImagePartialResult.streamText}`)
+    assert(!largeImagePartialResult.streamText.includes('response.failed'), `大图 partial 事件后不应补发失败事件：${largeImagePartialResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertSuccessfulUsageRecord(largeImagePartialCredential.account.id)
+    assertUsageRecordBodyOmitted(largeImagePartialCredential.account.id, largeImagePartialTraceId)
+    auditLogQueue.flushAllAuditLogQueue()
+    await assertImageStreamAuditBodyOmitted(largeImagePartialTraceId, 'response.image_generation_call.partial_image')
+
+    const largeImageApiTraceId = traceIdForSampledSuccessBucket('large-image-api-event')
+    const largeImageApiEventResult = await requestStreamScenario(baseUrl, largeImageApiEventCredential.apiKey.key, 'large-image-api-event-completed', largeImageApiTraceId)
+    assert(largeImageApiEventResult.streamText.includes('image_generation.completed'), `客户端未收到 Image API 大图完成事件：${largeImageApiEventResult.streamText}`)
+    assert(!largeImageApiEventResult.streamText.includes('response.failed'), `Image API 大图完成事件不应补发失败事件：${largeImageApiEventResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertSuccessfulUsageRecord(largeImageApiEventCredential.account.id, { inputTokens: 1, outputTokens: 100 })
+    assertUsageRecordBodyOmitted(largeImageApiEventCredential.account.id, largeImageApiTraceId)
+    auditLogQueue.flushAllAuditLogQueue()
+    await assertImageStreamAuditBodyOmitted(largeImageApiTraceId, 'image_generation.completed')
+
+    const largeImageApiSplitTraceId = traceIdForSampledSuccessBucket('large-image-api-split')
+    const largeImageApiSplitResult = await requestStreamScenario(baseUrl, largeImageApiSplitCredential.apiKey.key, 'large-image-api-event-split-completed', largeImageApiSplitTraceId)
+    assert(largeImageApiSplitResult.streamText.includes('split_tail_marker'), 'Image API 大图终止事件拆包时不应在首个 chunk 后提前截断响应')
+    assert(!largeImageApiSplitResult.streamText.includes('response.failed'), `拆包 Image API 大图完成事件不应补发失败事件：${largeImageApiSplitResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertSuccessfulUsageRecord(largeImageApiSplitCredential.account.id, { inputTokens: 3, outputTokens: 4 })
+    assertUsageRecordBodyOmitted(largeImageApiSplitCredential.account.id, largeImageApiSplitTraceId)
+    auditLogQueue.flushAllAuditLogQueue()
+    await assertImageStreamAuditBodyOmitted(largeImageApiSplitTraceId, 'image_generation.completed')
+
+    const largeImageApiEofTraceId = traceIdForSampledSuccessBucket('large-image-api-eof')
+    const largeImageApiEofResult = await requestStreamScenario(baseUrl, largeImageApiEofCredential.apiKey.key, 'large-image-api-event-eof-no-boundary', largeImageApiEofTraceId)
+    assert(largeImageApiEofResult.streamText.includes('image_generation.completed'), `客户端未收到无收尾边界 Image API 大图事件：${largeImageApiEofResult.streamText}`)
+    assert(!largeImageApiEofResult.streamText.includes('response.failed'), `无收尾边界 Image API 大图完成事件不应补发失败事件：${largeImageApiEofResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertSuccessfulUsageRecord(largeImageApiEofCredential.account.id, { inputTokens: 1, outputTokens: 100 })
+    assertUsageRecordBodyOmitted(largeImageApiEofCredential.account.id, largeImageApiEofTraceId)
+    auditLogQueue.flushAllAuditLogQueue()
+    await assertImageStreamAuditBodyOmitted(largeImageApiEofTraceId, 'image_generation.completed')
 
     const missingTerminalResult = await requestMissingTerminalEof(baseUrl, missingTerminalCredential.apiKey.key)
     assert(missingTerminalResult.streamText.includes('response.created'), `客户端未收到缺少终止事件场景的首段上游事件：${missingTerminalResult.streamText}`)
@@ -300,7 +357,7 @@ async function main(): Promise<void> {
     assert(topLevelCodeMessageResult.streamText.includes('"code":"diagnostic_code"'), `普通事件的 code 字段应原样透传：${topLevelCodeMessageResult.streamText}`)
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、非 Codex 不伪造可重试码、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、非 Codex 不伪造可重试码、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -409,6 +466,51 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         res.on('close', () => {
           clearInterval(interval)
         })
+        return
+      }
+      if (scenario === 'large-image-event-then-completed') {
+        const imagePayload = 'a'.repeat(300 * 1024)
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created","response":{"id":"resp_large_image","status":"in_progress"}}\n\n')
+        res.write('event: response.image_generation_call.completed\n')
+        res.write(`data: {"type":"response.image_generation_call.completed","item_id":"ig_large","result":"${imagePayload}"}\n\n`)
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_large_image","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n')
+        res.end()
+        return
+      }
+      if (scenario === 'large-image-partial-then-completed') {
+        const imagePayload = 'a'.repeat(300 * 1024)
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created","response":{"id":"resp_large_image_partial","status":"in_progress"}}\n\n')
+        res.write('event: response.image_generation_call.partial_image\n')
+        res.write(`data: {"type":"response.image_generation_call.partial_image","item_id":"ig_large_partial","partial_image_index":0,"partial_image_b64":"${imagePayload}"}\n\n`)
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_large_image_partial","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n')
+        res.end()
+        return
+      }
+      if (scenario === 'large-image-api-event-completed') {
+        const imagePayload = 'a'.repeat(300 * 1024)
+        res.write('event: image_generation.completed\n')
+        res.write(`data: {"type":"image_generation.completed","b64_json":"${imagePayload}","usage":{"input_tokens":1,"output_tokens":100,"total_tokens":101}}\n\n`)
+        res.end()
+        return
+      }
+      if (scenario === 'large-image-api-event-split-completed') {
+        res.write('event: image_generation.completed\n')
+        res.write('data: {"type":"image_generation.completed","b64_json":"')
+        setTimeout(() => {
+          res.write(`${'a'.repeat(300 * 1024)}split_tail_marker","usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}\n\n`)
+          res.end()
+        }, 80)
+        return
+      }
+      if (scenario === 'large-image-api-event-eof-no-boundary') {
+        const imagePayload = 'a'.repeat(300 * 1024)
+        res.write('event: image_generation.completed\n')
+        res.write(`data: {"type":"image_generation.completed","b64_json":"${imagePayload}","usage":{"input_tokens":1,"output_tokens":100,"total_tokens":101}}`)
+        res.end()
         return
       }
       res.write('event: response.created\n')
@@ -805,7 +907,8 @@ async function requestServerOverloadedAfterOutput(baseUrl: string, apiKey: strin
 async function requestStreamScenario(
   baseUrl: string,
   apiKey: string,
-  scenario: string
+  scenario: string,
+  traceId?: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
     streamCircuitBreakerEnabled: true,
@@ -818,7 +921,10 @@ async function requestStreamScenario(
   const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: codexStreamHeaders(apiKey, scenario),
+    headers: {
+      ...codexStreamHeaders(apiKey, traceId ?? scenario),
+      ...(traceId ? { 'x-trace-id': traceId } : {})
+    },
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       input: scenario,
@@ -849,12 +955,24 @@ function assertFailedUsageRecordHasTokenCost(accountId: string): void {
   assert((record.costUsd ?? 0) > 0, `输出后失败应估算成本：${record.costUsd}`)
 }
 
-function assertSuccessfulUsageRecord(accountId: string): void {
+function assertSuccessfulUsageRecord(
+  accountId: string,
+  expectedUsage?: {
+    inputTokens?: number
+    outputTokens?: number
+  }
+): void {
   const records = repositories.listUsageRecords(undefined, { result: 'success', page: 1, pageSize: 50 })
   const record = records.items.find((item) => item.accountId === accountId && item.success === true)
-  assert(record, `终止后客户端关闭场景应按成功写入使用记录，账号 ${accountId} 未找到成功记录`)
-  assert.equal(record.errorCode, undefined, `终止后客户端关闭不应写错误码：${record.errorCode}`)
-  assert.equal(record.statusCode, 200, `终止后客户端关闭应保留 200 状态码：${record.statusCode}`)
+  assert(record, `账号 ${accountId} 未找到成功使用记录`)
+  assert.equal(record.errorCode, undefined, `成功使用记录不应写错误码：${record.errorCode}`)
+  assert.equal(record.statusCode, 200, `成功使用记录应保留 200 状态码：${record.statusCode}`)
+  if (expectedUsage?.inputTokens !== undefined) {
+    assert.equal(record.inputTokens, expectedUsage.inputTokens, `成功使用记录 input token 不正确：${record.inputTokens}`)
+  }
+  if (expectedUsage?.outputTokens !== undefined) {
+    assert.equal(record.outputTokens, expectedUsage.outputTokens, `成功使用记录 output token 不正确：${record.outputTokens}`)
+  }
 }
 
 function assertNoClientAbortedAuditLogForAccount(accountId: string): void {
@@ -870,9 +988,60 @@ function assertNoClientAbortedAuditLogForAccount(accountId: string): void {
   assert.equal(Number(row?.count ?? 0), 0, '收到 response.completed 后客户端关闭不应写 client_aborted 审计')
 }
 
-function traceIdForSampledSuccessBucket(): string {
+function assertUsageRecordBodyOmitted(accountId: string, traceId: string): void {
+  const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 100 })
+  const record = records.items.find((item) => item.accountId === accountId && item.traceId === traceId)
+  assert(record, `未找到图像流使用记录：${accountId} ${traceId}`)
+  const detail = repositories.getUsageRecordDetail(record.id)
+  assert(detail, `未找到图像流使用记录详情：${record.id}`)
+  const requestSnapshot = detail.requestSnapshot as { body?: unknown; bodyOmission?: { reason?: unknown } } | undefined
+  const responseSnapshot = detail.responseSnapshot as { bodyText?: unknown; bodyOmission?: { reason?: unknown } } | undefined
+  assert.equal(requestSnapshot?.body, undefined, '图像流使用记录不应保留请求 body')
+  assert.equal(responseSnapshot?.bodyText, undefined, '图像流使用记录不应保留响应 bodyText')
+  assert.equal(requestSnapshot?.bodyOmission?.reason, 'image_stream_payload', '图像流使用记录请求快照应保留正文省略原因')
+  assert.equal(responseSnapshot?.bodyOmission?.reason, 'image_stream_payload', '图像流使用记录响应快照应保留正文省略原因')
+  const serialized = JSON.stringify({
+    requestSnapshot: detail.requestSnapshot,
+    responseSnapshot: detail.responseSnapshot
+  })
+  assert(!serialized.includes('a'.repeat(1024)), '图像流使用记录快照不应包含图片 base64 片段')
+}
+
+async function assertImageStreamAuditBodyOmitted(traceId: string, expectedEventType: string): Promise<void> {
+  const logs = repositories.listAuditLogs({ traceId, page: 1, pageSize: 20 })
+  assert.equal(logs.items.length, 1, `图像流成功采样审计日志数量不正确：${traceId}`)
+  const detail = repositories.getAuditLogDetail(logs.items[0].id)
+  assert(detail, `未找到图像流审计详情：${traceId}`)
+  let bodyOmissionMetadata: Record<string, unknown> | undefined
+  const unexpectedBodyPayloads: string[] = []
+  for (const payload of detail.payloads) {
+    const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id)
+    assert(payloadDetail, `未找到图像流审计 payload：${payload.id}`)
+    if (payload.partType !== 'gateway_metadata') {
+      if (payloadDetail.bodyText !== undefined || payloadDetail.bodyBase64 !== undefined || payloadDetail.bodyTotalBytes !== 0) {
+        unexpectedBodyPayloads.push(`${payload.partType}:${payloadDetail.bodyTotalBytes}`)
+      }
+      continue
+    }
+    if (!payloadDetail.bodyText) continue
+    assert(!payloadDetail.bodyText.includes('a'.repeat(1024)), '审计元信息不应包含图片 base64 片段')
+    const body = JSON.parse(payloadDetail.bodyText) as { label?: string; metadata?: Record<string, unknown> }
+    if (body.label === 'stream_body_omission') {
+      bodyOmissionMetadata = body.metadata
+    }
+  }
+  assert(bodyOmissionMetadata, '图像流审计应保留正文省略元信息')
+  assert.equal(bodyOmissionMetadata.reason, 'image_stream_payload', '图像流审计省略原因不正确')
+  assert.equal(bodyOmissionMetadata.imageOutputReceived, true, '图像流审计应标记已检测到图片输出')
+  assert(Number(bodyOmissionMetadata.totalUpstreamBytes ?? 0) > 0, '图像流审计应保留上游字节计数')
+  assert.equal(unexpectedBodyPayloads.length, 0, `图像流审计不应保留任何非元信息正文：${unexpectedBodyPayloads.join(',')}`)
+  const recentTypes = Array.isArray(bodyOmissionMetadata.recentSseEventTypes) ? bodyOmissionMetadata.recentSseEventTypes : []
+  assert(recentTypes.includes(expectedEventType), `图像流审计最近事件类型应包含 ${expectedEventType}，实际 ${recentTypes.join(',')}`)
+}
+
+function traceIdForSampledSuccessBucket(prefix = 'stream-client-close-after-terminal'): string {
   for (let index = 0; index < 100000; index += 1) {
-    const traceId = `stream-client-close-after-terminal-${index}`
+    const traceId = `${prefix}-${index}`
     if (sampleBucketForTraceId(traceId) < 1000) {
       return traceId
     }

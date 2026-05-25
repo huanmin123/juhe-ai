@@ -9,8 +9,8 @@ export function seedDefaults(database: DatabaseSync): void {
   database
     .prepare(`
       INSERT OR IGNORE INTO system_accounts (
-        id, username, display_name, description, role, status, password_hash, must_change_password, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       'sys_admin',
@@ -21,6 +21,7 @@ export function seedDefaults(database: DatabaseSync): void {
       'active',
       hashPassword('admin'),
       1,
+      0,
       now,
       now
     )

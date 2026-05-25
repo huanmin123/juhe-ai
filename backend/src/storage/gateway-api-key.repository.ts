@@ -9,6 +9,7 @@ export interface GatewayApiKeyRow {
   status: 'active' | 'disabled'
   expires_at: string | null
   quota_limits_json: string | null
+  system_account_image_generation_enabled: number
 }
 
 type GatewayApiKeyCacheEntry = {
@@ -37,7 +38,14 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   }
 
   const row = getDatabase().prepare(`
-    SELECT api_keys.id, api_keys.system_account_id, api_keys.group_id, api_keys.status, api_keys.expires_at, api_keys.quota_limits_json
+    SELECT
+      api_keys.id,
+      api_keys.system_account_id,
+      api_keys.group_id,
+      api_keys.status,
+      api_keys.expires_at,
+      api_keys.quota_limits_json,
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
     INNER JOIN groups
@@ -45,7 +53,6 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       AND groups.system_account_id = api_keys.system_account_id
     WHERE api_keys.key_hash = ?
       AND system_accounts.status = 'active'
-      AND api_keys.group_authorization_id IS NULL
   `).get(keyHash) as unknown as GatewayApiKeyRow | undefined
   if (!row || row.status !== 'active') {
     gatewayApiKeyCache.delete(keyHash)
@@ -66,7 +73,14 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
   const apiKeyId = id.trim()
   if (!apiKeyId) return undefined
   const row = getDatabase().prepare(`
-    SELECT api_keys.id, api_keys.system_account_id, api_keys.group_id, api_keys.status, api_keys.expires_at, api_keys.quota_limits_json
+    SELECT
+      api_keys.id,
+      api_keys.system_account_id,
+      api_keys.group_id,
+      api_keys.status,
+      api_keys.expires_at,
+      api_keys.quota_limits_json,
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
     INNER JOIN groups
@@ -74,7 +88,6 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       AND groups.system_account_id = api_keys.system_account_id
     WHERE api_keys.id = ?
       AND system_accounts.status = 'active'
-      AND api_keys.group_authorization_id IS NULL
     LIMIT 1
   `).get(apiKeyId) as unknown as GatewayApiKeyRow | undefined
   if (!row || row.status !== 'active') {

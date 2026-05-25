@@ -90,7 +90,7 @@ try {
       reason: 'invalid_json',
       signature: 'invalid_json'
     })
-    assert.equal(postAuthDecision.blocked, false, '未达到同签名阈值前不应熔断认证后来源')
+    assert.equal(postAuthDecision.blocked, false, '未达到本地高置信错误阈值前不应熔断认证后来源')
   }
   postAuthDecision = recordClientIpErrorCircuitSample({
     ...scope,
@@ -123,7 +123,7 @@ try {
   const snapshot = getGatewayClientIpSecuritySnapshotForTest()
   assert.equal(snapshot.clientIpErrors.length, 0, '成功恢复后认证后错误运行态应清空')
   const gatewayRoutesSource = readFileSync(new URL('../../modules/gateway/openai-gateway.routes.ts', import.meta.url), 'utf8')
-  assert.equal(gatewayRoutesSource.includes('request_failure_signature'), false, '未知同签名上游失败不应作为来源错误熔断采样原因')
+  assert.equal(gatewayRoutesSource.includes('request_failure_signature'), false, '未知上游账号池失败不应作为来源错误熔断采样原因')
 
   console.log('IP 级错误熔断回归通过：认证前探测保护、认证后错误风暴熔断、来源隔离和成功恢复均符合预期')
 } finally {

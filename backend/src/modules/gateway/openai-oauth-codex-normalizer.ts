@@ -81,7 +81,7 @@ export function normalizeOpenAIOAuthCodexRawBody(
   try {
     parsed = JSON.parse(rawBody.toString('utf8')) as unknown
   } catch {
-    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须是有效的 JSON 对象')
+    throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
   }
   return normalizeOpenAIOAuthCodexParsedBody(parsed, input)
 }
@@ -94,12 +94,12 @@ function ensurePlainJsonObject(value: unknown): Record<string, unknown> {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
     return { ...value as Record<string, unknown> }
   }
-  throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须是 JSON 对象')
+  throw new OpenAIOAuthCodexAdapterError('请求体必须是 JSON 对象')
 }
 
 function validateOpenAIOAuthCodexBody(body: Record<string, unknown>, compact: boolean): void {
   if (typeof body.model !== 'string' || !body.model.trim()) {
-    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体中的 model 必须是非空字符串')
+    throw new OpenAIOAuthCodexAdapterError('请求体中的 model 必须是非空字符串')
   }
 
   if (compact) {
@@ -107,10 +107,10 @@ function validateOpenAIOAuthCodexBody(body: Record<string, unknown>, compact: bo
   }
 
   if (!Object.prototype.hasOwnProperty.call(body, 'input')) {
-    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须包含 input 字段')
+    throw new OpenAIOAuthCodexAdapterError('请求体必须包含 input 字段')
   }
   if (typeof body.input !== 'string' && !Array.isArray(body.input)) {
-    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体中的 input 必须是字符串或数组')
+    throw new OpenAIOAuthCodexAdapterError('请求体中的 input 必须是字符串或数组')
   }
 }
 
@@ -120,7 +120,7 @@ function normalizeOpenAIOAuthCodexInstructions(body: Record<string, unknown>): v
     return
   }
   if (typeof body.instructions !== 'string') {
-    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体中的 instructions 必须是字符串')
+    throw new OpenAIOAuthCodexAdapterError('请求体中的 instructions 必须是字符串')
   }
 }
 

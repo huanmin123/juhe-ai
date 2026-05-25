@@ -11,7 +11,7 @@ export interface SystemTeamMemberSummary {
   username?: string
   memberRole: 'member'
   status: TeamMemberStatus
-  joinedAt?: string
+  joinedAt: string
   removedAt?: string
   createdAt: string
   updatedAt: string
@@ -25,7 +25,8 @@ export interface SystemTeamSummary {
   createdBy: string
   createdAt: string
   updatedAt: string
-  memberCount?: number
+  memberCount: number
+  activeMemberCount: number
   members?: SystemTeamMemberSummary[]
 }
 

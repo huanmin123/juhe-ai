@@ -261,6 +261,7 @@ interface SeedState {
   teamUserBOnlyId: string
   teamNoUserAId: string
   userCId: string
+  userATargetGroupId: string
   inboundAuthorizationId: string
   teamInboundAuthorizationId: string
   userBGroupId: string
@@ -484,7 +485,14 @@ async function main(): Promise<void> {
     assert(userAGranteeTeams.some((team) => team.id === seed.teamUserBOnlyId), '授权候选团队应包含当前用户未加入但同团队成员加入的团队')
     assert(userAGranteeTeams.some((team) => team.id === seed.teamNoUserAId), '授权候选团队应包含当前用户完全无关的系统团队')
     assert(userAGranteeTeams.every((team) => !Object.prototype.hasOwnProperty.call(team, 'members')), '授权候选团队不应返回成员明细')
-    summary.push('授权候选用户和团队全量检查通过')
+    const userAGranteeGroups = await getEnvelope<GroupSummary[]>(baseUrl, `/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=${seed.userAId}&providerCode=openai&preferDefault=true`, seed.userBCookie)
+    assert(userAGranteeGroups.some((group) => group.id === seed.userATargetGroupId), '授权目标分组选项应返回被授权用户自己的同供应商分组')
+    assert(userAGranteeGroups.every((group) => group.ownerSystemAccountId === seed.userAId), '授权目标分组选项不应混入其他用户分组')
+    const selectedBinding = databaseModule.getDatabase()
+      .prepare('SELECT group_id FROM group_accounts WHERE account_id = ? AND system_account_id = ? AND enabled = 1 LIMIT 1')
+      .get(seed.userBAccountId, seed.userAId) as unknown as { group_id?: string } | undefined
+    assert(selectedBinding?.group_id === seed.userATargetGroupId, '新增授权指定目标分组后应直接绑定到该分组')
+    summary.push('授权候选用户、团队和目标分组选项检查通过')
 
     const userAAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, `/__aisys__/api/my-authorizations?status=all&systemAccountId=${seed.userBId}`, seed.userACookie)
     const inboundAuthorization = userAAuthorizations.find((authorization) => authorization.id === seed.inboundAuthorizationId)
@@ -592,6 +600,10 @@ function seedData(): SeedState {
     name: '用户 B 自建分组',
     providerCode: 'openai'
   }, userBAccess)
+  const userATargetGroup = repositories.createGroup({
+    name: '指定授权目标分组',
+    providerCode: 'openai'
+  }, userAAccess)
   const teamShared = repositories.createSystemTeam({
     name: '作用域共享团队',
     description: '用户 A 和用户 B 都在此团队'
@@ -612,6 +624,7 @@ function seedData(): SeedState {
     resourceId: userBAccount.id,
     granteeType: 'system_account',
     granteeId: userA.id,
+    targetGroupId: userATargetGroup.id,
     remark: '用户 B 授权给用户 A 的账户'
   }, userBAccess)
   const teamInboundAuthorization = repositories.createResourceAuthorization({
@@ -635,18 +648,6 @@ function seedData(): SeedState {
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
     .get(userBGroup.id, userA.id) as unknown as { id?: string } | undefined
   assert(runtimeGroupAuthorization?.id, '共享团队分组授权应生成用户 A 的运行时授权')
-  const historicalAuthorizedGroupKeyId = 'key_scope_authorized_group_historical'
-  const now = new Date().toISOString()
-  databaseModule.getDatabase()
-    .prepare(`
-      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, ?, ?, NULL, 'active', ?, ?, NULL, NULL, '[]', ?, ?)
-    `)
-    .run(historicalAuthorizedGroupKeyId, userA.id, '用户 A 历史授权分组 Key', 'hash_scope_authorized_group_historical', 'sk-legacy', userBGroup.id, runtimeGroupAuthorization.id, now, now)
-  assert(
-    repositories.findActiveGatewayApiKeyById(historicalAuthorizedGroupKeyId) === undefined,
-    '历史上绑定授权方分组的 API Key 不应继续通过网关校验'
-  )
   repositories.createApiKeyRecord({
     name: '用户 A Key',
     groupId: repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
@@ -678,6 +679,7 @@ function seedData(): SeedState {
     teamSharedId: teamShared.id,
     teamUserBOnlyId: teamUserBOnly.id,
     teamNoUserAId: teamNoUserA.id,
+    userATargetGroupId: userATargetGroup.id,
     inboundAuthorizationId: inboundAuthorization.id,
     teamInboundAuthorizationId: teamInboundAuthorization.id,
     userBGroupId: userBGroup.id,

@@ -1,4 +1,5 @@
 import type { AccountSummary, AccountTestResult } from '@/types/domain'
+import { extractApiErrorMessage } from '@/shared/apiError'
 
 export type AccountTestForm = {
   model: string
@@ -28,7 +29,7 @@ export function failedAccountTestResult(input: {
   model: string
   startedAt: number
 }): AccountTestResult {
-  const fallbackMessage = input.error instanceof Error ? input.error.message : '测试失败'
+  const fallbackMessage = extractApiErrorMessage(input.error, '测试失败')
   return {
     accountId: input.account.id,
     accountName: input.account.name,

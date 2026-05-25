@@ -66,6 +66,7 @@ const createAuthorizationSchema = z.object({
   resourceId: z.string().trim().min(1, '授权资源不能为空'),
   granteeType: z.enum(['system_account', 'team']),
   granteeId: z.string().trim().min(1, '被授权对象不能为空'),
+  targetGroupId: z.string().trim().min(1, '目标分组不能为空').optional(),
   remark: z.string().trim().max(200).optional(),
   expiresAt: z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确').optional(),
   limits: z.record(z.string(), z.unknown()).optional(),
@@ -157,7 +158,8 @@ authorizationsRouter.post('/', mutationGuard({
     resourceType: textValue(bodyField(req, 'resourceType')),
     resourceId: textValue(bodyField(req, 'resourceId')),
     granteeType: textValue(bodyField(req, 'granteeType')),
-    granteeId: textValue(bodyField(req, 'granteeId'))
+    granteeId: textValue(bodyField(req, 'granteeId')),
+    targetGroupId: textValue(bodyField(req, 'targetGroupId'))
   })
 }), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -195,6 +197,7 @@ authorizationsRouter.post('/', mutationGuard({
             safeChange('resourceType', '资源类型', undefined, authorization.resourceType),
             safeChange('resourceId', '授权资源', undefined, authorization.resourceName ?? authorization.resourceId),
             safeChange('grantee', '被授权目标', undefined, authorizationGranteeName(authorization)),
+            safeChange('targetGroupId', '目标分组', undefined, parsed.data.targetGroupId),
             safeChange('status', '状态', undefined, authorization.status),
             safeChange('expiresAt', '过期时间', undefined, authorization.expiresAt),
             safeChange('limits', '额度限制', undefined, authorization.limits),

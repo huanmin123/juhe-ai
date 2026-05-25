@@ -78,6 +78,7 @@ export function handleStreamFailure(
     type: 'record_account_stream_failure',
     input: {
       accountId: account.id,
+      account,
       thresholdCount: settings.streamFailureThresholdCount,
       thresholdWindowMinutes: settings.streamFailureThresholdWindowMinutes,
       action: 'cooldown',
@@ -87,10 +88,12 @@ export function handleStreamFailure(
   })
 }
 
-export function clearAccountStreamFailureStateWithCacheInvalidation(accountId: string): void {
+export function clearAccountStreamFailureStateWithCacheInvalidation(account: UpstreamAccount | string): void {
+  const accountId = typeof account === 'string' ? account : account.id
   void requestDbService({
     type: 'clear_account_stream_failure_state',
-    accountId
+    accountId,
+    account: typeof account === 'string' ? undefined : account
   }).then((result) => {
     if (result.changed) {
       clearGatewayRuntimeCache()

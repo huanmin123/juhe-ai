@@ -193,6 +193,7 @@ export type DbServiceOperation =
     type: 'record_account_stream_failure'
     input: {
       accountId: string
+      account?: OpenAIAccountSecret
       thresholdCount: number
       thresholdWindowMinutes: number
       action: 'cooldown' | 'disable' | 'none'
@@ -202,7 +203,8 @@ export type DbServiceOperation =
   }
   | {
     type: 'clear_account_stream_failure_state'
-    accountId: string
+    accountId?: string
+    account?: OpenAIAccountSecret
   }
   | {
     type: 'clear_gateway_runtime_cache'

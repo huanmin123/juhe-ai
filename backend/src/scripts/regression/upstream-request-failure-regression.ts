@@ -31,7 +31,6 @@ const [
   gatewayCache,
   accountSideEffects,
   clientIpAccountAvoidanceService,
-  requestErrorSignatureCacheService,
   gatewayFailureDispatch,
   usageRecordQueue,
   auditLogQueue
@@ -45,7 +44,6 @@ const [
   import('../../modules/gateway/gateway-runtime-cache.service.js'),
   import('../../modules/gateway/gateway-account-side-effects.service.js'),
   import('../../modules/gateway/openai-gateway-client-ip-account-avoidance.service.js'),
-  import('../../modules/gateway/openai-gateway-request-error-signature-cache.service.js'),
   import('../../modules/gateway/openai-gateway-failure-dispatch.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
@@ -73,10 +71,10 @@ async function main(): Promise<void> {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
-    const group = repositories.createGroup({ name: '请求级失败回归分组', providerCode: 'openai', enabled: true })
+    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'openai', enabled: true })
     const firstAccount = repositories.createAccount({
       providerCode: 'openai',
-      name: '01-请求级失败回归账户',
+      name: '01-上游失败回归账户',
       type: 'api_key',
       credentials: {
         api_key: 'sk-request-failure-1',
@@ -88,7 +86,7 @@ async function main(): Promise<void> {
     })
     const secondAccount = repositories.createAccount({
       providerCode: 'openai',
-      name: '02-请求级失败回归账户',
+      name: '02-上游失败回归账户',
       type: 'api_key',
       credentials: {
         api_key: 'sk-request-failure-2',
@@ -100,7 +98,7 @@ async function main(): Promise<void> {
     })
     const thirdAccount = repositories.createAccount({
       providerCode: 'openai',
-      name: '03-请求级失败回归账户',
+      name: '03-上游失败回归账户',
       type: 'api_key',
       credentials: {
         api_key: 'sk-request-failure-3',
@@ -110,7 +108,22 @@ async function main(): Promise<void> {
       status: 'active',
       schedulable: true
     })
-    const apiKey = createRegressionApiKey(group.id)
+    const apiKey = createRegressionApiKey(group.id, 'sk-request-failure-regression')
+    dispatchRaceSecondAccountId = secondAccount.id
+    const waitGroup = repositories.createGroup({ name: '本地屏蔽等待回归分组', providerCode: 'openai', enabled: true })
+    const waitAccount = repositories.createAccount({
+      providerCode: 'openai',
+      name: '单账号等待回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-request-failure-wait',
+        base_url: upstreamBaseUrl
+      },
+      groupId: waitGroup.id,
+      status: 'active',
+      schedulable: true
+    })
+    const waitApiKey = createRegressionApiKey(waitGroup.id, 'sk-request-failure-wait-key')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -145,11 +158,12 @@ async function main(): Promise<void> {
     })
     const featureResponseText = await featureResponse.text()
 
-    assert.equal(featureResponse.status, 422, `invalid_request_error 应先用三个账号同签名确认后返回客户端，实际 HTTP ${featureResponse.status}: ${featureResponseText}`)
-    assert.equal(featureResponseText, invalidRequestRejectedRequestBody, `客户端收到的 invalid_request_error 错误体应与上游原文一致：${featureResponseText}`)
-    assert.equal(featureResponse.headers.get('content-type'), 'application/json; charset=utf-8', 'invalid_request_error 错误响应应保留上游 content-type')
-    assert.equal(invalidRequestUpstreamHitCount, 3, `invalid_request_error 应尝试三个账号确认请求级失败，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '同签名 invalid_request_error 不应本地屏蔽账号')
+    assert.equal(featureResponse.status, 503, `所有账号上游失败后应返回统一网关错误，实际 HTTP ${featureResponse.status}: ${featureResponseText}`)
+    assert.match(featureResponseText, /没有可用的上游账户/, `所有账号失败不应透传上游原文，应返回网关统一错误：${featureResponseText}`)
+    assert.notEqual(featureResponseText, invalidRequestRejectedRequestBody, '所有账号失败不应把上游原始错误体透传给客户端')
+    assert.equal(invalidRequestUpstreamHitCount, 3, `通用失败流水线应尝试三个账号后再失败，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 3, '三个账号都失败后应全部进入本地短期屏蔽')
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
     currentScenario = 'same_signature_third_account_success'
     const thirdSuccessResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -165,9 +179,12 @@ async function main(): Promise<void> {
       })
     })
     const thirdSuccessResponseText = await thirdSuccessResponse.text()
-    assert.equal(thirdSuccessResponse.status, 200, `前两个账号同签名但第三账号可用时应救回请求，实际 HTTP ${thirdSuccessResponse.status}: ${thirdSuccessResponseText}`)
+    assert.equal(thirdSuccessResponse.status, 200, `前两个账号返回相同上游错误但第三账号可用时应救回请求，实际 HTTP ${thirdSuccessResponse.status}: ${thirdSuccessResponseText}`)
     assert.equal(thirdSuccessResponseText, thirdAccountSuccessBody, `第三账号救回响应体异常：${thirdSuccessResponseText}`)
     assert.equal(thirdAccountSuccessHitCount, 3, `第三账号救回应尝试三个账号，实际 ${thirdAccountSuccessHitCount}`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 2, '前两个失败账号应进入本地短期屏蔽，成功账号不应被屏蔽')
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
     currentScenario = 'same_signature_confirmation'
     const sameSignatureRequestBody = JSON.stringify({
@@ -185,13 +202,14 @@ async function main(): Promise<void> {
     })
     const signatureResponseText = await signatureResponse.text()
 
-    assert.equal(signatureResponse.status, 422, `同签名请求级失败应把上游 422 返回客户端，实际 HTTP ${signatureResponse.status}: ${signatureResponseText}`)
-    assert.equal(signatureResponseText, sameSignatureRejectedRequestBody, `客户端收到的同签名错误体应与上游原文一致：${signatureResponseText}`)
-    assert.equal(signatureResponse.headers.get('content-type'), 'application/json; charset=utf-8', '同签名错误响应应保留上游 content-type')
-    assert.equal(sameSignatureUpstreamHitCount, 3, `同一错误应探测第三个账号确认后停止，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '同签名请求级失败不应本地屏蔽账号')
+    assert.equal(signatureResponse.status, 503, `多个账号返回相同上游错误也应走统一网关错误，实际 HTTP ${signatureResponse.status}: ${signatureResponseText}`)
+    assert.match(signatureResponseText, /没有可用的上游账户/, `相同上游错误失败不应返回上游原文：${signatureResponseText}`)
+    assert.notEqual(signatureResponseText, sameSignatureRejectedRequestBody, '相同上游错误失败不应保留上游原始错误体')
+    assert.equal(sameSignatureUpstreamHitCount, 3, `同一错误应尝试全部三个账号，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 3, '相同上游错误失败后也应本地屏蔽失败账号')
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
-    const cachedSignatureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const repeatedSignatureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${apiKey.key}`,
@@ -199,10 +217,10 @@ async function main(): Promise<void> {
       },
       body: sameSignatureRequestBody
     })
-    const cachedSignatureResponseText = await cachedSignatureResponse.text()
-    assert.equal(cachedSignatureResponse.status, 422, `重复同签名请求应命中短路缓存并保留上游 HTTP 状态，实际 HTTP ${cachedSignatureResponse.status}: ${cachedSignatureResponseText}`)
-    assert.equal(cachedSignatureResponseText, sameSignatureRejectedRequestBody, `重复同签名请求缓存响应体应与上游原文一致：${cachedSignatureResponseText}`)
-    assert.equal(sameSignatureUpstreamHitCount, 3, `重复同签名请求命中缓存后不应再打上游，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
+    const repeatedSignatureResponseText = await repeatedSignatureResponse.text()
+    assert.equal(repeatedSignatureResponse.status, 503, `重复相同上游错误请求不应命中旧短路缓存，实际 HTTP ${repeatedSignatureResponse.status}: ${repeatedSignatureResponseText}`)
+    assert.equal(sameSignatureUpstreamHitCount, 6, `重复相同上游错误请求清理本地屏蔽后应重新探测上游，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
     currentScenario = 'invalid_request_switch_account_success'
@@ -223,40 +241,15 @@ async function main(): Promise<void> {
     assert.equal(instructionsRequiredResponse.status, 200, `首账号 invalid_request_error 但后续账号可用时应切号成功，实际 HTTP ${instructionsRequiredResponse.status}: ${instructionsRequiredResponseText}`)
     assert.equal(instructionsRequiredResponseText, invalidRequestSwitchSuccessBody, `invalid_request_error 切号成功响应体异常：${instructionsRequiredResponseText}`)
     assert.equal(invalidRequestSwitchUpstreamHitCount, 2, `invalid_request_error 切号成功应命中两个账号，实际 ${invalidRequestSwitchUpstreamHitCount}`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, 'invalid_request_error 切号成功不应本地屏蔽账号')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 1, '首账号失败后即使后续账号成功，也应短期屏蔽首账号')
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
     settingsRepository.updateSettings({
       temporaryUnschedulableRetryAttempts: 2,
       temporaryUnschedulableRetryIntervalSeconds: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
-    currentScenario = 'unknown_failure_same_account_retry'
-    const transientResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'transient 502 should retry same account' }],
-        stream: false
-      })
-    })
-    const transientResponseText = await transientResponse.text()
-
-    assert.equal(transientResponse.status, 200, `未知非 2xx 失败应先同账号重试并在恢复后成功，实际 HTTP ${transientResponse.status}: ${transientResponseText}`)
-    assert.equal(transient502UpstreamHitCount, 3, `未知非 2xx 失败应在同账号上重试两次后成功，实际上游命中 ${transient502UpstreamHitCount} 次`)
-    assert.equal(transientResponseText, transient502SuccessBody, `同账号重试成功响应体异常：${transientResponseText}`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '未知非 2xx 失败同账号重试成功前不应本地屏蔽账号')
-
-    settingsRepository.updateSettings({
-      temporaryUnschedulableRetryAttempts: 0,
-      temporaryUnschedulableRetryIntervalSeconds: 0
-    })
-    gatewayCache.clearGatewayRuntimeCache()
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-    requestErrorSignatureCacheService.clearRequestErrorSignatureCacheForTest()
     currentScenario = 'unknown_failure_switch_account_success'
     const switchResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -273,15 +266,83 @@ async function main(): Promise<void> {
     const switchResponseText = await switchResponse.text()
 
     assert.equal(switchResponse.status, 200, `未知失败切到后续账号成功时应返回成功响应，实际 HTTP ${switchResponse.status}: ${switchResponseText}`)
-    assert.equal(unknownSwitchFirstAccountHitCount, 1, `未知失败切号场景首账号应命中 1 次，实际 ${unknownSwitchFirstAccountHitCount}`)
+    assert.equal(unknownSwitchFirstAccountHitCount, 1, `即使配置了同账号重试次数，未知失败首账号也只应命中 1 次，实际 ${unknownSwitchFirstAccountHitCount}`)
     assert.equal(unknownSwitchSecondAccountHitCount, 1, `未知失败切号场景后续账号应命中 1 次，实际 ${unknownSwitchSecondAccountHitCount}`)
     assert.equal(switchResponseText, unknownSwitchSuccessBody, `未知失败切号成功响应体异常：${switchResponseText}`)
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '未知失败切到后续账号成功后不应本地屏蔽首账号')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 1, '未知失败切到后续账号成功后应本地屏蔽首账号')
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
+
+    currentScenario = 'dispatch_loop_local_suppression_race'
+    const dispatchRaceResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'second account becomes locally suppressed during dispatch' }],
+        stream: false
+      })
+    })
+    const dispatchRaceResponseText = await dispatchRaceResponse.text()
+    assert.equal(dispatchRaceResponse.status, 200, `调度中途账号被本地屏蔽后应跳过并继续后续账号，实际 HTTP ${dispatchRaceResponse.status}: ${dispatchRaceResponseText}`)
+    assert.equal(dispatchRaceResponseText, dispatchRaceSuccessBody, `调度中途屏蔽后第三账号响应体异常：${dispatchRaceResponseText}`)
+    assert.equal(dispatchRaceFirstAccountHitCount, 1, `调度竞态场景应先命中首账号一次，实际 ${dispatchRaceFirstAccountHitCount}`)
+    assert.equal(dispatchRaceSecondAccountHitCount, 0, `第二账号在首账号失败后被本地屏蔽，不应继续命中，实际 ${dispatchRaceSecondAccountHitCount}`)
+    assert.equal(dispatchRaceThirdAccountHitCount, 1, `第二账号被屏蔽后应切到第三账号成功，实际 ${dispatchRaceThirdAccountHitCount}`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 2, '调度竞态后首账号和中途屏蔽账号都应处于本地短期屏蔽')
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
+
+    currentScenario = 'single_account_wait_recover_success'
+    accountSideEffects.suppressGatewayAccountLocallyForTest(waitAccount.id, 40, '单账号等待回归')
+    const waitResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${waitApiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'single account should wait until local suppression releases' }],
+        stream: false
+      })
+    })
+    const waitResponseText = await waitResponse.text()
+    assert.equal(waitResponse.status, 200, `单账号处于本地屏蔽时应先等待释放再请求，实际 HTTP ${waitResponse.status}: ${waitResponseText}`)
+    assert.equal(waitResponseText, singleAccountWaitSuccessBody, `单账号等待释放后的响应体异常：${waitResponseText}`)
+    assert.equal(singleAccountWaitHitCount, 1, `单账号等待释放后应只命中一次上游，实际 ${singleAccountWaitHitCount}`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '单账号屏蔽释放后本地屏蔽计数应恢复为 0')
+
+    currentScenario = 'single_account_wait_extended_recover_success'
+    accountSideEffects.suppressGatewayAccountLocallyForTest(waitAccount.id, 60, '单账号等待续期回归')
+    const extendedWaitResponsePromise = fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${waitApiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'single account wait should continue after suppression extension' }],
+        stream: false
+      })
+    })
+    await delay(20)
+    accountSideEffects.suppressGatewayAccountLocallyForTest(waitAccount.id, 120, '单账号等待续期回归-续期')
+    const extendedWaitResponse = await extendedWaitResponsePromise
+    const extendedWaitResponseText = await extendedWaitResponse.text()
+    assert.equal(extendedWaitResponse.status, 200, `单账号本地屏蔽等待被续期时应继续等到释放，实际 HTTP ${extendedWaitResponse.status}: ${extendedWaitResponseText}`)
+    assert.equal(extendedWaitResponseText, singleAccountExtendedWaitSuccessBody, `单账号等待续期释放后的响应体异常：${extendedWaitResponseText}`)
+    assert.equal(singleAccountExtendedWaitHitCount, 1, `单账号续期等待释放后应只命中一次上游，实际 ${singleAccountExtendedWaitHitCount}`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '单账号续期屏蔽释放后本地屏蔽计数应恢复为 0')
 
     usageRecordQueue.flushAllUsageRecordQueue()
     const accounts = repositories.listAccounts()
-    for (const account of [firstAccount, secondAccount, thirdAccount]) {
+    for (const account of [firstAccount, secondAccount, thirdAccount, waitAccount]) {
       const updated = accounts.find((item) => item.id === account.id)
       assert(updated, `账号 ${account.name} 不存在`)
       assert.equal(updated.status, 'active', `账号 ${account.name} 不应被冷却或停用`)
@@ -290,7 +351,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('请求级上游失败回归通过：无效 JSON 由网关拒绝；invalid_request_error 先切号确认，后续账号成功则救回，同签名才返回客户端；未知非 2xx 失败先同账号重试或切号；账号不冷却、不本地屏蔽')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝；任意上游失败先本地屏蔽并切号；全部失败返回统一网关错误；重复请求不再命中旧请求级短路缓存；单账号屏蔽时会等待释放并支持续期等待')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -310,17 +371,24 @@ type RegressionScenario =
   | 'same_signature_third_account_success'
   | 'same_signature_confirmation'
   | 'invalid_request_switch_account_success'
-  | 'unknown_failure_same_account_retry'
   | 'unknown_failure_switch_account_success'
+  | 'dispatch_loop_local_suppression_race'
+  | 'single_account_wait_recover_success'
+  | 'single_account_wait_extended_recover_success'
 
 let currentScenario: RegressionScenario = 'invalid_request_confirmation'
+let dispatchRaceSecondAccountId = ''
 let invalidRequestUpstreamHitCount = 0
 let thirdAccountSuccessHitCount = 0
 let sameSignatureUpstreamHitCount = 0
 let invalidRequestSwitchUpstreamHitCount = 0
-let transient502UpstreamHitCount = 0
 let unknownSwitchFirstAccountHitCount = 0
 let unknownSwitchSecondAccountHitCount = 0
+let dispatchRaceFirstAccountHitCount = 0
+let dispatchRaceSecondAccountHitCount = 0
+let dispatchRaceThirdAccountHitCount = 0
+let singleAccountWaitHitCount = 0
+let singleAccountExtendedWaitHitCount = 0
 const invalidRequestRejectedRequestMessage = 'Invalid value for model level: expected one of low, medium, high.'
 const invalidRequestRejectedRequestBody = JSON.stringify({
   error: {
@@ -369,18 +437,6 @@ const thirdAccountSuccessBody = JSON.stringify({
   ],
   usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
 })
-const transient502SuccessBody = JSON.stringify({
-  id: 'chatcmpl-transient-502-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
 const unknownSwitchSuccessBody = JSON.stringify({
   id: 'chatcmpl-unknown-switch-regression',
   object: 'chat.completion',
@@ -393,18 +449,77 @@ const unknownSwitchSuccessBody = JSON.stringify({
   ],
   usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
 })
+const singleAccountWaitSuccessBody = JSON.stringify({
+  id: 'chatcmpl-single-account-wait-regression',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok after local suppression wait' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
+const singleAccountExtendedWaitSuccessBody = JSON.stringify({
+  id: 'chatcmpl-single-account-extended-wait-regression',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok after extended local suppression wait' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
+const dispatchRaceSuccessBody = JSON.stringify({
+  id: 'chatcmpl-dispatch-race-regression',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok after dispatch suppression skip' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
 
 function createRejectedRequestUpstream(): http.Server {
   return http.createServer((req, res) => {
-    if (currentScenario === 'unknown_failure_same_account_retry') {
-      transient502UpstreamHitCount += 1
-      if (transient502UpstreamHitCount <= 2) {
+    if (currentScenario === 'single_account_wait_recover_success') {
+      singleAccountWaitHitCount += 1
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(singleAccountWaitSuccessBody)
+      return
+    }
+    if (currentScenario === 'single_account_wait_extended_recover_success') {
+      singleAccountExtendedWaitHitCount += 1
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(singleAccountExtendedWaitSuccessBody)
+      return
+    }
+    if (currentScenario === 'dispatch_loop_local_suppression_race') {
+      const authorization = String(req.headers.authorization ?? '')
+      if (authorization.includes('sk-request-failure-1')) {
+        dispatchRaceFirstAccountHitCount += 1
+        if (dispatchRaceSecondAccountId) {
+          accountSideEffects.suppressGatewayAccountLocallyForTest(dispatchRaceSecondAccountId, 30_000, '调度中途屏蔽回归')
+        }
         res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: { message: 'transient upstream error', type: 'server_error', code: 'bad_gateway' } }))
+        res.end(JSON.stringify({ error: { message: 'first account failed before dispatch race', type: 'server_error', code: 'bad_gateway' } }))
         return
       }
+      if (authorization.includes('sk-request-failure-2')) {
+        dispatchRaceSecondAccountHitCount += 1
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ id: 'should-not-hit-second-account' }))
+        return
+      }
+      dispatchRaceThirdAccountHitCount += 1
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(transient502SuccessBody)
+      res.end(dispatchRaceSuccessBody)
       return
     }
     if (currentScenario === 'unknown_failure_switch_account_success') {
@@ -463,29 +578,33 @@ function totalUpstreamHitCount(): number {
     + thirdAccountSuccessHitCount
     + sameSignatureUpstreamHitCount
     + invalidRequestSwitchUpstreamHitCount
-    + transient502UpstreamHitCount
+    + unknownSwitchFirstAccountHitCount
+    + unknownSwitchSecondAccountHitCount
+    + dispatchRaceFirstAccountHitCount
+    + dispatchRaceSecondAccountHitCount
+    + dispatchRaceThirdAccountHitCount
+    + singleAccountWaitHitCount
+    + singleAccountExtendedWaitHitCount
 }
 
-function createRegressionApiKey(groupId: string): { id: string; key: string } {
-  const key = 'sk-request-failure-regression'
+function createRegressionApiKey(groupId: string, key: string): { id: string; key: string } {
   const id = databaseModule.newId('key')
   const now = databaseModule.nowIso()
   databaseModule.getDatabase()
     .prepare(`
-      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       id,
       'sys_admin',
-      '请求级失败回归 Key',
+      `上游失败回归 Key ${key.slice(-8)}`,
       null,
       cryptoModule.hashSecret(key),
       key.slice(0, 8),
       cryptoModule.encryptJson({ key }),
       'active',
       groupId,
-      null,
       null,
       null,
       '[]',
@@ -517,6 +636,10 @@ async function closeServer(server: http.Server | undefined): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.close((error) => error ? rejectPromise(error) : resolvePromise())
   })
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 }
 
 await main()
