@@ -10,6 +10,9 @@ release/
 !**/.env.example
 *.log
 logs/
+reports/*.json
+!reports/perf-limit-report-2026-05-17.json
+reports/profiles/
 .DS_Store
 Thumbs.db
 .idea/
