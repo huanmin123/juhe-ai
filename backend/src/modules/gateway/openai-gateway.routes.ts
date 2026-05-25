@@ -83,7 +83,7 @@ function dbServiceUnavailableMessage(error: unknown): string | undefined {
   if (!(error instanceof Error)) {
     return undefined
   }
-  return /^本地数据库服务(暂时不可用|未就绪|请求超时|请求队列已满|已退出)/.test(error.message)
+  return /^本地数据库服务(暂时不可用|未就绪|请求超时|已退出)/.test(error.message)
     ? error.message
     : undefined
 }

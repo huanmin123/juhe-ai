@@ -4,7 +4,6 @@ import type { GroupSchedulingPolicy } from '../../domain/types.js'
 export type ClientIpConcurrencyRejectReason =
   | 'limit_reached'
   | 'queue_disabled'
-  | 'queue_full'
   | 'timeout'
   | 'aborted'
 
@@ -62,7 +61,6 @@ export interface ClientIpConcurrencyAcquireInput {
 
 const states = new Map<string, ClientIpConcurrencyState>()
 let nextQueueItemId = 1
-const clientIpQueueLimitMax = 1_000
 
 export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcquireInput): Promise<ClientIpConcurrencyDecision> {
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
@@ -101,10 +99,6 @@ export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcq
   const maxQueueWaitMs = normalizeNonNegativeInteger(policy.maxQueueWaitMs, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueWaitMs)
   if (maxQueueWaitMs <= 0) {
     return Promise.resolve(rejectedDecision('queue_disabled', state, limit, 0))
-  }
-  const maxQueueSize = clientIpQueueLimit(limit)
-  if (state.items.length >= maxQueueSize) {
-    return Promise.resolve(rejectedDecision('queue_full', state, limit, 0))
   }
 
   return new Promise<ClientIpConcurrencyDecision>((resolve) => {
@@ -251,18 +245,9 @@ function clientIpConcurrencyKey(systemAccountId: string, groupId: string, apiKey
   return `${systemAccountId}:${groupId}:${apiKeyId?.trim() || 'internal'}:${clientIp}`
 }
 
-function clientIpQueueLimit(limit: number): number {
-  return Math.min(clientIpQueueLimitMax, Math.max(20, normalizePositiveInteger(limit, 1) * 2))
-}
-
 function normalizeNonNegativeInteger(value: unknown, fallback: number): number {
   const numeric = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : fallback
-}
-
-function normalizePositiveInteger(value: unknown, fallback: number): number {
-  const numeric = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(numeric) ? Math.max(1, Math.trunc(numeric)) : fallback
 }
 
 function noop(): void {}

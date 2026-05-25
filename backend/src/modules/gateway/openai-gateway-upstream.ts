@@ -47,7 +47,8 @@ export class UpstreamRequestAbortedError extends Error {
 
 const gatewayUpstreamAgentOptions: http.AgentOptions = {
   keepAlive: true,
-  maxSockets: Infinity
+  maxSockets: Infinity,
+  maxFreeSockets: 2048
 }
 let directHttpAgent: http.Agent | undefined
 let directHttpsAgent: https.Agent | undefined

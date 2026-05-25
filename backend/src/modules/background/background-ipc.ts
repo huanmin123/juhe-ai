@@ -197,7 +197,6 @@ let usageRecordMessageQueueBytes = 0
 let regularWorkerMessageQueueBytes = 0
 let sendingMessage = false
 let sendingWorkerMessage: BackgroundWorkerMessage | undefined
-let pendingPendingMessagesWarningCount = 0
 const pendingMessageDropCounts = emptyIpcQueueCounts()
 const pendingMessageRejectCounts = emptyIpcQueueCounts()
 let pendingRequests = new Map<string, PendingRequest>()
@@ -208,9 +207,6 @@ let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
 let lastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
 let backgroundWorkerReadyHandler: (() => void) | undefined
-
-const maxPendingMessages = 5000
-const maxPendingMessageBytes = 128 * 1024 * 1024
 
 if (runtimeConfig.processRole === 'worker') {
   process.on('message', handleParentMessage)
@@ -449,18 +445,6 @@ function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
     regularWorkerMessageQueue.push(message)
     regularWorkerMessageQueueBytes += messageBytes
   }
-  const droppedMessages = enforceWorkerMessageQueueLimits()
-  const currentMessageDropped = droppedMessages.includes(message)
-  if (currentMessageDropped) {
-    return false
-  }
-  if (isWorkerQueueStillOverLimit(message)) {
-    removeNewestWorkerMessage(message)
-    recordPendingMessageRejected(message)
-    pendingPendingMessagesWarningCount += 1
-    process.stderr.write(`[background-worker] 消息队列已满，已拒绝 ${describeDroppedWorkerMessage(message)} ${pendingPendingMessagesWarningCount} 次\n`)
-    return false
-  }
 
   flushWorkerMessageQueue()
   return true
@@ -531,111 +515,6 @@ function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
     regularWorkerMessageQueue.unshift(message)
     regularWorkerMessageQueueBytes += messageBytes
   }
-  enforceWorkerMessageQueueLimits()
-}
-
-function isWorkerQueueStillOverLimit(message: BackgroundWorkerMessage): boolean {
-  if (message.type === 'background_worker_usage_records') {
-    return usageRecordMessageQueue.length > maxPendingMessages || usageRecordMessageQueueBytes > maxPendingMessageBytes
-  }
-  return regularWorkerMessageQueue.length > maxPendingMessages || regularWorkerMessageQueueBytes > maxPendingMessageBytes
-}
-
-function removeNewestWorkerMessage(message: BackgroundWorkerMessage): void {
-  if (message.type === 'background_worker_usage_records') {
-    const dropped = usageRecordMessageQueue.removeAt(usageRecordMessageQueue.length - 1)
-    if (dropped) {
-      usageRecordMessageQueueBytes = Math.max(0, usageRecordMessageQueueBytes - estimateWorkerMessageBytes(dropped))
-    }
-    return
-  }
-  removeRegularWorkerMessageAt(regularWorkerMessageQueue.length - 1)
-}
-
-function enforceWorkerMessageQueueLimits(): BackgroundWorkerMessage[] {
-  const droppedMessages: BackgroundWorkerMessage[] = []
-  while (usageRecordMessageQueue.length > maxPendingMessages || usageRecordMessageQueueBytes > maxPendingMessageBytes) {
-    const dropped = usageRecordMessageQueue.shift()
-    if (!dropped) {
-      break
-    }
-    usageRecordMessageQueueBytes = Math.max(0, usageRecordMessageQueueBytes - estimateWorkerMessageBytes(dropped))
-    droppedMessages.push(dropped)
-    recordPendingMessageDropped(dropped)
-    pendingPendingMessagesWarningCount += 1
-    process.stderr.write(`[background-worker] 消息队列已满，已丢弃 ${describeDroppedWorkerMessage(dropped)} ${pendingPendingMessagesWarningCount} 次\n`)
-  }
-
-  while (regularWorkerMessageQueue.length > maxPendingMessages || regularWorkerMessageQueueBytes > maxPendingMessageBytes) {
-    const dropped = shiftDroppableRegularWorkerMessage()
-    if (!dropped) {
-      break
-    }
-    droppedMessages.push(dropped)
-    recordPendingMessageDropped(dropped)
-    pendingPendingMessagesWarningCount += 1
-    process.stderr.write(`[background-worker] 消息队列已满，已丢弃 ${describeDroppedWorkerMessage(dropped)} ${pendingPendingMessagesWarningCount} 次\n`)
-  }
-
-  return droppedMessages
-}
-
-function shiftDroppableRegularWorkerMessage(): BackgroundWorkerMessage | undefined {
-  const droppedSuccessAudit = shiftSuccessAuditWorkerMessage()
-  if (droppedSuccessAudit) return droppedSuccessAudit
-
-  const runtimeLogIndex = regularWorkerMessageQueue.findIndex((message) => message.type === 'background_worker_runtime_log_line')
-  if (runtimeLogIndex >= 0) {
-    return removeRegularWorkerMessageAt(runtimeLogIndex)
-  }
-
-  const nonAuditIndex = regularWorkerMessageQueue.findIndex((message) => message.type !== 'background_worker_audit_logs' && message.type !== 'background_worker_operation_logs' && message.type !== 'background_worker_record_maintenance')
-  if (nonAuditIndex >= 0) {
-    return removeRegularWorkerMessageAt(nonAuditIndex)
-  }
-
-  return undefined
-}
-
-function shiftSuccessAuditWorkerMessage(): BackgroundWorkerMessage | undefined {
-  const messageIndex = regularWorkerMessageQueue.findIndex((message) => message.type === 'background_worker_audit_logs' && message.items.some(isSuccessAuditSample))
-  if (messageIndex < 0) return undefined
-
-  const message = regularWorkerMessageQueue.at(messageIndex)
-  if (!message || message.type !== 'background_worker_audit_logs') return undefined
-
-  const droppedItems = message.items.filter(isSuccessAuditSample)
-  const retainedItems = message.items.filter((item) => !isSuccessAuditSample(item))
-  if (retainedItems.length === 0) {
-    return removeRegularWorkerMessageAt(messageIndex)
-  }
-
-  const originalBytes = estimateWorkerMessageBytes(message)
-  const retainedMessage: BackgroundWorkerMessage = { ...message, items: retainedItems }
-  regularWorkerMessageQueue.set(messageIndex, retainedMessage)
-  regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - originalBytes + estimateWorkerMessageBytes(retainedMessage))
-  return { ...message, items: droppedItems }
-}
-
-function removeRegularWorkerMessageAt(index: number): BackgroundWorkerMessage | undefined {
-  const message = regularWorkerMessageQueue.removeAt(index)
-  if (message) {
-    regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - estimateWorkerMessageBytes(message))
-  }
-  return message
-}
-
-function isSuccessAuditSample(input: AuditLogInput): boolean {
-  return input.auditOutcome === 'success' && input.success === true
-}
-
-function describeDroppedWorkerMessage(message: BackgroundWorkerMessage): string {
-  if (message.type !== 'background_worker_audit_logs') {
-    return `${message.type} 消息`
-  }
-  const successCount = message.items.filter(isSuccessAuditSample).length
-  const retainedCount = message.items.length - successCount
-  return `审计日志消息（成功样本 ${successCount} 条，需保留事件 ${retainedCount} 条）`
 }
 
 function buildPendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
@@ -657,14 +536,6 @@ function addQueueRuntimeMessages(runtime: BackgroundWorkerIpcQueuesRuntime, queu
     item.queueLength += 1
     item.queueBytes = (item.queueBytes ?? 0) + estimateWorkerMessageBytes(message)
   }
-}
-
-function recordPendingMessageDropped(message: BackgroundWorkerMessage): void {
-  pendingMessageDropCounts[ipcQueueKeyForMessage(message)] += 1
-}
-
-function recordPendingMessageRejected(message: BackgroundWorkerMessage): void {
-  pendingMessageRejectCounts[ipcQueueKeyForMessage(message)] += 1
 }
 
 type IpcQueueKey = keyof BackgroundWorkerIpcQueuesRuntime

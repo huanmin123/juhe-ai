@@ -1,0 +1,129 @@
+{
+  "generatedAt": "2026-05-25T08:14:46.343Z",
+  "note": "本结果来自本机模拟上游和临时 SQLite 数据库，用于容量参考；真实部署容量需要在目标机器和目标网络下复测。",
+  "config": {
+    "scenarios": [
+      "responses_stream"
+    ],
+    "concurrencyLevels": [
+      380
+    ],
+    "durationSeconds": 4,
+    "warmupSeconds": 1,
+    "localPersistenceEnabled": false,
+    "requestTimeoutMs": 7000,
+    "upstreamLatencyMs": 20,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 8,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5.4-mini",
+    "promptBytes": 64,
+    "p95TargetMs": 1000,
+    "reportPath": "F:\\sub2api-lite\\reports\\perf-check-no-local-persistence-stream-380-2026-05-25.json"
+  },
+  "seeded": {
+    "apiKeyId": "key_1779696880957_a4bc50ef",
+    "groupId": "grp_1779696880652_f245ac6e",
+    "accountCount": 8
+  },
+  "results": [
+    {
+      "scenario": "responses_stream",
+      "concurrency": 380,
+      "durationSeconds": 4.075,
+      "warmupSeconds": 1,
+      "totalRequests": 8687,
+      "successRequests": 0,
+      "failedRequests": 8687,
+      "qps": 2131.87,
+      "successQps": 0,
+      "errorRate": 1,
+      "latencyMs": {
+        "min": 75.621,
+        "avg": 177.204,
+        "p50": 171.915,
+        "p90": 213.964,
+        "p95": 223.192,
+        "p99": 239.216,
+        "max": 367.012
+      },
+      "eventLoopDelayMs": {
+        "mean": 29.87,
+        "p95": 37.749,
+        "p99": 44.04,
+        "max": 47.481
+      },
+      "cpu": {
+        "userMs": 1485,
+        "systemMs": 297,
+        "totalMs": 1782,
+        "perRequestMs": 0.2051
+      },
+      "memory": {
+        "rssStartMb": 231.29,
+        "rssEndMb": 358.04,
+        "heapUsedStartMb": 118.15,
+        "heapUsedEndMb": 101.56
+      },
+      "statusCounts": {
+        "503": 8687
+      },
+      "errorCounts": {
+        "HTTP 503": 8687
+      },
+      "statusSamples": {
+        "503": "{\"error\":{\"message\":\"本地数据库服务暂时不可用，请稍后重试\",\"type\":\"service_unavailable\"}}"
+      },
+      "responseBytes": 929503,
+      "usageRecordsDelta": 0,
+      "auditLogsDelta": 0,
+      "usageRecordBreakdownDelta": {
+        "total": 0,
+        "bySuccess": {},
+        "byStatusCode": {},
+        "byErrorCode": {},
+        "byErrorMessage": {},
+        "byEndpoint": {}
+      },
+      "auditLogBreakdownDelta": {
+        "total": 0,
+        "byOutcome": {},
+        "bySuccess": {},
+        "byStatusCode": {},
+        "bySampleReason": {},
+        "byCaptureStatus": {}
+      },
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 0,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    }
+  ],
+  "upstream": {
+    "totalRequests": 0,
+    "pathCounts": {}
+  },
+  "datasetDatabase": {
+    "usageRecords": 0,
+    "auditLogs": 0,
+    "bytes": 4096,
+    "walBytes": 1268992
+  },
+  "statsDatabase": {
+    "bytes": 4096,
+    "walBytes": 2163032
+  }
+}

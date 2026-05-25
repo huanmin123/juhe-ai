@@ -50,7 +50,6 @@ export type RecordMaintenanceJob =
 const recordMaintenanceFlushIntervalMs = 100
 const recordMaintenanceRetryPolicy = fixedRetryPolicy('record_maintenance_queue_flush', 1000)
 const recordMaintenanceBatchSize = 50
-const recordMaintenanceMaxPending = 5000
 const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
 
 export interface RecordMaintenanceEnqueueResult {
@@ -83,7 +82,7 @@ export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJo
   if (runtimeConfig.processRole === 'server') {
     const queued = sendRecordMaintenanceJobsToWorker([job])
     if (!queued) {
-      recordRecordMaintenanceDispatchFailure(new Error('后台 worker IPC 队列已满或不可用'), job)
+      recordRecordMaintenanceDispatchFailure(new Error('后台 worker IPC 不可用'), job)
     }
     return {
       job,
@@ -222,17 +221,6 @@ export function installRecordMaintenanceQueueShutdownHooks(): void {
 function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): void {
   assertLocalRecordMaintenanceWriteAllowed('enqueueRecordMaintenanceJobLocal')
   pendingJobs.push(job)
-  if (pendingJobs.length > recordMaintenanceMaxPending) {
-    const overflowCount = pendingJobs.length - recordMaintenanceMaxPending
-    retainedOverflowWarningCount += 1
-    logger.warn({
-      event: 'record_maintenance_queue_soft_limit_exceeded',
-      overflowCount,
-      retainedOverflowWarningCount,
-      pendingCount: pendingJobs.length
-    }, '数据维护队列超过软上限，已保留待执行任务并触发立即处理')
-    flushRecordMaintenanceQueue({ drain: true, maxBatches: 5 })
-  }
   scheduleRecordMaintenanceFlush(pendingJobs.length >= recordMaintenanceBatchSize ? 0 : recordMaintenanceFlushIntervalMs)
 }
 

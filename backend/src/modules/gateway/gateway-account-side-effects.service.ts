@@ -58,6 +58,7 @@ export interface GatewayAccountSideEffectState {
   processing: boolean
   enqueuedCount: number
   completedCount: number
+  skippedHealthySuccessCount: number
   failedAttemptCount: number
   droppedCount: number
   expiredCount: number
@@ -65,7 +66,6 @@ export interface GatewayAccountSideEffectState {
   nextAttemptAt?: string
 }
 
-const maxQueuedSideEffects = 1024
 const sideEffectRetentionMs = 10 * 60_000
 const localSuppressionMaxMs = 10 * 60_000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
@@ -77,11 +77,17 @@ let drainTimer: NodeJS.Timeout | undefined
 let drainTimerDueAtMs: number | undefined
 let enqueuedCount = 0
 let completedCount = 0
+let skippedHealthySuccessCount = 0
 let failedAttemptCount = 0
 let droppedCount = 0
 let expiredCount = 0
 
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
+  if (isHealthySuccessfulAccountSideEffect(operation)) {
+    clearLocalAccountSuppression(gatewayAccountRuntimeKey(operation.account))
+    skippedHealthySuccessCount += 1
+    return
+  }
   enqueueAccountSideEffect(operation)
 }
 
@@ -195,6 +201,7 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     processing: processingSideEffects,
     enqueuedCount,
     completedCount,
+    skippedHealthySuccessCount,
     failedAttemptCount,
     droppedCount,
     expiredCount,
@@ -235,10 +242,6 @@ export async function flushGatewayAccountSideEffects(): Promise<void> {
 
 function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
   const now = Date.now()
-  if (sideEffectQueue.length >= maxQueuedSideEffects) {
-    sideEffectQueue.shift()
-    droppedCount += 1
-  }
   sideEffectQueue.push({
     operation,
     attempts: 0,
@@ -249,6 +252,18 @@ function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
   sortSideEffectQueue()
   enqueuedCount += 1
   scheduleSideEffectDrain(0)
+}
+
+function isHealthySuccessfulAccountSideEffect(operation: AccountErrorHandlingOperation): boolean {
+  if (!operation.input.success) {
+    return false
+  }
+  const account = operation.account
+  return account.status === 'active'
+    && !account.cooldownUntil
+    && !account.lastErrorMessage
+    && Math.max(0, account.streamFailureCount ?? 0) === 0
+    && !account.streamFailureWindowStartedAt
 }
 
 function scheduleSideEffectDrain(delayMs: number): void {

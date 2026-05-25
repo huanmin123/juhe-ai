@@ -10,10 +10,9 @@ import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../background/background-ipc.js'
 import { isSensitiveHeaderName } from './openai-gateway-usage.js'
 
-const usageRecordFlushIntervalMs = 100
+const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
-const usageRecordBatchSize = 200
-const usageRecordMaxPending = 10000
+const usageRecordBatchSize = 1000
 
 let pendingUsageRecords: UsageRecordInput[] = []
 let flushTimer: NodeJS.Timeout | undefined
@@ -33,7 +32,7 @@ export function enqueueUsageRecord(input: UsageRecordInput): void {
   const queuedInput = normalizeUsageRecordInput(input)
   if (runtimeConfig.processRole === 'server') {
     if (!sendUsageRecordsToWorker([queuedInput])) {
-      recordUsageRecordDispatchFailure(new Error('后台 worker IPC 队列已满或不可用'), queuedInput)
+      recordUsageRecordDispatchFailure(new Error('后台 worker IPC 不可用'), queuedInput)
     }
     return
   }
@@ -51,17 +50,6 @@ export function enqueueUsageRecordsLocal(inputs: UsageRecordInput[]): void {
 function enqueueUsageRecordLocal(input: UsageRecordInput): void {
   assertLocalUsageRecordWriteAllowed('enqueueUsageRecordLocal')
   pendingUsageRecords.push(input)
-  if (pendingUsageRecords.length > usageRecordMaxPending) {
-    const overflowCount = pendingUsageRecords.length - usageRecordMaxPending
-    retainedOverflowWarningCount += 1
-    logger.warn({
-      event: 'usage_record_queue_soft_limit_exceeded',
-      overflowCount,
-      retainedOverflowWarningCount,
-      pendingCount: pendingUsageRecords.length
-    }, '使用记录队列超过软上限，已保留待写入记录并触发立即落库')
-    flushUsageRecordQueue({ drain: true, maxBatches: 5 })
-  }
   scheduleUsageRecordFlush(pendingUsageRecords.length >= usageRecordBatchSize ? 0 : usageRecordFlushIntervalMs)
 }
 

@@ -41,12 +41,13 @@ export async function pipeNonStreamUpstreamResponse(
     startedAt: number
     captureBytes?: number
     usageTailBytes?: number
+    captureBody?: boolean
     signal?: AbortSignal
     onFirstByte?: () => void
   }
 ): Promise<NonStreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
-  const capture = new LimitedBufferCapture(input.captureBytes ?? nonStreamResponseCaptureBytes)
+  const capture = new LimitedBufferCapture(input.captureBody === false ? -1 : input.captureBytes ?? nonStreamResponseCaptureBytes)
   const usageTailCapture = new RollingBufferCapture(input.usageTailBytes ?? nonStreamUsageTailCaptureBytes)
   let transferredBytes = 0
   let firstByteMs: number | undefined

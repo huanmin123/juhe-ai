@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
+import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
@@ -78,12 +79,34 @@ interface ScenarioResult {
   }
   statusCounts: Record<string, number>
   errorCounts: Record<string, number>
+  statusSamples: Record<string, string>
   responseBytes: number
   usageRecordsDelta: number
   auditLogsDelta: number
+  usageRecordBreakdownDelta: UsageRecordBreakdown
+  auditLogBreakdownDelta: AuditLogBreakdown
   usageRecordQueueLength: number
   auditLogQueueLength: number
   upstreamRequestsDelta: number
+  accountSideEffects?: unknown
+}
+
+interface UsageRecordBreakdown {
+  total: number
+  bySuccess: Record<string, number>
+  byStatusCode: Record<string, number>
+  byErrorCode: Record<string, number>
+  byErrorMessage: Record<string, number>
+  byEndpoint: Record<string, number>
+}
+
+interface AuditLogBreakdown {
+  total: number
+  byOutcome: Record<string, number>
+  bySuccess: Record<string, number>
+  byStatusCode: Record<string, number>
+  bySampleReason: Record<string, number>
+  byCaptureStatus: Record<string, number>
 }
 
 interface LoadStats {
@@ -93,15 +116,38 @@ interface LoadStats {
   failedRequests: number
   statusCounts: Map<string, number>
   errorCounts: Map<string, number>
+  statusSamples: Map<string, string>
   responseBytes: number
 }
 
 interface UpstreamRuntime {
   totalRequests: number
   pathCounts: Map<string, number>
+  connections: ConnectionTracker
+}
+
+interface ConnectionTracker {
+  acceptedSockets: number
+  closedSockets: number
+  peakActiveSockets: number
+  activeSockets: Set<Socket>
+  socketIds: WeakMap<Socket, number>
+  requestsBySocketId: Map<number, number>
+}
+
+interface ConnectionStats {
+  acceptedSockets: number
+  closedSockets: number
+  activeSockets: number
+  peakActiveSockets: number
+  socketsWithRequests: number
+  reusedSockets: number
+  maxRequestsPerSocket: number
+  avgRequestsPerSocket: number
 }
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-perf-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const perfListenBacklog = 8192
 runtimeConfig.databasePath = join(tempRoot, 'perf.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
@@ -121,7 +167,8 @@ const [
   gatewayCache,
   usageRecordQueue,
   auditLogQueue,
-  usageRecordShards
+  usageRecordShards,
+  gatewayAccountSideEffects
 ] = await Promise.all([
   import('../../modules/gateway/openai-gateway.routes.js'),
   import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
@@ -131,7 +178,8 @@ const [
   import('../../modules/gateway/gateway-runtime-cache.service.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
-  import('../../storage/usage-record-shards.js')
+  import('../../storage/usage-record-shards.js'),
+  import('../../modules/gateway/gateway-account-side-effects.service.js')
 ])
 
 async function main(): Promise<void> {
@@ -140,8 +188,10 @@ async function main(): Promise<void> {
   let upstreamServer: http.Server | undefined
   const upstreamRuntime: UpstreamRuntime = {
     totalRequests: 0,
-    pathCounts: new Map()
+    pathCounts: new Map(),
+    connections: createConnectionTracker()
   }
+  const gatewayConnections = createConnectionTracker()
 
   try {
     upstreamServer = createMockOpenAIUpstream(config, upstreamRuntime)
@@ -149,9 +199,11 @@ async function main(): Promise<void> {
     const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
 
     const seeded = seedGatewayData(config, upstreamBaseUrl)
+    prewarmStorageDatabases()
+    prewarmUsageRecordShards()
     gatewayCache.clearGatewayRuntimeCacheLocal()
 
-    appServer = createGatewayServer()
+    appServer = createGatewayServer(gatewayConnections)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverPort(appServer)}`
 
@@ -172,7 +224,7 @@ async function main(): Promise<void> {
       }
     }
 
-    const summary = buildSummary(config, results, seeded, upstreamRuntime)
+    const summary = buildSummary(config, results, seeded, upstreamRuntime, gatewayConnections)
     console.log('\n性能综合测试汇总')
     console.log(JSON.stringify(summary, null, 2))
     if (config.reportPath) {
@@ -227,16 +279,46 @@ function seedGatewayData(config: PerfConfig, upstreamBaseUrl: string): SeededGat
   }
 }
 
-function createGatewayServer(): http.Server {
+function prewarmUsageRecordShards(): void {
+  const createdAt = new Date().toISOString()
+  const targetShardCount = usageRecordShards.usageRecordShardCount()
+  const seenShardKeys = new Set<string>()
+  for (let index = 0; seenShardKeys.size < targetShardCount && index < targetShardCount * 100; index += 1) {
+    const id = usageRecordShards.generateUsageRecordId(createdAt, `perf-prewarm-${index}`)
+    const location = usageRecordShards.usageRecordShardLocationForRecord(id, createdAt)
+    if (seenShardKeys.has(location.shardKey)) {
+      continue
+    }
+    usageRecordShards.getUsageRecordShardDatabase(location)
+    seenShardKeys.add(location.shardKey)
+  }
+  if (seenShardKeys.size < targetShardCount) {
+    console.warn(`usage shard 预热未覆盖全部分片：${seenShardKeys.size}/${targetShardCount}`)
+  }
+}
+
+function prewarmStorageDatabases(): void {
+  databaseModule.getDatabase().prepare('SELECT 1').get()
+  databaseModule.getDatasetDatabase().prepare('SELECT 1').get()
+  databaseModule.getStatsDatabase().prepare('SELECT 1').get()
+}
+
+function createGatewayServer(connectionTracker: ConnectionTracker): http.Server {
   const gatewayRawBodyLimit = '64mb'
   const app = express()
+  app.use((req, _res, next) => {
+    recordSocketRequest(connectionTracker, req.socket)
+    next()
+  })
   app.use(requestContextMiddleware)
   app.use(cors({ credentials: true, origin: true }))
   app.get('/__aisys__/health', (_req, res) => {
     res.json({ status: 'ok', service: 'juhe-ai-performance-test' })
   })
   app.use(express.raw({ type: () => true, limit: gatewayRawBodyLimit }), handleGatewayRawBodyError, captureGatewayRawBody, openAIGatewayRouter)
-  return http.createServer(app)
+  const server = http.createServer(app)
+  attachConnectionTracker(server, connectionTracker)
+  return server
 }
 
 function handleGatewayRawBodyError(error: Error & { status?: number; statusCode?: number }, _req: Request, res: ExpressResponse, next: NextFunction): void {
@@ -258,7 +340,8 @@ function handleGatewayRawBodyError(error: Error & { status?: number; statusCode?
 }
 
 function createMockOpenAIUpstream(config: PerfConfig, runtime: UpstreamRuntime): http.Server {
-  return http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
+    recordSocketRequest(runtime.connections, req.socket)
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     runtime.totalRequests += 1
     increment(runtime.pathCounts, `${req.method ?? 'GET'} ${url.pathname}`)
@@ -296,6 +379,8 @@ function createMockOpenAIUpstream(config: PerfConfig, runtime: UpstreamRuntime):
       }, config.upstreamLatencyMs)
     })
   })
+  attachConnectionTracker(server, runtime.connections)
+  return server
 }
 
 async function runScenario(input: {
@@ -318,6 +403,8 @@ async function runScenario(input: {
 
   const usageRecordsBefore = countRows('usage_records')
   const auditLogsBefore = countRows('audit_logs')
+  const usageRecordBreakdownBefore = usageRecordBreakdown(usageRecordsBefore)
+  const auditLogBreakdownBefore = auditLogBreakdown(auditLogsBefore)
   const upstreamRequestsBefore = input.upstreamRuntime.totalRequests
   const memoryStart = process.memoryUsage()
   const cpuStart = process.cpuUsage()
@@ -337,6 +424,10 @@ async function runScenario(input: {
   const memoryEnd = process.memoryUsage()
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
+  const usageRecordsAfter = countRows('usage_records')
+  const auditLogsAfter = countRows('audit_logs')
+  const usageRecordBreakdownAfter = usageRecordBreakdown(usageRecordsAfter)
+  const auditLogBreakdownAfter = auditLogBreakdown(auditLogsAfter)
 
   const totalRequests = stats.totalRequests
   const latency = latencySummary(stats.latenciesMs)
@@ -372,12 +463,16 @@ async function runScenario(input: {
     },
     statusCounts: objectFromCounts(stats.statusCounts),
     errorCounts: objectFromCounts(stats.errorCounts),
+    statusSamples: Object.fromEntries(stats.statusSamples.entries()),
     responseBytes: stats.responseBytes,
-    usageRecordsDelta: countRows('usage_records') - usageRecordsBefore,
-    auditLogsDelta: countRows('audit_logs') - auditLogsBefore,
+    usageRecordsDelta: usageRecordsAfter - usageRecordsBefore,
+    auditLogsDelta: auditLogsAfter - auditLogsBefore,
+    usageRecordBreakdownDelta: subtractUsageRecordBreakdown(usageRecordBreakdownAfter, usageRecordBreakdownBefore),
+    auditLogBreakdownDelta: subtractAuditLogBreakdown(auditLogBreakdownAfter, auditLogBreakdownBefore),
     usageRecordQueueLength: usageRecordQueue.getUsageRecordQueueRuntime().queueLength,
     auditLogQueueLength: auditLogQueue.getAuditLogQueueRuntime().queueLength,
-    upstreamRequestsDelta: input.upstreamRuntime.totalRequests - upstreamRequestsBefore
+    upstreamRequestsDelta: input.upstreamRuntime.totalRequests - upstreamRequestsBefore,
+    accountSideEffects: gatewayAccountSideEffects.getGatewayAccountSideEffectState()
   }
 }
 
@@ -397,6 +492,7 @@ async function runLoadPhase(input: {
     failedRequests: 0,
     statusCounts: new Map(),
     errorCounts: new Map(),
+    statusSamples: new Map(),
     responseBytes: 0
   }
   const endAt = performance.now() + input.durationSeconds * 1000
@@ -423,13 +519,15 @@ async function loadWorker(
     const started = performance.now()
     try {
       const response: globalThis.Response = await fetchWithTimeout(input.baseUrl, input.apiKey, input.scenario, input.config, `${workerIndex}-${sequence}`)
-      const bytes = Buffer.byteLength(await response.text(), 'utf8')
+      const responseText = await response.text()
+      const bytes = Buffer.byteLength(responseText, 'utf8')
       if (input.record) {
         const latencyMs = performance.now() - started
         stats.latenciesMs.push(latencyMs)
         stats.totalRequests += 1
         stats.responseBytes += bytes
         increment(stats.statusCounts, String(response.status))
+        rememberStatusSample(stats.statusSamples, response.status, responseText)
         if (response.ok) {
           stats.successRequests += 1
         } else {
@@ -443,10 +541,34 @@ async function loadWorker(
         stats.latenciesMs.push(latencyMs)
         stats.totalRequests += 1
         stats.failedRequests += 1
-        increment(stats.errorCounts, error instanceof Error ? error.name || error.message : String(error))
+        increment(stats.errorCounts, formatLoadError(error))
       }
     }
   }
+}
+
+function formatLoadError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error)
+  }
+  const parts = [
+    error.name || 'Error',
+    error.message
+  ].filter(Boolean)
+  const cause = (error as Error & { cause?: unknown }).cause
+  const causeCode = objectStringProperty(cause, 'code')
+  if (causeCode) {
+    parts.push(`cause=${causeCode}`)
+  }
+  return parts.join(': ').slice(0, 240)
+}
+
+function objectStringProperty(value: unknown, key: string): string | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined
+  }
+  const property = (value as Record<string, unknown>)[key]
+  return typeof property === 'string' && property.trim() ? property.trim() : undefined
 }
 
 async function fetchWithTimeout(
@@ -613,7 +735,13 @@ function sendUpstreamError(res: http.ServerResponse): void {
   }))
 }
 
-function buildSummary(config: PerfConfig, results: ScenarioResult[], seeded: SeededGateway, upstreamRuntime: UpstreamRuntime): Record<string, unknown> {
+function buildSummary(
+  config: PerfConfig,
+  results: ScenarioResult[],
+  seeded: SeededGateway,
+  upstreamRuntime: UpstreamRuntime,
+  gatewayConnections: ConnectionTracker
+): Record<string, unknown> {
   const stable = results
     .filter((item) => item.errorRate <= 0.01 && item.latencyMs.p95 <= config.p95TargetMs)
     .sort((left, right) => right.successQps - left.successQps)[0]
@@ -640,7 +768,11 @@ function buildSummary(config: PerfConfig, results: ScenarioResult[], seeded: See
     results,
     upstream: {
       totalRequests: upstreamRuntime.totalRequests,
-      pathCounts: objectFromCounts(upstreamRuntime.pathCounts)
+      pathCounts: objectFromCounts(upstreamRuntime.pathCounts),
+      connections: connectionStats(upstreamRuntime.connections)
+    },
+    gateway: {
+      connections: connectionStats(gatewayConnections)
     },
     datasetDatabase: {
       usageRecords: countRows('usage_records'),
@@ -739,6 +871,101 @@ function countRows(tableName: string): number {
   return Number(row?.total ?? 0)
 }
 
+function usageRecordBreakdown(total = countRows('usage_records')): UsageRecordBreakdown {
+  return {
+    total,
+    bySuccess: countUsageRecordsGrouped("CASE WHEN success = 1 THEN 'success' ELSE 'failure' END"),
+    byStatusCode: countUsageRecordsGrouped("COALESCE(CAST(status_code AS TEXT), 'null')"),
+    byErrorCode: countUsageRecordsGrouped("COALESCE(error_code, 'null')"),
+    byErrorMessage: countUsageRecordsGrouped("COALESCE(error_message, 'null')"),
+    byEndpoint: countUsageRecordsGrouped("COALESCE(endpoint, 'null')")
+  }
+}
+
+function auditLogBreakdown(total = countRows('audit_logs')): AuditLogBreakdown {
+  return {
+    total,
+    byOutcome: countDatasetGrouped('audit_logs', "COALESCE(audit_outcome, 'null')"),
+    bySuccess: countDatasetGrouped('audit_logs', "CASE WHEN success = 1 THEN 'success' ELSE 'failure' END"),
+    byStatusCode: countDatasetGrouped('audit_logs', "COALESCE(CAST(final_status_code AS TEXT), 'null')"),
+    bySampleReason: countDatasetGrouped('audit_logs', "COALESCE(sample_reason, 'null')"),
+    byCaptureStatus: countDatasetGrouped('audit_logs', "COALESCE(capture_status, 'null')")
+  }
+}
+
+function subtractUsageRecordBreakdown(after: UsageRecordBreakdown, before: UsageRecordBreakdown): UsageRecordBreakdown {
+  return {
+    total: after.total - before.total,
+    bySuccess: subtractCountRecords(after.bySuccess, before.bySuccess),
+    byStatusCode: subtractCountRecords(after.byStatusCode, before.byStatusCode),
+    byErrorCode: subtractCountRecords(after.byErrorCode, before.byErrorCode),
+    byErrorMessage: subtractCountRecords(after.byErrorMessage, before.byErrorMessage),
+    byEndpoint: subtractCountRecords(after.byEndpoint, before.byEndpoint)
+  }
+}
+
+function subtractAuditLogBreakdown(after: AuditLogBreakdown, before: AuditLogBreakdown): AuditLogBreakdown {
+  return {
+    total: after.total - before.total,
+    byOutcome: subtractCountRecords(after.byOutcome, before.byOutcome),
+    bySuccess: subtractCountRecords(after.bySuccess, before.bySuccess),
+    byStatusCode: subtractCountRecords(after.byStatusCode, before.byStatusCode),
+    bySampleReason: subtractCountRecords(after.bySampleReason, before.bySampleReason),
+    byCaptureStatus: subtractCountRecords(after.byCaptureStatus, before.byCaptureStatus)
+  }
+}
+
+function countDatasetGrouped(tableName: string, expression: string): Record<string, number> {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
+    throw new Error(`非法表名：${tableName}`)
+  }
+  const rows = databaseModule.getDatasetDatabase()
+    .prepare(`SELECT ${expression} AS key, COUNT(*) AS total FROM ${tableName} GROUP BY ${expression}`)
+    .all() as Array<{ key?: string | number | null; total?: number }>
+  return countRowsToRecord(rows)
+}
+
+function countUsageRecordsGrouped(expression: string): Record<string, number> {
+  const counts = new Map<string, number>()
+  for (const location of usageRecordShards.listUsageRecordShardLocations()) {
+    const rows = usageRecordShards.getUsageRecordShardDatabase(location)
+      .prepare(`SELECT ${expression} AS key, COUNT(*) AS total FROM usage_records GROUP BY ${expression}`)
+      .all() as Array<{ key?: string | number | null; total?: number }>
+    for (const row of rows) {
+      addCount(counts, countKey(row.key), Number(row.total ?? 0))
+    }
+  }
+  return objectFromCounts(counts)
+}
+
+function countRowsToRecord(rows: Array<{ key?: string | number | null; total?: number }>): Record<string, number> {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    addCount(counts, countKey(row.key), Number(row.total ?? 0))
+  }
+  return objectFromCounts(counts)
+}
+
+function subtractCountRecords(after: Record<string, number>, before: Record<string, number>): Record<string, number> {
+  const output = new Map<string, number>()
+  const keys = new Set([...Object.keys(after), ...Object.keys(before)])
+  for (const key of keys) {
+    const delta = (after[key] ?? 0) - (before[key] ?? 0)
+    if (delta !== 0) {
+      output.set(key, delta)
+    }
+  }
+  return objectFromCounts(output)
+}
+
+function addCount(counts: Map<string, number>, key: string, count: number): void {
+  counts.set(key, (counts.get(key) ?? 0) + count)
+}
+
+function countKey(value: string | number | null | undefined): string {
+  return value === null || value === undefined ? 'null' : String(value)
+}
+
 function fileBytes(path: string): number {
   return existsSync(path) ? statSync(path).size : 0
 }
@@ -747,8 +974,63 @@ function objectFromCounts(counts: Map<string, number>): Record<string, number> {
   return Object.fromEntries([...counts.entries()].sort(([left], [right]) => left.localeCompare(right)))
 }
 
+function createConnectionTracker(): ConnectionTracker {
+  return {
+    acceptedSockets: 0,
+    closedSockets: 0,
+    peakActiveSockets: 0,
+    activeSockets: new Set(),
+    socketIds: new WeakMap(),
+    requestsBySocketId: new Map()
+  }
+}
+
+function attachConnectionTracker(server: http.Server, tracker: ConnectionTracker): void {
+  server.on('connection', (socket) => {
+    tracker.acceptedSockets += 1
+    tracker.socketIds.set(socket, tracker.acceptedSockets)
+    tracker.activeSockets.add(socket)
+    tracker.peakActiveSockets = Math.max(tracker.peakActiveSockets, tracker.activeSockets.size)
+    socket.once('close', () => {
+      tracker.closedSockets += 1
+      tracker.activeSockets.delete(socket)
+    })
+  })
+}
+
+function recordSocketRequest(tracker: ConnectionTracker, socket: Socket): void {
+  const socketId = tracker.socketIds.get(socket)
+  if (!socketId) {
+    return
+  }
+  tracker.requestsBySocketId.set(socketId, (tracker.requestsBySocketId.get(socketId) ?? 0) + 1)
+}
+
+function connectionStats(tracker: ConnectionTracker): ConnectionStats {
+  const requestCounts = [...tracker.requestsBySocketId.values()]
+  const totalRequests = requestCounts.reduce((total, value) => total + value, 0)
+  return {
+    acceptedSockets: tracker.acceptedSockets,
+    closedSockets: tracker.closedSockets,
+    activeSockets: tracker.activeSockets.size,
+    peakActiveSockets: tracker.peakActiveSockets,
+    socketsWithRequests: requestCounts.length,
+    reusedSockets: requestCounts.filter((count) => count > 1).length,
+    maxRequestsPerSocket: requestCounts.length > 0 ? Math.max(...requestCounts) : 0,
+    avgRequestsPerSocket: requestCounts.length > 0 ? round(totalRequests / requestCounts.length, 3) : 0
+  }
+}
+
 function increment(counts: Map<string, number>, key: string): void {
   counts.set(key, (counts.get(key) ?? 0) + 1)
+}
+
+function rememberStatusSample(samples: Map<string, string>, status: number, bodyText: string): void {
+  const key = String(status)
+  if (samples.has(key)) {
+    return
+  }
+  samples.set(key, bodyText.slice(0, 500))
 }
 
 function positiveIntegerList(value: string, fallback: number[]): number[] {
@@ -808,7 +1090,7 @@ function bytesToMb(value: number): number {
 }
 
 function listen(server: http.Server): Promise<void> {
-  server.listen(0, '127.0.0.1')
+  server.listen({ port: 0, host: '127.0.0.1', backlog: perfListenBacklog })
   if (server.listening) return Promise.resolve()
   return new Promise((resolvePromise, rejectPromise) => {
     server.once('listening', resolvePromise)

@@ -8,7 +8,6 @@ import { sendOperationLogsToWorker } from '../background/background-ipc.js'
 const operationLogFlushIntervalMs = 100
 const operationLogRetryPolicy = fixedRetryPolicy('operation_log_queue_flush', 1000)
 const operationLogBatchSize = 200
-const operationLogMaxPending = 10000
 
 let pendingOperationLogs: OperationLogInput[] = []
 let flushTimer: NodeJS.Timeout | undefined
@@ -28,7 +27,7 @@ export function enqueueOperationLog(input: OperationLogInput): void {
   const queuedInput = normalizeOperationLogInput(input)
   if (runtimeConfig.processRole === 'server') {
     if (!sendOperationLogsToWorker([queuedInput])) {
-      recordOperationLogDispatchFailure(new Error('后台 worker IPC 队列已满或不可用'), queuedInput)
+      recordOperationLogDispatchFailure(new Error('后台 worker IPC 不可用'), queuedInput)
     }
     return
   }
@@ -148,17 +147,6 @@ export function installOperationLogQueueShutdownHooks(): void {
 function enqueueOperationLogLocal(input: OperationLogInput): void {
   assertLocalOperationLogWriteAllowed('enqueueOperationLogLocal')
   pendingOperationLogs.push(input)
-  if (pendingOperationLogs.length > operationLogMaxPending) {
-    const overflowCount = pendingOperationLogs.length - operationLogMaxPending
-    retainedOverflowWarningCount += 1
-    logger.warn({
-      event: 'operation_log_queue_soft_limit_exceeded',
-      overflowCount,
-      retainedOverflowWarningCount,
-      pendingCount: pendingOperationLogs.length
-    }, '操作日志队列超过软上限，已保留待写入记录并触发立即落库')
-    flushOperationLogQueue({ drain: true, maxBatches: 5 })
-  }
   scheduleOperationLogFlush(pendingOperationLogs.length >= operationLogBatchSize ? 0 : operationLogFlushIntervalMs)
 }
 

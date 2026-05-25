@@ -1,0 +1,377 @@
+{
+  "generatedAt": "2026-05-25T07:38:05.652Z",
+  "note": "本结果来自本机模拟上游和临时 SQLite 数据库，用于容量参考；真实部署容量需要在目标机器和目标网络下复测。",
+  "config": {
+    "scenarios": [
+      "responses_stream"
+    ],
+    "concurrencyLevels": [
+      300,
+      340,
+      360,
+      380,
+      400
+    ],
+    "durationSeconds": 6,
+    "warmupSeconds": 1,
+    "requestTimeoutMs": 5000,
+    "upstreamLatencyMs": 20,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 8,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5.4-mini",
+    "promptBytes": 64,
+    "p95TargetMs": 1000,
+    "reportPath": "F:\\sub2api-lite\\reports\\perf-after-load-client-warm-agent-stream-boundary-2026-05-25.json"
+  },
+  "seeded": {
+    "apiKeyId": "key_1779694637234_0cc3950f",
+    "groupId": "grp_1779694636760_cf18b798",
+    "accountCount": 8
+  },
+  "results": [
+    {
+      "scenario": "responses_stream",
+      "concurrency": 300,
+      "durationSeconds": 6.549,
+      "warmupSeconds": 1,
+      "totalRequests": 2277,
+      "successRequests": 2277,
+      "failedRequests": 0,
+      "qps": 347.7,
+      "successQps": 347.7,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 426.965,
+        "avg": 830.641,
+        "p50": 770.335,
+        "p90": 1421.864,
+        "p95": 1573.443,
+        "p99": 1836.441,
+        "max": 1872.131
+      },
+      "eventLoopDelayMs": {
+        "mean": 45.699,
+        "p95": 124.06,
+        "p99": 276.3,
+        "max": 349.962
+      },
+      "cpu": {
+        "userMs": 938,
+        "systemMs": 859,
+        "totalMs": 1797,
+        "perRequestMs": 0.7892
+      },
+      "memory": {
+        "rssStartMb": 202.9,
+        "rssEndMb": 323.52,
+        "heapUsedStartMb": 77.52,
+        "heapUsedEndMb": 198.77
+      },
+      "statusCounts": {
+        "200": 2277
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output"
+      },
+      "responseBytes": 2311155,
+      "usageRecordsDelta": 2421,
+      "auditLogsDelta": 279,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 2277,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 2692,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    },
+    {
+      "scenario": "responses_stream",
+      "concurrency": 340,
+      "durationSeconds": 7.194,
+      "warmupSeconds": 1,
+      "totalRequests": 1236,
+      "successRequests": 1236,
+      "failedRequests": 0,
+      "qps": 171.82,
+      "successQps": 171.82,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 1121.924,
+        "avg": 1838.315,
+        "p50": 1760.475,
+        "p90": 2343.555,
+        "p95": 2428.344,
+        "p99": 2910.258,
+        "max": 2984.592
+      },
+      "eventLoopDelayMs": {
+        "mean": 83.312,
+        "p95": 249.168,
+        "p99": 313,
+        "max": 642.777
+      },
+      "cpu": {
+        "userMs": 594,
+        "systemMs": 360,
+        "totalMs": 954,
+        "perRequestMs": 0.7718
+      },
+      "memory": {
+        "rssStartMb": 319.66,
+        "rssEndMb": 331.05,
+        "heapUsedStartMb": 46.8,
+        "heapUsedEndMb": 118.69
+      },
+      "statusCounts": {
+        "200": 1236
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output"
+      },
+      "responseBytes": 1254540,
+      "usageRecordsDelta": 1540,
+      "auditLogsDelta": 220,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 1236,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 4273,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    },
+    {
+      "scenario": "responses_stream",
+      "concurrency": 360,
+      "durationSeconds": 6.933,
+      "warmupSeconds": 1,
+      "totalRequests": 1367,
+      "successRequests": 1367,
+      "failedRequests": 0,
+      "qps": 197.16,
+      "successQps": 197.16,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 1028.278,
+        "avg": 1716.896,
+        "p50": 1677.86,
+        "p90": 2148.754,
+        "p95": 2705.763,
+        "p99": 3153.155,
+        "max": 3227.229
+      },
+      "eventLoopDelayMs": {
+        "mean": 75.835,
+        "p95": 219.546,
+        "p99": 265.683,
+        "max": 270.795
+      },
+      "cpu": {
+        "userMs": 532,
+        "systemMs": 375,
+        "totalMs": 907,
+        "perRequestMs": 0.6635
+      },
+      "memory": {
+        "rssStartMb": 328.86,
+        "rssEndMb": 339.62,
+        "heapUsedStartMb": 77.42,
+        "heapUsedEndMb": 132.67
+      },
+      "statusCounts": {
+        "200": 1367
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output"
+      },
+      "responseBytes": 1387505,
+      "usageRecordsDelta": 1751,
+      "auditLogsDelta": 253,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 1367,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 6061,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    },
+    {
+      "scenario": "responses_stream",
+      "concurrency": 380,
+      "durationSeconds": 7.767,
+      "warmupSeconds": 1,
+      "totalRequests": 1059,
+      "successRequests": 1052,
+      "failedRequests": 7,
+      "qps": 136.35,
+      "successQps": 135.45,
+      "errorRate": 0.0066,
+      "latencyMs": {
+        "min": 1574.858,
+        "avg": 2553.722,
+        "p50": 2391.895,
+        "p90": 3577.263,
+        "p95": 4082.298,
+        "p99": 4312.865,
+        "max": 4314.255
+      },
+      "eventLoopDelayMs": {
+        "mean": 100.39,
+        "p95": 219.021,
+        "p99": 288.621,
+        "max": 463.995
+      },
+      "cpu": {
+        "userMs": 562,
+        "systemMs": 391,
+        "totalMs": 953,
+        "perRequestMs": 0.8999
+      },
+      "memory": {
+        "rssStartMb": 341.76,
+        "rssEndMb": 350.77,
+        "heapUsedStartMb": 177.1,
+        "heapUsedEndMb": 139.58
+      },
+      "statusCounts": {
+        "200": 1052,
+        "503": 7
+      },
+      "errorCounts": {
+        "HTTP 503": 7
+      },
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output",
+        "503": "{\"error\":{\"message\":\"没有可用的上游账户\",\"type\":\"service_unavailable\"}}"
+      },
+      "responseBytes": 1068340,
+      "usageRecordsDelta": 1889,
+      "auditLogsDelta": 422,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 1052,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 7514,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    },
+    {
+      "scenario": "responses_stream",
+      "concurrency": 400,
+      "durationSeconds": 7.915,
+      "warmupSeconds": 1,
+      "totalRequests": 822,
+      "successRequests": 734,
+      "failedRequests": 88,
+      "qps": 103.85,
+      "successQps": 92.73,
+      "errorRate": 0.1071,
+      "latencyMs": {
+        "min": 1891.343,
+        "avg": 3517.501,
+        "p50": 3429.873,
+        "p90": 4794.641,
+        "p95": 5020.966,
+        "p99": 5026.791,
+        "max": 5027.19
+      },
+      "eventLoopDelayMs": {
+        "mean": 122.887,
+        "p95": 311.951,
+        "p99": 391.381,
+        "max": 408.682
+      },
+      "cpu": {
+        "userMs": 422,
+        "systemMs": 610,
+        "totalMs": 1032,
+        "perRequestMs": 1.2555
+      },
+      "memory": {
+        "rssStartMb": 353.23,
+        "rssEndMb": 358.7,
+        "heapUsedStartMb": 188.38,
+        "heapUsedEndMb": 126.34
+      },
+      "statusCounts": {
+        "200": 734,
+        "503": 8
+      },
+      "errorCounts": {
+        "Error: 请求超时": 80,
+        "HTTP 503": 8
+      },
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output",
+        "503": "{\"error\":{\"message\":\"没有可用的上游账户\",\"type\":\"service_unavailable\"}}"
+      },
+      "responseBytes": 745650,
+      "usageRecordsDelta": 1898,
+      "auditLogsDelta": 472,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 814,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 8699,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    }
+  ],
+  "upstream": {
+    "totalRequests": 8709,
+    "pathCounts": {
+      "POST /v1/responses": 8709
+    }
+  },
+  "datasetDatabase": {
+    "usageRecords": 11462,
+    "auditLogs": 1857,
+    "bytes": 14835712,
+    "walBytes": 5298352
+  },
+  "statsDatabase": {
+    "bytes": 4096,
+    "walBytes": 2163032
+  }
+}

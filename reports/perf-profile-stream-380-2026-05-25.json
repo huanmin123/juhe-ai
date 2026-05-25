@@ -1,0 +1,112 @@
+{
+  "generatedAt": "2026-05-25T07:57:32.734Z",
+  "note": "本结果来自本机模拟上游和临时 SQLite 数据库，用于容量参考；真实部署容量需要在目标机器和目标网络下复测。",
+  "config": {
+    "scenarios": [
+      "responses_stream"
+    ],
+    "concurrencyLevels": [
+      380
+    ],
+    "durationSeconds": 10,
+    "warmupSeconds": 1,
+    "requestTimeoutMs": 7000,
+    "upstreamLatencyMs": 20,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 8,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5.4-mini",
+    "promptBytes": 64,
+    "p95TargetMs": 1000,
+    "reportPath": "F:\\sub2api-lite\\reports\\perf-profile-stream-380-2026-05-25.json"
+  },
+  "seeded": {
+    "apiKeyId": "key_1779695839122_00ecfe5a",
+    "groupId": "grp_1779695838776_409395d6",
+    "accountCount": 8
+  },
+  "results": [
+    {
+      "scenario": "responses_stream",
+      "concurrency": 380,
+      "durationSeconds": 10.589,
+      "warmupSeconds": 1,
+      "totalRequests": 3621,
+      "successRequests": 3621,
+      "failedRequests": 0,
+      "qps": 341.96,
+      "successQps": 341.96,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 703.15,
+        "avg": 1091.729,
+        "p50": 1037.593,
+        "p90": 1572.276,
+        "p95": 1670.095,
+        "p99": 1842.118,
+        "max": 2210.345
+      },
+      "eventLoopDelayMs": {
+        "mean": 45.242,
+        "p95": 101.45,
+        "p99": 148.374,
+        "max": 573.047
+      },
+      "cpu": {
+        "userMs": 704,
+        "systemMs": 422,
+        "totalMs": 1126,
+        "perRequestMs": 0.311
+      },
+      "memory": {
+        "rssStartMb": 224.63,
+        "rssEndMb": 410.11,
+        "heapUsedStartMb": 98.17,
+        "heapUsedEndMb": 233.89
+      },
+      "statusCounts": {
+        "200": 3621
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output"
+      },
+      "responseBytes": 3675315,
+      "usageRecordsDelta": 4591,
+      "auditLogsDelta": 860,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 3621,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 4003,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    }
+  ],
+  "upstream": {
+    "totalRequests": 4003,
+    "pathCounts": {
+      "POST /v1/responses": 4003
+    }
+  },
+  "datasetDatabase": {
+    "usageRecords": 4973,
+    "auditLogs": 896,
+    "bytes": 7090176,
+    "walBytes": 5360152
+  },
+  "statsDatabase": {
+    "bytes": 4096,
+    "walBytes": 2163032
+  }
+}

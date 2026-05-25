@@ -63,6 +63,7 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
+  let closedTransportServer: http.Server | undefined
   try {
     settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
     gatewayCache.clearGatewayRuntimeCache()
@@ -124,10 +125,48 @@ async function main(): Promise<void> {
       schedulable: true
     })
     const waitApiKey = createRegressionApiKey(waitGroup.id, 'sk-request-failure-wait-key')
+    closedTransportServer = http.createServer()
+    await listen(closedTransportServer)
+    const closedTransportBaseUrl = `http://127.0.0.1:${serverAddress(closedTransportServer).port}/v1`
+    await closeServer(closedTransportServer)
+    closedTransportServer = undefined
+    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'openai', enabled: true })
+    for (let index = 0; index < 2; index += 1) {
+      repositories.createAccount({
+        providerCode: 'openai',
+        name: `直连传输失败回归账户-${index + 1}`,
+        type: 'api_key',
+        credentials: {
+          api_key: `sk-direct-transport-failure-${index + 1}`,
+          base_url: closedTransportBaseUrl
+        },
+        groupId: directTransportFailureGroup.id,
+        status: 'active',
+        schedulable: true
+      })
+    }
+    const directTransportFailureApiKey = createRegressionApiKey(directTransportFailureGroup.id, 'sk-direct-transport-failure-key')
 
     appServer = http.createServer(app)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
+
+    const directTransportFailureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${directTransportFailureApiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'direct transport failures should not locally suppress accounts' }],
+        stream: false
+      })
+    })
+    const directTransportFailureText = await directTransportFailureResponse.text()
+    assert.equal(directTransportFailureResponse.status, 503, `直连上游传输失败仍应返回统一网关错误，实际 HTTP ${directTransportFailureResponse.status}: ${directTransportFailureText}`)
+    assert.match(directTransportFailureText, /没有可用的上游账户/, `直连上游传输失败应返回网关统一错误：${directTransportFailureText}`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '直连上游传输错误不应把账号放进长时间本地短期屏蔽')
 
     const invalidJsonHitsBefore = totalUpstreamHitCount()
     const invalidJsonResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -351,12 +390,13 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝；任意上游失败先本地屏蔽并切号；全部失败返回统一网关错误；重复请求不再命中旧请求级短路缓存；单账号屏蔽时会等待释放并支持续期等待')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝；直连传输错误不长期屏蔽账号；上游响应失败会本地屏蔽并切号；全部失败返回统一网关错误；重复请求不再命中旧请求级短路缓存；单账号屏蔽时会等待释放并支持续期等待')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
     await closeServer(appServer)
     await closeServer(upstreamServer)
+    await closeServer(closedTransportServer)
     try {
       databaseModule.getDatabase().close()
       databaseModule.closeStorageDatabases()

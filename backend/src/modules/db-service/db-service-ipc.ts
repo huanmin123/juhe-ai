@@ -49,7 +49,6 @@ interface DbServiceState {
 
 const requestTimeoutMs = 5000
 const invalidateTimeoutMs = 500
-const maxPendingRequests = 10000
 const unavailableCircuitOpenMs = 3000
 
 let dbServiceProcess: ChildProcess | undefined
@@ -124,11 +123,6 @@ export async function requestDbService<T extends DbServiceOperation>(
     }
     throw new Error('本地数据库服务未就绪，请稍后重试')
   }
-  if (pendingRequests.size >= maxPendingRequests) {
-    failedRequestCount += 1
-    throw new Error('本地数据库服务请求队列已满，请稍后重试')
-  }
-
   const requestId = randomUUID()
   const message: DbServiceParentMessage = {
     type: 'db_service_request',

@@ -179,7 +179,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       signal,
       {
         clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
-        onFirstOutput: markFirstOutput
+        onFirstOutput: markFirstOutput,
+        captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads()
       }
     )
   } catch (error) {
@@ -378,6 +379,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     } else if (upstreamResponse.ok) {
       const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
         startedAt,
+        captureBody: auditCapture.shouldCaptureSuccessPayloads(),
         signal,
         onFirstByte: markFirstOutput
       })

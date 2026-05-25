@@ -1,0 +1,153 @@
+{
+  "generatedAt": "2026-05-25T08:18:08.061Z",
+  "note": "本结果来自本机模拟上游和临时 SQLite 数据库，用于容量参考；真实部署容量需要在目标机器和目标网络下复测。",
+  "config": {
+    "scenarios": [
+      "responses_stream"
+    ],
+    "concurrencyLevels": [
+      380
+    ],
+    "durationSeconds": 4,
+    "warmupSeconds": 1,
+    "requestTimeoutMs": 7000,
+    "upstreamLatencyMs": 20,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 8,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5.4-mini",
+    "promptBytes": 64,
+    "p95TargetMs": 1000,
+    "reportPath": "F:\\sub2api-lite\\reports\\perf-ab-batch-750-150-stream-380-isolated-2026-05-25.json"
+  },
+  "seeded": {
+    "apiKeyId": "key_1779697080846_6e61ffb7",
+    "groupId": "grp_1779697080536_30618cdd",
+    "accountCount": 8
+  },
+  "results": [
+    {
+      "scenario": "responses_stream",
+      "concurrency": 380,
+      "durationSeconds": 4.246,
+      "warmupSeconds": 1,
+      "totalRequests": 1766,
+      "successRequests": 1766,
+      "failedRequests": 0,
+      "qps": 415.96,
+      "successQps": 415.96,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 267.927,
+        "avg": 894.35,
+        "p50": 917.531,
+        "p90": 1189.569,
+        "p95": 1387.545,
+        "p99": 1770.319,
+        "max": 1773.493
+      },
+      "eventLoopDelayMs": {
+        "mean": 36.351,
+        "p95": 84.279,
+        "p99": 205.521,
+        "max": 213.254
+      },
+      "cpu": {
+        "userMs": 547,
+        "systemMs": 531,
+        "totalMs": 1078,
+        "perRequestMs": 0.6104
+      },
+      "memory": {
+        "rssStartMb": 228.89,
+        "rssEndMb": 333.26,
+        "heapUsedStartMb": 109.42,
+        "heapUsedEndMb": 189.36
+      },
+      "statusCounts": {
+        "200": 1766
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output"
+      },
+      "responseBytes": 1792490,
+      "usageRecordsDelta": 2521,
+      "auditLogsDelta": 473,
+      "usageRecordBreakdownDelta": {
+        "total": 2521,
+        "bySuccess": {
+          "failure": 755,
+          "success": 1766
+        },
+        "byStatusCode": {
+          "200": 1766,
+          "null": 755
+        },
+        "byErrorCode": {
+          "null": 2521
+        },
+        "byErrorMessage": {
+          "connect ECONNREFUSED 127.0.0.1:51970": 755,
+          "null": 1766
+        },
+        "byEndpoint": {
+          "POST /v1/responses": 2521
+        }
+      },
+      "auditLogBreakdownDelta": {
+        "total": 473,
+        "byOutcome": {
+          "success": 136,
+          "success_after_retry": 337
+        },
+        "bySuccess": {
+          "success": 473
+        },
+        "byStatusCode": {
+          "200": 473
+        },
+        "bySampleReason": {
+          "full_capture": 337,
+          "success_sample_0.1": 136
+        },
+        "byCaptureStatus": {
+          "complete": 473
+        }
+      },
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 1766,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 2267,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    }
+  ],
+  "upstream": {
+    "totalRequests": 2267,
+    "pathCounts": {
+      "POST /v1/responses": 2267
+    }
+  },
+  "datasetDatabase": {
+    "usageRecords": 3022,
+    "auditLogs": 518,
+    "bytes": 4632576,
+    "walBytes": 4742152
+  },
+  "statsDatabase": {
+    "bytes": 4096,
+    "walBytes": 2163032
+  }
+}

@@ -32,6 +32,23 @@ try {
   clearAccountConcurrency()
   clearHighConcurrencyGroupQueues()
 
+  const raceSlot = tryAcquireAccountConcurrency('acct_queue_race_release', 1)
+  assert.equal(raceSlot.acquired, true, '竞态测试前应先占用账号并发')
+  raceSlot.release()
+  const immediateReadyAfterRace = await waitForHighConcurrencyGroupCapacity({
+    systemAccountId: 'sys_queue',
+    groupId: 'grp_queue_race_release',
+    apiKeyId: 'key_queue_race_release',
+    accountIds: ['acct_queue_race_release'],
+    accountConcurrencyLimits: { acct_queue_race_release: 1 },
+    policy: queuePolicy(500)
+  })
+  assert.equal(immediateReadyAfterRace.ready, true, '入队前账号已释放时应立即返回可调度，避免无意义排队')
+  assert.equal(immediateReadyAfterRace.ready ? immediateReadyAfterRace.waitedMs : -1, 0, '入队前容量复查命中时不应产生等待耗时')
+  assert.equal(highConcurrencyGroupQueueSnapshot().length, 0, '入队前容量复查命中时不应留下队列项')
+  clearAccountConcurrency()
+  clearHighConcurrencyGroupQueues()
+
   const heldImageSlot = tryAcquireAccountConcurrency('acct_lane_cross_wake', 2, { lane: 'image', laneLimit: 1 })
   const heldTextSlot = tryAcquireAccountConcurrency('acct_lane_cross_wake', 2, { lane: 'text' })
   assert.equal(heldImageSlot.acquired, true, '跨通道唤醒测试前应占用图像槽')
@@ -98,41 +115,54 @@ try {
   clearAccountConcurrency()
   clearHighConcurrencyGroupQueues()
 
+  const unlimitedQueueSlot = tryAcquireAccountConcurrency('acct_unlimited_queue', 1)
+  assert.equal(unlimitedQueueSlot.acquired, true, '无限队列测试前应先占用账号并发')
   const firstWaitAbort = new AbortController()
   const firstWait = waitForHighConcurrencyGroupCapacity({
     systemAccountId: 'sys_queue',
-    groupId: 'grp_limited',
-    apiKeyId: 'key_limited',
-    accountIds: ['acct_limited'],
+    groupId: 'grp_unlimited_queue',
+    apiKeyId: 'key_unlimited_queue',
+    accountIds: ['acct_unlimited_queue'],
     policy: {
       maxQueueWaitMs: 500,
-      maxQueueSize: 5,
+      maxQueueSize: 1,
       perApiKeyQueueLimit: 1
     },
     signal: firstWaitAbort.signal
   })
-  const rejectedByApiKeyLimit = await waitForHighConcurrencyGroupCapacity({
+  const secondWaitAbort = new AbortController()
+  const secondWait = waitForHighConcurrencyGroupCapacity({
     systemAccountId: 'sys_queue',
-    groupId: 'grp_limited',
-    apiKeyId: 'key_limited',
-    accountIds: ['acct_limited'],
+    groupId: 'grp_unlimited_queue',
+    apiKeyId: 'key_unlimited_queue',
+    accountIds: ['acct_unlimited_queue'],
     policy: {
       maxQueueWaitMs: 500,
-      maxQueueSize: 5,
+      maxQueueSize: 1,
       perApiKeyQueueLimit: 1
-    }
+    },
+    signal: secondWaitAbort.signal
   })
-  assert.equal(rejectedByApiKeyLimit.ready, false, '同一 API Key 超过队列上限应快速失败')
-  assert.equal(rejectedByApiKeyLimit.ready === false ? rejectedByApiKeyLimit.reason : '', 'api_key_queue_full')
+  const unlimitedQueueSnapshot = highConcurrencyGroupQueueSnapshot()[0]
+  assert.equal(unlimitedQueueSnapshot?.queueSize, 2, '超过旧队列上限后仍应保留等待项')
+  assert.equal(unlimitedQueueSnapshot?.perApiKeyQueueSize.key_unlimited_queue, 2, '超过旧 API Key 队列上限后仍应按 Key 记录排队数')
   firstWaitAbort.abort()
-  await firstWait
+  secondWaitAbort.abort()
+  const [firstAbortResult, secondAbortResult] = await Promise.all([firstWait, secondWait])
+  assert.equal(firstAbortResult.ready === false ? firstAbortResult.reason : '', 'aborted')
+  assert.equal(secondAbortResult.ready === false ? secondAbortResult.reason : '', 'aborted')
+  unlimitedQueueSlot.release()
+  clearAccountConcurrency()
   clearHighConcurrencyGroupQueues()
 
+  const timeoutSlot = tryAcquireAccountConcurrency('acct_timeout', 1)
+  assert.equal(timeoutSlot.acquired, true, '超时测试前应先占用账号并发')
   const timeoutResult = await waitForHighConcurrencyGroupCapacity({
     systemAccountId: 'sys_queue',
     groupId: 'grp_timeout',
     apiKeyId: 'key_timeout',
     accountIds: ['acct_timeout'],
+    accountConcurrencyLimits: { acct_timeout: 1 },
     policy: {
       maxQueueWaitMs: 5,
       maxQueueSize: 5,
@@ -141,8 +171,9 @@ try {
   })
   assert.equal(timeoutResult.ready, false, '没有账号释放时应等待超时')
   assert.equal(timeoutResult.ready === false ? timeoutResult.reason : '', 'timeout')
+  timeoutSlot.release()
 
-  console.log('高并发分组短队列回归通过：账号释放唤醒、通道容量检查、每 API Key 队列上限和等待超时均符合预期')
+  console.log('高并发分组短队列回归通过：账号释放唤醒、通道容量检查、旧队列上限不再拒绝和等待超时均符合预期')
 } finally {
   clearAccountConcurrency()
   clearHighConcurrencyGroupQueues()

@@ -87,11 +87,12 @@ brokenWorker.exit()
 const saturatedWorker = new FakeWorkerProcess(41004)
 backgroundIpc.attachBackgroundWorkerProcess(saturatedWorker as unknown as ChildProcess)
 for (let index = 0; index < 5000; index += 1) {
-  assert.equal(backgroundIpc.sendOperationLogsToWorker([operationLog(index)]), true, `保护队列预填充 ${index} 应成功`)
+  assert.equal(backgroundIpc.sendOperationLogsToWorker([operationLog(index)]), true, `旧队列上限预填充 ${index} 应成功`)
 }
-const rejectedSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(50)
-assert.equal(rejectedSnapshot, undefined, 'snapshot 请求被 server IPC 队列拒绝时不能返回 stale lastSnapshot')
-assert.equal(backgroundIpc.getBackgroundWorkerState().rejectedSnapshotRequestCount, 1, '队列拒绝应计入 snapshot 请求拒绝指标')
+const queuedSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(10)
+assert.equal(queuedSnapshot, undefined, 'worker 未就绪导致 snapshot 请求排队超时时不能返回 stale lastSnapshot')
+assert.equal(backgroundIpc.getBackgroundWorkerState().timedOutSnapshotRequestCount, 2, '排队超时应计入 snapshot 请求超时指标')
+assert.equal(backgroundIpc.getBackgroundWorkerState().rejectedSnapshotRequestCount, 0, '超过旧队列上限不应计入 snapshot 请求拒绝指标')
 saturatedWorker.exit()
 
 console.log('后台 worker snapshot stale fallback 回归通过：不可观测时返回 undefined，不复用旧快照')

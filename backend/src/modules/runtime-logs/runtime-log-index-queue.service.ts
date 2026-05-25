@@ -14,17 +14,13 @@ import { sendRuntimeLogLineToWorker } from '../background/background-ipc.js'
 const runtimeLogFlushIntervalMs = 200
 const runtimeLogRetryPolicy = fixedRetryPolicy('runtime_log_index_queue_flush', 1000)
 const runtimeLogBatchSize = 500
-const runtimeLogMaxPending = 20000
 const runtimeLogMaxRawJsonChars = 128 * 1024
-const runtimeLogOverflowWarningIntervalMs = 5000
 
 let pendingRuntimeLogs: RuntimeLogIndexInput[] = []
 let flushTimer: NodeJS.Timeout | undefined
 let flushTimerDelayMs: number | undefined
 let flushing = false
 let droppedRuntimeLogCount = 0
-let lastOverflowWarningAtMs = 0
-let suppressedOverflowWarningCount = 0
 let flushLastSuccessAt: string | undefined
 let flushLastError: string | undefined
 let shutdownHooksInstalled = false
@@ -62,11 +58,6 @@ export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogL
   if (!input) return
 
   pendingRuntimeLogs.push(input)
-  if (pendingRuntimeLogs.length > runtimeLogMaxPending) {
-    const overflowCount = pendingRuntimeLogs.length - runtimeLogMaxPending
-    pendingRuntimeLogs.splice(0, overflowCount)
-    recordRuntimeLogOverflow(overflowCount)
-  }
 
   scheduleRuntimeLogFlush(pendingRuntimeLogs.length >= runtimeLogBatchSize ? 0 : runtimeLogFlushIntervalMs)
 }
@@ -99,11 +90,6 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
       } catch (error) {
         failed = true
         pendingRuntimeLogs = [...batch, ...pendingRuntimeLogs]
-        if (pendingRuntimeLogs.length > runtimeLogMaxPending) {
-          const overflowCount = pendingRuntimeLogs.length - runtimeLogMaxPending
-          pendingRuntimeLogs.splice(runtimeLogMaxPending, overflowCount)
-          recordRuntimeLogOverflow(overflowCount)
-        }
         flushLastError = error instanceof Error ? error.message : String(error)
         writeRuntimeLogIndexError(`运行日志索引写入失败：${flushLastError}`)
         shouldRetry = options.retryOnFailure !== false
@@ -267,22 +253,4 @@ function scheduleRuntimeLogFlush(delayMs: number): void {
 
 function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
-}
-
-function recordRuntimeLogOverflow(overflowCount: number): void {
-  droppedRuntimeLogCount += overflowCount
-
-  const nowMs = Date.now()
-  if (nowMs - lastOverflowWarningAtMs < runtimeLogOverflowWarningIntervalMs) {
-    suppressedOverflowWarningCount += overflowCount
-    return
-  }
-
-  const warningCount = overflowCount + suppressedOverflowWarningCount
-  const suppressedText = suppressedOverflowWarningCount > 0
-    ? `，含前序未重复提示 ${suppressedOverflowWarningCount} 条`
-    : ''
-  suppressedOverflowWarningCount = 0
-  lastOverflowWarningAtMs = nowMs
-  writeRuntimeLogIndexError(`运行日志索引队列已满，累计丢弃 ${warningCount} 条${suppressedText}`)
 }

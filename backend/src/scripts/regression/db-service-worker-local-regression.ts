@@ -41,7 +41,7 @@ async function main(): Promise<void> {
     try {
       await assert.rejects(
         requestDbService({ type: 'status' }),
-        /DB service (暂时不可用|未就绪|请求队列已满|请求超时|已退出)/,
+        /(?:DB service|本地数据库服务)(暂时不可用|未就绪|请求超时|已退出)/,
         'server 角色未挂载 DB service 子进程时不能本地执行 requestDbService'
       )
     } finally {

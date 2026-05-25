@@ -38,6 +38,7 @@ import {
   type ClientIpAccountAvoidanceTracker
 } from './openai-gateway-client-ip-account-avoidance.service.js'
 import {
+  gatewayProxyKey,
   isHighConfidenceProxyRequestError,
   recordGatewayProxyFailure
 } from './openai-gateway-proxy-health.service.js'
@@ -293,12 +294,19 @@ export async function handleUpstreamRequestError(
     })
   }
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-  suppressGatewayAccountLocally(account, settings, `上游账号请求异常：${message}`)
   if (isHighConfidenceProxyRequestError(error)) {
     recordGatewayProxyFailure(account, message)
   }
+  if (shouldSuppressAccountForUpstreamRequestError(account)) {
+    suppressGatewayAccountLocally(account, settings, `上游账号请求异常：${message}`)
+  }
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return { action: 'skip_account', lastAttempt }
+}
+
+function shouldSuppressAccountForUpstreamRequestError(account: UpstreamAccount): boolean {
+  // 直连传输错误通常是上游或本机连接压力，不是账号本身异常；长时间屏蔽会在高并发下把可用账号误伤清空。
+  return Boolean(gatewayProxyKey(account))
 }
 
 export function formatUpstreamRequestErrorMessage(error: unknown): string {

@@ -1,0 +1,272 @@
+{
+  "generatedAt": "2026-05-25T08:46:19.375Z",
+  "note": "本结果来自本机模拟上游和临时 SQLite 数据库，用于容量参考；真实部署容量需要在目标机器和目标网络下复测。",
+  "config": {
+    "scenarios": [
+      "responses_stream"
+    ],
+    "concurrencyLevels": [
+      600,
+      800
+    ],
+    "durationSeconds": 6,
+    "warmupSeconds": 1,
+    "requestTimeoutMs": 7000,
+    "upstreamLatencyMs": 20,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 8,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5.4-mini",
+    "promptBytes": 64,
+    "p95TargetMs": 1000,
+    "reportPath": "F:\\sub2api-lite\\reports\\perf-after-stream-terminal-drain-stream-600-800-2026-05-25.json"
+  },
+  "seeded": {
+    "apiKeyId": "key_1779698761217_6c6cb34d",
+    "groupId": "grp_1779698760903_7c4c31cf",
+    "accountCount": 8
+  },
+  "results": [
+    {
+      "scenario": "responses_stream",
+      "concurrency": 600,
+      "durationSeconds": 6.27,
+      "warmupSeconds": 1,
+      "totalRequests": 4772,
+      "successRequests": 4740,
+      "failedRequests": 32,
+      "qps": 761.12,
+      "successQps": 756.02,
+      "errorRate": 0.0067,
+      "latencyMs": {
+        "min": 181.882,
+        "avg": 786.235,
+        "p50": 768.6,
+        "p90": 1084.954,
+        "p95": 1130.904,
+        "p99": 1368.426,
+        "max": 1486.139
+      },
+      "eventLoopDelayMs": {
+        "mean": 33.402,
+        "p95": 65.241,
+        "p99": 111.346,
+        "max": 363.069
+      },
+      "cpu": {
+        "userMs": 2016,
+        "systemMs": 656,
+        "totalMs": 2672,
+        "perRequestMs": 0.5599
+      },
+      "memory": {
+        "rssStartMb": 229.14,
+        "rssEndMb": 489.63,
+        "heapUsedStartMb": 96.12,
+        "heapUsedEndMb": 87.96
+      },
+      "statusCounts": {
+        "200": 4740
+      },
+      "errorCounts": {
+        "TypeError: fetch failed: cause=ECONNREFUSED": 32
+      },
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output"
+      },
+      "responseBytes": 4811100,
+      "usageRecordsDelta": 4740,
+      "auditLogsDelta": 457,
+      "usageRecordBreakdownDelta": {
+        "total": 4740,
+        "bySuccess": {
+          "success": 4740
+        },
+        "byStatusCode": {
+          "200": 4740
+        },
+        "byErrorCode": {
+          "null": 4740
+        },
+        "byErrorMessage": {
+          "null": 4740
+        },
+        "byEndpoint": {
+          "POST /v1/responses": 4740
+        }
+      },
+      "auditLogBreakdownDelta": {
+        "total": 457,
+        "byOutcome": {
+          "success": 457
+        },
+        "bySuccess": {
+          "success": 457
+        },
+        "byStatusCode": {
+          "200": 457
+        },
+        "bySampleReason": {
+          "success_sample_0.1": 457
+        },
+        "byCaptureStatus": {
+          "complete": 457
+        }
+      },
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4740,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 5164,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    },
+    {
+      "scenario": "responses_stream",
+      "concurrency": 800,
+      "durationSeconds": 6.883,
+      "warmupSeconds": 1,
+      "totalRequests": 6400,
+      "successRequests": 6400,
+      "failedRequests": 0,
+      "qps": 929.82,
+      "successQps": 929.82,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 590.206,
+        "avg": 854.507,
+        "p50": 795.974,
+        "p90": 1158.465,
+        "p95": 1259.599,
+        "p99": 1281.153,
+        "max": 1287.105
+      },
+      "eventLoopDelayMs": {
+        "mean": 30.779,
+        "p95": 49.84,
+        "p99": 268.96,
+        "max": 282.329
+      },
+      "cpu": {
+        "userMs": 1375,
+        "systemMs": 437,
+        "totalMs": 1812,
+        "perRequestMs": 0.2831
+      },
+      "memory": {
+        "rssStartMb": 506.27,
+        "rssEndMb": 565.09,
+        "heapUsedStartMb": 289.35,
+        "heapUsedEndMb": 160.57
+      },
+      "statusCounts": {
+        "200": 6400
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output"
+      },
+      "responseBytes": 6496000,
+      "usageRecordsDelta": 6400,
+      "auditLogsDelta": 658,
+      "usageRecordBreakdownDelta": {
+        "total": 6400,
+        "bySuccess": {
+          "success": 6400
+        },
+        "byStatusCode": {
+          "200": 6400
+        },
+        "byErrorCode": {
+          "null": 6400
+        },
+        "byErrorMessage": {
+          "null": 6400
+        },
+        "byEndpoint": {
+          "POST /v1/responses": 6400
+        }
+      },
+      "auditLogBreakdownDelta": {
+        "total": 658,
+        "byOutcome": {
+          "success": 658
+        },
+        "bySuccess": {
+          "success": 658
+        },
+        "byStatusCode": {
+          "200": 658
+        },
+        "bySampleReason": {
+          "success_sample_0.1": 658
+        },
+        "byCaptureStatus": {
+          "complete": 658
+        }
+      },
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 6400,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 13088,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    }
+  ],
+  "upstream": {
+    "totalRequests": 13088,
+    "pathCounts": {
+      "POST /v1/responses": 13088
+    },
+    "connections": {
+      "acceptedSockets": 800,
+      "closedSockets": 0,
+      "activeSockets": 800,
+      "peakActiveSockets": 800,
+      "socketsWithRequests": 800,
+      "reusedSockets": 800,
+      "maxRequestsPerSocket": 21,
+      "avgRequestsPerSocket": 16.36
+    }
+  },
+  "gateway": {
+    "connections": {
+      "acceptedSockets": 928,
+      "closedSockets": 0,
+      "activeSockets": 928,
+      "peakActiveSockets": 928,
+      "socketsWithRequests": 928,
+      "reusedSockets": 928,
+      "maxRequestsPerSocket": 19,
+      "avgRequestsPerSocket": 14.103
+    }
+  },
+  "datasetDatabase": {
+    "usageRecords": 13088,
+    "auditLogs": 1328,
+    "bytes": 9089024,
+    "walBytes": 6006992
+  },
+  "statsDatabase": {
+    "bytes": 4096,
+    "walBytes": 2163032
+  }
+}

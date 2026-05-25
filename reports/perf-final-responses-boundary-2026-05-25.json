@@ -1,0 +1,249 @@
+{
+  "generatedAt": "2026-05-25T07:43:14.716Z",
+  "note": "本结果来自本机模拟上游和临时 SQLite 数据库，用于容量参考；真实部署容量需要在目标机器和目标网络下复测。",
+  "config": {
+    "scenarios": [
+      "responses"
+    ],
+    "concurrencyLevels": [
+      400,
+      600,
+      800
+    ],
+    "durationSeconds": 6,
+    "warmupSeconds": 1,
+    "requestTimeoutMs": 5000,
+    "upstreamLatencyMs": 20,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 8,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5.4-mini",
+    "promptBytes": 64,
+    "p95TargetMs": 1000,
+    "reportPath": "F:\\sub2api-lite\\reports\\perf-final-responses-boundary-2026-05-25.json"
+  },
+  "seeded": {
+    "apiKeyId": "key_1779694967359_1ddea5ba",
+    "groupId": "grp_1779694967040_ef5463ed",
+    "accountCount": 8
+  },
+  "estimatedStableCapacity": {
+    "scenario": "responses",
+    "concurrency": 400,
+    "successQps": 513.57,
+    "p95LatencyMs": 980.825,
+    "p99LatencyMs": 1174.491,
+    "errorRate": 0,
+    "condition": "errorRate <= 1% 且 p95 <= 1000ms"
+  },
+  "results": [
+    {
+      "scenario": "responses",
+      "concurrency": 400,
+      "durationSeconds": 6.663,
+      "warmupSeconds": 1,
+      "totalRequests": 3422,
+      "successRequests": 3422,
+      "failedRequests": 0,
+      "qps": 513.57,
+      "successQps": 513.57,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 310.181,
+        "avg": 718.326,
+        "p50": 716.337,
+        "p90": 955.895,
+        "p95": 980.825,
+        "p99": 1174.491,
+        "max": 1254.757
+      },
+      "eventLoopDelayMs": {
+        "mean": 60.677,
+        "p95": 178.389,
+        "p99": 392.167,
+        "max": 418.644
+      },
+      "cpu": {
+        "userMs": 531,
+        "systemMs": 985,
+        "totalMs": 1516,
+        "perRequestMs": 0.443
+      },
+      "memory": {
+        "rssStartMb": 207.34,
+        "rssEndMb": 379.73,
+        "heapUsedStartMb": 87.68,
+        "heapUsedEndMb": 206.12
+      },
+      "statusCounts": {
+        "200": 3422
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "{\"id\":\"resp_perf\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-5.4-mini\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK "
+      },
+      "responseBytes": 2658894,
+      "usageRecordsDelta": 3422,
+      "auditLogsDelta": 337,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 3422,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 3764,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    },
+    {
+      "scenario": "responses",
+      "concurrency": 600,
+      "durationSeconds": 6.507,
+      "warmupSeconds": 1,
+      "totalRequests": 3868,
+      "successRequests": 3868,
+      "failedRequests": 0,
+      "qps": 594.42,
+      "successQps": 594.42,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 531.011,
+        "avg": 975.836,
+        "p50": 943.787,
+        "p90": 1122.838,
+        "p95": 1422.555,
+        "p99": 2191.417,
+        "max": 2541.336
+      },
+      "eventLoopDelayMs": {
+        "mean": 53.442,
+        "p95": 117.899,
+        "p99": 200.933,
+        "max": 248.644
+      },
+      "cpu": {
+        "userMs": 469,
+        "systemMs": 594,
+        "totalMs": 1063,
+        "perRequestMs": 0.2748
+      },
+      "memory": {
+        "rssStartMb": 394.72,
+        "rssEndMb": 443.43,
+        "heapUsedStartMb": 87.24,
+        "heapUsedEndMb": 114.79
+      },
+      "statusCounts": {
+        "200": 3868
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "{\"id\":\"resp_perf\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-5.4-mini\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK "
+      },
+      "responseBytes": 3005436,
+      "usageRecordsDelta": 4092,
+      "auditLogsDelta": 470,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 3868,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 8327,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    },
+    {
+      "scenario": "responses",
+      "concurrency": 800,
+      "durationSeconds": 6.673,
+      "warmupSeconds": 1,
+      "totalRequests": 3379,
+      "successRequests": 3379,
+      "failedRequests": 0,
+      "qps": 506.4,
+      "successQps": 506.4,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 680.289,
+        "avg": 1499.344,
+        "p50": 1272.246,
+        "p90": 2457.118,
+        "p95": 2850.353,
+        "p99": 3764.064,
+        "max": 3908.376
+      },
+      "eventLoopDelayMs": {
+        "mean": 59.578,
+        "p95": 139.198,
+        "p99": 276.562,
+        "max": 297.009
+      },
+      "cpu": {
+        "userMs": 484,
+        "systemMs": 656,
+        "totalMs": 1140,
+        "perRequestMs": 0.3374
+      },
+      "memory": {
+        "rssStartMb": 450.7,
+        "rssEndMb": 496.54,
+        "heapUsedStartMb": 223.34,
+        "heapUsedEndMb": 164.83
+      },
+      "statusCounts": {
+        "200": 3379
+      },
+      "errorCounts": {},
+      "statusSamples": {
+        "200": "{\"id\":\"resp_perf\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-5.4-mini\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK "
+      },
+      "responseBytes": 2625483,
+      "usageRecordsDelta": 4025,
+      "auditLogsDelta": 630,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 3379,
+      "accountSideEffects": {
+        "queueLength": 0,
+        "processing": false,
+        "enqueuedCount": 0,
+        "completedCount": 0,
+        "skippedHealthySuccessCount": 12506,
+        "failedAttemptCount": 0,
+        "droppedCount": 0,
+        "expiredCount": 0,
+        "localSuppressedAccountCount": 0
+      }
+    }
+  ],
+  "upstream": {
+    "totalRequests": 12506,
+    "pathCounts": {
+      "POST /v1/responses": 12506
+    }
+  },
+  "datasetDatabase": {
+    "usageRecords": 13832,
+    "auditLogs": 1845,
+    "bytes": 14106624,
+    "walBytes": 5207712
+  },
+  "statsDatabase": {
+    "bytes": 4096,
+    "walBytes": 2163032
+  }
+}

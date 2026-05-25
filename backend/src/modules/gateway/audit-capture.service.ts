@@ -99,6 +99,8 @@ export class AuditCaptureContext {
   private readonly startedAtMs: number
   private readonly startedAtIso: string
   private readonly trafficSource: OpenAIGatewayTrafficSource
+  private readonly sampleBucket: number
+  private readonly successCaptureSelected: boolean
   private readonly metadataOnly: boolean
   private readonly enabled: boolean
   private readonly successSampleRate: number
@@ -113,6 +115,7 @@ export class AuditCaptureContext {
   private overflowed = false
   private approximateBytes = 0
   private sequenceIndex = 0
+  private clientRequestPayloadCaptured = false
 
   constructor(input: AuditCaptureContextInput) {
     const settings = readAuditLogSettings()
@@ -125,6 +128,8 @@ export class AuditCaptureContext {
     this.startedAtMs = input.startedAtMs
     this.startedAtIso = new Date(input.startedAtMs).toISOString()
     this.trafficSource = normalizeOpenAIGatewayTrafficSource(input.trafficSource)
+    this.sampleBucket = sampleBucketForTraceId(this.traceId)
+    this.successCaptureSelected = this.sampleBucket < Math.round(this.successSampleRate * 10000)
     this.metadataOnly = input.captureMode === 'metadata_only'
     if (!this.enabled) {
       return
@@ -143,13 +148,9 @@ export class AuditCaptureContext {
       })
       return
     }
-    this.addPayload({
-      partType: 'client_request',
-      headers: requestHeadersToObject(input.req),
-      body: (input.req as RawBodyRequest).rawBody,
-      contentType: input.req.header('content-type'),
-      contentEncoding: input.req.header('content-encoding')
-    })
+    if (this.shouldCaptureSuccessPayloads()) {
+      this.addClientRequestPayload()
+    }
   }
 
   bindContext(context: AuditGatewayContext): void {
@@ -161,6 +162,10 @@ export class AuditCaptureContext {
 
   markClientAborted(): void {
     this.clientAborted = true
+  }
+
+  shouldCaptureSuccessPayloads(): boolean {
+    return this.enabled && !this.metadataOnly && this.successCaptureSelected
   }
 
   addGatewayMetadata(input: AddGatewayMetadataInput): void {
@@ -222,7 +227,7 @@ export class AuditCaptureContext {
     }
     this.attempts.push(attempt)
     this.activeAttemptByTempId.set(tempId, { tempId, attempt, startedAtMs, completed: false })
-    if (!this.metadataOnly) {
+    if (this.shouldCaptureSuccessPayloads()) {
       this.addPayload({
         attemptTempId: tempId,
         partType: 'upstream_request',
@@ -252,7 +257,11 @@ export class AuditCaptureContext {
     if (!input.success) {
       this.hadFailedAttempt = true
     }
-    if (!this.metadataOnly && (input.responseHeaders || input.responseBody !== undefined)) {
+    if (
+      !this.metadataOnly
+      && (!input.success || this.shouldCaptureSuccessPayloads())
+      && (input.responseHeaders || input.responseBody !== undefined)
+    ) {
       this.addPayload({
         attemptTempId: tempId,
         partType: 'upstream_response',
@@ -278,16 +287,19 @@ export class AuditCaptureContext {
         ? 'success_after_retry'
         : input.outcome
     const success = input.success && outcome !== 'client_aborted'
-    const sampleBucket = sampleBucketForTraceId(this.traceId)
-    const shouldCapture = this.metadataOnly || outcome !== 'success' || sampleBucket < Math.round(this.successSampleRate * 10000)
+    const shouldCapture = this.metadataOnly || outcome !== 'success' || this.successCaptureSelected
     if (!shouldCapture) {
       return
     }
 
+    const shouldCapturePayloadBodies = !this.metadataOnly && (outcome !== 'success' || this.successCaptureSelected)
+    if (outcome !== 'success') {
+      this.addClientRequestPayload()
+    }
     if (input.accountId) {
       this.bindContext({ accountId: input.accountId })
     }
-    if (!this.metadataOnly && (input.responseBody !== undefined || input.responseHeaders)) {
+    if (shouldCapturePayloadBodies && (input.responseBody !== undefined || input.responseHeaders)) {
       this.addPayload({
         partType: input.responsePartType ?? (input.success ? 'gateway_response' : 'gateway_error'),
         headers: input.responseHeaders ? normalizeSafeHeaders(input.responseHeaders) : undefined,
@@ -317,7 +329,7 @@ export class AuditCaptureContext {
       errorPhase: clientAborted ? input.errorPhase ?? 'client' : input.errorPhase,
       errorCode: input.errorCode,
       errorMessage: clientAborted ? input.errorMessage ?? 'Client aborted request' : input.errorMessage,
-      sampleBucket,
+      sampleBucket: this.sampleBucket,
       sampleReason: this.metadataOnly ? `${this.trafficSource}_metadata_only` : outcome === 'success' ? `success_sample_${this.successSampleRate}` : 'full_capture',
       captureStatus: this.overflowed ? 'overflow' : 'complete',
       startedAt: this.startedAtIso,
@@ -328,6 +340,18 @@ export class AuditCaptureContext {
       payloads: this.payloads
     }
     enqueueAuditLog(auditLog)
+  }
+
+  private addClientRequestPayload(): void {
+    if (!this.enabled || this.metadataOnly || this.clientRequestPayloadCaptured) return
+    this.clientRequestPayloadCaptured = true
+    this.addPayload({
+      partType: 'client_request',
+      headers: requestHeadersToObject(this.req),
+      body: (this.req as RawBodyRequest).rawBody,
+      contentType: this.req.header('content-type'),
+      contentEncoding: this.req.header('content-encoding')
+    })
   }
 
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {

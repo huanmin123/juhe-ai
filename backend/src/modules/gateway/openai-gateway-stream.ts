@@ -59,13 +59,6 @@ export interface StreamBodyOmissionSummary {
   failedReceived: boolean
 }
 
-class StreamCompletedAfterTerminalSignal extends Error {
-  constructor() {
-    super('上游流式响应已收到终止事件')
-    this.name = 'StreamCompletedAfterTerminalSignal'
-  }
-}
-
 export interface StreamFailureContext {
   downstreamBytesWritten: number
   outputReceived: boolean
@@ -74,10 +67,12 @@ export interface StreamFailureContext {
 export interface StreamPipeOptions {
   clientRetryEnabled?: boolean
   onFirstOutput?: () => void
+  captureSuccessPayloads?: boolean
 }
 
 const streamDiagnosticCaptureBytes = 256 * 1024
 const streamAuditCaptureBytes = 1024 * 1024
+const streamTerminalKeepAliveDrainMs = 50
 const streamProgressLogIntervalMs = 60_000
 const streamBackpressureLogIntervalMs = 30_000
 
@@ -95,8 +90,9 @@ export async function pipeUpstreamStream(
   const interceptor = new OpenAIStreamInterceptBuffer({
     clientRetryEnabled: options.clientRetryEnabled === true
   })
-  const responseCapture = new LimitedBufferCapture(streamAuditCaptureBytes)
-  const upstreamCapture = new LimitedBufferCapture(streamAuditCaptureBytes)
+  const captureSuccessPayloads = options.captureSuccessPayloads !== false
+  const responseCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
+  const upstreamCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
   const streamLogger = getRequestLogger()
   let completed = false
@@ -147,6 +143,35 @@ export async function pipeUpstreamStream(
   const bodyOmissionFor = (inspection: OpenAIStreamInspection) => bodyCaptureOmitted
     ? streamBodyOmissionSummary(inspection, totalUpstreamBytes, totalResponseBytes)
     : undefined
+  const finishTerminalSuccess = (
+    inspection: OpenAIStreamInspection,
+    input: { drainForKeepAlive?: boolean; eofPendingFlush?: boolean } = {}
+  ): StreamPipeResult => {
+    omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: input.eofPendingFlush })
+    if (input.drainForKeepAlive) {
+      res.off('close', closeIterator)
+    }
+    endResponse(res)
+    if (input.drainForKeepAlive) {
+      void drainIteratorAfterTerminalForKeepAlive(iterator)
+    }
+    streamLogger.info({
+      event: 'gateway_stream_finished_success_after_terminal',
+      elapsedMs: Date.now() - startedAt,
+      chunkCount: chunkIndex,
+      totalUpstreamBytes,
+      totalResponseBytes,
+      firstTokenMs,
+      sseEventCount: inspection.eventCount,
+      sseEventTypeCounts: inspection.eventTypeCounts,
+      recentSseEventTypes: inspection.recentEventTypes,
+      outputReceived: inspection.outputReceived,
+      outputEventCount: inspection.outputEventCount,
+      upstreamDrainScheduledForKeepAlive: input.drainForKeepAlive === true || undefined,
+      eofPendingFlush: input.eofPendingFlush === true || undefined
+    }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
+    return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+  }
   res.once('close', closeIterator)
 
   streamLogger.info({
@@ -233,7 +258,7 @@ export async function pipeUpstreamStream(
         totalResponseBytes += outbound.length
         if (latestInspection.terminalReceived && !latestInspection.failedReceived && chunkCanEndAfterTerminal) {
           terminalEventWritten = true
-          throw new StreamCompletedAfterTerminalSignal()
+          return finishTerminalSuccess(inspector.finish(), { drainForKeepAlive: true, eofPendingFlush: true })
         }
         const writeNow = Date.now()
         if (
@@ -303,7 +328,7 @@ export async function pipeUpstreamStream(
           rewriteErrorCode: decision.rewriteErrorCode,
           outputSeen: decision.outputSeen
         }, '网关已拦截上游流式错误并改写为客户端可重试事件')
-        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, bodyOmissionFor(latestInspection))
+        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
     }
 
@@ -346,22 +371,7 @@ export async function pipeUpstreamStream(
         totalResponseBytes += outbound.length
         if (latestInspection.terminalReceived && !latestInspection.failedReceived && eofCanEndAfterTerminal) {
           terminalEventWritten = true
-          endResponse(res)
-          streamLogger.info({
-            event: 'gateway_stream_finished_success_after_terminal',
-            elapsedMs: Date.now() - startedAt,
-            chunkCount: chunkIndex,
-            totalUpstreamBytes,
-            totalResponseBytes,
-            firstTokenMs,
-            sseEventCount: latestInspection.eventCount,
-            sseEventTypeCounts: latestInspection.eventTypeCounts,
-            recentSseEventTypes: latestInspection.recentEventTypes,
-            outputReceived: latestInspection.outputReceived,
-            outputEventCount: latestInspection.outputEventCount,
-            eofPendingFlush: true
-          }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
-          return streamResult(true, '已完成', undefined, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, bodyOmissionFor(latestInspection))
+          return finishTerminalSuccess(latestInspection, { eofPendingFlush: true })
         }
         const writeNow = Date.now()
         if (
@@ -400,30 +410,11 @@ export async function pipeUpstreamStream(
           outputSeen: decision.outputSeen,
           eofPendingFlush: true
         }, '网关已在上游 EOF 时拦截未收尾流式错误并改写为客户端可重试事件')
-        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, bodyOmissionFor(latestInspection))
+        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
     }
   } catch (error) {
     await closeAsyncIterator(iterator)
-    if (error instanceof StreamCompletedAfterTerminalSignal) {
-      const inspection = inspector.finish()
-      omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
-      endResponse(res)
-      streamLogger.info({
-        event: 'gateway_stream_finished_success_after_terminal',
-        elapsedMs: Date.now() - startedAt,
-        chunkCount: chunkIndex,
-        totalUpstreamBytes,
-        totalResponseBytes,
-        firstTokenMs,
-        sseEventCount: inspection.eventCount,
-        sseEventTypeCounts: inspection.eventTypeCounts,
-        recentSseEventTypes: inspection.recentEventTypes,
-        outputReceived: inspection.outputReceived,
-        outputEventCount: inspection.outputEventCount
-      }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
-      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
-    }
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
       const inspection = inspector.finish()
       omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
@@ -446,7 +437,7 @@ export async function pipeUpstreamStream(
           skipReason: inspection.skipReason,
           errorMessage: error instanceof Error ? error.message : String(error)
         }, '客户端在 OpenAI 终止事件后关闭连接，按成功流式响应收尾')
-        return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
+        return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
       }
       streamLogger.warn({
         event: 'gateway_stream_aborted',
@@ -496,7 +487,7 @@ export async function pipeUpstreamStream(
         elapsedMs: Date.now() - startedAt,
         rawMessage
       }, '网关已收到终止事件，忽略终止后的流式异常')
-      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
+      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
     const message = inspection.errorMessage ?? rawMessage
     const errorCode = streamClientFailureCode(
@@ -531,7 +522,7 @@ export async function pipeUpstreamStream(
       }
     }
     endResponse(res)
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   } finally {
     res.off('close', closeIterator)
   }
@@ -562,7 +553,7 @@ export async function pipeUpstreamStream(
       failedReceived: inspection.failedReceived,
       skipReason: inspection.skipReason
     }, '网关流式解析已跳过，按原始转发结果结束')
-    return streamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
+    return streamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
   if (!inspection.terminalReceived) {
     const message = '上游流在 OpenAI 终止事件前结束'
@@ -600,7 +591,7 @@ export async function pipeUpstreamStream(
       }, '网关因缺少终止事件补发 response.failed 失败或响应已结束')
     }
     endResponse(res)
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
   endResponse(res)
@@ -627,7 +618,7 @@ export async function pipeUpstreamStream(
       sseEventTypeCounts: inspection.eventTypeCounts,
       recentSseEventTypes: inspection.recentEventTypes
     }, '网关流式响应以失败结束')
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
   streamLogger.info({
@@ -643,7 +634,7 @@ export async function pipeUpstreamStream(
     outputReceived: inspection.outputReceived,
     outputEventCount: inspection.outputEventCount
   }, '网关流式响应已成功结束')
-  return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, bodyOmissionFor(inspection))
+  return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
 }
 
 function readNextStreamChunk(
@@ -673,6 +664,49 @@ function readNextStreamChunk(
     () => new Error(readPlan.timeoutMessage),
     signal
   )
+}
+
+async function drainIteratorAfterTerminalForKeepAlive(iterator: AsyncIterator<Uint8Array>): Promise<boolean> {
+  const deadline = Date.now() + streamTerminalKeepAliveDrainMs
+  try {
+    while (Date.now() < deadline) {
+      const result = await readIteratorNextWithTimeout(iterator, Math.max(1, deadline - Date.now()))
+      if (!result) {
+        await closeAsyncIterator(iterator)
+        return false
+      }
+      if (result.done) {
+        return true
+      }
+    }
+    await closeAsyncIterator(iterator)
+    return false
+  } catch {
+    await closeAsyncIterator(iterator)
+    return false
+  }
+}
+
+async function readIteratorNextWithTimeout(
+  iterator: AsyncIterator<Uint8Array>,
+  timeoutMs: number
+): Promise<IteratorResult<Uint8Array> | undefined> {
+  let clearTimer: (() => void) | undefined
+  try {
+    return await Promise.race([
+      iterator.next(),
+      new Promise<undefined>((resolve) => {
+        const timer = setTimeout(resolve, Math.max(1, timeoutMs)) as unknown
+        clearTimer = () => clearTimeout(timer as Parameters<typeof clearTimeout>[0])
+        const unrefableTimer = timer as { unref?: () => void }
+        if (typeof timer === 'object' && timer !== null && typeof unrefableTimer.unref === 'function') {
+          unrefableTimer.unref()
+        }
+      })
+    ])
+  } finally {
+    clearTimer?.()
+  }
 }
 
 interface StreamReadPlan {
@@ -763,8 +797,17 @@ function streamResult(
   outputReceived = false,
   estimatedOutputTokens?: number,
   imageOutputReceived = false,
+  captureSuccessPayloads = true,
   bodyOmission?: StreamBodyOmissionSummary
 ): StreamPipeResult {
+  const responseBodyText = bodyOmission || (completed && !captureSuccessPayloads)
+    ? undefined
+    : diagnosticCapture.toDiagnosticText()
+  const auditResponseBody = bodyOmission
+    ? undefined
+    : captureSuccessPayloads
+      ? responseCapture.completeBuffer()
+      : completed ? undefined : diagnosticCapture.completeBuffer()
   return {
     completed,
     message,
@@ -774,9 +817,9 @@ function streamResult(
     outputReceived,
     imageOutputReceived,
     estimatedOutputTokens,
-    responseBodyText: bodyOmission ? undefined : diagnosticCapture.toDiagnosticText(),
-    auditResponseBody: bodyOmission ? undefined : responseCapture.completeBuffer(),
-    auditUpstreamBody: bodyOmission ? undefined : upstreamCapture.completeBuffer(),
+    responseBodyText,
+    auditResponseBody,
+    auditUpstreamBody: bodyOmission || !captureSuccessPayloads ? undefined : upstreamCapture.completeBuffer(),
     streamIntercept,
     bodyOmission
   }

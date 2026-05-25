@@ -27,6 +27,7 @@ const frontendAssetsPath = resolve(frontendDistPath, 'assets')
 const systemPrefix = '/__aisys__'
 const systemApiPrefix = `${systemPrefix}/api`
 const gatewayRawBodyLimit = '64mb'
+const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
 
 type BodyParserError = Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number }
@@ -159,11 +160,12 @@ app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ message: '服务器内部错误' })
 })
 
-const server = app.listen(port, host, () => {
+const server = app.listen(port, host, httpListenBacklog, () => {
   logger.info({
     event: 'server_started',
     host,
     port,
+    backlog: httpListenBacklog,
     logDirectory: runtimeConfig.log.fileEnabled ? runtimeConfig.log.directory : undefined
   }, `juhe-ai 后端已监听 http://${host}:${port}`)
 })

@@ -964,7 +964,13 @@ function assertSuccessfulUsageRecord(
 ): void {
   const records = repositories.listUsageRecords(undefined, { result: 'success', page: 1, pageSize: 50 })
   const record = records.items.find((item) => item.accountId === accountId && item.success === true)
-  assert(record, `账号 ${accountId} 未找到成功使用记录`)
+  const account = repositories.listAccounts().find((item) => item.id === accountId)
+  const accountRecords = repositories
+    .listUsageRecords(undefined, { page: 1, pageSize: 200 })
+    .items
+    .filter((item) => item.accountId === accountId)
+    .map((item) => `${item.success ? 'success' : 'failed'}:${item.statusCode ?? 'no_status'}:${item.errorCode ?? 'no_error'}`)
+  assert(record, `账号 ${account?.name ?? accountId} (${accountId}) 未找到成功使用记录；该账号已有记录：${accountRecords.join(', ') || '无'}`)
   assert.equal(record.errorCode, undefined, `成功使用记录不应写错误码：${record.errorCode}`)
   assert.equal(record.statusCode, 200, `成功使用记录应保留 200 状态码：${record.statusCode}`)
   if (expectedUsage?.inputTokens !== undefined) {

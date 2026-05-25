@@ -26,8 +26,6 @@ interface HighConcurrencyQueueItem {
 
 export type HighConcurrencyQueueRejectReason =
   | 'queue_disabled'
-  | 'queue_full'
-  | 'api_key_queue_full'
   | 'timeout'
   | 'aborted'
 
@@ -71,8 +69,6 @@ subscribeAccountConcurrencyRelease((event) => {
 export function waitForHighConcurrencyGroupCapacity(input: HighConcurrencyQueueWaitInput): Promise<HighConcurrencyQueueWaitResult> {
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
   const maxQueueWaitMs = normalizeNonNegativeInteger(policy.maxQueueWaitMs, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueWaitMs)
-  const maxQueueSize = normalizePositiveInteger(policy.maxQueueSize, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueSize)
-  const perApiKeyQueueLimit = normalizePositiveInteger(policy.perApiKeyQueueLimit, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.perApiKeyQueueLimit)
   const lane = input.lane === 'image' ? 'image' : 'text'
   const groupKey = highConcurrencyGroupQueueKey(input.systemAccountId, input.groupId, lane)
   const apiKeyKey = input.apiKeyId?.trim() || 'internal'
@@ -82,14 +78,15 @@ export function waitForHighConcurrencyGroupCapacity(input: HighConcurrencyQueueW
   if (input.signal?.aborted) {
     return Promise.resolve(rejectedQueueWait('aborted', 0, state.items.length, perApiKeyQueueSize))
   }
+  if (state.items.length === 0 && hasImmediateAccountCapacity(input.accountIds, accountCapacities, lane)) {
+    return Promise.resolve({
+      ready: true,
+      waitedMs: 0,
+      queueSizeBeforeWake: 0
+    })
+  }
   if (maxQueueWaitMs <= 0) {
     return Promise.resolve(rejectedQueueWait('queue_disabled', 0, state.items.length, perApiKeyQueueSize))
-  }
-  if (state.items.length >= maxQueueSize) {
-    return Promise.resolve(rejectedQueueWait('queue_full', 0, state.items.length, perApiKeyQueueSize))
-  }
-  if (perApiKeyQueueSize >= perApiKeyQueueLimit) {
-    return Promise.resolve(rejectedQueueWait('api_key_queue_full', 0, state.items.length, perApiKeyQueueSize))
   }
   queues.set(groupKey, state)
   const itemId = nextQueueItemId
@@ -192,6 +189,26 @@ function queueItemCanAcquireAfterRelease(item: HighConcurrencyQueueItem, account
     return true
   }
   return getAccountCurrentConcurrency(accountId, 'image') < capacity.imageLaneLimit
+}
+
+function hasImmediateAccountCapacity(
+  accountIds: string[],
+  capacities: Map<string, HighConcurrencyQueueAccountCapacity>,
+  lane: AccountConcurrencyLane
+): boolean {
+  for (const accountId of new Set(accountIds.filter(Boolean))) {
+    const capacity = capacities.get(accountId)
+    if (!capacity) {
+      return true
+    }
+    if (getAccountCurrentConcurrency(accountId) >= capacity.hardLimit) {
+      continue
+    }
+    if (lane !== 'image' || getAccountCurrentConcurrency(accountId, 'image') < capacity.imageLaneLimit) {
+      return true
+    }
+  }
+  return false
 }
 
 function completeQueueItem(item: HighConcurrencyQueueItem, result: HighConcurrencyQueueWaitResult): void {

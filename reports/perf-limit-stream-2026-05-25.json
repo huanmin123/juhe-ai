@@ -1,0 +1,256 @@
+{
+  "generatedAt": "2026-05-25T04:58:44.427Z",
+  "note": "本结果来自本机模拟上游和临时 SQLite 数据库，用于容量参考；真实部署容量需要在目标机器和目标网络下复测。",
+  "config": {
+    "scenarios": [
+      "responses_stream"
+    ],
+    "concurrencyLevels": [
+      240,
+      280,
+      320,
+      360
+    ],
+    "durationSeconds": 8,
+    "warmupSeconds": 2,
+    "requestTimeoutMs": 5000,
+    "upstreamLatencyMs": 20,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 8,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5.4-mini",
+    "promptBytes": 64,
+    "p95TargetMs": 1000,
+    "reportPath": "F:\\sub2api-lite\\reports\\perf-limit-stream-2026-05-25.json"
+  },
+  "seeded": {
+    "apiKeyId": "key_1779685053862_c17d7c13",
+    "groupId": "grp_1779685053104_6800e1ec",
+    "accountCount": 8
+  },
+  "results": [
+    {
+      "scenario": "responses_stream",
+      "concurrency": 240,
+      "durationSeconds": 12.671,
+      "warmupSeconds": 2,
+      "totalRequests": 2020,
+      "successRequests": 435,
+      "failedRequests": 1585,
+      "qps": 159.42,
+      "successQps": 34.33,
+      "errorRate": 0.7847,
+      "latencyMs": {
+        "min": 12.99,
+        "avg": 1144.694,
+        "p50": 349.521,
+        "p90": 5013.466,
+        "p95": 5090.261,
+        "p99": 5145.062,
+        "max": 5156.089
+      },
+      "eventLoopDelayMs": {
+        "mean": 32.13,
+        "p95": 112.46,
+        "p99": 176.947,
+        "max": 300.679
+      },
+      "cpu": {
+        "userMs": 922,
+        "systemMs": 1781,
+        "totalMs": 2703,
+        "perRequestMs": 1.3381
+      },
+      "memory": {
+        "rssStartMb": 192.18,
+        "rssEndMb": 128.03,
+        "heapUsedStartMb": 76.44,
+        "heapUsedEndMb": 35.72
+      },
+      "statusCounts": {
+        "200": 435,
+        "503": 1134
+      },
+      "errorCounts": {
+        "Error": 302,
+        "HTTP 503": 1134,
+        "TypeError": 149
+      },
+      "responseBytes": 532245,
+      "usageRecordsDelta": 1569,
+      "auditLogsDelta": 1178,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 435
+    },
+    {
+      "scenario": "responses_stream",
+      "concurrency": 280,
+      "durationSeconds": 12.886,
+      "warmupSeconds": 2,
+      "totalRequests": 2212,
+      "successRequests": 0,
+      "failedRequests": 2212,
+      "qps": 171.66,
+      "successQps": 0,
+      "errorRate": 1,
+      "latencyMs": {
+        "min": 2.648,
+        "avg": 1411.263,
+        "p50": 126.571,
+        "p90": 5040.659,
+        "p95": 5222.973,
+        "p99": 5408.875,
+        "max": 5459.816
+      },
+      "eventLoopDelayMs": {
+        "mean": 21.644,
+        "p95": 73.794,
+        "p99": 130.81,
+        "max": 471.597
+      },
+      "cpu": {
+        "userMs": 188,
+        "systemMs": 1532,
+        "totalMs": 1720,
+        "perRequestMs": 0.7776
+      },
+      "memory": {
+        "rssStartMb": 182.77,
+        "rssEndMb": 194.26,
+        "heapUsedStartMb": 63.06,
+        "heapUsedEndMb": 59.85
+      },
+      "statusCounts": {},
+      "errorCounts": {
+        "Error": 560,
+        "TypeError": 1652
+      },
+      "responseBytes": 0,
+      "usageRecordsDelta": 0,
+      "auditLogsDelta": 0,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0
+    },
+    {
+      "scenario": "responses_stream",
+      "concurrency": 320,
+      "durationSeconds": 12.981,
+      "warmupSeconds": 2,
+      "totalRequests": 2258,
+      "successRequests": 0,
+      "failedRequests": 2258,
+      "qps": 173.95,
+      "successQps": 0,
+      "errorRate": 1,
+      "latencyMs": {
+        "min": 97.581,
+        "avg": 1381.967,
+        "p50": 486.619,
+        "p90": 5007.77,
+        "p95": 5019.289,
+        "p99": 5103.819,
+        "max": 5623.021
+      },
+      "eventLoopDelayMs": {
+        "mean": 32.482,
+        "p95": 141.689,
+        "p99": 367.002,
+        "max": 609.747
+      },
+      "cpu": {
+        "userMs": 266,
+        "systemMs": 2297,
+        "totalMs": 2563,
+        "perRequestMs": 1.1351
+      },
+      "memory": {
+        "rssStartMb": 193.73,
+        "rssEndMb": 126.97,
+        "heapUsedStartMb": 54.63,
+        "heapUsedEndMb": 34.73
+      },
+      "statusCounts": {},
+      "errorCounts": {
+        "Error": 445,
+        "TypeError": 1813
+      },
+      "responseBytes": 0,
+      "usageRecordsDelta": 0,
+      "auditLogsDelta": 0,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0
+    },
+    {
+      "scenario": "responses_stream",
+      "concurrency": 360,
+      "durationSeconds": 11.07,
+      "warmupSeconds": 2,
+      "totalRequests": 1168,
+      "successRequests": 0,
+      "failedRequests": 1168,
+      "qps": 105.51,
+      "successQps": 0,
+      "errorRate": 1,
+      "latencyMs": {
+        "min": 60.072,
+        "avg": 3219.14,
+        "p50": 5002.455,
+        "p90": 5026.596,
+        "p95": 5051.82,
+        "p99": 5074.757,
+        "max": 5081.385
+      },
+      "eventLoopDelayMs": {
+        "mean": 18.932,
+        "p95": 28.836,
+        "p99": 110.297,
+        "max": 379.847
+      },
+      "cpu": {
+        "userMs": 282,
+        "systemMs": 516,
+        "totalMs": 798,
+        "perRequestMs": 0.6832
+      },
+      "memory": {
+        "rssStartMb": 178.4,
+        "rssEndMb": 197.18,
+        "heapUsedStartMb": 57.35,
+        "heapUsedEndMb": 71.67
+      },
+      "statusCounts": {},
+      "errorCounts": {
+        "Error": 720,
+        "TypeError": 448
+      },
+      "responseBytes": 0,
+      "usageRecordsDelta": 0,
+      "auditLogsDelta": 0,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0
+    }
+  ],
+  "upstream": {
+    "totalRequests": 739,
+    "pathCounts": {
+      "POST /v1/responses": 739
+    }
+  },
+  "datasetDatabase": {
+    "usageRecords": 2096,
+    "auditLogs": 1323,
+    "bytes": 11661312,
+    "walBytes": 5240672
+  },
+  "statsDatabase": {
+    "bytes": 4096,
+    "walBytes": 2163032
+  }
+}
