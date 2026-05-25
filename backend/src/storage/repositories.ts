@@ -57,6 +57,7 @@ import {
   revokeAllTeamSources,
   revokeResourceAuthorizationGrant,
   revokeTeamSourcesForMember,
+  returnResourceAuthorizationGrant,
   syncResourceAuthorizationGrantRuntime,
   upsertResourceAuthorizationForUser,
   upsertResourceAuthorizationGrant
@@ -96,6 +97,7 @@ const temporaryUnavailableInitialBackoffSeconds = 3
 const temporaryUnavailableFastThresholdSeconds = 60
 const temporaryUnavailableBackoffMultiplier = 2
 type AccountOptionFilterValue = string | number
+const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
 interface AccountOptionRow {
   id: string
@@ -112,6 +114,7 @@ interface AccountOptionRow {
   access_type: 'owner' | 'authorized'
   authorization_id: string | null
   authorization_status: AuthorizationStatus | null
+  authorization_expires_at?: string | null
   local_status?: AccountStatus | null
   local_cooldown_until?: string | null
 }
@@ -498,12 +501,15 @@ function accountDispatchUnavailableMessage(account: AccountSummary, options: { r
   if (account.accessType === 'authorized') {
     if (options.requireAuthorizedBinding && !account.boundGroupId) return '授权账户需要先绑定到你的分组'
     if (account.groupBindStatus === 'authorization_unavailable') return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
+    const authorizationUnavailableMessage = authorizedAuthorizationUnavailableMessage(account)
+    if (authorizationUnavailableMessage) return authorizationUnavailableMessage
     if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
-    if (account.status === 'disabled') return '当前分组已停用该授权账户，当前不可用'
-    if (account.status === 'error') return '授权账户本地状态异常，当前不可用'
-    if (isCoolingAccountStatus(account.status) || isLaterIso(account.cooldownUntil, nowIso())) return '授权账户在当前分组暂时不可调用，恢复前不会参与调度'
     const sourceUnavailableMessage = authorizedAccountSourceUnavailableMessage(account)
     if (sourceUnavailableMessage) return sourceUnavailableMessage
+    const localStatus = account.localStatus ?? account.status
+    if (localStatus === 'disabled') return '当前分组已停用该授权账户，当前不可用'
+    if (localStatus === 'error') return '授权账户本地状态异常，当前不可用'
+    if (isCoolingAccountStatus(localStatus) || isLaterIso(account.localCooldownUntil ?? account.cooldownUntil, nowIso())) return '授权账户在当前分组暂时不可调用，恢复前不会参与调度'
     if (!account.schedulable) return '授权账户暂时不可调用，恢复前不会参与调度'
     return undefined
   }
@@ -519,11 +525,14 @@ export function accountTestUnavailableMessage(account: AccountSummary): string |
   if (account.permissions?.canUse === false) return '当前账户无可用权限'
   if (!account.boundGroupId) return '授权账户需要先绑定到你的分组'
   if (account.groupBindStatus === 'authorization_unavailable') return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
+  const authorizationUnavailableMessage = authorizedAuthorizationUnavailableMessage(account)
+  if (authorizationUnavailableMessage) return authorizationUnavailableMessage
   if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
-  const sourceUnavailableMessage = authorizedAccountSourceUnavailableMessage(account)
+  const sourceUnavailableMessage = authorizedAccountSourceUnavailableMessage(account, { includeRuntimeState: false })
   if (sourceUnavailableMessage) return sourceUnavailableMessage
-  if (account.status === 'error') return '账户处于异常状态，当前不可用'
-  if (isCoolingAccountStatus(account.status) || (!account.schedulable && account.status !== 'disabled') || isLaterIso(account.cooldownUntil, nowIso())) {
+  const localStatus = account.localStatus ?? account.status
+  if (localStatus === 'error') return '账户处于异常状态，当前不可用'
+  if (isCoolingAccountStatus(localStatus) || isLaterIso(account.localCooldownUntil ?? account.cooldownUntil, nowIso())) {
     if (canTestAuthorizedLocalFailureState(account)) {
       return undefined
     }
@@ -547,7 +556,7 @@ function disableExpiredAccounts(access?: AccessScope): void {
       SET status = 'disabled',
           schedulable = 0,
           cooldown_until = NULL,
-          last_error_code = NULL,
+          last_error_code = 'account_expired',
           last_error_message = ?,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = NULL,
@@ -626,9 +635,77 @@ function authorizedAccountLocalRuntimeStatus(localStatus: AccountStatus | undefi
   return localStatus ?? 'active'
 }
 
-function authorizedAccountSourceUnavailableMessage(account: AccountSummary): string | undefined {
+function authorizationRuntimeBlockingStatus(status?: AuthorizationStatus | null, expiresAt?: string | null): AccountStatus | undefined {
+  if (status && status !== 'active') return 'disabled'
+  if (isResourceAuthorizationExpired(expiresAt)) return 'disabled'
+  return undefined
+}
+
+function authorizedSourceBlockingStatus(input: {
+  status?: AccountStatus
+  schedulable?: boolean
+  accountExpiresAt?: string | null
+  cooldownUntil?: string | null
+}): AccountStatus | undefined {
+  if (isAccountExpired(input.accountExpiresAt)) return 'disabled'
+  if (input.status && (isHardUnavailableAccountStatus(input.status) || isCoolingAccountStatus(input.status))) return input.status
+  if (input.schedulable === false) return 'disabled'
+  if (isLaterIso(input.cooldownUntil ?? undefined, nowIso())) return 'temporary_unavailable'
+  return undefined
+}
+
+function authorizedAccountEffectiveRuntimeStatus(input: {
+  authorizationStatus?: AuthorizationStatus | null
+  authorizationExpiresAt?: string | null
+  sourceStatus: AccountStatus
+  sourceSchedulable: boolean
+  sourceAccountExpiresAt?: string | null
+  sourceCooldownUntil?: string | null
+  localStatus?: AccountStatus
+  localCooldownUntil?: string | null
+}): AccountStatus {
+  const authorizationBlockingStatus = authorizationRuntimeBlockingStatus(input.authorizationStatus, input.authorizationExpiresAt)
+  if (authorizationBlockingStatus) return authorizationBlockingStatus
+  const sourceBlockingStatus = authorizedSourceBlockingStatus({
+    status: input.sourceStatus,
+    schedulable: input.sourceSchedulable,
+    accountExpiresAt: input.sourceAccountExpiresAt,
+    cooldownUntil: input.sourceCooldownUntil
+  })
+  if (sourceBlockingStatus) return sourceBlockingStatus
+  return authorizedAccountLocalRuntimeStatus(input.localStatus, input.localCooldownUntil)
+}
+
+function isAuthorizedAccountEffectivelySchedulable(input: {
+  authorizationStatus?: AuthorizationStatus | null
+  authorizationExpiresAt?: string | null
+  sourceStatus: AccountStatus
+  sourceSchedulable: boolean
+  sourceAccountExpiresAt?: string | null
+  sourceCooldownUntil?: string | null
+  localStatus?: AccountStatus
+  localCooldownUntil?: string | null
+  bindingAvailable: boolean
+}): boolean {
+  return input.bindingAvailable && authorizedAccountEffectiveRuntimeStatus(input) === 'active'
+}
+
+function authorizedAuthorizationUnavailableMessage(account: AccountSummary): string | undefined {
+  if (account.accessType !== 'authorized') return undefined
+  if (account.authorizationStatus === 'expired' || isResourceAuthorizationExpired(account.authorizationExpiresAt)) return '授权已到期，当前账户不能调用'
+  if (account.authorizationStatus === 'paused') return '授权已暂停，当前账户不能调用'
+  return undefined
+}
+
+function authorizedAccountSourceUnavailableMessage(account: AccountSummary, options: { includeRuntimeState?: boolean } = {}): string | undefined {
   if (account.accessType !== 'authorized') return undefined
   if (isAccountExpired(account.accountExpiresAt)) return '授权来源账户已到期，当前不可用'
+  if (options.includeRuntimeState === false) return undefined
+  if (account.sourceStatus === 'disabled') return '授权来源账户已停用，当前不可用'
+  if (account.sourceStatus === 'error') return '授权来源账户异常，当前不可用'
+  if (account.sourceSchedulable === false) return '授权来源账户已暂停调度，当前不可用'
+  if (account.sourceStatus && isCoolingAccountStatus(account.sourceStatus)) return '授权来源账户暂时不可调用，恢复前不会参与调度'
+  if (isLaterIso(account.sourceCooldownUntil, nowIso())) return '授权来源账户暂时不可调用，恢复前不会参与调度'
   return undefined
 }
 
@@ -862,7 +939,16 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
     const isAuthorizedView = row.access_type === 'authorized'
     const localStatus = normalizedGroupAccountLocalStatus(row.local_status)
     const effectiveStatus = isAuthorizedView
-      ? authorizedAccountLocalRuntimeStatus(localStatus, row.local_cooldown_until)
+      ? authorizedAccountEffectiveRuntimeStatus({
+          authorizationStatus: row.authorization_status,
+          authorizationExpiresAt: row.authorization_expires_at,
+          sourceStatus: row.status,
+          sourceSchedulable: row.schedulable === 1,
+          sourceAccountExpiresAt: row.account_expires_at,
+          sourceCooldownUntil: row.cooldown_until,
+          localStatus,
+          localCooldownUntil: row.local_cooldown_until
+        })
       : row.status
     return {
       id: row.id,
@@ -880,6 +966,7 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
       accessType: row.access_type ?? 'owner',
       accountAuthorizationId: row.authorization_id ?? undefined,
       authorizationStatus: row.authorization_status ?? undefined,
+      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
       accountExpiresAt: row.account_expires_at ?? undefined,
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
@@ -908,7 +995,7 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   if (!ownerSystemAccountId && canAccessAll(access)) {
     const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
     return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS local_status, NULL AS local_cooldown_until
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS local_status, NULL AS local_cooldown_until
       FROM accounts
       WHERE 1 = 1${filters.clause}
     `, filters.params)
@@ -916,7 +1003,7 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   if (!viewerSystemAccountId) {
     const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
     return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS local_status, NULL AS local_cooldown_until
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS local_status, NULL AS local_cooldown_until
       FROM accounts
       WHERE 1 = 1${filters.clause}
     `, filters.params)
@@ -926,11 +1013,11 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   const ownerFilters = buildAccountOptionFilters(options, 'accounts.system_account_id')
   const authorizedFilters = buildAccountOptionFilters(options, '?', [viewerSystemAccountId], true)
   return queryRows(`
-    SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS local_status, NULL AS local_cooldown_until
+    SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS local_status, NULL AS local_cooldown_until
     FROM accounts
     WHERE accounts.system_account_id = ?${ownerFilters.clause}
     UNION ALL
-    SELECT ${accountOptionSelectColumns()}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status,
+    SELECT ${accountOptionSelectColumns()}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
       option_group_bindings.local_status AS local_status,
       option_group_bindings.local_cooldown_until AS local_cooldown_until
     FROM resource_authorizations ra
@@ -941,10 +1028,9 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
       AND option_group_bindings.enabled = 1
     WHERE ra.resource_type = 'account'
       AND ra.grantee_system_account_id = ?
-      AND ra.status = 'active'
-      AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+      AND ra.status IN ('active', 'paused', 'expired')
       AND accounts.system_account_id <> ?${authorizedFilters.clause}
-  `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerId, ...authorizedFilters.params])
+  `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, viewerSystemAccountId, ownerId, ...authorizedFilters.params])
 }
 
 function accountOptionSelectColumns(): string {
@@ -1004,61 +1090,81 @@ function buildAccountOptionFilters(
     params.push(options.type)
   }
   const statuses = accountStatusFilterValues(options.status)
-  const authorizedStatusExpression = `CASE
+  const authorizedLocalStatusExpression = `CASE
     WHEN option_group_bindings.local_status = 'temporary_unavailable'
       AND option_group_bindings.local_cooldown_until IS NOT NULL
-      AND option_group_bindings.local_cooldown_until <= ?
+      AND option_group_bindings.local_cooldown_until <= ${currentIsoSql}
     THEN 'active'
     ELSE COALESCE(option_group_bindings.local_status, 'active')
   END`
+  const authorizedStatusExpression = `CASE
+    WHEN ra.status <> 'active'
+      OR (ra.expires_at IS NOT NULL AND ra.expires_at <= ${currentIsoSql})
+    THEN 'disabled'
+    WHEN accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql} THEN 'disabled'
+    WHEN accounts.status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.schedulable <> 1 THEN 'disabled'
+    WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
+    ELSE ${authorizedLocalStatusExpression}
+  END`
+  const authorizedBindingAvailableExpression = `option_group_bindings.group_id IS NOT NULL
+    AND option_group_bindings.account_authorization_id IS NOT NULL
+    AND option_group_bindings.account_authorization_id = ra.id`
+  const authorizedBindingUnavailableExpression = `option_group_bindings.group_id IS NULL
+    OR option_group_bindings.account_authorization_id IS NULL
+    OR option_group_bindings.account_authorization_id <> ra.id`
+  const authorizedAuthorizationAvailableExpression = `ra.status = 'active'
+    AND (ra.expires_at IS NULL OR ra.expires_at > ${currentIsoSql})`
+  const authorizedSourceAvailableExpression = `accounts.schedulable = 1
+    AND accounts.status = 'active'
+    AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ${currentIsoSql})
+    AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ${currentIsoSql})`
+  const authorizedSourceHardUnavailableExpression = `accounts.schedulable <> 1
+    OR accounts.status IN ('disabled', 'error')
+    OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})`
+  const authorizedSourceCoolingExpression = `accounts.status IN ('rate_limited', 'temporary_unavailable')
+    OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql})`
   if (statuses.length === 1) {
     clauses.push(authorizedView ? `${authorizedStatusExpression} = ?` : 'accounts.status = ?')
-    if (authorizedView) params.push(nowIso())
     params.push(statuses[0])
   } else if (statuses.length > 1) {
     clauses.push(authorizedView
       ? `${authorizedStatusExpression} IN (${statuses.map(() => '?').join(', ')})`
       : `accounts.status IN (${statuses.map(() => '?').join(', ')})`)
-    if (authorizedView) params.push(nowIso())
     params.push(...statuses)
   }
   if (options.schedulable === 'enabled') {
     if (authorizedView) {
-      clauses.push(`option_group_bindings.group_id IS NOT NULL
-        AND option_group_bindings.account_authorization_id IS NOT NULL
-        AND option_group_bindings.account_authorization_id = ra.id
-        AND ${authorizedStatusExpression} = 'active'
-        AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)`)
-      const current = nowIso()
-      params.push(current, current)
+      clauses.push(`${authorizedBindingAvailableExpression}
+        AND ${authorizedAuthorizationAvailableExpression}
+        AND ${authorizedSourceAvailableExpression}
+        AND ${authorizedLocalStatusExpression} = 'active'`)
     } else {
-      clauses.push("accounts.status = 'active' AND accounts.schedulable = 1 AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)")
-      params.push(nowIso())
+      clauses.push(`accounts.status = 'active'
+        AND accounts.schedulable = 1
+        AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ${currentIsoSql})`)
     }
   } else if (options.schedulable === 'disabled') {
     if (authorizedView) {
-      clauses.push(`(option_group_bindings.group_id IS NULL
-        OR option_group_bindings.account_authorization_id IS NULL
-        OR option_group_bindings.account_authorization_id <> ra.id
+      clauses.push(`(${authorizedBindingUnavailableExpression}
         OR ${authorizedStatusExpression} IN ('disabled', 'error')
-        OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ?))`)
-      const current = nowIso()
-      params.push(current, current)
+      )`)
     } else {
       clauses.push("(accounts.status = 'disabled' OR accounts.schedulable <> 1)")
     }
   } else if (options.schedulable === 'cooling') {
     if (authorizedView) {
-      clauses.push(`option_group_bindings.group_id IS NOT NULL
-        AND option_group_bindings.account_authorization_id IS NOT NULL
-        AND option_group_bindings.account_authorization_id = ra.id
-        AND (${authorizedStatusExpression} IN ('rate_limited', 'temporary_unavailable')
-          OR (option_group_bindings.local_cooldown_until IS NOT NULL AND option_group_bindings.local_cooldown_until > ?))`)
-      const current = nowIso()
-      params.push(current, current)
+      clauses.push(`${authorizedBindingAvailableExpression}
+        AND ${authorizedAuthorizationAvailableExpression}
+        AND NOT (${authorizedSourceHardUnavailableExpression})
+        AND (
+          ${authorizedSourceCoolingExpression}
+          OR ${authorizedLocalStatusExpression} IN ('rate_limited', 'temporary_unavailable')
+          OR (option_group_bindings.local_cooldown_until IS NOT NULL AND option_group_bindings.local_cooldown_until > ${currentIsoSql})
+        )`)
     } else {
-      clauses.push("(accounts.status IN ('rate_limited', 'temporary_unavailable') OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ?))")
-      params.push(nowIso())
+      clauses.push(`(accounts.status IN ('rate_limited', 'temporary_unavailable')
+        OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql}))`)
     }
   }
   return {
@@ -1107,17 +1213,48 @@ function accountSummariesFromRows(
       ? accountGroupBindingFromRow(row, groupBindingSystemAccountId) ?? accountGroupBinding(row.id, groupBindingSystemAccountId)
       : undefined
     const authorizedLocalStatus = normalizedGroupAccountLocalStatus(row.bound_group_local_status)
+    const sourceBlockingStatus = isAuthorizedView
+      ? authorizedSourceBlockingStatus({
+          status: row.status,
+          schedulable: row.schedulable === 1,
+          accountExpiresAt: row.account_expires_at,
+          cooldownUntil: row.cooldown_until
+        })
+      : undefined
     const effectiveAuthorizedStatus = isAuthorizedView
-      ? authorizedAccountLocalRuntimeStatus(authorizedLocalStatus, row.bound_group_local_cooldown_until)
+      ? authorizedAccountEffectiveRuntimeStatus({
+          authorizationStatus: row.authorization_status,
+          authorizationExpiresAt: row.authorization_expires_at,
+          sourceStatus: row.status,
+          sourceSchedulable: row.schedulable === 1,
+          sourceAccountExpiresAt: row.account_expires_at,
+          sourceCooldownUntil: row.cooldown_until,
+          localStatus: authorizedLocalStatus,
+          localCooldownUntil: row.bound_group_local_cooldown_until
+        })
       : row.status
-    const sourceUnavailableForAuthorized = isAuthorizedView && (
-      isAccountExpired(row.account_expires_at)
-      || !groupBinding
-      || groupBinding.groupBindStatus !== 'bound'
-    )
     const effectiveAuthorizedSchedulable = isAuthorizedView
-      ? !sourceUnavailableForAuthorized && effectiveAuthorizedStatus === 'active'
+      ? isAuthorizedAccountEffectivelySchedulable({
+          authorizationStatus: row.authorization_status,
+          authorizationExpiresAt: row.authorization_expires_at,
+          sourceStatus: row.status,
+          sourceSchedulable: row.schedulable === 1,
+          sourceAccountExpiresAt: row.account_expires_at,
+          sourceCooldownUntil: row.cooldown_until,
+          localStatus: authorizedLocalStatus,
+          localCooldownUntil: row.bound_group_local_cooldown_until,
+          bindingAvailable: Boolean(groupBinding && groupBinding.groupBindStatus === 'bound')
+        })
       : row.schedulable === 1
+    const authorizedCooldownUntil = isAuthorizedView && sourceBlockingStatus && (
+      isCoolingAccountStatus(sourceBlockingStatus)
+      || isLaterIso(row.cooldown_until ?? undefined, nowIso())
+    )
+      ? row.cooldown_until ?? undefined
+      : row.bound_group_local_cooldown_until ?? undefined
+    const authorizedLastErrorMessage = isAuthorizedView && sourceBlockingStatus
+      ? row.last_error_message ?? undefined
+      : row.bound_group_local_last_error_message ?? undefined
     return {
       id: row.id,
       systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -1152,9 +1289,9 @@ function accountSummariesFromRows(
       errorPolicyId: isAuthorizedView ? undefined : row.error_policy_id ?? undefined,
       schedulable: effectiveAuthorizedSchedulable,
       accountExpiresAt: row.account_expires_at ?? undefined,
-      cooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : row.cooldown_until ?? undefined,
+      cooldownUntil: isAuthorizedView ? authorizedCooldownUntil : row.cooldown_until ?? undefined,
       lastErrorCode: isAuthorizedView ? undefined : row.last_error_code ?? undefined,
-      lastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : row.last_error_message ?? undefined,
+      lastErrorMessage: isAuthorizedView ? authorizedLastErrorMessage : row.last_error_message ?? undefined,
       cooldownRetestFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: isAuthorizedView ? undefined : row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: isAuthorizedView ? undefined : row.cooldown_retest_last_at ?? undefined,
@@ -1508,7 +1645,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : input.schedulable !== false,
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
-    lastErrorCode: undefined,
+    lastErrorCode: expiredByPackage ? 'account_expired' : undefined,
     lastErrorMessage: expiredByPackage ? '账户套餐已过期，已自动停用' : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     cooldownRetestFailureCount: 0,
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
@@ -1665,7 +1802,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   }
   if (expiredByPackage) {
     nextCooldownUntil = undefined
-    nextLastErrorCode = undefined
+    nextLastErrorCode = 'account_expired'
     nextLastErrorMessage = '账户套餐已过期，已自动停用'
     nextCooldownRetestObservationStartedAt = undefined
     clearCooldownRetestState = true
@@ -1959,7 +2096,7 @@ export function clearAccountFailureStateResult(
         SET status = 'disabled',
             schedulable = 0,
             cooldown_until = NULL,
-            last_error_code = NULL,
+            last_error_code = 'account_expired',
             last_error_message = ?,
             cooldown_retest_failure_count = 0,
             cooldown_retest_observation_started_at = NULL,
@@ -2604,7 +2741,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
         SET status = 'disabled',
             schedulable = 0,
             cooldown_until = NULL,
-            last_error_code = NULL,
+            last_error_code = 'account_expired',
             last_error_message = ?,
             cooldown_retest_failure_count = 0,
             cooldown_retest_observation_started_at = NULL,
@@ -3143,6 +3280,8 @@ function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): 
       accessType: row.access_type ?? 'owner',
       groupAuthorizationId: row.authorization_id ?? undefined,
       authorizationStatus: row.authorization_status ?? undefined,
+      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+      authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
   })
@@ -3173,7 +3312,7 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
     const totalUsage = isAuthorizedView && row.authorization_id
       ? totalUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : totalUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
-    const accountStats = groupAccountStatsFromRow(isAuthorizedView ? undefined : groupStatsByGroup.get(row.id), todayUsage, totalUsage)
+    const accountStats = groupAccountStatsFromRow(groupStatsByGroup.get(row.id), todayUsage, totalUsage)
     if (!isAuthorizedView) {
       accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIdsByGroup.get(row.id) ?? [], currentConcurrencyByAccount)
     }
@@ -3185,7 +3324,7 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       ownerSystemAccountName: accountNames.get(row.system_account_id),
       name: row.name,
       providerCode: row.provider_code,
-      description: isAuthorizedView ? undefined : row.description ?? undefined,
+      description: row.description ?? undefined,
       enabled: row.enabled === 1,
       isDefault: isAuthorizedView ? false : row.is_default === 1,
       groupType: groupTypeFromRow(row),
@@ -3195,6 +3334,8 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       accessType: row.access_type ?? 'owner',
       groupAuthorizationId: row.authorization_id ?? undefined,
       authorizationStatus: row.authorization_status ?? undefined,
+      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+      authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
       authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(sourcesByAuthorization.get(row.authorization_id) ?? [], isAuthorizedView) : undefined,
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
@@ -3901,6 +4042,84 @@ export function revokeResourceAuthorization(authorizationId: string, input: Reco
   return findResourceAuthorization(authorizationId, access)
 }
 
+export function returnResourceAuthorizationForGrantee(authorizationId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
+  expireDueResourceAuthorizations()
+  const granteeSystemAccountId = userVisibleSystemAccountId(access)
+  if (!granteeSystemAccountId) return undefined
+  const database = getDatabase()
+  const authorization = database
+    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? AND grantee_system_account_id = ? LIMIT 1`)
+    .get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
+    return undefined
+  }
+  const now = nowIso()
+  const actor = currentSystemAccountId(access)
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    const directGrants = database
+      .prepare(`
+        SELECT *
+        FROM resource_authorization_grants
+        WHERE resource_type = ?
+          AND resource_id = ?
+          AND resource_owner_system_account_id = ?
+          AND grantee_type = 'system_account'
+          AND grantee_system_account_id = ?
+          AND status NOT IN ('revoked', 'returned')
+      `)
+      .all(
+        authorization.resource_type,
+        authorization.resource_id,
+        authorization.resource_owner_system_account_id,
+        granteeSystemAccountId
+      ) as unknown as ResourceAuthorizationGrantRow[]
+    for (const grant of directGrants) {
+      returnResourceAuthorizationGrant(grant, actor, database, now)
+    }
+    database
+      .prepare(`
+        UPDATE resource_authorization_sources
+        SET status = 'revoked',
+            ended_at = COALESCE(ended_at, ?),
+            ended_reason = COALESCE(ended_reason, 'grantee_returned'),
+            revoked_by = ?,
+            revoked_at = ?,
+            updated_at = ?
+        WHERE authorization_id = ?
+          AND status IN ('active', 'superseded')
+      `)
+      .run(now, actor, now, now, authorization.id)
+    database
+      .prepare(`
+        UPDATE resource_authorizations
+        SET status = 'returned',
+            effective_source_type = NULL,
+            effective_source_team_id = NULL,
+            revoked_by = ?,
+            revoked_at = ?,
+            revoked_reason = 'grantee_returned',
+            last_source_changed_at = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND grantee_system_account_id = ?
+      `)
+      .run(actor, now, now, now, authorization.id, granteeSystemAccountId)
+    cleanupInactiveAuthorizationBindings(database, [authorization.id])
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_returned' })
+  invalidateGroupAccountIdsCache()
+  clearResourceAuthorizationLookupCaches()
+  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_returned')
+  return database
+    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
+    .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
+}
+
 export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
   expireDueResourceAuthorizations()
   const database = getDatabase()
@@ -3917,20 +4136,17 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
     ? requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
     : grant.limits_json
   const rawStatus = optionalString(input.status)
-  const requestedStatus = rawStatus === 'active' || rawStatus === 'paused' || rawStatus === 'expired' || rawStatus === 'revoked'
+  const requestedStatus = rawStatus === 'active' || rawStatus === 'paused' || rawStatus === 'expired' || rawStatus === 'revoked' || rawStatus === 'returned'
     ? rawStatus
     : undefined
   validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, nextExpiresAt, Date.parse(now), { allowExpired: requestedStatus === 'expired' })
-  if (grant.status === 'revoked' && requestedStatus === 'active') {
-    throw new Error('已回收授权不能直接恢复，请重新新增授权')
-  }
   if (grant.status === 'expired' && requestedStatus === 'active' && !hasExpiresAtInput) {
     throw new Error('到期授权恢复时请同时调整过期时间')
   }
   const expiredByTime = isResourceAuthorizationExpired(nextExpiresAt)
   const nextStatus: AuthorizationStatus = expiredByTime
     ? 'expired'
-    : requestedStatus === 'active' || requestedStatus === 'paused'
+    : requestedStatus === 'active' || requestedStatus === 'paused' || requestedStatus === 'revoked' || requestedStatus === 'returned'
       ? requestedStatus
       : grant.status === 'expired' && hasExpiresAtInput
         ? 'active'

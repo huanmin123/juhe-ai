@@ -18,6 +18,7 @@ export function accountErrorActionLabel(action: AccountErrorAction): string {
 }
 
 export function accountErrorActionColor(action: AccountErrorAction): string {
+  if (action === 'retry_next') return 'blue'
   if (action === 'rate_limited') return 'orange'
   if (action === 'error_disabled') return 'red'
   return 'gold'

@@ -33,7 +33,7 @@ export function payloadPartText(value: AuditPayloadPartType): string {
 export function trafficSourceText(value: AuditTrafficSource): string {
   return {
     gateway: '网关请求',
-    manual_account_test: '账号测试',
+    manual_account_test: 'AI账户测试',
     cooldown_retest: '恢复探活'
   }[value] ?? '网关请求'
 }

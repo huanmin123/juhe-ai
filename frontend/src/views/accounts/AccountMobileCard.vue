@@ -93,7 +93,7 @@ import {
   isAccountDisplayExpired,
   isAuthorizedAccount
 } from './accountFormatters'
-import { authorizedAccountSourceToneClass, canTestAccount } from './accountRules'
+import { authorizedAccountSourceToneClass } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
@@ -159,13 +159,19 @@ const actions = computed<RowActionItem[]>(() => {
 })
 const authorizedActions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []
-  if (canTestAccount(props.account)) {
-    list.push({ key: 'test', label: '测试', icon: 'test', tone: 'info' })
+  if (props.account.status !== 'error') {
+    list.push({ key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
   }
-  if (props.account.status === 'error') {
-    return list
+  if (props.account.accountAuthorizationId) {
+    list.push({
+      key: 'return',
+      label: '归还',
+      icon: 'revoke',
+      tone: 'danger',
+      confirmTitle: `确认归还授权账户「${props.account.name}」？归还后你将不再看到或使用它，不影响授权方原账户。`,
+      confirmOkText: '归还'
+    })
   }
-  list.push({ key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
   return list
 })
 
@@ -174,7 +180,7 @@ function handleActionClick(key: string) {
     emit('bind-group')
     return
   }
-  if (key === 'delete') {
+  if (key === 'delete' || key === 'return') {
     emit('delete')
     return
   }

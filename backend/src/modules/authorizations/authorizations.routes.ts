@@ -10,6 +10,7 @@ import {
   listResourceAuthorizations,
   listResourceAuthorizationsPage,
   revokeResourceAuthorization,
+  returnResourceAuthorizationForGrantee,
   updateResourceAuthorization
 } from '../../storage/repositories.js'
 import { getDatabase } from '../../storage/database.js'
@@ -31,7 +32,7 @@ const authorizationsQuerySchema = z.object({
   resourceId: z.string().trim().min(1, '授权资源 ID 不能为空').optional(),
   granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
-  status: z.enum(['active', 'paused', 'expired', 'revoked', 'all']).optional(),
+  status: z.enum(['active', 'paused', 'expired', 'revoked', 'returned', 'all']).optional(),
   direction: z.enum(['all', 'outbound', 'inbound']).optional(),
   sourceType: z.enum(['all', 'manual', 'team']).optional(),
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
@@ -104,7 +105,7 @@ const revokeAuthorizationSchema = z.object({
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['sourceTeamId'],
-      message: '撤销团队来源授权时必须提供团队 ID'
+      message: '回收团队来源授权时必须提供团队 ID'
     })
   }
 })
@@ -214,6 +215,68 @@ authorizationsRouter.post('/', mutationGuard({
   }
 })
 
+authorizationsRouter.delete('/:id/return', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    sendBadRequest(res, scopeQuery.message)
+    return
+  }
+  const paramsParsed = parseOrBadRequest(authorizationIdParamsSchema, req.params, '授权记录 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  try {
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    runLoggedOperation(() => {
+      const authorization = returnResourceAuthorizationForGrantee(paramsParsed.data.id, requestAccess)
+      if (!authorization) {
+        throw new Error('授权记录不存在')
+      }
+      return {
+        result: true,
+        log: {
+          operationScopeSystemAccountId: authorization.grantee_system_account_id,
+          mode: operationMode(requestAccess),
+          module: 'authorizations',
+          action: 'return',
+          operationKey: 'authorizations.return',
+          resourceType: 'authorization',
+          resourceId: authorization.id,
+          resourceName: authorization.resource_id,
+          summary: `归还授权使用权：${authorization.resource_id}`,
+          changes: [safeChange('returned', '归还授权', false, true)],
+          targets: [
+            ownerTarget({
+              targetType: authorization.resource_type,
+              targetId: authorization.resource_id,
+              ownerSystemAccountId: authorization.resource_owner_system_account_id,
+              relation: 'owner'
+            }),
+            ownerTarget({
+              targetType: 'system_account',
+              targetId: authorization.grantee_system_account_id,
+              ownerSystemAccountId: authorization.grantee_system_account_id,
+              relation: 'grantee'
+            })
+          ],
+          viewers: viewers(
+            viewer(authorization.resource_owner_system_account_id, 'authorization_owner'),
+            viewer(authorization.grantee_system_account_id, 'authorization_grantee')
+          )
+        }
+      }
+    }, req)
+    res.status(204).send()
+  } catch (error) {
+    if (error instanceof Error && error.message === '授权记录不存在') {
+      sendNotFound(res, '授权记录不存在')
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '归还授权使用权失败'))
+  }
+})
+
 authorizationsRouter.delete('/:id', (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
@@ -230,7 +293,7 @@ authorizationsRouter.delete('/:id', (req, res) => {
     sourceTeamId: req.body?.sourceTeamId ?? req.query.sourceTeamId,
     revokeAll: req.body?.revokeAll ?? (req.query.revokeAll === 'true' ? true : req.query.revokeAll === 'false' ? false : undefined)
   }
-  const parsed = parseOrBadRequest(revokeAuthorizationSchema, payload, '撤销授权参数不合法')
+  const parsed = parseOrBadRequest(revokeAuthorizationSchema, payload, '回收授权参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)
     return
@@ -254,14 +317,14 @@ authorizationsRouter.delete('/:id', (req, res) => {
           resourceType: 'authorization',
           resourceId: authorization.id,
           resourceName: authorization.resourceName ?? authorization.resourceId,
-          summary: `撤销资源授权：${authorization.resourceName ?? authorization.resourceId} -> ${authorizationGranteeName(authorization)}`,
+          summary: `回收资源授权：${authorization.resourceName ?? authorization.resourceId} -> ${authorizationGranteeName(authorization)}`,
           changes: [
             ...diffSafeFields(before as unknown as Record<string, unknown> | undefined, authorization as unknown as Record<string, unknown>, {
               status: '状态',
               expiresAt: '过期时间',
               limits: '额度限制'
             }),
-            safeChange('revoked', '撤销状态', false, true)
+            safeChange('revoked', '回收状态', false, true)
           ],
           targets: authorizationTargets(authorization),
           viewers: authorizationViewers(authorization)
@@ -274,7 +337,7 @@ authorizationsRouter.delete('/:id', (req, res) => {
       sendNotFound(res, '授权记录不存在')
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '撤销授权失败'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '回收授权失败'))
   }
 })
 

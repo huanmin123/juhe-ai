@@ -201,7 +201,7 @@ async function main(): Promise<void> {
     assert.match(featureResponseText, /没有可用的上游账户/, `所有账号失败不应透传上游原文，应返回网关统一错误：${featureResponseText}`)
     assert.notEqual(featureResponseText, invalidRequestRejectedRequestBody, '所有账号失败不应把上游原始错误体透传给客户端')
     assert.equal(invalidRequestUpstreamHitCount, 3, `通用失败流水线应尝试三个账号后再失败，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 3, '三个账号都失败后应全部进入本地短期屏蔽')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '未命中账号错误策略的上游失败不应默认进入本地短期屏蔽')
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
     currentScenario = 'same_signature_third_account_success'
@@ -221,7 +221,7 @@ async function main(): Promise<void> {
     assert.equal(thirdSuccessResponse.status, 200, `前两个账号返回相同上游错误但第三账号可用时应救回请求，实际 HTTP ${thirdSuccessResponse.status}: ${thirdSuccessResponseText}`)
     assert.equal(thirdSuccessResponseText, thirdAccountSuccessBody, `第三账号救回响应体异常：${thirdSuccessResponseText}`)
     assert.equal(thirdAccountSuccessHitCount, 3, `第三账号救回应尝试三个账号，实际 ${thirdAccountSuccessHitCount}`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 2, '前两个失败账号应进入本地短期屏蔽，成功账号不应被屏蔽')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '前两个失败账号未命中账号错误策略时不应默认本地屏蔽')
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
@@ -245,7 +245,7 @@ async function main(): Promise<void> {
     assert.match(signatureResponseText, /没有可用的上游账户/, `相同上游错误失败不应返回上游原文：${signatureResponseText}`)
     assert.notEqual(signatureResponseText, sameSignatureRejectedRequestBody, '相同上游错误失败不应保留上游原始错误体')
     assert.equal(sameSignatureUpstreamHitCount, 3, `同一错误应尝试全部三个账号，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 3, '相同上游错误失败后也应本地屏蔽失败账号')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '相同上游错误未命中账号错误策略时不应默认本地屏蔽失败账号')
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
     const repeatedSignatureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -280,7 +280,7 @@ async function main(): Promise<void> {
     assert.equal(instructionsRequiredResponse.status, 200, `首账号 invalid_request_error 但后续账号可用时应切号成功，实际 HTTP ${instructionsRequiredResponse.status}: ${instructionsRequiredResponseText}`)
     assert.equal(instructionsRequiredResponseText, invalidRequestSwitchSuccessBody, `invalid_request_error 切号成功响应体异常：${instructionsRequiredResponseText}`)
     assert.equal(invalidRequestSwitchUpstreamHitCount, 2, `invalid_request_error 切号成功应命中两个账号，实际 ${invalidRequestSwitchUpstreamHitCount}`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 1, '首账号失败后即使后续账号成功，也应短期屏蔽首账号')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '首账号失败未命中账号错误策略时不应默认短期屏蔽')
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
@@ -309,7 +309,7 @@ async function main(): Promise<void> {
     assert.equal(unknownSwitchSecondAccountHitCount, 1, `未知失败切号场景后续账号应命中 1 次，实际 ${unknownSwitchSecondAccountHitCount}`)
     assert.equal(switchResponseText, unknownSwitchSuccessBody, `未知失败切号成功响应体异常：${switchResponseText}`)
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 1, '未知失败切到后续账号成功后应本地屏蔽首账号')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '未知失败切到后续账号成功后不应默认本地屏蔽首账号')
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
@@ -332,7 +332,7 @@ async function main(): Promise<void> {
     assert.equal(dispatchRaceFirstAccountHitCount, 1, `调度竞态场景应先命中首账号一次，实际 ${dispatchRaceFirstAccountHitCount}`)
     assert.equal(dispatchRaceSecondAccountHitCount, 0, `第二账号在首账号失败后被本地屏蔽，不应继续命中，实际 ${dispatchRaceSecondAccountHitCount}`)
     assert.equal(dispatchRaceThirdAccountHitCount, 1, `第二账号被屏蔽后应切到第三账号成功，实际 ${dispatchRaceThirdAccountHitCount}`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 2, '调度竞态后首账号和中途屏蔽账号都应处于本地短期屏蔽')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 1, '调度竞态后只有显式中途屏蔽账号应处于本地短期屏蔽')
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
@@ -390,7 +390,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝；直连传输错误不长期屏蔽账号；上游响应失败会本地屏蔽并切号；全部失败返回统一网关错误；重复请求不再命中旧请求级短路缓存；单账号屏蔽时会等待释放并支持续期等待')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝；未命中账号错误策略的上游响应失败只记录并切号，不默认本地屏蔽；全部失败返回统一网关错误；重复请求不再命中旧请求级短路缓存；单账号屏蔽时会等待释放并支持续期等待')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()

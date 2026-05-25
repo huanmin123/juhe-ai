@@ -13,9 +13,6 @@ import {
   persistOpenAICodexHeadersIfNeeded
 } from './openai-gateway-account-effects.js'
 import { readUpstreamBodyLimited } from './openai-gateway-body.js'
-import {
-  headersFromObjectForPolicy
-} from './openai-gateway-error-helpers.js'
 import { suppressGatewayAccountLocally } from './gateway-account-side-effects.service.js'
 import { forgetOpenAIAccountForSession } from './openai-gateway-session-affinity.service.js'
 import {
@@ -184,17 +181,19 @@ export async function handleFailedUpstreamResponse(
   if (!responseBodyRead.truncated) {
     parsedError = parseErrorPayload(responseBodyText, response.headers)
   }
+  const policyDecision = decideAccountErrorPolicy(account, failureInput.statusCode, response.headers, Buffer.from(responseBodyText), settings)
 
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-  suppressGatewayAccountLocally(
-    account,
-    settings,
-    responseBodyRead.truncated
-      ? `上游账号返回非成功状态：HTTP ${response.status}`
-      : `上游账号返回非成功状态：HTTP ${response.status}`
-  )
-
-  if (hasAccountErrorPolicyDecision(account, failureInput)) {
+  if (policyDecision) {
+    if (policyDecisionChangesRuntimeAvailability(policyDecision.action)) {
+      suppressGatewayAccountLocally(
+        account,
+        settings,
+        responseBodyRead.truncated
+          ? `上游账号返回非成功状态：HTTP ${response.status}`
+          : `上游账号返回非成功状态：HTTP ${response.status}`
+      )
+    }
     applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
   }
 
@@ -328,9 +327,8 @@ export function formatUpstreamRequestErrorMessage(error: unknown): string {
   return '请求失败'
 }
 
-function hasAccountErrorPolicyDecision(account: UpstreamAccount, input: AccountFailureInput): boolean {
-  const headers = input.headers instanceof Headers ? input.headers : headersFromObjectForPolicy(input.headers)
-  return Boolean(decideAccountErrorPolicy(account, input.statusCode, headers, Buffer.from(input.bodyText), input.settings))
+function policyDecisionChangesRuntimeAvailability(action: 'retry_next' | 'cooldown' | 'disable'): boolean {
+  return action === 'cooldown' || action === 'disable'
 }
 
 function logGatewayFailureWarning(

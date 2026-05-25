@@ -27,6 +27,7 @@ import { jsonObjectOrNull, parseOptionalJsonObject } from './value-utils.js'
 interface RefreshEffectiveSourceOptions {
   noActiveSourceReason?: string
   preserveExpiredWhenNoActiveSource?: boolean
+  terminalStatus?: 'revoked' | 'returned'
 }
 
 export function expireDueResourceAuthorizations(): number {
@@ -398,9 +399,10 @@ function refreshResourceAuthorizationEffectiveSource(
 
   const preserveExpiredWhenNoActiveSource = options.preserveExpiredWhenNoActiveSource === false ? 0 : 1
   const noActiveSourceReason = options.noActiveSourceReason ?? null
+  const terminalStatus = options.terminalStatus ?? 'revoked'
   database.prepare(`
     UPDATE resource_authorizations
-    SET status = CASE WHEN ? = 1 AND expires_at IS NOT NULL AND expires_at <= ? THEN 'expired' ELSE 'revoked' END,
+    SET status = CASE WHEN ? = 1 AND expires_at IS NOT NULL AND expires_at <= ? THEN 'expired' ELSE ? END,
         effective_source_type = NULL,
         effective_source_team_id = NULL,
         revoked_by = CASE WHEN ? IS NOT NULL THEN ? ELSE COALESCE(revoked_by, ?) END,
@@ -416,6 +418,7 @@ function refreshResourceAuthorizationEffectiveSource(
   `).run(
     preserveExpiredWhenNoActiveSource,
     now,
+    terminalStatus,
     noActiveSourceReason,
     actor,
     actor,
@@ -472,8 +475,8 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
       AND grantee_type = ?
       AND COALESCE(grantee_system_account_id, '') = COALESCE(?, '')
       AND COALESCE(grantee_team_id, '') = COALESCE(?, '')
-      AND status IN ('paused', 'expired', 'revoked')
-    ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END,
+      AND status IN ('paused', 'expired', 'revoked', 'returned')
+    ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 WHEN 'returned' THEN 4 ELSE 5 END,
       created_at ASC,
       id ASC
     LIMIT 1
@@ -484,9 +487,6 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
     input.granteeType === 'system_account' ? input.granteeId : null,
     input.granteeType === 'team' ? input.granteeId : null
   ) as unknown as ResourceAuthorizationGrantRow | undefined
-  if (existing?.status === 'paused') {
-    throw new Error(input.granteeType === 'team' ? '该资源已暂停授权给该团队，请先恢复或修改原授权' : '该资源已暂停授权给该用户，请先恢复或修改原授权')
-  }
   const id = existing?.id ?? newId('rauthgrant')
   const nextExpiresAt = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
     ? input.expiresAt ?? null
@@ -527,6 +527,14 @@ export function revokeResourceAuthorizationGrant(grant: ResourceAuthorizationGra
   cleanupInactiveAuthorizationBindings(database)
 }
 
+export function returnResourceAuthorizationGrant(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
+  database
+    .prepare("UPDATE resource_authorization_grants SET status = 'returned', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
+    .run(actor, now, now, grant.id)
+  syncResourceAuthorizationGrantRuntime({ ...grant, status: 'returned', revoked_by: actor, revoked_at: now, updated_at: now }, actor, database, now)
+  cleanupInactiveAuthorizationBindings(database)
+}
+
 export function syncResourceAuthorizationGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
   if (grant.grantee_type === 'system_account') {
     syncUserGrantRuntime(grant, actor, database, now)
@@ -556,6 +564,21 @@ function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: strin
     return
   }
   if (!runtime) return
+  if (grant.status === 'paused' || grant.status === 'expired') {
+    database.prepare(`
+      UPDATE resource_authorizations
+      SET status = ?,
+          expires_at = ?,
+          limits_json = ?,
+          revoked_by = CASE WHEN ? = 'expired' THEN COALESCE(revoked_by, ?) ELSE NULL END,
+          revoked_at = CASE WHEN ? = 'expired' THEN COALESCE(revoked_at, ?) ELSE NULL END,
+          revoked_reason = CASE WHEN ? = 'expired' THEN 'authorization_expired' ELSE 'authorization_paused' END,
+          updated_at = ?
+      WHERE id = ?
+    `).run(grant.status, grant.expires_at, grant.limits_json, grant.status, actor, grant.status, now, grant.status, now, runtime.id)
+    refreshResourceAuthorizationEffectiveSource(runtime.id, actor, now, database)
+    return
+  }
   database.prepare(`
     UPDATE resource_authorization_sources
     SET status = 'revoked',
@@ -565,14 +588,18 @@ function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: strin
         revoked_at = ?,
         updated_at = ?
     WHERE authorization_id = ? AND source_type = 'manual' AND status IN ('active', 'superseded')
-  `).run(now, grant.status === 'expired' ? 'authorization_expired' : grant.status === 'paused' ? 'authorization_paused' : 'authorization_revoked', actor, now, now, runtime.id)
+  `).run(now, grant.status === 'returned' ? 'grantee_returned' : 'authorization_revoked', actor, now, now, runtime.id)
   refreshResourceAuthorizationEffectiveSource(
     runtime.id,
     actor,
     now,
     database,
-    grant.status === 'revoked'
-      ? { noActiveSourceReason: 'authorization_revoked', preserveExpiredWhenNoActiveSource: false }
+    grant.status === 'revoked' || grant.status === 'returned'
+      ? {
+        noActiveSourceReason: grant.status === 'returned' ? 'grantee_returned' : 'authorization_revoked',
+        preserveExpiredWhenNoActiveSource: false,
+        terminalStatus: grant.status === 'returned' ? 'returned' : 'revoked'
+      }
       : undefined
   )
 }
@@ -580,13 +607,13 @@ function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: strin
 function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
   const teamId = grant.grantee_team_id
   if (!teamId) return
-  if (grant.status === 'revoked') {
+  if (grant.status === 'revoked' || grant.status === 'returned') {
     revokeTeamGrantSources(grant.resource_type, grant.resource_id, teamId, actor, database, now)
     return
   }
   if (grant.status === 'paused' || grant.status === 'expired') {
     const sourceRows = database.prepare(`
-      SELECT ras.id AS source_id, ras.authorization_id
+      SELECT ras.authorization_id
       FROM resource_authorization_sources ras
       INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
       WHERE ra.resource_type = ?
@@ -594,19 +621,19 @@ function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow,
         AND ras.source_type = 'team'
         AND ras.source_team_id = ?
         AND ras.status = 'active'
-    `).all(grant.resource_type, grant.resource_id, teamId) as unknown as Array<{ source_id?: string; authorization_id?: string }>
+    `).all(grant.resource_type, grant.resource_id, teamId) as unknown as Array<{ authorization_id?: string }>
     for (const sourceRow of sourceRows) {
-      if (!sourceRow.source_id || !sourceRow.authorization_id) continue
+      if (!sourceRow.authorization_id) continue
       database.prepare(`
-        UPDATE resource_authorization_sources
-        SET status = 'revoked',
-            ended_at = COALESCE(ended_at, ?),
-            ended_reason = ?,
-            revoked_by = ?,
-            revoked_at = ?,
+        UPDATE resource_authorizations
+        SET expires_at = ?,
+            revoked_by = CASE WHEN ? = 'expired' THEN COALESCE(revoked_by, ?) ELSE NULL END,
+            revoked_at = CASE WHEN ? = 'expired' THEN COALESCE(revoked_at, ?) ELSE NULL END,
+            revoked_reason = CASE WHEN ? = 'expired' THEN 'authorization_expired' WHEN ? = 'paused' THEN 'authorization_paused' ELSE revoked_reason END,
+            limits_json = ?,
             updated_at = ?
         WHERE id = ?
-      `).run(now, grant.status === 'paused' ? 'authorization_paused' : 'authorization_expired', actor, now, now, sourceRow.source_id)
+      `).run(grant.expires_at, grant.status, actor, grant.status, now, grant.status, grant.status, grant.limits_json, now, sourceRow.authorization_id)
       refreshResourceAuthorizationEffectiveSource(sourceRow.authorization_id, actor, now, database)
     }
     return

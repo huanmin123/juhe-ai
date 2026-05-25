@@ -478,7 +478,7 @@ function canManageAuthorization(authorization: ResourceAuthorizationSummary): bo
 
 function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
   let count = 1
-  if (authorization.status === 'active' || authorization.status === 'paused') count += 1
+  if (authorization.status === 'active' || authorization.status === 'paused' || authorization.status === 'expired' || authorization.status === 'revoked' || authorization.status === 'returned') count += 1
   count += authorizationRevokeActionCount(authorization)
   return count
 }
@@ -1351,11 +1351,11 @@ async function revokeManualSource(item: ResourceAuthorizationSummary) {
     } else {
       await api.myAuthorizations.revoke(item.id, { sourceType: 'manual' })
     }
-    message.success('个人授权来源已收回')
+    message.success('个人授权来源已回收')
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '收回个人授权失败'))
+    message.error(extractApiErrorMessage(error, '回收个人授权失败'))
   }
 }
 
@@ -1366,11 +1366,11 @@ async function revokeTeamSource(item: ResourceAuthorizationSummary, sourceTeamId
     } else {
       await api.myAuthorizations.revoke(item.id, { sourceType: 'team', sourceTeamId })
     }
-    message.success('团队授权来源已收回')
+    message.success('团队授权来源已回收')
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '收回团队授权失败'))
+    message.error(extractApiErrorMessage(error, '回收团队授权失败'))
   }
 }
 
@@ -1381,11 +1381,11 @@ async function revokeAuthorization(item: ResourceAuthorizationSummary) {
     } else {
       await api.myAuthorizations.revoke(item.id)
     }
-    message.success(item.granteeType === 'team' ? '团队授权已收回' : '授权已收回')
+    message.success(item.granteeType === 'team' ? '团队授权已回收' : '授权已回收')
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, item.granteeType === 'team' ? '收回团队授权失败' : '收回授权失败'))
+    message.error(extractApiErrorMessage(error, item.granteeType === 'team' ? '回收团队授权失败' : '回收授权失败'))
   }
 }
 
@@ -1425,10 +1425,14 @@ function handleActionMenuClick(event: { key: string | number }, item: ResourceAu
 
 async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, status: 'active' | 'paused') {
   try {
+    const payload: { status: 'active' | 'paused'; expiresAt?: string | null } = { status }
+    if (status === 'active' && item.expiresAt && Date.parse(item.expiresAt) <= Date.now()) {
+      payload.expiresAt = null
+    }
     if (isManagementView.value) {
-      await api.authorizations.update(item.id, { status }, authorizationScopeParams.value)
+      await api.authorizations.update(item.id, payload, authorizationScopeParams.value)
     } else {
-      await api.myAuthorizations.update(item.id, { status })
+      await api.myAuthorizations.update(item.id, payload)
     }
     message.success(status === 'active' ? '授权已恢复' : '授权已暂停')
     await loadData()

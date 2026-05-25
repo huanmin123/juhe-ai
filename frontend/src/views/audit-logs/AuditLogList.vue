@@ -81,7 +81,7 @@
             <strong class="mono-cell">{{ record.traceId }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>账号</span>
+            <span>AI账户</span>
             <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
           </div>
           <div class="mobile-list-meta-item">

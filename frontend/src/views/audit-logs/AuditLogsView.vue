@@ -32,6 +32,20 @@
       </template>
       <template #advanced-filters>
         <a-form layout="vertical" class="advanced-filter-form">
+          <a-form-item label="AI账户">
+            <AccountSelect
+              v-model:value="accountIdFilter"
+              v-model:selected-account="accountSelection"
+              :accounts="accountOptions"
+              :filter-option="false"
+              :loading="accountOptionsLoading"
+              allow-clear
+              placeholder="选择 AI账户"
+              @change="applyFilters"
+              @dropdown-visible-change="handleAccountOptionsDropdown"
+              @search="handleAccountOptionsSearch"
+            />
+          </a-form-item>
           <a-form-item label="接口路径">
             <a-input v-model:value="pathFilter" allow-clear placeholder="/v1/responses" @press-enter="applyFilters" />
           </a-form-item>
@@ -75,6 +89,20 @@
               @search="handleSystemAccountOptionsSearch"
             />
           </a-form-item>
+          <a-form-item label="AI账户">
+            <AccountSelect
+              v-model:value="accountIdFilter"
+              v-model:selected-account="accountSelection"
+              :accounts="accountOptions"
+              :filter-option="false"
+              :loading="accountOptionsLoading"
+              allow-clear
+              placeholder="选择 AI账户"
+              @change="applyFilters"
+              @dropdown-visible-change="handleAccountOptionsDropdown"
+              @search="handleAccountOptionsSearch"
+            />
+          </a-form-item>
           <a-form-item label="接口路径">
             <a-input v-model:value="pathFilter" allow-clear placeholder="/v1/responses" />
           </a-form-item>
@@ -113,7 +141,7 @@
             <a-descriptions-item label="来源">{{ trafficSourceText(detail.trafficSource) }}</a-descriptions-item>
             <a-descriptions-item label="接口">{{ detail.method }} {{ detail.path }}</a-descriptions-item>
             <a-descriptions-item label="状态码">{{ detail.finalStatusCode ?? '-' }}</a-descriptions-item>
-            <a-descriptions-item label="账号">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
+            <a-descriptions-item label="AI账户">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
             <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>
             <a-descriptions-item label="分组">{{ displayAuditGroupName(detail.groupName, detail.groupId) }}</a-descriptions-item>
             <a-descriptions-item label="系统账户">{{ displayName(detail.systemAccountName, detail.systemAccountId) }}</a-descriptions-item>
@@ -165,7 +193,7 @@
                     <div class="payload-mobile-card-grid">
                       <span>序号</span>
                       <strong>{{ record.attemptIndex }}</strong>
-                      <span>账号</span>
+                      <span>AI账户</span>
                       <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
                       <span>状态码</span>
                       <strong>{{ record.upstreamStatusCode ?? '-' }}</strong>
@@ -284,12 +312,13 @@
 
 <script setup lang="ts">
 import { ArrowRightOutlined, CopyOutlined } from '@ant-design/icons-vue'
-import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, AuditTrafficSource } from '@/types/domain'
+import type { AccountOptionSummary, AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, AuditTrafficSource } from '@/types/domain'
+import AccountSelect from '@/components/AccountSelect.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
@@ -300,8 +329,10 @@ import TableColumnManager from '@/components/TableColumnManager.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
+import { accountSelectionForId, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -348,9 +379,46 @@ const {
 } = useRemoteSystemAccountOptions({
   selectedIds: () => [systemAccountFilter.value]
 })
+const accountOptions = ref<AccountOptionSummary[]>([])
+const accountOptionsLoading = ref(false)
+const accountOptionsKeyword = ref('')
+const accountOptionsCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
+let accountOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let accountOptionsRequestSeq = 0
+let accountOptionsLoadingKey: string | undefined
+let accountOptionsLoadingPromise: Promise<void> | undefined
+
+function handleAccountOptionsSearch(value: string): void {
+  accountOptionsKeyword.value = value
+  clearAccountOptionsSearchTimer()
+  accountOptionsSearchTimer = window.setTimeout(() => {
+    accountOptionsSearchTimer = undefined
+    void loadAccountOptions(accountOptionsKeyword.value)
+  }, 250)
+}
+
+function handleAccountOptionsDropdown(open: boolean): void {
+  if (open) {
+    void loadAccountOptions()
+  }
+}
+
+function resetAccountOptionsSearch(): void {
+  accountOptionsKeyword.value = ''
+  clearAccountOptionsSearchTimer()
+}
+
+function clearAccountOptionsSearchTimer(): void {
+  if (accountOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(accountOptionsSearchTimer)
+    accountOptionsSearchTimer = undefined
+  }
+}
 
 const pageSize = 100
 type AuditLogsPageState = {
+  accountIdFilter: string
+  accountSelection?: AccountSelection
   outcomeFilter: AuditOutcome | 'all'
   pagination: { current: number; pageSize: number }
   pathFilter: string
@@ -361,6 +429,8 @@ type AuditLogsPageState = {
   trafficSourceFilter: AuditTrafficSource | 'all'
 }
 const defaultAuditLogsPageState = (): AuditLogsPageState => ({
+  accountIdFilter: '',
+  accountSelection: undefined,
   outcomeFilter: 'all',
   pagination: { current: 1, pageSize },
   pathFilter: '',
@@ -370,7 +440,7 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   traceIdFilter: '',
   trafficSourceFilter: 'all'
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 5 })
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 7 })
 const initialPageState = pageStateCache.read()
 const route = useRoute()
 const router = useRouter()
@@ -380,6 +450,8 @@ const effectiveInitialPageState: AuditLogsPageState = initialTraceId
   : initialPageState
 
 const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
+const accountIdFilter = ref(effectiveInitialPageState.accountIdFilter)
+const accountSelection = ref<AccountSelection | undefined>(effectiveInitialPageState.accountSelection)
 const outcomeFilter = ref<AuditOutcome | 'all'>(effectiveInitialPageState.outcomeFilter)
 const pathFilter = ref(effectiveInitialPageState.pathFilter)
 const statusCodeFilter = ref(effectiveInitialPageState.statusCodeFilter)
@@ -407,6 +479,7 @@ const {
   fetchPage: async (options, pageState) => {
     if (options.forceOptions === true) {
       resetSystemAccountOptionsSearch()
+      resetAccountOptionsSearch()
     }
     const [listResult, runtimeInfo] = await Promise.all([
       fetchRecords(pageState),
@@ -425,7 +498,7 @@ const outcomeOptions = auditOutcomeOptions
 const trafficSourceOptions = [
   { label: '全部来源', value: 'all' },
   { label: '网关请求', value: 'gateway' },
-  { label: '账号测试', value: 'manual_account_test' },
+  { label: 'AI账户测试', value: 'manual_account_test' },
   { label: '恢复探活', value: 'cooldown_retest' }
 ] satisfies Array<{ label: string; value: AuditTrafficSource | 'all' }>
 const attemptColumns = auditAttemptColumns
@@ -442,6 +515,7 @@ const {
 const activeFilterCount = computed(() => {
   let count = 0
   if (traceIdFilter.value.trim()) count += 1
+  if (accountIdFilter.value) count += 1
   if (outcomeFilter.value !== 'all') count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (pathFilter.value.trim()) count += 1
@@ -451,6 +525,7 @@ const activeFilterCount = computed(() => {
 })
 const advancedFilterCount = computed(() => {
   let count = 0
+  if (accountIdFilter.value) count += 1
   if (pathFilter.value.trim()) count += 1
   if (statusCodeFilter.value.trim()) count += 1
   if (trafficSourceFilter.value !== 'all') count += 1
@@ -516,6 +591,8 @@ function applyFilters(): void {
 
 function applyPageState(state: AuditLogsPageState): void {
   traceIdFilter.value = state.traceIdFilter
+  accountIdFilter.value = state.accountIdFilter
+  accountSelection.value = state.accountSelection
   outcomeFilter.value = state.outcomeFilter
   pathFilter.value = state.pathFilter
   statusCodeFilter.value = state.statusCodeFilter
@@ -525,6 +602,7 @@ function applyPageState(state: AuditLogsPageState): void {
   pagination.current = state.pagination.current
   pagination.pageSize = state.pagination.pageSize
   resetSystemAccountOptionsSearch()
+  resetAccountOptionsSearch()
 }
 
 function applyRouteTraceId(traceId: string): void {
@@ -547,6 +625,9 @@ function resetFilters(): void {
   clearRouteTraceIdForManualState()
   const defaults = defaultAuditLogsPageState()
   traceIdFilter.value = defaults.traceIdFilter
+  accountIdFilter.value = defaults.accountIdFilter
+  accountSelection.value = defaults.accountSelection
+  resetAccountOptionsSearch()
   outcomeFilter.value = defaults.outcomeFilter
   pathFilter.value = defaults.pathFilter
   statusCodeFilter.value = defaults.statusCodeFilter
@@ -565,12 +646,87 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
     page: pageState.current,
     pageSize: pageState.pageSize,
     traceId: traceIdFilter.value.trim() || undefined,
+    accountId: accountIdFilter.value || undefined,
     outcome: outcomeFilter.value,
     path: pathFilter.value || undefined,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId,
     trafficSource: trafficSourceFilter.value === 'all' ? undefined : trafficSourceFilter.value
   })
+}
+
+async function loadAccountOptions(keyword = accountOptionsKeyword.value, force = false): Promise<void> {
+  accountOptionsKeyword.value = keyword
+  const requestKeyword = keyword.trim() || undefined
+  const selectedIds = accountIdFilter.value ? [accountIdFilter.value] : []
+  const requestKey = JSON.stringify([requestKeyword ?? '', selectedIds])
+  if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
+    return accountOptionsLoadingPromise
+  }
+  const requestSeq = ++accountOptionsRequestSeq
+  if (!force) {
+    const cachedOptions = accountOptionsCache.get(requestKey)
+    if (cachedOptions) {
+      accountOptionsLoadingKey = undefined
+      accountOptionsLoadingPromise = undefined
+      accountOptionsLoading.value = false
+      accountOptions.value = cachedOptions
+      syncSelectedAccountFromOptions(cachedOptions)
+      return
+    }
+  }
+  accountOptionsLoading.value = true
+  accountOptionsLoadingKey = requestKey
+  accountOptionsLoadingPromise = (async () => {
+    try {
+      let nextOptions = await api.accounts.options({ keyword: requestKeyword, limit: 50 })
+      nextOptions = await ensureSelectedAccountOption(nextOptions)
+      accountOptionsCache.set(requestKey, nextOptions)
+      if (requestSeq !== accountOptionsRequestSeq) return
+      accountOptions.value = nextOptions
+      syncSelectedAccountFromOptions(nextOptions)
+    } catch (error) {
+      if (requestSeq !== accountOptionsRequestSeq) return
+      console.error(error)
+      message.error('AI账户筛选项加载失败')
+    } finally {
+      if (accountOptionsLoadingKey === requestKey) {
+        accountOptionsLoadingKey = undefined
+        accountOptionsLoadingPromise = undefined
+      }
+      if (requestSeq === accountOptionsRequestSeq) {
+        accountOptionsLoading.value = false
+      }
+    }
+  })()
+  return accountOptionsLoadingPromise
+}
+
+async function ensureSelectedAccountOption(options: AccountOptionSummary[]): Promise<AccountOptionSummary[]> {
+  const selectedId = accountIdFilter.value
+  if (!selectedId || options.some((account) => account.id === selectedId)) return options
+  try {
+    const selectedOptions = await api.accounts.options({ ids: [selectedId], limit: 50 })
+    return mergeOptionsById(selectedOptions, options)
+  } catch {
+    return options
+  }
+}
+
+function syncSelectedAccountFromOptions(options: AccountOptionSummary[]): void {
+  if (!accountIdFilter.value || accountSelection.value) return
+  accountSelection.value = accountSelectionForId(accountIdFilter.value, options)
+}
+
+function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
+  const seen = new Set<string>()
+  const output: T[] = []
+  for (const item of [...leading, ...trailing]) {
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    output.push(item)
+  }
+  return output
 }
 
 function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {
@@ -693,6 +849,8 @@ function runtimeReadyText(value: boolean | null): string {
 
 function snapshotPageState(): AuditLogsPageState {
   return {
+    accountIdFilter: accountIdFilter.value,
+    accountSelection: accountSelection.value,
     outcomeFilter: outcomeFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     pathFilter: pathFilter.value,
@@ -711,6 +869,7 @@ watch(snapshotPageState, () => {
   }
   pageStateCache.scheduleWrite(snapshotPageState)
 }, { deep: true })
+watch(accountSelection, (selection) => rememberAccountSelection(selection), { deep: true, immediate: true })
 watch(systemAccountSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(
   () => route.query.traceId,
@@ -731,7 +890,11 @@ watch(
 )
 
 onMounted(loadData)
-onDeactivated(closeTransientDetails)
+onBeforeUnmount(clearAccountOptionsSearchTimer)
+onDeactivated(() => {
+  clearAccountOptionsSearchTimer()
+  closeTransientDetails()
+})
 </script>
 
 <style scoped>

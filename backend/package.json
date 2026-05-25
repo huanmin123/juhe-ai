@@ -91,6 +91,7 @@
     "test:authorized-account-admin-dispatch": "tsx src/scripts/regression/authorized-account-admin-dispatch-regression.ts",
     "test:authorized-account-test-local-restore": "tsx src/scripts/regression/authorized-account-test-local-restore-regression.ts",
     "test:authorized-account-runtime-side-effects": "tsx src/scripts/regression/authorized-account-runtime-side-effects-regression.ts",
+    "test:authorization-return": "tsx src/scripts/regression/authorization-return-regression.ts",
     "test:authorization-quota-batch": "tsx src/scripts/regression/authorization-quota-batch-regression.ts",
     "test:authorization-usage-pagination": "tsx src/scripts/regression/authorization-usage-pagination-regression.ts",
     "test:resource-authorization-expire-clear": "tsx src/scripts/regression/resource-authorization-expire-clear-regression.ts",

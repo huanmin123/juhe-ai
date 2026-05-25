@@ -22,7 +22,7 @@ logger.level = 'silent'
 
 const [
   { accountsRouter },
-  { forceSelfAccessScope, requireAuth },
+  { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
   { flushAllUsageRecordQueue },
   { flushAllOperationLogQueue },
@@ -43,6 +43,7 @@ app.use(requestContextMiddleware)
 app.use(express.json({ limit: '1mb' }))
 app.use('/__aisys__/api', requireAuth)
 app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
+app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
 
 interface ApiEnvelope<T> {
   data: T
@@ -102,6 +103,14 @@ try {
     status: 'active',
     mustChangePassword: false
   })
+  const admin = repositories.createSystemAccount({
+    username: 'test_local_restore_admin',
+    displayName: '授权测试本地恢复管理员',
+    password: 'password',
+    role: 'admin',
+    status: 'active',
+    mustChangePassword: false
+  })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeGroup = repositories.createGroup({
@@ -148,7 +157,40 @@ try {
   assert.equal(granteeView?.localLastErrorMessage, undefined, '测试成功后应清理授权账户本地错误信息')
   assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '测试恢复授权本地状态不应修改所有者物理账户')
 
-  console.log('授权账户测试本地状态恢复回归通过')
+  const failingOwnerAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权测试本地失败账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-authorized-local-failure', base_url: mockBaseUrl }
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: failingOwnerAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '授权账户测试本地失败回归'
+  }, ownerAccess)
+  assert(repositories.setAccountGroup(failingOwnerAccount.id, granteeGroup.id, granteeAccess), '失败授权账户绑定到被授权用户分组失败')
+
+  const failureResult = await postEnvelope<AccountTestResult>(
+    appBaseUrl,
+    `/__aisys__/api/accounts/${failingOwnerAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
+    sessionCookie(admin.id),
+    { model: 'gpt-5.5' }
+  )
+  assert.equal(failureResult.success, false, '授权账户测试收到上游失败时测试结果不应成功')
+  assert.equal(failureResult.statusCode, 400, '授权账户测试应保留上游失败状态码用于诊断')
+  assert.equal(failureResult.accountStatusChanged, true, '授权账户测试失败应返回本地状态已变更')
+  assert.equal(failureResult.accountStatus, 'temporary_unavailable', '授权账户测试失败应写入被授权人本地临时不可调用')
+
+  const failedGranteeView = repositories.findAccountSummary(failingOwnerAccount.id, granteeAccess) as AccountView | undefined
+  assert.equal(failedGranteeView?.status, 'temporary_unavailable', '测试失败后被授权用户视角应为临时不可调用')
+  assert.equal(failedGranteeView?.localStatus, 'temporary_unavailable', '测试失败应写入授权账户本地状态')
+  assert(failedGranteeView?.localCooldownUntil, '测试失败应写入授权账户本地冷却时间')
+  assert(failedGranteeView?.localLastErrorMessage?.includes('账户测试失败'), `测试失败应写入授权账户本地错误信息，实际 ${failedGranteeView?.localLastErrorMessage}`)
+  assert.equal(repositories.findAccountSummary(failingOwnerAccount.id, ownerAccess)?.status, 'active', '测试失败不应修改所有者物理账户')
+
+  console.log('授权账户测试本地状态恢复和失败隔离回归通过')
 } finally {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
@@ -169,6 +211,17 @@ function createMockOpenAIServer(): http.Server {
       return
     }
     req.on('end', () => {
+      if (req.headers.authorization?.includes('sk-authorized-local-failure')) {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          error: {
+            code: 'key_switch_cooldown',
+            message: '切换key需要冷却30秒',
+            type: 'invalid_request_error'
+          }
+        }))
+        return
+      }
       const completedEvent = {
         type: 'response.completed',
         response: {

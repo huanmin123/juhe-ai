@@ -781,30 +781,15 @@ function accountTestStatusLogChanges(before: AccountSummary, after: AccountSumma
   return changes
 }
 
-function shouldMarkAccountTestFailureAsTemporaryUnavailable(account: AccountSummary, result: { success: boolean; statusCode?: number; message?: string; accountStatusChanged?: boolean; accountStatus?: string }): boolean {
+function shouldMarkAccountTestFailureAsTemporaryUnavailable(account: AccountSummary, result: { success: boolean; accountFailureEligible?: boolean; accountStatusChanged?: boolean; accountStatus?: string }): boolean {
   if (result.success) return false
   if (result.accountStatusChanged) return false
+  if (result.accountFailureEligible === false) return false
   if (account.status !== 'active') return false
   if (!account.schedulable) return false
   const observedStatus = result.accountStatus ?? account.status
   if (observedStatus !== 'active') return false
-  if (isAccountTestConfigurationFailure(result.message)) return false
-  if (typeof result.statusCode !== 'number') return true
-  if (result.statusCode >= 200 && result.statusCode < 300) return true
-  return result.statusCode === 401
-    || result.statusCode === 403
-    || result.statusCode === 407
-    || result.statusCode === 408
-    || result.statusCode === 429
-    || result.statusCode >= 500
-}
-
-function isAccountTestConfigurationFailure(message: string | undefined): boolean {
-  if (!message) return false
-  return message.includes('未绑定可用分组')
-    || message.includes('不在当前分组')
-    || message.includes('凭据不可用')
-    || message.includes('账户测试已取消')
+  return true
 }
 
 function accountTestFailureCooldownReason(result: { statusCode?: number; errorCode?: string; message?: string }): string {

@@ -19,7 +19,8 @@ export function statusLabel(status: AuthorizationStatus): string {
   if (status === 'active') return '生效中'
   if (status === 'paused') return '已暂停'
   if (status === 'expired') return '授权到期'
-  if (status === 'revoked') return '已收回'
+  if (status === 'revoked') return '已回收'
+  if (status === 'returned') return '已归还'
   return status
 }
 
@@ -28,6 +29,7 @@ export function statusTagColor(status: AuthorizationStatus): string {
   if (status === 'paused') return 'orange'
   if (status === 'expired') return 'default'
   if (status === 'revoked') return 'default'
+  if (status === 'returned') return 'default'
   return 'default'
 }
 
@@ -37,7 +39,7 @@ export function sourceLabel(source: AuthorizationSourceSummary): string {
     : '团队'
   if (source.status === 'active') return baseLabel
   if (source.status === 'superseded') return `${baseLabel}（已被团队覆盖）`
-  return `${baseLabel}（已收回）`
+  return `${baseLabel}（已回收）`
 }
 
 export function sourceTagColor(source: AuthorizationSourceSummary): string {
@@ -104,7 +106,7 @@ export function hasManualSource(item: ResourceAuthorizationSummary): boolean {
 }
 
 export function canRevokeAuthorization(item: ResourceAuthorizationSummary): boolean {
-  return item.status !== 'revoked'
+  return item.status !== 'revoked' && item.status !== 'returned'
 }
 
 export function activeTeamSources(item: ResourceAuthorizationSummary): AuthorizationSourceSummary[] {

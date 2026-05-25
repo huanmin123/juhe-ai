@@ -52,7 +52,8 @@ try {
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '脏缓存主分组',
-    providerCode: 'openai'
+    providerCode: 'openai',
+    description: '用于验证授权分组摘要展示'
   }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: 'openai',
@@ -88,7 +89,23 @@ try {
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应能消费全量哨兵刷新统计缓存')
   assert.deepEqual(dirtyRows(), [], '全量哨兵刷新后应被清理')
 
-  console.log('分组账户统计脏缓存回归通过：请求路径只打脏标记，全量影响只写哨兵，统计由 worker 异步刷新')
+  repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: primaryGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '验证授权分组统计展示'
+  }, ownerAccess)
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '分组授权后 worker 应刷新统计缓存')
+  const authorizedGroup = repositories.listGroups({ systemAccountId: grantee.id, role: 'user' as const })
+    .find((group) => group.id === primaryGroup.id)
+  assert.equal(authorizedGroup?.accessType, 'authorized', '被授权用户应能在分组列表看到授权分组')
+  assert.equal(authorizedGroup?.accountStats.total, 1, '授权分组列表应展示原分组聚合账户总数')
+  assert.equal(authorizedGroup?.accountStats.available, 1, '授权分组列表应展示原分组聚合可用账户数')
+  assert.equal(authorizedGroup?.description, '用于验证授权分组摘要展示', '授权分组列表应展示原分组说明')
+  assert.deepEqual(authorizedGroup?.accountIds, [], '授权分组列表不应暴露具体账户 ID')
+
+  console.log('分组账户统计脏缓存回归通过：请求路径只打脏标记，全量影响只写哨兵，统计由 worker 异步刷新，授权分组列表展示聚合账户数')
 } finally {
   try {
     databaseModule.getDatabase().close()

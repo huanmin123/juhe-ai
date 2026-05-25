@@ -18,7 +18,7 @@ export function authorizationDirectionFilter(value: unknown): 'outbound' | 'inbo
 }
 
 export function authorizationStatusFilter(value: unknown): AuthorizationStatus | undefined {
-  return value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked'
+  return value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked' || value === 'returned'
     ? value
     : undefined
 }
@@ -33,8 +33,14 @@ export function resourceAuthorizationGrantSourceSummary(row: ResourceAuthorizati
     sourceTeamName: teamName,
     status: row.status === 'active' || row.status === 'paused' ? 'active' as const : 'revoked' as const,
     activatedAt: row.created_at,
-    endedAt: row.revoked_at ?? (row.status === 'expired' || row.status === 'revoked' ? row.updated_at : undefined),
-    endedReason: row.status === 'expired' ? 'authorization_expired' : row.status === 'revoked' ? 'authorization_revoked' : undefined,
+    endedAt: row.revoked_at ?? (row.status === 'expired' || row.status === 'revoked' || row.status === 'returned' ? row.updated_at : undefined),
+    endedReason: row.status === 'expired'
+      ? 'authorization_expired'
+      : row.status === 'returned'
+        ? 'grantee_returned'
+        : row.status === 'revoked'
+          ? 'authorization_revoked'
+          : undefined,
     createdBy: row.created_by,
     createdAt: row.created_at,
     revokedBy: row.revoked_by ?? undefined,
@@ -58,7 +64,8 @@ export function authorizationStatusSortWeight(status: AuthorizationStatus): numb
   if (status === 'paused') return 1
   if (status === 'expired') return 2
   if (status === 'revoked') return 3
-  return 4
+  if (status === 'returned') return 4
+  return 5
 }
 
 export function sanitizeResourceAuthorizationSummaryForAccess(summary: ResourceAuthorizationSummary, access?: AccessScope): ResourceAuthorizationSummary {

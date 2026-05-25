@@ -75,6 +75,9 @@ const normalizeWeekday = (value: unknown, fallback = 1): number => {
 }
 
 const normalizeAction = (value: unknown): AccountErrorAction => {
+  if (value === 'switch_account' || value === 'next') return 'retry_next'
+  if (value === 'cooldown' || value === 'temporary_unavailable' || value === 'overloaded') return 'temp_unschedulable'
+  if (value === 'disable') return 'error_disabled'
   return accountErrorActionValues.includes(value as AccountErrorAction) ? value as AccountErrorAction : 'temp_unschedulable'
 }
 
@@ -85,15 +88,18 @@ const normalizeRecoveryStrategy = (value: unknown): AccountErrorRecoveryStrategy
 const buildRuleFromPayload = (value: unknown, index: number): AccountErrorPolicyRuleForm | null => {
   if (!value || typeof value !== 'object') return null
   const entry = value as Record<string, unknown>
+  const match = entry.match && typeof entry.match === 'object' && !Array.isArray(entry.match)
+    ? entry.match as Record<string, unknown>
+    : {}
   const name = String(entry.name || entry.description || '自定义错误处理规则')
   return makeAccountErrorPolicyRule({
     enabled: entry.enabled !== false,
     name,
     priority: normalizeOptionalPositiveInt(entry.priority) ?? (100 + index),
-    status_codes: formatStatusCodes(entry.status_codes ?? entry.statusCodes),
-    error_codes: formatList(entry.error_codes ?? entry.provider_error_codes ?? entry.providerErrorCodes),
-    error_types: formatList(entry.error_types ?? entry.provider_error_types ?? entry.providerErrorTypes),
-    keywords: formatList(entry.keywords),
+    status_codes: formatStatusCodes(entry.status_codes ?? entry.statusCodes ?? entry.status_code ?? entry.statusCode ?? match.status_codes ?? match.statusCodes ?? match.status_code ?? match.statusCode),
+    error_codes: formatList(entry.error_codes ?? entry.provider_error_codes ?? entry.providerErrorCodes ?? entry.error_code ?? entry.errorCode ?? match.error_codes ?? match.errorCodes ?? match.error_code ?? match.errorCode),
+    error_types: formatList(entry.error_types ?? entry.provider_error_types ?? entry.providerErrorTypes ?? entry.error_type ?? entry.errorType ?? match.error_types ?? match.errorTypes ?? match.error_type ?? match.errorType),
+    keywords: formatList(entry.keywords ?? entry.body_keywords ?? entry.bodyKeywords ?? match.keywords ?? match.body_keywords ?? match.bodyKeywords),
     action: normalizeAction(entry.action ?? entry.state),
     duration_minutes: normalizeOptionalPositiveInt(entry.duration_minutes ?? entry.durationMinutes),
     reset_strategy: normalizeRecoveryStrategy(entry.reset_strategy ?? entry.recovery_strategy ?? entry.strategy),
@@ -116,8 +122,6 @@ export const loadAccountErrorPolicyRules = (credentials?: Record<string, unknown
 }
 
 export const validateAccountErrorPolicyRules = (rules: AccountErrorPolicyRuleForm[]): AccountErrorPolicyValidationResult => {
-  const hasEnabledRule = rules.some((rule) => rule.enabled !== false)
-  if (!hasEnabledRule) return { valid: false, message: '错误处理策略至少需要保留一条启用规则' }
   for (const [index, rule] of rules.entries()) {
     if (rule.enabled === false) continue
     const ruleIndex = index + 1

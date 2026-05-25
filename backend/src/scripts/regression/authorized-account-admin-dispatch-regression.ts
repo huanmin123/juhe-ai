@@ -272,26 +272,35 @@ try {
     seed.granteeCookie
   )
   const ownerPausedAuthorizedAccount = ownerPausedAuthorizedAccounts.items.find((account) => account.id === seed.ownerPausedAccountId)
-  assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '归属人停用主账户不应改变被授权账户本地状态')
-  assert.equal(ownerPausedAuthorizedAccount?.sourceStatus, 'disabled', '归属人停用主账户只应作为授权来源状态展示')
-  assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, false, '归属人停用主账户只应作为授权来源调度状态展示')
-  assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '归属人停用主账户不应阻断被授权账户本地调度')
+  assert.equal(ownerPausedAuthorizedAccount?.status, 'disabled', '归属人停用主账户后授权账户有效状态应不可用')
+  assert.equal(ownerPausedAuthorizedAccount?.localStatus, 'active', '归属人停用主账户不应回写被授权用户本地状态')
+  assert.equal(ownerPausedAuthorizedAccount?.sourceStatus, 'disabled', '归属人停用主账户应作为授权来源状态展示')
+  assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, false, '归属人停用主账户应作为授权来源调度状态展示')
+  assert.equal(ownerPausedAuthorizedAccount?.schedulable, false, '归属人停用主账户应阻断被授权账户调度')
   const ownerPausedEnabledAccounts = await getEnvelope<AccountListResult>(
     baseUrl,
     '/__aisys__/api/my-accounts?page=1&pageSize=20&schedulable=enabled',
     seed.granteeCookie
   )
-  assert.equal(ownerPausedEnabledAccounts.items.some((account) => account.id === seed.ownerPausedAccountId), true, '归属人停用主账户后授权副本仍应出现在可调度筛选中')
-  const ownerPausedDispatch = await patchEnvelope<AccountSummary>(
+  assert.equal(ownerPausedEnabledAccounts.items.some((account) => account.id === seed.ownerPausedAccountId), false, '归属人停用主账户后授权账户不应出现在可调度筛选中')
+  const ownerPausedDisabledAccounts = await getEnvelope<AccountListResult>(
     baseUrl,
-    `/__aisys__/api/my-accounts/${seed.ownerPausedAccountId}/authorized-dispatch`,
-    seed.granteeCookie,
-    { fallbackEnabled: true }
+    '/__aisys__/api/my-accounts?page=1&pageSize=20&schedulable=disabled',
+    seed.granteeCookie
   )
-  assert.equal(ownerPausedDispatch.status, 'active', '归属人停用主账户后本地调度操作仍应返回授权副本状态')
-  assert.equal(ownerPausedDispatch.fallbackEnabled, true, '归属人停用主账户不应阻断被授权用户开启本地备用')
+  assert.equal(ownerPausedDisabledAccounts.items.some((account) => account.id === seed.ownerPausedAccountId), true, '归属人停用主账户后授权账户应出现在不可调度筛选中')
+  await assert.rejects(
+    patchEnvelope<AccountSummary>(
+      baseUrl,
+      `/__aisys__/api/my-accounts/${seed.ownerPausedAccountId}/authorized-dispatch`,
+      seed.granteeCookie,
+      { fallbackEnabled: true }
+    ),
+    /授权来源账户已停用/,
+    '归属人停用主账户后不应允许被授权用户开启本地备用'
+  )
   const ownerPausedGatewayAccounts = repositories.listOpenAIAccountsForGroup(seed.granteeGroupId, seed.granteeId)
-  assert.equal(ownerPausedGatewayAccounts.some((account) => account.id === seed.ownerPausedAccountId && account.accountAccessType === 'account_authorized'), true, '网关调度应保留归属人停用后的授权账户副本')
+  assert.equal(ownerPausedGatewayAccounts.some((account) => account.id === seed.ownerPausedAccountId && account.accountAccessType === 'account_authorized'), false, '网关调度应排除归属人停用后的授权账户')
   const ownerPausedTest = await postEnvelope<AccountTestResult>(
     baseUrl,
     `/__aisys__/api/my-accounts/${seed.ownerPausedAccountId}/test`,

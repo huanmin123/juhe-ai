@@ -7,6 +7,7 @@ import {
   isAccountPackageExpiredStatus,
   isAuthorizationBindingUnavailable,
   isAuthorizationExpired,
+  isAuthorizationPaused,
   isAuthorizedAccount,
   isTemporaryAccountStatus
 } from './accountFormatters'
@@ -20,13 +21,16 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
   const limitsText = quotaLimitSummaryText(account.authorizationLimits)
   const hasBlocker = hasAuthorizedAccountSourceBlocker(account)
   const lines = [
-    hasBlocker ? `授权自 ${ownerName}。` : `授权自 ${ownerName}，仅可使用。`,
+    `授权自 ${ownerName}。`,
     `授权来源：${authorizedAccountSourceText(account)}`,
     `授权到期：${expiresText}`,
     `授权限额：${limitsText}`
   ]
   if (isAuthorizationExpired(account)) {
     lines.push('授权已到期，当前不可用。')
+  }
+  if (isAuthorizationPaused(account)) {
+    lines.push('授权已暂停，当前不可用。')
   }
   if (account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
     lines.push('授权额度已用完，当前调用会被拦截。')
@@ -87,6 +91,7 @@ function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
   return Boolean(
     account.authorizationQuotaExceeded
     || isAuthorizationExpired(account)
+    || isAuthorizationPaused(account)
     || isAuthorizationBindingUnavailable(account)
     || authorizedAccountSourceUnavailableText(account)
     || account.status === 'disabled'
@@ -141,6 +146,7 @@ export function authorizedAccountUnavailableText(account: AccountSummary): strin
   if (account.permissions?.canUse === false) return '当前授权账户无可用权限'
   if (!account.boundGroupId) return '授权账户需要先绑定到你的分组'
   if (isAuthorizationExpired(account)) return '授权已到期，当前账户不能调用'
+  if (isAuthorizationPaused(account)) return '授权已暂停，当前账户不能调用'
   if (isAuthorizationBindingUnavailable(account)) return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
   if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
   if (account.status === 'disabled') return '账户已停用，当前不可用'
@@ -175,7 +181,7 @@ export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
 export function canTestAccount(account: AccountSummary): boolean {
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
-    if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account) || isAccountPackageExpiredStatus(account)) return false
+    if (isAuthorizationExpired(account) || isAuthorizationPaused(account) || isAuthorizationBindingUnavailable(account) || isAccountPackageExpiredStatus(account)) return false
     if (account.authorizationQuotaExceeded || account.status === 'error') return false
     const localFailureState = hasAuthorizedLocalFailureState(account)
     if (isTemporaryAccountStatus(account) && !localFailureState) return false
@@ -217,6 +223,9 @@ export function canManageOpenAIOAuth(account: AccountSummary): boolean {
 export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
   if (isAuthorizedAccount(account)) {
+    if (canTestAccount(account)) {
+      items.push({ key: 'test', label: '测试' })
+    }
     if (account.status === 'error') {
       pushDispatchFlagItems(items, account)
       return items.map(normalizeAccountMenuItem)

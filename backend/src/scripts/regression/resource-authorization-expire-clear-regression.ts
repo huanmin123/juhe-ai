@@ -116,8 +116,8 @@ try {
   assert.equal(expiredListItem?.status, 'expired', '到期扫描后授权应进入过期状态')
   const revokedExpiredAuthorization = repositories.revokeResourceAuthorization(expiredRevokeAuthorization.id, {}, ownerAccess)
   assert.equal(revokedExpiredAuthorization?.status, 'revoked', '到期授权仍应允许显式回收')
-  assert.equal(runtimeStatus('group', expiredRevokeGroup.id, grantee.id), 'revoked', '到期授权显式回收后运行态也应标记已收回')
-  assert.equal(repositories.listResourceAuthorizations({}, ownerAccess).some((authorization) => authorization.id === expiredRevokeAuthorization.id), false, '到期授权回收后默认列表不应继续展示')
+  assert.equal(runtimeStatus('group', expiredRevokeGroup.id, grantee.id), 'revoked', '到期授权显式回收后运行态也应标记已回收')
+  assert.equal(repositories.listResourceAuthorizations({}, ownerAccess).some((authorization) => authorization.id === expiredRevokeAuthorization.id), true, '到期授权回收后默认列表仍应保留授权记录')
 
   const accountExpiresAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
   const validAuthorizationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
@@ -221,13 +221,13 @@ try {
   const ownerPausedBinding = repositories.setAccountGroup(ownerPausedAccount.id, granteeQuotaGroup.id, granteeAccess)
   assert.equal(ownerPausedBinding?.boundGroupId, granteeQuotaGroup.id, '所有者停调账户应能先绑定到被授权人的分组')
   const ownerPausedAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerPausedAccount.id)
-  assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '授权账户本地状态应和所有者停调状态隔离')
+  assert.equal(ownerPausedAuthorizedAccount?.status, 'disabled', '所有者停调应让授权账户有效状态不可用')
+  assert.equal(ownerPausedAuthorizedAccount?.localStatus, 'active', '所有者停调不应回写被授权用户本地状态')
   assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, false, '所有者停调应作为授权来源状态返回')
-  assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '所有者停调不应影响被授权账户本地可调度状态')
-  const ownerPausedDispatch = repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAccount.id, {
+  assert.equal(ownerPausedAuthorizedAccount?.schedulable, false, '所有者停调应阻断被授权账户调度')
+  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAccount.id, {
     fallbackEnabled: true
-  }, granteeAccess)
-  assert.equal(ownerPausedDispatch?.fallbackEnabled, true, '所有者停调不应阻断被授权用户开启本地调度标记')
+  }, granteeAccess), /授权来源账户已暂停调度/, '所有者停调后不应允许被授权用户开启本地调度标记')
   const ownerPausedTestAccount = repositories.findAccountForTest(ownerPausedAccount.id, granteeAccess)
   assert(ownerPausedTestAccount, '所有者停调账户仍应能被解析出来用于测试前置校验')
   assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), undefined, '测试接口不应因所有者停调拦截被授权账户')

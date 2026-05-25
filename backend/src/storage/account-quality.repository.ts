@@ -131,7 +131,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       const successRate = row.recent_request_count > 0
         ? Math.max(0, Math.min(1, row.recent_success_count / row.recent_request_count))
         : previous?.success_rate ?? null
-      const qualityState = row.recent_first_token_sample_count > 0 ? 'fresh' : row.recent_success_count > 0 ? 'unknown' : 'failed'
+      const qualityState = row.recent_first_token_sample_count > 0 ? 'fresh' : 'unknown'
       const qualityScore = computeQualityScore({
         ewmaFirstTokenMs,
         successRate,
@@ -236,7 +236,11 @@ function cleanupInactiveQualityRows(database: ReturnType<typeof getStatsDatabase
 }
 
 function markAccountQualityStale(upsertQuality: ReturnType<DatabaseSync['prepare']>, previous: AccountQualityRow, windowStartedAt: string, windowEndedAt: string, updatedAt: string): void {
-  const qualityState: AccountQualityState = previous.quality_state === 'fresh' ? 'stale' : previous.quality_state
+  const qualityState: AccountQualityState = previous.quality_state === 'fresh'
+    ? 'stale'
+    : previous.quality_state === 'failed'
+      ? 'unknown'
+      : previous.quality_state
   const qualityScore = computeQualityScore({
     ewmaFirstTokenMs: previous.ewma_first_token_ms,
     successRate: previous.success_rate,
@@ -347,8 +351,6 @@ function computeQualityScore(input: {
   updatedAt: string
 }): number {
   const latency = typeof input.ewmaFirstTokenMs === 'number' ? input.ewmaFirstTokenMs : unknownQualityScore
-  const successRate = typeof input.successRate === 'number' ? input.successRate : 0.5
-  const errorPenalty = Math.round((1 - successRate) * 20_000)
   const statePenalty = input.qualityState === 'failed'
     ? failurePenaltyMs
     : input.qualityState === 'stale'
@@ -357,7 +359,7 @@ function computeQualityScore(input: {
         ? 10_000
         : 0
   const agePenalty = agePenaltyMs(input.updatedAt)
-  return Math.max(0, Math.trunc(latency + errorPenalty + statePenalty + agePenalty))
+  return Math.max(0, Math.trunc(latency + statePenalty + agePenalty))
 }
 
 function agePenaltyMs(updatedAt: string): number {

@@ -1,5 +1,5 @@
 import { createAppCache } from '../shared/cache.js'
-import { getDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getDatabase, getStatsDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export type GroupAccountStatsRow = {
@@ -41,7 +41,6 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
   }
   if (!missingIds.length) return result
 
-  const now = nowIso()
   const rows: Array<{ group_id: string; account_id: string }> = []
   const database = getDatabase()
   for (const chunk of chunkValues(missingIds, 900)) {
@@ -58,13 +57,12 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
           AND (
             accounts.system_account_id = groups.system_account_id
             OR (
-              account_authorizations.status = 'active'
-              AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+              account_authorizations.status IN ('active', 'paused', 'expired')
             )
           )
         ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC
       `)
-      .all(...chunk, now) as unknown as Array<{ group_id: string; account_id: string }>)
+      .all(...chunk) as unknown as Array<{ group_id: string; account_id: string }>)
   }
   const loaded = new Map<string, string[]>()
   for (const row of rows) {

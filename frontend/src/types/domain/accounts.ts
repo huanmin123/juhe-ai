@@ -156,6 +156,7 @@ export type AccountOptionSummary = Pick<
   | 'accessType'
   | 'accountAuthorizationId'
   | 'authorizationStatus'
+  | 'authorizationExpiresAt'
   | 'accountExpiresAt'
   | 'permissions'
 >
@@ -184,6 +185,7 @@ export interface AccountTestResult {
   firstTokenMs?: number
   accountStatusChanged?: boolean
   accountStatus?: AccountStatus
+  accountFailureEligible?: boolean
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable'
   errorPolicyReason?: string
 }
@@ -303,6 +305,8 @@ export interface GroupSummary {
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
+  authorizationExpiresAt?: string
+  authorizationLimits?: RequestQuotaLimits
   authorizationSources?: AuthorizationSourceSummary[]
   permissions?: ResourcePermissions
 }
@@ -333,6 +337,8 @@ export type GroupOptionSummary = Pick<
   | 'schedulingPolicy'
   | 'accessType'
   | 'groupAuthorizationId'
+  | 'authorizationExpiresAt'
+  | 'authorizationLimits'
   | 'authorizationStatus'
   | 'permissions'
 >

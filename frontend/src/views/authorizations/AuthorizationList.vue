@@ -148,7 +148,7 @@ function canManageAuthorization(authorization: ResourceAuthorizationSummary): bo
 
 function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
   let count = 1
-  if (authorization.status === 'active' || authorization.status === 'paused') count += 1
+  if (authorization.status === 'active' || authorization.status === 'paused' || authorization.status === 'expired' || authorization.status === 'revoked' || authorization.status === 'returned') count += 1
   count += authorizationRevokeActionCount(authorization)
   return count
 }

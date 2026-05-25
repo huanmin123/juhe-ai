@@ -111,11 +111,12 @@ try {
   assert.equal(result.refreshed, 1 + batchAccounts.length, '账号质量刷新应处理分钟桶样本')
   assert.equal(qualityScoreUpsertPrepares, 1, '账号质量刷新应复用 account_quality_scores upsert statement')
   const row = recordDatabase
-    .prepare('SELECT quality_state, recent_error_count, last_error_message FROM account_quality_scores WHERE account_id = ?')
-    .get(account.id) as { quality_state?: string; recent_error_count?: number; last_error_message?: string } | undefined
-  assert.equal(row?.quality_state, 'failed')
+    .prepare('SELECT quality_score, quality_state, recent_error_count, last_error_message FROM account_quality_scores WHERE account_id = ?')
+    .get(account.id) as { quality_score?: number; quality_state?: string; recent_error_count?: number; last_error_message?: string } | undefined
+  assert.equal(row?.quality_state, 'unknown', '只有失败样本时不能把账号质量标记为失败，避免请求形态错误污染调度')
   assert.equal(row?.recent_error_count, 1)
   assert.equal(row?.last_error_message, '质量刷新模拟错误')
+  assert(row?.quality_score && row.quality_score >= 1_000_000, '没有成功首段样本时质量分应保持未知保守值')
   const staleRow = recordDatabase
     .prepare('SELECT quality_state, recent_request_count FROM account_quality_scores WHERE account_id = ?')
     .get(staleAccount.id) as { quality_state?: string; recent_request_count?: number } | undefined

@@ -127,7 +127,7 @@ async function assertClientIpAvoidsFailedAccountAfterSwitch(
 
   const snapshotAfterPrime = clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest()
   assert(snapshotAfterPrime.some((entry) => entry.accountId === seeded.firstAccountId && entry.clientIp === ipA), 'IP A 首次切号成功后应记录第一账号短期回避')
-  assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 1, '首账号上游失败后应同步进入进程级本地屏蔽')
+  assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '未命中账号错误策略的上游失败不应同步进入进程级本地屏蔽')
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
   const followupText = await requestChatCompletion(baseUrl, seeded.apiKey, ipA, 'ip-a-followup')

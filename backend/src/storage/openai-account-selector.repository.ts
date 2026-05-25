@@ -412,14 +412,6 @@ function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAI
   })
 }
 
-function isGroupAccountLocallyAvailable(groupAccount: GroupAccountRow, now: string): boolean {
-  const localStatus = openAIGroupAccountRuntimeStatus(groupAccount.local_status, groupAccount.local_cooldown_until, now)
-  if (localStatus === 'active') {
-    return true
-  }
-  return false
-}
-
 function openAIGroupAccountRuntimeStatus(
   localStatus: AccountStatus | null | undefined,
   localCooldownUntil: string | null | undefined,
@@ -431,6 +423,19 @@ function openAIGroupAccountRuntimeStatus(
   return localStatus ?? 'active'
 }
 
+function isOpenAIPhysicalAccountAvailableForSelection(row: OpenAIAccountRow, now: string, includeUnavailable: boolean): boolean {
+  if (row.account_expires_at && row.account_expires_at <= now) {
+    return false
+  }
+  if (row.schedulable !== 1) {
+    return false
+  }
+  if (includeUnavailable) {
+    return row.status === 'active' || row.status === 'rate_limited' || row.status === 'temporary_unavailable'
+  }
+  return row.status === 'active' && (!row.cooldown_until || row.cooldown_until <= now)
+}
+
 function isOpenAIAccountAvailableForSelection(
   row: OpenAIAccountRow,
   groupAccount: GroupAccountRow | undefined,
@@ -438,7 +443,7 @@ function isOpenAIAccountAvailableForSelection(
   now: string,
   includeUnavailable: boolean
 ): boolean {
-  if (row.account_expires_at && row.account_expires_at <= now) {
+  if (!isOpenAIPhysicalAccountAvailableForSelection(row, now, includeUnavailable)) {
     return false
   }
   if (accountAccess.accountAccessType === 'account_authorized') {
@@ -451,12 +456,7 @@ function isOpenAIAccountAvailableForSelection(
     }
     return localStatus === 'active'
   }
-  if (includeUnavailable) {
-    return row.schedulable === 1 && (row.status === 'active' || row.status === 'rate_limited' || row.status === 'temporary_unavailable')
-  }
-  return row.schedulable === 1
-    && row.status === 'active'
-    && (!row.cooldown_until || row.cooldown_until <= now)
+  return true
 }
 
 function qualityFreshAfterIso(): string {

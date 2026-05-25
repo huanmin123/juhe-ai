@@ -10,7 +10,6 @@ import type { RowActionItem } from '@/components/rowActions'
 import type { AccountSummary } from '@/types/domain'
 import type { AccountMenuItem } from './accountActionTypes'
 import { isAuthorizedAccount } from './accountFormatters'
-import { canTestAccount } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
@@ -31,13 +30,19 @@ const emit = defineEmits<{
 const actions = computed<RowActionItem[]>(() => {
   if (isAuthorizedAccount(props.account)) {
     const authorizedList: RowActionItem[] = []
-    if (canTestAccount(props.account)) {
-      authorizedList.push({ key: 'test', label: '测试', icon: 'test', tone: 'info' })
+    if (props.account.status !== 'error') {
+      authorizedList.push({ key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
     }
-    if (props.account.status === 'error') {
-      return authorizedList
+    if (props.account.accountAuthorizationId) {
+      authorizedList.push({
+        key: 'return',
+        label: '归还',
+        icon: 'revoke',
+        tone: 'danger',
+        confirmTitle: `确认归还授权账户「${props.account.name}」？归还后你将不再看到或使用它，不影响授权方原账户。`,
+        confirmOkText: '归还'
+      })
     }
-    authorizedList.push({ key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
     return authorizedList
   }
   const list: RowActionItem[] = []
@@ -64,7 +69,7 @@ function handleActionClick(key: string) {
     emit('bind-group')
     return
   }
-  if (key === 'delete') {
+  if (key === 'delete' || key === 'return') {
     emit('delete')
     return
   }

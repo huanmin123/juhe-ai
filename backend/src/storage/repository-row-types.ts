@@ -205,4 +205,6 @@ export type GroupListRow = GroupRow & {
   access_type?: 'owner' | 'authorized'
   authorization_id?: string | null
   authorization_status?: AuthorizationStatus | null
+  authorization_expires_at?: string | null
+  authorization_limits_json?: string | null
 }

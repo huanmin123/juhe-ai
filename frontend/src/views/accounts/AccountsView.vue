@@ -234,7 +234,7 @@ import { useAccountEditForm } from './useAccountEditForm'
 import { useAccountGroupOptions } from './useAccountGroupOptions'
 import { useAccountListData } from './useAccountListData'
 import { useAccountMenuActions } from './useAccountMenuActions'
-import { accountOperationSystemAccountId } from './accountOperationScope'
+import { accountOperationScopeParams, accountOperationSystemAccountId } from './accountOperationScope'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountTestModal } from './useAccountTestModal'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
@@ -651,6 +651,26 @@ async function handleImportCompleted() {
 }
 
 async function removeAccount(id: string) {
+  const account = accountById.value.get(id)
+  if (account?.accessType === 'authorized') {
+    if (!account.accountAuthorizationId) {
+      message.warning('当前授权账户缺少授权记录，无法归还')
+      return
+    }
+    try {
+      if (isManagementView.value) {
+        await api.authorizations.returnAuthorization(account.accountAuthorizationId, accountOperationScopeParams(account, accountScopeParams.value))
+      } else {
+        await api.myAuthorizations.returnAuthorization(account.accountAuthorizationId)
+      }
+      message.success('授权账户已归还')
+      await loadData()
+    } catch (error) {
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '归还授权账户失败'))
+    }
+    return
+  }
   try {
     if (isManagementView.value) {
       await api.accounts.delete(id, accountScopeParams.value)

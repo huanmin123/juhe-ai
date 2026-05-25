@@ -96,6 +96,22 @@ async function runCooldownAccountRetestQueueItem(
     return true
   }
 
+  if (result.accountFailureEligible === false) {
+    logger.warn({
+      event: 'background_cooldown_account_retest_ineligible_failure_discarded',
+      accountId: account.id,
+      accountName: account.name,
+      accountStatus: account.status,
+      attemptIndex: context.attemptIndex,
+      retryNumber: context.retryNumber,
+      statusCode: result.statusCode,
+      errorCode: result.errorCode,
+      durationMs: result.durationMs,
+      message: result.message
+    }, '冷却账户复测未通过，但失败原因不属于账号失败，已跳过失败预算累计')
+    return true
+  }
+
   const failure = recordCooldownAccountRetestFailure(account.id, {
     statusCode: result.statusCode,
     errorCode: result.errorCode,

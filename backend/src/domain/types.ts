@@ -8,7 +8,7 @@ export type ResourceAccessType = 'owner' | 'authorized'
 export type AccountUsageAccessType = 'owner' | 'authorized' | 'account_authorized' | 'group_authorized'
 export type GroupUsageAccessType = 'owner' | 'authorized'
 export type GroupType = 'personal' | 'high_concurrency'
-export type AuthorizationStatus = 'active' | 'paused' | 'expired' | 'revoked'
+export type AuthorizationStatus = 'active' | 'paused' | 'expired' | 'revoked' | 'returned'
 export type SystemTeamStatus = 'active' | 'disabled'
 export type SystemTeamMemberStatus = 'active' | 'removed'
 export type ResourceAuthorizationResourceType = 'account' | 'group'
@@ -370,6 +370,7 @@ export type AccountOptionSummary = Pick<
   | 'accessType'
   | 'accountAuthorizationId'
   | 'authorizationStatus'
+  | 'authorizationExpiresAt'
   | 'accountExpiresAt'
   | 'permissions'
 >
@@ -436,6 +437,7 @@ export interface AccountTestResult {
   firstTokenMs?: number
   accountStatusChanged?: boolean
   accountStatus?: AccountStatus
+  accountFailureEligible?: boolean
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable'
   errorPolicyReason?: string
 }
@@ -588,6 +590,8 @@ export interface GroupSummary {
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
+  authorizationExpiresAt?: string
+  authorizationLimits?: RequestQuotaLimits
   authorizationSources?: ResourceAuthorizationSourceSummary[]
   permissions?: ResourcePermissions
 }
@@ -615,6 +619,8 @@ export type GroupOptionSummary = Pick<
   | 'schedulingPolicy'
   | 'accessType'
   | 'groupAuthorizationId'
+  | 'authorizationExpiresAt'
+  | 'authorizationLimits'
   | 'authorizationStatus'
   | 'permissions'
 >

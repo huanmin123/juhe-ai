@@ -113,7 +113,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     if (!canUseAccountActions(account)) {
       if (!isAuthorizedAccount(account)) {
         if (!['super-priority-off', 'fallback-off'].includes(key)) {
-          message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、恢复异常和取消调度标记' : '授权账户仅可使用，不能执行管理操作')
+          message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、恢复异常和取消调度标记' : '当前账户不能执行管理操作')
           return
         }
       } else if (!['restore-normal', 'toggle-status', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {

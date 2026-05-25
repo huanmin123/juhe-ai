@@ -54,6 +54,12 @@
         <template v-if="column.key === 'name'">
           <div class="group-name-cell">
             <span>{{ record.name }}</span>
+            <a-tooltip v-if="groupInfoTooltip(record)">
+              <template #title>
+                <span class="authorized-tooltip-text">{{ groupInfoTooltip(record) }}</span>
+              </template>
+              <InfoCircleOutlined class="authorized-group-icon" :class="groupInfoIconClass(record)" />
+            </a-tooltip>
           </div>
         </template>
         <template v-else-if="column.key === 'providerCode'">
@@ -97,20 +103,24 @@
         </template>
         <template v-else-if="column.key === 'actions'">
           <RowActions v-if="groupActions(record).length" :actions="groupActions(record)" @action-click="handleGroupAction($event, record)" />
-          <a-tag v-else-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
         </template>
       </template>
       <template #card="{ record }">
         <article class="mobile-list-card">
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">
-              {{ record.name }}
+              <span>{{ record.name }}</span>
+              <a-tooltip v-if="groupInfoTooltip(record)">
+                <template #title>
+                  <span class="authorized-tooltip-text">{{ groupInfoTooltip(record) }}</span>
+                </template>
+                <InfoCircleOutlined class="authorized-group-icon" :class="groupInfoIconClass(record)" />
+              </a-tooltip>
             </div>
             <div class="mobile-list-card-tags">
               <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
               <a-tag :color="groupTypeColor(record.groupType)">{{ groupTypeText(record.groupType) }}</a-tag>
               <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
-              <a-tag v-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
             </div>
           </div>
           <div class="mobile-list-meta-grid">
@@ -195,6 +205,7 @@
 </template>
 
 <script setup lang="ts">
+import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
@@ -215,10 +226,11 @@ import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
+import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
@@ -448,6 +460,8 @@ function groupConcurrencyTooltip(group: GroupSummary): string {
 
 function groupStatusText(group: GroupSummary) {
   const stats = groupStats(group)
+  if (isAuthorizedGroup(group) && group.authorizationStatus === 'paused') return '授权暂停'
+  if (isAuthorizedGroup(group) && group.authorizationStatus === 'expired') return '授权到期'
   if (!group.enabled) return '停用'
   if (stats.total === 0) return '未绑定'
   if (stats.available === 0) return '无可用账户'
@@ -456,6 +470,8 @@ function groupStatusText(group: GroupSummary) {
 
 function groupStatusColor(group: GroupSummary) {
   const stats = groupStats(group)
+  if (isAuthorizedGroup(group) && group.authorizationStatus === 'paused') return 'orange'
+  if (isAuthorizedGroup(group) && group.authorizationStatus === 'expired') return 'default'
   if (!group.enabled || stats.total === 0) return 'default'
   if (stats.available === 0) return 'orange'
   return 'green'
@@ -474,6 +490,60 @@ function isAuthorizedGroup(group: GroupSummary): boolean {
   return group.accessType === 'authorized'
 }
 
+function authorizedGroupTooltip(group: GroupSummary): string {
+  const ownerName = group.ownerSystemAccountName || '其他用户'
+  const expiresText = group.authorizationExpiresAt ? formatDateTime(group.authorizationExpiresAt) : '长期有效'
+  const limitsText = quotaLimitSummaryText(group.authorizationLimits)
+  const lines = [
+    `授权自 ${ownerName}。`,
+    `授权来源：${authorizedGroupSourceText(group)}`,
+    `授权到期：${expiresText}`,
+    `授权限额：${limitsText}`
+  ]
+  if (group.authorizationStatus === 'expired') {
+    lines.push('授权已到期，当前不可用。')
+  } else if (group.authorizationStatus === 'paused') {
+    lines.push('授权已暂停，当前不可用。')
+  }
+  return lines.join('\n')
+}
+
+function groupInfoTooltip(group: GroupSummary): string {
+  const lines: string[] = []
+  if (isAuthorizedGroup(group)) {
+    lines.push(authorizedGroupTooltip(group))
+  }
+  if (group.description) {
+    lines.push(`分组说明：${group.description}`)
+  }
+  return lines.join('\n')
+}
+
+function authorizedGroupSourceText(group: GroupSummary): string {
+  const activeSources = group.authorizationSources?.filter((source) => source.status === 'active') ?? []
+  if (!activeSources.length && group.authorizationSources?.some((source) => source.sourceType === 'team')) {
+    return '团队授权'
+  }
+  const hasManual = activeSources.some((source) => source.sourceType === 'manual')
+  const teamSources = activeSources.filter((source) => source.sourceType === 'team')
+  const teamNames = teamSources.map((source) => source.sourceTeamName).filter((name): name is string => Boolean(name))
+  if (hasManual && teamSources.length) {
+    return teamNames.length ? `个人授权 + 团队授权（${teamNames.join('、')}）` : '个人授权 + 团队授权'
+  }
+  if (teamSources.length) {
+    return teamNames.length ? `团队授权（${teamNames.join('、')}）` : '团队授权'
+  }
+  return '个人授权'
+}
+
+function authorizedGroupIconClass(group: GroupSummary): string {
+  return group.authorizationStatus === 'active' ? 'source-normal' : 'source-danger'
+}
+
+function groupInfoIconClass(group: GroupSummary): string {
+  return isAuthorizedGroup(group) ? authorizedGroupIconClass(group) : 'source-normal'
+}
+
 function canEditGroup(group: GroupSummary): boolean {
   return !group.isDefault && group.permissions?.canEdit !== false
 }
@@ -484,6 +554,19 @@ function canDeleteGroup(group: GroupSummary): boolean {
 
 function groupActions(group: GroupSummary): RowActionItem[] {
   const actions: RowActionItem[] = []
+  if (isAuthorizedGroup(group)) {
+    if (group.groupAuthorizationId) {
+      actions.push({
+        key: 'return',
+        label: '归还',
+        icon: 'revoke',
+        tone: 'danger',
+        confirmTitle: `确认归还授权分组「${group.name}」？归还后你将不再看到或使用它，不影响授权方原分组。`,
+        confirmOkText: '归还'
+      })
+    }
+    return actions
+  }
   if (canEditGroup(group)) {
     actions.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
   }
@@ -505,7 +588,7 @@ function handleGroupAction(key: string, group: GroupSummary) {
     openEdit(group)
     return
   }
-  if (key === 'delete') {
+  if (key === 'delete' || key === 'return') {
     void removeGroup(group.id)
   }
 }
@@ -657,6 +740,25 @@ function groupFormPayload(): Record<string, unknown> {
 
 async function removeGroup(id: string) {
   const group = groups.value.find((item) => item.id === id)
+  if (group && isAuthorizedGroup(group)) {
+    if (!group.groupAuthorizationId) {
+      message.warning('当前授权分组缺少授权记录，无法归还')
+      return
+    }
+    try {
+      if (isManagementView.value) {
+        await api.authorizations.returnAuthorization(group.groupAuthorizationId, groupScopeParams.value)
+      } else {
+        await api.myAuthorizations.returnAuthorization(group.groupAuthorizationId)
+      }
+      message.success('授权分组已归还')
+      await loadData()
+    } catch (error) {
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '归还授权分组失败'))
+    }
+    return
+  }
   if (group?.isDefault) {
     message.warning('默认分组不允许删除')
     return
@@ -786,6 +888,21 @@ onMounted(() => {
 
 .status-tag {
   width: fit-content;
+}
+
+.authorized-group-icon {
+  flex: none;
+  color: #08979c;
+  cursor: help;
+  font-size: 14px;
+}
+
+.authorized-group-icon.source-danger {
+  color: #cf1322;
+}
+
+.authorized-tooltip-text {
+  white-space: pre-line;
 }
 
 @media (max-width: 640px) {

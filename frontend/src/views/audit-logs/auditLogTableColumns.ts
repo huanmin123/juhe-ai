@@ -16,7 +16,7 @@ export const auditLogColumns = [
   { title: '接口', key: 'endpoint', width: 190 },
   { title: '模型', key: 'model', width: 150 },
   { title: '类型', key: 'stream', width: 90 },
-  { title: '账号', key: 'account', width: 160 },
+  { title: 'AI账户', key: 'account', width: 160 },
   { title: 'API Key', key: 'apiKey', width: 150 },
   { title: '分组', key: 'group', width: 150 },
   { title: '系统账户', key: 'systemAccount', width: 150 },
@@ -28,7 +28,7 @@ export const auditLogColumns = [
 export const auditAttemptColumns = [
   { title: '#', dataIndex: 'attemptIndex', width: 44 },
   { title: '结果', key: 'success', width: 64 },
-  { title: '账号', key: 'account', width: 112 },
+  { title: 'AI账户', key: 'account', width: 112 },
   { title: '状态码', dataIndex: 'upstreamStatusCode', width: 64 },
   { title: '时间', key: 'startedAt', width: 132 },
   { title: '耗时', key: 'duration', width: 64 },

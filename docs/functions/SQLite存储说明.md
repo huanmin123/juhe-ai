@@ -105,7 +105,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 原始审计日志使用独立表保存完全成功请求的 10% 稳定样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 background worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
 - 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集库表 `runtime_logs`，后台 worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配，完整日志正文搜索交给 `grep 模式`。
 - 系统团队、团队成员和统一资源授权使用独立表记录；授权不复制账户凭据，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
-- `accounts.system_account_id` 和 `groups.system_account_id` 表示资源归属人；`group_accounts.system_account_id` 表示本地分组绑定所属的使用方系统账户。授权账户绑定到被授权用户分组时写入同一个物理 `account_id` 和稳定的 `account_authorization_id`，只改变该使用方本地绑定与本地调度状态，不改变账户资源归属或账户所有者的分组绑定。授权账户列表和选项接口必须把 `group_accounts.local_status / local_cooldown_until / local_last_error_message / local_stream_failure_count / local_stream_failure_window_started_at` 投影为使用方本地运行态，把物理账户的 `accounts.status / schedulable / cooldown_until / last_error_*` 作为 `source*` 来源态返回；两类状态不能共用同一个展示、筛选、测试或调度口径，归属人侧停用、冷却和关闭调度不阻断被授权用户本地调用。
+- `accounts.system_account_id` 和 `groups.system_account_id` 表示资源归属人；`group_accounts.system_account_id` 表示本地分组绑定所属的使用方系统账户。授权账户绑定到被授权用户分组时写入同一个物理 `account_id` 和稳定的 `account_authorization_id`，只改变该使用方本地绑定与本地调度状态，不改变账户资源归属或账户所有者的分组绑定。授权账户列表和选项接口必须把 `group_accounts.local_status / local_cooldown_until / local_last_error_message / local_stream_failure_count / local_stream_failure_window_started_at` 作为使用方本地运行态返回，把物理账户的 `accounts.status / schedulable / cooldown_until / last_error_*` 作为 `source*` 来源态返回；最终展示、筛选和调度口径必须同时合并授权有效性、来源态、本地绑定、本地运行态和额度缓存。归属人侧停用、异常、冷却、关闭调度、套餐到期和凭据不可用会阻断被授权用户调度，但不能回写或覆盖被授权用户本地运行态。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
 - `accounts.last_error_code` 保存账户异常子类型；顶层状态仍统一使用 `status = error` 表示“异常”，可读细节继续放在 `accounts.last_error_message`。
 - `accounts.cooldown_retest_failure_count`、`cooldown_retest_observation_started_at`、`cooldown_retest_last_at` 和 `cooldown_retest_last_status_code` 保存 `temporary_unavailable` 后台复测的连续失败次数、本轮自动恢复观察起点、最近复测时间和最近 HTTP 状态；复测成功、手动恢复、停用或到期时清空。进入慢速恢复后，如果复测失败发生在最长自动恢复观察之后，账户转为 `status = error` 并保留最后错误摘要。
@@ -192,7 +192,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `usage_record_cleanup_deductions`：API Key 历史记录物理清理的统计扣减账本，按 `usage_id + source_shard_key` 记录已扣减但可能尚未完成 shard 删除的使用记录；统计扣减和账本标记在同一个统计结果库事务内提交，用于跨 SQLite 文件清理失败后的幂等续跑。
 - `operation_logs`：保存业务操作主事件，包括操作人、业务作用域、模块、动作、主资源、安全差异和 trace ID；`keyword` 直接对摘要、资源名、资源 ID、操作人、操作键、模块和动作等主表字段做普通 SQL 模糊匹配，不维护额外搜索影子表。
 - `operation_log_targets`：保存一次操作涉及或影响的资源，支持按资源反查历史操作。
-- `operation_log_viewers`：保存普通用户可见性和可见原因，资源删除或授权撤销后仍按当时关系追溯。
+- `operation_log_viewers`：保存普通用户可见性和可见原因，资源删除、授权回收或授权归还后仍按当时关系追溯。
 - `audit_logs`：保存进入原始审计的客户端请求事件元数据，用于后台页面检索；完全成功请求默认只采样 10%。
 - `audit_log_attempts`：保存审计请求下每次上游尝试、命中账号、代理、状态码和错误摘要。
 - `audit_payload_refs`：保存审计事件到 headers/body blob 的引用、part 类型、顺序、hash、大小和保留状态。
@@ -242,8 +242,8 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `resource_authorizations(grantee_system_account_id, status)`：查询系统账户可用授权。
 - `resource_authorizations(resource_type, resource_id, grantee_system_account_id)`：保证同一资源同一最终用户全生命周期只有一条运行时授权记录。
 - `resource_authorization_grants(resource_owner_system_account_id, status)`：资源归属人查看授权操作。
-- `resource_authorization_grants(resource_type, resource_id, grantee_system_account_id) WHERE status = active AND grantee_type = system_account`：防止同一资源重复授权给同一用户。
-- `resource_authorization_grants(resource_type, resource_id, grantee_team_id) WHERE status = active AND grantee_type = team`：防止同一资源重复授权给同一团队。
+- `resource_authorization_grants(resource_type, resource_id, grantee_system_account_id) WHERE status = active AND grantee_type = system_account`：防止同一资源重复创建有效人员授权；已回收、已归还或已过期的再次授权复用原记录恢复。
+- `resource_authorization_grants(resource_type, resource_id, grantee_team_id) WHERE status = active AND grantee_type = team`：防止同一资源重复创建有效团队授权；已回收或已过期的再次授权复用原记录恢复。
 - `resource_authorization_sources(authorization_id, source_type) WHERE status = active AND source_type = manual`、`resource_authorization_sources(authorization_id, source_type, source_team_id) WHERE status = active AND source_type = team`：防止同一最终授权存在重复有效来源。
 - 有效资源查询需要在 service 层按 `resource_type + resource_id + caller_system_account_id` 去重；团队来源只能合并到用户授权来源摘要，不能展开成多条 AI 账户或分组。
 - `usage_records(system_account_id, first_token_ms, created_at, id)`、`usage_records(system_account_id, duration_ms, created_at, id)`、`usage_records(system_account_id, cost_usd, created_at, id)`：使用记录页按首 token、总耗时、成本排序时只取有限窗口，避免大数据量下前端全量排序或数据库临时排序。
@@ -651,7 +651,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `grantee_system_account_id`：`grantee_type = system_account` 时必填
 - `grantee_team_id`：`grantee_type = team` 时必填
 - `scope`：当前固定为 `use`
-- `status`：`active`、`paused`、`expired`、`revoked`
+- `status`：`active`、`paused`、`expired`、`revoked`、`returned`
 - `remark`
 - `expires_at`
 - `limits_json`
@@ -670,7 +670,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `resource_owner_system_account_id`
 - `grantee_system_account_id`：最终被授权系统账户
 - `scope`：当前固定为 `use`
-- `status`：`active`、`paused`、`expired`、`revoked`
+- `status`：`active`、`paused`、`expired`、`revoked`、`returned`
 - `effective_source_type`：当前生效来源，`manual`、`team` 或空
 - `effective_source_team_id`：当前生效来源是团队时记录团队 ID，否则为空
 - `activated_at`
@@ -710,8 +710,9 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 授权操作以 `resource_authorization_grants` 为业务主表；最终用户可调用关系以 `resource_authorizations` 为运行时主表；来源解释和优先级切换以 `resource_authorization_sources` 追踪。
 - 团队授权由 service 层展开为成员用户级授权；资源所有者如果也是团队成员，其自用调用仍按自用处理，不计入授权消耗。
 - 同一个 `resource_type + resource_id + grantee_system_account_id` 在 `resource_authorizations` 中只维护一条最终用户授权；同一资源同一业务目标的有效人员 / 团队授权由 `resource_authorization_grants` 的部分唯一索引兜底。
-- 收回授权只把 `status` 改为 `revoked` 并写入 `revoked_by` / `revoked_at`，不物理删除，历史统计继续可查。
-- 到期授权只把 `status` 改为 `expired`，不物理删除，独立 background worker 进程负责自动处理。
+- 授权记录不提供普通删除动作；除资源本身被删除导致关联授权清理外，授权关系只能通过状态变化表达。
+- 暂停授权把 `status` 改为 `paused`，被授权人仍可见但不可用；到期授权把 `status` 改为 `expired`，被授权人仍可见但不可用，独立 background worker 进程负责自动处理。
+- 回收授权把 `status` 改为 `revoked` 并写入 `revoked_by` / `revoked_at`，被授权人不可见也不可用；归还授权把 `status` 改为 `returned`，被授权人不可见也不可用。历史统计继续按原授权 ID 可查。
 - 团队停用、成员移除或系统账户停用后，授权来源和最终用户授权状态必须同步更新；网关调度按最终用户授权、系统账户、资源和绑定状态阻断调用，不再额外把团队作为运行时主体遍历判断。
 - 授权资源不能继续被被授权人二次授权给第三方。
 

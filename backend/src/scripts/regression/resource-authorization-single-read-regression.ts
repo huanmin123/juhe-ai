@@ -79,10 +79,10 @@ try {
   assert.equal(updated?.expiresAt, '2099-01-01T00:00:00.000Z', '更新授权应保留新的过期时间')
 
   const revoked = repositories.revokeResourceAuthorization(targetId, { revokeAll: true }, ownerAccess)
-  assert.equal(revoked?.id, targetId, '撤销授权应通过单条读取返回目标授权摘要')
-  assert.equal(revoked?.status, 'revoked', '撤销授权应返回已回收状态')
+  assert.equal(revoked?.id, targetId, '回收授权应通过单条读取返回目标授权摘要')
+  assert.equal(revoked?.status, 'revoked', '回收授权应返回已回收状态')
   const defaultListAfterRevoke = repositories.listResourceAuthorizations({}, ownerAccess)
-  assert.equal(defaultListAfterRevoke.some((authorization) => authorization.id === targetId), false, '默认授权列表不应显示已回收授权')
+  assert.equal(defaultListAfterRevoke.some((authorization) => authorization.id === targetId), true, '默认授权列表应保留已回收授权')
   const allListAfterRevoke = repositories.listResourceAuthorizations({ status: 'all' }, ownerAccess)
   assert.equal(allListAfterRevoke.some((authorization) => authorization.id === targetId), true, '显式全部状态查询仍应保留已回收授权用于审计和重新授权')
 

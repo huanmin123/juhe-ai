@@ -307,7 +307,7 @@ export interface AuthorizationListParams extends ListParams {
   resourceId?: string
   granteeSystemAccountId?: string
   teamId?: string
-  status?: 'active' | 'paused' | 'expired' | 'revoked' | 'all'
+  status?: 'active' | 'paused' | 'expired' | 'revoked' | 'returned' | 'all'
   direction?: 'all' | 'outbound' | 'inbound'
   sourceType?: 'all' | 'manual' | 'team'
   startDate?: string
@@ -601,6 +601,7 @@ export const api = {
     update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload, { params })),
     updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload, { params })),
     revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload, params })),
+    returnAuthorization: (id: string, params?: AuthorizationScopeParams) => http.delete(`/authorizations/${id}/return`, { params }),
     usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`, { params })),
     teamUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationTeamUsageOverview>(http.get('/authorizations/usage/team-details', { params })),
     userUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationUserUsageOverview>(http.get('/authorizations/usage/user-details', { params }))
@@ -621,6 +622,7 @@ export const api = {
     update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/my-authorizations/${id}`, payload)),
     updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/my-authorizations/${id}/expire`, payload)),
     revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }) => unwrap<ResourceAuthorizationSummary>(http.delete(`/my-authorizations/${id}`, { data: payload })),
+    returnAuthorization: (id: string) => http.delete(`/my-authorizations/${id}/return`),
     usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/my-authorizations/${id}/usage`, { params: stripSystemAccountParam(params) })),
     teamUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationTeamUsageOverview>(http.get('/my-authorizations/usage/team-details', { params: stripSystemAccountParam(params) })),
     userUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationUserUsageOverview>(http.get('/my-authorizations/usage/user-details', { params: stripSystemAccountParam(params) }))

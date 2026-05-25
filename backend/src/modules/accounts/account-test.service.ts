@@ -78,11 +78,11 @@ export async function testOpenAIAccount(
       settingsOverride: input.gatewaySettingsOverride
     })))
     if (input.signal?.aborted) {
-      throw new Error(accountTestAbortMessage(input.signal))
+      throw accountTestAbortError(input.signal)
     }
     await flushGatewayAccountSideEffects()
     if (input.signal?.aborted) {
-      throw new Error(accountTestAbortMessage(input.signal))
+      throw accountTestAbortError(input.signal)
     }
 
     const finalAccount = findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
@@ -121,10 +121,12 @@ export async function testOpenAIAccount(
       durationMs: Date.now() - startedAt,
       firstTokenMs: response.firstTokenMs(),
       accountStatusChanged: finalAccountStatus !== account.status,
-      accountStatus: finalAccountStatus
+      accountStatus: finalAccountStatus,
+      accountFailureEligible: !success
     }, limitedDiagnostics)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OpenAI Responses 测试失败'
+    const accountFailureEligible = accountTestFailureEligible(error)
     return accountTestResultWithDiagnosticsMode({
       accountId: account.id,
       accountName: account.name,
@@ -140,7 +142,8 @@ export async function testOpenAIAccount(
       proxyUrl: account.proxyProfileId ? '[configured]' : undefined,
       durationMs: Date.now() - startedAt,
       accountStatusChanged: false,
-      accountStatus: account.status
+      accountStatus: account.status,
+      accountFailureEligible
     }, limitedDiagnostics)
   }
 }
@@ -164,13 +167,14 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     durationMs: result.durationMs,
     firstTokenMs: result.firstTokenMs,
     accountStatusChanged: result.accountStatusChanged,
-    accountStatus: result.accountStatus
+    accountStatus: result.accountStatus,
+    accountFailureEligible: result.accountFailureEligible
   }
 }
 
 function limitedAccountTestMessage(result: AccountTestResult): string {
   if (result.success) return result.message
-  if (result.message === '账户测试超时' || result.message === '账户测试已取消') return result.message
+  if (result.accountFailureEligible === false) return result.message
   if (typeof result.statusCode === 'number') {
     return `账户测试未通过，上游返回 HTTP ${result.statusCode}；请联系授权人或管理员查看完整诊断`
   }
@@ -178,11 +182,34 @@ function limitedAccountTestMessage(result: AccountTestResult): string {
 }
 
 function accountTestAbortMessage(signal: AbortSignal): string {
-  const reason = signal.reason
-  if (reason && typeof reason === 'object' && 'name' in reason && reason.name === 'TimeoutError') {
+  if (isAccountTestTimeoutSignal(signal)) {
     return '账户测试超时'
   }
   return '账户测试已取消'
+}
+
+function accountTestAbortError(signal: AbortSignal): AccountTestAbortError {
+  return new AccountTestAbortError(accountTestAbortMessage(signal), isAccountTestTimeoutSignal(signal))
+}
+
+function isAccountTestTimeoutSignal(signal: AbortSignal): boolean {
+  const reason = signal.reason
+  return Boolean(reason && typeof reason === 'object' && 'name' in reason && reason.name === 'TimeoutError')
+}
+
+function accountTestFailureEligible(error: unknown): boolean {
+  if (error instanceof AccountTestConfigurationError) return false
+  if (error instanceof AccountTestAbortError) return error.accountFailureEligible
+  return true
+}
+
+class AccountTestConfigurationError extends Error {
+}
+
+class AccountTestAbortError extends Error {
+  constructor(message: string, readonly accountFailureEligible: boolean) {
+    super(message)
+  }
 }
 
 function accountTestProxyMarker(account: AccountSummary, resolved: OpenAIAccountSecret): string | undefined {
@@ -199,11 +226,11 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
     : account.systemAccountId ?? account.ownerSystemAccountId ?? resolveAccountSystemAccountId(account.id) ?? 'sys_admin'
   const groupId = input.groupId || account.boundGroupId
   if (!groupId) {
-    throw new Error('账户未绑定可用分组，无法按客户真实链路测试')
+    throw new AccountTestConfigurationError('账户未绑定可用分组，无法按客户真实链路测试')
   }
   const candidate = findOpenAIAccountForGroup(groupId, account.id, systemAccountId, { ignoreAvailability: true })
   if (!candidate) {
-    throw new Error('账户不在当前分组或凭据不可用，无法执行网关测试')
+    throw new AccountTestConfigurationError('账户不在当前分组或凭据不可用，无法执行网关测试')
   }
   return { systemAccountId, groupId, account: candidate }
 }
