@@ -676,6 +676,9 @@ export const api = {
   auditLogs: {
     list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
     runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
+    updateFullBodyCapture: (enabled: boolean) => unwrap<{ fullBodyCaptureEnabled: boolean; settings: AuditLogRuntime['settings'] }>(
+      http.patch('/audit-logs/runtime/full-body-capture', { enabled }, noTimeout)
+    ),
     detail: (id: string) => unwrap<AuditLogDetail>(http.get(`/audit-logs/${id}`, noTimeout)),
     payload: (id: string, payloadId: string, params?: AuditLogPayloadParams) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, { params, ...noTimeout }))
   },

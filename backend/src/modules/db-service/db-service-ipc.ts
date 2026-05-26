@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
+import { setAuditLogFullBodyCaptureEnabled } from '../audit-logs/audit-log-settings.js'
 import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
 import type {
   DbServiceChildMessage,
@@ -58,6 +59,7 @@ let dbServiceHttpHost: string | undefined
 let dbServiceHttpPort: number | undefined
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>()
+let pendingServerAuditFullBodyCaptureUpdateRequests = new Map<string, PendingServerAuditFullBodyCaptureUpdateRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let timedOutRequestCount = 0
 let failedRequestCount = 0
@@ -72,6 +74,11 @@ let dbServiceReadyHandler: (() => void) | undefined
 
 interface PendingServerRuntimeRequest {
   resolve: (snapshot: DbServiceServerRuntimeSnapshot | undefined) => void
+  timeout: NodeJS.Timeout
+}
+
+interface PendingServerAuditFullBodyCaptureUpdateRequest {
+  resolve: (result: { fullBodyCaptureEnabled: boolean } | undefined) => void
   timeout: NodeJS.Timeout
 }
 
@@ -281,6 +288,35 @@ export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): P
   })
 }
 
+export async function updateServerAuditFullBodyCaptureEnabled(
+  enabled: boolean,
+  timeoutMs = 1000
+): Promise<{ fullBodyCaptureEnabled: boolean } | undefined> {
+  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
+    return { fullBodyCaptureEnabled: setAuditLogFullBodyCaptureEnabled(enabled).fullBodyCaptureEnabled }
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<{ fullBodyCaptureEnabled: boolean } | undefined>((resolve) => {
+    const timeout = setTimeout(() => {
+      const pending = pendingServerAuditFullBodyCaptureUpdateRequests.get(requestId)
+      if (!pending) {
+        return
+      }
+      pendingServerAuditFullBodyCaptureUpdateRequests.delete(requestId)
+      pending.resolve(undefined)
+    }, timeoutMs)
+    pendingServerAuditFullBodyCaptureUpdateRequests.set(requestId, { resolve, timeout })
+    sendDbServiceChildMessage({
+      type: 'db_service_server_audit_full_body_capture_update_request',
+      requestId,
+      enabled
+    }, () => {
+      finishServerAuditFullBodyCaptureUpdateRequest(requestId, undefined)
+    })
+  })
+}
+
 export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {
     return false
@@ -294,6 +330,17 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
       sample: buildProcessEventLoopSample('db-service')
     }
     sendDbServiceChildMessage(response, () => exitDbServiceAfterChildIpcFailure(response.type))
+    return true
+  }
+
+  if (record.type === 'db_service_server_audit_full_body_capture_update_response' && typeof record.requestId === 'string') {
+    const result = record.ok === true && isAuditFullBodyCaptureUpdateResult(record.result)
+      ? record.result
+      : undefined
+    if (result) {
+      setAuditLogFullBodyCaptureEnabled(result.fullBodyCaptureEnabled)
+    }
+    finishServerAuditFullBodyCaptureUpdateRequest(record.requestId, result)
     return true
   }
 
@@ -353,6 +400,11 @@ function handleDbServiceMessage(message: unknown): void {
         )
       }
       break
+    case 'db_service_server_audit_full_body_capture_update_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && typeof record.enabled === 'boolean') {
+        respondToServerAuditFullBodyCaptureUpdateRequest(record.requestId, record.enabled)
+      }
+      break
     case 'gateway_runtime_cache_invalidate':
       if (runtimeConfig.processRole === 'server') {
         void clearServerGatewayRuntimeCache()
@@ -408,6 +460,11 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingServerRuntimeRequests.delete(requestId)
+  }
+  for (const [requestId, pending] of pendingServerAuditFullBodyCaptureUpdateRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(undefined)
+    pendingServerAuditFullBodyCaptureUpdateRequests.delete(requestId)
   }
 }
 
@@ -561,6 +618,20 @@ function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServer
   pending.resolve(snapshot)
 }
 
+function finishServerAuditFullBodyCaptureUpdateRequest(
+  requestId: string,
+  result: { fullBodyCaptureEnabled: boolean } | undefined
+): void {
+  const pending = pendingServerAuditFullBodyCaptureUpdateRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+
+  clearTimeout(pending.timeout)
+  pendingServerAuditFullBodyCaptureUpdateRequests.delete(requestId)
+  pending.resolve(result)
+}
+
 function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMessage): void {
   if (!child.connected) {
     markDbServiceIpcBroken(new Error('本地数据库服务通信已断开'), child)
@@ -641,8 +712,44 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       httpPort: dbServiceState.httpPort
     },
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
-    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
+    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
+    audit: {
+      fullBodyCaptureEnabled: runtimeConfig.audit.fullBodyCaptureEnabled
+    }
   }
+}
+
+function respondToServerAuditFullBodyCaptureUpdateRequest(requestId: string, enabled: boolean): void {
+  const child = dbServiceProcess
+  if (!child) {
+    return
+  }
+
+  try {
+    const settings = setAuditLogFullBodyCaptureEnabled(enabled)
+    sendToDbServiceProcess(child, {
+      type: 'db_service_server_audit_full_body_capture_update_response',
+      requestId,
+      ok: true,
+      result: {
+        fullBodyCaptureEnabled: settings.fullBodyCaptureEnabled
+      }
+    })
+  } catch (error) {
+    sendToDbServiceProcess(child, {
+      type: 'db_service_server_audit_full_body_capture_update_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    })
+  }
+}
+
+function isAuditFullBodyCaptureUpdateResult(value: unknown): value is { fullBodyCaptureEnabled: boolean } {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).fullBodyCaptureEnabled === 'boolean'
 }
 
 function backgroundPendingQueuesSnapshot(queues: BackgroundWorkerIpcQueuesRuntime): Record<string, DbServiceRuntimeQueueSnapshot> {

@@ -605,7 +605,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 
 - `audit_logs` 只写入命中 10% 稳定采样的完全成功请求，以及所有失败、异常、客户端中断、流式中断和重试后成功链路；每次请求事实仍由 `usage_records` 保底。
 - 成功样本 body 不超过 `512KB` 时保存完整正文，超过后保存 `summary_only` 摘要；问题链路 body 不超过 `2MB` 时保存完整正文，超过后保存原始 hash、大小、头尾 `256KB` 和 JSON 结构摘要。
-- `JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=1` 只作为临时排障开关；开启后不做 body 摘要化或流式 body 省略，但仍受 `64MB` 活跃捕获硬上限、header 脱敏、blob 压缩去重和窗口读取约束。
+- 临时全量捕获可在审计日志页面通过胶囊开关运行期切换；`JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=1` 只作为服务启动默认值。开启后不做 body 摘要化或流式 body 省略，但仍受 `64MB` 活跃捕获硬上限、header 脱敏、blob 压缩去重和窗口读取约束。
 - `headers_sha256` 和 `body_sha256` 均针对压缩前的原始字节计算。
 - payload blob 可以压缩存储，压缩算法、原始大小和压缩后大小必须记录。
 - 相同 `sha256 + raw_size_bytes + content_type` 的 blob 只存一份，多条事件通过 `audit_payload_refs` 引用。
@@ -858,7 +858,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 每次请求事实由 `usage_records` 保底，原始审计不替代使用记录。
 - 失败、异常、重试后成功、客户端中断和流式中断默认进入原始审计，并按策略保全可捕获正文。
 - 默认正文保全按成功样本 `512KB`、问题链路 `2MB` 分档；超限后写 `summary_only` 摘要，不把摘要伪装成完整原文。
-- 临时全量捕获只允许通过 `JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=true` / `1` 短时开启；开启后不做 body 摘要化或流式正文省略，但凭据类 headers 仍脱敏保留。
+- 临时全量捕获可通过审计日志页面胶囊开关短时运行期开启；`JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=true` / `1` 只决定启动默认值。开启后不做 body 摘要化或流式正文省略，但凭据类 headers 仍脱敏保留。
 - 正文 blob 压缩后按原始 hash 精确去重，并通过 payload 引用关联到事件。
 - 重复错误按短时间窗口聚合展示，但每次 occurrence 仍由 `audit_logs` 事件追溯。
 - 问题列表 / 审计事件列表不新增 payload 字节列；`raw_payload_bytes` 和 `compressed_payload_bytes` 只用于后端报表、容量分析和内部接口字段。

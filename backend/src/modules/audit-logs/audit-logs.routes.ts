@@ -1,6 +1,6 @@
 import { Router } from 'express'
 
-import { ok, sendNotFound } from '../../shared/http.js'
+import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
   getAuditLogDetail,
@@ -14,7 +14,7 @@ import {
   type AuditTrafficSource
 } from '../../storage/repositories.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
-import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
+import { requestServerRuntimeSnapshot, updateServerAuditFullBodyCaptureEnabled } from '../db-service/db-service-ipc.js'
 
 export const auditLogsRouter = Router()
 
@@ -36,6 +36,10 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
   const runtimeAvailable = Boolean(serverRuntime)
   const workerSnapshotAvailable = Boolean(workerSnapshot)
   const auditLogQueueAvailable = Boolean(auditLogQueue)
+  const settings = readAuditLogSettings()
+  if (typeof serverRuntime?.audit?.fullBodyCaptureEnabled === 'boolean') {
+    settings.fullBodyCaptureEnabled = serverRuntime.audit.fullBodyCaptureEnabled
+  }
   res.json(ok({
     runtimeAvailable,
     workerSnapshotAvailable,
@@ -58,6 +62,27 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
       ready: workerSnapshot?.ready ?? workerRuntime?.ready ?? null,
       pendingMessageCount: workerRuntime?.pendingMessageCount ?? null
     },
+    settings
+  }))
+})
+
+auditLogsRouter.patch('/runtime/full-body-capture', async (req, res) => {
+  const enabled = typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>).enabled
+    : undefined
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json(badRequest('临时全量捕获参数无效'))
+    return
+  }
+
+  const result = await updateServerAuditFullBodyCaptureEnabled(enabled)
+  if (!result) {
+    res.status(503).json({ message: '临时全量捕获运行期切换失败，请稍后重试' })
+    return
+  }
+
+  res.json(ok({
+    fullBodyCaptureEnabled: result.fullBodyCaptureEnabled,
     settings: readAuditLogSettings()
   }))
 })

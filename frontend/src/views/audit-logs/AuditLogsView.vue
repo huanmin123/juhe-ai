@@ -59,9 +59,17 @@
       </template>
       <template #actions>
         <a-tooltip :title="fullBodyCaptureTooltip">
-          <a-tag :color="fullBodyCaptureTagColor" class="audit-full-capture-status">
-            临时全量捕获：{{ fullBodyCaptureText }}
-          </a-tag>
+          <div class="audit-full-capture-switch">
+            <span>临时全量捕获</span>
+            <a-switch
+              :checked="fullBodyCaptureEnabled"
+              :disabled="!runtime"
+              :loading="fullBodyCaptureUpdating"
+              checked-children="开"
+              un-checked-children="关"
+              @change="toggleFullBodyCapture"
+            />
+          </div>
         </a-tooltip>
         <TableColumnManager
           :columns="auditLogColumns"
@@ -368,6 +376,7 @@ import {
 const detailLoading = ref(false)
 const payloadLoadingId = ref('')
 const runtime = ref<AuditLogRuntime>()
+const fullBodyCaptureUpdating = ref(false)
 const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
@@ -558,14 +567,7 @@ const auditRuntimeAlertDescription = computed(() => {
     : '后台进程状态不可用'
   return `${reasons.join('；') || '运行态状态未知'}。${workerText}。`
 })
-const fullBodyCaptureText = computed(() => {
-  if (!runtime.value) return '读取中'
-  return runtime.value.settings.fullBodyCaptureEnabled ? '已开启' : '关闭'
-})
-const fullBodyCaptureTagColor = computed(() => {
-  if (!runtime.value) return 'default'
-  return runtime.value.settings.fullBodyCaptureEnabled ? 'red' : 'default'
-})
+const fullBodyCaptureEnabled = computed(() => runtime.value?.settings.fullBodyCaptureEnabled ?? false)
 const fullBodyCaptureTooltip = computed(() => {
   if (!runtime.value) return '正在读取运行期配置'
   return runtime.value.settings.fullBodyCaptureEnabled
@@ -606,6 +608,35 @@ function applyFilters(): void {
   clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
+}
+
+async function toggleFullBodyCapture(checked: boolean): Promise<void> {
+  if (!runtime.value || fullBodyCaptureUpdating.value) return
+  const previousRuntime = runtime.value
+  runtime.value = {
+    ...previousRuntime,
+    settings: {
+      ...previousRuntime.settings,
+      fullBodyCaptureEnabled: checked
+    }
+  }
+  fullBodyCaptureUpdating.value = true
+  try {
+    const result = await api.auditLogs.updateFullBodyCapture(checked)
+    if (runtime.value) {
+      runtime.value = {
+        ...runtime.value,
+        settings: result.settings
+      }
+    }
+    message.success(checked ? '临时全量捕获已开启' : '临时全量捕获已关闭')
+  } catch (error) {
+    runtime.value = previousRuntime
+    console.error(error)
+    message.error('切换临时全量捕获失败')
+  } finally {
+    fullBodyCaptureUpdating.value = false
+  }
 }
 
 function applyPageState(state: AuditLogsPageState): void {
@@ -933,11 +964,18 @@ onDeactivated(() => {
   width: 190px;
 }
 
-.audit-full-capture-status {
+.audit-full-capture-switch {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
   min-height: 32px;
-  margin-inline-end: 0;
+  padding: 0 10px;
+  color: #475569;
+  font-size: 13px;
+  white-space: nowrap;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #fff;
 }
 
 .advanced-filter-form :deep(.ant-input) {
@@ -1083,7 +1121,7 @@ onDeactivated(() => {
 }
 
 @media (max-width: 900px) {
-  .audit-full-capture-status {
+  .audit-full-capture-switch {
     width: 100%;
     justify-content: center;
   }

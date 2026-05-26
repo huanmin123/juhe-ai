@@ -37,3 +37,8 @@ export function readAuditLogSettings(): AuditLogSettings {
     fullBodyCaptureEnabled: runtimeConfig.audit.fullBodyCaptureEnabled
   }
 }
+
+export function setAuditLogFullBodyCaptureEnabled(enabled: boolean): AuditLogSettings {
+  runtimeConfig.audit.fullBodyCaptureEnabled = enabled
+  return readAuditLogSettings()
+}

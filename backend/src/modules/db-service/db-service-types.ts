@@ -101,6 +101,9 @@ export interface DbServiceServerRuntimeSnapshot {
   }
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
+  audit?: {
+    fullBodyCaptureEnabled: boolean
+  }
 }
 
 export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime'
@@ -289,6 +292,20 @@ export type DbServiceParentMessage =
     type: 'db_service_process_event_loop_request'
     requestId: string
   }
+  | {
+    type: 'db_service_server_audit_full_body_capture_update_response'
+    requestId: string
+    ok: true
+    result: {
+      fullBodyCaptureEnabled: boolean
+    }
+  }
+  | {
+    type: 'db_service_server_audit_full_body_capture_update_response'
+    requestId: string
+    ok: false
+    errorMessage: string
+  }
 
 export type DbServiceChildMessage =
   | {
@@ -318,6 +335,11 @@ export type DbServiceChildMessage =
     type: 'db_service_process_event_loop_response'
     requestId: string
     sample?: ProcessEventLoopSample
+  }
+  | {
+    type: 'db_service_server_audit_full_body_capture_update_request'
+    requestId: string
+    enabled: boolean
   }
   | {
     type: 'gateway_runtime_cache_invalidate'
