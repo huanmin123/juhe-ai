@@ -27,7 +27,7 @@ export type AccountOAuthCreateCommonPayload = {
   supportedModels: string[]
   proxyProfileId?: string
   accountExpiresAt: string | null
-  credentialsPatch: { error_handling_rules?: unknown }
+  credentialsPatch?: { error_handling_rules?: unknown }
   notes?: string
 }
 
@@ -81,7 +81,8 @@ export function buildOAuthCreateCommonPayload(input: {
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
 }): AccountOAuthCreateCommonPayload {
-  return {
+  const credentials = accountCredentials(input)
+  const payload: AccountOAuthCreateCommonPayload = {
     name: input.form.name.trim() || undefined,
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
@@ -89,9 +90,12 @@ export function buildOAuthCreateCommonPayload(input: {
     supportedModels: [...(input.form.supportedModels ?? [])],
     proxyProfileId: input.form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
-    credentialsPatch: { error_handling_rules: accountCredentials(input).error_handling_rules },
     notes: input.form.notes || undefined
   }
+  if (Object.prototype.hasOwnProperty.call(credentials, 'error_handling_rules')) {
+    payload.credentialsPatch = { error_handling_rules: credentials.error_handling_rules }
+  }
+  return payload
 }
 
 function saveProxyProfileId(proxyProfileId: string | undefined, editing: boolean): string | null | undefined {

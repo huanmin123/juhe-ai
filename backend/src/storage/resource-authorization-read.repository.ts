@@ -199,7 +199,7 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
-  return getDatabase().prepare(`SELECT ${resourceAuthorizationGrantSelectColumns('rag')} FROM resource_authorization_grants rag ${where} ORDER BY CASE rag.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 WHEN 'returned' THEN 4 ELSE 5 END, rag.updated_at DESC, rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
+  return getDatabase().prepare(`SELECT ${resourceAuthorizationGrantSelectColumns('rag')} FROM resource_authorization_grants rag ${where} ORDER BY rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
 }
 
 function resourceAuthorizationGrantSelectColumns(alias: string): string {

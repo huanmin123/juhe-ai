@@ -4,40 +4,36 @@
       <a-collapse-panel key="policy">
         <template #header>
           <div class="policy-summary">
-            <div class="policy-title">
+            <div class="policy-title-row">
               <h4>错误处理策略</h4>
-              <p>按优先级从小到大匹配，命中第一条即停止。</p>
+              <a-tag color="blue">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
             </div>
-            <a-tag color="blue">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
           </div>
         </template>
 
         <div class="policy-content">
-          <div class="policy-toolbar">
-            <span class="policy-tip">未命中规则的未知异常只记录失败并切换账号，不会默认冷却账号。</span>
-            <a-space class="error-policy-actions" :size="6" wrap>
-              <a-dropdown>
-                <a-button size="small">添加预设</a-button>
-                <template #overlay>
-                  <a-menu @click="handlePresetClick">
-                    <a-menu-item v-for="preset in accountErrorPolicyPresets" :key="preset.key">{{ preset.label }}</a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
-              <a-button size="small" @click="addBlankRule">自定义规则</a-button>
-              <a-button size="small" @click="expandAllRules">展开全部</a-button>
-              <a-button size="small" @click="collapseAllRules">收起全部</a-button>
-              <a-button size="small" @click="normalizePriorities">重排优先级</a-button>
-              <a-popconfirm title="恢复默认规则会覆盖当前列表，确定继续吗？" ok-text="恢复" cancel-text="取消" @confirm="resetDefaultRules">
-                <a-button size="small">恢复默认</a-button>
-              </a-popconfirm>
-            </a-space>
-          </div>
+          <a-space class="error-policy-actions" :size="6" wrap>
+            <a-button size="small" :icon="h(QuestionCircleOutlined)" @click="guideOpen = true">配置指南</a-button>
+            <a-dropdown>
+              <a-button size="small">添加预设</a-button>
+              <template #overlay>
+                <a-menu @click="handlePresetClick">
+                  <a-menu-item v-for="preset in accountErrorPolicyPresets" :key="preset.key">{{ preset.label }}</a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+            <a-button size="small" @click="addBlankRule">自定义规则</a-button>
+            <a-button size="small" @click="expandAllRules">展开全部</a-button>
+            <a-button size="small" @click="collapseAllRules">收起全部</a-button>
+            <a-button size="small" @click="normalizePriorities">重排优先级</a-button>
+            <a-popconfirm title="清空后账号只走通用失败处理，确定继续吗？" ok-text="清空" cancel-text="取消" @confirm="clearRules">
+              <a-button size="small" :disabled="rules.length === 0">清空规则</a-button>
+            </a-popconfirm>
+          </a-space>
 
-          <a-empty v-if="rules.length === 0" class="compact-empty" description="还没有错误处理规则">
+          <a-empty v-if="rules.length === 0" class="compact-empty" :description="contextGuide.emptyDescription">
             <a-space>
-              <a-button type="primary" @click="addBlankRule">添加第一条规则</a-button>
-              <a-button @click="resetDefaultRules">恢复默认规则</a-button>
+              <a-button type="primary" @click="addBlankRule">添加专属规则</a-button>
             </a-space>
           </a-empty>
 
@@ -45,17 +41,19 @@
             <a-collapse-panel v-for="(rule, index) in rules" :key="ruleKey(index)" class="rule-panel" :class="{ disabled: rule.enabled === false }">
               <template #header>
                 <div class="rule-summary">
-                  <a-switch
-                    v-model:checked="rule.enabled"
-                    size="small"
-                    checked-children="启"
-                    un-checked-children="停"
-                    @click.stop
-                  />
-                  <a-tag class="priority-tag" color="blue">P{{ rule.priority ?? '-' }}</a-tag>
-                  <a-tag :color="actionColor(rule.action)">{{ actionLabel(rule.action) }}</a-tag>
-                  <strong>{{ rule.name || '未命名规则' }}</strong>
-                  <span>{{ ruleConditionSummary(rule) }}</span>
+                  <div class="rule-summary-main">
+                    <a-switch
+                      v-model:checked="rule.enabled"
+                      size="small"
+                      checked-children="启"
+                      un-checked-children="停"
+                      @click.stop
+                    />
+                    <a-tag class="priority-tag" color="blue">P{{ rule.priority ?? '-' }}</a-tag>
+                    <a-tag :color="actionColor(rule.action)">{{ actionLabel(rule.action) }}</a-tag>
+                    <strong>{{ rule.name || '未命名规则' }}</strong>
+                  </div>
+                  <span class="rule-condition-summary">{{ ruleConditionSummary(rule) }}</span>
                 </div>
               </template>
 
@@ -128,11 +126,50 @@
         </div>
       </a-collapse-panel>
     </a-collapse>
+
+    <a-modal v-model:open="guideOpen" title="错误处理策略配置指南" width="860px" :footer="null">
+      <div class="policy-guide">
+        <section class="guide-section">
+          <h4>去哪里查错误</h4>
+          <a-table
+            :columns="guideSourceColumns"
+            :data-source="accountErrorPolicyGuideSources"
+            :pagination="false"
+            row-key="key"
+            size="small"
+          />
+        </section>
+
+        <section class="guide-section">
+          <h4>字段怎么填</h4>
+          <a-table
+            :columns="guideFieldColumns"
+            :data-source="accountErrorPolicyGuideFields"
+            :pagination="false"
+            row-key="key"
+            size="small"
+          />
+          <p class="guide-note">多个值用逗号、分号或换行分隔；同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。</p>
+        </section>
+
+        <section class="guide-section">
+          <h4>常见响应结构</h4>
+          <pre class="guide-code">{
+  "error": {
+    "message": "可读错误说明",
+    "type": "错误类型，填到错误类型",
+    "code": "错误码，填到错误码"
+  }
+}</pre>
+        </section>
+      </div>
+    </a-modal>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { QuestionCircleOutlined } from '@ant-design/icons-vue'
+import { computed, h, ref } from 'vue'
 
 import {
   accountErrorActionOptions,
@@ -140,7 +177,6 @@ import {
   accountErrorPolicyPresets,
   accountErrorRecoveryStrategyOptions,
   accountErrorWeekdayOptions,
-  buildDefaultAccountErrorPolicyRules,
   cloneAccountErrorPolicyRule,
   createBlankAccountErrorRule,
   getNextAccountErrorRulePriority,
@@ -154,13 +190,47 @@ import {
   accountErrorRuleConditionSummary as ruleConditionSummary,
   accountErrorRuleKey as ruleKey
 } from './accountErrorPolicyDisplay'
+import {
+  accountErrorPolicyGuideFields,
+  accountErrorPolicyGuideSources,
+  resolveAccountErrorPolicyContextGuide
+} from './accountErrorPolicyGuide'
 
 const rules = defineModel<AccountErrorPolicyRuleForm[]>('rules', { required: true })
 
+const props = withDefaults(defineProps<{
+  accountType?: string
+  baseUrl?: string
+  providerCode?: string
+}>(), {
+  accountType: '',
+  baseUrl: '',
+  providerCode: ''
+})
+
 const policyActiveKeys = ref<string[]>([])
 const activeRuleKeys = ref<string[]>([])
+const guideOpen = ref(false)
 const actionOptions = accountErrorActionSelectOptions
 const enabledRuleCount = computed(() => rules.value.filter((rule) => rule.enabled !== false).length)
+const contextGuide = computed(() => resolveAccountErrorPolicyContextGuide({
+  accountType: props.accountType,
+  baseUrl: props.baseUrl,
+  providerCode: props.providerCode
+}))
+
+const guideSourceColumns = [
+  { title: '来源', key: 'name', dataIndex: 'name', width: 120 },
+  { title: '查看位置', key: 'where', dataIndex: 'where' },
+  { title: '说明', key: 'note', dataIndex: 'note' }
+]
+
+const guideFieldColumns = [
+  { title: '字段', key: 'field', dataIndex: 'field', width: 100 },
+  { title: '取值来源', key: 'source', dataIndex: 'source' },
+  { title: '例子', key: 'example', dataIndex: 'example', width: 180 },
+  { title: '说明', key: 'note', dataIndex: 'note' }
+]
 
 function openPolicy() {
   policyActiveKeys.value = ['policy']
@@ -183,8 +253,8 @@ function handlePresetClick(event: { key: string | number }) {
   activeRuleKeys.value = [ruleKey(rules.value.length - 1)]
 }
 
-function resetDefaultRules() {
-  rules.value = buildDefaultAccountErrorPolicyRules().map(cloneAccountErrorPolicyRule)
+function clearRules() {
+  rules.value = []
   activeRuleKeys.value = []
 }
 
@@ -248,32 +318,32 @@ function collapseAllRules() {
   display: flex;
   width: 100%;
   min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.policy-title-row {
+  display: flex;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.policy-title {
-  min-width: 0;
-}
-
-.policy-title h4 {
+.policy-title-row h4 {
   margin: 0;
   color: #0f172a;
   font-size: 16px;
 }
 
-.policy-title p {
-  margin: 3px 0 0;
-  overflow: hidden;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.error-policy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px;
 }
 
-.error-policy-actions,
 .rule-actions {
   display: flex;
   flex-wrap: wrap;
@@ -285,20 +355,6 @@ function collapseAllRules() {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.policy-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 32px;
-}
-
-.policy-tip {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 20px;
 }
 
 .rule-collapse {
@@ -315,9 +371,18 @@ function collapseAllRules() {
 }
 
 .rule-collapse :deep(.ant-collapse-header) {
-  align-items: center !important;
+  align-items: flex-start !important;
   min-height: 42px;
   padding: 7px 10px !important;
+}
+
+.rule-collapse :deep(.ant-collapse-header-text) {
+  min-width: 0;
+}
+
+.rule-collapse :deep(.ant-collapse-extra) {
+  flex: 0 0 auto;
+  margin-inline-start: 12px;
 }
 
 .rule-collapse :deep(.ant-collapse-content-box) {
@@ -331,12 +396,21 @@ function collapseAllRules() {
 
 .rule-summary {
   display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.rule-summary-main {
+  display: flex;
   min-width: 0;
   align-items: center;
   gap: 8px;
 }
 
-.rule-summary strong {
+.rule-summary-main strong {
   overflow: hidden;
   max-width: 180px;
   color: #0f172a;
@@ -345,10 +419,12 @@ function collapseAllRules() {
   white-space: nowrap;
 }
 
-.rule-summary span {
+.rule-condition-summary {
+  display: block;
   overflow: hidden;
   color: #64748b;
   font-size: 12px;
+  line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -389,13 +465,48 @@ function collapseAllRules() {
   padding: 12px 0;
 }
 
-@media (max-width: 992px) {
-  .policy-summary,
-  .policy-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
+.policy-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 
+.policy-guide :deep(.ant-table-wrapper) {
+  overflow-x: auto;
+}
+
+.guide-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.guide-section h4 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.guide-note {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.guide-code {
+  overflow-x: auto;
+  margin: 0;
+  border: 1px solid #e8edf5;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px;
+  color: #334155;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+@media (max-width: 992px) {
   .error-policy-actions,
   .rule-actions {
     justify-content: flex-start;
@@ -406,6 +517,7 @@ function collapseAllRules() {
   .matcher-grid {
     grid-template-columns: 1fr;
   }
+
 }
 </style>
 

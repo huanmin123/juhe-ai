@@ -54,7 +54,13 @@
         :proxy-options="proxyOptions"
       />
 
-      <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="errorPolicyRules" />
+      <AccountErrorPolicyCard
+        v-if="hasAccountType"
+        v-model:rules="errorPolicyRules"
+        :account-type="form.type"
+        :base-url="form.baseUrl"
+        :provider-code="form.providerCode"
+      />
     </a-form>
   </a-modal>
 </template>

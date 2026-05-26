@@ -79,14 +79,6 @@ const dailyLimit429Rule = (): AccountErrorPolicyRuleForm => makeAccountErrorPoli
   description: '同为 429 时，仅包含日额度关键词才按限流到次日恢复'
 })
 
-export const buildDefaultAccountErrorPolicyRules = (): AccountErrorPolicyRuleForm[] => [
-  tempRule('429 临时限流', 40, '429', 10, '普通 429 只短暂避让；余额不足/日额度耗尽请按账号单独添加 402/403/429 余额预设'),
-  temp529Rule(),
-  tempRule('503 服务不可用', 110, '503', 10, '上游维护或暂不可用，临时避让 10 分钟'),
-  tempRule('502 网关错误', 120, '502', 10, '上游网关错误，临时避让 10 分钟'),
-  tempRule('500 上游错误', 130, '500', 5, '上游内部错误，短暂避让 5 分钟')
-]
-
 export const accountErrorPolicyPresets: AccountErrorPolicyPreset[] = [
   { key: 'quota_403', label: '403 余额不足', rule: newAPIQuotaRule() },
   { key: 'balance_402', label: '402 余额不足', rule: balance402Rule() },

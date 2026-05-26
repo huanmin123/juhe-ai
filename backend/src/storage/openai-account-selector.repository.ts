@@ -12,6 +12,7 @@ import { getSettings } from './settings.repository.js'
 
 export interface OpenAIAccountSecret {
   id: string
+  providerCode?: 'openai'
   systemAccountId: string
   accountOwnerSystemAccountId: string
   groupOwnerSystemAccountId: string
@@ -324,6 +325,7 @@ function openAIAccountSecretFromRow(
   const localFallbackEnabled = isLocalAccountAuthorized && groupAccount?.local_fallback_enabled === 1
   return {
     id: row.id,
+    providerCode: 'openai',
     systemAccountId: row.system_account_id,
     accountOwnerSystemAccountId: row.system_account_id,
     groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,

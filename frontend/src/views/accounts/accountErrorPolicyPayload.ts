@@ -6,11 +6,7 @@ import {
   type AccountErrorPolicyValidationResult,
   type AccountErrorRecoveryStrategy
 } from './accountErrorPolicyTypes'
-import {
-  buildDefaultAccountErrorPolicyRules,
-  cloneAccountErrorPolicyRule,
-  makeAccountErrorPolicyRule
-} from './accountErrorPolicyRules'
+import { makeAccountErrorPolicyRule } from './accountErrorPolicyRules'
 
 const listSeparators = /[,;，；\n]/
 
@@ -113,12 +109,12 @@ const buildRuleFromPayload = (value: unknown, index: number): AccountErrorPolicy
 
 export const loadAccountErrorPolicyRules = (credentials?: Record<string, unknown>): AccountErrorPolicyRuleForm[] => {
   if (!credentials || !Array.isArray(credentials.error_handling_rules)) {
-    return buildDefaultAccountErrorPolicyRules().map(cloneAccountErrorPolicyRule)
+    return []
   }
   const loaded = credentials.error_handling_rules
     .map((item, index) => buildRuleFromPayload(item, index))
     .filter((rule): rule is AccountErrorPolicyRuleForm => rule !== null)
-  return loaded.length > 0 ? loaded : buildDefaultAccountErrorPolicyRules().map(cloneAccountErrorPolicyRule)
+  return loaded
 }
 
 export const validateAccountErrorPolicyRules = (rules: AccountErrorPolicyRuleForm[]): AccountErrorPolicyValidationResult => {
@@ -175,5 +171,10 @@ export const buildAccountErrorPolicyPayload = (rules: AccountErrorPolicyRuleForm
 }
 
 export const writeAccountErrorPolicyToCredentials = (credentials: Record<string, unknown>, rules: AccountErrorPolicyRuleForm[]): void => {
-  credentials.error_handling_rules = buildAccountErrorPolicyPayload(rules)
+  const payload = buildAccountErrorPolicyPayload(rules)
+  if (payload.length > 0) {
+    credentials.error_handling_rules = payload
+  } else {
+    delete credentials.error_handling_rules
+  }
 }

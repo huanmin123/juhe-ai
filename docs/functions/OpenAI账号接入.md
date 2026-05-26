@@ -154,7 +154,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token；Client ID 与 Redirect URI 使用后端内置默认值，不暴露给用户填写。
 6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱和可选的 `account_expires_at`。
 7. 账户落库后不主动请求模型接口获取额度；额度快照等待第一次真实网关请求或账户测试返回 Codex rate-limit 响应头后被动更新。
-8. 创建接口只允许客户端通过 `credentialsPatch.error_handling_rules` 携带账号级错误处理规则；`access_token`、`refresh_token`、`expires_at`、`client_id` 和 `base_url` 必须以 OpenAI token endpoint 返回或服务端 fallback 为准，不能被请求体覆盖。
+8. 创建接口默认不携带账号级错误处理规则；只有用户显式添加专属规则时，客户端才通过 `credentialsPatch.error_handling_rules` 携带。`access_token`、`refresh_token`、`expires_at`、`client_id` 和 `base_url` 必须以 OpenAI token endpoint 返回或服务端 fallback 为准，不能被请求体覆盖。
 
 ### Refresh Token 授权
 
@@ -203,7 +203,7 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 存储字段保存为账号运行态快照，并按 `system_account_id + account_id + kind` 隔离：`codex_5h_used_percent`、`codex_5h_reset_after_seconds`、`codex_5h_reset_at`、`codex_5h_window_minutes`、`codex_7d_used_percent`、`codex_7d_reset_after_seconds`、`codex_7d_reset_at`、`codex_7d_window_minutes`、`codex_usage_updated_at`、`last_attempt_at`、`last_success_at`、`next_refresh_after`、`refresh_status`、`last_error_message`。
 - 获取策略：列表只读已缓存快照，不因展示批量探测；新建 OAuth 账户不触发首次快照刷新，缺失或过期时等待真实请求或账户测试的响应头更新。
 - 后台策略：不再注册 OAuth 额度快照主动探测任务；后台只保留 Access Token 预刷新。
-- 429 处理：收到 OAuth Codex 429 时，先解析 header 里已耗尽窗口的 reset 时间；如果 header 不足，再解析响应体 `error.resets_at` 或 `error.resets_in_seconds`；计算出的时间写入账号 `rate_limited` 冷却截止时间，后台下次刷新不早于 reset 时间。
+- 官方限额处理：收到 OpenAI OAuth / Codex 官方限额响应时，先解析 header 里已耗尽窗口的 reset 时间；如果 header 不足，再解析响应体 `error.resets_at` 或 `error.resets_in_seconds`；计算出的时间写入账号 `rate_limited` 冷却截止时间，后台下次刷新不早于 reset 时间。该逻辑属于官方账号语义，不要求账号内置默认错误规则。
 - UI 展示：OAuth 行在“用量情况”里显示本地请求/token/成本摘要，同时额外显示 `5h`、`7d` 两条进度条、百分比、倒计时/恢复时间、快照更新时间和快照来源；API Key 行不显示这两条 OAuth 额度进度。
 - 授权展示：OAuth 额度快照是账号非敏感运行态，被授权用户获得该 OAuth 账户使用权后，也能在自己的账户列表看到同一账号的 `5h` / `7d` 额度进度，但仍不能查看 Access Token、Refresh Token 或完整请求内容。
 - UI 限制：更多菜单不提供“刷新用量”按钮；快照缺失或过期时显示“等待真实请求更新”或“暂无快照”，不触发前端即时探测。

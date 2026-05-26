@@ -50,22 +50,9 @@ export function resourceAuthorizationGrantSourceSummary(row: ResourceAuthorizati
 }
 
 export function compareResourceAuthorizationOperations(left: ResourceAuthorizationSummary, right: ResourceAuthorizationSummary): number {
-  const statusDelta = authorizationStatusSortWeight(left.status) - authorizationStatusSortWeight(right.status)
-  if (statusDelta !== 0) return statusDelta
-  const updatedDelta = Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-  if (Number.isFinite(updatedDelta) && updatedDelta !== 0) return updatedDelta
   const createdDelta = Date.parse(right.createdAt) - Date.parse(left.createdAt)
   if (Number.isFinite(createdDelta) && createdDelta !== 0) return createdDelta
   return right.id.localeCompare(left.id)
-}
-
-export function authorizationStatusSortWeight(status: AuthorizationStatus): number {
-  if (status === 'active') return 0
-  if (status === 'paused') return 1
-  if (status === 'expired') return 2
-  if (status === 'revoked') return 3
-  if (status === 'returned') return 4
-  return 5
 }
 
 export function sanitizeResourceAuthorizationSummaryForAccess(summary: ResourceAuthorizationSummary, access?: AccessScope): ResourceAuthorizationSummary {

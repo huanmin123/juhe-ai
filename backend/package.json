@@ -95,6 +95,7 @@
     "test:authorization-return": "tsx src/scripts/regression/authorization-return-regression.ts",
     "test:authorization-quota-batch": "tsx src/scripts/regression/authorization-quota-batch-regression.ts",
     "test:authorization-usage-pagination": "tsx src/scripts/regression/authorization-usage-pagination-regression.ts",
+    "test:resource-authorization-stable-sort": "tsx src/scripts/regression/resource-authorization-stable-sort-regression.ts",
     "test:resource-authorization-expire-clear": "tsx src/scripts/regression/resource-authorization-expire-clear-regression.ts",
     "test:account-test-limited-diagnostics": "tsx src/scripts/regression/account-test-limited-diagnostics-regression.ts",
     "test:account-test-responses-compatibility": "tsx src/scripts/regression/account-test-responses-compatibility-regression.ts",
