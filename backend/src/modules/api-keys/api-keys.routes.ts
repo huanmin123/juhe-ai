@@ -15,10 +15,17 @@ export const apiKeysRouter = Router()
 const apiKeyCreateSchema = z.object({
   name: z.string().trim().min(1),
   description: z.string().trim().max(200).nullable().optional(),
-  groupId: z.string().trim().min(1),
+  groupId: z.string().trim().min(1).optional(),
+  groupBindings: z.array(z.object({
+    groupId: z.string().trim().min(1),
+    priority: z.number().int().positive().optional(),
+    status: z.enum(['active', 'disabled']).optional()
+  })).min(1).max(20).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().optional(),
   quotaLimits: z.record(z.string(), z.unknown()).nullable().optional()
+}).refine((value) => Boolean(value.groupId || value.groupBindings?.length), {
+  message: 'API Key 至少需要绑定一个分组'
 })
 
 apiKeysRouter.get('/', (req, res) => {
@@ -79,7 +86,7 @@ apiKeysRouter.post('/', mutationGuard({
           changes: [
             safeChange('name', '名称', undefined, apiKey.name),
             safeChange('status', '状态', undefined, apiKey.status),
-            safeChange('groupId', '绑定分组', undefined, apiKey.groupId),
+            safeChange('groupBindings', '绑定分组路由', undefined, apiKey.groupBindings),
             safeChange('key', '密钥', undefined, apiKey.keyPrefix)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -124,7 +131,8 @@ apiKeysRouter.patch('/:id', (req, res) => {
             name: '名称',
             description: '说明',
             status: '状态',
-            groupId: '绑定分组',
+            groupId: '主分组',
+            groupBindings: '绑定分组路由',
             expiresAt: '过期时间',
             quotaLimits: '额度限制'
           }),

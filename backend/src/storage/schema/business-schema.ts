@@ -280,6 +280,19 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (group_id) REFERENCES groups(id)
     );
 
+    CREATE TABLE IF NOT EXISTS api_key_group_bindings (
+      id TEXT PRIMARY KEY,
+      api_key_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE,
+      FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS system_settings (
       system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
       key TEXT NOT NULL,
@@ -367,6 +380,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name COLLATE NOCASE, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_key_group_unique ON api_key_group_bindings(api_key_id, group_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_active_priority_unique ON api_key_group_bindings(api_key_id, priority) WHERE status = 'active';
+    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_api_key_priority ON api_key_group_bindings(api_key_id, status, priority);
+    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_group ON api_key_group_bindings(group_id);
+    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_key ON api_key_group_bindings(system_account_id, api_key_id);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_resource ON resource_authorization_grants(resource_type, resource_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_grantee_user ON resource_authorization_grants(grantee_system_account_id, status);
@@ -381,6 +399,20 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, published_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
+  `)
+  database.exec(`
+    INSERT OR IGNORE INTO api_key_group_bindings (id, api_key_id, system_account_id, group_id, priority, status, created_at, updated_at)
+    SELECT 'akgb_' || api_keys.id || '_' || api_keys.group_id,
+      api_keys.id,
+      api_keys.system_account_id,
+      api_keys.group_id,
+      1,
+      'active',
+      api_keys.created_at,
+      api_keys.updated_at
+    FROM api_keys
+    INNER JOIN groups ON groups.id = api_keys.group_id
+    WHERE api_keys.group_id IS NOT NULL
   `)
   ensureColumn(database, 'system_accounts', 'image_generation_enabled', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'group_accounts', 'local_stream_failure_count', 'INTEGER NOT NULL DEFAULT 0')

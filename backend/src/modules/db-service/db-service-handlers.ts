@@ -235,21 +235,34 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
   }
 
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
-  const groupId = operation.groupId ?? apiKey.group_id
-  const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
-  if (!groupAccess) {
+  const candidateGroupIds = operation.groupId
+    ? [operation.groupId]
+    : apiKey.group_bindings?.length
+      ? apiKey.group_bindings.map((binding) => binding.group_id)
+      : [apiKey.group_id]
+  const uniqueCandidateGroupIds = [...new Set(candidateGroupIds.filter(Boolean))]
+
+  for (const groupId of uniqueCandidateGroupIds) {
+    const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
+    if (!groupAccess) {
+      continue
+    }
+    const accounts = listOpenAIAccountsForGroup(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
+    if (!accounts.length && uniqueCandidateGroupIds.length > 1) {
+      continue
+    }
     return {
-      apiKey,
+      apiKey: { ...apiKey, group_id: groupId },
       settings,
-      accounts: []
+      groupAccess,
+      accounts
     }
   }
 
   return {
     apiKey,
     settings,
-    groupAccess,
-    accounts: listOpenAIAccountsForGroup(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
+    accounts: []
   }
 }
 

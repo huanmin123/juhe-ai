@@ -57,6 +57,7 @@
     "test:table-monitor-default-scan": "pnpm --filter juhe-ai-backend test:table-monitor-default-scan",
     "test:gateway-runtime-cache": "pnpm --filter juhe-ai-backend test:gateway-runtime-cache",
     "test:api-key-image-permission": "pnpm --filter juhe-ai-backend test:api-key-image-permission",
+    "test:api-key-multi-group-bindings": "pnpm --filter juhe-ai-backend test:api-key-multi-group-bindings",
     "test:cooldown-retest-recovery": "pnpm --filter juhe-ai-backend test:cooldown-retest-recovery",
     "test:gateway-concurrency-snapshot": "pnpm --filter juhe-ai-backend test:gateway-concurrency-snapshot",
     "test:gateway-proxy-health": "pnpm --filter juhe-ai-backend test:gateway-proxy-health",

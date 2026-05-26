@@ -18,6 +18,18 @@ export interface RequestQuotaLimits {
   total?: RequestQuotaLimit
 }
 
+export type ApiKeyGroupBindingStatus = 'active' | 'disabled'
+
+export interface ApiKeyGroupBindingSummary {
+  id: string
+  groupId: string
+  groupName?: string
+  providerCode?: string
+  priority: number
+  status: ApiKeyGroupBindingStatus
+  groupEnabled: boolean
+}
+
 export interface ApiKeySummary {
   id: string
   systemAccountId?: string
@@ -29,6 +41,9 @@ export interface ApiKeySummary {
   status: 'active' | 'disabled'
   groupId: string
   groupName?: string
+  primaryGroupId?: string
+  primaryGroupName?: string
+  groupBindings: ApiKeyGroupBindingSummary[]
   groupOwnerSystemAccountName?: string
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits

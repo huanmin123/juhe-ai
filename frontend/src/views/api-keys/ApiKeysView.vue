@@ -105,7 +105,15 @@
           </div>
         </template>
         <template v-else-if="column.key === 'group'">
-          <a-tag color="purple">{{ groupName(record.groupId) }}</a-tag>
+          <div class="group-route-tags">
+            <a-tag
+              v-for="binding in apiKeyGroupBindings(record)"
+              :key="binding.id"
+              :color="apiKeyGroupBindingTagColor(binding)"
+            >
+              {{ apiKeyGroupBindingTagText(binding) }}
+            </a-tag>
+          </div>
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
@@ -126,7 +134,14 @@
             <div class="mobile-list-card-title">{{ record.name }}</div>
             <div class="mobile-list-card-tags">
               <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
-              <a-tag color="purple">{{ groupName(record.groupId) }}</a-tag>
+              <a-tag
+                v-for="binding in apiKeyGroupBindings(record).slice(0, 2)"
+                :key="binding.id"
+                :color="apiKeyGroupBindingTagColor(binding)"
+              >
+                {{ apiKeyGroupBindingTagText(binding) }}
+              </a-tag>
+              <a-tag v-if="apiKeyGroupBindings(record).length > 2">+{{ apiKeyGroupBindings(record).length - 2 }}</a-tag>
             </div>
           </div>
           <div class="mobile-list-meta-grid">
@@ -149,6 +164,10 @@
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>美元额度</span>
               <strong>{{ quotaLimitSummaryText(record.quotaLimits) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>绑定分组</span>
+              <strong>{{ apiKeyGroupRouteText(record) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>说明</span>
@@ -193,18 +212,50 @@
         <a-form-item label="名称" required>
           <a-input v-model:value="form.name" />
         </a-form-item>
-        <a-form-item label="绑定分组" required>
-          <GroupSelect
-            v-model:value="form.groupId"
-            v-model:selected-group="form.group"
-            :disabled="groupFilterDisabled"
-            :filter-option="false"
-            :groups="groups"
-            :loading="groupOptionsLoading"
-            :placeholder="groupFilterDisabled ? '请先选择系统账户' : '输入分组名称搜索'"
-            @dropdown-visible-change="handleGroupOptionsDropdown"
-            @search="handleGroupOptionsSearch"
-          />
+        <a-form-item label="绑定分组路由" required>
+          <div class="api-key-group-bindings-field">
+            <div v-for="(binding, index) in form.groupBindings" :key="binding.key" class="api-key-group-binding-row">
+              <span class="binding-priority">P{{ index + 1 }}</span>
+              <GroupSelect
+                v-model:value="binding.groupId"
+                v-model:selected-group="binding.group"
+                class="binding-group-select"
+                :disabled="groupFilterDisabled"
+                :filter-option="false"
+                :groups="groups"
+                :loading="groupOptionsLoading"
+                :placeholder="groupFilterDisabled ? '请先选择系统账户' : '输入分组名称搜索'"
+                :selected-ids="formGroupBindingIds"
+                :selected-groups="formGroupBindingSelections"
+                @dropdown-visible-change="handleGroupOptionsDropdown"
+                @search="handleGroupOptionsSearch"
+              />
+              <a-select v-model:value="binding.status" class="binding-status-select" :options="bindingStatusOptions" />
+              <div class="binding-row-actions">
+                <a-tooltip title="上移">
+                  <a-button type="text" size="small" :disabled="index === 0" @click="moveGroupBinding(index, -1)">
+                    <template #icon><up-outlined /></template>
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip title="下移">
+                  <a-button type="text" size="small" :disabled="index === form.groupBindings.length - 1" @click="moveGroupBinding(index, 1)">
+                    <template #icon><down-outlined /></template>
+                  </a-button>
+                </a-tooltip>
+                <a-popconfirm title="确认移除这个分组绑定？" ok-text="移除" cancel-text="取消" :disabled="form.groupBindings.length <= 1" @confirm="removeGroupBinding(index)">
+                  <a-tooltip title="移除">
+                    <a-button type="text" size="small" danger :disabled="form.groupBindings.length <= 1">
+                      <template #icon><delete-outlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                </a-popconfirm>
+              </div>
+            </div>
+            <a-button type="dashed" block @click="addGroupBinding">
+              <template #icon><plus-outlined /></template>
+              添加分组
+            </a-button>
+          </div>
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="form.status" :options="statusOptions" />
@@ -236,11 +287,10 @@
 
 <script setup lang="ts">
 import type { Dayjs } from 'dayjs'
-import { CopyOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, DeleteOutlined, DownOutlined, PlusOutlined, QuestionCircleOutlined, UpOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
-import { api } from '@/api/client'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -263,7 +313,7 @@ import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDat
 import { displayGroupName, rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
+import type { AccountUsageSummary, ApiKeyGroupBindingSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
@@ -285,6 +335,13 @@ type ApiKeysPageState = {
   statusFilter: 'all' | 'active' | 'disabled'
   systemAccountFilter: string
   systemAccountFilterSelection?: PrincipalSelection
+}
+type ApiKeyGroupBindingFormStatus = 'active' | 'disabled'
+interface ApiKeyGroupBindingFormRow {
+  key: string
+  groupId: string
+  group?: GroupSelection
+  status: ApiKeyGroupBindingFormStatus
 }
 const defaultApiKeysPageState = (): ApiKeysPageState => ({
   groupFilter: undefined,
@@ -313,13 +370,13 @@ const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const form = reactive({
   name: '',
-  groupId: '',
-  group: undefined as GroupSelection | undefined,
+  groupBindings: [] as ApiKeyGroupBindingFormRow[],
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
   description: '',
   quotaLimits: createQuotaLimitForm()
 })
+let groupBindingFormKeySeed = 0
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const apiKeysApi = useScopedApiKeysApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
@@ -408,9 +465,15 @@ const listStatusOptions = [
   { label: '全部状态', value: 'all' },
   ...statusOptions
 ]
+const bindingStatusOptions = [
+  { label: '启用', value: 'active' },
+  { label: '停用', value: 'disabled' }
+]
 
 const filteredApiKeys = computed(() => apiKeys.value)
 const mobileApiKeys = computed(() => apiKeys.value)
+const formGroupBindingIds = computed(() => form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
+const formGroupBindingSelections = computed(() => form.groupBindings.map((binding) => binding.group))
 const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -437,19 +500,47 @@ const targetSystemAccountLabel = computed(() => {
     || ''
 })
 
-function groupName(groupId: string) {
-  const apiKey = apiKeys.value.find((item) => item.groupId === groupId)
-  return displayGroupName(apiKey?.groupName, groupId)
-}
-
 function selectedGroupSelection(id: string | undefined): GroupSelection | undefined {
   const normalizedId = id?.trim()
   if (!normalizedId) return undefined
   const group = groups.value.find((item) => item.id === normalizedId)
   if (group) return { id: group.id, name: group.name }
   if (groupFilterSelection.value?.id === normalizedId) return groupFilterSelection.value
-  if (form.group?.id === normalizedId) return form.group
+  const selectedBinding = form.groupBindings.find((binding) => binding.group?.id === normalizedId)
+  if (selectedBinding?.group) return selectedBinding.group
   return undefined
+}
+
+function apiKeyGroupBindings(apiKey: ApiKeySummary): ApiKeyGroupBindingSummary[] {
+  if (apiKey.groupBindings?.length) return apiKey.groupBindings
+  return [{
+    id: `legacy:${apiKey.id}:${apiKey.groupId}`,
+    groupId: apiKey.groupId,
+    groupName: apiKey.groupName,
+    priority: 1,
+    status: 'active',
+    groupEnabled: true
+  }]
+}
+
+function apiKeyGroupBindingTagColor(binding: ApiKeyGroupBindingSummary): string {
+  if (binding.status === 'disabled') return 'default'
+  if (!binding.groupEnabled) return 'orange'
+  return binding.priority === 1 ? 'purple' : 'blue'
+}
+
+function apiKeyGroupBindingTagText(binding: ApiKeyGroupBindingSummary): string {
+  const name = displayGroupName(binding.groupName, binding.groupId)
+  const suffix = binding.status === 'disabled'
+    ? '停用'
+    : binding.groupEnabled ? undefined : '分组停用'
+  return suffix ? `P${binding.priority} ${name}（${suffix}）` : `P${binding.priority} ${name}`
+}
+
+function apiKeyGroupRouteText(apiKey: ApiKeySummary): string {
+  return apiKeyGroupBindings(apiKey)
+    .map(apiKeyGroupBindingTagText)
+    .join(' / ')
 }
 
 function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
@@ -519,7 +610,7 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
     return
   }
   const requestKeyword = normalizeOptionKeyword(keyword)
-  const requestKey = JSON.stringify([isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', groupFilter.value ?? '', form.groupId ?? ''])
+  const requestKey = JSON.stringify([isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', groupFilter.value ?? '', ...formGroupBindingIds.value])
   if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
     return groupOptionsLoadingPromise
   }
@@ -592,7 +683,7 @@ function clearGroupOptionsSearchTimer(): void {
 }
 
 async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined): Promise<GroupOptionSummary[]> {
-  const selectedIds = [groupFilter.value, form.groupId].filter((id): id is string => Boolean(id))
+  const selectedIds = [groupFilter.value, ...formGroupBindingIds.value].filter((id): id is string => Boolean(id))
   const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
   if (!missingIds.length) return nextGroups
   const selectedGroups = await Promise.all(missingIds.map(async (id) => {
@@ -613,8 +704,10 @@ function syncSelectedGroupSelections(nextGroups = groups.value): void {
   if (groupFilter.value) {
     groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
   }
-  if (form.groupId) {
-    form.group = selectedGroupFromOptions(form.groupId, nextGroups, form.group)
+  for (const binding of form.groupBindings) {
+    if (binding.groupId) {
+      binding.group = selectedGroupFromOptions(binding.groupId, nextGroups, binding.group)
+    }
   }
 }
 
@@ -735,17 +828,77 @@ async function openCreate() {
   await loadGroupOptions()
   editingId.value = undefined
   const defaultGroup = groups.value[0]
-  Object.assign(form, { name: '', groupId: defaultGroup?.id ?? '', group: defaultGroup ? { id: defaultGroup.id, name: defaultGroup.name } : undefined, status: 'active', expiresAt: undefined, description: '', quotaLimits: createQuotaLimitForm() })
+  Object.assign(form, {
+    name: '',
+    groupBindings: [createGroupBindingFormRow(defaultGroup ? { id: defaultGroup.id, name: defaultGroup.name } : undefined)],
+    status: 'active',
+    expiresAt: undefined,
+    description: '',
+    quotaLimits: createQuotaLimitForm()
+  })
   modalOpen.value = true
 }
 
 async function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
-  rememberGroupLabel(apiKey.groupId, apiKey.groupName)
-  Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, group: apiKey.groupName ? { id: apiKey.groupId, name: apiKey.groupName } : undefined, status: apiKey.status, expiresAt: undefined, description: apiKey.description ?? '', quotaLimits: createQuotaLimitForm(apiKey.quotaLimits) })
+  const bindings = apiKeyGroupBindings(apiKey).map((binding) => {
+    rememberGroupLabel(binding.groupId, binding.groupName)
+    return createGroupBindingFormRow({
+      id: binding.groupId,
+      name: displayGroupName(binding.groupName, binding.groupId)
+    }, binding.status)
+  })
+  Object.assign(form, {
+    name: apiKey.name,
+    groupBindings: bindings.length ? bindings : [createGroupBindingFormRow(apiKey.groupName ? { id: apiKey.groupId, name: apiKey.groupName } : undefined)],
+    status: apiKey.status,
+    expiresAt: undefined,
+    description: apiKey.description ?? '',
+    quotaLimits: createQuotaLimitForm(apiKey.quotaLimits)
+  })
   resetGroupOptionsSearch()
   await loadGroupOptions()
   modalOpen.value = true
+}
+
+function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBindingFormStatus = 'active'): ApiKeyGroupBindingFormRow {
+  return {
+    key: `binding_${Date.now()}_${groupBindingFormKeySeed += 1}`,
+    groupId: group?.id ?? '',
+    group,
+    status
+  }
+}
+
+function addGroupBinding() {
+  const selectedIds = new Set(form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
+  const nextGroup = groups.value.find((group) => !selectedIds.has(group.id))
+  form.groupBindings.push(createGroupBindingFormRow(nextGroup ? { id: nextGroup.id, name: nextGroup.name } : undefined))
+}
+
+function removeGroupBinding(index: number) {
+  if (form.groupBindings.length <= 1) return
+  form.groupBindings.splice(index, 1)
+}
+
+function moveGroupBinding(index: number, offset: -1 | 1) {
+  const nextIndex = index + offset
+  if (nextIndex < 0 || nextIndex >= form.groupBindings.length) return
+  const [item] = form.groupBindings.splice(index, 1)
+  if (!item) return
+  form.groupBindings.splice(nextIndex, 0, item)
+}
+
+function normalizedGroupBindingPayload(): Array<{ groupId: string; priority: number; status: ApiKeyGroupBindingFormStatus }> | undefined {
+  const rows = form.groupBindings
+    .map((binding, index) => ({
+      groupId: binding.groupId.trim(),
+      priority: index + 1,
+      status: binding.status
+    }))
+    .filter((binding) => binding.groupId)
+  if (!rows.length) return undefined
+  return rows
 }
 
 function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
@@ -783,13 +936,23 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     message.warning('请填写名称')
     return
   }
-  if (!form.groupId) {
-    message.warning('请选择绑定分组')
+  const groupBindings = normalizedGroupBindingPayload()
+  if (!groupBindings?.length) {
+    message.warning('请至少选择一个绑定分组')
+    return
+  }
+  if (!groupBindings.some((binding) => binding.status === 'active')) {
+    message.warning('至少需要一个启用分组')
+    return
+  }
+  if (new Set(groupBindings.map((binding) => binding.groupId)).size !== groupBindings.length) {
+    message.warning('绑定分组不能重复')
     return
   }
   const payload = {
     name: form.name,
-    groupId: form.groupId,
+    groupId: groupBindings.find((binding) => binding.status === 'active')?.groupId ?? groupBindings[0]?.groupId,
+    groupBindings,
     status: form.status,
     expiresAt: formatServerDateTimeInput(form.expiresAt) ?? undefined,
     description: form.description,
@@ -862,6 +1025,9 @@ watch(groupFilterDisabled, (disabled) => {
 watch(apiKeys, (items) => {
   for (const item of items) {
     rememberGroupLabel(item.groupId, item.groupName)
+    for (const binding of apiKeyGroupBindings(item)) {
+      rememberGroupLabel(binding.groupId, binding.groupName)
+    }
   }
   rememberGroupSelection(groupFilterSelection.value)
   rememberPrincipalSelection(systemAccountFilterSelection.value)
@@ -991,6 +1157,57 @@ onMounted(loadData)
   white-space: nowrap;
 }
 
+.group-route-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 320px;
+}
+
+.group-route-tags :deep(.ant-tag) {
+  max-width: 280px;
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-key-group-bindings-field {
+  display: grid;
+  gap: 10px;
+}
+
+.api-key-group-binding-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 96px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.binding-priority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.binding-group-select,
+.binding-status-select {
+  min-width: 0;
+}
+
+.binding-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .key-preview-cell {
   display: inline-flex;
   align-items: center;
@@ -1020,6 +1237,21 @@ onMounted(loadData)
 .key-copy-button:hover:not(:disabled) {
   color: #1677ff;
   background: #eff6ff;
+}
+
+@media (max-width: 640px) {
+  .api-key-group-binding-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .binding-status-select,
+  .binding-row-actions {
+    grid-column: 2;
+  }
+
+  .binding-row-actions {
+    justify-content: flex-start;
+  }
 }
 
 </style>

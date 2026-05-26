@@ -45,8 +45,16 @@ export function buildApiKeyFilters(scope: { clause: string; params: string[] }, 
     params.push(options.status)
   }
   if (options.groupId) {
-    clauses.push('api_keys.group_id = ?')
-    params.push(options.groupId)
+    clauses.push(`(
+      api_keys.group_id = ?
+      OR EXISTS (
+        SELECT 1
+        FROM api_key_group_bindings
+        WHERE api_key_group_bindings.api_key_id = api_keys.id
+          AND api_key_group_bindings.group_id = ?
+      )
+    )`)
+    params.push(options.groupId, options.groupId)
   }
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',

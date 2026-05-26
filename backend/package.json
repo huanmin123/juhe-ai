@@ -58,6 +58,7 @@
     "test:account-usage-query-guard": "tsx src/scripts/regression/account-usage-query-guard-regression.ts",
     "test:ai-performance-account-options-query-guard": "tsx src/scripts/regression/ai-performance-account-options-query-guard-regression.ts",
     "test:api-key-list-query-guard": "tsx src/scripts/regression/api-key-list-query-guard-regression.ts",
+    "test:api-key-multi-group-bindings": "tsx src/scripts/regression/api-key-multi-group-bindings-regression.ts",
     "test:log-list-query-guard": "tsx src/scripts/regression/log-list-query-guard-regression.ts",
     "test:usage-stats-batch-statement": "tsx src/scripts/regression/usage-stats-batch-statement-regression.ts",
     "test:usage-overview-window-atomic": "tsx src/scripts/regression/usage-overview-window-atomic-regression.ts",

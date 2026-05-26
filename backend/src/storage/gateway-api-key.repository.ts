@@ -10,6 +10,18 @@ export interface GatewayApiKeyRow {
   expires_at: string | null
   quota_limits_json: string | null
   system_account_image_generation_enabled: number
+  group_bindings?: GatewayApiKeyGroupBindingRow[]
+}
+
+export interface GatewayApiKeyGroupBindingRow {
+  id: string
+  api_key_id: string
+  system_account_id: string
+  group_id: string
+  priority: number
+  status: 'active' | 'disabled'
+  provider_code: string
+  group_enabled: number
 }
 
 type GatewayApiKeyCacheEntry = {
@@ -62,6 +74,12 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
+  row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
+  if (!row.group_bindings.length) {
+    gatewayApiKeyCache.delete(keyHash)
+    return undefined
+  }
+  row.group_id = row.group_bindings[0]?.group_id ?? row.group_id
   gatewayApiKeyCache.set(keyHash, {
     row,
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
@@ -93,7 +111,15 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
   if (!row || row.status !== 'active') {
     return undefined
   }
-  return isGatewayApiKeyRowExpired(row) ? undefined : row
+  if (isGatewayApiKeyRowExpired(row)) {
+    return undefined
+  }
+  row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
+  if (!row.group_bindings.length) {
+    return undefined
+  }
+  row.group_id = row.group_bindings[0]?.group_id ?? row.group_id
+  return row
 }
 
 export function clearGatewayApiKeyValidationCache(): void {
@@ -118,4 +144,27 @@ function gatewayApiKeyCacheTtlMs(now: number, row: GatewayApiKeyRow): number {
   if (!row.expires_at) return GATEWAY_API_KEY_CACHE_TTL_MS
   const keyExpiresAt = Date.parse(row.expires_at)
   return Number.isFinite(keyExpiresAt) ? Math.max(1, Math.min(GATEWAY_API_KEY_CACHE_TTL_MS, keyExpiresAt - now)) : GATEWAY_API_KEY_CACHE_TTL_MS
+}
+
+export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAccountId: string): GatewayApiKeyGroupBindingRow[] {
+  return getDatabase().prepare(`
+    SELECT
+      api_key_group_bindings.id,
+      api_key_group_bindings.api_key_id,
+      api_key_group_bindings.system_account_id,
+      api_key_group_bindings.group_id,
+      api_key_group_bindings.priority,
+      api_key_group_bindings.status,
+      groups.provider_code,
+      groups.enabled AS group_enabled
+    FROM api_key_group_bindings
+    INNER JOIN groups
+      ON groups.id = api_key_group_bindings.group_id
+      AND groups.system_account_id = api_key_group_bindings.system_account_id
+    WHERE api_key_group_bindings.api_key_id = ?
+      AND api_key_group_bindings.system_account_id = ?
+      AND api_key_group_bindings.status = 'active'
+      AND groups.enabled = 1
+    ORDER BY api_key_group_bindings.priority ASC, api_key_group_bindings.created_at ASC, api_key_group_bindings.id ASC
+  `).all(apiKeyId, systemAccountId) as unknown as GatewayApiKeyGroupBindingRow[]
 }
