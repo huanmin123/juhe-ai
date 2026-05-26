@@ -4,15 +4,17 @@ import { requestDbService } from '../db-service/db-service-ipc.js'
 import { type GatewaySettings } from './account-error-policy.service.js'
 import {
   enqueueGatewayAccountErrorHandlingSideEffect,
-  enqueueGatewayStreamFailureSideEffect
+  enqueueGatewayStreamFailureSideEffect,
+  recordGatewayAccountFailureForPrecheck
 } from './gateway-account-side-effects.service.js'
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
 import { parseOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
 import { type UpstreamAccount } from './openai-gateway-route-helpers.js'
 import { type StreamFailureContext } from './openai-gateway-stream.js'
 import { headersToObject } from './openai-gateway-usage.js'
-import { recordGatewayProxyFailure } from './openai-gateway-proxy-health.service.js'
+import { recordGatewayUpstreamBucketFailure } from './openai-gateway-proxy-health.service.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
+import type { GatewayUsageContext } from './openai-gateway-usage-records.js'
 
 export function applyAccountErrorHandlingWithCacheInvalidation(
   account: UpstreamAccount,
@@ -42,9 +44,14 @@ export function handleStreamFailure(
   reason: string,
   settings: GatewaySettings,
   errorCode: string | undefined,
-  context: StreamFailureContext
+  context: StreamFailureContext,
+  usageContext?: GatewayUsageContext,
+  accountStateMutationEnabled = true
 ): void {
   if (!settings.streamCircuitBreakerEnabled) {
+    return
+  }
+  if (!accountStateMutationEnabled) {
     return
   }
   if (!context.outputReceived) {
@@ -59,18 +66,30 @@ export function handleStreamFailure(
     return
   }
 
-  const proxyFailure = recordGatewayProxyFailure(account, reason)
-  if (proxyFailure.suspected) {
+  const upstreamBucketFailure = recordGatewayUpstreamBucketFailure(account, '流式响应失败')
+  if (upstreamBucketFailure.suspected) {
     getRequestLogger().warn({
-      event: 'gateway_stream_failure_proxy_bucket_absorbed',
+      event: 'gateway_stream_failure_upstream_bucket_absorbed',
       accountId: account.id,
       accountName: account.name,
-      proxyKey: proxyFailure.proxyKey,
-      distinctAccountCount: proxyFailure.distinctAccountCount,
+      bucketKeys: upstreamBucketFailure.suspectedBucketKeys,
+      distinctAccountCount: upstreamBucketFailure.distinctAccountCount,
       errorCode,
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten
-    }, '可见输出后流失败已被同代理多账号失败桶吸收，暂不累计账号流失败')
+    }, '可见输出后流失败已被同上游桶多账号失败吸收，暂不累计账号流失败')
+    return
+  }
+
+  if (usageContext?.trafficSource === 'gateway') {
+    recordGatewayAccountFailureForPrecheck(account, settings, {
+      systemAccountId: usageContext.systemAccountId,
+      groupId: usageContext.groupId,
+      apiKeyId: usageContext.apiKeyId,
+      clientIp: usageContext.clientIp,
+      endpoint: usageContext.endpoint,
+      reason: `流式响应失败：${reason}`
+    })
     return
   }
 

@@ -36,7 +36,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `system_accounts`、`system_sessions`
 - `global_settings`、`system_settings`
 - `providers`、`proxy_profiles`、`error_policies`
-- `accounts`、`account_supported_models`、`groups`、`group_accounts`、`api_keys`
+- `accounts`、`account_supported_models`、`groups`、`group_accounts`、`api_keys`、`api_key_group_bindings`
 - `system_teams`、`system_team_members`
 - `resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`
 - `announcements`、`announcement_reads`
@@ -222,6 +222,10 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `api_keys(system_account_id, lower(name))`：保证同一用户下 API Key 名称唯一，密钥本身仍由 `key_hash` 兜底。
 - `api_keys(name, id)`、`api_keys(system_account_id, name, id)`：API Key 列表关键词只按名称精确 / 前缀匹配，不搜索 Key 前缀或说明，也不做无边界包含匹配。
 - API Key 列表不维护 Key 前缀、说明或多字段组合搜索索引；`key_prefix` 只作为摘要展示字段保留，不参与列表关键词查询。
+- `api_key_group_bindings(api_key_id, group_id)`：保证同一个 API Key 不重复绑定同一分组号池。
+- `api_key_group_bindings(api_key_id, priority) WHERE status = 'active'`：保证同一个 API Key 的 active 号池优先级唯一。
+- `api_key_group_bindings(api_key_id, status, priority)`：网关按 Key 读取 active 号池路由绑定。
+- `api_key_group_bindings(group_id)`、`api_key_group_bindings(system_account_id, api_key_id)`：分组删除保护、列表筛选和管理作用域校验使用。
 - `proxy_profiles(lower(name))`：保证代理配置名称全局唯一。
 - `proxy_profiles(name, id)`：代理管理列表和代理选项只按代理名称精确 / 前缀匹配；不维护代理地址、类型、用户名或说明的组合搜索索引。
 - 业务唯一索引直接落到当前 schema；若本地旧库已有重复记录，应先离线清理旧数据或重建库，不在启动路径保留跳过索引的兼容逻辑。
@@ -321,9 +325,9 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 高并发分组调度使用的当前并发、分组排队、单账户排队阈值占用、慢请求计数和最近分配时间属于网关主进程内易失运行态；SQLite 只保存分组类型、策略配置、账号硬配置和可重建质量缓存。服务重启后高并发调度允许回到保守默认，不能把这些易失指标当作授权、额度、账务或审计事实。
 - 高并发分组的后台反向缓存只保存可重建的短窗口质量摘要，不能保存敏感 payload、完整错误响应或会话内容。缓存缺失、过期或 worker 滞后时，网关必须按保守默认选号，不能在请求链路触发同步重建。
 - 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再从 `account_quality_minute_stats` 汇总近 10 分钟真实网关请求刷新 `account_quality_scores`。分钟桶由用量统计 worker 随主游标增量写入；刷新 worker 不回扫 `usage_records`，旧质量行一次性加载为 Map，避免按账号逐条查询。主动探测能力已删除，worker 只处理真实请求样本，源码和预上线本地库都不再保留 `last_probe_at`。超过 24 小时未更新的质量分不参与网关调度，活跃账号短窗口无新样本时会标记为 `stale`。
-- OpenAI OAuth Access Token 保活 worker 默认每 1 分钟扫描仍存在、未删除、有 `refresh_token` 且即将过期的 OAuth 账户，扫描不受账户状态和调度标记影响；成功时只更新 `accounts.credentials_encrypted` 中的 token 凭据，不恢复调度状态、不清理冷却和最近错误；连续 3 次失败会把账户写为 `status = error`、`last_error_code = oauth_token_refresh_failed`。
+- OpenAI OAuth Access Token 保活 worker 默认每 1 分钟扫描仍存在、未删除、有 `refresh_token` 且即将过期的 OAuth 账户，扫描不受账户状态和调度标记影响；成功时更新 `accounts.credentials_encrypted` 中的 token 凭据，不恢复普通冷却状态；连续 3 次失败会把非停用账户写为 `status = error`、`last_error_code = oauth_token_refresh_failed`，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
 - 网关请求中触发的 OpenAI OAuth Access Token 即时刷新，在 server 角色下必须通过 DB service 查最新账户、解析代理和持久化新凭据，不能直接读取或更新 SQLite。
-- 冷却账号恢复性复测只处理冷却到期的 `temporary_unavailable`、仍可调度、已绑定分组且未过期的账号；`rate_limited` 等其他状态不进入后台复测队列，不做自愈恢复。复测前优先从最近真实 `usage_records` 学习 `endpoint/model/stream` 元信息，最多按最近 7 天 date shard 倒序查找，命中后立即停止，endpoint 只按规范化后的 OpenAI 路径精确 / 子路径前缀识别，不使用前导通配符扫描；该流程只读取 `traffic_source = gateway` 的真实请求，不读取 `request_snapshot_json`，也不重放用户 prompt、工具参数或文件内容。探活输入使用后端最小 Responses 默认输入。后台复测固定启用，复用真实网关链路但候选只包含当前复测账号，失败后由复测任务自身按 3 秒快速恢复通道和指数退避更新 `cooldown_until`；超过快速阈值后进入慢速恢复，单次等待不超过 `defaultTemporaryUnschedulableMinutes`，进入慢速恢复后如果复测失败发生在 `cooldownAccountRetestMaxBackoffHours` 表达的最长观察之后则转为异常。恢复探活使用记录与审计均标记 `traffic_source = cooldown_retest`，不参与业务统计、账户质量统计和真实请求形态学习，Codex 额度快照也保留 `cooldown_retest` 来源而不伪装成真实网关流量。
+- 冷却账号恢复性复测处理冷却到期的 `temporary_unavailable` / `rate_limited`、仍可调度、已绑定分组且未过期的账号；`error`、`disabled` 等硬状态不进入后台复测队列。复测前优先从最近真实 `usage_records` 学习 `endpoint/model/stream` 元信息，最多按最近 7 天 date shard 倒序查找，命中后立即停止，endpoint 只按规范化后的 OpenAI 路径精确 / 子路径前缀识别，不使用前导通配符扫描；该流程只读取 `traffic_source = gateway` 的真实请求，不读取 `request_snapshot_json`，也不重放用户 prompt、工具参数或文件内容。探活输入使用后端最小 Responses 默认输入。后台复测固定启用，复用真实网关链路但候选只包含当前复测账号，失败后由复测任务自身按 3 秒快速恢复通道和指数退避更新 `cooldown_until`；超过快速阈值后进入慢速恢复，单次等待不超过 `defaultTemporaryUnschedulableMinutes`，不会升级为永久异常。恢复探活使用记录与审计均标记 `traffic_source = cooldown_retest`，不参与业务统计、账户质量统计和真实请求形态学习，Codex 额度快照也保留 `cooldown_retest` 来源而不伪装成真实网关流量。
 - 代理延迟刷新 worker 固定每 1 分钟检测最多 20 个启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新，不提供系统设置项调整。
 - 授权账户调用需要同时写入调用方统计、调用方命中账户统计、真实账户统计、授权额度统计和授权报表：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；`我的用量` 按 `system_account_id + scope_type = caller_account + account_id` 读取本人对该账户的消耗；账户所有者的账户总用量按 `account_owner_system_account_id + scope_type = account + account_id` 聚合；授权额度按 `account_owner_system_account_id + account_authorization_id` 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤资源归属人自用消耗。
 - 授权分组相关的历史调用记录不作为当前运行时兼容范围。当前调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权额度按当前有效授权 ID 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤资源归属人自用消耗。新建 API Key 不再绑定授权分组，授权账户应先进入调用方自有分组后再产生调用。
@@ -504,10 +508,10 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `sample_reason`
 - `attempt_count`
 - `payload_count`
-- `payload_bytes`
-- `raw_payload_bytes`
-- `compressed_payload_bytes`
-- `compression_saved_bytes`
+- `payload_bytes`：兼容字段，当前等同 `raw_payload_bytes`
+- `raw_payload_bytes`：原始逻辑字节，summary-only / hash-only 时仍按原始 body 大小计入
+- `compressed_payload_bytes`：实际落盘 blob 字节，summary-only 时只计算摘要 blob 的落盘大小
+- `compression_saved_bytes`：原始逻辑字节减实际落盘字节，用于容量报表
 - `error_group_id`
 - `capture_status`：`complete`、`dropped`、`overflow`
 - `started_at`
@@ -600,6 +604,8 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 保存规则：
 
 - `audit_logs` 只写入命中 10% 稳定采样的完全成功请求，以及所有失败、异常、客户端中断、流式中断和重试后成功链路；每次请求事实仍由 `usage_records` 保底。
+- 成功样本 body 不超过 `512KB` 时保存完整正文，超过后保存 `summary_only` 摘要；问题链路 body 不超过 `2MB` 时保存完整正文，超过后保存原始 hash、大小、头尾 `256KB` 和 JSON 结构摘要。
+- `JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=1` 只作为临时排障开关；开启后不做 body 摘要化或流式 body 省略，但仍受 `64MB` 活跃捕获硬上限、header 脱敏、blob 压缩去重和窗口读取约束。
 - `headers_sha256` 和 `body_sha256` 均针对压缩前的原始字节计算。
 - payload blob 可以压缩存储，压缩算法、原始大小和压缩后大小必须记录。
 - 相同 `sha256 + raw_size_bytes + content_type` 的 blob 只存一份，多条事件通过 `audit_payload_refs` 引用。
@@ -716,11 +722,12 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 团队停用、成员移除或系统账户停用后，授权来源和最终用户授权状态必须同步更新；网关调度按最终用户授权、系统账户、资源和绑定状态阻断调用，不再额外把团队作为运行时主体遍历判断。
 - 授权资源不能继续被被授权人二次授权给第三方。
 
-`group_accounts` 和 `api_keys` 的授权路径字段：
+`group_accounts`、`api_keys` 和 `api_key_group_bindings` 的授权路径字段：
 
 - `group_accounts.account_id` 仍指向唯一物理 AI 账户；同一 `system_account_id + group_id + account_id` 只能有一条有效分组成员关系，不能因多个授权来源重复加入同一账户。`system_account_id` 表示这条分组绑定属于哪个使用方，本地分组绑定不改变账户所有者的资源归属。
 - `group_accounts.account_authorization_id`：当被授权用户把授权 AI 账户加入自己分组时记录首选统一授权 ID；为空表示自有账户。
-- `api_keys.group_id` 仍指向唯一分组；新建和编辑时只能绑定 API Key 所属系统账户自己的分组，当前 API Key 模型不保留授权分组绑定字段。
+- `api_keys.group_id` 保留为兼容主号池字段，指向 active 绑定中优先级最高的分组；新路由以 `api_key_group_bindings` 为准。
+- `api_key_group_bindings.api_key_id / group_id / priority / status` 保存 API Key 到多个本地分组号池的路由绑定；新建和编辑时只能绑定 API Key 所属系统账户自己的分组，不能绑定授权方分组。至少保留一个 `active` 绑定，同一个 Key 下 active 绑定优先级唯一，同一个 Key 下所有绑定分组必须属于同一供应商。
 - 授权账户通过 `group_accounts.account_authorization_id` 进入被授权用户自己的分组后参与调度；调度时仍必须重新校验最终用户授权、调用方系统账户、资源和绑定状态。
 - 当同一用户对同一账户或分组同时拥有个人来源和团队来源时，只允许存在一条用户级授权，并在资源行返回全部来源供排查。
 - 调度只校验用户级授权是否仍有效；来源变化不应导致资源重复或历史绑定断裂。
@@ -746,6 +753,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 授权消耗统计必须过滤自用记录：账户授权按 `usage_records.system_account_id != account_owner_system_account_id`，分组授权按 `usage_records.system_account_id != group_owner_system_account_id`。
 - 账户真实总用量按 `account_owner_system_account_id + account_id` 聚合，所以自用和所有用户授权都会累计到同一个真实账户维度。
 - 分组真实总用量按 `group_owner_system_account_id + group_id` 聚合，所以自用和所有用户授权都会累计到同一个真实分组维度。
+- API Key 绑定多个号池时，API Key 维度统计仍按同一个 `api_key_id` 聚合；分组维度统计只按实际命中的 `group_id` 聚合。
 - 授权统计主口径是“资源 × 用户”：按用户级统一授权 ID 进入统计，worker 同步写入团队报表行和用户报表行，不再把个人来源和团队来源拆成两份。
 - 个人授权详情需要按实际调用方 `system_account_id` 写入用户报表，所以 A 授权给 B 时，A 能看到 B 对该资源的消耗。
 - 团队授权详情基于使用记录里的团队来源快照写入团队报表；团队总量和用户筛选结果在 worker 中预先生成，页面请求不能现场按成员或授权关系聚合。
@@ -754,7 +762,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `usage_records` 按每次实际上游请求 / 上游尝试写入；同一个客户端请求如果发生重试或切号，可以产生多条记录。`traffic_source` 用于区分真实网关请求、手动账号测试和恢复探活。`usage_records` 是排障和重建统计的事实源，不等同于业务消耗统计。
 - `request_count` 统计的是进入业务统计口径的请求次数：后台统计 worker 聚合真实网关请求和手动账号测试，恢复探活 `traffic_source = cooldown_retest` 只保留明细和审计，不进入业务用量统计、账户质量统计或真实请求形态学习；统计安全游标可以确认处理恢复探活明细，避免阻塞后续 `usage_records` 清理。没有 token / cost 的失败记录按 0 token、0 cost 计入请求和错误次数，便于统一追踪；成本、缓存成本与 token 仍以实际解析到的上游用量和模型价格快照为准。
 - 同一次上游尝试不能因为调用方同时拥有个人来源和团队来源而重复入库；资源真实总量按 `usage_records.id` 去重。
-- 统计按请求实际命中的 `group_id`、`account_id` 和当时的统一授权 ID 记录，历史不会因后续团队成员或分组账户变化而重算。
+- 统计按请求实际命中的 `group_id`、`account_id` 和当时的统一授权 ID 记录，历史不会因后续 API Key 号池优先级、团队成员或分组账户变化而重算。
 ## 账户套餐到期
 
 `accounts.account_expires_at` 是本地账户套餐/购买到期时间，适用于 OpenAI OAuth 和 OpenAI API Key 账户。它和 OAuth 凭据里的 `expires_at` 分离：`credentials.expires_at` 来自 OpenAI token 的 `expires_in`，只表示 access token 过期时间。
@@ -839,7 +847,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `accountQualityRefreshIntervalSeconds = 600`：账号质量缓存默认每 10 分钟刷新一次。
 - `accountQualityWindowMinutes = 10`：真实网关请求首 token 统计窗口默认 10 分钟。
 - 账号质量主动探测相关默认设置已删除，不允许通过系统配置恢复。
-- `cooldownAccountRetestMaxBackoffHours = 24`：冷却账号后台复测最长自动恢复观察，默认 24 小时；从账号进入 `temporary_unavailable` 开始计时，进入慢速恢复后若复测失败发生在该观察窗口之后则转异常并停止自动复测。后台冷却复测固定启用，只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
+- `cooldownAccountRetestMaxBackoffHours = 24`：冷却账号后台复测慢速恢复观察参考，默认 24 小时；进入慢速恢复后仍继续自动退避复测，不升级为永久异常。后台冷却复测固定启用，只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
 - `cooldownAccountRetestIntervalSeconds = 3`：冷却账号后台复测默认扫描间隔，用于承接 3 秒起步的快速恢复通道。
 - `cooldownAccountRetestBatchSize = 10`：默认每轮最多恢复性复测 10 个冷却到期账号。
 
@@ -849,10 +857,13 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 完全成功请求默认只按稳定桶采样 `10%` 进入原始审计；未命中采样时不写 `audit_logs`。
 - 每次请求事实由 `usage_records` 保底，原始审计不替代使用记录。
 - 失败、异常、重试后成功、客户端中断和流式中断默认进入原始审计，并按策略保全可捕获正文。
+- 默认正文保全按成功样本 `512KB`、问题链路 `2MB` 分档；超限后写 `summary_only` 摘要，不把摘要伪装成完整原文。
+- 临时全量捕获只允许通过 `JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=true` / `1` 短时开启；开启后不做 body 摘要化或流式正文省略，但凭据类 headers 仍脱敏保留。
 - 正文 blob 压缩后按原始 hash 精确去重，并通过 payload 引用关联到事件。
 - 重复错误按短时间窗口聚合展示，但每次 occurrence 仍由 `audit_logs` 事件追溯。
-- 审计队列固定每 `5` 秒批量落库一次，单批最多 `50` 条客户端请求。
-- 待写队列最多保留 `1000` 条终态审计请求，近似最大原文体积为 `256MB`。
+- 问题列表 / 审计事件列表不新增 payload 字节列；`raw_payload_bytes` 和 `compressed_payload_bytes` 只用于后端报表、容量分析和内部接口字段。
+- 审计队列固定每 `5` 秒批量落库一次，单批最多 `200` 条客户端请求。
+- 待写队列不设固定请求数或字节数上限，由机器资源决定承载能力；队列异常不能阻塞网关请求。
 - 单个请求活跃捕获上限为 `64MB`，超过后丢弃整条审计记录。
 - 默认固定保留：成功样本 `7` 天，失败 / 异常事件 `30` 天，失败 / 异常正文随事件引用分层清理，错误聚合组 `30` 天；具体以 [审计日志保全策略设计](审计日志保全策略设计.md) 为准。
 
@@ -860,7 +871,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 系统账户隔离补充
 
-- `accounts`、`system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`operation_logs`、`operation_log_targets`、`operation_log_viewers`、`audit_logs`、`account_usage_snapshots` 都按 `system_account_id` 或明确的 owner/grantee/viewer 字段隔离；`system_settings` 当前按默认管理员作用域保存系统级运行策略。
+- `accounts`、`system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_accounts`、`api_keys`、`api_key_group_bindings`、`error_policies`、`usage_records`、`operation_logs`、`operation_log_targets`、`operation_log_viewers`、`audit_logs`、`account_usage_snapshots` 都按 `system_account_id` 或明确的 owner/grantee/viewer 字段隔离；`system_settings` 当前按默认管理员作用域保存系统级运行策略。
 - `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*` 和各类窗口 / 排行快照也必须按 `system_account_id` 或全局虚拟账户明确隔离。
 - `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly`、`process_event_loop_samples`、`process_event_loop_hourly`、`process_event_loop_trend_windows` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。进程事件循环趋势固定按最近 24 小时分钟峰值桶展示，不按系统账户隔离。`proxy_profiles.latency_ms`、`outbound_ip`、`outbound_region`、`test_status`、`last_tested_at` 和 `last_test_message` 是代理最近检测缓存，不参与账号调度事实判断。
 - 管理员可以读取所有系统账户的数据；普通用户只读取自己的系统账户数据，以及其他用户主动授权给自己的 AI 账户和分组使用摘要。

@@ -58,6 +58,11 @@
         </a-form>
       </template>
       <template #actions>
+        <a-tooltip :title="fullBodyCaptureTooltip">
+          <a-tag :color="fullBodyCaptureTagColor" class="audit-full-capture-status">
+            临时全量捕获：{{ fullBodyCaptureText }}
+          </a-tag>
+        </a-tooltip>
         <TableColumnManager
           :columns="auditLogColumns"
           :settings="columnSettings"
@@ -553,6 +558,20 @@ const auditRuntimeAlertDescription = computed(() => {
     : '后台进程状态不可用'
   return `${reasons.join('；') || '运行态状态未知'}。${workerText}。`
 })
+const fullBodyCaptureText = computed(() => {
+  if (!runtime.value) return '读取中'
+  return runtime.value.settings.fullBodyCaptureEnabled ? '已开启' : '关闭'
+})
+const fullBodyCaptureTagColor = computed(() => {
+  if (!runtime.value) return 'default'
+  return runtime.value.settings.fullBodyCaptureEnabled ? 'red' : 'default'
+})
+const fullBodyCaptureTooltip = computed(() => {
+  if (!runtime.value) return '正在读取运行期配置'
+  return runtime.value.settings.fullBodyCaptureEnabled
+    ? '已开启：进入原始审计的 body 会跳过摘要化'
+    : '已关闭：成功样本超过 512KB、问题链路超过 2MB 会转为摘要'
+})
 let skipNextRouteTraceRestore = false
 
 const selectedPayloadCurrentText = computed(() => {
@@ -914,6 +933,13 @@ onDeactivated(() => {
   width: 190px;
 }
 
+.audit-full-capture-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  margin-inline-end: 0;
+}
+
 .advanced-filter-form :deep(.ant-input) {
   width: 100%;
 }
@@ -1054,6 +1080,13 @@ onDeactivated(() => {
   overflow: hidden;
   color: #0f172a;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  .audit-full-capture-status {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 </style>

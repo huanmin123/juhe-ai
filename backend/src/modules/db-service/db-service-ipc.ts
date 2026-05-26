@@ -226,6 +226,16 @@ export async function requestServerAccountConcurrencySnapshot(timeoutMs = 300): 
   return snapshot?.accountConcurrency
 }
 
+export async function requestServerAccountRuntimeSnapshot(timeoutMs = 300): Promise<Pick<DbServiceServerRuntimeSnapshot, 'accountConcurrency' | 'accountRuntimeAvailability'> | undefined> {
+  const snapshot = await requestServerRuntimeSnapshotByScope('account_runtime', timeoutMs)
+  return snapshot
+    ? {
+        accountConcurrency: snapshot.accountConcurrency,
+        accountRuntimeAvailability: snapshot.accountRuntimeAvailability
+      }
+    : undefined
+}
+
 export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): Promise<ProcessEventLoopSample | undefined> {
   const child = dbServiceProcess
   if (runtimeConfig.processRole !== 'server' || !child || !child.connected || !dbServiceReady) {
@@ -339,7 +349,7 @@ function handleDbServiceMessage(message: unknown): void {
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
         void respondToServerRuntimeRequest(
           record.requestId,
-          record.scope === 'account_concurrency' ? 'account_concurrency' : 'full'
+          record.scope === 'account_concurrency' || record.scope === 'account_runtime' ? record.scope : 'full'
         )
       }
       break
@@ -490,7 +500,9 @@ async function respondToServerRuntimeRequest(requestId: string, scope: DbService
   try {
     const snapshot = scope === 'account_concurrency'
       ? await buildServerAccountConcurrencySnapshot()
-      : await buildServerRuntimeSnapshot()
+      : scope === 'account_runtime'
+        ? await buildServerAccountRuntimeSnapshot()
+        : await buildServerRuntimeSnapshot()
     sendToDbServiceProcess(child, {
       type: 'db_service_server_runtime_response',
       requestId,
@@ -641,6 +653,17 @@ async function buildServerAccountConcurrencySnapshot(): Promise<DbServiceServerR
   const accountConcurrency = await import('../../shared/account-concurrency.js')
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency()
+  }
+}
+
+async function buildServerAccountRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
+  const [accountConcurrency, gatewaySideEffects] = await Promise.all([
+    import('../../shared/account-concurrency.js'),
+    import('../gateway/gateway-account-side-effects.service.js')
+  ])
+  return {
+    accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
+    accountRuntimeAvailability: gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()
   }
 }
 

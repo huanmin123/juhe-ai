@@ -5,6 +5,8 @@ import {
   findAccountForTest,
   listOpenAIAccountsForGroup,
   listPublicGlobalSettings,
+  markAccountCooldown,
+  markAuthorizedAccountBindingCooldownByContext,
   recordAccountStreamFailure,
   recordAuthorizedAccountBindingStreamFailure,
   resolveGroupUsageAccessMetadata,
@@ -136,6 +138,22 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         clearGatewayRuntimeCacheLocal()
       }
       return { count: result.count, triggered: result.triggered }
+    }
+    case 'mark_account_precheck_temporary_unavailable': {
+      const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
+      const fallbackCooldownUntil = new Date(Date.now() + 60_000).toISOString()
+      const updated = authorizedTarget
+        ? markAuthorizedAccountBindingCooldownByContext({
+            ...authorizedTarget,
+            cooldownUntil: fallbackCooldownUntil,
+            reason: operation.reason,
+            status: 'temporary_unavailable'
+          })
+        : markAccountCooldown(operation.account.id, fallbackCooldownUntil, operation.reason, 'temporary_unavailable')
+      if (updated) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { updated: Boolean(updated) }
     }
     case 'clear_account_stream_failure_state': {
       const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)

@@ -8,6 +8,19 @@ import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.
 import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 
+export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'precheck_pending' | 'precheck_failed'
+
+export interface AccountRuntimeAvailability {
+  status: AccountRuntimeAvailabilityStatus
+  reason?: string
+  since?: string
+  until?: string
+  failureCount?: number
+  distinctClientIpCount?: number
+  distinctApiKeyCount?: number
+  precheckAttemptCount?: number
+}
+
 export interface DbServiceRuntimeSnapshot {
   pid: number
   ready: boolean
@@ -24,6 +37,7 @@ export interface DbServiceRuntimeSnapshot {
 
 export interface DbServiceServerRuntimeSnapshot {
   accountConcurrency?: Record<string, number>
+  accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
   worker?: {
     pid?: number
     ready: boolean
@@ -89,7 +103,7 @@ export interface DbServiceServerRuntimeSnapshot {
   activeAuditCaptureCount?: number
 }
 
-export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency'
+export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime'
 
 export interface DbServiceRuntimeQueueSnapshot {
   queueLength?: number
@@ -113,7 +127,7 @@ export interface DbServiceGatewayRuntime {
   accounts: OpenAIAccountSecret[]
 }
 
-export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId'> & {
+export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId' | 'lastErrorCode'> & {
   proxyUrl?: string
 }
 
@@ -207,6 +221,11 @@ export type DbServiceOperation =
     account?: OpenAIAccountSecret
   }
   | {
+    type: 'mark_account_precheck_temporary_unavailable'
+    account: OpenAIAccountSecret
+    reason: string
+  }
+  | {
     type: 'clear_gateway_runtime_cache'
   }
   | {
@@ -239,6 +258,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'persist_openai_codex_usage_headers' } ? { persisted: boolean } :
   T extends { type: 'apply_account_error_handling' } ? AccountErrorHandlingResult :
   T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
+  T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :

@@ -34,10 +34,14 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
   const selectedResourceOwnerSystemAccountId = computed(() => {
     return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
   })
+  const resourceGroupDisabled = computed(() => {
+    return isManagementView.value && filters.resourceType === 'group' && !selectedResourceOwnerSystemAccountId.value
+  })
   const ownAuthorizableAccounts = computed(() => accounts.value.filter((account) => account.permissions?.canAuthorize !== false))
   const ownAuthorizableGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
   const resourceOptions = computed(() => {
     if (filters.resourceType === 'all') return []
+    if (resourceGroupDisabled.value) return []
     if (filters.resourceType === 'account') {
       return ownAuthorizableAccounts.value
         .filter((account) => matchesSelectedResourceOwner(account))
@@ -55,6 +59,16 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
       groups.value = []
       filters.resourceAccount = undefined
       filters.resourceGroup = undefined
+      loadingKey = undefined
+      loadingPromise = undefined
+      return
+    }
+    if (resourceGroupDisabled.value) {
+      requestId += 1
+      accounts.value = []
+      groups.value = []
+      resetResourceId()
+      resourceOptionsLoading.value = false
       loadingKey = undefined
       loadingPromise = undefined
       return
@@ -241,6 +255,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     accounts,
     groups,
     selectedResourceOwnerSystemAccountId,
+    resourceGroupDisabled,
     resourceOptions,
     resourceOptionsLoading,
     handleResourceOptionsDropdown,

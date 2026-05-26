@@ -45,7 +45,7 @@ import {
   type GatewayClientIpErrorCircuitReason
 } from './openai-gateway-client-ip-error-circuit.service.js'
 import {
-  orderOpenAIAccountsByGatewayProxyHealth
+  orderOpenAIAccountsByGatewayUpstreamBucketHealth
 } from './openai-gateway-proxy-health.service.js'
 import { waitForHighConcurrencyGroupCapacity } from './openai-gateway-high-concurrency-queue.service.js'
 import { finalizeGatewayAuthFailureAudit, sendOpenAIModelsGatewayResponse } from './openai-gateway-fixed-responses.js'
@@ -483,28 +483,34 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  const proxyHealthOrder = orderOpenAIAccountsByGatewayProxyHealth(localSuppressionFilter.accounts)
+  const proxyHealthOrder = orderOpenAIAccountsByGatewayUpstreamBucketHealth(localSuppressionFilter.accounts)
   if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
     logger.warn({
       event: proxyHealthOrder.applied
-        ? 'gateway_proxy_health_avoidance_applied'
-        : 'gateway_proxy_health_avoidance_bypassed',
+        ? 'gateway_upstream_bucket_health_avoidance_applied'
+        : 'gateway_upstream_bucket_health_avoidance_bypassed',
       applied: proxyHealthOrder.applied,
+      avoidedBucketKeys: proxyHealthOrder.avoidedBucketKeys,
       avoidedProxyKeys: proxyHealthOrder.avoidedProxyKeys,
       avoidedAccountIds: proxyHealthOrder.avoidedAccountIds,
+      halfOpenBucketKeys: proxyHealthOrder.halfOpenBucketKeys,
+      halfOpenAccountIds: proxyHealthOrder.halfOpenAccountIds,
       bypassedAllAvoided: proxyHealthOrder.bypassedAllAvoided,
       groupId,
       systemAccountId,
       apiKeyId
     }, proxyHealthOrder.applied
-      ? '代理运行态避让已应用到候选列表'
-      : '代理运行态避让无可用备选，保持原候选列表')
+      ? '上游桶运行态避让已应用到候选列表'
+      : '上游桶运行态避让无可用备选，保持原候选列表')
     auditCapture.addGatewayMetadata({
-      label: 'proxy_health_avoidance',
+      label: 'upstream_bucket_health_avoidance',
       metadata: {
         applied: proxyHealthOrder.applied,
+        avoidedBucketKeys: proxyHealthOrder.avoidedBucketKeys,
         avoidedProxyKeys: proxyHealthOrder.avoidedProxyKeys,
         avoidedAccountIds: proxyHealthOrder.avoidedAccountIds,
+        halfOpenBucketKeys: proxyHealthOrder.halfOpenBucketKeys,
+        halfOpenAccountIds: proxyHealthOrder.halfOpenAccountIds,
         bypassedAllAvoided: proxyHealthOrder.bypassedAllAvoided
       }
     })

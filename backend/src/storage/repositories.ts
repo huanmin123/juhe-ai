@@ -840,7 +840,7 @@ function initialCooldownUntilForStatus(status: AccountStatus, nowMs = Date.now()
 }
 
 function cooldownRetestObservationStartedAtForStatus(status: AccountStatus, nowMs = Date.now()): string | undefined {
-  return status === 'temporary_unavailable' ? new Date(nowMs).toISOString() : undefined
+  return isCoolingAccountStatus(status) ? new Date(nowMs).toISOString() : undefined
 }
 
 function refreshGroupAccountStatsAfterWrite(input: {
@@ -1091,7 +1091,7 @@ function buildAccountOptionFilters(
   }
   const statuses = accountStatusFilterValues(options.status)
   const authorizedLocalStatusExpression = `CASE
-    WHEN option_group_bindings.local_status = 'temporary_unavailable'
+    WHEN option_group_bindings.local_status IN ('temporary_unavailable', 'rate_limited')
       AND option_group_bindings.local_cooldown_until IS NOT NULL
       AND option_group_bindings.local_cooldown_until <= ${currentIsoSql}
     THEN 'active'
@@ -1515,7 +1515,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       FROM accounts
       WHERE provider_code = 'openai'
         AND type IN ('api_key', 'oauth')
-        AND status = 'temporary_unavailable'
+        AND status IN ('temporary_unavailable', 'rate_limited')
         AND schedulable = 1
         AND cooldown_until IS NOT NULL
         AND cooldown_until <= ?
@@ -2428,14 +2428,14 @@ export interface CooldownAccountRetestFailureInput {
 }
 
 export interface CooldownAccountRetestFailureResult {
-  action: 'retry_immediately' | 'cooldown' | 'error' | 'discard'
+  action: 'retry_immediately' | 'cooldown' | 'discard'
   changed: boolean
   failureCount: number
   account?: AccountSummary
   cooldownUntil?: string
   backoffSeconds?: number
   backoffMinutes?: number
-  recoveryStage?: 'fast' | 'slow' | 'error'
+  recoveryStage?: 'fast' | 'slow'
   fastThresholdSeconds?: number
   maxPauseSeconds?: number
   maxRecoverySeconds?: number
@@ -2450,7 +2450,7 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
   const current = findAccountSummary(id)
   const errorCode = normalizedCooldownRetestErrorCode(input)
   const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
-  if (!current || current.status !== 'temporary_unavailable') {
+  if (!current || !isCoolingAccountStatus(current.status)) {
     return {
       action: 'discard',
       changed: false,
@@ -2467,51 +2467,6 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
   const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
   const observationStartedAt = current.cooldownRetestObservationStartedAt ?? now
   const recovery = cooldownRetestRecoveryPlan(failureCount, input, nowDate, observationStartedAt)
-  if (recovery.shouldMarkError) {
-    const finalMessage = cooldownRetestExhaustedMessage(failureCount, recovery.backoffSeconds, recovery.maxRecoverySeconds, recovery.observationElapsedSeconds, testErrorMessage)
-    const result = getDatabase()
-      .prepare(`
-        UPDATE accounts
-        SET status = 'error',
-            schedulable = 0,
-            cooldown_until = NULL,
-            last_error_code = ?,
-            last_error_message = ?,
-            cooldown_retest_failure_count = ?,
-            cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
-            cooldown_retest_last_at = ?,
-            cooldown_retest_last_status_code = ?,
-            stream_failure_count = 0,
-            stream_failure_window_started_at = NULL,
-            updated_at = ?
-        WHERE id = ?
-          AND status = 'temporary_unavailable'
-      `)
-      .run(errorCode, finalMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id)
-    const changed = Number(result.changes ?? 0) > 0
-    if (changed) {
-      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_exhausted' })
-      invalidateAccountLookupCache(id)
-      invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_exhausted')
-    }
-    return {
-      action: 'error',
-      changed,
-      failureCount,
-      account: failureAccountSummary(id, current),
-      errorCode,
-      errorMessage: finalMessage,
-      recoveryStage: 'error',
-      backoffSeconds: recovery.backoffSeconds,
-      backoffMinutes: secondsToCeilMinutes(recovery.backoffSeconds),
-      fastThresholdSeconds: recovery.fastThresholdSeconds,
-      maxPauseSeconds: recovery.maxPauseSeconds,
-      maxRecoverySeconds: recovery.maxRecoverySeconds,
-      maxedFailureCount: recovery.maxedFailureCount,
-      observationStartedAt: recovery.observationStartedAt,
-      observationElapsedSeconds: recovery.observationElapsedSeconds
-    }
-  }
 
   const cooldownUntil = new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
   const cooldownMessage = cooldownRetestCooldownMessage(failureCount, recovery.backoffSeconds, recovery.stage, testErrorMessage)
@@ -2530,9 +2485,9 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
           stream_failure_window_started_at = NULL,
           updated_at = ?
       WHERE id = ?
-        AND status = 'temporary_unavailable'
+        AND status = ?
     `)
-    .run(cooldownUntil, errorCode, cooldownMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id)
+    .run(cooldownUntil, errorCode, cooldownMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id, current.status)
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_backoff' })
@@ -2588,7 +2543,6 @@ function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailur
 
 interface CooldownRetestRecoveryPlan {
   stage: 'fast' | 'slow'
-  shouldMarkError: boolean
   backoffSeconds: number
   fastThresholdSeconds: number
   maxPauseSeconds: number
@@ -2613,7 +2567,6 @@ function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccount
   const observationElapsedSeconds = cooldownRetestObservationElapsedSeconds(observationStartedAt, nowDate)
   return {
     stage,
-    shouldMarkError: stage === 'slow' && observationElapsedSeconds >= maxRecoverySeconds,
     backoffSeconds,
     fastThresholdSeconds,
     maxPauseSeconds,
@@ -2643,10 +2596,6 @@ function firstCappedBackoffFailureCount(initialBackoffSeconds: number, multiplie
 function cooldownRetestCooldownMessage(failureCount: number, backoffSeconds: number, stage: 'fast' | 'slow', lastError: string): string {
   const stageText = stage === 'fast' ? '快速恢复通道' : '慢速恢复通道'
   return `后台冷却复测连续失败 ${failureCount} 次，${stageText}下次复测延后 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
-}
-
-function cooldownRetestExhaustedMessage(failureCount: number, backoffSeconds: number, maxRecoverySeconds: number, observationElapsedSeconds: number, lastError: string): string {
-  return `后台冷却复测连续失败 ${failureCount} 次，已观察 ${formatDurationSeconds(observationElapsedSeconds)}，超过最长自动恢复观察 ${formatDurationSeconds(maxRecoverySeconds)}，转为异常；最后一次退避 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
 }
 
 function secondsToCeilMinutes(seconds: number): number {

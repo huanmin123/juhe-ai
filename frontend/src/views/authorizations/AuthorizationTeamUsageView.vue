@@ -24,6 +24,22 @@
             @open-change="handleDateRangeOpenChange"
           />
           <SystemPrincipalSelect
+            v-if="isManagementView"
+            v-model:value="filters.resourceOwnerSystemAccountId"
+            v-model:selected-principal="filters.resourceOwnerSystemAccount"
+            :accounts="resourceOwners"
+            :active-only="false"
+            :filter-option="false"
+            :loading="resourceOwnerOptionsLoading"
+            include-all
+            all-label="全部资源归属用户"
+            class="authorization-usage-select responsive-list-inline-filter"
+            placeholder="筛选资源归属用户"
+            @change="handleResourceOwnerChange"
+            @dropdown-visible-change="handleResourceOwnerOptionsDropdown"
+            @search="handleResourceOwnerOptionsSearch"
+          />
+          <SystemPrincipalSelect
             v-model:value="filters.teamId"
             v-model:selected-principal="filters.team"
             :teams="teams"
@@ -44,33 +60,18 @@
             <a-form-item label="授权内容">
               <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
             </a-form-item>
-            <a-form-item v-if="isManagementView" label="资源归属用户">
-              <SystemPrincipalSelect
-                v-model:value="filters.resourceOwnerSystemAccountId"
-                v-model:selected-principal="filters.resourceOwnerSystemAccount"
-                :accounts="resourceOwners"
-                :active-only="false"
-                :filter-option="false"
-                :loading="resourceOwnerOptionsLoading"
-                include-all
-                all-label="全部资源归属用户"
-                placeholder="筛选资源归属用户"
-                @change="handleResourceOwnerChange"
-                @dropdown-visible-change="handleResourceOwnerOptionsDropdown"
-                @search="handleResourceOwnerOptionsSearch"
-              />
-            </a-form-item>
             <a-form-item label="授权资源">
               <GroupSelect
                 v-if="filters.resourceType === 'group'"
                 v-model:value="filters.resourceId"
                 v-model:selected-group="filters.resourceGroup"
                 allow-clear
+                :disabled="resourceGroupDisabled"
                 option-filter-prop="label"
                 :options="resourceOptions"
                 :filter-option="false"
                 :loading="resourceOptionsLoading"
-                placeholder="筛选授权资源"
+                :placeholder="resourceGroupDisabled ? '请先选择资源归属用户' : '筛选授权资源'"
                 @change="handleResourceChange"
                 @dropdown-visible-change="handleResourceOptionsDropdown"
                 @search="handleResourceOptionsSearch"
@@ -153,11 +154,12 @@
               v-model:value="filters.resourceId"
               v-model:selected-group="filters.resourceGroup"
               allow-clear
+              :disabled="resourceGroupDisabled"
               option-filter-prop="label"
               :options="resourceOptions"
               :filter-option="false"
               :loading="resourceOptionsLoading"
-              placeholder="筛选授权资源"
+              :placeholder="resourceGroupDisabled ? '请先选择资源归属用户' : '筛选授权资源'"
               @change="handleResourceChange"
               @dropdown-visible-change="handleResourceOptionsDropdown"
               @search="handleResourceOptionsSearch"
@@ -326,6 +328,7 @@ const filters = reactive<TeamUsageFilters>(defaultFilters())
 const {
   isManagementView,
   selectedResourceOwnerSystemAccountId,
+  resourceGroupDisabled,
   resourceOptions,
   resourceOptionsLoading,
   handleResourceOptionsDropdown,
@@ -414,15 +417,14 @@ const activeFilterCount = computed(() => {
   if (filters.teamId) count += 1
   if (selectedResourceOwnerSystemAccountId.value) count += 1
   if (filters.resourceType !== 'all') count += 1
-  if (filters.resourceId) count += 1
+  if (!resourceGroupDisabled.value && filters.resourceId) count += 1
   if (dateRangeExplicit.value) count += 1
   return count
 })
 const advancedFilterCount = computed(() => {
   let count = 0
-  if (selectedResourceOwnerSystemAccountId.value) count += 1
   if (filters.resourceType !== 'all') count += 1
-  if (filters.resourceId) count += 1
+  if (!resourceGroupDisabled.value && filters.resourceId) count += 1
   return count
 })
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
@@ -477,7 +479,7 @@ async function fetchTeamUsagePage(loadPageOptions: ResponsivePagedListLoadOption
   const params = {
     systemAccountId: ownerSystemAccountId,
     resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
-    resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
+    resourceId: filters.resourceType === 'all' || resourceGroupDisabled.value ? undefined : filters.resourceId,
     teamId: filters.teamId,
     page: pageState.current,
     pageSize: pageState.pageSize,

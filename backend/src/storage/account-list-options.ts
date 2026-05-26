@@ -59,7 +59,7 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
         WHEN account_rows.status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
         WHEN account_rows.schedulable <> 1 THEN 'disabled'
         WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'temporary_unavailable'
-        WHEN group_bindings.local_status = 'temporary_unavailable'
+        WHEN group_bindings.local_status IN ('temporary_unavailable', 'rate_limited')
           AND group_bindings.local_cooldown_until IS NOT NULL
           AND group_bindings.local_cooldown_until <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         THEN 'active'

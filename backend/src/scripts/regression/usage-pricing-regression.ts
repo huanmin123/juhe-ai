@@ -487,11 +487,11 @@ assert.match(gatewayFailureDispatchSource, /usageContext\.trafficSource === 'gat
 
 const repositoriesSource = readSource('storage/repositories.ts')
 const cooldownRetestRepositorySource = sourceFunctionBlock(repositoriesSource, 'export function listAccountsDueForCooldownRetest')
-assert.match(cooldownRetestRepositorySource, /status = 'temporary_unavailable'/)
-assert.doesNotMatch(cooldownRetestRepositorySource, /rate_limited/)
+assert.match(cooldownRetestRepositorySource, /status IN \('temporary_unavailable', 'rate_limited'\)/)
+assert.match(cooldownRetestRepositorySource, /rate_limited/)
 assert.match(repositoriesSource, /recordCooldownAccountRetestFailure/)
 assert.match(repositoriesSource, /cooldownRetestObservationElapsedSeconds/)
-assert.match(repositoriesSource, /observationElapsedSeconds >= maxRecoverySeconds/)
+assert.doesNotMatch(repositoriesSource, /SET status = 'error'[\s\S]+account_cooldown_retest_exhausted/)
 
 const accountQualityRepositorySource = readSource('storage/account-quality.repository.ts')
 assert.doesNotMatch(accountQualityRepositorySource, /recordAccountQualityProbe/)

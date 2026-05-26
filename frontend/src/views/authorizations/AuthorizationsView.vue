@@ -7,7 +7,11 @@
       :source-options="sourceOptions"
       :resource-type-options="resourceTypeOptions"
       :resource-options="resourceOptions"
+      :resource-disabled="filterResourceDisabled"
       :resource-loading="filterResourceOptionsLoading"
+      :resource-placeholder="filterResourcePlaceholder"
+      :owner-users="filterOwnerUsers"
+      :owner-loading="filterOwnerUsersLoading"
       :teams="teams"
       :team-loading="filterTeamOptionsLoading"
       :users="users"
@@ -19,6 +23,9 @@
       @refresh="refreshData"
       @help="helpOpen = true"
       @create="openCreateModal"
+      @owner-change="handleFilterOwnerChange"
+      @owner-dropdown="handleFilterOwnerDropdown"
+      @owner-search="handleFilterOwnerSearch"
       @resource-type-change="handleResourceTypeChange"
       @resource-dropdown="handleFilterResourceDropdown"
       @resource-search="handleFilterResourceSearch"
@@ -113,6 +120,7 @@ import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
@@ -123,6 +131,7 @@ import { mergeSelectedGroupOptions, rememberGroupLabels, type GroupSelection } f
 import { rememberPrincipalSelection, systemAccountPrincipalName, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
 import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
@@ -208,6 +217,8 @@ type AuthorizationFilters = {
   direction: AuthorizationDirectionFilter
   sourceType: AuthorizationSourceFilter
   resourceType: AuthorizationFilterResourceType
+  resourceOwnerSystemAccountId: string
+  resourceOwnerSystemAccount?: PrincipalSelection
   resourceId?: string
   resourceAccount?: AccountSelection
   resourceGroup?: GroupSelection
@@ -225,6 +236,8 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
     direction: 'outbound',
     sourceType: 'all',
     resourceType: 'all',
+    resourceOwnerSystemAccountId: allSystemAccountsValue,
+    resourceOwnerSystemAccount: undefined,
     resourceId: undefined,
     resourceAccount: undefined,
     resourceGroup: undefined,
@@ -262,6 +275,19 @@ const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, def
 const initialPageState = pageStateCache.read()
 
 const filters = reactive<AuthorizationFilters>({ ...initialPageState.filters })
+const selectedFilterOwnerSystemAccountId = computed(() => {
+  return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
+})
+const {
+  handleDropdown: handleFilterOwnerDropdown,
+  handleSearch: handleFilterOwnerSearch,
+  loading: filterOwnerUsersLoading,
+  resetSearch: resetFilterOwnerSearch,
+  systemAccounts: filterOwnerUsers
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [filters.resourceOwnerSystemAccountId]
+})
 const {
   items: authorizations,
   loading,
@@ -322,10 +348,20 @@ const resourceOptions = computed(() => {
   if (filters.resourceType === 'all') {
     return []
   }
+  if (filterResourceDisabled.value) {
+    return []
+  }
   if (filters.resourceType === 'account') {
     return accounts.value.map((account) => ({ label: account.name, value: account.id }))
   }
   return mergeSelectedGroupOptions(groups.value.map((group) => ({ label: group.name, value: group.id })), [filters.resourceId], [filters.resourceGroup])
+})
+const filterResourceDisabled = computed(() => {
+  return isManagementView.value && filters.resourceType === 'group' && !selectedFilterOwnerSystemAccountId.value
+})
+const filterResourcePlaceholder = computed(() => {
+  if (filterResourceDisabled.value) return '请先选择资源归属用户'
+  return filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'
 })
 
 const createResourceOptions = computed(() => {
@@ -364,8 +400,9 @@ const createTargetGroupTip = computed(() => createTargetGroups.value.length
 const activeFilterCount = computed(() => {
   let count = 0
   if (!isManagementView.value && filters.sourceType !== 'all') count += 1
+  if (isManagementView.value && filters.resourceOwnerSystemAccountId !== allSystemAccountsValue) count += 1
   if (filters.resourceType !== 'all') count += 1
-  if (filters.resourceId) count += 1
+  if (!filterResourceDisabled.value && filters.resourceId) count += 1
   if (isManagementView.value && filters.teamId) count += 1
   if (isManagementView.value && filters.granteeSystemAccountId) count += 1
   return count
@@ -373,9 +410,7 @@ const activeFilterCount = computed(() => {
 const advancedFilterCount = computed(() => {
   if (!isManagementView.value) return 0
   let count = 0
-  if (filters.resourceId) count += 1
-  if (filters.teamId) count += 1
-  if (filters.granteeSystemAccountId) count += 1
+  if (!filterResourceDisabled.value && filters.resourceId) count += 1
   return count
 })
 const authorizationEmptyDescription = computed(() => {
@@ -388,7 +423,7 @@ const authorizationEmptyDescription = computed(() => {
   return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无我授权出去的记录，可新增授权给其他用户或团队。'
 })
 const authorizationScopeParams = computed(() => {
-  const systemAccountId = scopedSystemAccountId()
+  const systemAccountId = selectedFilterOwnerSystemAccountId.value
   return systemAccountId ? { systemAccountId } : undefined
 })
 const createOwnedAccounts = computed(() => createAccounts.value.filter((account) => account.permissions?.canAuthorize !== false))
@@ -486,7 +521,7 @@ function authorizationActionCount(authorization: ResourceAuthorizationSummary): 
 function authorizationListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
   return {
     resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
-    resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
+    resourceId: filters.resourceType === 'all' || filterResourceDisabled.value ? undefined : filters.resourceId,
     teamId: isManagementView.value ? filters.teamId : undefined,
     granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
     direction: isManagementView.value ? undefined : filters.direction,
@@ -609,10 +644,30 @@ function handleFilterUserDropdown(open: boolean) {
   }
 }
 
-function handleResourceTypeChange() {
+function resetFilterResource() {
   filters.resourceId = undefined
   filters.resourceAccount = undefined
   filters.resourceGroup = undefined
+}
+
+function handleFilterOwnerChange() {
+  if (filters.resourceOwnerSystemAccountId === allSystemAccountsValue) {
+    filters.resourceOwnerSystemAccount = undefined
+  }
+  resetFilterOwnerSearch()
+  if (filters.resourceType === 'group') {
+    resetFilterResource()
+  }
+  filterResourceSearchKeyword.value = ''
+  clearFilterResourceSearchTimer()
+  accounts.value = []
+  groups.value = []
+  void loadFilterResourceOptions()
+  refreshData()
+}
+
+function handleResourceTypeChange() {
+  resetFilterResource()
   filterResourceSearchKeyword.value = ''
   clearFilterResourceSearchTimer()
   void loadFilterResourceOptions()
@@ -842,8 +897,16 @@ async function loadFilterResourceOptions(keyword?: string): Promise<void> {
     groups.value = []
     return
   }
+  if (filterResourceDisabled.value) {
+    filterResourceRequestId += 1
+    filterResourceOptionsLoading.value = false
+    accounts.value = []
+    groups.value = []
+    resetFilterResource()
+    return
+  }
   const requestKeyword = normalizeSearchKeyword(keyword)
-  const systemAccountId = scopedSystemAccountId()
+  const systemAccountId = selectedFilterOwnerSystemAccountId.value
   const requestKey = JSON.stringify(['filter-resource', filters.resourceType, systemAccountId ?? '', requestKeyword ?? '', filters.resourceId ?? ''])
   if (filters.resourceType === 'account') {
     const cachedAccounts = authorizationAccountOptionCache.get(requestKey)
@@ -1197,6 +1260,7 @@ function selectedUserFromOptions(id: string | undefined, nextUsers: SystemAccoun
 }
 
 function resetFilterOptionSearchState() {
+  resetFilterOwnerSearch()
   filterResourceSearchKeyword.value = ''
   filterTeamSearchKeyword.value = ''
   filterUserSearchKeyword.value = ''
@@ -1492,11 +1556,14 @@ function applyRouteFilters() {
   const hasRouteFilters = [
     route.query.resourceType,
     route.query.resourceId,
+    route.query.resourceOwnerSystemAccountId,
     route.query.teamId,
     route.query.granteeSystemAccountId
   ].some((value) => value !== undefined)
   if (!hasRouteFilters) return
   filters.resourceType = 'all'
+  filters.resourceOwnerSystemAccountId = allSystemAccountsValue
+  filters.resourceOwnerSystemAccount = undefined
   filters.resourceId = undefined
   filters.resourceGroup = undefined
   filters.teamId = undefined
@@ -1505,6 +1572,7 @@ function applyRouteFilters() {
   filters.granteeSystemAccount = undefined
   const resourceType = route.query.resourceType === 'group' ? 'group' : route.query.resourceType === 'account' ? 'account' : undefined
   const resourceId = typeof route.query.resourceId === 'string' ? route.query.resourceId : undefined
+  const resourceOwnerSystemAccountId = typeof route.query.resourceOwnerSystemAccountId === 'string' ? route.query.resourceOwnerSystemAccountId : undefined
   const teamId = typeof route.query.teamId === 'string' ? route.query.teamId : undefined
   const granteeSystemAccountId = typeof route.query.granteeSystemAccountId === 'string' ? route.query.granteeSystemAccountId : undefined
   if (resourceType) {
@@ -1513,6 +1581,9 @@ function applyRouteFilters() {
   }
   if (resourceId) {
     filters.resourceId = resourceId
+  }
+  if (resourceOwnerSystemAccountId) {
+    filters.resourceOwnerSystemAccountId = resourceOwnerSystemAccountId
   }
   if (teamId) {
     filters.teamId = teamId
@@ -1530,7 +1601,14 @@ function snapshotPageState(): AuthorizationsPageState {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(filterResourceDisabled, (disabled) => {
+  if (!disabled) return
+  resetFilterResource()
+  accounts.value = []
+  groups.value = []
+}, { immediate: true })
 watch(() => filters.resourceAccount, (selection) => rememberAccountSelection(selection), { deep: true, immediate: true })
+watch(() => filters.resourceOwnerSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(() => filters.team, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(() => filters.granteeSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 

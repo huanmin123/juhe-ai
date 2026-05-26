@@ -18,6 +18,7 @@ runtimeConfig.secret = 'audit-log-retention-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.audit.fullBodyCaptureEnabled = false
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -35,8 +36,20 @@ const repeatedBody = JSON.stringify({
   error: 'rate limited',
   detail: 'x'.repeat(8192)
 })
+const largeFailedRequestBody = Buffer.from(JSON.stringify({
+  model: 'gpt-5.4-mini',
+  input: 'failed-payload-prefix-' + 'x'.repeat(2 * 1024 * 1024 + 128 * 1024),
+  metadata: { regressionCase: 'large_failed_payload_summary' }
+}), 'utf8')
+const largeSuccessRequestBody = Buffer.from(JSON.stringify({
+  model: 'gpt-5.4-mini',
+  input: 'success-payload-prefix-' + 'y'.repeat(600 * 1024),
+  metadata: { regressionCase: 'large_success_payload_summary' }
+}), 'utf8')
 
 try {
+  assert.equal(runtimeConfig.audit.fullBodyCaptureEnabled, false, '回归默认应关闭全量捕获开关，超限 body 走摘要保全')
+
   const unsampledTraceId = traceIdForBucket((bucket) => bucket >= 1000)
   const sampledTraceId = traceIdForBucket((bucket) => bucket < 1000)
   finalizeSuccessfulRequest(unsampledTraceId)
@@ -130,9 +143,11 @@ try {
   auditQueue.flushAllAuditLogQueue()
   const overflowEvents = repositories.listAuditLogs({ traceId: overflowTraceId })
   assert.equal(overflowEvents.total, 1, 'active capture 超限时应保留失败事件')
-  assert.equal(overflowEvents.items[0]?.captureStatus, 'overflow', 'active capture 超限事件应标记为 overflow')
-  assert.equal(overflowEvents.items[0]?.payloadCount, 0, 'active capture 超限事件不应伪装成完整原文')
-  assert.equal(repositories.getAuditLogDetail(overflowEvents.items[0]?.id ?? '')?.payloads.length, 0, 'active capture 超限时不应短暂保留大 payload')
+  assert.equal(overflowEvents.items[0]?.captureStatus, 'complete', '超大失败 body 摘要化后事件主状态应保持完整')
+  assert(overflowEvents.items[0]?.payloadCount > 0, '超大失败 body 应保留摘要 payload')
+  const overflowDetail = repositories.getAuditLogDetail(overflowEvents.items[0]?.id ?? '')
+  const overflowClientPayload = overflowDetail?.payloads.find((payload) => payload.partType === 'client_request')
+  assert.equal(overflowClientPayload?.captureStatus, 'summary_only', '超大失败 body 不应保留完整原文，应保留摘要')
 
   auditQueue.recordDroppedAuditCapture({
     traceId: 'trace-body-rejected-retained',
@@ -151,6 +166,76 @@ try {
   const rejectedEvents = repositories.listAuditLogs({ traceId: 'trace-body-rejected-retained' })
   assert.equal(rejectedEvents.total, 1, '请求体被网关拒绝时也应保留失败事件')
   assert.equal(rejectedEvents.items[0]?.captureStatus, 'overflow', '请求体被网关拒绝时应标记为 overflow')
+
+  const largeFailedTraceId = 'trace-large-failed-payload-summary'
+  finalizeFailedRequestWithBody(largeFailedTraceId, largeFailedRequestBody)
+  auditQueue.flushAllAuditLogQueue()
+  const largeFailedEvents = repositories.listAuditLogs({ traceId: largeFailedTraceId })
+  assert.equal(largeFailedEvents.total, 1, '失败大请求应保留审计事件')
+  const largeFailedEvent = largeFailedEvents.items[0]
+  assert(largeFailedEvent.rawPayloadBytes > largeFailedRequestBody.byteLength, '失败大请求报表原始字节应按原始 body 计入')
+  assert(largeFailedEvent.compressedPayloadBytes < largeFailedEvent.rawPayloadBytes, '失败大请求报表落盘字节应小于原始逻辑字节')
+  assertAuditPayloadByteColumns(largeFailedEvent.id, {
+    compressedLessThanRaw: true,
+    rawGreaterThan: largeFailedRequestBody.byteLength
+  })
+  const largeFailedDetail = repositories.getAuditLogDetail(largeFailedEvent.id)
+  const largeFailedClientPayload = largeFailedDetail?.payloads.find((payload) => payload.partType === 'client_request')
+  assert(largeFailedClientPayload, '失败大请求应保留客户端请求 payload 摘要')
+  assert.equal(largeFailedClientPayload.captureStatus, 'summary_only', '超过 2MB 的失败请求 body 应转为摘要保全')
+  assert.equal(largeFailedClientPayload.bodySha256, sha256Buffer(largeFailedRequestBody), '摘要 payload 的 bodySha256 应指向原始 body')
+  assert(largeFailedClientPayload.sizeBytes > largeFailedRequestBody.byteLength, 'payload 原始大小应按原始 body 加 headers 计入')
+  const largeFailedPayloadDetail = await repositories.getAuditLogPayload(largeFailedEvent.id, largeFailedClientPayload.id, { limit: 1024 * 1024 })
+  const largeFailedSummary = JSON.parse(largeFailedPayloadDetail?.bodyText ?? '{}') as Record<string, unknown>
+  assert.equal(largeFailedSummary.type, 'audit_payload_summary', '失败大请求读取正文应返回摘要 JSON')
+  assert.equal(largeFailedSummary.originalSha256, sha256Buffer(largeFailedRequestBody), '摘要 JSON 应记录原始 body hash')
+  assert.equal(largeFailedSummary.originalSizeBytes, largeFailedRequestBody.byteLength, '摘要 JSON 应记录原始 body 大小')
+  assert(typeof largeFailedSummary.headBase64 === 'string' && largeFailedSummary.headBase64.length > 0, '摘要 JSON 应保留头部窗口')
+  assert(typeof largeFailedSummary.tailBase64 === 'string' && largeFailedSummary.tailBase64.length > 0, '摘要 JSON 应保留尾部窗口')
+  assert((largeFailedPayloadDetail?.bodyTotalBytes ?? 0) < largeFailedRequestBody.byteLength, '摘要 blob 不应保存完整失败大 body')
+  assert(JSON.stringify(largeFailedSummary.json ?? {}).includes('model'), '摘要 JSON 应包含 JSON 结构信息')
+
+  const largeSuccessTraceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-large-success-summary')
+  finalizeSuccessfulRequestWithBody(largeSuccessTraceId, largeSuccessRequestBody)
+  auditQueue.flushAllAuditLogQueue()
+  const largeSuccessEvents = repositories.listAuditLogs({ traceId: largeSuccessTraceId })
+  assert.equal(largeSuccessEvents.total, 1, '命中采样的成功大请求应保留审计事件')
+  const largeSuccessDetail = repositories.getAuditLogDetail(largeSuccessEvents.items[0]?.id ?? '')
+  const largeSuccessClientPayload = largeSuccessDetail?.payloads.find((payload) => payload.partType === 'client_request')
+  assert(largeSuccessClientPayload, '成功大请求应保留客户端请求 payload 摘要')
+  assert.equal(largeSuccessClientPayload.captureStatus, 'summary_only', '超过 512KB 的成功样本 body 应转为摘要保全')
+  assert.equal(largeSuccessClientPayload.bodySha256, sha256Buffer(largeSuccessRequestBody), '成功摘要 payload 的 bodySha256 应指向原始 body')
+  assert(largeSuccessClientPayload.sizeBytes > largeSuccessRequestBody.byteLength, '成功摘要 payload 原始大小应按原始 body 加 headers 计入')
+  assertAuditPayloadByteColumns(largeSuccessEvents.items[0]?.id ?? '', {
+    compressedLessThanRaw: true,
+    rawGreaterThan: largeSuccessRequestBody.byteLength
+  })
+
+  const previousFullBodyCaptureEnabled = runtimeConfig.audit.fullBodyCaptureEnabled
+  runtimeConfig.audit.fullBodyCaptureEnabled = true
+  try {
+    const fullBodyCaptureTraceId = 'trace-full-body-capture-large'
+    finalizeFailedRequestWithBody(fullBodyCaptureTraceId, largeFailedRequestBody)
+    auditQueue.flushAllAuditLogQueue()
+    const fullBodyCaptureEvents = repositories.listAuditLogs({ traceId: fullBodyCaptureTraceId })
+    assert.equal(fullBodyCaptureEvents.total, 1, '临时全量捕获开启后仍应保留审计事件')
+    const fullBodyCaptureDetail = repositories.getAuditLogDetail(fullBodyCaptureEvents.items[0]?.id ?? '')
+    const fullBodyClientPayload = fullBodyCaptureDetail?.payloads.find((payload) => payload.partType === 'client_request')
+    assert(fullBodyClientPayload, '临时全量捕获开启后应保留客户端请求 payload')
+    assert.equal(fullBodyClientPayload.captureStatus, 'complete', '临时全量捕获开启后大 body 不应转为摘要')
+    assert.equal(fullBodyClientPayload.bodySha256, sha256Buffer(largeFailedRequestBody), '临时全量捕获开启后 bodySha256 仍应指向原始 body')
+    assert.equal(fullBodyClientPayload.sizeBytes, largeFailedRequestBody.byteLength + headerBytes({ 'content-type': 'application/json' }), '临时全量捕获开启后 payload 原始大小应等于完整 body 加 headers')
+    assert.equal(fullBodyClientPayload.compressedSizeBytes, fullBodyClientPayload.sizeBytes, '临时全量捕获开启后超过压缩窗口的大 body 应按未压缩落盘字节计入')
+    assertAuditPayloadByteColumns(fullBodyCaptureEvents.items[0]?.id ?? '', {
+      compressedEqualsRaw: true,
+      rawGreaterThan: largeFailedRequestBody.byteLength
+    })
+    const fullBodyPayloadDetail = await repositories.getAuditLogPayload(fullBodyCaptureEvents.items[0]?.id ?? '', fullBodyClientPayload.id, { limit: 1024 * 1024 })
+    assert.equal(fullBodyPayloadDetail?.bodyTotalBytes, largeFailedRequestBody.byteLength, '临时全量捕获开启后应保存完整 body 原文大小')
+    assert.equal(fullBodyPayloadDetail?.bodyTruncated, true, '完整大 body 读取接口仍应按窗口返回')
+  } finally {
+    runtimeConfig.audit.fullBodyCaptureEnabled = previousFullBodyCaptureEnabled
+  }
 
   const previousProcessRole = runtimeConfig.processRole
   const pendingWorkerMessagesBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
@@ -350,8 +435,12 @@ function cleanupTemporaryAuditBlobs(): void {
 }
 
 function finalizeSuccessfulRequest(traceId: string): void {
+  finalizeSuccessfulRequestWithBody(traceId, Buffer.from(JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }), 'utf8'))
+}
+
+function finalizeSuccessfulRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>): void {
   const capture = auditCapture.createAuditCapture({
-    req: auditRequest(),
+    req: auditRequest(body),
     traceId,
     clientIp: '127.0.0.1',
     startedAtMs: Date.parse(now)
@@ -362,6 +451,25 @@ function finalizeSuccessfulRequest(traceId: string): void {
     statusCode: 200,
     responseHeaders: { 'content-type': 'application/json' },
     responseBody: JSON.stringify({ ok: true })
+  })
+}
+
+function finalizeFailedRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>): void {
+  const capture = auditCapture.createAuditCapture({
+    req: auditRequest(body),
+    traceId,
+    clientIp: '127.0.0.1',
+    startedAtMs: Date.parse(now)
+  })
+  capture.finalize({
+    outcome: 'gateway_failed',
+    success: false,
+    statusCode: 500,
+    responseHeaders: { 'content-type': 'application/json' },
+    responseBody: JSON.stringify({ error: 'large request failed' }),
+    errorPhase: 'gateway',
+    errorCode: 'large_request_failed',
+    errorMessage: 'large request failed'
   })
 }
 
@@ -448,7 +556,7 @@ function finalizeSensitiveHeaderAudit(traceId: string): void {
 }
 
 function auditRequest(
-  rawBody = Buffer.from(JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }), 'utf8'),
+  rawBody: Buffer<ArrayBufferLike> = Buffer.from(JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }), 'utf8'),
   headerOverrides: Record<string, string> = {},
   originalUrl = '/v1/responses'
 ): Request & { rawBody?: Buffer } {
@@ -466,9 +574,9 @@ function auditRequest(
   } as Request & { rawBody?: Buffer }
 }
 
-function traceIdForBucket(predicate: (bucket: number) => boolean): string {
+function traceIdForBucket(predicate: (bucket: number) => boolean, prefix = 'trace-sampling'): string {
   for (let index = 0; index < 100000; index += 1) {
-    const traceId = `trace-sampling-${index}`
+    const traceId = `${prefix}-${index}`
     if (predicate(sampleBucketForTraceId(traceId))) {
       return traceId
     }
@@ -479,6 +587,62 @@ function traceIdForBucket(predicate: (bucket: number) => boolean): string {
 function sampleBucketForTraceId(traceId: string): number {
   const digest = createHash('sha256').update(traceId).digest()
   return digest.readUInt32BE(0) % 10000
+}
+
+function sha256Buffer(buffer: Buffer<ArrayBufferLike>): string {
+  return createHash('sha256').update(buffer).digest('hex')
+}
+
+function assertAuditPayloadByteColumns(
+  auditLogId: string,
+  options: { compressedLessThanRaw?: boolean; compressedEqualsRaw?: boolean; rawGreaterThan?: number } = {}
+): void {
+  const database = databaseModule.getDatasetDatabase()
+  const logRow = database
+    .prepare('SELECT payload_bytes, raw_payload_bytes, compressed_payload_bytes, compression_saved_bytes FROM audit_logs WHERE id = ?')
+    .get(auditLogId) as {
+      payload_bytes: number
+      raw_payload_bytes: number
+      compressed_payload_bytes: number
+      compression_saved_bytes: number
+    } | undefined
+  assert(logRow, '审计主记录应存在以校验 payload 字节口径')
+  const refRow = database
+    .prepare('SELECT COALESCE(SUM(raw_size_bytes), 0) AS raw_size_bytes, COALESCE(SUM(compressed_size_bytes), 0) AS compressed_size_bytes FROM audit_payload_refs WHERE audit_log_id = ?')
+    .get(auditLogId) as { raw_size_bytes: number; compressed_size_bytes: number }
+  const rawPayloadBytes = Number(logRow.raw_payload_bytes)
+  const compressedPayloadBytes = Number(logRow.compressed_payload_bytes)
+  assert.equal(rawPayloadBytes, Number(refRow.raw_size_bytes), 'raw_payload_bytes 应等于 payload refs 的原始逻辑字节汇总')
+  assert.equal(compressedPayloadBytes, Number(refRow.compressed_size_bytes), 'compressed_payload_bytes 应等于 payload refs 的落盘压缩字节汇总')
+  assert.equal(Number(logRow.payload_bytes), rawPayloadBytes, '兼容字段 payload_bytes 应继续跟随原始逻辑字节口径')
+  assert.equal(Number(logRow.compression_saved_bytes), Math.max(0, rawPayloadBytes - compressedPayloadBytes), 'compression_saved_bytes 应由两个独立口径计算')
+  if (options.rawGreaterThan !== undefined) {
+    assert(rawPayloadBytes > options.rawGreaterThan, 'raw_payload_bytes 应包含原始 body 字节和 headers 字节')
+  }
+  if (options.compressedLessThanRaw) {
+    assert(compressedPayloadBytes < rawPayloadBytes, '摘要/压缩场景 compressed_payload_bytes 应小于 raw_payload_bytes')
+  }
+  if (options.compressedEqualsRaw) {
+    assert.equal(compressedPayloadBytes, rawPayloadBytes, '全量未压缩场景 compressed_payload_bytes 应等于 raw_payload_bytes')
+  }
+}
+
+function headerBytes(headers: Record<string, string | string[]>): number {
+  return Buffer.byteLength(stableJsonStringify(headers), 'utf8')
+}
+
+function stableJsonStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJsonStringify).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    const object = value as Record<string, unknown>
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(object[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
 }
 
 function auditLog(id: string, traceId: string, body: string): AuditLogInput {

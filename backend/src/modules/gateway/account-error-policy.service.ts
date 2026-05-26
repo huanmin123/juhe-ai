@@ -90,7 +90,7 @@ export function applyAccountErrorHandling(
   }
 
   if (input.success) {
-    if (account.status === 'rate_limited' && input.trafficSource !== 'manual_account_test') {
+    if (account.status === 'rate_limited' && input.trafficSource === 'gateway') {
       return { action: 'none', changed: false, accountStatus: account.status }
     }
     const shouldClear = (account.status !== undefined && account.status !== 'active')

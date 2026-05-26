@@ -1,9 +1,11 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import type { DbServiceOperation } from '../db-service/db-service-types.js'
+import type { AccountRuntimeAvailability, DbServiceOperation } from '../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
+import type { OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { AccountSummary } from '../../domain/types.js'
 
 type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
 type StreamFailureOperation = Extract<DbServiceOperation, { type: 'record_account_stream_failure' }>
@@ -20,6 +22,12 @@ interface QueuedAccountSideEffect {
 interface LocalAccountSuppression {
   untilMs: number
   reason: string
+  sinceMs: number
+  status: AccountRuntimeAvailability['status']
+  failureCount?: number
+  distinctClientIpCount?: number
+  distinctApiKeyCount?: number
+  precheckAttemptCount?: number
 }
 
 type SuppressibleGatewayAccount = {
@@ -29,6 +37,39 @@ type SuppressibleGatewayAccount = {
   groupOwnerSystemAccountId?: string
   boundGroupId?: string
   accountAuthorizationId?: string
+}
+
+interface GatewayAccountFailurePrecheckInput {
+  systemAccountId: string
+  groupId: string
+  apiKeyId?: string
+  clientIp?: string
+  endpoint?: string
+  reason: string
+  statusCode?: number
+}
+
+interface FailureStormEntry {
+  firstSeenMs: number
+  lastSeenMs: number
+  failureCount: number
+  clientIps: Set<string>
+  apiKeyIds: Set<string>
+}
+
+interface PrecheckState {
+  account: OpenAIAccountSecret
+  settings?: GatewaySettings
+  systemAccountId: string
+  groupId: string
+  startedAtMs: number
+  lastAttemptAtMs?: number
+  attemptCount: number
+  failureCount: number
+  reason: string
+  distinctClientIpCount: number
+  distinctApiKeyCount: number
+  running: boolean
 }
 
 export interface LocalAccountSuppressionFilterResult<T> {
@@ -63,15 +104,25 @@ export interface GatewayAccountSideEffectState {
   droppedCount: number
   expiredCount: number
   localSuppressedAccountCount: number
+  precheckPendingAccountCount: number
   nextAttemptAt?: string
 }
 
 const sideEffectRetentionMs = 10 * 60_000
 const localSuppressionMaxMs = 10 * 60_000
+const failureStormWindowMs = 10_000
+const failureStormThresholdCount = 5
+const failureStormDistinctIpThreshold = 2
+const precheckMinIntervalMs = 60_000
+const precheckMaxAttempts = 2
+const precheckAttemptTimeoutMs = 45_000
+const precheckRetryDelayMs = 5_000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 
 const sideEffectQueue: QueuedAccountSideEffect[] = []
 const localAccountSuppressions = new Map<string, LocalAccountSuppression>()
+const failureStorms = new Map<string, FailureStormEntry>()
+const precheckStates = new Map<string, PrecheckState>()
 let processingSideEffects = false
 let drainTimer: NodeJS.Timeout | undefined
 let drainTimerDueAtMs: number | undefined
@@ -100,7 +151,136 @@ export function suppressGatewayAccountLocally(
   settings: GatewaySettings | undefined,
   reason = '上游账号请求失败'
 ): void {
-  suppressLocalAccount(gatewayAccountRuntimeKey(account), localSuppressionMs(settings), reason)
+  suppressLocalAccount(gatewayAccountRuntimeKey(account), localSuppressionMs(settings), reason, 'local_suppressed')
+}
+
+export function recordGatewayAccountFailureForPrecheck(
+  account: OpenAIAccountSecret,
+  settings: GatewaySettings | undefined,
+  input: GatewayAccountFailurePrecheckInput
+): void {
+  recordGatewayAccountFailureForPrecheckInternal(account, settings, input, true)
+}
+
+export function recordGatewayAccountFailureForPrecheckForTest(
+  account: OpenAIAccountSecret,
+  settings: GatewaySettings | undefined,
+  input: GatewayAccountFailurePrecheckInput
+): void {
+  recordGatewayAccountFailureForPrecheckInternal(account, settings, input, false)
+}
+
+function recordGatewayAccountFailureForPrecheckInternal(
+  account: OpenAIAccountSecret,
+  settings: GatewaySettings | undefined,
+  input: GatewayAccountFailurePrecheckInput,
+  runPrecheck: boolean
+): void {
+  cleanupExpiredFailureStorms()
+  cleanupExpiredLocalSuppressions()
+  const runtimeKey = gatewayAccountRuntimeKey(account)
+  const now = Date.now()
+  const current = failureStorms.get(runtimeKey)
+  const entry: FailureStormEntry = current && now - current.firstSeenMs <= failureStormWindowMs
+    ? current
+    : {
+        firstSeenMs: now,
+        lastSeenMs: now,
+        failureCount: 0,
+        clientIps: new Set<string>(),
+        apiKeyIds: new Set<string>()
+      }
+  entry.lastSeenMs = now
+  entry.failureCount += 1
+  if (input.clientIp) entry.clientIps.add(input.clientIp)
+  if (input.apiKeyId) entry.apiKeyIds.add(input.apiKeyId)
+  failureStorms.set(runtimeKey, entry)
+
+  if (entry.failureCount < failureStormThresholdCount || entry.clientIps.size < failureStormDistinctIpThreshold) {
+    return
+  }
+
+  const existingPrecheck = precheckStates.get(runtimeKey)
+  if (existingPrecheck && now - existingPrecheck.startedAtMs < precheckMinIntervalMs) {
+    suppressLocalAccount(runtimeKey, localSuppressionMs(settings), existingPrecheck.reason, 'precheck_pending', {
+      failureCount: entry.failureCount,
+      distinctClientIpCount: entry.clientIps.size,
+      distinctApiKeyCount: entry.apiKeyIds.size,
+      precheckAttemptCount: existingPrecheck.attemptCount
+    })
+    return
+  }
+
+  const reason = `多来源短窗口失败，等待事前确认；${input.reason}`.slice(0, 1000)
+  const state: PrecheckState = {
+    account,
+    settings,
+    systemAccountId: input.systemAccountId,
+    groupId: input.groupId,
+    startedAtMs: now,
+    attemptCount: 0,
+    failureCount: entry.failureCount,
+    reason,
+    distinctClientIpCount: entry.clientIps.size,
+    distinctApiKeyCount: entry.apiKeyIds.size,
+    running: false
+  }
+  precheckStates.set(runtimeKey, state)
+  suppressLocalAccount(runtimeKey, localSuppressionMs(settings), reason, 'precheck_pending', {
+    failureCount: entry.failureCount,
+    distinctClientIpCount: entry.clientIps.size,
+    distinctApiKeyCount: entry.apiKeyIds.size,
+    precheckAttemptCount: 0
+  })
+  logger.warn({
+    event: 'gateway_account_precheck_scheduled',
+    accountId: account.id,
+    accountName: account.name,
+    runtimeKey,
+    failureCount: entry.failureCount,
+    distinctClientIpCount: entry.clientIps.size,
+    distinctApiKeyCount: entry.apiKeyIds.size,
+    systemAccountId: input.systemAccountId,
+    groupId: input.groupId,
+    apiKeyId: input.apiKeyId,
+    endpoint: input.endpoint,
+    statusCode: input.statusCode
+  }, '网关检测到账号多来源短窗口失败，已进入运行态待确认')
+  if (runPrecheck) {
+    void runGatewayAccountPrecheck(runtimeKey)
+  }
+}
+
+export function snapshotGatewayAccountRuntimeAvailability(): Record<string, AccountRuntimeAvailability> {
+  cleanupExpiredLocalSuppressions()
+  cleanupExpiredFailureStorms()
+  const snapshot: Record<string, AccountRuntimeAvailability> = {}
+  for (const [runtimeKey, suppression] of localAccountSuppressions) {
+    snapshot[runtimeKey] = {
+      status: suppression.status,
+      reason: suppression.reason,
+      since: new Date(suppression.sinceMs).toISOString(),
+      until: new Date(suppression.untilMs).toISOString(),
+      failureCount: suppression.failureCount,
+      distinctClientIpCount: suppression.distinctClientIpCount,
+      distinctApiKeyCount: suppression.distinctApiKeyCount,
+      precheckAttemptCount: suppression.precheckAttemptCount
+    }
+  }
+  for (const [runtimeKey, state] of precheckStates) {
+    snapshot[runtimeKey] = {
+      ...snapshot[runtimeKey],
+      status: 'precheck_pending',
+      reason: state.reason,
+      since: new Date(state.startedAtMs).toISOString(),
+      until: snapshot[runtimeKey]?.until,
+      failureCount: state.failureCount,
+      distinctClientIpCount: state.distinctClientIpCount,
+      distinctApiKeyCount: state.distinctApiKeyCount,
+      precheckAttemptCount: state.attemptCount
+    }
+  }
+  return snapshot
 }
 
 export function filterLocallySuppressedGatewayAccounts<T extends SuppressibleGatewayAccount>(
@@ -206,6 +386,7 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     droppedCount,
     expiredCount,
     localSuppressedAccountCount: localAccountSuppressions.size,
+    precheckPendingAccountCount: precheckStates.size,
     nextAttemptAt: nextAttemptAtMs === undefined ? undefined : new Date(nextAttemptAtMs).toISOString()
   }
 }
@@ -220,6 +401,8 @@ export function suppressGatewayAccountLocallyForTest(accountId: string, duration
 
 export function clearGatewayLocalAccountSuppressionsForTest(): void {
   localAccountSuppressions.clear()
+  failureStorms.clear()
+  precheckStates.clear()
 }
 
 export async function flushGatewayAccountSideEffects(): Promise<void> {
@@ -401,17 +584,30 @@ function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string):
   return account.id
 }
 
-function suppressLocalAccount(accountId: string, durationMs: number, reason: string): void {
+function suppressLocalAccount(
+  accountId: string,
+  durationMs: number,
+  reason: string,
+  status: AccountRuntimeAvailability['status'] = 'local_suppressed',
+  metadata: Pick<LocalAccountSuppression, 'failureCount' | 'distinctClientIpCount' | 'distinctApiKeyCount' | 'precheckAttemptCount'> = {}
+): void {
   const untilMs = Date.now() + durationMs
   const current = localAccountSuppressions.get(accountId)
   if (current && current.untilMs >= untilMs) {
+    localAccountSuppressions.set(accountId, {
+      ...current,
+      status,
+      reason,
+      ...metadata
+    })
     return
   }
-  localAccountSuppressions.set(accountId, { untilMs, reason })
+  localAccountSuppressions.set(accountId, { untilMs, reason, sinceMs: current?.sinceMs ?? Date.now(), status, ...metadata })
   logger.warn({
     event: 'gateway_account_local_suppressed',
     accountId,
     until: new Date(untilMs).toISOString(),
+    runtimeStatus: status,
     reason
   }, '网关账号已进入 Web 进程本地短期屏蔽')
 }
@@ -425,6 +621,15 @@ function cleanupExpiredLocalSuppressions(): void {
   for (const [accountId, suppression] of localAccountSuppressions) {
     if (suppression.untilMs <= now) {
       localAccountSuppressions.delete(accountId)
+    }
+  }
+}
+
+function cleanupExpiredFailureStorms(): void {
+  const now = Date.now()
+  for (const [runtimeKey, entry] of failureStorms) {
+    if (now - entry.lastSeenMs > failureStormWindowMs) {
+      failureStorms.delete(runtimeKey)
     }
   }
 }
@@ -447,4 +652,157 @@ function operationAccountId(operation: AccountSideEffectOperation): string {
 
 function delay(ms: number): Promise<void> {
   return waitForRetryDelayMs(ms)
+}
+
+async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
+  const state = precheckStates.get(runtimeKey)
+  if (!state || state.running) {
+    return
+  }
+  state.running = true
+  try {
+    for (let attempt = state.attemptCount; attempt < precheckMaxAttempts; attempt += 1) {
+      const latestState = precheckStates.get(runtimeKey)
+      if (!latestState) {
+        return
+      }
+      latestState.attemptCount = attempt + 1
+      latestState.lastAttemptAtMs = Date.now()
+      suppressLocalAccount(runtimeKey, localSuppressionMs(latestState.settings), latestState.reason, 'precheck_pending', {
+        failureCount: latestState.failureCount,
+        distinctClientIpCount: latestState.distinctClientIpCount,
+        distinctApiKeyCount: latestState.distinctApiKeyCount,
+        precheckAttemptCount: latestState.attemptCount
+      })
+      const result = await runSingleGatewayAccountPrecheck(latestState)
+      if (result.success || result.accountFailureEligible === false) {
+        precheckStates.delete(runtimeKey)
+        clearLocalAccountSuppression(runtimeKey)
+        failureStorms.delete(runtimeKey)
+        logger.info({
+          event: 'gateway_account_precheck_recovered',
+          accountId: latestState.account.id,
+          accountName: latestState.account.name,
+          runtimeKey,
+          attemptCount: latestState.attemptCount,
+          statusCode: result.statusCode,
+          durationMs: result.durationMs
+        }, '账号事前确认探针通过，已清理运行态短避让')
+        return
+      }
+      if (attempt + 1 < precheckMaxAttempts) {
+        await delay(precheckRetryDelayMs)
+      }
+    }
+
+    const finalState = precheckStates.get(runtimeKey)
+    if (!finalState) {
+      return
+    }
+    const reason = `事前确认探针连续失败 ${finalState.attemptCount} 次，已标记为临时不可调用；${finalState.reason}`.slice(0, 1000)
+    const markResult = await requestDbService({
+      type: 'mark_account_precheck_temporary_unavailable',
+      account: finalState.account,
+      reason
+    })
+    suppressLocalAccount(runtimeKey, localSuppressionMs(finalState.settings), reason, 'precheck_failed', {
+      failureCount: finalState.failureCount,
+      distinctClientIpCount: finalState.distinctClientIpCount,
+      distinctApiKeyCount: finalState.distinctApiKeyCount,
+      precheckAttemptCount: finalState.attemptCount
+    })
+    precheckStates.delete(runtimeKey)
+    failureStorms.delete(runtimeKey)
+    if (markResult.updated) {
+      clearGatewayRuntimeCache()
+    }
+    logger.warn({
+      event: 'gateway_account_precheck_failed_marked',
+      accountId: finalState.account.id,
+      accountName: finalState.account.name,
+      runtimeKey,
+      updated: markResult.updated,
+      attemptCount: finalState.attemptCount
+    }, '账号事前确认探针连续失败，已写入临时不可调用')
+  } catch (error) {
+    const stateAfterError = precheckStates.get(runtimeKey)
+    if (stateAfterError) {
+      stateAfterError.running = false
+    }
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_account_precheck_exception',
+      runtimeKey
+    }), '账号事前确认探针执行失败，保留运行态等待下一轮触发')
+  }
+}
+
+async function runSingleGatewayAccountPrecheck(state: PrecheckState): Promise<{
+  success: boolean
+  statusCode?: number
+  durationMs?: number
+  accountFailureEligible?: boolean
+}> {
+  const { testOpenAIAccount } = await import('../accounts/account-test.service.js')
+  const signal = AbortSignal.timeout(precheckAttemptTimeoutMs)
+  return await testOpenAIAccount(accountSummaryFromUpstreamAccount(state.account, state), {
+    diagnostics: 'limited',
+    groupId: state.groupId,
+    trafficSource: 'cooldown_retest',
+    signal,
+    disableAccountStateMutation: true,
+    gatewaySettingsOverride: {
+      ...state.settings,
+      temporaryUnschedulableRetryAttempts: 0,
+      temporaryUnschedulableRetryIntervalSeconds: 0
+    }
+  })
+}
+
+function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: Pick<PrecheckState, 'systemAccountId' | 'groupId'>): AccountSummary {
+  const emptyUsage = {
+    requestCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheReadCost: 0,
+    totalTokens: 0,
+    totalCost: 0
+  }
+  return {
+    id: account.id,
+    systemAccountId: account.bindingSystemAccountId ?? state.systemAccountId ?? account.systemAccountId,
+    ownerSystemAccountId: account.accountOwnerSystemAccountId,
+    providerCode: 'openai',
+    name: account.name,
+    type: account.type,
+    credentials: account.credentials,
+    status: account.status,
+    concurrencyLimit: account.concurrencyLimit,
+    currentConcurrency: account.currentConcurrency ?? 0,
+    priority: account.priority,
+    superPriorityEnabled: account.superPriorityEnabled,
+    fallbackEnabled: account.fallbackEnabled,
+    supportedModels: account.supportedModels,
+    proxyProfileId: account.proxyProfileId,
+    passthroughEnabled: account.passthroughEnabled,
+    errorPolicyId: account.errorPolicyId,
+    schedulable: true,
+    cooldownUntil: account.cooldownUntil,
+    lastErrorMessage: account.lastErrorMessage,
+    streamFailureCount: account.streamFailureCount,
+    streamFailureWindowStartedAt: account.streamFailureWindowStartedAt,
+    todayUsage: emptyUsage,
+    usage: emptyUsage,
+    accessType: account.accountAccessType === 'account_authorized' ? 'authorized' : 'owner',
+    accountAuthorizationId: account.accountAuthorizationId,
+    boundGroupId: account.boundGroupId ?? state.groupId,
+    bindingSystemAccountId: account.bindingSystemAccountId ?? state.systemAccountId,
+    permissions: {
+      canUse: true,
+      canEdit: false,
+      canDelete: false,
+      canAuthorize: false,
+      canViewCredentials: false
+    }
+  }
 }

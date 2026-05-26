@@ -92,6 +92,15 @@ interface AuditAttemptState {
 
 let activeAuditCaptureCount = 0
 
+const failedAuditFullBodyLimitBytes = 2 * 1024 * 1024
+const successAuditFullBodyLimitBytes = 512 * 1024
+const auditBodySummaryEdgeBytes = 256 * 1024
+const auditBodySummaryTextPreviewBytes = 4 * 1024
+const auditJsonSummaryParseMaxBytes = 8 * 1024 * 1024
+const auditJsonSummaryMaxKeys = 50
+const auditPayloadSummaryContentType = 'application/json; audit=payload-summary'
+const auditActiveCaptureHardLimitBytes = 64 * 1024 * 1024
+
 export class AuditCaptureContext {
   private readonly req: Request
   private readonly traceId: string
@@ -105,6 +114,7 @@ export class AuditCaptureContext {
   private readonly enabled: boolean
   private readonly successSampleRate: number
   private readonly activeCaptureMaxBytes: number
+  private readonly fullBodyCaptureEnabled: boolean
   private readonly payloads: AuditLogPayloadInput[] = []
   private readonly attempts: AuditLogAttemptInput[] = []
   private gatewayContext: AuditGatewayContext = {}
@@ -121,7 +131,8 @@ export class AuditCaptureContext {
     const settings = readAuditLogSettings()
     this.enabled = settings.enabled
     this.successSampleRate = settings.successSampleRate
-    this.activeCaptureMaxBytes = settings.activeCaptureMaxBytes
+    this.activeCaptureMaxBytes = Math.min(settings.activeCaptureMaxBytes, auditActiveCaptureHardLimitBytes)
+    this.fullBodyCaptureEnabled = settings.fullBodyCaptureEnabled
     this.req = input.req
     this.traceId = input.traceId
     this.clientIp = input.clientIp
@@ -183,14 +194,29 @@ export class AuditCaptureContext {
 
   omitPayloadBodies(input: AddGatewayMetadataInput): void {
     if (!this.enabled) return
+    if (this.fullBodyCaptureEnabled) {
+      this.addGatewayMetadata({
+        label: input.label,
+        metadata: {
+          ...input.metadata,
+          auditBodyPayloadOmissionSkipped: true,
+          reason: 'full_body_capture_enabled'
+        }
+      })
+      return
+    }
     let omittedPayloadCount = 0
     let omittedBodyBytes = 0
     for (const payload of this.payloads) {
       if (payload.partType === 'gateway_metadata' || payload.body === undefined) {
         continue
       }
+      const bodyBuffer = bodyToBuffer(payload.body)
       omittedPayloadCount += 1
-      omittedBodyBytes += payloadBodyByteLength(payload.body)
+      omittedBodyBytes += bodyBuffer.byteLength
+      payload.bodySha256 = payload.bodySha256 ?? sha256Buffer(bodyBuffer)
+      payload.rawBodySizeBytes = payload.rawBodySizeBytes ?? bodyBuffer.byteLength
+      payload.captureStatus = 'hash_only'
       payload.body = undefined
       payload.contentEncoding = undefined
     }
@@ -308,6 +334,7 @@ export class AuditCaptureContext {
         contentEncoding: headerValue(input.responseHeaders, 'content-encoding')
       })
     }
+    this.applyPayloadRetention(outcome === 'success' ? 'success' : 'failure')
     const sanitizedOriginalUrl = sanitizeUrlForLog(this.req.originalUrl)
     const auditLog: AuditLogInput = {
       id: `audit_${Date.now()}_${randomUUID()}`,
@@ -357,6 +384,9 @@ export class AuditCaptureContext {
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
+    if (!this.fullBodyCaptureEnabled) {
+      summarizePayloadForLimit(payload, failedAuditFullBodyLimitBytes)
+    }
     const nextApproximateBytes = this.approximateBytes + estimatePayloadBytes(payload)
     if (nextApproximateBytes > this.activeCaptureMaxBytes) {
       this.overflowed = true
@@ -376,6 +406,20 @@ export class AuditCaptureContext {
 
   private recalculateApproximateBytes(): void {
     this.approximateBytes = this.payloads.reduce((total, payload) => total + estimatePayloadBytes(payload), 0)
+  }
+
+  private applyPayloadRetention(mode: 'success' | 'failure'): void {
+    if (this.fullBodyCaptureEnabled) {
+      this.recalculateApproximateBytes()
+      return
+    }
+    const fullBodyLimit = mode === 'success'
+      ? successAuditFullBodyLimitBytes
+      : failedAuditFullBodyLimitBytes
+    for (const payload of this.payloads) {
+      summarizePayloadForLimit(payload, fullBodyLimit)
+    }
+    this.recalculateApproximateBytes()
   }
 }
 
@@ -423,6 +467,257 @@ function headerValue(headers: Record<string, string | string[]> | Headers | unde
   return Array.isArray(value) ? value.join(', ') : value
 }
 
+function summarizePayloadForLimit(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>, fullBodyLimitBytes: number): void {
+  if (payload.partType === 'gateway_metadata' || payload.body === undefined) {
+    return
+  }
+  if (payload.captureStatus && payload.captureStatus !== 'complete') {
+    updateExistingPayloadSummaryLimit(payload, fullBodyLimitBytes)
+    return
+  }
+  const bodyBuffer = bodyToBuffer(payload.body)
+  const originalBodySizeBytes = payload.rawBodySizeBytes ?? bodyBuffer.byteLength
+  if (originalBodySizeBytes <= fullBodyLimitBytes) {
+    return
+  }
+  const originalContentType = payload.contentType
+  const originalContentEncoding = payload.contentEncoding
+  const originalSha256 = payload.bodySha256 ?? sha256Buffer(bodyBuffer)
+  payload.body = JSON.stringify(buildPayloadSummary({
+    body: bodyBuffer,
+    originalSha256,
+    originalBodySizeBytes,
+    originalContentType,
+    originalContentEncoding,
+    fullBodyLimitBytes
+  }))
+  payload.bodySha256 = originalSha256
+  payload.rawBodySizeBytes = originalBodySizeBytes
+  payload.captureStatus = 'summary_only'
+  payload.contentType = auditPayloadSummaryContentType
+  payload.contentEncoding = undefined
+}
+
+function updateExistingPayloadSummaryLimit(
+  payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>,
+  fullBodyLimitBytes: number
+): void {
+  if (payload.captureStatus !== 'summary_only' || typeof payload.body !== 'string') {
+    return
+  }
+  try {
+    const summary = JSON.parse(payload.body) as Record<string, unknown>
+    if (summary.type !== 'audit_payload_summary') {
+      return
+    }
+    summary.fullBodyLimitBytes = fullBodyLimitBytes
+    payload.body = JSON.stringify(summary)
+  } catch {
+    return
+  }
+}
+
+function buildPayloadSummary(input: {
+  body: Buffer
+  originalSha256: string
+  originalBodySizeBytes: number
+  originalContentType?: string
+  originalContentEncoding?: string
+  fullBodyLimitBytes: number
+}): Record<string, unknown> {
+  const head = input.body.subarray(0, Math.min(auditBodySummaryEdgeBytes, input.body.byteLength))
+  const tailStart = Math.max(0, input.body.byteLength - auditBodySummaryEdgeBytes)
+  const tail = input.body.subarray(tailStart)
+  const hasSeparatedTail = tailStart >= head.byteLength
+  const retainedBodyBytes = head.byteLength + (hasSeparatedTail ? tail.byteLength : Math.max(0, input.body.byteLength - head.byteLength))
+  const summary: Record<string, unknown> = {
+    type: 'audit_payload_summary',
+    captureStatus: 'summary_only',
+    reason: 'body_exceeded_full_capture_limit',
+    fullBodyLimitBytes: input.fullBodyLimitBytes,
+    originalSha256: input.originalSha256,
+    originalSizeBytes: input.originalBodySizeBytes,
+    originalContentType: input.originalContentType,
+    originalContentEncoding: input.originalContentEncoding,
+    retainedHeadBytes: head.byteLength,
+    retainedTailBytes: tail.byteLength,
+    omittedMiddleBytes: Math.max(0, input.originalBodySizeBytes - retainedBodyBytes),
+    headBase64: head.toString('base64'),
+    tailBase64: tail.toString('base64')
+  }
+  if (isTextLikePayload(input.originalContentType, input.originalContentEncoding)) {
+    summary.textPreview = {
+      head: textPreview(head),
+      tail: textPreview(tail)
+    }
+  }
+  const json = summarizeJsonPayload(input.body, input.originalContentType, input.originalContentEncoding)
+  if (json) {
+    summary.json = json
+  }
+  return summary
+}
+
+function summarizeJsonPayload(body: Buffer, contentType?: string, contentEncoding?: string): Record<string, unknown> | undefined {
+  if (!isJsonLikePayload(body, contentType, contentEncoding)) {
+    return undefined
+  }
+  const headText = body.subarray(0, Math.min(body.byteLength, auditBodySummaryEdgeBytes)).toString('utf8')
+  if (body.byteLength > auditJsonSummaryParseMaxBytes) {
+    return {
+      parseable: false,
+      reason: 'body_too_large_for_inline_parse',
+      topLevelType: inferJsonTopLevelType(headText),
+      topLevelKeys: extractTopLevelObjectKeysFromJsonPrefix(headText)
+    }
+  }
+  try {
+    return summarizeParsedJsonValue(JSON.parse(body.toString('utf8')))
+  } catch {
+    return {
+      parseable: false,
+      reason: 'json_parse_failed',
+      topLevelType: inferJsonTopLevelType(headText),
+      topLevelKeys: extractTopLevelObjectKeysFromJsonPrefix(headText)
+    }
+  }
+}
+
+function summarizeParsedJsonValue(value: unknown): Record<string, unknown> {
+  if (Array.isArray(value)) {
+    return {
+      parseable: true,
+      topLevelType: 'array',
+      topLevelLength: value.length,
+      firstItemType: jsonValueType(value[0]),
+      firstItemKeys: value[0] && typeof value[0] === 'object' && !Array.isArray(value[0])
+        ? Object.keys(value[0] as Record<string, unknown>).slice(0, auditJsonSummaryMaxKeys)
+        : undefined
+    }
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>)
+    return {
+      parseable: true,
+      topLevelType: 'object',
+      topLevelKeyCount: keys.length,
+      topLevelKeys: keys.slice(0, auditJsonSummaryMaxKeys)
+    }
+  }
+  return {
+    parseable: true,
+    topLevelType: jsonValueType(value)
+  }
+}
+
+function isJsonLikePayload(body: Buffer, contentType?: string, contentEncoding?: string): boolean {
+  const encoding = contentEncoding?.trim().toLowerCase()
+  if (encoding && encoding !== 'identity') {
+    return false
+  }
+  const normalizedContentType = contentType?.toLowerCase() ?? ''
+  if (normalizedContentType.includes('json')) {
+    return true
+  }
+  const head = body.subarray(0, Math.min(body.byteLength, 512)).toString('utf8')
+  const firstChar = firstNonWhitespaceChar(head)
+  return firstChar === '{' || firstChar === '['
+}
+
+function isTextLikePayload(contentType?: string, contentEncoding?: string): boolean {
+  const encoding = contentEncoding?.trim().toLowerCase()
+  if (encoding && encoding !== 'identity') {
+    return false
+  }
+  const type = contentType?.toLowerCase() ?? ''
+  return type.includes('json')
+    || type.includes('text')
+    || type.includes('xml')
+    || type.includes('event-stream')
+    || type.includes('javascript')
+    || type.includes('x-www-form-urlencoded')
+}
+
+function textPreview(buffer: Buffer): string {
+  return buffer.subarray(0, Math.min(buffer.byteLength, auditBodySummaryTextPreviewBytes)).toString('utf8')
+}
+
+function inferJsonTopLevelType(text: string): string {
+  const firstChar = firstNonWhitespaceChar(text)
+  if (firstChar === '{') return 'object'
+  if (firstChar === '[') return 'array'
+  if (firstChar === '"') return 'string'
+  if (firstChar === 't' || firstChar === 'f') return 'boolean'
+  if (firstChar === 'n') return 'null'
+  if (firstChar && /[-0-9]/.test(firstChar)) return 'number'
+  return 'unknown'
+}
+
+function extractTopLevelObjectKeysFromJsonPrefix(text: string): string[] {
+  const keys: string[] = []
+  let depth = 0
+  let index = 0
+  while (index < text.length && keys.length < auditJsonSummaryMaxKeys) {
+    const char = text[index]
+    if (char === '"') {
+      const parsed = readJsonStringAt(text, index)
+      if (!parsed) break
+      const nextIndex = skipJsonWhitespace(text, parsed.end)
+      if (depth === 1 && text[nextIndex] === ':') {
+        keys.push(parsed.value)
+      }
+      index = parsed.end
+      continue
+    }
+    if (char === '{' || char === '[') {
+      depth += 1
+    } else if (char === '}' || char === ']') {
+      depth = Math.max(0, depth - 1)
+    }
+    index += 1
+  }
+  return [...new Set(keys)]
+}
+
+function readJsonStringAt(text: string, start: number): { value: string; end: number } | undefined {
+  let escaped = false
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '"') {
+      const raw = text.slice(start, index + 1)
+      try {
+        return { value: JSON.parse(raw) as string, end: index + 1 }
+      } catch {
+        return { value: raw.slice(1, -1), end: index + 1 }
+      }
+    }
+  }
+}
+
+function skipJsonWhitespace(text: string, start: number): number {
+  let index = start
+  while (index < text.length && /\s/.test(text[index])) {
+    index += 1
+  }
+  return index
+}
+
+function firstNonWhitespaceChar(text: string): string {
+  return text.trimStart().charAt(0)
+}
+
+function jsonValueType(value: unknown): string {
+  return Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
+}
+
 function sampleBucketForTraceId(traceId: string): number {
   const digest = createHash('sha256').update(traceId).digest()
   return digest.readUInt32BE(0) % 10000
@@ -437,6 +732,14 @@ function estimatePayloadBytes(payload: Omit<AuditLogPayloadInput, 'sequenceIndex
 
 function payloadBodyByteLength(body: Buffer | string | undefined): number {
   return Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0
+}
+
+function bodyToBuffer(body: Buffer | string): Buffer {
+  return Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8')
+}
+
+function sha256Buffer(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex')
 }
 
 function estimateHeadersBytes(headers: Record<string, string | string[]>): number {

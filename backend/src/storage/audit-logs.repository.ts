@@ -41,6 +41,9 @@ export interface AuditLogPayloadInput {
   contentEncoding?: string
   headers?: Record<string, string | string[]>
   body?: Buffer | string
+  bodySha256?: string
+  rawBodySizeBytes?: number
+  captureStatus?: AuditPayloadCaptureStatus
   createdAt?: string
 }
 
@@ -369,9 +372,9 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         return { ...attempt, id: attemptId }
       })
       const payloads = input.payloads.map((payload, index) => preparePayloadInput(payload, index, createdAt))
-      const payloadBytes = payloads.reduce((sum, payload) => sum + payload.rawSizeBytes, 0)
+      const rawPayloadBytes = payloads.reduce((sum, payload) => sum + payload.rawSizeBytes, 0)
       const compressedPayloadBytes = payloads.reduce((sum, payload) => sum + payload.compressedSizeBytes, 0)
-      const compressionSavedBytes = Math.max(0, payloadBytes - compressedPayloadBytes)
+      const compressionSavedBytes = Math.max(0, rawPayloadBytes - compressedPayloadBytes)
       const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, errorGroupStatements)
 
       const insertLogResult = insertLog.run(
@@ -400,8 +403,8 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         input.sampleReason,
         preparedAttempts.length,
         payloads.length,
-        payloadBytes,
-        payloadBytes,
+        rawPayloadBytes,
+        rawPayloadBytes,
         compressedPayloadBytes,
         compressionSavedBytes,
         errorGroupId,
@@ -690,9 +693,12 @@ function preparePayloadInput(payload: AuditLogPayloadInput, fallbackIndex: numbe
   const headersBlob = payload.headers
     ? prepareAuditPayloadBlob(Buffer.from(stableJsonStringify(payload.headers), 'utf8'), auditHeadersContentType)
     : undefined
-  const bodyBlob = prepareAuditPayloadBlob(bodyToBuffer(payload.body), payload.contentType, payload.contentEncoding)
-  const rawSizeBytes = (headersBlob?.rawSizeBytes ?? 0) + (bodyBlob?.rawSizeBytes ?? 0)
+  const bodyBuffer = bodyToBuffer(payload.body)
+  const bodyBlob = prepareAuditPayloadBlob(bodyBuffer, payload.contentType, payload.contentEncoding)
+  const rawBodySizeBytes = normalizePayloadSizeBytes(payload.rawBodySizeBytes, bodyBlob?.rawSizeBytes ?? 0)
+  const rawSizeBytes = (headersBlob?.rawSizeBytes ?? 0) + rawBodySizeBytes
   const compressedSizeBytes = (headersBlob?.compressedSizeBytes ?? 0) + (bodyBlob?.compressedSizeBytes ?? 0)
+  const bodySha256 = payload.bodySha256 ?? bodyBlob?.sha256
   return {
     id: payload.id ?? newId('audpay'),
     attemptTempId: payload.attemptTempId,
@@ -703,10 +709,10 @@ function preparePayloadInput(payload: AuditLogPayloadInput, fallbackIndex: numbe
     headersBlob,
     bodyBlob,
     headersSha256: headersBlob?.sha256,
-    bodySha256: bodyBlob?.sha256,
+    bodySha256,
     rawSizeBytes,
     compressedSizeBytes,
-    captureStatus: 'complete',
+    captureStatus: payload.captureStatus ?? 'complete',
     createdAt: payload.createdAt ?? fallbackCreatedAt
   }
 }
@@ -969,6 +975,12 @@ function normalizePageSize(value: unknown, fallback: number, max: number): numbe
 function bodyToBuffer(body: Buffer | string | undefined): Buffer | undefined {
   if (body === undefined) return undefined
   return Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8')
+}
+
+function normalizePayloadSizeBytes(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.trunc(value))
+    : fallback
 }
 
 function stableJsonStringify(value: unknown): string {

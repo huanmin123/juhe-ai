@@ -3,37 +3,34 @@
     <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="API Key 名称" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :advanced-filter-count="advancedFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
       <template #inline-filters>
         <a-select v-model:value="statusFilter" class="toolbar-select responsive-list-inline-filter" :options="listStatusOptions" @change="applyFilters" />
+        <SystemPrincipalSelect
+          v-if="isManagementView"
+          v-model:value="systemAccountFilter"
+          v-model:selected-principal="systemAccountFilterSelection"
+          :accounts="systemAccounts"
+          :active-only="false"
+          :filter-option="false"
+          :loading="systemAccountOptionsLoading"
+          include-all
+          class="toolbar-select responsive-list-inline-filter"
+          @change="handleSystemAccountFilterChange"
+          @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+          @search="handleSystemAccountOptionsSearch"
+        />
         <GroupSelect
           v-model:value="groupFilter"
           v-model:selected-group="groupFilterSelection"
           allow-clear
           class="toolbar-select responsive-list-inline-filter"
+          :disabled="groupFilterDisabled"
           :filter-option="false"
           :groups="groups"
           :loading="groupOptionsLoading"
-          placeholder="全部分组"
+          :placeholder="groupFilterDisabled ? '请先选择系统账户' : '全部分组'"
           @change="handleGroupFilterChange"
           @dropdown-visible-change="handleGroupOptionsDropdown"
           @search="handleGroupOptionsSearch"
         />
-      </template>
-      <template #advanced-filters>
-        <a-form v-if="isManagementView" layout="vertical" class="advanced-filter-form">
-          <a-form-item label="系统账户">
-            <SystemPrincipalSelect
-              v-model:value="systemAccountFilter"
-              v-model:selected-principal="systemAccountFilterSelection"
-              :accounts="systemAccounts"
-              :active-only="false"
-              :filter-option="false"
-              :loading="systemAccountOptionsLoading"
-              include-all
-              @change="handleSystemAccountFilterChange"
-              @dropdown-visible-change="handleSystemAccountOptionsDropdown"
-              @search="handleSystemAccountOptionsSearch"
-            />
-          </a-form-item>
-        </a-form>
       </template>
       <template #actions>
         <TableColumnManager
@@ -60,10 +57,11 @@
             v-model:value="groupFilter"
             v-model:selected-group="groupFilterSelection"
             allow-clear
+            :disabled="groupFilterDisabled"
             :filter-option="false"
             :groups="groups"
             :loading="groupOptionsLoading"
-            placeholder="全部分组"
+            :placeholder="groupFilterDisabled ? '请先选择系统账户' : '全部分组'"
             @change="handleGroupFilterChange"
             @dropdown-visible-change="handleGroupOptionsDropdown"
             @search="handleGroupOptionsSearch"
@@ -199,10 +197,11 @@
           <GroupSelect
             v-model:value="form.groupId"
             v-model:selected-group="form.group"
+            :disabled="groupFilterDisabled"
             :filter-option="false"
             :groups="groups"
             :loading="groupOptionsLoading"
-            placeholder="输入分组名称搜索"
+            :placeholder="groupFilterDisabled ? '请先选择系统账户' : '输入分组名称搜索'"
             @dropdown-visible-change="handleGroupOptionsDropdown"
             @search="handleGroupOptionsSearch"
           />
@@ -416,13 +415,14 @@ const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
 })
+const groupFilterDisabled = computed(() => isManagementView.value && !apiKeyScopeParams.value?.systemAccountId)
 const activeFilterCount = computed(() => [
   keywordFilter.value.trim(),
   statusFilter.value !== 'all',
-  groupFilter.value,
+  !groupFilterDisabled.value && groupFilter.value,
   isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue
 ].filter(Boolean).length)
-const advancedFilterCount = computed(() => isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue ? 1 : 0)
+const advancedFilterCount = computed(() => 0)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
 const targetSystemAccountLabel = computed(() => {
@@ -511,6 +511,13 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
 async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): Promise<void> {
   groupOptionsKeyword = keyword
   const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
+  if (isManagementView.value && !systemAccountId) {
+    groups.value = []
+    groupOptionsLoading.value = false
+    groupOptionsLoadingKey = undefined
+    groupOptionsLoadingPromise = undefined
+    return
+  }
   const requestKeyword = normalizeOptionKeyword(keyword)
   const requestKey = JSON.stringify([isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', groupFilter.value ?? '', form.groupId ?? ''])
   if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
@@ -599,6 +606,10 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], syst
 }
 
 function syncSelectedGroupSelections(nextGroups = groups.value): void {
+  if (groupFilterDisabled.value) {
+    groupFilterSelection.value = undefined
+    return
+  }
   if (groupFilter.value) {
     groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
   }
@@ -695,7 +706,7 @@ function apiKeyListParams(systemAccountId: string | undefined, pageState: { curr
     pageSize: pageState.pageSize,
     keyword: keywordFilter.value.trim() || undefined,
     status: statusFilter.value,
-    groupId: groupFilter.value
+    groupId: isManagementView.value && !systemAccountId ? undefined : groupFilter.value
   }
 }
 
@@ -843,6 +854,11 @@ async function removeApiKey(id: string) {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(groupFilterDisabled, (disabled) => {
+  if (!disabled) return
+  groupFilterSelection.value = undefined
+  groups.value = []
+}, { immediate: true })
 watch(apiKeys, (items) => {
   for (const item of items) {
     rememberGroupLabel(item.groupId, item.groupName)

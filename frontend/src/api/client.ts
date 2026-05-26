@@ -43,6 +43,7 @@ import type {
   OperationLogDetail,
   OperationLogListResult,
   ProviderDefinition,
+  ProviderModelOption,
   ProviderModelPricing,
   ProxyProfileOptionSummary,
   ProxyProfileListResult,
@@ -526,6 +527,7 @@ export const api = {
   },
   providers: {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
+    modelOptions: () => unwrap<ProviderModelOption[]>(http.get('/providers/models/options')),
     models: (code: string) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`))
   },
   errorPolicies: {

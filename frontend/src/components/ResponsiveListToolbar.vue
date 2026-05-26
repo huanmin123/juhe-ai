@@ -57,7 +57,12 @@
     </div>
     <div v-if="showReset || showFilterSearch" class="responsive-list-filter-actions" :class="{ single: !showReset || !showFilterSearch }">
       <a-button v-if="showReset" @click="handleDrawerReset">重置筛选</a-button>
-      <a-button v-if="showFilterSearch" type="primary" @click="handleDrawerSearch">查询</a-button>
+      <a-button v-if="showFilterSearch" type="primary" :loading="refreshLoading" @click="handleDrawerRefresh">
+        <template #icon>
+          <ReloadOutlined />
+        </template>
+        刷新
+      </a-button>
     </div>
   </a-drawer>
 
@@ -150,9 +155,8 @@ function handleDrawerReset() {
   emit('reset')
 }
 
-function handleDrawerSearch() {
-  emit('search')
-  filtersOpen.value = false
+function handleDrawerRefresh() {
+  emit('refresh')
 }
 
 function updateViewportState() {

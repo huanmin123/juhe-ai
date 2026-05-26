@@ -59,6 +59,10 @@ export function accountStatusColor(account: AccountSummary) {
   if (sourceStatus === 'cooling') return 'gold'
   if (sourceStatus === 'disabled') return 'default'
   if (isOwnerDisabledAuthorizedAccount(account)) return 'default'
+  const runtimeStatus = activeRuntimeAvailabilityStatus(account)
+  if (runtimeStatus === 'precheck_pending') return 'blue'
+  if (runtimeStatus === 'local_suppressed') return 'gold'
+  if (runtimeStatus === 'precheck_failed') return 'gold'
   return statusColor(account.status)
 }
 
@@ -71,6 +75,10 @@ export function accountStatusText(account: AccountSummary) {
   const sourceStatusText = authorizedSourceUnavailableStatusText(account)
   if (sourceStatusText) return sourceStatusText
   if (isOwnerDisabledAuthorizedAccount(account)) return '停用'
+  const runtimeStatus = activeRuntimeAvailabilityStatus(account)
+  if (runtimeStatus === 'precheck_pending') return '待探针确认'
+  if (runtimeStatus === 'local_suppressed') return '短暂避让'
+  if (runtimeStatus === 'precheck_failed') return '探针确认失败'
   return statusText(account.status)
 }
 
@@ -118,19 +126,20 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   if (sourceUnavailableText) {
     lines.push(sourceUnavailableText)
   }
+  lines.push(...accountRuntimeAvailabilityTooltipLines(account))
   if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
   }
   const cooldownText = accountCooldownText(account)
   if (cooldownText) {
     lines.push(cooldownText)
-    if (account.status === 'temporary_unavailable' && account.cooldownRetestFailureCount) {
+    if (isTemporaryAccountStatus(account) && account.cooldownRetestFailureCount) {
       lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
     }
-  } else if (account.status === 'temporary_unavailable' && account.cooldownUntil) {
+  } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
     lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
     lines.push('等待后台复测；也可手动测试或在更多菜单恢复正常')
-    if (account.status === 'temporary_unavailable' && account.cooldownRetestFailureCount) {
+    if (account.cooldownRetestFailureCount) {
       lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
     }
   } else if (account.status === 'disabled' && !accountExpired) {
@@ -140,19 +149,68 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     if (account.cooldownRetestFailureCount) {
       lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
     }
-    lines.push('异常账户不会参与调度，仅保留测试和恢复异常')
+    lines.push(account.lastErrorCode === 'oauth_token_refresh_failed'
+      ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动恢复异常'
+      : '异常账户不会参与调度，仅保留测试和恢复异常')
   }
   if (account.cooldownRetestLastAt) {
     const suffix = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
     lines.push(`最近后台复测：${formatDateTime(account.cooldownRetestLastAt)}${suffix}`)
   }
-  if (account.cooldownRetestObservationStartedAt && account.status === 'temporary_unavailable') {
+  if (account.cooldownRetestObservationStartedAt && isTemporaryAccountStatus(account)) {
     lines.push(`自动恢复观察开始：${formatDateTime(account.cooldownRetestObservationStartedAt)}`)
   }
   if (account.lastErrorMessage) {
     lines.push(`原因：${account.lastErrorMessage}`)
   }
   return lines
+}
+
+function activeRuntimeAvailabilityStatus(account: AccountSummary) {
+  const status = account.runtimeAvailability?.status
+  if (!status || status === 'normal') return undefined
+  if (account.status !== 'active') return undefined
+  return status
+}
+
+function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string[] {
+  const runtime = account.runtimeAvailability
+  if (!runtime || runtime.status === 'normal') return []
+  const lines = [
+    `运行态状态：${runtimeAvailabilityText(runtime.status)}`,
+    account.status === 'active'
+      ? `数据库状态仍为${statusText(account.status)}；此状态只保存在当前网关进程缓存，不写入数据库`
+      : `数据库状态：${statusText(account.status)}；运行态仅说明当前网关进程最近的确认过程`
+  ]
+  if (runtime.since) {
+    lines.push(`进入时间：${formatDateTime(runtime.since)}`)
+  }
+  if (runtime.until) {
+    lines.push(`预计释放：${formatDateTime(runtime.until)}`)
+  }
+  if (runtime.failureCount) {
+    lines.push(`短窗口失败：${formatNumber(runtime.failureCount)} 次`)
+  }
+  if (runtime.distinctClientIpCount) {
+    lines.push(`来源 IP：${formatNumber(runtime.distinctClientIpCount)} 个`)
+  }
+  if (runtime.distinctApiKeyCount) {
+    lines.push(`API Key：${formatNumber(runtime.distinctApiKeyCount)} 个`)
+  }
+  if (runtime.precheckAttemptCount) {
+    lines.push(`事前探针：${formatNumber(runtime.precheckAttemptCount)} 次`)
+  }
+  if (runtime.reason) {
+    lines.push(`原因：${runtime.reason}`)
+  }
+  return lines
+}
+
+function runtimeAvailabilityText(status: NonNullable<AccountSummary['runtimeAvailability']>['status']): string {
+  if (status === 'precheck_pending') return '待探针确认'
+  if (status === 'local_suppressed') return '短暂避让'
+  if (status === 'precheck_failed') return '探针确认失败'
+  return '正常'
 }
 
 export function isTemporaryAccountStatus(account: AccountSummary) {

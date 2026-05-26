@@ -62,6 +62,7 @@ export interface OpenAIGatewayHandleOptions {
   exposeUpstreamDiagnostics?: boolean
   trafficSource?: OpenAIGatewayTrafficSource
   settingsOverride?: Partial<GatewaySettings>
+  disableAccountStateMutation?: boolean
 }
 
 export function handleGatewayDbServiceUnavailable(error: unknown, req: Request, res: Response, next: NextFunction): void {
@@ -167,7 +168,8 @@ export async function handleOpenAIGatewayRequest(
       abortController.signal,
       clientIpAccountAvoidanceTracker,
       requestLane,
-      preflight.groupSchedulingPolicy
+      preflight.groupSchedulingPolicy,
+      options.disableAccountStateMutation !== true
     )
     const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
 
@@ -193,7 +195,8 @@ export async function handleOpenAIGatewayRequest(
           sessionAffinityKey,
           clientStrategy,
           markFirstOutput,
-          clientIpAccountAvoidanceTracker
+          clientIpAccountAvoidanceTracker,
+          accountStateMutationEnabled: options.disableAccountStateMutation !== true
         })
         : await handleNonStreamUpstreamResponse({
           req,
@@ -209,7 +212,8 @@ export async function handleOpenAIGatewayRequest(
           signal: abortController.signal,
           sessionAffinityKey,
           markFirstOutput,
-          clientIpAccountAvoidanceTracker
+          clientIpAccountAvoidanceTracker,
+          accountStateMutationEnabled: options.disableAccountStateMutation !== true
         })
       if (handledResponse.alreadyFinalized) {
         return
@@ -227,7 +231,8 @@ export async function handleOpenAIGatewayRequest(
         startedAt,
         signal: abortController.signal,
         result: handledResponse,
-        clientIpAccountAvoidanceTracker
+        clientIpAccountAvoidanceTracker,
+        accountStateMutationEnabled: options.disableAccountStateMutation !== true
       })
     } finally {
       releaseConcurrency()

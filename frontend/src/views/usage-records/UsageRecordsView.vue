@@ -14,9 +14,12 @@
       v-model:traffic-source="trafficSourceFilter"
       :active-filter-count="activeFilterCount"
       :advanced-filter-count="advancedFilterCount"
+      :group-disabled="groupFilterDisabled"
       :group-options="groups"
       :group-options-loading="groupOptionsLoading"
       :is-management-view="isManagementView"
+      :model-options="modelOptions"
+      :models-loading="modelOptionsLoading"
       :refresh-loading="loading"
       :result-options="resultOptions"
       :system-accounts="systemAccounts"
@@ -166,7 +169,7 @@ import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import type { UsageRecordListParams } from '@/api/client'
+import { api, type UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
@@ -180,7 +183,7 @@ import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/d
 import { rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import type { GroupOptionSummary, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
+import type { GroupOptionSummary, ProviderModelOption, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
@@ -258,8 +261,11 @@ const groupFilter = computed({
     groupFilterSelection.value = selectedGroupSelection(id)
   }
 })
+const groupFilterDisabled = computed(() => isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value))
 const groups = ref<GroupOptionSummary[]>([])
 const groupOptionsLoading = ref(false)
+const modelOptions = ref<ProviderModelOption[]>([])
+const modelOptionsLoading = ref(false)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -275,6 +281,8 @@ let groupOptionsLoadingKey: string | undefined
 let groupOptionsLoadingPromise: Promise<void> | undefined
 let groupOptionsKeyword = ''
 let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let modelOptionsLoaded = false
+let modelOptionsLoadingPromise: Promise<void> | undefined
 const groupOptionsCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
 const {
   items: records,
@@ -299,7 +307,8 @@ const {
       resetGroupOptionsSearch()
     }
     const [result] = await Promise.all([
-      fetchRecords(pageState)
+      fetchRecords(pageState),
+      loadModelOptions(options.forceOptions === true)
     ])
     return result
   },
@@ -340,7 +349,6 @@ const advancedFilterCount = computed(() => {
   if (clientIpFilter.value.trim()) count += 1
   if (modelFilter.value.trim()) count += 1
   if (statusCodeFilter.value) count += 1
-  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
@@ -397,6 +405,13 @@ function selectedGroupSelection(id: string | undefined): GroupSelection | undefi
 async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): Promise<void> {
   groupOptionsKeyword = keyword
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
+  if (isManagementView.value && !systemAccountId) {
+    groups.value = []
+    groupOptionsLoading.value = false
+    groupOptionsLoadingKey = undefined
+    groupOptionsLoadingPromise = undefined
+    return
+  }
   const requestKeyword = normalizeOptionKeyword(keyword)
   const requestKey = JSON.stringify([
     isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self',
@@ -447,6 +462,27 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
   return groupOptionsLoadingPromise
 }
 
+async function loadModelOptions(force = false): Promise<void> {
+  if (!force && (modelOptionsLoaded || modelOptionsLoadingPromise)) {
+    return modelOptionsLoadingPromise
+  }
+  modelOptionsLoading.value = true
+  modelOptionsLoadingPromise = (async () => {
+    try {
+      modelOptions.value = await api.providers.modelOptions()
+      modelOptionsLoaded = true
+    } catch (error) {
+      console.error(error)
+      modelOptionsLoaded = true
+      message.warning('加载模型筛选选项失败')
+    } finally {
+      modelOptionsLoading.value = false
+      modelOptionsLoadingPromise = undefined
+    }
+  })()
+  return modelOptionsLoadingPromise
+}
+
 function handleGroupOptionsDropdown(open: boolean): void {
   if (open) {
     void loadGroupOptions()
@@ -490,6 +526,10 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], syst
 
 function syncSelectedGroupSelection(nextGroups = groups.value): void {
   if (!groupFilter.value) return
+  if (groupFilterDisabled.value) {
+    groupFilterSelection.value = undefined
+    return
+  }
   groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
 }
 
@@ -608,7 +648,7 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     clientIp: clientIpFilter.value.trim() || undefined,
     startDate: dateRange?.[0],
     endDate: dateRange?.[1],
-    groupId: groupFilter.value,
+    groupId: groupFilterDisabled.value ? undefined : groupFilter.value,
     model: modelFilter.value.trim() || undefined,
     result: resultFilter.value,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
@@ -675,6 +715,11 @@ function parseDateRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(groupFilterDisabled, (disabled) => {
+  if (!disabled) return
+  groupFilterSelection.value = undefined
+  groups.value = []
+}, { immediate: true })
 watch(records, (items) => {
   for (const item of items) {
     rememberGroupLabel(item.groupId, item.groupName)

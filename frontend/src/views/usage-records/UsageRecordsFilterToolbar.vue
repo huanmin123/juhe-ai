@@ -26,6 +26,22 @@
         :options="resultOptions"
         @update:value="handleResultUpdate"
       />
+      <SystemPrincipalSelect
+        v-if="isManagementView"
+        :value="systemAccountId"
+        :accounts="systemAccounts"
+        :active-only="false"
+        :filter-option="false"
+        :loading="systemAccountsLoading"
+        :selected-principal="systemAccountSelection"
+        include-all
+        class="system-account-filter toolbar-select responsive-list-inline-filter"
+        @update:value="handleSystemAccountUpdate"
+        @update:selected-principal="emit('update:systemAccountSelection', $event)"
+        @change="emit('system-account-change')"
+        @dropdown-visible-change="emit('system-account-dropdown', $event)"
+        @search="emit('system-account-search', $event)"
+      />
     </template>
     <template #advanced-filters>
       <a-form layout="vertical" class="advanced-filter-form">
@@ -36,8 +52,9 @@
             allow-clear
             :filter-option="false"
             :groups="groupOptions"
+            :disabled="groupDisabled"
             :loading="groupOptionsLoading"
-            placeholder="全部分组"
+            :placeholder="groupDisabled ? '请先选择系统账户' : '全部分组'"
             @update:value="handleGroupUpdate"
             @update:selected-group="emit('update:groupSelection', $event)"
             @change="emit('group-change')"
@@ -49,29 +66,20 @@
           <a-input :value="statusCode" allow-clear placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
         </a-form-item>
         <a-form-item label="模型">
-          <a-input :value="model" allow-clear placeholder="完整模型名称" @update:value="handleModelUpdate" @press-enter="emit('search')" />
+          <ModelFilterSelect
+            :value="model"
+            :loading="modelsLoading"
+            :models="modelOptions"
+            placeholder="全部模型"
+            @change="handleModelChange"
+            @update:value="handleModelUpdate"
+          />
         </a-form-item>
         <a-form-item label="IP">
           <a-input :value="clientIp" allow-clear placeholder="客户端 IP 前缀" @update:value="handleClientIpUpdate" @press-enter="emit('search')" />
         </a-form-item>
         <a-form-item label="来源">
           <a-select :value="trafficSource" :options="trafficSourceOptions" @update:value="handleTrafficSourceUpdate" />
-        </a-form-item>
-        <a-form-item v-if="isManagementView" label="系统账户">
-          <SystemPrincipalSelect
-            :value="systemAccountId"
-            :accounts="systemAccounts"
-            :active-only="false"
-            :filter-option="false"
-            :loading="systemAccountsLoading"
-            :selected-principal="systemAccountSelection"
-            include-all
-            @update:value="handleSystemAccountUpdate"
-            @update:selected-principal="emit('update:systemAccountSelection', $event)"
-            @change="emit('system-account-change')"
-            @dropdown-visible-change="emit('system-account-dropdown', $event)"
-            @search="emit('system-account-search', $event)"
-          />
         </a-form-item>
       </a-form>
     </template>
@@ -103,8 +111,9 @@
           allow-clear
           :filter-option="false"
           :groups="groupOptions"
+          :disabled="groupDisabled"
           :loading="groupOptionsLoading"
-          placeholder="全部分组"
+          :placeholder="groupDisabled ? '请先选择系统账户' : '全部分组'"
           @update:value="handleGroupUpdate"
           @update:selected-group="emit('update:groupSelection', $event)"
           @change="emit('group-change')"
@@ -118,7 +127,14 @@
       </label>
       <label class="mobile-filter-field">
         <span>模型</span>
-        <a-input :value="model" allow-clear placeholder="完整模型名称" @update:value="handleModelUpdate" @press-enter="emit('search')" />
+        <ModelFilterSelect
+          :value="model"
+          :loading="modelsLoading"
+          :models="modelOptions"
+          placeholder="全部模型"
+          @change="handleModelChange"
+          @update:value="handleModelUpdate"
+        />
       </label>
       <label class="mobile-filter-field">
         <span>IP</span>
@@ -152,10 +168,11 @@
 import type { Dayjs } from 'dayjs'
 
 import GroupSelect from '@/components/GroupSelect.vue'
+import ModelFilterSelect from '@/components/ModelFilterSelect.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { normalizeDayjsDateRange } from '@/shared/dateRange'
-import type { GroupOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { GroupOptionSummary, ProviderModelOption, SystemAccountPrincipalSummary } from '@/types/domain'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 
@@ -174,12 +191,15 @@ defineProps<{
   clientIp: string
   dateRange?: [Dayjs, Dayjs]
   groupId?: string
+  groupDisabled?: boolean
   groupOptions: GroupOptionSummary[]
   groupOptionsLoading?: boolean
   groupSelection?: GroupSelection
   isManagementView: boolean
   keyword: string
   model: string
+  modelOptions: ProviderModelOption[]
+  modelsLoading?: boolean
   refreshLoading: boolean
   result: ResultFilter
   resultOptions: Array<FilterOption<ResultFilter>>
@@ -256,9 +276,10 @@ function handleModelUpdate(value: SelectValue) {
       ? value
       : ''
   emit('update:model', nextValue)
-  if (!nextValue) {
-    emit('search')
-  }
+}
+
+function handleModelChange() {
+  emit('search')
 }
 
 function handleGroupUpdate(value: SelectValue) {

@@ -290,6 +290,8 @@ async function main(): Promise<void> {
     await assertForbidden(`${baseUrl}/__aisys__/api/providers`, seed.userACookie, '普通用户不能访问供应商管理接口')
     const userProviderModels = await getEnvelope<Array<{ model: string }>>(baseUrl, '/__aisys__/api/providers/openai/models', seed.userACookie)
     assert(userProviderModels.some((item) => item.model === 'gpt-5.5'), '普通用户应能查询 OpenAI 模型列表用于账户模型限制下拉')
+    const userProviderModelOptions = await getEnvelope<Array<{ providerCode: string; model: string }>>(baseUrl, '/__aisys__/api/providers/models/options', seed.userACookie)
+    assert(userProviderModelOptions.some((item) => item.providerCode === 'openai' && item.model === 'gpt-5.5'), '普通用户应能查询全部模型名称选项用于使用记录模型筛选')
     const userProxyOptions = await getEnvelope<Array<{ id: string; enabled: boolean }>>(baseUrl, '/__aisys__/api/proxies/options?limit=50', seed.userACookie)
     assert(userProxyOptions.some((proxy) => proxy.id === seed.userBProxyId && proxy.enabled === true), '普通用户应能查询已启用代理选项用于账户代理下拉')
     summary.push('仅管理员菜单接口拦截通过')

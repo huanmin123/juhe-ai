@@ -113,9 +113,9 @@ async function main(): Promise<void> {
       })
       assert(failedResult.failed === 2, `第 ${attempt} 次应记录 2 个刷新失败，实际 ${failedResult.failed}`)
       assert(failedResult.cooldowned === 0, `刷新失败不应改成临时不可调用，实际 ${failedResult.cooldowned}`)
-      assert(failedResult.exceptioned === (attempt === 3 ? 2 : 0), `第 ${attempt} 次异常标记数量不正确：${failedResult.exceptioned}`)
+      assert(failedResult.exceptioned === (attempt === 3 ? 1 : 0), `第 ${attempt} 次异常标记数量不正确：${failedResult.exceptioned}`)
       assertAccountState(failedActive.id, attempt === 3 ? 'error' : 'active', attempt !== 3, attempt === 3 ? 'oauth_token_refresh_failed' : undefined)
-      assertAccountState(failedDisabled.id, attempt === 3 ? 'error' : 'disabled', false, attempt === 3 ? 'oauth_token_refresh_failed' : undefined)
+      assertAccountState(failedDisabled.id, 'disabled', false)
     }
 
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => ({
@@ -131,13 +131,10 @@ async function main(): Promise<void> {
       retryBackoffSeconds: 0
     })
     assert(refreshedAfterException.refreshed === 2, `异常账户仍应后台保活刷新，实际刷新 ${refreshedAfterException.refreshed}`)
-    assertAccountState(failedActive.id, 'error', false, 'oauth_token_refresh_failed')
-    const restored = repositories.clearAccountFailureState(failedActive.id, access)
-    assert(restored?.status === 'active', `恢复异常后应回到正常状态，实际 ${restored?.status}`)
-    assert(restored?.lastErrorCode === undefined, '恢复异常后应清理异常类型')
-    assert(restored?.lastErrorMessage === undefined, '恢复异常后应清理异常信息')
+    assertAccountState(failedActive.id, 'active', true)
+    assertAccountState(failedDisabled.id, 'disabled', false)
 
-    console.log('OpenAI OAuth Access Token 后台保活回归通过：未删除 OAuth 账户不受调度状态影响，连续失败 3 次会标记异常并保留恢复入口')
+    console.log('OpenAI OAuth Access Token 后台保活回归通过：未删除 OAuth 账户不受调度状态影响，自动刷新异常成功后会自恢复，手动停用不被后台覆盖')
   } finally {
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
     try {

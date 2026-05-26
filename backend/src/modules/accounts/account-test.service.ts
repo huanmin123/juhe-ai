@@ -30,7 +30,7 @@ const maxAccountTestResponseBytes = 1024 * 1024
 
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; trafficSource?: OpenAIGatewayTrafficSource; gatewaySettingsOverride?: Partial<GatewaySettings> } = {}
+  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; trafficSource?: OpenAIGatewayTrafficSource; gatewaySettingsOverride?: Partial<GatewaySettings>; disableAccountStateMutation?: boolean } = {}
 ): Promise<AccountTestResult> {
   const explicitModel = stringValue(input.model)
   const model = explicitModel || defaultAccountTestModel(account)
@@ -75,7 +75,8 @@ export async function testOpenAIAccount(
       disableSessionAffinity: true,
       exposeUpstreamDiagnostics: !limitedDiagnostics,
       trafficSource: input.trafficSource ?? 'manual_account_test',
-      settingsOverride: input.gatewaySettingsOverride
+      settingsOverride: input.gatewaySettingsOverride,
+      disableAccountStateMutation: input.disableAccountStateMutation
     })))
     if (input.signal?.aborted) {
       throw accountTestAbortError(input.signal)
@@ -174,7 +175,6 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
 
 function limitedAccountTestMessage(result: AccountTestResult): string {
   if (result.success) return result.message
-  if (result.accountFailureEligible === false) return result.message
   if (typeof result.statusCode === 'number') {
     return `账户测试未通过，上游返回 HTTP ${result.statusCode}；请联系授权人或管理员查看完整诊断`
   }

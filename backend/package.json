@@ -85,6 +85,7 @@
     "test:gateway-upstream-keepalive": "tsx src/scripts/regression/gateway-upstream-keepalive-regression.ts",
     "test:gateway-proxy-health": "tsx src/scripts/regression/gateway-proxy-health-regression.ts",
     "test:gateway-client-ip-account-avoidance": "tsx src/scripts/regression/gateway-client-ip-account-avoidance-regression.ts",
+    "test:gateway-account-precheck-runtime": "tsx src/scripts/regression/gateway-account-precheck-runtime-regression.ts",
     "test:gateway-concurrency-snapshot": "tsx src/scripts/regression/gateway-concurrency-snapshot-regression.ts",
     "test:gateway-concurrency-preparation": "tsx src/scripts/regression/gateway-concurrency-preparation-regression.ts",
     "test:authorized-account-dispatch-query": "tsx src/scripts/regression/authorized-account-dispatch-query-regression.ts",

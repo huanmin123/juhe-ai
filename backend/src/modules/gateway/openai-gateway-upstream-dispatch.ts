@@ -73,7 +73,8 @@ export async function fetchFirstAvailableUpstream(
   signal?: AbortSignal,
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker,
   requestLane: OpenAIGatewayRequestLane = 'text',
-  groupSchedulingPolicy?: GroupSchedulingPolicy
+  groupSchedulingPolicy?: GroupSchedulingPolicy,
+  accountStateMutationEnabled = true
 ): Promise<OpenAIUpstreamDispatchResult> {
   const maxAttemptCount = 1
   let lastAttempt: UpstreamAttempt | undefined
@@ -258,7 +259,8 @@ export async function fetchFirstAvailableUpstream(
                 sessionAffinityKey,
                 signal,
                 lastAttempt,
-                clientIpAccountAvoidanceTracker
+                clientIpAccountAvoidanceTracker,
+                accountStateMutationEnabled
               })
               lastAttempt = failedResponseResult.lastAttempt
               if (failedResponseResult.action === 'retry') {
@@ -282,9 +284,10 @@ export async function fetchFirstAvailableUpstream(
                 signal,
                 lastAttempt,
                 failedProxyDispatchKeys,
-                error,
-                clientIpAccountAvoidanceTracker
-              })
+            error,
+            clientIpAccountAvoidanceTracker,
+            accountStateMutationEnabled
+          })
               lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
               if (requestErrorResult.action === 'retry') {
                 continue

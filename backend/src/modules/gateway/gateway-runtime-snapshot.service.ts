@@ -1,34 +1,60 @@
-import type { AccountSummary, GroupSummary } from '../../domain/types.js'
-import { requestServerAccountConcurrencySnapshot } from '../db-service/db-service-ipc.js'
+import type { AccountRuntimeAvailability, AccountSummary, GroupSummary } from '../../domain/types.js'
+import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 
 type AccountConcurrencySnapshot = Record<string, number>
+type AccountRuntimeAvailabilitySnapshot = Record<string, AccountRuntimeAvailability>
 
-export interface AccountConcurrencyRuntimeSnapshotStatus {
+export interface AccountRuntimeSnapshotStatus {
   accountConcurrencyAvailable: boolean
+  accountRuntimeAvailabilityAvailable: boolean
 }
 
 export async function applyServerAccountConcurrencyToAccountList<T extends { items: AccountSummary[] }>(
   result: T
-): Promise<T & { runtimeSnapshot: AccountConcurrencyRuntimeSnapshotStatus }> {
+): Promise<T & { runtimeSnapshot: AccountRuntimeSnapshotStatus }> {
   if (!accountsRequireServerConcurrencySnapshot(result.items)) {
     return {
       ...result,
-      runtimeSnapshot: { accountConcurrencyAvailable: true }
+      runtimeSnapshot: {
+        accountConcurrencyAvailable: true,
+        accountRuntimeAvailabilityAvailable: true
+      }
     }
   }
-  const concurrency = await loadServerAccountConcurrencySnapshot()
-  if (!concurrency) {
+  const runtime = await loadServerAccountRuntimeSnapshot()
+  if (!runtime?.accountConcurrency) {
     return {
       ...result,
-      runtimeSnapshot: { accountConcurrencyAvailable: false },
+      runtimeSnapshot: {
+        accountConcurrencyAvailable: false,
+        accountRuntimeAvailabilityAvailable: Boolean(runtime?.accountRuntimeAvailability)
+      },
       items: result.items.map(markAccountConcurrencyUnavailable)
     }
   }
+  const runtimeAvailability = runtime.accountRuntimeAvailability
   return {
     ...result,
-    runtimeSnapshot: { accountConcurrencyAvailable: true },
-    items: result.items.map((account) => applyAccountConcurrency(account, concurrency))
+    runtimeSnapshot: {
+      accountConcurrencyAvailable: true,
+      accountRuntimeAvailabilityAvailable: Boolean(runtimeAvailability)
+    },
+    items: result.items.map((account) => applyAccountRuntimeAvailability(
+      applyAccountConcurrency(account, runtime.accountConcurrency ?? {}),
+      runtimeAvailability
+    ))
   }
+}
+
+export async function applyServerAccountRuntimeToAccount(account: AccountSummary): Promise<AccountSummary> {
+  const runtime = await loadServerAccountRuntimeSnapshot()
+  if (!runtime?.accountConcurrency && !runtime?.accountRuntimeAvailability) {
+    return account
+  }
+  return applyAccountRuntimeAvailability(
+    runtime.accountConcurrency ? applyAccountConcurrency(account, runtime.accountConcurrency) : account,
+    runtime.accountRuntimeAvailability
+  )
 }
 
 export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary[]): Promise<GroupSummary[]> {
@@ -57,7 +83,7 @@ export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary
 
 export async function applyServerAccountConcurrencyToGroupList<T extends { items: GroupSummary[] }>(
   result: T
-): Promise<T & { runtimeSnapshot: AccountConcurrencyRuntimeSnapshotStatus }> {
+): Promise<T & { runtimeSnapshot: Pick<AccountRuntimeSnapshotStatus, 'accountConcurrencyAvailable'> }> {
   const requiresSnapshot = groupsRequireServerConcurrencySnapshot(result.items)
   const items = await applyServerAccountConcurrencyToGroups(result.items)
   return {
@@ -73,12 +99,35 @@ async function loadServerAccountConcurrencySnapshot(): Promise<AccountConcurrenc
   return await requestServerAccountConcurrencySnapshot(80).catch(() => undefined)
 }
 
+async function loadServerAccountRuntimeSnapshot(): Promise<{
+  accountConcurrency?: AccountConcurrencySnapshot
+  accountRuntimeAvailability?: AccountRuntimeAvailabilitySnapshot
+} | undefined> {
+  return await requestServerAccountRuntimeSnapshot(80).catch(() => undefined)
+}
+
 function applyAccountConcurrency(account: AccountSummary, concurrency: AccountConcurrencySnapshot): AccountSummary {
   return {
     ...account,
     currentConcurrency: concurrency[account.id] ?? 0,
     currentConcurrencyAvailable: true
   }
+}
+
+function applyAccountRuntimeAvailability(
+  account: AccountSummary,
+  runtimeAvailability?: AccountRuntimeAvailabilitySnapshot
+): AccountSummary {
+  if (!runtimeAvailability) {
+    return account
+  }
+  const runtimeStatus = runtimeAvailability[accountRuntimeAvailabilityKey(account)] ?? runtimeAvailability[account.id]
+  return runtimeStatus
+    ? {
+        ...account,
+        runtimeAvailability: runtimeStatus
+      }
+    : account
 }
 
 function markAccountConcurrencyUnavailable(account: AccountSummary): AccountSummary {
@@ -107,6 +156,20 @@ function accountsRequireServerConcurrencySnapshot(accounts: AccountSummary[]): b
 
 function groupsRequireServerConcurrencySnapshot(groups: GroupSummary[]): boolean {
   return groups.some((group) => group.accessType !== 'authorized' && group.accountIds.length > 0)
+}
+
+function accountRuntimeAvailabilityKey(account: AccountSummary): string {
+  if (
+    account.accessType === 'authorized'
+    && account.accountAuthorizationId
+    && account.boundGroupId
+  ) {
+    const systemAccountId = account.bindingSystemAccountId ?? account.systemAccountId ?? account.ownerSystemAccountId ?? ''
+    if (systemAccountId) {
+      return `${account.id}:authorized:${systemAccountId}:${account.boundGroupId}:${account.accountAuthorizationId}`
+    }
+  }
+  return account.id
 }
 
 function sumCurrentConcurrency(accountIds: string[], concurrency: AccountConcurrencySnapshot): number {

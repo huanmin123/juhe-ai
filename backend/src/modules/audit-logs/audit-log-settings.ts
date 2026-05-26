@@ -1,3 +1,5 @@
+import { runtimeConfig } from '../../config/runtime.js'
+
 export interface AuditLogSettings {
   enabled: boolean
   successSampleRate: number
@@ -6,6 +8,7 @@ export interface AuditLogSettings {
   queueMaxItems: number
   queueMaxBytes: number
   activeCaptureMaxBytes: number
+  fullBodyCaptureEnabled: boolean
   successRetentionDays: number
   failureRetentionDays: number
   errorGroupRetentionDays: number
@@ -22,11 +25,15 @@ export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
   queueMaxItems: Number.MAX_SAFE_INTEGER,
   queueMaxBytes: Number.MAX_SAFE_INTEGER,
   activeCaptureMaxBytes: 64 * auditLogMb,
+  fullBodyCaptureEnabled: false,
   successRetentionDays: 7,
   failureRetentionDays: 30,
   errorGroupRetentionDays: 30
 })
 
 export function readAuditLogSettings(): AuditLogSettings {
-  return fixedAuditLogSettings
+  return {
+    ...fixedAuditLogSettings,
+    fullBodyCaptureEnabled: runtimeConfig.audit.fullBodyCaptureEnabled
+  }
 }

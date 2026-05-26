@@ -24,7 +24,7 @@ const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
 function authorizedAccountLocalRuntimeStatusExpression(groupBindingsAlias = 'group_bindings'): string {
   return `CASE
-    WHEN ${groupBindingsAlias}.local_status = 'temporary_unavailable'
+    WHEN ${groupBindingsAlias}.local_status IN ('temporary_unavailable', 'rate_limited')
       AND ${groupBindingsAlias}.local_cooldown_until IS NOT NULL
       AND ${groupBindingsAlias}.local_cooldown_until <= ${currentIsoSql}
     THEN 'active'

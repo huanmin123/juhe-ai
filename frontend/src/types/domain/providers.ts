@@ -33,3 +33,8 @@ export interface ProviderModelPricing {
   supportsServiceTier: boolean
   source: string
 }
+
+export interface ProviderModelOption {
+  providerCode: ProviderCode
+  model: string
+}

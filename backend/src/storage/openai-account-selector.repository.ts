@@ -417,7 +417,7 @@ function openAIGroupAccountRuntimeStatus(
   localCooldownUntil: string | null | undefined,
   now = nowIso()
 ): AccountStatus {
-  if (localStatus === 'temporary_unavailable' && localCooldownUntil && localCooldownUntil <= now) {
+  if ((localStatus === 'temporary_unavailable' || localStatus === 'rate_limited') && localCooldownUntil && localCooldownUntil <= now) {
     return 'active'
   }
   return localStatus ?? 'active'

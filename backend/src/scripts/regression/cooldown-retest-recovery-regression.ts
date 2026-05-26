@@ -25,6 +25,10 @@ const [databaseModule, repositories] = await Promise.all([
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
+  const group = repositories.createGroup({
+    name: '冷却复测回归分组',
+    providerCode: 'openai'
+  }, access)
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '冷却复测观察窗口回归',
@@ -34,6 +38,7 @@ try {
     },
     status: 'active'
   }, access)
+  assert(repositories.setAccountGroup(account.id, group.id, access), '冷却复测观察窗口账号应能绑定分组')
   const cooled = repositories.markAccountCooldown(account.id, new Date(Date.now() + 60_000).toISOString(), '模拟临时不可调用')
   assert.equal(cooled?.status, 'temporary_unavailable', '临时不可调用应进入恢复通道')
   assert.ok(cooled?.cooldownRetestObservationStartedAt, '进入临时不可调用时应记录自动恢复观察起点')
@@ -50,15 +55,16 @@ try {
     `)
     .run(oldObservationStartedAt, new Date(Date.now() - 1000).toISOString(), account.id)
 
-  const exhausted = repositories.recordCooldownAccountRetestFailure(account.id, {
+  const longRecovering = repositories.recordCooldownAccountRetestFailure(account.id, {
     statusCode: 401,
     errorMessage: '仍然不可用',
     maxRecoveryHours: 1,
     maxPauseMinutes: 1440
   })
-  assert.equal(exhausted.action, 'error', '超过最长自动恢复观察后应直接转异常')
-  assert.equal(exhausted.account?.status, 'error', '超过观察窗口后账号状态应为异常')
-  assert.match(exhausted.errorMessage, /已观察/, '异常摘要应包含真实观察时长')
+  assert.equal(longRecovering.action, 'cooldown', '超过最长观察后也应继续自动恢复，不应转异常')
+  assert.equal(longRecovering.account?.status, 'temporary_unavailable', '超过观察窗口后账号仍应保留临时不可调用')
+  assert.equal(longRecovering.recoveryStage, 'slow', '长时间失败应留在慢速恢复通道')
+  assert.match(longRecovering.errorMessage, /慢速恢复通道/, '失败摘要应说明仍在慢速恢复通道')
 
   const freshAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -69,6 +75,7 @@ try {
     },
     status: 'active'
   }, access)
+  assert(repositories.setAccountGroup(freshAccount.id, group.id, access), '冷却复测未超观察窗口账号应能绑定分组')
   repositories.markAccountCooldown(freshAccount.id, new Date(Date.now() + 60_000).toISOString(), '模拟临时不可调用')
   databaseModule.getDatabase()
     .prepare(`
@@ -92,6 +99,33 @@ try {
 
   const restored = repositories.clearAccountFailureState(freshAccount.id, access)
   assert.equal(restored?.cooldownRetestObservationStartedAt, undefined, '恢复正常时应清理自动恢复观察起点')
+
+  const rateLimitedAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '限流后台复测回归',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cooldown-retest-rate-limited'
+    },
+    status: 'active'
+  }, access)
+  assert(repositories.setAccountGroup(rateLimitedAccount.id, group.id, access), '限流复测账号应能绑定分组')
+  const limited = repositories.markAccountCooldown(rateLimitedAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟限流', 'rate_limited')
+  assert.equal(limited?.status, 'rate_limited', '限流状态应进入同一自动恢复通道')
+  assert.ok(limited?.cooldownRetestObservationStartedAt, '进入限流时应记录自动恢复观察起点')
+  databaseModule.getDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(Date.now() - 1000).toISOString(), rateLimitedAccount.id)
+  const dueIds = repositories.listAccountsDueForCooldownRetest(20).map((item) => item.id)
+  assert(dueIds.includes(rateLimitedAccount.id), '限流到期账号应进入后台复测候选')
+  const limitedStillRecovering = repositories.recordCooldownAccountRetestFailure(rateLimitedAccount.id, {
+    statusCode: 429,
+    errorMessage: '仍然限流',
+    maxRecoveryHours: 1,
+    maxPauseMinutes: 10
+  })
+  assert.equal(limitedStillRecovering.action, 'retry_immediately', '限流首次复测失败应走快速恢复通道')
+  assert.equal(repositories.findAccountSummary(rateLimitedAccount.id)?.status, 'rate_limited', '限流复测失败后应保持限流状态等待下次自动恢复')
 
   console.log('cooldown retest recovery regression passed')
 } finally {

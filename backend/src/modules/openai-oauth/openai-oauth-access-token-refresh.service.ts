@@ -50,7 +50,7 @@ const refreshFailureStateByAccountId = new Map<string, { count: number; backoffU
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
 let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
 
-type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerCode' | 'proxyProfileId' | 'status' | 'name'>> & {
+type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerCode' | 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode'>> & {
   proxyUrl?: string
 }
 type OpenAIOAuthRefreshAccount = RefreshableOpenAIOAuthAccount & Partial<Pick<AccountSummary, 'systemAccountId' | 'concurrencyLimit' | 'currentConcurrency' | 'priority' | 'superPriorityEnabled' | 'fallbackEnabled' | 'passthroughEnabled' | 'schedulable' | 'todayUsage' | 'usage' | 'permissions'>> & {
@@ -222,6 +222,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
     try {
       await refreshOpenAIOAuthAccountAccessToken(account, { force: false, leadSeconds, restoreFailureState: false })
       refreshFailureStateByAccountId.delete(account.id)
+      restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account)
       result.refreshed += 1
     } catch (error) {
       result.failed += 1
@@ -240,8 +241,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
         const updated = markAccountException(
           account.id,
           oauthTokenRefreshFailedErrorCode,
-          `OpenAI OAuth 访问令牌连续 ${failureState.count} 次刷新失败：${message}`,
-          { preserveDisabled: false }
+          `OpenAI OAuth 访问令牌连续 ${failureState.count} 次刷新失败：${message}`
         )
         if (updated) {
           clearGatewayRuntimeCache()
@@ -324,6 +324,21 @@ async function findLatestRefreshableOpenAIOAuthAccount(
     return undefined
   }
   return latest
+}
+
+function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: AccountSummary): void {
+  if (account.status !== 'error' || account.lastErrorCode !== oauthTokenRefreshFailedErrorCode) {
+    return
+  }
+  const restored = clearAccountFailureState(account.id)
+  if (restored?.status === 'active') {
+    clearGatewayRuntimeCache()
+    logger.info({
+      event: 'openai_oauth_access_token_refresh_account_restored',
+      accountId: account.id,
+      accountName: account.name
+    }, 'OpenAI OAuth Access Token 后台刷新成功，已自动恢复此前刷新失败异常')
+  }
 }
 
 async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promise<T>): Promise<T> {

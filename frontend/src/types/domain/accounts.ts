@@ -43,6 +43,19 @@ export interface AccountOAuthUsageSnapshot {
   sevenDay?: AccountOAuthUsageWindow
 }
 
+export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'precheck_pending' | 'precheck_failed'
+
+export interface AccountRuntimeAvailability {
+  status: AccountRuntimeAvailabilityStatus
+  reason?: string
+  since?: string
+  until?: string
+  failureCount?: number
+  distinctClientIpCount?: number
+  distinctApiKeyCount?: number
+  precheckAttemptCount?: number
+}
+
 export interface GroupAccountStats {
   total: number
   available: number
@@ -70,6 +83,7 @@ export interface AccountSummary {
   concurrencyLimit: number
   currentConcurrency: number
   currentConcurrencyAvailable?: boolean
+  runtimeAvailability?: AccountRuntimeAvailability
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -136,6 +150,7 @@ export interface AccountListResult {
   pageSize: number
   runtimeSnapshot?: {
     accountConcurrencyAvailable: boolean
+    accountRuntimeAvailabilityAvailable?: boolean
   }
 }
 

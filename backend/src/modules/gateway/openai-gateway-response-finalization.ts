@@ -52,7 +52,7 @@ import {
   type UsageRequestSnapshot
 } from './openai-gateway-usage.js'
 import { applyOpenAIStreamUsageFallback } from './openai-gateway-stream-inspection.js'
-import { recordGatewayProxySuccess } from './openai-gateway-proxy-health.service.js'
+import { recordGatewayUpstreamBucketSuccess } from './openai-gateway-proxy-health.service.js'
 import {
   recordClientAbortedUpstreamAttempt,
   recordCompletedUpstreamAttempt,
@@ -86,6 +86,7 @@ interface HandleUpstreamResponseInput {
   clientStrategy?: OpenAIGatewayClientStrategyContext
   markFirstOutput?: () => void
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
+  accountStateMutationEnabled?: boolean
 }
 
 interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
@@ -123,7 +124,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     signal,
     sessionAffinityKey,
     clientStrategy,
-    markFirstOutput
+    markFirstOutput,
+    accountStateMutationEnabled
   } = input
 
   if (!upstreamResponse.body) {
@@ -175,7 +177,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       res,
       settings,
       startedAt,
-      (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context),
+      (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, accountStateMutationEnabled !== false),
       signal,
       {
         clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
@@ -487,25 +489,27 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
     clientIpAccountAvoidanceTracker
   } = input
   if (upstreamResponse.ok) {
-    const clearedProxyFailure = recordGatewayProxySuccess(account)
+    const clearedProxyFailure = recordGatewayUpstreamBucketSuccess(account)
     if (clearedProxyFailure) {
       getRequestLogger().info({
-        event: 'gateway_proxy_failure_bucket_recovered',
+        event: 'gateway_upstream_failure_bucket_recovered',
         accountId: account.id,
         accountName: account.name
-      }, '代理运行态失败桶已按成功响应恢复')
+      }, '上游桶运行态失败已按成功响应恢复')
       auditCapture.addGatewayMetadata({
-        label: 'proxy_health',
+        label: 'upstream_bucket_health',
         metadata: {
           recovered: true
         }
       })
     }
-    applyAccountErrorHandlingWithCacheInvalidation(account, {
-      success: true,
-      settings,
-      trafficSource: usageContext.trafficSource
-    })
+    if (input.accountStateMutationEnabled !== false) {
+      applyAccountErrorHandlingWithCacheInvalidation(account, {
+        success: true,
+        settings,
+        trafficSource: usageContext.trafficSource
+      })
+    }
     const clearedClientIpErrorCircuit = recordClientIpErrorCircuitSuccess({
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
@@ -549,7 +553,7 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
         }
       })
     }
-    if (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage) {
+    if (input.accountStateMutationEnabled !== false && (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage)) {
       clearAccountStreamFailureStateWithCacheInvalidation(account)
     }
   }

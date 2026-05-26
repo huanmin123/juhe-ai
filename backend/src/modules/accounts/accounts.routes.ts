@@ -9,7 +9,7 @@ import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
-import { applyServerAccountConcurrencyToAccountList } from '../gateway/gateway-runtime-snapshot.service.js'
+import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
@@ -110,28 +110,33 @@ accountsRouter.get('/options', (req, res, next) => {
   }
 })
 
-accountsRouter.get('/:id', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
+accountsRouter.get('/:id', async (req, res, next) => {
+  try {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const visibleAccount = findAccountSummary(req.params.id, requestAccess)
+    if (!visibleAccount) {
+      res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    if (visibleAccount.permissions?.canViewCredentials === false || visibleAccount.permissions?.canEdit === false) {
+      res.status(403).json({ message: '无权查看账户凭据' })
+      return
+    }
+    const account = findAccountForTest(req.params.id, requestAccess)
+    if (!account) {
+      res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    const hydratedAccount = await applyServerAccountRuntimeToAccount(account)
+    res.json(ok(hydratedAccount))
+  } catch (error) {
+    next(error)
   }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const visibleAccount = findAccountSummary(req.params.id, requestAccess)
-  if (!visibleAccount) {
-    res.status(404).json({ message: '账户不存在' })
-    return
-  }
-  if (visibleAccount.permissions?.canViewCredentials === false || visibleAccount.permissions?.canEdit === false) {
-    res.status(403).json({ message: '无权查看账户凭据' })
-    return
-  }
-  const account = findAccountForTest(req.params.id, requestAccess)
-  if (!account) {
-    res.status(404).json({ message: '账户不存在' })
-    return
-  }
-  res.json(ok(account))
 })
 
 function parseAccountOptionsQuery(query: Record<string, unknown>): AccountListOptions {

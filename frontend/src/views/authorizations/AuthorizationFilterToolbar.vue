@@ -13,6 +13,53 @@
       <a-segmented v-if="!isManagementView" v-model:value="filters.direction" class="direction-filter responsive-list-inline-filter" :options="directionOptions" @change="$emit('refresh')" />
       <a-select v-if="!isManagementView" v-model:value="filters.sourceType" class="filter-select responsive-list-inline-filter" :options="sourceOptions" @change="$emit('refresh')" />
       <a-select v-if="isManagementView" v-model:value="filters.resourceType" class="filter-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
+      <SystemPrincipalSelect
+        v-if="isManagementView"
+        v-model:value="filters.resourceOwnerSystemAccountId"
+        v-model:selected-principal="filters.resourceOwnerSystemAccount"
+        :accounts="ownerUsers"
+        :active-only="false"
+        :filter-option="false"
+        :loading="ownerLoading"
+        include-all
+        all-label="全部资源归属用户"
+        class="filter-user responsive-list-inline-filter"
+        placeholder="筛选资源归属用户"
+        @dropdown-visible-change="$emit('owner-dropdown', $event)"
+        @search="$emit('owner-search', $event)"
+        @change="$emit('owner-change')"
+      />
+      <SystemPrincipalSelect
+        v-if="isManagementView"
+        v-model:value="filters.teamId"
+        v-model:selected-principal="filters.team"
+        :teams="teams"
+        :active-only="false"
+        allow-clear
+        :filter-option="false"
+        :loading="teamLoading"
+        class="filter-user responsive-list-inline-filter"
+        placeholder="筛选授权团队"
+        scope="team"
+        @dropdown-visible-change="$emit('team-dropdown', $event)"
+        @search="$emit('team-search', $event)"
+        @change="$emit('refresh')"
+      />
+      <SystemPrincipalSelect
+        v-if="isManagementView"
+        v-model:value="filters.granteeSystemAccountId"
+        v-model:selected-principal="filters.granteeSystemAccount"
+        :accounts="users"
+        :active-only="false"
+        allow-clear
+        :filter-option="false"
+        :loading="userLoading"
+        class="filter-user responsive-list-inline-filter"
+        placeholder="筛选被授权用户"
+        @dropdown-visible-change="$emit('user-dropdown', $event)"
+        @search="$emit('user-search', $event)"
+        @change="$emit('refresh')"
+      />
     </template>
     <template #advanced-filters>
       <a-form v-if="isManagementView" layout="vertical" class="advanced-filter-form">
@@ -22,10 +69,11 @@
             v-model:value="filters.resourceId"
             v-model:selected-group="filters.resourceGroup"
             allow-clear
+            :disabled="resourceDisabled"
             :filter-option="false"
             :loading="resourceLoading"
             :options="resourceOptions"
-            placeholder="筛选授权资源"
+            :placeholder="resourcePlaceholder"
             @dropdown-visible-change="$emit('resource-dropdown', $event)"
             @search="$emit('resource-search', $event)"
             @change="$emit('refresh')"
@@ -46,37 +94,6 @@
             @change="$emit('refresh')"
           />
         </a-form-item>
-        <a-form-item label="授权团队">
-          <SystemPrincipalSelect
-            v-model:value="filters.teamId"
-            v-model:selected-principal="filters.team"
-            :teams="teams"
-            :active-only="false"
-            allow-clear
-            :filter-option="false"
-            :loading="teamLoading"
-            placeholder="筛选授权团队"
-            scope="team"
-            @dropdown-visible-change="$emit('team-dropdown', $event)"
-            @search="$emit('team-search', $event)"
-            @change="$emit('refresh')"
-          />
-        </a-form-item>
-        <a-form-item label="被授权用户">
-          <SystemPrincipalSelect
-            v-model:value="filters.granteeSystemAccountId"
-            v-model:selected-principal="filters.granteeSystemAccount"
-            :accounts="users"
-            :active-only="false"
-            allow-clear
-            :filter-option="false"
-            :loading="userLoading"
-            placeholder="筛选被授权用户"
-            @dropdown-visible-change="$emit('user-dropdown', $event)"
-            @search="$emit('user-search', $event)"
-            @change="$emit('refresh')"
-          />
-        </a-form-item>
       </a-form>
     </template>
     <template #filters>
@@ -93,16 +110,34 @@
         <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
+        <span>资源归属用户</span>
+        <SystemPrincipalSelect
+          v-model:value="filters.resourceOwnerSystemAccountId"
+          v-model:selected-principal="filters.resourceOwnerSystemAccount"
+          :accounts="ownerUsers"
+          :active-only="false"
+          :filter-option="false"
+          :loading="ownerLoading"
+          include-all
+          all-label="全部资源归属用户"
+          placeholder="筛选资源归属用户"
+          @dropdown-visible-change="$emit('owner-dropdown', $event)"
+          @search="$emit('owner-search', $event)"
+          @change="$emit('owner-change')"
+        />
+      </label>
+      <label v-if="isManagementView" class="mobile-filter-field">
         <span>授权资源</span>
         <GroupSelect
           v-if="filters.resourceType === 'group'"
           v-model:value="filters.resourceId"
           v-model:selected-group="filters.resourceGroup"
           allow-clear
+          :disabled="resourceDisabled"
           :filter-option="false"
           :loading="resourceLoading"
           :options="resourceOptions"
-          placeholder="筛选授权资源"
+          :placeholder="resourcePlaceholder"
           @dropdown-visible-change="$emit('resource-dropdown', $event)"
           @search="$emit('resource-search', $event)"
           @change="$emit('refresh')"
@@ -186,6 +221,8 @@ const props = defineProps<{
     direction: AuthorizationDirectionFilter
     sourceType: AuthorizationSourceFilter
     resourceType: AuthorizationFilterResourceType
+    resourceOwnerSystemAccountId: string
+    resourceOwnerSystemAccount?: PrincipalSelection
     resourceId?: string
     resourceAccount?: AccountSelection
     resourceGroup?: GroupSelection
@@ -199,7 +236,11 @@ const props = defineProps<{
   sourceOptions: Array<{ label: string; value: AuthorizationSourceFilter }>
   resourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }>
   resourceOptions: Array<{ label: string; value: string }>
+  resourceDisabled?: boolean
   resourceLoading?: boolean
+  resourcePlaceholder?: string
+  ownerUsers: SystemAccountPrincipalSummary[]
+  ownerLoading?: boolean
   teams: SystemTeamPrincipalSummary[]
   teamLoading?: boolean
   users: SystemAccountPrincipalSummary[]
@@ -214,6 +255,9 @@ defineEmits<{
   (event: 'help'): void
   (event: 'refresh'): void
   (event: 'reset'): void
+  (event: 'owner-change'): void
+  (event: 'owner-search', value: string): void
+  (event: 'owner-dropdown', open: boolean): void
   (event: 'resource-type-change'): void
   (event: 'resource-search', value: string): void
   (event: 'resource-dropdown', open: boolean): void

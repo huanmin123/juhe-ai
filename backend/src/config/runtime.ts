@@ -17,6 +17,9 @@ export interface RuntimeConfig {
   usageShardCount: number
   secret: string
   oauthProxyUrl?: string
+  audit: {
+    fullBodyCaptureEnabled: boolean
+  }
   log: {
     level: LogLevel
     directory: string
@@ -62,6 +65,9 @@ export const runtimeConfig: RuntimeConfig = {
   usageShardCount: numberConfig('JUHE_AI_USAGE_SHARD_COUNT', 16, 1, 256),
   secret: stringConfig('JUHE_AI_SECRET', 'juhe-ai-dev-secret-change-me'),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
+  audit: {
+    fullBodyCaptureEnabled: booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', false)
+  },
   log: {
     level: logLevelConfig('JUHE_AI_LOG_LEVEL', 'info'),
     directory: pathConfig('JUHE_AI_LOG_DIR', resolve(backendRoot, 'logs')),

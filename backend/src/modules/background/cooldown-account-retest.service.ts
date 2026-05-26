@@ -142,9 +142,7 @@ async function runCooldownAccountRetestQueueItem(
     observationElapsedSeconds: failure.observationElapsedSeconds,
     message: result.message
   }
-  if (failure.action === 'error') {
-    logger.warn(logFields, '冷却账户复测超过最长自动恢复观察，账号已转为异常')
-  } else if (failure.recoveryStage === 'slow') {
+  if (failure.recoveryStage === 'slow') {
     logger.warn(logFields, '冷却账户复测未通过，已进入慢速恢复通道')
   } else {
     logger.debug(logFields, '冷却账户快速恢复通道复测未通过，已按短退避等待下次复测')
@@ -153,7 +151,7 @@ async function runCooldownAccountRetestQueueItem(
 }
 
 function isAccountDueForCooldownRetest(account: AccountSummary): boolean {
-  if (account.status !== 'temporary_unavailable') {
+  if (account.status !== 'temporary_unavailable' && account.status !== 'rate_limited') {
     return false
   }
   if (!account.schedulable || !account.cooldownUntil) {
