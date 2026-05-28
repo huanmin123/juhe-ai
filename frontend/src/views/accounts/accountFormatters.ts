@@ -173,6 +173,10 @@ function activeRuntimeAvailabilityStatus(account: AccountSummary) {
   return status
 }
 
+export function hasAccountRuntimeRecoveryState(account: AccountSummary): boolean {
+  return Boolean(activeRuntimeAvailabilityStatus(account))
+}
+
 function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string[] {
   const runtime = account.runtimeAvailability
   if (!runtime || runtime.status === 'normal') return []
@@ -202,6 +206,9 @@ function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string
   }
   if (runtime.reason) {
     lines.push(`原因：${runtime.reason}`)
+  }
+  if (account.status === 'active') {
+    lines.push('可在更多菜单手动恢复正常，清理当前网关运行态避让')
   }
   return lines
 }

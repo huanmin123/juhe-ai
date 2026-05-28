@@ -57,7 +57,7 @@
           </a-button>
         </div>
       </div>
-      <div v-if="accountFilterItems.length" class="usage-stats-account-list" aria-label="趋势账户筛选">
+      <div v-if="accountFilterItems.length" class="usage-stats-account-list" aria-label="账户筛选">
         <span
           v-for="item in accountFilterItems"
           :key="item.account.id"
@@ -67,6 +67,7 @@
           <button
             class="usage-stats-account-filter-item"
             type="button"
+            :aria-pressed="item.selected"
             @click="toggleTrendAccount(item.account.id)"
           >
             <span class="usage-stats-legend-dot" :style="{ backgroundColor: item.color }" />
@@ -108,17 +109,17 @@
         class="usage-stats-responsive-list"
         table-class="usage-stats-table"
         :columns="columns"
-        :data-source="rows"
-        :mobile-data-source="rows"
+        :data-source="displayRows"
+        :mobile-data-source="displayRows"
         row-key="id"
         :loading="loading"
-        :loading-more="accountUsageMobileLoadingMore"
-        :mobile-has-more="accountUsageMobileHasMore"
-        :pagination="tablePagination"
+        :loading-more="displayMobileLoadingMore"
+        :mobile-has-more="displayMobileHasMore"
+        :pagination="displayTablePagination"
         :scroll-x="tableScrollX"
         :table-scroll-enabled="false"
         :lock-body-scroll="false"
-        mobile-pagination
+        :mobile-pagination="!hasSelectedTrendAccounts"
         pull-refresh-enabled
         :refreshing="loading"
         @change="handleTableChange"
@@ -126,7 +127,7 @@
         @mobile-refresh="refreshMobileRows"
       >
         <template #emptyText>
-          <a-empty class="page-empty-card" description="当前日期范围暂无账户用量，等待后台聚合后会显示结果。" />
+          <a-empty class="page-empty-card" :description="accountUsageEmptyDescription" />
         </template>
         <template #bodyCell="{ column, record, index }">
           <template v-if="column.key === 'rank'">
@@ -413,6 +414,16 @@ const selectedTrendRows = computed(() => {
 })
 const visibleTrendRows = computed(() => selectedTrendAccountIds.value.length ? selectedTrendRows.value : trendAccountRows.value)
 const hasSelectedTrendAccounts = computed(() => selectedTrendAccountIds.value.length > 0)
+const displayRows = computed(() => hasSelectedTrendAccounts.value ? orderedUsageRows(selectedTrendRows.value) : rows.value)
+const displayTablePagination = computed(() => hasSelectedTrendAccounts.value ? false : tablePagination.value)
+const displayMobileHasMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileHasMore.value)
+const displayMobileLoadingMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileLoadingMore.value)
+const displaySummary = computed(() => hasSelectedTrendAccounts.value
+  ? aggregateUsageSummaries(displayRows.value.map((row) => row.rangeUsage))
+  : overview.value?.summary)
+const accountUsageEmptyDescription = computed(() => hasSelectedTrendAccounts.value
+  ? '当前已选账户在日期范围内暂无用量。'
+  : '当前日期范围暂无账户用量，等待后台聚合后会显示结果。')
 const trendEmptyDescription = computed(() => visibleTrendRows.value.length ? `${rangeLabel.value} 暂无${metricText(selectedMetric.value)}消耗趋势` : '暂无可展示账户')
 const hasTrendData = computed(() => visibleTrendRows.value.some((row) => row.dailyUsage.some((point) => metricValue(point, selectedMetric.value) > 0)))
 const tableScrollX = computed(() => isManagementView.value ? 1620 : 1450)
@@ -448,7 +459,7 @@ const accountFilterItems = computed(() => {
   }))
 })
 const summaryCards = computed(() => {
-  const summary = overview.value?.summary
+  const summary = displaySummary.value
   return [
     { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
     { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读取 ${formatCompactInteger(summary?.cacheReadTokens)}` },
@@ -461,6 +472,25 @@ function cacheReadRate(summary?: AccountUsageSummary) {
   const inputTokens = summary?.inputTokens ?? 0
   if (inputTokens <= 0) return 0
   return ((summary?.cacheReadTokens ?? 0) / inputTokens) * 100
+}
+
+function aggregateUsageSummaries(summaries: AccountUsageSummary[]): AccountUsageSummary {
+  const summary = zeroUsageSummary()
+  let lastUsedAt: string | undefined
+  for (const item of summaries) {
+    summary.requestCount += item.requestCount
+    summary.inputTokens += item.inputTokens
+    summary.outputTokens += item.outputTokens
+    summary.cacheReadTokens += item.cacheReadTokens
+    summary.cacheReadCost += item.cacheReadCost
+    summary.totalCost += item.totalCost
+    if (item.lastUsedAt && (!lastUsedAt || item.lastUsedAt > lastUsedAt)) {
+      lastUsedAt = item.lastUsedAt
+    }
+  }
+  summary.totalTokens = summary.inputTokens + summary.outputTokens
+  summary.lastUsedAt = lastUsedAt
+  return summary
 }
 
 async function loadUsageStatsOptions(force = false): Promise<void> {

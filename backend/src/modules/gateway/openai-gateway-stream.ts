@@ -2,6 +2,7 @@ import type { Response } from 'express'
 
 import { getRequestLogger } from '../../shared/request-context.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
+import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
 import { emptyUsage, type ParsedUsage } from './openai-gateway-usage.js'
 import {
   OpenAIStreamInspector,
@@ -452,11 +453,11 @@ export async function pipeUpstreamStream(
         outputEventCount: inspection.outputEventCount,
         sseEventCount: inspection.eventCount,
         sseEventTypeCounts: inspection.eventTypeCounts,
-        recentSseEventTypes: inspection.recentEventTypes,
-        parserSkipped: inspection.skipped,
-        skipReason: inspection.skipReason,
-        errorMessage: error instanceof Error ? error.message : String(error)
-      }, '网关流式转发因请求取消而结束')
+          recentSseEventTypes: inspection.recentEventTypes,
+          parserSkipped: inspection.skipped,
+          skipReason: inspection.skipReason,
+          errorMessage: downstreamConnectionClosedMessage
+        }, '网关流式转发因下游连接提前关闭而结束')
       endResponse(res)
       throw error
     }

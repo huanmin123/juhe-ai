@@ -84,27 +84,27 @@ Codex turn 策略必须同时满足：
 Codex turn 级状态键建议使用：
 
 ```text
-systemAccountId + apiKeyId + groupId + endpoint + codex.turn_id + rawBodyHash
+systemAccountId + apiKeyId + endpoint + codex.turn_id + rawBodyHash
 ```
 
 说明：
 
-- `systemAccountId + apiKeyId + groupId` 用于隔离本地调用方边界，避免不同 API Key 或不同本地分组共享重试状态。
+- `systemAccountId + apiKeyId` 用于隔离本地调用方边界，避免不同 API Key 共享重试状态；`groupId` 不参与状态键，避免同一 API Key 下分组切换时丢失 Codex turn 级失败账号避让连续性。
 - `endpoint` 用于区分 `/responses`、`/responses/compact` 或未来其他 endpoint。
 - `codex.turn_id` 是唯一允许驱动 Codex turn 策略的客户端行为标识。
 - `rawBodyHash` 用于防止同一个 `turn_id` 下请求体发生变化仍被当成同一轮重试。
 - `session_id` 只可作为审计字段，不参与替代 `turn_id`。
 
-当前项目不承诺识别真实自然人用户；能保证的是同一本地 API Key / 分组边界内的同一个 Codex turn。若同一个 API Key 被多人共享，隔离能力依赖 Codex `turn_id` 和请求体哈希。
+当前项目不承诺识别真实自然人用户；能保证的是同一本地 API Key 边界内的同一个 Codex turn。若同一个 API Key 被多人共享，隔离能力依赖 Codex `turn_id` 和请求体哈希。
 
 ### 第 4 次切号策略
 
 Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的第 4 次可见输出前失败链路上应优先做账号规避：
 
 1. 前 1 到 3 次：保持 Codex 客户端可重试行为，记录 turn 级失败账号和失败原因。
-2. 第 4 次及以后：在同一分组、同一授权边界内避让该 turn 已失败账号，优先选择其他可调度账号。
+2. 第 4 次及以后：在同一 API Key 路由边界内避让该 turn 已失败账号，优先选择当前路由候选中的其他可调度账号。
 3. 如果没有可用备选账号，或无法精准确认 Codex turn，不再伪造新的 Codex 可重试事件；按普通流式失败或上游错误返回客户端。
-4. 切号是 turn 级局部策略，不迁移会话亲和，不写全局账号冷却，不影响其他客户端、其他 turn、其他 API Key 或其他分组。
+4. 切号是 turn 级局部策略，不迁移会话亲和，不写全局账号冷却，不影响其他客户端、其他 turn 或其他 API Key；同一 API Key 下分组切换时保留该 turn 的失败账号避让连续性。
 
 ### 副作用边界
 
@@ -176,7 +176,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 - 运行时已选择收紧路径：`response.failed/upstream_retryable_error` 只在 Codex profile 下启用；后续新增客户端不得复用这条策略，必须新增独立 profile。
 - Codex `x-codex-turn-metadata` 是 Codex 客户端行为，不是 OpenAI 官方所有客户端的通用行为；任何依赖它的逻辑都必须 guarded by `clientProfile = codex`。
 - 进程内 TTL 状态在重启后会丢失；这比误识别更安全，因为系统会回到普通错误行为。
-- 若同一 API Key 被多人共享，系统不能识别真实自然人，只能按本地 API Key / 分组 / Codex turn 边界隔离。
+- 若同一 API Key 被多人共享，系统不能识别真实自然人，只能按本地 API Key / Codex turn 边界隔离。
 - 后续维护时必须避免把 turn 级失败记录写成账号健康结论。
 
 ## 完成总结

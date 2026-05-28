@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { newId, nowIso } from '../../storage/database.js'
 import { createOperationLogsBatch, type OperationLogInput } from '../../storage/repositories.js'
@@ -8,13 +9,23 @@ import { sendOperationLogsToWorker } from '../background/background-ipc.js'
 const operationLogFlushIntervalMs = 100
 const operationLogRetryPolicy = fixedRetryPolicy('operation_log_queue_flush', 1000)
 const operationLogBatchSize = 200
+const operationLogQueueMaxItems = 5_000
+const operationLogQueueMaxBytes = 32 * 1024 * 1024
 
-let pendingOperationLogs: OperationLogInput[] = []
+interface QueuedOperationLog {
+  input: OperationLogInput
+  bytes: number
+}
+
+let pendingOperationLogs: QueuedOperationLog[] = []
+let pendingOperationLogBytes = 0
 let flushTimer: NodeJS.Timeout | undefined
 let flushing = false
 let retainedOverflowWarningCount = 0
 let flushFailureCount = 0
 let droppedDispatchCount = 0
+let droppedOverflowCount = 0
+let droppedOversizeCount = 0
 let shutdownHooksInstalled = false
 
 interface OperationLogFlushOptions {
@@ -89,15 +100,18 @@ export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): 
       flushedBatches += 1
 
       try {
-        createOperationLogsBatch(batch)
+        pendingOperationLogBytes = Math.max(0, pendingOperationLogBytes - sumQueuedOperationLogBytes(batch))
+        createOperationLogsBatch(batch.map((item) => item.input))
       } catch (error) {
         failed = true
         pendingOperationLogs = [...batch, ...pendingOperationLogs]
+        pendingOperationLogBytes = sumQueuedOperationLogBytes(pendingOperationLogs)
         flushFailureCount += 1
         logger.error(errorLogFields(error, {
           event: 'operation_log_queue_flush_failed',
           batchSize: batch.length,
           pendingCount: pendingOperationLogs.length,
+          pendingBytes: pendingOperationLogBytes,
           flushFailureCount
         }), '操作日志队列写入失败，已保留记录等待重试')
         shouldRetry = options.retryOnFailure !== false
@@ -119,14 +133,20 @@ export function flushAllOperationLogQueue(): void {
 
 export function getOperationLogQueueRuntime(): {
   queueLength: number
+  queueBytes: number
   droppedCount: number
   retainedOverflowWarningCount: number
+  droppedOverflowCount: number
+  droppedOversizeCount: number
   flushFailureCount: number
 } {
   return {
     queueLength: pendingOperationLogs.length,
-    droppedCount: droppedDispatchCount,
+    queueBytes: pendingOperationLogBytes,
+    droppedCount: droppedDispatchCount + droppedOverflowCount + droppedOversizeCount,
     retainedOverflowWarningCount,
+    droppedOverflowCount,
+    droppedOversizeCount,
     flushFailureCount
   }
 }
@@ -146,7 +166,20 @@ export function installOperationLogQueueShutdownHooks(): void {
 
 function enqueueOperationLogLocal(input: OperationLogInput): void {
   assertLocalOperationLogWriteAllowed('enqueueOperationLogLocal')
-  pendingOperationLogs.push(input)
+  const queued = {
+    input,
+    bytes: estimateOperationLogBytes(input)
+  }
+  if (queued.bytes > operationLogQueueMaxBytes) {
+    recordOperationLogLocalDrop(queued, 'oversize')
+    return
+  }
+  if (pendingOperationLogs.length >= operationLogQueueMaxItems || pendingOperationLogBytes + queued.bytes > operationLogQueueMaxBytes) {
+    recordOperationLogLocalDrop(queued, 'overflow')
+    return
+  }
+  pendingOperationLogs.push(queued)
+  pendingOperationLogBytes += queued.bytes
   scheduleOperationLogFlush(pendingOperationLogs.length >= operationLogBatchSize ? 0 : operationLogFlushIntervalMs)
 }
 
@@ -183,6 +216,22 @@ function recordOperationLogDispatchFailure(error: unknown, input?: OperationLogI
   }), '操作日志投递后台 worker 失败，已跳过投递')
 }
 
+export function clearOperationLogQueueForTest(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+  pendingOperationLogs = []
+  pendingOperationLogBytes = 0
+  flushing = false
+  retainedOverflowWarningCount = 0
+  flushFailureCount = 0
+  droppedDispatchCount = 0
+  droppedOverflowCount = 0
+  droppedOversizeCount = 0
+  shutdownHooksInstalled = false
+}
+
 function normalizeOperationLogInput(input: OperationLogInput): OperationLogInput {
   return {
     ...input,
@@ -207,6 +256,42 @@ export function isOperationLogInput(value: unknown): value is OperationLogInput 
 
 function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
+}
+
+function estimateOperationLogBytes(input: OperationLogInput): number {
+  return estimateJsonLikeBytes(input) + 256
+}
+
+function sumQueuedOperationLogBytes(items: QueuedOperationLog[]): number {
+  return items.reduce((sum, item) => sum + item.bytes, 0)
+}
+
+function recordOperationLogLocalDrop(item: QueuedOperationLog, reason: 'overflow' | 'oversize'): void {
+  if (reason === 'overflow') {
+    droppedOverflowCount += 1
+    retainedOverflowWarningCount += 1
+  } else {
+    droppedOversizeCount += 1
+  }
+  const droppedCount = droppedDispatchCount + droppedOverflowCount + droppedOversizeCount
+  if (droppedCount > 10 && droppedCount % 100 !== 0) {
+    return
+  }
+  logger.warn({
+    event: 'operation_log_queue_dropped',
+    reason,
+    operationLogId: item.input.id,
+    actorSystemAccountId: item.input.actorSystemAccountId,
+    module: item.input.module,
+    action: item.input.action,
+    operationKey: item.input.operationKey,
+    resourceType: item.input.resourceType,
+    bytes: item.bytes,
+    pendingCount: pendingOperationLogs.length,
+    pendingBytes: pendingOperationLogBytes,
+    droppedOverflowCount,
+    droppedOversizeCount
+  }, '操作日志队列达到保护上限，已丢弃新记录')
 }
 
 function assertLocalOperationLogWriteAllowed(operation: string): void {

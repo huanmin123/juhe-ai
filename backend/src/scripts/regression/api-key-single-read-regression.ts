@@ -25,10 +25,15 @@ const [databaseModule, repositories] = await Promise.all([
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
+  const group = repositories.createGroup({
+    name: 'API Key 单条读取回归分组',
+    providerCode: 'openai'
+  }, access)
   let targetId = ''
   for (let index = 0; index < 250; index += 1) {
     const apiKey = repositories.createApiKeyRecord({
       name: `单条读取回归-${String(index).padStart(3, '0')}`,
+      groupId: group.id,
       status: 'active'
     }, access)
     if (index === 0) {

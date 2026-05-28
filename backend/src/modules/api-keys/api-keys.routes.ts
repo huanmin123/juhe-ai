@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
-import { badRequest, ok } from '../../shared/http.js'
+import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySummary, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -13,14 +13,14 @@ import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperatio
 export const apiKeysRouter = Router()
 
 const apiKeyCreateSchema = z.object({
-  name: z.string().trim().min(1),
+  name: z.string().trim().min(1, '请填写 API Key 名称'),
   description: z.string().trim().max(200).nullable().optional(),
-  groupId: z.string().trim().min(1).optional(),
+  groupId: z.string().trim().min(1, 'API Key 分组无效').optional(),
   groupBindings: z.array(z.object({
-    groupId: z.string().trim().min(1),
+    groupId: z.string().trim().min(1, 'API Key 分组无效'),
     priority: z.number().int().positive().optional(),
     status: z.enum(['active', 'disabled']).optional()
-  })).min(1).max(20).optional(),
+  })).min(1, 'API Key 至少需要绑定一个分组').max(20).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().optional(),
   quotaLimits: z.record(z.string(), z.unknown()).nullable().optional()
@@ -64,7 +64,7 @@ apiKeysRouter.post('/', mutationGuard({
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = apiKeyCreateSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('API Key 参数无效'))
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 参数无效')))
     return
   }
   try {

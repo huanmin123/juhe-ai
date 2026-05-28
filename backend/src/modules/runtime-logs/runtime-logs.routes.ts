@@ -17,22 +17,18 @@ runtimeLogsRouter.use((req, res, next) => {
 runtimeLogsRouter.get('/', async (req, res, next) => {
   try {
     const startedAt = performance.now()
-    const [result, serverRuntime] = await Promise.all([
-      requestDbService({
-        type: 'list_runtime_logs',
-        options: parseRuntimeLogListOptions(req.query)
-      }),
-      requestServerRuntimeSnapshot()
-    ])
-    const runtimeLogIndexQueue = serverRuntime?.worker?.snapshot?.runtimeLogIndexQueue
+    const result = await requestDbService({
+      type: 'list_runtime_logs',
+      options: parseRuntimeLogListOptions(req.query)
+    })
     res.json(ok({
       ...result,
       elapsedMs: Math.round(performance.now() - startedAt),
-      retentionDays: runtimeLogIndexQueue?.retentionDays ?? null,
-      retentionDaysSource: runtimeLogIndexQueue ? 'worker_snapshot' : 'unavailable',
-      runtimeAvailable: Boolean(serverRuntime),
-      workerSnapshotAvailable: Boolean(serverRuntime?.worker?.snapshot),
-      runtimeLogIndexQueueAvailable: Boolean(runtimeLogIndexQueue)
+      retentionDays: null,
+      retentionDaysSource: 'unavailable',
+      runtimeAvailable: false,
+      workerSnapshotAvailable: false,
+      runtimeLogIndexQueueAvailable: false
     }))
   } catch (error) {
     next(error)

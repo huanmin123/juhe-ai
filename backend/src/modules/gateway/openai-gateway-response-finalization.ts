@@ -10,6 +10,7 @@ import {
   handleStreamFailure
 } from './openai-gateway-account-effects.js'
 import { rememberCodexTurnStreamFailure } from './openai-gateway-codex-turn-retry.service.js'
+import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
 import type { OpenAIGatewayClientStrategyContext } from './openai-gateway-client-strategy.js'
 import {
   confirmClientIpAccountAvoidanceAfterSuccess,
@@ -187,6 +188,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     )
   } catch (error) {
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
+      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
       recordClientAbortedUpstreamAttempt(req, {
         ...usageContext,
         account,
@@ -198,7 +200,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           upstreamUrl,
           statusCode: upstreamResponse.status,
           headers: upstreamResponse.headers,
-          errorMessage: '请求已取消'
+          errorMessage: downstreamConnectionClosedMessage
         })
       })
       auditCapture.completeAttempt(auditAttemptId, {
@@ -206,7 +208,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         responseHeaders: upstreamResponse.headers,
         success: false,
         errorPhase: 'client',
-        errorMessage: '请求已取消'
+        errorMessage: downstreamConnectionClosedMessage
       })
     }
     throw error
@@ -434,7 +436,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           statusCode: upstreamResponse.status,
           headers: upstreamResponse.headers,
           bodyText: responseBodyText,
-          errorMessage: '请求已取消'
+          errorMessage: downstreamConnectionClosedMessage
         })
       })
       auditCapture.completeAttempt(auditAttemptId, {
@@ -442,7 +444,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         responseHeaders: upstreamResponse.headers,
         success: false,
         errorPhase: 'client',
-        errorMessage: '请求已取消'
+        errorMessage: downstreamConnectionClosedMessage
       })
     }
     throw error

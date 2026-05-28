@@ -1,9 +1,10 @@
 import type { Request, Response } from 'express'
 
 import { loadAccountCurrentConcurrencyByIds } from '../../shared/account-concurrency.js'
+import { effectiveImageLaneConcurrencyLimit } from '../../domain/group-scheduling.js'
 import { logger } from '../../shared/logger.js'
 import { bindRequestContextFields } from '../../shared/request-context.js'
-import { findActiveGatewayApiKeyById, type GatewayApiKeyRow, type GroupUsageAccessMetadata } from '../../storage/repositories.js'
+import { type GatewayApiKeyRow, type GroupUsageAccessMetadata } from '../../storage/repositories.js'
 import {
   listCachedOpenAIAccountsForGroupAsync,
   readCachedGatewaySettingsAsync,
@@ -32,6 +33,9 @@ import { type OpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
 import {
   orderOpenAIAccountsByCodexTurnAvoidance
 } from './openai-gateway-codex-turn-retry.service.js'
+import {
+  filterGatewayAccountsByRequestCapability
+} from './openai-gateway-account-capability-filter.js'
 import {
   openAIGatewayClientStrategyAuditMetadata,
   resolveOpenAIGatewayClientStrategy,
@@ -81,6 +85,7 @@ export interface OpenAIGatewayRequestIdentity {
 
 interface OpenAIGatewayRequestPreflightOptions {
   identity?: OpenAIGatewayRequestIdentity
+  apiKeyRecord?: GatewayApiKeyRow
   candidateAccounts?: UpstreamAccount[]
   disableSessionAffinity?: boolean
   trafficSource?: OpenAIGatewayTrafficSource
@@ -118,7 +123,7 @@ export async function prepareOpenAIGatewayDispatchContext(
 ): Promise<OpenAIGatewayDispatchContext | undefined> {
   const { req, res, auditCapture, options, startedAt, traceId, clientIp, endpoint, requestSnapshot, signal } = input
   let gatewaySettings: GatewaySettings | undefined
-  let apiKeyRecord: GatewayApiKeyRow | undefined
+  let apiKeyRecord: GatewayApiKeyRow | undefined = options.apiKeyRecord
   let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
   let runtimeAccounts: UpstreamAccount[] | undefined
 
@@ -150,7 +155,6 @@ export async function prepareOpenAIGatewayDispatchContext(
   const trafficSource = options.trafficSource ?? 'gateway'
   const gatewayClientIp = trafficSource === 'gateway' ? clientIp : undefined
   const { systemAccountId, apiKeyId, groupId } = identity
-  apiKeyRecord = apiKeyRecord ?? (apiKeyId ? findActiveGatewayApiKeyById(apiKeyId) : undefined)
   const apiKeyUnavailable = Boolean(apiKeyId && !apiKeyRecord)
   auditCapture.bindContext({
     systemAccountId,
@@ -416,7 +420,71 @@ export async function prepareOpenAIGatewayDispatchContext(
     schedulingPolicy: groupAccess.schedulingPolicy
   }
   let releaseClientIpConcurrency = noop
-  const modelFilter = filterGatewayAccountsByRequestedModel(rawCandidateAccounts, requestModel(req))
+  const capabilityFilter = filterGatewayAccountsByRequestCapability(req, rawCandidateAccounts)
+  if (capabilityFilter.skippedCount > 0) {
+    auditCapture.addGatewayMetadata({
+      label: 'account_request_capability_filter',
+      metadata: {
+        skippedCount: capabilityFilter.skippedCount,
+        remainingCount: capabilityFilter.accounts.length,
+        reason: capabilityFilter.reason
+      }
+    })
+  }
+  if (rawCandidateAccounts.length > 0 && capabilityFilter.accounts.length === 0) {
+    const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options,
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal,
+      reason: 'request_capability_mismatch',
+      apiKeyRecord,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      trafficSource,
+      requestLane
+    })
+    if (fallback.attempted) {
+      return fallback.context
+    }
+    const statusCode = 400
+    const message = '当前分组无账户支持请求路径或客户端协议'
+    const responsePayload = gatewayErrorPayload(message, 'invalid_request_error', 'request_capability_mismatch')
+    recordClientIpRequestErrorSample({
+      auditCapture,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      clientIp: gatewayClientIp,
+      endpoint,
+      reason: 'request_capability_mismatch',
+      signature: `${req.method.toUpperCase()} ${req.path || req.originalUrl.split('?')[0] || '/'}`
+    })
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'request_validation',
+        errorCode: 'request_capability_mismatch',
+        errorMessage: message
+      }
+    })
+    return undefined
+  }
+  const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestModel(req))
   if (modelFilter.skippedCount > 0) {
     auditCapture.addGatewayMetadata({
       label: 'account_model_filter',
@@ -429,7 +497,29 @@ export async function prepareOpenAIGatewayDispatchContext(
       }
     })
   }
-  if (rawCandidateAccounts.length > 0 && modelFilter.accounts.length === 0) {
+  if (capabilityFilter.accounts.length > 0 && modelFilter.accounts.length === 0) {
+    const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options,
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal,
+      reason: modelFilter.reason ?? 'unsupported_model',
+      apiKeyRecord,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      trafficSource,
+      requestLane
+    })
+    if (fallback.attempted) {
+      return fallback.context
+    }
     const statusCode = 400
     const message = gatewayModelFilterFailureMessage(modelFilter)
     const responsePayload = gatewayErrorPayload(message, 'invalid_request_error')
@@ -466,6 +556,50 @@ export async function prepareOpenAIGatewayDispatchContext(
     sessionAffinityKey,
     dispatchOrderingOptions
   )
+  const initialLocalSuppressionFilter = filterLocallySuppressedGatewayAccounts(orderedCandidateAccounts)
+  if (initialLocalSuppressionFilter.allSuppressed) {
+    const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options,
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal,
+      reason: 'local_account_suppressed',
+      apiKeyRecord,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      trafficSource,
+      requestLane
+    })
+    if (fallback.attempted) {
+      logger.warn({
+        event: 'gateway_local_account_suppression_fallback',
+        suppressedCount: initialLocalSuppressionFilter.suppressedCount,
+        suppressedAccountIds: initialLocalSuppressionFilter.suppressedAccountIds,
+        nextRetryAfterMs: initialLocalSuppressionFilter.nextRetryAfterMs,
+        groupId,
+        systemAccountId,
+        apiKeyId
+      }, '当前号池候选账号均处于本地短期屏蔽，已在派发前尝试后备号池')
+      auditCapture.addGatewayMetadata({
+        label: 'local_account_suppression',
+        metadata: {
+          suppressedCount: initialLocalSuppressionFilter.suppressedCount,
+          suppressedAccountIds: initialLocalSuppressionFilter.suppressedAccountIds,
+          allSuppressed: true,
+          nextRetryAfterMs: initialLocalSuppressionFilter.nextRetryAfterMs,
+          fallbackAttempted: true
+        }
+      })
+      return fallback.context
+    }
+  }
   const localSuppressionFilter = await resolveLocalSuppressionFilter({
     req,
     res,
@@ -589,6 +723,28 @@ export async function prepareOpenAIGatewayDispatchContext(
 
   if (accounts.length === 0) {
     if (authorizationQuotaDeniedAccountCount > 0) {
+      const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+        req,
+        res,
+        auditCapture,
+        options,
+        startedAt,
+        traceId,
+        clientIp,
+        endpoint,
+        requestSnapshot,
+        signal,
+        reason: 'authorization_quota_exceeded',
+        apiKeyRecord,
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        trafficSource,
+        requestLane
+      })
+      if (fallback.attempted) {
+        return fallback.context
+      }
       sendQuotaExceededResponse(req, res, auditCapture, usageContext, startedAt, AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE)
       return undefined
     }
@@ -610,6 +766,70 @@ export async function prepareOpenAIGatewayDispatchContext(
       }
     })
     return undefined
+  }
+
+  const laneAwareDispatchOrderingOptions = {
+    ...dispatchOrderingOptions,
+    requestLane
+  }
+
+  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
+    accounts = orderOpenAIAccountsBySessionAffinity(
+      refreshGatewayAccountCurrentConcurrency(accounts),
+      sessionAffinityKey,
+      dispatchOrderingOptions
+    )
+  }
+
+  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
+    const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options,
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal,
+      reason: 'high_concurrency_group_busy',
+      apiKeyRecord,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      trafficSource,
+      requestLane
+    })
+    if (fallback.attempted) {
+      return fallback.context
+    }
+  }
+
+  if (dispatchOrderingOptions.groupType !== 'high_concurrency'
+    && areGatewayAccountsCapacityBusyForLane(accounts, requestLane, groupAccess.schedulingPolicy)) {
+    const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options,
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal,
+      reason: 'group_capacity_busy',
+      apiKeyRecord,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      trafficSource,
+      requestLane
+    })
+    if (fallback.attempted) {
+      return fallback.context
+    }
   }
 
   if (dispatchOrderingOptions.groupType === 'high_concurrency') {
@@ -655,19 +875,6 @@ export async function prepareOpenAIGatewayDispatchContext(
       releaseClientIpConcurrency()
       return undefined
     }
-  }
-
-  const laneAwareDispatchOrderingOptions = {
-    ...dispatchOrderingOptions,
-    requestLane
-  }
-
-  if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
-    accounts = orderOpenAIAccountsBySessionAffinity(
-      refreshGatewayAccountCurrentConcurrency(accounts),
-      sessionAffinityKey,
-      dispatchOrderingOptions
-    )
   }
 
   if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
@@ -732,6 +939,140 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
     releaseClientIpConcurrency
   }
+}
+
+interface ApiKeyGroupFallbackDispatchInput {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  options: OpenAIGatewayRequestPreflightOptions
+  startedAt: number
+  traceId: string
+  clientIp?: string
+  endpoint: string
+  requestSnapshot: UsageRequestSnapshot
+  signal?: AbortSignal
+  reason: string
+  apiKeyRecord?: GatewayApiKeyRow
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+  trafficSource: OpenAIGatewayTrafficSource
+  requestLane: OpenAIGatewayRequestLane
+}
+
+interface ApiKeyGroupFallbackDispatchResult {
+  attempted: boolean
+  context?: OpenAIGatewayDispatchContext
+}
+
+async function prepareApiKeyGroupFallbackDispatchContext(
+  input: ApiKeyGroupFallbackDispatchInput
+): Promise<ApiKeyGroupFallbackDispatchResult> {
+  if (!canAttemptApiKeyGroupFallback(input.apiKeyRecord, input.groupId)) {
+    return { attempted: false }
+  }
+  const candidate = await resolveNextApiKeyGroupFallbackCandidate(input)
+  if (!candidate) {
+    return { attempted: false }
+  }
+  input.auditCapture.addGatewayMetadata({
+    label: 'api_key_group_route_fallback',
+    metadata: {
+      reason: input.reason,
+      fromGroupId: input.groupId,
+      toGroupId: candidate.groupId
+    }
+  })
+  const context = await prepareOpenAIGatewayDispatchContext({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    options: {
+      ...input.options,
+      identity: {
+        systemAccountId: input.systemAccountId,
+        apiKeyId: input.apiKeyId,
+        groupId: candidate.groupId
+      },
+      apiKeyRecord: input.apiKeyRecord,
+      candidateAccounts: candidate.accounts,
+      trafficSource: input.trafficSource,
+      requestLane: input.requestLane
+    },
+    startedAt: input.startedAt,
+    traceId: input.traceId,
+    clientIp: input.clientIp,
+    endpoint: input.endpoint,
+    requestSnapshot: input.requestSnapshot,
+    signal: input.signal
+  })
+  return { attempted: true, context }
+}
+
+function canAttemptApiKeyGroupFallback(apiKeyRecord: GatewayApiKeyRow | undefined, groupId: string): boolean {
+  const bindings = apiKeyRecord?.group_bindings ?? []
+  if (bindings.length <= 1) {
+    return false
+  }
+  const currentIndex = bindings.findIndex((binding) => binding.group_id === groupId)
+  return currentIndex >= 0 && currentIndex < bindings.length - 1
+}
+
+async function resolveNextApiKeyGroupFallbackCandidate(input: ApiKeyGroupFallbackDispatchInput): Promise<{
+  groupId: string
+  accounts: UpstreamAccount[]
+} | undefined> {
+  const bindings = input.apiKeyRecord?.group_bindings ?? []
+  const currentIndex = bindings.findIndex((binding) => binding.group_id === input.groupId)
+  const candidateBindings = currentIndex >= 0
+    ? bindings.slice(currentIndex + 1)
+    : bindings.filter((binding) => binding.group_id !== input.groupId)
+  const requestedModel = requestModel(input.req)
+  const seenGroupIds = new Set<string>([input.groupId])
+  for (const binding of candidateBindings) {
+    if (!binding.group_id || seenGroupIds.has(binding.group_id)) {
+      continue
+    }
+    seenGroupIds.add(binding.group_id)
+    const groupAccess = await resolveCachedGroupUsageAccessMetadataAsync(binding.group_id, input.systemAccountId)
+    if (!groupAccess) {
+      continue
+    }
+    const accounts = await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.systemAccountId)
+    if (!accounts.length) {
+      continue
+    }
+    const capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, accounts)
+    if (!capabilityFilter.accounts.length) {
+      continue
+    }
+    const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestedModel)
+    if (!modelFilter.accounts.length) {
+      continue
+    }
+    const accountQuotaDecisions = await checkGatewayAuthorizationQuotaBatchAsync({ groupAccess, accounts: modelFilter.accounts })
+    const quotaAllowedAccounts = modelFilter.accounts.filter((account) => {
+      const decision = accountQuotaDecisions.get(account.id) ?? { allowed: true }
+      return decision.allowed
+    })
+    if (!quotaAllowedAccounts.length) {
+      continue
+    }
+    if ((input.reason === 'high_concurrency_group_busy' || input.reason === 'group_capacity_busy')
+      && areGatewayAccountsCapacityBusyForLane(quotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
+      continue
+    }
+    if (input.reason === 'local_account_suppressed'
+      && filterLocallySuppressedGatewayAccounts(quotaAllowedAccounts).allSuppressed) {
+      continue
+    }
+    return {
+      groupId: binding.group_id,
+      accounts: quotaAllowedAccounts
+    }
+  }
+  return undefined
 }
 
 async function resolveLocalSuppressionFilter(input: {
@@ -837,6 +1178,38 @@ function refreshGatewayAccountCurrentConcurrency(accounts: UpstreamAccount[]): U
     ...account,
     currentConcurrency: concurrency.get(account.id) ?? 0
   }))
+}
+
+function areGatewayAccountsCapacityBusyForLane(
+  accounts: UpstreamAccount[],
+  requestLane: OpenAIGatewayRequestLane,
+  schedulingPolicy?: GroupSchedulingPolicy
+): boolean {
+  if (accounts.length === 0) {
+    return false
+  }
+  const accountIds = accounts.map((account) => account.id)
+  const currentConcurrency = loadAccountCurrentConcurrencyByIds(accountIds)
+  const imageLaneConcurrency = requestLane === 'image'
+    ? loadAccountCurrentConcurrencyByIds(accountIds, 'image')
+    : undefined
+  return accounts.every((account) => {
+    const hardLimit = accountHardConcurrencyLimit(account)
+    if ((currentConcurrency.get(account.id) ?? 0) >= hardLimit) {
+      return true
+    }
+    if (requestLane !== 'image') {
+      return false
+    }
+    return (imageLaneConcurrency?.get(account.id) ?? 0) >= effectiveImageLaneConcurrencyLimit({
+      accountConcurrencyLimit: hardLimit,
+      policy: schedulingPolicy
+    })
+  })
+}
+
+function accountHardConcurrencyLimit(account: UpstreamAccount): number {
+  return Number.isFinite(account.concurrencyLimit) ? Math.max(1, Math.trunc(account.concurrencyLimit)) : 1
 }
 
 function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewaySettings>): GatewaySettings {

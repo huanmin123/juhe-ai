@@ -115,12 +115,9 @@ try {
     sampledAt: workerPeakAt,
     eventLoopLagMs: 42
   })
-  const minuteOverview = usageStatsRepository.getSystemMetricsOverview({
-    startDate: '2026-01-01',
-    endDate: '2026-01-01',
-    days: 1,
-    maxDays: 31
-  })
+  usageStatsRepository.refreshUsageRankSnapshots()
+  const todayRange = usageStatsRepository.normalizeDefaultUsageStatsRange()
+  const minuteOverview = usageStatsRepository.getSystemMetricsOverview(todayRange)
   const peakStatusByRole = new Map(minuteOverview.processEventLoopPeakStatus.map((row) => [row.processRole, row]))
   assert.equal(peakStatusByRole.get('server')?.sampleAvailable, true, 'server 最近 24 小时内有采样时应标记峰值可用')
   assert.equal(peakStatusByRole.get('server')?.eventLoopLagMs, 20, 'server 峰值应取最近 24 小时最大延迟，忽略窗口外高值')
@@ -129,10 +126,10 @@ try {
   assert.equal(peakStatusByRole.get('worker')?.sampledAt, workerPeakAt, 'worker 峰值状态应返回对应采样时间')
   assert.equal(peakStatusByRole.get('db-service')?.sampleAvailable, false, 'db-service 无最近 24 小时采样时不应使用旧样本伪装峰值')
   const serverMinuteBucket = minuteOverview.processEventLoopTrend.find((row) => row.processRole === 'server' && row.sampleCount === 2)
-  assert(serverMinuteBucket, '进程事件循环趋势应按最近 24 小时分钟桶聚合')
-  assert.match(serverMinuteBucket.statMinute, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, '进程事件循环趋势桶应精确到分钟')
-  assert.equal(serverMinuteBucket.eventLoopLagMsAvg, 15, '同一分钟内多个采样应按分钟计算平均延迟')
-  assert.equal(serverMinuteBucket.eventLoopLagMsMax, 20, '分钟桶应保留峰值延迟，便于定位尖峰')
+  assert(serverMinuteBucket, '进程事件循环趋势应读取后台窗口缓存')
+  assert.match(serverMinuteBucket.statMinute, /^\d{4}-\d{2}-\d{2}T\d{2}$/, '单日窗口内事件循环趋势桶应精确到小时')
+  assert.equal(serverMinuteBucket.eventLoopLagMsAvg, 15, '同一窗口桶内多个采样应按缓存计算平均延迟')
+  assert.equal(serverMinuteBucket.eventLoopLagMsMax, 20, '窗口桶应保留峰值延迟，便于定位尖峰')
 
   console.log('系统指标进程事件循环回归通过：最新样本和 24 小时峰值按进程角色独立计算')
 } finally {

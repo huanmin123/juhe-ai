@@ -62,6 +62,7 @@ try {
   const nowDate = new Date()
   const now = nowDate.toISOString()
   const statMinute = minuteKey(nowDate, usageStatsTimezone())
+  const inactiveAccountId = 'acct_quality_inactive_batch_cleanup'
   recordDatabase
     .prepare(`
       INSERT INTO account_quality_minute_stats (
@@ -81,6 +82,18 @@ try {
         ) VALUES (?, ?, ?, ?, 1, 1, 0, ?, 1, ?, ?, NULL, NULL, ?)
       `)
       .run(batchAccount.id, 'sys_admin', 'openai', statMinute, 800 + index, now, now, now)
+  }
+  for (let index = 0; index < 1205; index += 1) {
+    const inactiveMinute = minuteKey(new Date(nowDate.getTime() - (60 + index) * 60 * 1000), usageStatsTimezone())
+    recordDatabase
+      .prepare(`
+        INSERT INTO account_quality_minute_stats (
+          account_id, system_account_id, provider_code, stat_minute,
+          request_count, success_count, error_count, first_token_ms_sum, first_token_ms_count,
+          last_sample_at, last_success_at, last_error_at, last_error_message, updated_at
+        ) VALUES (?, 'sys_admin', 'openai', ?, 1, 1, 0, 800, 1, ?, ?, NULL, NULL, ?)
+      `)
+      .run(inactiveAccountId, inactiveMinute, now, now, now)
   }
   recordDatabase
     .prepare(`
@@ -110,6 +123,7 @@ try {
   }
   assert.equal(result.refreshed, 1 + batchAccounts.length, '账号质量刷新应处理分钟桶样本')
   assert.equal(qualityScoreUpsertPrepares, 1, '账号质量刷新应复用 account_quality_scores upsert statement')
+  assert.equal(inactiveQualityMinuteCount(inactiveAccountId), 205, '账号质量刷新应小批清理已失效账户分钟桶，剩余等待后续轮次')
   const row = recordDatabase
     .prepare('SELECT quality_score, quality_state, recent_error_count, last_error_message FROM account_quality_scores WHERE account_id = ?')
     .get(account.id) as { quality_score?: number; quality_state?: string; recent_error_count?: number; last_error_message?: string } | undefined
@@ -138,4 +152,11 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function inactiveQualityMinuteCount(accountId: string): number {
+  const row = databaseModule.getStatsDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM account_quality_minute_stats WHERE account_id = ?')
+    .get(accountId) as { total?: number } | undefined
+  return Number(row?.total ?? 0)
 }

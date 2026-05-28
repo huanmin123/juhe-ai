@@ -301,7 +301,7 @@ export function buildProcessEventLoopOption(trend: SystemMetricsOverview['proces
     yAxis: {
       type: 'value',
       name: 'ms',
-      axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
+      axisLabel: { formatter: formatInteger, color: '#64748b' },
       splitLine: { lineStyle: { color: '#edf2f7' } }
     },
     series: roles.map((role) => ({

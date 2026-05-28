@@ -8,6 +8,7 @@ import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountT
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
@@ -494,6 +495,22 @@ function authorizedLocalOperationOwner(account: AccountSummary, access?: Request
   return account.accessType === 'authorized' ? effectiveRequestSystemAccountId(access) : undefined
 }
 
+async function clearAccountGatewayRuntimeAfterRestore(account: AccountSummary, access?: RequestAccessScope): Promise<void> {
+  const systemAccountId = account.accessType === 'authorized'
+    ? account.bindingSystemAccountId ?? effectiveRequestSystemAccountId(access)
+    : undefined
+  await clearServerAccountRuntimeAvailability({
+    accountId: account.id,
+    authorizedBinding: account.accessType === 'authorized' && systemAccountId && account.boundGroupId && account.accountAuthorizationId
+      ? {
+          systemAccountId,
+          groupId: account.boundGroupId,
+          accountAuthorizationId: account.accountAuthorizationId
+        }
+      : undefined
+  }).catch(() => undefined)
+}
+
 function authorizedMigrationAffinityScope(account: AccountSummary, access?: RequestAccessScope): { systemAccountId: string; groupId: string } | undefined {
   const systemAccountId = effectiveRequestSystemAccountId(access)
   return account.accessType === 'authorized' && account.boundGroupId && systemAccountId
@@ -505,7 +522,7 @@ function effectiveRequestSystemAccountId(access?: RequestAccessScope): string | 
   return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }
 
-accountsRouter.patch('/:id/authorized-dispatch', (req, res) => {
+accountsRouter.patch('/:id/authorized-dispatch', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -550,13 +567,16 @@ accountsRouter.patch('/:id/authorized-dispatch', (req, res) => {
       res.status(404).json({ message: '授权账户不存在或尚未绑定分组' })
       return
     }
-    res.json(ok(account))
+    if (parsed.data.clearFailureState === true || parsed.data.status === 'active') {
+      await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
+    }
+    res.json(ok(await applyServerAccountRuntimeToAccount(account)))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '更新授权账户调度设置失败'))
   }
 })
 
-accountsRouter.patch('/:id', (req, res) => {
+accountsRouter.patch('/:id', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -639,7 +659,10 @@ accountsRouter.patch('/:id', (req, res) => {
         }
       }
     }, req)
-    res.json(ok(account))
+    if (body.clearFailureState === true || body.status === 'active') {
+      await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
+    }
+    res.json(ok(await applyServerAccountRuntimeToAccount(account)))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
@@ -719,6 +742,9 @@ accountsRouter.post('/:id/test', async (req, res) => {
           accountStatus: restored.account.status
         }
       }
+    }
+    if (result.success) {
+      await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
     }
     if (shouldMarkAccountTestFailureAsTemporaryUnavailable(account, result)) {
       const updatedAccount = markAccountTestTemporaryUnavailable(account, accountTestFailureCooldownReason(result), requestAccess)

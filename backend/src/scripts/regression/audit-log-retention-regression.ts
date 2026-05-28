@@ -320,7 +320,15 @@ try {
   ])
   assert.equal(repositories.listAuditLogs({ traceId: 'trace-deleted-api-key' }).total, 1, 'API Key 被删除后异步 flush 的审计事件仍应保留')
 
-  const apiKey = repositories.createApiKeyRecord({ name: '审计删除保留 API Key' }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const apiKeyAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const apiKeyGroup = repositories.createGroup({
+    name: '审计删除保留 API Key 分组',
+    providerCode: 'openai'
+  }, apiKeyAccess)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '审计删除保留 API Key',
+    groupId: apiKeyGroup.id
+  }, apiKeyAccess)
   repositories.createAuditLogsBatch([
     {
       ...auditLog('audit_api_key_delete_retained', 'trace-api-key-delete-retained', JSON.stringify({ error: 'api key deleted after audit' })),

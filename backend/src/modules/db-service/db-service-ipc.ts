@@ -7,6 +7,8 @@ import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../
 import { setAuditLogFullBodyCaptureEnabled } from '../audit-logs/audit-log-settings.js'
 import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
 import type {
+  AccountRuntimeAvailabilityClearResult,
+  AccountRuntimeAvailabilityClearTarget,
   DbServiceChildMessage,
   DbServiceOperation,
   DbServiceOperationResult,
@@ -29,6 +31,9 @@ class DbServiceOperationFailedError extends Error {
 class DbServiceRequestTimedOutError extends Error {
 }
 
+class DbServiceRequestQueueFullError extends Error {
+}
+
 interface DbServiceState {
   pid?: number
   ready: boolean
@@ -37,6 +42,7 @@ interface DbServiceState {
   lastSnapshot?: DbServiceRuntimeSnapshot
   pendingRequestCount: number
   timedOutRequestCount: number
+  rejectedRequestCount: number
   failedRequestCount: number
   pendingProcessEventLoopRequestCount: number
   timedOutProcessEventLoopRequestCount: number
@@ -51,6 +57,7 @@ interface DbServiceState {
 const requestTimeoutMs = 5000
 const invalidateTimeoutMs = 500
 const unavailableCircuitOpenMs = 3000
+const maxPendingRequests = 2000
 
 let dbServiceProcess: ChildProcess | undefined
 let dbServiceReady = false
@@ -60,8 +67,10 @@ let dbServiceHttpPort: number | undefined
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>()
 let pendingServerAuditFullBodyCaptureUpdateRequests = new Map<string, PendingServerAuditFullBodyCaptureUpdateRequest>()
+let pendingServerAccountRuntimeClearRequests = new Map<string, PendingServerAccountRuntimeClearRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let timedOutRequestCount = 0
+let rejectedRequestCount = 0
 let failedRequestCount = 0
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
@@ -79,6 +88,11 @@ interface PendingServerRuntimeRequest {
 
 interface PendingServerAuditFullBodyCaptureUpdateRequest {
   resolve: (result: { fullBodyCaptureEnabled: boolean } | undefined) => void
+  timeout: NodeJS.Timeout
+}
+
+interface PendingServerAccountRuntimeClearRequest {
+  resolve: (result: AccountRuntimeAvailabilityClearResult | undefined) => void
   timeout: NodeJS.Timeout
 }
 
@@ -130,6 +144,10 @@ export async function requestDbService<T extends DbServiceOperation>(
     }
     throw new Error('本地数据库服务未就绪，请稍后重试')
   }
+  if (pendingRequests.size >= maxPendingRequests) {
+    rejectedRequestCount += 1
+    throw new DbServiceRequestQueueFullError('本地数据库服务请求队列已满，请稍后重试')
+  }
   const requestId = randomUUID()
   const message: DbServiceParentMessage = {
     type: 'db_service_request',
@@ -171,7 +189,9 @@ export async function requestDbService<T extends DbServiceOperation>(
     })
   } catch (error) {
     failedRequestCount += 1
-    if (!(error instanceof DbServiceOperationFailedError) && !(error instanceof DbServiceRequestTimedOutError)) {
+    if (!(error instanceof DbServiceOperationFailedError)
+      && !(error instanceof DbServiceRequestTimedOutError)
+      && !(error instanceof DbServiceRequestQueueFullError)) {
       openUnavailableCircuit()
     }
     throw error
@@ -212,6 +232,7 @@ export function getDbServiceState(): DbServiceState {
     lastSnapshot,
     pendingRequestCount: pendingRequests.size,
     timedOutRequestCount,
+    rejectedRequestCount,
     failedRequestCount,
     pendingProcessEventLoopRequestCount: pendingProcessEventLoopRequests.size,
     timedOutProcessEventLoopRequestCount,
@@ -317,6 +338,40 @@ export async function updateServerAuditFullBodyCaptureEnabled(
   })
 }
 
+export async function clearServerAccountRuntimeAvailability(
+  target: AccountRuntimeAvailabilityClearTarget,
+  timeoutMs = 1000
+): Promise<AccountRuntimeAvailabilityClearResult | undefined> {
+  const normalizedTarget = normalizeAccountRuntimeClearTarget(target)
+  if (!normalizedTarget) {
+    return undefined
+  }
+  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
+    const gatewaySideEffects = await import('../gateway/gateway-account-side-effects.service.js')
+    return gatewaySideEffects.clearGatewayAccountRuntimeAvailability(normalizedTarget)
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<AccountRuntimeAvailabilityClearResult | undefined>((resolve) => {
+    const timeout = setTimeout(() => {
+      const pending = pendingServerAccountRuntimeClearRequests.get(requestId)
+      if (!pending) {
+        return
+      }
+      pendingServerAccountRuntimeClearRequests.delete(requestId)
+      pending.resolve(undefined)
+    }, timeoutMs)
+    pendingServerAccountRuntimeClearRequests.set(requestId, { resolve, timeout })
+    sendDbServiceChildMessage({
+      type: 'db_service_server_account_runtime_clear_request',
+      requestId,
+      target: normalizedTarget
+    }, () => {
+      finishServerAccountRuntimeClearRequest(requestId, undefined)
+    })
+  })
+}
+
 export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {
     return false
@@ -341,6 +396,14 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
       setAuditLogFullBodyCaptureEnabled(result.fullBodyCaptureEnabled)
     }
     finishServerAuditFullBodyCaptureUpdateRequest(record.requestId, result)
+    return true
+  }
+
+  if (record.type === 'db_service_server_account_runtime_clear_response' && typeof record.requestId === 'string') {
+    finishServerAccountRuntimeClearRequest(
+      record.requestId,
+      record.ok === true ? record.result as AccountRuntimeAvailabilityClearResult : undefined
+    )
     return true
   }
 
@@ -405,6 +468,11 @@ function handleDbServiceMessage(message: unknown): void {
         respondToServerAuditFullBodyCaptureUpdateRequest(record.requestId, record.enabled)
       }
       break
+    case 'db_service_server_account_runtime_clear_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && isAccountRuntimeClearTarget(record.target)) {
+        void respondToServerAccountRuntimeClearRequest(record.requestId, record.target)
+      }
+      break
     case 'gateway_runtime_cache_invalidate':
       if (runtimeConfig.processRole === 'server') {
         void clearServerGatewayRuntimeCache()
@@ -465,6 +533,11 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingServerAuditFullBodyCaptureUpdateRequests.delete(requestId)
+  }
+  for (const [requestId, pending] of pendingServerAccountRuntimeClearRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(undefined)
+    pendingServerAccountRuntimeClearRequests.delete(requestId)
   }
 }
 
@@ -632,6 +705,20 @@ function finishServerAuditFullBodyCaptureUpdateRequest(
   pending.resolve(result)
 }
 
+function finishServerAccountRuntimeClearRequest(
+  requestId: string,
+  result: AccountRuntimeAvailabilityClearResult | undefined
+): void {
+  const pending = pendingServerAccountRuntimeClearRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+
+  clearTimeout(pending.timeout)
+  pendingServerAccountRuntimeClearRequests.delete(requestId)
+  pending.resolve(result)
+}
+
 function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMessage): void {
   if (!child.connected) {
     markDbServiceIpcBroken(new Error('本地数据库服务通信已断开'), child)
@@ -698,8 +785,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       pid: dbServiceState.pid,
       ready: dbServiceState.ready,
       pendingRequestCount: dbServiceState.pendingRequestCount,
-      timedOutRequestCount,
-      failedRequestCount,
+      timedOutRequestCount: dbServiceState.timedOutRequestCount,
+      rejectedRequestCount: dbServiceState.rejectedRequestCount,
+      failedRequestCount: dbServiceState.failedRequestCount,
       pendingProcessEventLoopRequestCount: dbServiceState.pendingProcessEventLoopRequestCount,
       timedOutProcessEventLoopRequestCount: dbServiceState.timedOutProcessEventLoopRequestCount,
       failedProcessEventLoopRequestCount: dbServiceState.failedProcessEventLoopRequestCount,
@@ -745,11 +833,70 @@ function respondToServerAuditFullBodyCaptureUpdateRequest(requestId: string, ena
   }
 }
 
+async function respondToServerAccountRuntimeClearRequest(
+  requestId: string,
+  target: AccountRuntimeAvailabilityClearTarget
+): Promise<void> {
+  const child = dbServiceProcess
+  if (!child) {
+    return
+  }
+
+  try {
+    const gatewaySideEffects = await import('../gateway/gateway-account-side-effects.service.js')
+    const result = gatewaySideEffects.clearGatewayAccountRuntimeAvailability(target)
+    sendToDbServiceProcess(child, {
+      type: 'db_service_server_account_runtime_clear_response',
+      requestId,
+      ok: true,
+      result
+    })
+  } catch (error) {
+    sendToDbServiceProcess(child, {
+      type: 'db_service_server_account_runtime_clear_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    })
+  }
+}
+
 function isAuditFullBodyCaptureUpdateResult(value: unknown): value is { fullBodyCaptureEnabled: boolean } {
   return typeof value === 'object'
     && value !== null
     && !Array.isArray(value)
     && typeof (value as Record<string, unknown>).fullBodyCaptureEnabled === 'boolean'
+}
+
+function isAccountRuntimeClearTarget(value: unknown): value is AccountRuntimeAvailabilityClearTarget {
+  return Boolean(normalizeAccountRuntimeClearTarget(value))
+}
+
+function normalizeAccountRuntimeClearTarget(value: unknown): AccountRuntimeAvailabilityClearTarget | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined
+  }
+  const record = value as Record<string, unknown>
+  if (typeof record.accountId !== 'string' || !record.accountId.trim()) {
+    return undefined
+  }
+  const target: AccountRuntimeAvailabilityClearTarget = {
+    accountId: record.accountId.trim()
+  }
+  if (typeof record.authorizedBinding === 'object' && record.authorizedBinding !== null && !Array.isArray(record.authorizedBinding)) {
+    const binding = record.authorizedBinding as Record<string, unknown>
+    const systemAccountId = typeof binding.systemAccountId === 'string' ? binding.systemAccountId.trim() : ''
+    const groupId = typeof binding.groupId === 'string' ? binding.groupId.trim() : ''
+    const accountAuthorizationId = typeof binding.accountAuthorizationId === 'string' ? binding.accountAuthorizationId.trim() : ''
+    if (systemAccountId && groupId && accountAuthorizationId) {
+      target.authorizedBinding = {
+        systemAccountId,
+        groupId,
+        accountAuthorizationId
+      }
+    }
+  }
+  return target
 }
 
 function backgroundPendingQueuesSnapshot(queues: BackgroundWorkerIpcQueuesRuntime): Record<string, DbServiceRuntimeQueueSnapshot> {
@@ -775,8 +922,12 @@ async function buildServerAccountRuntimeSnapshot(): Promise<DbServiceServerRunti
 }
 
 async function clearServerGatewayRuntimeCache(): Promise<void> {
-  const gatewayCache = await import('../gateway/gateway-runtime-cache.service.js')
+  const [gatewayCache, oauthRefresh] = await Promise.all([
+    import('../gateway/gateway-runtime-cache.service.js'),
+    import('../openai-oauth/openai-oauth-access-token-refresh.service.js')
+  ])
   gatewayCache.clearGatewayRuntimeCacheLocal()
+  oauthRefresh.clearOpenAIOAuthRecentRefreshCache()
 }
 
 async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {

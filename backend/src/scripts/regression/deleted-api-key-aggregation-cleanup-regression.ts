@@ -148,6 +148,32 @@ try {
   assert.equal(usageStatsTotal('sys_admin', 'api_key', resumedApiKeyId), 0, '恢复清理不应重复扣减 API Key 统计')
   assert.equal(cleanupDeductionCount(resumedApiKeyId), 0, '清理完成后应移除 stats 扣减账本')
 
+  const largeAuditGroupApiKeyId = 'key_deleted_cleanup_large_audit_groups'
+  for (let index = 0; index < 120; index += 1) {
+    seedAuditErrorGroup(
+      `audit_group_deleted_key_large_${String(index).padStart(3, '0')}`,
+      largeAuditGroupApiKeyId,
+      largeCreatedAt
+    )
+  }
+  const firstAuditGroupCleanup = apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
+    apiKeyId: largeAuditGroupApiKeyId,
+    systemAccountId: 'sys_admin'
+  })
+  assert.equal(firstAuditGroupCleanup.deletedRows, 100, '纯审计错误组也应按小批次清理')
+  assert.equal(firstAuditGroupCleanup.hasMore, true, '纯审计错误组未清完时应保留待重试目标')
+  assert.equal(cleanupTargetExists(largeAuditGroupApiKeyId), true, '纯审计错误组未清完时不应提前移除清理目标')
+  assert.equal(auditErrorGroupCount(largeAuditGroupApiKeyId), 20, '首批清理后应只剩余未处理的小批错误组')
+
+  const secondAuditGroupCleanup = apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
+    apiKeyId: largeAuditGroupApiKeyId,
+    systemAccountId: 'sys_admin'
+  })
+  assert.equal(secondAuditGroupCleanup.deletedRows, 20, '纯审计错误组后续重试应继续清理剩余批次')
+  assert.equal(secondAuditGroupCleanup.hasMore, false, '纯审计错误组清完后不应继续标记 hasMore')
+  assert.equal(cleanupTargetExists(largeAuditGroupApiKeyId), false, '纯审计错误组清完后应移除清理目标')
+  assert.equal(auditErrorGroupCount(largeAuditGroupApiKeyId), 0, '纯审计错误组清完后不应残留')
+
   const largeApiKeyId = 'key_deleted_cleanup_large_batch'
   for (let index = 0; index < 1200; index += 1) {
     seedUsageRecord(
@@ -167,17 +193,23 @@ try {
     apiKeyId: largeApiKeyId,
     systemAccountId: 'sys_admin'
   })
-  assert.equal(firstLargeCleanup.deletedRows, 1000, '单次 API Key 关联清理最多处理一个有界批次，避免长事务')
+  assert.equal(firstLargeCleanup.deletedRows, 100, '单次 API Key 关联清理最多处理一个小批次，避免长事务')
   assert.equal(firstLargeCleanup.hasMore, true, '单批次后仍有剩余记录时应保留待重试状态')
   assert.equal(cleanupTargetExists(largeApiKeyId), true, '单批次未清完时应保留清理目标')
-  assert.equal(usageStatsTotal('sys_admin', 'api_key', largeApiKeyId), 200, '单批次清理应只扣减已删除批次统计')
+  assert.equal(usageStatsTotal('sys_admin', 'api_key', largeApiKeyId), 1100, '单批次清理应只扣减已删除批次统计')
 
-  const secondLargeCleanup = apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
-    apiKeyId: largeApiKeyId,
-    systemAccountId: 'sys_admin'
-  })
-  assert.equal(secondLargeCleanup.deletedRows, 200, '后续重试应继续清理剩余批次')
-  assert.equal(secondLargeCleanup.hasMore, false, '剩余批次清完后不应继续标记 hasMore')
+  let latestLargeCleanup = firstLargeCleanup
+  let totalLargeDeletedRows = firstLargeCleanup.deletedRows
+  for (let attempt = 0; attempt < 20 && latestLargeCleanup.hasMore; attempt += 1) {
+    latestLargeCleanup = apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
+      apiKeyId: largeApiKeyId,
+      systemAccountId: 'sys_admin'
+    })
+    assert.ok(latestLargeCleanup.deletedRows <= 100, '后续重试也应保持小批次清理')
+    totalLargeDeletedRows += latestLargeCleanup.deletedRows
+  }
+  assert.equal(totalLargeDeletedRows, 1200, '后续重试应逐批清完剩余记录')
+  assert.equal(latestLargeCleanup.hasMore, false, '剩余批次清完后不应继续标记 hasMore')
   assert.equal(cleanupTargetExists(largeApiKeyId), false, '清理完成后应移除大批量清理目标')
   assert.equal(usageStatsTotal('sys_admin', 'api_key', largeApiKeyId), 0, '大批量清理完成后 API Key 维度统计应归零')
 
@@ -368,6 +400,13 @@ function auditErrorGroupExists(id: string): boolean {
     .prepare('SELECT id FROM audit_error_groups WHERE id = ?')
     .get(id) as { id?: string } | undefined
   return Boolean(row?.id)
+}
+
+function auditErrorGroupCount(apiKeyIdInput: string): number {
+  const row = databaseModule.getDatasetDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM audit_error_groups WHERE api_key_id = ?')
+    .get(apiKeyIdInput) as { total?: number } | undefined
+  return Number(row?.total ?? 0)
 }
 
 function cleanupTargetExists(apiKeyIdInput: string): boolean {

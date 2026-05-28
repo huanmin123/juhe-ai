@@ -174,7 +174,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `GET /v1/models` 由本地 OpenAI 模型价格目录返回，不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。
 - OAuth Codex 转发会补齐必要 Codex CLI 协议头，并在账号凭据包含 `chatgpt_account_id` / `account_id` 时写入 `chatgpt-account-id`；客户端传入的同名头不会透传，避免跨账号伪造。
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户，作为请求前懒刷新兜底。
-- OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
+- OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。刷新成功后 server 进程会短 TTL 记住最近新凭据，同一波临期请求复用该结果，不再逐个重复读写 DB service。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
 - 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 OpenAI OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做 token 保活，成功时不恢复普通冷却状态、不清理无关错误；失败时按退避等待并累计连续失败次数，连续 3 次失败后把非停用账户写入 `status = error`，`last_error_code = oauth_token_refresh_failed`，`last_error_message` 记录最近失败摘要，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
 - 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求或账户测试返回的 Codex rate-limit 响应头被动更新。access token 即将过期时，真实网关请求仍会按正常规则做请求前懒刷新。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
@@ -187,12 +187,12 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过本地 API Key、分组授权、账号状态、冷却、到期时间、并发、错误策略和上游可用性判断。
 
 - 会话标识来源包括请求头或请求体里的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
-- 亲和键按 `system_account_id + api_key_id + group_id + session` 隔离，避免不同本地 API Key、分组或系统账户共享同一个上游会话绑定。
-- OAuth Codex adapter 写入上游的 `session_id`、`conversation_id` 和 `prompt_cache_key` 也按同一层本地边界隔离，不把上游账号 ID 或账号类型写进隔离 key；同一个本地 API Key / 分组内因失败、冷却或并发切换上游账号时，尽量保留客户端会话和 prompt cache 连续性。
+- 亲和键按 `system_account_id + api_key_id + session` 隔离，避免不同本地 API Key 或系统账户共享同一个上游会话绑定；`group_id` 不参与亲和键。
+- OAuth Codex adapter 写入上游的 `session_id`、`conversation_id` 和 `prompt_cache_key` 也按同一层本地边界隔离，不把上游账号 ID、账号类型或分组 ID 写进隔离 key；同一个本地 API Key 路由下因失败、冷却或并发切换上游账号时，尽量保留客户端会话和 prompt cache 连续性。
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
 - 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
-- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。Codex 第 4 次切号这类 turn 级策略只能使用可解析的 `x-codex-turn-metadata.turn_id` 加本地 API Key / 分组 / 请求体哈希边界；识别不到时不使用 `session_id` 或 `x-client-request-id` 回退。
+- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。Codex 第 4 次切号这类 turn 级策略只能使用可解析的 `x-codex-turn-metadata.turn_id` 加本地 API Key / endpoint / 请求体哈希边界；识别不到时不使用 `session_id` 或 `x-client-request-id` 回退。
 
 ### OpenAI OAuth 额度进度
 
@@ -236,7 +236,7 @@ OpenAI 账户不再分别设计账户授权弹窗和分组授权弹窗，授权�
 - 授权资源支持 AI 账户和分组。
 - 授权对象支持系统账户和系统团队。
 - 新增授权时选择资源类型、自有资源、授权对象类型、系统账户或团队和备注。
-- 收回授权只把授权状态改成 `revoked`，不删除历史行；被授权用户已绑定的授权账户分组关系会保留但运行时不可用，重新授权同一用户后可按同一稳定授权 ID 恢复使用。API Key 入口只绑定调用方自己的一个或多个本地分组，不保留授权分组绑定关系。
+- 回收授权只把授权状态改成 `revoked`，归还授权只把授权状态改成 `returned`，都不删除历史行；被授权用户已绑定的授权账户分组关系会保留但运行时不可用，重新授权同一用户后可按同一稳定授权 ID 恢复使用。API Key 入口只绑定调用方自己的一个或多个本地分组，不保留授权分组绑定关系。
 - 使用统计按统一授权 ID 聚合展示请求次数、成功次数、错误次数、输入 Token、输出 Token、缓存读取 Token、总 Token、成本、最后使用时间和最近模型；成功、失败、账户测试和后台检测都按同一套网关使用记录聚合，未产生 token / cost 的失败记录按 0 token、0 cost 计入请求和错误次数。
 - 团队授权展开为成员用户授权；统计仍按“资源 × 用户”展示，团队视图只是成员用户用量的筛选汇总。
 - 授权消耗统计不包含资源归属人自己的自用消耗；资源归属人的账户 / 分组用量情况仍展示全部总消耗。

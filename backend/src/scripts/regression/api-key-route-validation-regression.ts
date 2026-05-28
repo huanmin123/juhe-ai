@@ -1,0 +1,171 @@
+import { mkdirSync, rmSync } from 'node:fs'
+import http from 'node:http'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import cors from 'cors'
+import express from 'express'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-route-validation-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'api-key-route-validation.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.secret = 'api-key-route-validation-secret'
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+mkdirSync(tempRoot, { recursive: true })
+logger.level = 'silent'
+
+const [
+  { apiKeysRouter },
+  { authRouter },
+  { requireAdmin, requireAuth },
+  { requestContextMiddleware },
+  databaseModule,
+  operationLogQueue
+] = await Promise.all([
+  import('../../modules/api-keys/api-keys.routes.js'),
+  import('../../modules/auth/auth.routes.js'),
+  import('../../modules/auth/auth.middleware.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../modules/operation-logs/operation-log-queue.service.js')
+])
+
+const app = express()
+app.use(requestContextMiddleware)
+app.use(cors({ credentials: true, origin: true }))
+app.use(express.json({ limit: '2mb' }))
+app.use('/__aisys__/api/auth', authRouter)
+app.use('/__aisys__/api', requireAuth)
+app.use('/__aisys__/api/api-keys', requireAdmin, apiKeysRouter)
+
+interface ApiEnvelope<T> {
+  data: T
+  message?: string
+}
+
+async function main(): Promise<void> {
+  let appServer: http.Server | undefined
+  try {
+    appServer = app.listen(0, '127.0.0.1')
+    await listen(appServer)
+    const address = serverAddress(appServer)
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    const adminCookie = await login(baseUrl)
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '未绑定分组回归 Key'
+    }, 'API Key 至少需要绑定一个分组')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '空绑定分组回归 Key',
+      groupBindings: []
+    }, 'API Key 至少需要绑定一个分组')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '空分组 ID 回归 Key',
+      groupBindings: [{ groupId: '' }]
+    }, 'API Key 分组无效')
+
+    console.log('API Key 路由校验回归通过：创建接口缺少分组、空分组绑定和空分组 ID 均返回中文错误')
+  } finally {
+    operationLogQueue.flushAllOperationLogQueue()
+    await closeServer(appServer)
+    try {
+      databaseModule.getDatabase().close()
+      databaseModule.closeStorageDatabases()
+    } catch {
+    }
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
+async function assertBadRequestMessage(baseUrl: string, cookie: string, body: unknown, expectedMessage: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/__aisys__/api/api-keys`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert(response.status === 400, `创建 API Key 应返回 400，实际 HTTP ${response.status}: ${text}`)
+  const parsed = JSON.parse(text) as { message?: string }
+  assert(parsed.message === expectedMessage, `创建 API Key 错误文案异常：${parsed.message}`)
+}
+
+async function login(baseUrl: string): Promise<string> {
+  const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/__aisys__/api/auth/captcha')
+  const captchaCode = parseCaptchaCode(captcha.image)
+  assert(captchaCode, '无法解析登录验证码')
+  const response = await fetch(`${baseUrl}/__aisys__/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      username: 'admin',
+      password: 'admin',
+      captchaId: captcha.captchaId,
+      captchaCode
+    })
+  })
+  const cookie = response.headers.get('set-cookie')?.split(';')[0]
+  assert(response.ok, `登录失败：HTTP ${response.status} ${await response.text()}`)
+  assert(cookie, '登录未返回会话 Cookie')
+  return cookie
+}
+
+function parseCaptchaCode(image: string): string {
+  const base64 = image.replace(/^data:image\/svg\+xml;base64,/, '')
+  const svg = Buffer.from(base64, 'base64').toString('utf8')
+  return [...svg.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map((match) => match[1]).join('')
+}
+
+async function getEnvelope<T>(baseUrl: string, path: string, cookie?: string): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, cookie ? { headers: { cookie } } : undefined)
+  return unwrapEnvelope<T>(response, path)
+}
+
+async function unwrapEnvelope<T>(response: Response, path: string): Promise<T> {
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`${path} HTTP ${response.status}: ${text}`)
+  }
+  return (JSON.parse(text) as ApiEnvelope<T>).data
+}
+
+function listen(server: http.Server): Promise<void> {
+  if (server.listening) return Promise.resolve()
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.once('listening', resolvePromise)
+    server.once('error', rejectPromise)
+  })
+}
+
+function serverAddress(server: http.Server): { port: number } {
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('服务地址不可用')
+  }
+  return { port: address.port }
+}
+
+async function closeServer(server: http.Server | undefined): Promise<void> {
+  if (!server?.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.close((error) => error ? rejectPromise(error) : resolvePromise())
+  })
+}
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) {
+    throw new Error(message)
+  }
+}
+
+main().catch((error) => {
+  console.error('\nAPI Key 路由校验回归失败')
+  console.error(error instanceof Error ? error.message : error)
+  process.exitCode = 1
+})

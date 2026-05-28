@@ -429,8 +429,9 @@ const authorizationScopeParams = computed(() => {
 const createOwnedAccounts = computed(() => createAccounts.value.filter((account) => account.permissions?.canAuthorize !== false))
 const createOwnedGroups = computed(() => createGroups.value.filter((group) => group.permissions?.canAuthorize !== false))
 const rawColumns = computed(() => {
-  const showActions = isManagementView.value || filters.direction === 'outbound'
+  const showActions = isManagementView.value || filters.direction === 'outbound' || hasReturnableInboundAuthorization.value
   const actionColumnWidth = Math.max(84, 24 + authorizations.value.reduce((maxCount, authorization) => {
+    if (canReturnAuthorization(authorization)) return Math.max(maxCount, 1)
     if (!canManageAuthorization(authorization)) return maxCount
     return Math.max(maxCount, authorizationActionCount(authorization))
   }, 0) * 30)
@@ -511,11 +512,21 @@ function canManageAuthorization(authorization: ResourceAuthorizationSummary): bo
   return isManagementView.value || authorization.permissions?.canEdit === true
 }
 
+const hasReturnableInboundAuthorization = computed(() => {
+  if (isManagementView.value || filters.direction !== 'inbound') return false
+  return authorizations.value.some((authorization) => canReturnAuthorization(authorization))
+})
+
+function canReturnAuthorization(authorization: ResourceAuthorizationSummary): boolean {
+  if (isManagementView.value || filters.direction !== 'inbound') return false
+  if (authorization.granteeType !== 'system_account') return false
+  return authorization.status !== 'revoked' && authorization.status !== 'returned'
+}
+
 function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
-  let count = 1
-  if (authorization.status === 'active' || authorization.status === 'paused' || authorization.status === 'expired' || authorization.status === 'revoked' || authorization.status === 'returned') count += 1
-  count += authorizationRevokeActionCount(authorization)
-  return count
+  const revokeCount = authorizationRevokeActionCount(authorization)
+  const hasMore = canManageAuthorization(authorization) ? 1 : 0
+  return revokeCount + hasMore
 }
 
 function authorizationListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -1453,8 +1464,23 @@ async function revokeAuthorization(item: ResourceAuthorizationSummary) {
   }
 }
 
+async function returnAuthorization(item: ResourceAuthorizationSummary) {
+  try {
+    await api.myAuthorizations.returnAuthorization(item.id)
+    message.success('授权已归还')
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '归还授权失败'))
+  }
+}
+
 function handleActionMenuClick(event: { key: string | number }, item: ResourceAuthorizationSummary) {
   const key = String(event.key)
+  if (key === 'return') {
+    void returnAuthorization(item)
+    return
+  }
   if (key === 'edit-expire') {
     openExpireModal(item)
     return

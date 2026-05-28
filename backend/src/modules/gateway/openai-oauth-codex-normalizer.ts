@@ -277,7 +277,6 @@ export function isolateOpenAIOAuthCodexSessionId(
     .update(JSON.stringify({
       systemAccountId: identity.systemAccountId,
       apiKeyId: identity.apiKeyId ?? 'internal',
-      groupId: identity.groupId,
       raw: normalized
     }))
     .digest('hex')

@@ -25,7 +25,6 @@ const [
   { openAIGatewayRouter },
   { requestContextMiddleware },
   databaseModule,
-  cryptoModule,
   repositories,
   settingsRepository,
   gatewayCache,
@@ -38,7 +37,6 @@ const [
   import('../../modules/gateway/openai-gateway.routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
-  import('../../storage/crypto.js'),
   import('../../storage/repositories.js'),
   import('../../storage/settings.repository.js'),
   import('../../modules/gateway/gateway-runtime-cache.service.js'),
@@ -628,30 +626,13 @@ function totalUpstreamHitCount(): number {
 }
 
 function createRegressionApiKey(groupId: string, key: string): { id: string; key: string } {
-  const id = databaseModule.newId('key')
-  const now = databaseModule.nowIso()
-  databaseModule.getDatabase()
-    .prepare(`
-      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
-      id,
-      'sys_admin',
-      `上游失败回归 Key ${key.slice(-8)}`,
-      null,
-      cryptoModule.hashSecret(key),
-      key.slice(0, 8),
-      cryptoModule.encryptJson({ key }),
-      'active',
-      groupId,
-      null,
-      null,
-      '[]',
-      now,
-      now
-    )
-  return { id, key }
+  const apiKey = repositories.createApiKeyRecord({
+    name: `上游失败回归 Key ${key.slice(-8)}`,
+    groupId,
+    status: 'active'
+  })
+  assert(apiKey.key, '回归 API Key 未返回明文密钥')
+  return { id: apiKey.id, key: apiKey.key }
 }
 
 function listen(server: http.Server): Promise<void> {

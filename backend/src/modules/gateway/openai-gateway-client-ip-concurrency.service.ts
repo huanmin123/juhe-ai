@@ -4,6 +4,7 @@ import type { GroupSchedulingPolicy } from '../../domain/types.js'
 export type ClientIpConcurrencyRejectReason =
   | 'limit_reached'
   | 'queue_disabled'
+  | 'queue_full'
   | 'timeout'
   | 'aborted'
 
@@ -99,6 +100,10 @@ export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcq
   const maxQueueWaitMs = normalizeNonNegativeInteger(policy.maxQueueWaitMs, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueWaitMs)
   if (maxQueueWaitMs <= 0) {
     return Promise.resolve(rejectedDecision('queue_disabled', state, limit, 0))
+  }
+  const queueLimit = normalizePositiveInteger(policy.perApiKeyQueueLimit, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.perApiKeyQueueLimit)
+  if (state.items.length >= queueLimit) {
+    return Promise.resolve(rejectedDecision('queue_full', state, limit, 0))
   }
 
   return new Promise<ClientIpConcurrencyDecision>((resolve) => {
@@ -248,6 +253,11 @@ function clientIpConcurrencyKey(systemAccountId: string, groupId: string, apiKey
 function normalizeNonNegativeInteger(value: unknown, fallback: number): number {
   const numeric = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : fallback
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(numeric) ? Math.max(1, Math.trunc(numeric)) : fallback
 }
 
 function noop(): void {}

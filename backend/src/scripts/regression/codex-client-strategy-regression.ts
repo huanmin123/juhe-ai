@@ -27,6 +27,7 @@ function main(): void {
   testInvalidTurnMetadataDoesNotBecomeCodex()
   testNonCodexMetadataShapesDoNotFallback()
   testRawBodyHashIsPartOfTurnStateKey()
+  testCodexTurnStateKeyIgnoresGroupAndKeepsApiKeyBoundary()
   testFourthCodexRetryAvoidsFailedAccounts()
   testAllFailedAccountsBypassAvoidance()
   testMissingTurnStateDoesNotAvoidAccounts()
@@ -137,6 +138,36 @@ function testRawBodyHashIsPartOfTurnStateKey(): void {
   assert(strategyB.codexTurn?.stateKey, '请求 B 应解析出 Codex turn key')
   assert.notEqual(strategyA.codexTurn.stateKey, strategyB.codexTurn.stateKey)
   assert.notEqual(strategyA.codexTurn.rawBodyHash, strategyB.codexTurn.rawBodyHash)
+}
+
+function testCodexTurnStateKeyIgnoresGroupAndKeepsApiKeyBoundary(): void {
+  const body = {
+    model: 'gpt-5.3-codex',
+    input: 'same turn across groups',
+    stream: true
+  }
+  const headers = {
+    'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_group_route' })
+  }
+  const strategyGroupA = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, headers), {
+    ...identity,
+    groupId: 'group_a'
+  })
+  const strategyGroupB = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, headers), {
+    ...identity,
+    groupId: 'group_b'
+  })
+  const strategyApiKeyB = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, headers), {
+    ...identity,
+    apiKeyId: 'key_b',
+    groupId: 'group_b'
+  })
+
+  assert(strategyGroupA.codexTurn?.stateKey, '分组 A 应解析出 Codex turn key')
+  assert(strategyGroupB.codexTurn?.stateKey, '分组 B 应解析出 Codex turn key')
+  assert(strategyApiKeyB.codexTurn?.stateKey, 'API Key B 应解析出 Codex turn key')
+  assert.equal(strategyGroupA.codexTurn.stateKey, strategyGroupB.codexTurn.stateKey, '同一 API Key 下不同分组不应切开 Codex turn 状态')
+  assert.notEqual(strategyGroupA.codexTurn.stateKey, strategyApiKeyB.codexTurn.stateKey, '不同 API Key 仍应隔离 Codex turn 状态')
 }
 
 function testFourthCodexRetryAvoidsFailedAccounts(): void {

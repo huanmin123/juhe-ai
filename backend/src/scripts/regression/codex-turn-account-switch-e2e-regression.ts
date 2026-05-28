@@ -91,6 +91,7 @@ async function main(): Promise<void> {
     const nonCodex = seedTwoAccountGateway(upstreamBaseUrl, 'non-codex')
     const contextWindow = seedTwoAccountGateway(upstreamBaseUrl, 'context-window')
     const cyberPolicy = seedTwoAccountGateway(upstreamBaseUrl, 'cyber-policy')
+    const clientAbortAffinity = seedTwoAccountGateway(upstreamBaseUrl, 'client-abort-affinity', { freshPriority: 0 })
 
     gatewayServer = createGatewayServer()
     await listen(gatewayServer)
@@ -100,13 +101,14 @@ async function main(): Promise<void> {
     await assertNonCodexDoesNotSwitchAccount(baseUrl, nonCodex, upstreamState)
     await assertCodexContextWindowSwitchesAccount(baseUrl, contextWindow, upstreamState)
     await assertCodexCyberPolicySwitchesAccount(baseUrl, cyberPolicy, upstreamState)
+    await assertClientAbortClearsSessionAffinity(baseUrl, clientAbortAffinity, upstreamState)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assertUsageRecords(codexSwitch)
-    assertAccountsStillActive([codexSwitch, nonCodex, contextWindow, cyberPolicy])
+    assertAccountsStillActive([codexSwitch, nonCodex, contextWindow, cyberPolicy, clientAbortAffinity])
 
-    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、3 次失败后第 4 次避让、非 Codex 不切号、context_length_exceeded 和 cyber_policy 均可重试并切号，符合预期')
+    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、3 次失败后第 4 次避让、非 Codex 不切号、context_length_exceeded 和 cyber_policy 均可重试并切号，client_aborted 会释放会话亲和，符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -240,7 +242,54 @@ async function assertCodexCyberPolicySwitchesAccount(
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'cyber_policy 第 4 次应命中备用账号')
 }
 
-function seedTwoAccountGateway(upstreamBaseUrl: string, label: string): SeededGateway {
+async function assertClientAbortClearsSessionAffinity(
+  baseUrl: string,
+  seeded: SeededGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const sessionId = `session-client-abort-affinity-${Date.now()}`
+  const beforePrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+
+  const bindText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'bind-sticky-after-primary-503',
+    turnId: 'turn-client-abort-affinity',
+    codex: true,
+    sessionId
+  })
+  assert(bindText.includes('response.completed'), `预绑定请求应切到备用账号并完成：${bindText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforePrimaryHits, 1, '预绑定请求应先尝试主账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeStickyHits, 1, '预绑定请求应成功绑定备用账号会话亲和')
+
+  await requestResponsesStreamAndAbortAfterFirstChunk(baseUrl, seeded.apiKey, {
+    scenario: 'client-abort-before-terminal',
+    turnId: 'turn-client-abort-affinity',
+    codex: true,
+    sessionId
+  })
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeStickyHits, 2, 'client_aborted 请求应命中已绑定的备用账号')
+
+  const beforeRetryPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeRetryStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  const retryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'after-client-abort',
+    turnId: 'turn-client-abort-affinity',
+    codex: true,
+    sessionId
+  })
+  assert(retryText.includes('response.completed'), `client_aborted 后下一次请求应完成：${retryText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeRetryPrimaryHits, 1, 'client_aborted 后应释放会话亲和并回到正常账号顺序')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeRetryStickyHits, 0, 'client_aborted 后不应继续粘住已断开的备用账号')
+
+  usageRecordQueue.flushAllUsageRecordQueue()
+  const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 200 }).items
+  assert(
+    records.some((record) => record.accountId === seeded.freshAccountId && record.errorCode === 'client_aborted' && record.errorMessage === '下游连接提前关闭'),
+    'client_aborted 使用记录应使用“下游连接提前关闭”文案，避免误导为用户手动取消'
+  )
+}
+
+function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: { freshPriority?: number } = {}): SeededGateway {
   sequence += 1
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组-${label}`,
@@ -251,7 +300,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string): SeededGa
   const freshUpstreamKey = `sk-codex-switch-${sequence}-fresh`
   const failedAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: `Codex 切号 e2e 失败账号-${label}`,
+    name: `A-Codex 切号 e2e 失败账号-${label}`,
     type: 'api_key',
     credentials: {
       api_key: failedUpstreamKey,
@@ -262,9 +311,12 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string): SeededGa
     schedulable: true,
     priority: 0
   })
+  if ((options.freshPriority ?? 10) === 0) {
+    waitForClockTick()
+  }
   const freshAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: `Codex 切号 e2e 备用账号-${label}`,
+    name: `B-Codex 切号 e2e 备用账号-${label}`,
     type: 'api_key',
     credentials: {
       api_key: freshUpstreamKey,
@@ -273,8 +325,11 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string): SeededGa
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 10
+    priority: options.freshPriority ?? 10
   })
+  if ((options.freshPriority ?? 10) === 0) {
+    forceGroupAccountOrder(group.id, failedAccount.id, freshAccount.id)
+  }
   const apiKey = repositories.createApiKeyRecord({
     name: `Codex 切号 e2e Key-${label}`,
     groupId: group.id,
@@ -321,11 +376,31 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         : undefined
       state.requests.push({ upstreamKey, scenario, turnMetadata })
 
+      if (scenario === 'bind-sticky-after-primary-503' && !upstreamKey.endsWith('-fresh')) {
+        res.writeHead(503, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          error: {
+            message: 'primary temporarily unavailable',
+            type: 'server_error',
+            code: 'service_unavailable'
+          }
+        }))
+        return
+      }
+
       res.writeHead(200, {
         'content-type': 'text/event-stream; charset=utf-8',
         'cache-control': 'no-cache',
         connection: 'keep-alive'
       })
+      if (scenario === 'client-abort-before-terminal') {
+        sendOpenStreamWithoutTerminal(res)
+        return
+      }
+      if (scenario === 'after-client-abort') {
+        sendCompletedStream(res)
+        return
+      }
       if (upstreamKey.endsWith('-fresh')) {
         sendCompletedStream(res)
         return
@@ -356,6 +431,7 @@ async function requestResponsesStream(
     scenario: string
     turnId: string
     codex: boolean
+    sessionId?: string
   }
 ): Promise<string> {
   const headers: Record<string, string> = {
@@ -369,6 +445,9 @@ async function requestResponsesStream(
       session_id: `session-${input.turnId}`,
       thread_id: `thread-${input.turnId}`
     })
+  }
+  if (input.sessionId) {
+    headers['x-session-id'] = input.sessionId
   }
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -384,12 +463,78 @@ async function requestResponsesStream(
   return response.text()
 }
 
+async function requestResponsesStreamAndAbortAfterFirstChunk(
+  baseUrl: string,
+  apiKey: string,
+  input: {
+    scenario: string
+    turnId: string
+    codex: boolean
+    sessionId?: string
+  }
+): Promise<void> {
+  const controller = new AbortController()
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${apiKey}`,
+    'content-type': 'application/json',
+    accept: 'text/event-stream'
+  }
+  if (input.codex) {
+    headers['x-codex-turn-metadata'] = JSON.stringify({
+      turn_id: input.turnId,
+      session_id: `session-${input.turnId}`,
+      thread_id: `thread-${input.turnId}`
+    })
+  }
+  if (input.sessionId) {
+    headers['x-session-id'] = input.sessionId
+  }
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: 'gpt-5.3-codex',
+      input: input.scenario,
+      stream: true
+    }),
+    signal: controller.signal
+  })
+  assert.equal(response.status, 200)
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const reader = response.body?.getReader()
+  assert(reader, '流式响应应有可读取 body')
+  const firstChunk = await reader.read()
+  assert.equal(firstChunk.done, false, '测试请求应先收到首段流式数据再关闭下游连接')
+  controller.abort()
+  try {
+    await reader.cancel()
+  } catch {
+  }
+  await sleep(500)
+}
+
 function sendCompletedStream(res: http.ServerResponse): void {
   res.write('event: response.created\n')
   res.write('data: {"type":"response.created","response":{"id":"resp_mock","status":"in_progress"}}\n\n')
   res.write('event: response.completed\n')
   res.write('data: {"type":"response.completed","response":{"id":"resp_mock","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n\n')
   res.end()
+}
+
+function sendOpenStreamWithoutTerminal(res: http.ServerResponse): void {
+  res.write('event: response.created\n')
+  res.write('data: {"type":"response.created","response":{"id":"resp_open","status":"in_progress"}}\n\n')
+  res.write('event: response.output_item.added\n')
+  res.write('data: {"type":"response.output_item.added","item":{"id":"item_open","type":"custom_tool_call","status":"in_progress"}}\n\n')
+  const interval = setInterval(() => {
+    if (res.destroyed || res.writableEnded) {
+      clearInterval(interval)
+      return
+    }
+    res.write('event: response.custom_tool_call_input.delta\n')
+    res.write('data: {"type":"response.custom_tool_call_input.delta","delta":"{}"}\n\n')
+  }, 25)
+  res.once('close', () => clearInterval(interval))
 }
 
 function sendFailedStream(res: http.ServerResponse, code: string, message: string): void {
@@ -467,6 +612,22 @@ function serverPort(server: http.Server): number {
   const address = server.address()
   assert(address && typeof address === 'object', 'server address unavailable')
   return address.port
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
+function waitForClockTick(): void {
+  const startedAt = Date.now()
+  while (Date.now() === startedAt) {
+  }
+}
+
+function forceGroupAccountOrder(groupId: string, primaryAccountId: string, stickyAccountId: string): void {
+  const statement = databaseModule.getDatabase().prepare('UPDATE group_accounts SET created_at = ? WHERE group_id = ? AND account_id = ?')
+  statement.run('2000-01-01T00:00:00.000Z', groupId, primaryAccountId)
+  statement.run('2000-01-01T00:00:01.000Z', groupId, stickyAccountId)
 }
 
 main().catch((error) => {

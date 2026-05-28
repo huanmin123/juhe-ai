@@ -40,7 +40,6 @@ export interface ClientIpAccountAvoidanceConfirmResult {
 
 interface ClientIpAccountAvoidanceScope {
   systemAccountId: string
-  groupId: string
   apiKeyId: string
   clientIp: string
 }
@@ -202,7 +201,6 @@ export function getClientIpAccountAvoidanceSnapshotForTest(): Array<{
   failureCount: number
   clientIp: string
   apiKeyId: string
-  groupId: string
   systemAccountId: string
 }> {
   return [...clientIpAccountAvoidanceCache.values()].map((entry) => {
@@ -212,7 +210,6 @@ export function getClientIpAccountAvoidanceSnapshotForTest(): Array<{
       failureCount: entry.failureCount,
       clientIp: scope.clientIp,
       apiKeyId: scope.apiKeyId,
-      groupId: scope.groupId,
       systemAccountId: scope.systemAccountId
     }
   })
@@ -225,7 +222,6 @@ function normalizeScope(input: ClientIpAccountAvoidanceScopeInput): ClientIpAcco
   }
   return {
     systemAccountId: input.systemAccountId,
-    groupId: input.groupId,
     apiKeyId: input.apiKeyId?.trim() || 'internal',
     clientIp
   }
@@ -239,7 +235,6 @@ function scopeKey(scope: ClientIpAccountAvoidanceScope): string {
   return JSON.stringify({
     systemAccountId: scope.systemAccountId,
     apiKeyId: scope.apiKeyId,
-    groupId: scope.groupId,
     clientIp: scope.clientIp
   })
 }
@@ -250,14 +245,12 @@ function parseScopeKey(value: string): ClientIpAccountAvoidanceScope {
     return {
       systemAccountId: parsed.systemAccountId,
       apiKeyId: parsed.apiKeyId,
-      groupId: parsed.groupId,
       clientIp: parsed.clientIp
     }
   } catch {
     return {
       systemAccountId: '',
       apiKeyId: '',
-      groupId: '',
       clientIp: ''
     }
   }

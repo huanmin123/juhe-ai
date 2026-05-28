@@ -30,21 +30,21 @@ try {
     const result = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildUsageRecordsCleanupJob(index))
     assert.equal(result.queued, true, `数据维护任务 ${index} 应被 server IPC 队列保留`)
   }
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '旧 regular IPC 上限数量应全部保留')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, 'regular IPC 队列达到保护上限前应全部保留')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, 'server IPC runtime 应按类型展示维护任务排队数')
 
   const droppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
   const protectedOverflow = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildUsageRecordsCleanupJob(5000))
-  assert.equal(protectedOverflow.queued, true, '超过旧 IPC 队列上限后数据维护任务仍应排队')
-  assert.equal(protectedOverflow.droppedReason, undefined, '成功排队不应带投递失败原因')
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, droppedBefore, '超过旧 IPC 上限不应进入维护队列 dropped 指标')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5001, '超过旧 IPC 上限后应继续增长')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount, 0, 'server IPC runtime 不应记录旧上限拒绝次数')
+  assert.equal(protectedOverflow.queued, false, '超过 regular IPC 队列上限后数据维护任务应快速拒绝')
+  assert.equal(protectedOverflow.droppedReason, 'worker_dispatch_failed', '拒绝排队应返回投递失败原因')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, droppedBefore + 1, '超过 IPC 上限应进入维护队列 dropped 指标')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '超过 IPC 上限后 pending 数不应继续增长')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount, 1, 'server IPC runtime 应记录维护任务拒绝次数')
 
   const runtimeLogAccepted = backgroundIpc.sendRuntimeLogLineToWorker('{"level":"info","event":"runtime_log_after_old_limit"}')
-  assert.equal(runtimeLogAccepted, true, '超过旧 IPC 队列上限后低优先级运行日志仍应排队')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5002, '低优先级消息不应挤掉维护任务')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.runtimeLogLines.droppedCount, 0, 'server IPC runtime 不应记录旧上限导致的运行日志丢弃')
+  assert.equal(runtimeLogAccepted, false, '超过 regular IPC 队列上限后低优先级运行日志应快速拒绝')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '低优先级消息不应挤掉维护任务')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.runtimeLogLines.rejectedCount, 1, 'server IPC runtime 应记录运行日志拒绝次数')
 
   const operationDroppedBefore = operationLogQueue.getOperationLogQueueRuntime().droppedCount
   operationLogQueue.enqueueOperationLog({
@@ -56,9 +56,9 @@ try {
     resourceType: 'operation_log',
     summary: 'server IPC 队列满时操作日志投递失败回归'
   })
-  assert.equal(operationLogQueue.getOperationLogQueueRuntime().droppedCount, operationDroppedBefore, '超过旧 IPC 上限后 server 操作日志不应进入 dropped 指标')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5003, '操作日志应突破旧队列上限继续排队')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.operationLogs.rejectedCount, 0, 'server IPC runtime 不应记录操作日志旧上限拒绝次数')
+  assert.equal(operationLogQueue.getOperationLogQueueRuntime().droppedCount, operationDroppedBefore + 1, '超过 IPC 上限后 server 操作日志应进入 dropped 指标')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '操作日志不应突破 IPC 队列上限继续排队')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.operationLogs.rejectedCount, 1, 'server IPC runtime 应记录操作日志拒绝次数')
 
   const auditDroppedBefore = auditLogQueue.getAuditLogQueueRuntime().droppedFailureCount
   auditLogQueue.enqueueAuditLog({
@@ -79,11 +79,19 @@ try {
     attempts: [],
     payloads: []
   })
-  assert.equal(auditLogQueue.getAuditLogQueueRuntime().droppedFailureCount, auditDroppedBefore, '超过旧 IPC 上限后 server 审计日志不应进入失败丢弃指标')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5004, '审计日志应突破旧队列上限继续排队')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.auditLogs.rejectedCount, 0, 'server IPC runtime 不应记录审计日志旧上限拒绝次数')
+  assert.equal(auditLogQueue.getAuditLogQueueRuntime().droppedFailureCount, auditDroppedBefore + 1, '超过 IPC 上限后 server 审计日志应进入失败丢弃指标')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '审计日志不应突破 IPC 队列上限继续排队')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.auditLogs.rejectedCount, 1, 'server IPC runtime 应记录审计日志拒绝次数')
 
-  console.log('后台 IPC 队列回归通过：超过旧上限后继续排队，不再因为人工队列阈值丢弃或拒绝')
+  for (let index = 0; index < 10_000; index += 1) {
+    assert.equal(backgroundIpc.sendUsageRecordsToWorker([buildUsageRecord(index)]), true, `使用记录 ${index} 应进入独立 usage IPC 队列`)
+  }
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.queueLength, 10_000, 'usage IPC 队列应独立达到保护上限')
+  const usageOverflowAccepted = backgroundIpc.sendUsageRecordsToWorker([buildUsageRecord(10_000)])
+  assert.equal(usageOverflowAccepted, false, '超过 usage IPC 队列上限后使用记录应快速拒绝')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.rejectedCount, 1, 'server IPC runtime 应记录使用记录拒绝次数')
+
+  console.log('后台 IPC 队列回归通过：server 到 worker 的 regular/usage IPC 队列达到上限后会快速拒绝并记录指标，避免请求侧副作用无限堆积')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -100,5 +108,23 @@ function buildUsageRecordsCleanupJob(index: number) {
     cutoffAt: '2000-01-01T00:00:00.000Z',
     batchSize: 100,
     maxBatches: 1
+  }
+}
+
+function buildUsageRecord(index: number) {
+  return {
+    traceId: `trace-background-ipc-usage-${index}`,
+    trafficSource: 'gateway' as const,
+    systemAccountId: 'sys_admin',
+    endpoint: 'POST /v1/responses',
+    providerCode: 'openai',
+    success: true,
+    stream: false,
+    statusCode: 200,
+    durationMs: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costUsd: 0,
+    createdAt: '2000-01-01T00:00:00.000Z'
   }
 }

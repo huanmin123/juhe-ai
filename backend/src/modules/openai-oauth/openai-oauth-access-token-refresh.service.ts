@@ -1,5 +1,7 @@
 import type { AccountSummary } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { createAppCache } from '../../shared/cache.js'
+import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import {
@@ -48,6 +50,12 @@ const oauthTokenRefreshFailedErrorCode = 'oauth_token_refresh_failed'
 const openAIOAuthRefreshRaceRetryPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_race', 0, 1)
 const refreshFailureStateByAccountId = new Map<string, { count: number; backoffUntil: number }>()
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
+const recentRefreshTtlMs = 30_000
+const recentRefreshByAccountId = createAppCache<string, OpenAIOAuthRefreshAccount>({
+  name: 'openai-oauth:recent-refresh',
+  max: 5000,
+  ttlMs: recentRefreshTtlMs
+})
 let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
 
 type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerCode' | 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode'>> & {
@@ -70,6 +78,10 @@ export function setOpenAIOAuthTokenRefresherForTest(refresher?: OpenAIOAuthToken
   openAIOAuthTokenRefresher = refresher ?? refreshOpenAIOAuthToken
 }
 
+export function clearOpenAIOAuthRecentRefreshCache(): void {
+  recentRefreshByAccountId.clear()
+}
+
 export async function refreshOpenAIOAuthAccountAccessToken(
   account: RefreshableOpenAIOAuthAccount,
   options: OpenAIOAuthAccountRefreshCallOptions = {}
@@ -85,6 +97,10 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
   options: OpenAIOAuthAccountRefreshCallOptions
 ): Promise<AccountSummary | RefreshedOpenAIOAuthAccount> {
   const persistMode = effectivePersistMode(options)
+  const recent = readRecentOpenAIOAuthRefresh(account, options, persistMode)
+  if (recent) {
+    return recent
+  }
   let current = await findLatestRefreshableOpenAIOAuthAccount(account, options, persistMode)
   let retryWithLatestRefreshToken = false
 
@@ -101,6 +117,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
 
     if (credentialsChanged(account.credentials, credentials) && !isAccessTokenExpiredOrMissing(credentials, Date.now())) {
       clearGatewayRuntimeCache()
+      rememberRecentOpenAIOAuthRefresh(current, persistMode)
       return current
     }
 
@@ -124,10 +141,12 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
         if (!updated) {
           throw new Error('OpenAI OAuth 账户不存在或无法更新')
         }
-        return {
+        const refreshed = {
           ...current,
           credentials: nextCredentials
         }
+        rememberRecentOpenAIOAuthRefresh(refreshed, persistMode)
+        return refreshed
       }
       const updated = updateAccount(current.id, {
         credentials: nextCredentials
@@ -144,6 +163,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
           accountId: recovered.account.id
         }, 'OpenAI OAuth Access Token 刷新竞争已恢复')
         clearGatewayRuntimeCache()
+        rememberRecentOpenAIOAuthRefresh(recovered.account, persistMode)
         return finalizeSuccessfulTokenRefresh(recovered.account, options)
       }
       if (
@@ -404,7 +424,40 @@ async function tryRecoverOpenAIOAuthRefreshRace(
 function normalizeDbServiceRefreshAccount(account: DbServiceOpenAIOAuthRefreshAccount): OpenAIOAuthRefreshAccount {
   return {
     ...account,
+    credentials: { ...account.credentials },
     proxyUrl: account.proxyUrl
+  }
+}
+
+function readRecentOpenAIOAuthRefresh(
+  account: RefreshableOpenAIOAuthAccount,
+  options: OpenAIOAuthAccountRefreshCallOptions,
+  persistMode: 'sync' | 'db-service'
+): OpenAIOAuthRefreshAccount | undefined {
+  if (persistMode !== 'db-service' || options.force === true) {
+    return undefined
+  }
+  const cached = recentRefreshByAccountId.get(account.id)
+  if (!cached || isAccessTokenExpiredOrMissing(cached.credentials, Date.now())) {
+    return undefined
+  }
+  if (!credentialsChanged(account.credentials, cached.credentials)) {
+    return undefined
+  }
+  return cloneOpenAIOAuthRefreshAccount(cached)
+}
+
+function rememberRecentOpenAIOAuthRefresh(account: OpenAIOAuthRefreshAccount, persistMode: 'sync' | 'db-service'): void {
+  if (persistMode !== 'db-service' || isAccessTokenExpiredOrMissing(account.credentials, Date.now())) {
+    return
+  }
+  recentRefreshByAccountId.set(account.id, cloneOpenAIOAuthRefreshAccount(account), { ttlMs: recentRefreshTtlMs })
+}
+
+function cloneOpenAIOAuthRefreshAccount(account: OpenAIOAuthRefreshAccount): OpenAIOAuthRefreshAccount {
+  return {
+    ...account,
+    credentials: { ...account.credentials }
   }
 }
 
@@ -471,3 +524,5 @@ function boundedNumber(value: unknown, fallback: number, min: number, max: numbe
   if (!Number.isFinite(number)) return fallback
   return Math.min(Math.max(Math.trunc(number), min), max)
 }
+
+registerGatewayRuntimeCacheInvalidator(clearOpenAIOAuthRecentRefreshCache)

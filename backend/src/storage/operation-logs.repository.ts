@@ -267,15 +267,8 @@ export function getOperationLogDetailForViewer(id: string, systemAccountId: stri
   return sanitizeOperationLogDetailForViewer(detail, effectiveViewerDetailLevel(detail.detailLevel, viewerLevel, detail.visibilityScope))
 }
 
-export function cleanupOperationLogsBefore(cutoffCreatedAt: string, limit?: number): number {
+export function cleanupOperationLogsBefore(cutoffCreatedAt: string, limit = 1000): number {
   const database = getDatasetDatabase()
-  if (!limit) {
-    const result = database
-      .prepare('DELETE FROM operation_logs WHERE created_at < ?')
-      .run(cutoffCreatedAt)
-    return Number(result.changes ?? 0)
-  }
-
   const rows = database
     .prepare('SELECT id FROM operation_logs WHERE created_at < ? ORDER BY created_at ASC, id ASC LIMIT ?')
     .all(cutoffCreatedAt, Math.max(1, Math.trunc(limit))) as OperationLogRow[]

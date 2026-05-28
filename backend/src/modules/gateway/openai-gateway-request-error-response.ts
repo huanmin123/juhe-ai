@@ -1,6 +1,7 @@
 import type { Response } from 'express'
 
 import { responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
+import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
 import { gatewayErrorPayload, sendGatewayErrorResponse } from './openai-gateway-responses.js'
 import { isUpstreamRequestAbortedError } from './openai-gateway-upstream.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
@@ -22,7 +23,7 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
       statusCode: res.statusCode,
       responseHeaders: responseHeadersToObject(res),
       errorPhase: 'client',
-      errorMessage: '请求已取消'
+      errorMessage: downstreamConnectionClosedMessage
     })
     if (!res.writableEnded && !res.destroyed) {
       res.end()

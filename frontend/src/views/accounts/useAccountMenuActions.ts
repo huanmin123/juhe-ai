@@ -3,13 +3,14 @@ import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
-import { isAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
+import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
   authorizedAccountUnavailableText,
   canEditAccount,
   canManageOpenAIOAuth,
   canRestoreException,
+  hasAuthorizedLocalFailureState,
   canUseAccountActions,
   canUseBoundAuthorizedAccount
 } from './accountRules'
@@ -92,7 +93,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     if (key === 'restore-normal') {
       if (isAuthorizedAccount(account)) {
-        if (!account.localStatus || account.localStatus === 'active') {
+        if (!hasAccountRuntimeRecoveryState(account) && !hasAuthorizedLocalFailureState(account)) {
           message.warning('当前授权账户不需要恢复')
           return
         }
@@ -103,7 +104,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         await updateAccountState(account, { clearFailureState: true }, '账户异常已恢复', { allowExceptionRecovery: true })
         return
       }
-      if (!isTemporaryAccountStatus(account)) {
+      if (!hasAccountRuntimeRecoveryState(account) && !isTemporaryAccountStatus(account)) {
         message.warning('当前账户不需要恢复')
         return
       }

@@ -625,7 +625,7 @@ export async function getAuditLogPayload(
   }
 }
 
-export function cleanupAuditLogsBefore(cutoffCreatedAt: string, limit?: number): number {
+export function cleanupAuditLogsBefore(cutoffCreatedAt: string, limit = 1000): number {
   const deleted = deleteAuditLogsByWhere('created_at < ?', [cutoffCreatedAt], limit)
   cleanupUnreferencedAuditPayloadBlobs(limit)
   return deleted
@@ -637,23 +637,19 @@ export function cleanupAuditLogsByRetention(input: {
   errorGroupCutoffUpdatedAt: string
   limit?: number
 }): number {
+  const limit = input.limit ?? 1000
   const deletedLogs = deleteAuditLogsByWhere(
     "((audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))",
     [input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
-    input.limit
+    limit
   )
-  const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, input.limit)
-  const deletedBlobs = cleanupUnreferencedAuditPayloadBlobs(input.limit)
+  const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
+  const deletedBlobs = cleanupUnreferencedAuditPayloadBlobs(limit)
   return deletedLogs + deletedGroups + deletedBlobs
 }
 
-function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue[], limit?: number): number {
+function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue[], limit: number): number {
   const database = getDatasetDatabase()
-  if (!limit) {
-    const result = database.prepare(`DELETE FROM audit_logs WHERE ${whereClause}`).run(...params)
-    return Number(result.changes ?? 0)
-  }
-
   const rows = database
     .prepare(`SELECT id FROM audit_logs WHERE ${whereClause} ORDER BY created_at ASC, id ASC LIMIT ?`)
     .all(...params, Math.max(1, Math.trunc(limit))) as AuditLogRow[]
@@ -665,7 +661,7 @@ function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue
   return Number(result.changes ?? 0)
 }
 
-function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit?: number): number {
+function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit: number): number {
   const database = getDatasetDatabase()
   const unreferencedGroupWhere = `
     updated_at < ?
@@ -675,10 +671,6 @@ function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit?: number):
       WHERE audit_logs.error_group_id = audit_error_groups.id
     )
   `
-  if (!limit) {
-    const result = database.prepare(`DELETE FROM audit_error_groups WHERE ${unreferencedGroupWhere}`).run(cutoffUpdatedAt)
-    return Number(result.changes ?? 0)
-  }
   const rows = database
     .prepare(`SELECT id FROM audit_error_groups WHERE ${unreferencedGroupWhere} ORDER BY updated_at ASC, id ASC LIMIT ?`)
     .all(cutoffUpdatedAt, Math.max(1, Math.trunc(limit))) as AuditLogRow[]

@@ -3,6 +3,7 @@ import {
   clearAccountStreamFailureState,
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
+  getAccountPrecheckMutationState,
   listOpenAIAccountsForGroup,
   listPublicGlobalSettings,
   markAccountCooldown,
@@ -141,6 +142,10 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     }
     case 'mark_account_precheck_temporary_unavailable': {
       const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
+      const staleReason = precheckTemporaryUnavailableSkipReason(operation, authorizedTarget)
+      if (staleReason) {
+        return { updated: false, skippedReason: staleReason }
+      }
       const fallbackCooldownUntil = new Date(Date.now() + 60_000).toISOString()
       const updated = authorizedTarget
         ? markAuthorizedAccountBindingCooldownByContext({
@@ -183,6 +188,30 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     default:
       return assertNever(operation)
   }
+}
+
+function precheckTemporaryUnavailableSkipReason(
+  operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>,
+  authorizedTarget: ReturnType<typeof authorizedBindingRuntimeTarget>
+): string | undefined {
+  const startedAtMs = operation.precheckStartedAt ? Date.parse(operation.precheckStartedAt) : NaN
+  if (!Number.isFinite(startedAtMs)) {
+    return undefined
+  }
+  const state = getAccountPrecheckMutationState({
+    accountId: operation.account.id,
+    authorizedBinding: authorizedTarget
+  })
+  if (!state) {
+    return 'account_missing'
+  }
+  if (state.status === 'disabled' || state.status === 'error') {
+    return 'hard_unavailable'
+  }
+  if (state.updatedAt && Date.parse(state.updatedAt) > startedAtMs && state.updatedAt !== state.lastUsedAt) {
+    return 'stale_account_updated'
+  }
+  return undefined
 }
 
 function authorizedBindingRuntimeTarget(account: OpenAIAccountSecret | undefined): {
@@ -248,7 +277,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       continue
     }
     const accounts = listOpenAIAccountsForGroup(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
-    if (!accounts.length && uniqueCandidateGroupIds.length > 1) {
+    if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
     return {
@@ -264,6 +293,10 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     settings,
     accounts: []
   }
+}
+
+function hasDispatchableGatewayAccount(accounts: OpenAIAccountSecret[]): boolean {
+  return accounts.some((account) => account.status === 'active' && account.proxyProfileUnavailable !== true)
 }
 
 function assertNever(value: never): never {

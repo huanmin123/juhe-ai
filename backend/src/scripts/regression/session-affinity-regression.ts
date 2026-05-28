@@ -46,17 +46,17 @@ function testAffinityKeyUsesLocalIdentityOnly(): void {
   })
 
   assert.equal(typeof keyA, 'string', '可识别会话请求应生成亲和 key')
-  assert.equal(keyA, keyARepeat, '同一本地系统账户、API Key、分组和客户端会话应复用同一个亲和 key')
+  assert.equal(keyA, keyARepeat, '同一本地系统账户、API Key 和客户端会话应复用同一个亲和 key')
   assert.notEqual(keyA, resolveOpenAIGatewaySessionAffinityKey(req, {
     systemAccountId: 'system-a',
     apiKeyId: 'key-b',
     groupId: 'group-a'
   }), '不同本地 API Key 必须隔离会话亲和')
-  assert.notEqual(keyA, resolveOpenAIGatewaySessionAffinityKey(req, {
+  assert.equal(keyA, resolveOpenAIGatewaySessionAffinityKey(req, {
     systemAccountId: 'system-a',
     apiKeyId: 'key-a',
     groupId: 'group-b'
-  }), '不同分组必须隔离会话亲和')
+  }), '同一 API Key 下不同分组不应重新切分会话亲和')
   assert.notEqual(keyA, resolveOpenAIGatewaySessionAffinityKey(req, {
     systemAccountId: 'system-b',
     apiKeyId: 'key-a',
@@ -178,11 +178,13 @@ function testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard(): void {
 
 function testScopedMigrationOnlyMovesMatchingBindings(): void {
   const scopedKey = 'session-affinity-regression:scoped-migration'
-  const otherGranteeKey = 'session-affinity-regression:scoped-migration-other-grantee'
+  const sameApiKeyOtherGroupKey = 'session-affinity-regression:scoped-migration-same-key-other-group'
+  const otherApiKey = 'session-affinity-regression:scoped-migration-other-api-key'
   const ownerKey = 'session-affinity-regression:scoped-migration-owner'
   const unscopedKey = 'session-affinity-regression:scoped-migration-unscoped'
   rememberOpenAIAccountForSession(scopedKey, 'shared-source', { systemAccountId: 'grantee-a', apiKeyId: 'key-a', groupId: 'group-a' })
-  rememberOpenAIAccountForSession(otherGranteeKey, 'shared-source', { systemAccountId: 'grantee-b', apiKeyId: 'key-b', groupId: 'group-b' })
+  rememberOpenAIAccountForSession(sameApiKeyOtherGroupKey, 'shared-source', { systemAccountId: 'grantee-a', apiKeyId: 'key-a', groupId: 'group-b' })
+  rememberOpenAIAccountForSession(otherApiKey, 'shared-source', { systemAccountId: 'grantee-a', apiKeyId: 'key-b', groupId: 'group-b' })
   rememberOpenAIAccountForSession(ownerKey, 'shared-source', { systemAccountId: 'owner', apiKeyId: 'owner-key', groupId: 'owner-group' })
   rememberOpenAIAccountForSession(unscopedKey, 'shared-source')
   const accounts = [
@@ -191,18 +193,20 @@ function testScopedMigrationOnlyMovesMatchingBindings(): void {
   ]
 
   assert.equal(
-    migrateOpenAIAccountSessionAffinity('shared-source', 'scoped-target', { systemAccountId: 'grantee-a', groupId: 'group-a' }).migratedSessionCount,
-    1,
-    '授权账户本地迁移只应迁移当前被授权人当前分组的会话绑定'
+    migrateOpenAIAccountSessionAffinity('shared-source', 'scoped-target', { systemAccountId: 'grantee-a', apiKeyId: 'key-a', groupId: 'group-a' }).migratedSessionCount,
+    2,
+    '授权账户本地迁移应按当前 API Key 迁移，同一 API Key 下不同分组不应切开会话亲和'
   )
   assert.deepEqual(orderedIds(accounts, scopedKey), ['scoped-target', 'shared-source'])
-  assert.deepEqual(orderedIds(accounts, otherGranteeKey), ['shared-source', 'scoped-target'])
+  assert.deepEqual(orderedIds(accounts, sameApiKeyOtherGroupKey), ['scoped-target', 'shared-source'])
+  assert.deepEqual(orderedIds(accounts, otherApiKey), ['shared-source', 'scoped-target'])
   assert.deepEqual(orderedIds(accounts, ownerKey), ['shared-source', 'scoped-target'])
   assert.deepEqual(orderedIds(accounts, unscopedKey), ['shared-source', 'scoped-target'])
 
   assert.equal(migrateOpenAIAccountSessionAffinity('shared-source', 'scoped-target').migratedSessionCount, 3)
   forgetOpenAIAccountForSession(scopedKey)
-  forgetOpenAIAccountForSession(otherGranteeKey)
+  forgetOpenAIAccountForSession(sameApiKeyOtherGroupKey)
+  forgetOpenAIAccountForSession(otherApiKey)
   forgetOpenAIAccountForSession(ownerKey)
   forgetOpenAIAccountForSession(unscopedKey)
 }

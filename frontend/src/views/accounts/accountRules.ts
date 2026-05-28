@@ -4,6 +4,7 @@ import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
   formatDateTime,
+  hasAccountRuntimeRecoveryState,
   isAccountPackageExpiredStatus,
   isAuthorizationBindingUnavailable,
   isAuthorizationExpired,
@@ -190,7 +191,7 @@ export function canTestAccount(account: AccountSummary): boolean {
   return account.permissions?.canUse !== false
 }
 
-function hasAuthorizedLocalFailureState(account: AccountSummary): boolean {
+export function hasAuthorizedLocalFailureState(account: AccountSummary): boolean {
   return Boolean(
     (account.localStatus && account.localStatus !== 'active' && account.localStatus !== 'disabled')
     || account.localCooldownUntil
@@ -207,13 +208,13 @@ export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: A
   if (target.providerCode !== source.providerCode) return false
   if (groupIdForAccount(target.id) !== groupIdForAccount(source.id)) return false
   if (isAuthorizedAccount(source)) {
-    if (isAuthorizedAccount(target)) return canUseBoundAuthorizedAccount(target)
-    return target.permissions?.canUse !== false && target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
+    if (isAuthorizedAccount(target)) return canUseBoundAuthorizedAccount(target) && !hasAccountRuntimeRecoveryState(target)
+    return target.permissions?.canUse !== false && target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target) && !hasAccountRuntimeRecoveryState(target)
   }
   if (isAuthorizedAccount(target)) return false
   if (!canEditAccount(target)) return false
   if (target.ownerSystemAccountId !== source.ownerSystemAccountId) return false
-  return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
+  return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target) && !hasAccountRuntimeRecoveryState(target)
 }
 
 export function canManageOpenAIOAuth(account: AccountSummary): boolean {
@@ -230,7 +231,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       pushDispatchFlagItems(items, account)
       return items.map(normalizeAccountMenuItem)
     }
-    if (account.boundGroupId && account.localStatus && account.localStatus !== 'active' && account.localStatus !== 'disabled') {
+    if (hasAccountRuntimeRecoveryState(account) || (account.boundGroupId && hasAuthorizedLocalFailureState(account))) {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
     pushDispatchFlagItems(items, account)
@@ -268,7 +269,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       items.push({ key: 'refresh-oauth-token', label: '刷新令牌' })
       items.push({ key: 'reauthorize-oauth', label: '重新授权' })
     }
-    if (isTemporaryAccountStatus(account)) {
+    if (hasAccountRuntimeRecoveryState(account) || isTemporaryAccountStatus(account)) {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
     pushDispatchFlagItems(items, account)

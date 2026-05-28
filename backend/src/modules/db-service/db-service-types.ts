@@ -21,6 +21,20 @@ export interface AccountRuntimeAvailability {
   precheckAttemptCount?: number
 }
 
+export interface AccountRuntimeAvailabilityClearTarget {
+  accountId: string
+  authorizedBinding?: {
+    systemAccountId?: string
+    groupId?: string
+    accountAuthorizationId?: string
+  }
+}
+
+export interface AccountRuntimeAvailabilityClearResult {
+  cleared: boolean
+  clearedKeys: string[]
+}
+
 export interface DbServiceRuntimeSnapshot {
   pid: number
   ready: boolean
@@ -87,6 +101,7 @@ export interface DbServiceServerRuntimeSnapshot {
     ready: boolean
     pendingRequestCount: number
     timedOutRequestCount: number
+    rejectedRequestCount?: number
     failedRequestCount: number
     pendingProcessEventLoopRequestCount?: number
     timedOutProcessEventLoopRequestCount?: number
@@ -227,6 +242,7 @@ export type DbServiceOperation =
     type: 'mark_account_precheck_temporary_unavailable'
     account: OpenAIAccountSecret
     reason: string
+    precheckStartedAt?: string
   }
   | {
     type: 'clear_gateway_runtime_cache'
@@ -261,7 +277,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'persist_openai_codex_usage_headers' } ? { persisted: boolean } :
   T extends { type: 'apply_account_error_handling' } ? AccountErrorHandlingResult :
   T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
-  T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean } :
+  T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean; skippedReason?: string } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :
@@ -306,6 +322,18 @@ export type DbServiceParentMessage =
     ok: false
     errorMessage: string
   }
+  | {
+    type: 'db_service_server_account_runtime_clear_response'
+    requestId: string
+    ok: true
+    result: AccountRuntimeAvailabilityClearResult
+  }
+  | {
+    type: 'db_service_server_account_runtime_clear_response'
+    requestId: string
+    ok: false
+    errorMessage: string
+  }
 
 export type DbServiceChildMessage =
   | {
@@ -340,6 +368,11 @@ export type DbServiceChildMessage =
     type: 'db_service_server_audit_full_body_capture_update_request'
     requestId: string
     enabled: boolean
+  }
+  | {
+    type: 'db_service_server_account_runtime_clear_request'
+    requestId: string
+    target: AccountRuntimeAvailabilityClearTarget
   }
   | {
     type: 'gateway_runtime_cache_invalidate'

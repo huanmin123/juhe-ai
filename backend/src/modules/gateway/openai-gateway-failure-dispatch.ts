@@ -13,6 +13,7 @@ import {
   persistOpenAICodexHeadersIfNeeded
 } from './openai-gateway-account-effects.js'
 import { readUpstreamBodyLimited } from './openai-gateway-body.js'
+import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
 import { recordGatewayAccountFailureForPrecheck, suppressGatewayAccountLocally } from './gateway-account-side-effects.service.js'
 import { forgetOpenAIAccountForSession } from './openai-gateway-session-affinity.service.js'
 import {
@@ -258,20 +259,20 @@ export async function handleUpstreamRequestError(
         upstreamUrl,
         startedAt: attemptStartedAt,
         statusCode,
-        errorMessage: '请求已取消'
+        errorMessage: downstreamConnectionClosedMessage
       })
       lastAttempt = {
         accountId: account.id,
         accountName: account.name,
         upstreamUrl,
         status: statusCode,
-        message: '请求已取消'
+        message: downstreamConnectionClosedMessage
       }
     }
     auditCapture.completeAttempt(auditAttemptId, {
       success: false,
       errorPhase: 'client',
-      errorMessage: '请求已取消'
+      errorMessage: downstreamConnectionClosedMessage
     })
     throw error
   }

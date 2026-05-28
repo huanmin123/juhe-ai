@@ -70,11 +70,12 @@ const mergedOptions = computed(() => mergeSelectedSelectOptions(
   normalizedSelectedIds.value,
   props.selectedOptions
 ))
+const currentValueSet = computed(() => new Set(selectedValues(props.value).map((value) => value?.trim()).filter(Boolean)))
 const selectOptions = computed(() => mergedOptions.value.map((option) => (
-  hiddenValueSet.value.has(option.value)
+  hiddenValueSet.value.has(option.value) && currentValueSet.value.has(option.value)
     ? { ...option, style: { ...option.style, display: 'none' } }
     : option
-)))
+)).filter((option) => !hiddenValueSet.value.has(option.value) || currentValueSet.value.has(option.value)))
 const displayValue = computed(() => {
   const knownValues = new Set(mergedOptions.value.map((option) => option.value))
   if (Array.isArray(props.value)) {

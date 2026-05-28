@@ -89,6 +89,7 @@ async function main(): Promise<void> {
 
     await assertClientIpAvoidsFailedAccountAfterSwitch(baseUrl, seeded, upstreamState)
     assertServiceBypassesWhenAllCandidatesAvoided()
+    assertServiceSharesAvoidanceAcrossGroupsForSameApiKey()
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -165,6 +166,44 @@ function assertServiceBypassesWhenAllCandidatesAvoided(): void {
   assert.equal(ordered.applied, false, '全部候选都被回避时不应应用过滤排序')
   assert.equal(ordered.bypassedAllAvoided, true, '全部候选都被回避时应标记旁路')
   assert.deepEqual(ordered.accounts.map((account) => account.id), accounts.map((account) => account.id), '全部回避旁路时应保留原候选顺序')
+  clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+}
+
+function assertServiceSharesAvoidanceAcrossGroupsForSameApiKey(): void {
+  clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+  const scopeGroupA = {
+    systemAccountId: 'sys_cross_group',
+    groupId: 'grp_a',
+    apiKeyId: 'key_cross_group',
+    clientIp: '203.0.113.19'
+  }
+  const scopeGroupB = {
+    ...scopeGroupA,
+    groupId: 'grp_b'
+  }
+  const scopeOtherApiKey = {
+    ...scopeGroupA,
+    apiKeyId: 'key_other'
+  }
+  const accounts = [
+    createTestAccount('avoid-cross-group-a'),
+    createTestAccount('avoid-cross-group-b')
+  ]
+  const tracker = clientIpAvoidance.createClientIpAccountAvoidanceTracker(scopeGroupA)
+  clientIpAvoidance.rememberClientIpAccountPendingFailure(tracker, accounts[0], {
+    errorPhase: 'upstream_response',
+    statusCode: 502,
+    errorCode: 'mock_cross_group'
+  })
+  clientIpAvoidance.confirmClientIpAccountAvoidanceAfterSuccess(tracker, accounts[1].id)
+
+  const sameApiKeyDifferentGroupOrder = clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance(accounts, scopeGroupB)
+  assert.equal(sameApiKeyDifferentGroupOrder.applied, true, '同一 API Key 下不同分组应共享来源账号回避状态')
+  assert.deepEqual(sameApiKeyDifferentGroupOrder.accounts.map((account) => account.id), [accounts[1].id, accounts[0].id])
+
+  const otherApiKeyOrder = clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance(accounts, scopeOtherApiKey)
+  assert.equal(otherApiKeyOrder.applied, false, '不同 API Key 不应共享来源账号回避状态')
+  assert.deepEqual(otherApiKeyOrder.accounts.map((account) => account.id), accounts.map((account) => account.id))
   clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
 }
 

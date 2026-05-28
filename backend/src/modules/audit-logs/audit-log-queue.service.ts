@@ -207,6 +207,22 @@ export function getAuditLogQueueRuntime(): AuditLogQueueRuntime {
   }
 }
 
+export function clearAuditLogQueueForTest(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+  pendingAuditLogs = []
+  pendingBytes = 0
+  flushing = false
+  droppedSuccessCount = 0
+  droppedFailureCount = 0
+  droppedOverflowCount = 0
+  droppedOversizeCount = 0
+  lastFlushSuccessAt = undefined
+  lastFlushError = undefined
+}
+
 function enforceAuditQueueLimits(settings = readAuditLogSettings()): void {
   while (pendingAuditLogs.length > settings.queueMaxItems || pendingBytes > settings.queueMaxBytes) {
     const successIndex = pendingAuditLogs.findIndex((item) => item.success)

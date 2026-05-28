@@ -372,6 +372,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_sources_authorization ON resource_authorization_sources(authorization_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_sources_team ON resource_authorization_sources(source_team_id, status);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_account_authorization ON group_accounts(account_authorization_id);
+    CREATE INDEX IF NOT EXISTS idx_group_accounts_group_enabled ON group_accounts(group_id, enabled, account_id);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_account_scope_enabled ON group_accounts(account_id, system_account_id, enabled);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_scope_enabled_updated ON group_accounts(system_account_id, account_id, enabled, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_api_keys_group ON api_keys(group_id);
@@ -380,8 +381,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name COLLATE NOCASE, id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_key_group_unique ON api_key_group_bindings(api_key_id, group_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_active_priority_unique ON api_key_group_bindings(api_key_id, priority) WHERE status = 'active';
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_api_key_priority ON api_key_group_bindings(api_key_id, status, priority);
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_group ON api_key_group_bindings(group_id);
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_key ON api_key_group_bindings(system_account_id, api_key_id);
@@ -414,9 +413,41 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     INNER JOIN groups ON groups.id = api_keys.group_id
     WHERE api_keys.group_id IS NOT NULL
   `)
+  cleanupDuplicateApiKeyGroupBindings(database)
+  ensureApiKeyGroupBindingUniqueIndexes(database)
   ensureColumn(database, 'system_accounts', 'image_generation_enabled', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'group_accounts', 'local_stream_failure_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'group_accounts', 'local_stream_failure_window_started_at', 'TEXT')
+}
+
+function cleanupDuplicateApiKeyGroupBindings(database: DatabaseSync): void {
+  database.exec(`
+    DELETE FROM api_key_group_bindings
+    WHERE rowid IN (
+      SELECT rowid
+      FROM (
+        SELECT
+          rowid,
+          ROW_NUMBER() OVER (
+            PARTITION BY api_key_id, group_id
+            ORDER BY
+              CASE WHEN status = 'active' THEN 0 ELSE 1 END ASC,
+              priority ASC,
+              created_at ASC,
+              id ASC
+          ) AS duplicate_rank
+        FROM api_key_group_bindings
+      )
+      WHERE duplicate_rank > 1
+    );
+  `)
+}
+
+function ensureApiKeyGroupBindingUniqueIndexes(database: DatabaseSync): void {
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_key_group_unique ON api_key_group_bindings(api_key_id, group_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_active_priority_unique ON api_key_group_bindings(api_key_id, priority) WHERE status = 'active';
+  `)
 }
 
 function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {

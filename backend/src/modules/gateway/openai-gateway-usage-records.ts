@@ -22,6 +22,7 @@ import {
   type UsageRequestSnapshot
 } from './openai-gateway-usage.js'
 import type { GatewayErrorPayload } from './openai-gateway-responses.js'
+import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 
 type UpstreamAccount = OpenAIAccountSecret
@@ -237,7 +238,7 @@ export function recordClientAbortedUpstreamAttempt(
     success: false,
     usage: emptyUsage(),
     errorCode: 'client_aborted',
-    errorMessage: '请求已取消'
+    errorMessage: downstreamConnectionClosedMessage
   })
 }
 

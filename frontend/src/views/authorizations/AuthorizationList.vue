@@ -50,7 +50,7 @@
         <span>{{ record.remark || '-' }}</span>
       </template>
       <template v-else-if="column.key === 'actions'">
-        <AuthorizationActions v-if="showActions" :authorization="record" :is-management-view="isManagementView" compact @menu-click="$emit('menu-click', $event, record)" />
+        <AuthorizationActions v-if="showActions" :authorization="record" :direction="direction" :is-management-view="isManagementView" compact @menu-click="$emit('menu-click', $event, record)" />
       </template>
     </template>
 
@@ -83,7 +83,7 @@
             <strong>{{ record.remark || '-' }}</strong>
           </div>
         </div>
-        <AuthorizationActions v-if="showActions" :authorization="record" :is-management-view="isManagementView" @menu-click="$emit('menu-click', $event, record)" />
+        <AuthorizationActions v-if="showActions" :authorization="record" :direction="direction" :is-management-view="isManagementView" @menu-click="$emit('menu-click', $event, record)" />
       </article>
     </template>
   </ResponsiveDataList>
@@ -121,10 +121,15 @@ defineEmits<{
   (event: 'refresh'): void
 }>()
 
-const showActions = computed(() => props.isManagementView || props.direction === 'outbound')
+const showActions = computed(() => props.isManagementView || props.direction === 'outbound' || hasReturnableInboundAuthorization.value)
+const hasReturnableInboundAuthorization = computed(() => {
+  if (props.isManagementView || props.direction !== 'inbound') return false
+  return props.authorizations.some((authorization) => canReturnAuthorization(authorization))
+})
 const actionColumnWidth = computed(() => {
   if (!showActions.value) return 0
   const maxActionCount = props.authorizations.reduce((maxCount, authorization) => {
+    if (canReturnAuthorization(authorization)) return Math.max(maxCount, 1)
     if (!canManageAuthorization(authorization)) return maxCount
     return Math.max(maxCount, authorizationActionCount(authorization))
   }, 0)
@@ -146,11 +151,16 @@ function canManageAuthorization(authorization: ResourceAuthorizationSummary): bo
   return props.isManagementView || authorization.permissions?.canEdit === true
 }
 
+function canReturnAuthorization(authorization: ResourceAuthorizationSummary): boolean {
+  if (props.isManagementView || props.direction !== 'inbound') return false
+  if (authorization.granteeType !== 'system_account') return false
+  return authorization.status !== 'revoked' && authorization.status !== 'returned'
+}
+
 function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
-  let count = 1
-  if (authorization.status === 'active' || authorization.status === 'paused' || authorization.status === 'expired' || authorization.status === 'revoked' || authorization.status === 'returned') count += 1
-  count += authorizationRevokeActionCount(authorization)
-  return count
+  const revokeCount = authorizationRevokeActionCount(authorization)
+  const hasMore = canManageAuthorization(authorization) ? 1 : 0
+  return revokeCount + hasMore
 }
 
 function resourceTypeTag(resourceType: AuthorizationResourceType) {

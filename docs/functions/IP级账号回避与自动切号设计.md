@@ -8,8 +8,8 @@
 
 ## 目标
 
-- 优先保证客户端可用：遇到单账号失败时继续尝试同分组其他可调度账号，只有实在没有可用结果时才返回客户端失败。
-- 隔离单个来源的影响：某个客户端 IP 对某个账号失败后，只影响这个 `clientIp + API Key + 分组 + 账号` 的短 TTL 调度顺序，不影响其他 IP。
+- 优先保证客户端可用：遇到单账号失败时继续尝试当前路由候选中的其他可调度账号，只有实在没有可用结果时才返回客户端失败。
+- 隔离单个来源的影响：某个客户端 IP 对某个账号失败后，只影响这个 `clientIp + API Key + 账号` 的短 TTL 调度顺序，不影响其他 IP。
 - 不扩大账号冷却：IP 级回避不写账号 `temporary_unavailable`、`rate_limited`、`error`，也不修改账号全局 `schedulable`。
 - 不解释状态码：状态码只作为规则输入、使用记录、审计和排障字段；默认调度逻辑不能用固定状态码判断账号失败性质。
 - 保持轻量：使用单进程内有界 TTL 状态，不引入新表、分布式队列或多实例一致性假设。
@@ -52,16 +52,17 @@ IP 级回避只能帮助下一次请求更快绕开近期失败账号，不能�
 回避状态键建议为：
 
 ```text
-systemAccountId + apiKeyId + groupId + clientIp + accountId
+systemAccountId + apiKeyId + clientIp + accountId
 ```
 
 说明：
 
 - `systemAccountId` 隔离调用方系统账户。
 - `apiKeyId` 隔离同一出口 IP 下不同 API Key。
-- `groupId` 隔离不同调度池。
 - `clientIp` 隔离客户端来源。
 - `accountId` 表示该来源短期内应优先避开的账号。
+
+`groupId` 不参与 IP 级账号回避键。同一个 API Key 绑定多个分组时，分组只是路由容器，来源对某个账号的短期失败经验应跟随账号和 API Key，不应被分组切碎；不同 API Key 仍保持隔离。
 
 缺少 `clientIp` 时不启用 IP 级账号回避，避免把未知来源混进同一个全局桶。
 
@@ -175,12 +176,12 @@ flowchart TD
 - `openai-gateway-request-preflight.ts`：在全局本地账号屏蔽后、Codex turn 避让前应用 IP 级账号回避排序，并写入审计 metadata。
 - `openai-gateway-upstream-dispatch.ts` / `openai-gateway-failure-dispatch.ts`：在上游失败并决定跳账号后登记本请求待提交 IP 失败；没有后续成功样本时不提交为 IP 回避。
 - `openai-gateway-response-finalization.ts`：只有完整成功后清理当前账号回避，并提交前序待确认 IP 失败；流式失败不提前清理。
-- 回归脚本：新增 `gateway-client-ip-account-avoidance-regression.ts`，覆盖同 IP 自动切号、不同 IP 不互相影响、账号仍 active、全部候选回避时旁路。
+- 回归脚本：新增 `gateway-client-ip-account-avoidance-regression.ts`，覆盖同 IP 自动切号、不同 IP 不互相影响、同一 API Key 不同分组共享回避、不同 API Key 隔离、账号仍 active、全部候选回避时旁路。
 
 ## 验收标准
 
-- 同一个 `clientIp + API Key + 分组` 下，账号 A 未确认失败、账号 B 成功后，后续请求优先避开账号 A。
-- 同一 API Key 和分组下的另一个 `clientIp` 不受影响，仍按原候选顺序调度。
+- 同一个 `clientIp + API Key` 下，账号 A 未确认失败、账号 B 成功后，后续请求优先避开账号 A。
+- 同一 API Key 下不同分组共享这份回避状态，不同 API Key 和另一个 `clientIp` 不受影响，仍按原候选顺序调度。
 - IP 级回避不写账号 `temporary_unavailable`、`rate_limited`、`error`、`cooldown_until` 或全局 `schedulable`。
 - 账号策略命中、客户端取消、本地校验失败和没有后续成功样本的全失败请求不记录 IP 级账号回避。
 - 所有候选账号都被当前 IP 回避时，系统旁路回避，仍尝试原候选列表。

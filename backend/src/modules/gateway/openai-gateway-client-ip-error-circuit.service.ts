@@ -6,12 +6,13 @@ export type GatewayPreAuthFailureReason = 'missing_bearer_token' | 'invalid_api_
 
 export type GatewayClientIpErrorCircuitReason =
   | 'invalid_json'
+  | 'request_capability_mismatch'
   | 'unsupported_model'
   | 'adapter_request_validation'
 
 export interface GatewayClientIpCircuitScope {
   systemAccountId: string
-  groupId: string
+  groupId?: string
   apiKeyId?: string
   clientIp?: string
 }
@@ -257,7 +258,6 @@ function clientIpErrorScopeKey(input: GatewayClientIpErrorCircuitInput): string 
   return JSON.stringify({
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId?.trim() || 'internal',
-    groupId: input.groupId,
     clientIp
   })
 }

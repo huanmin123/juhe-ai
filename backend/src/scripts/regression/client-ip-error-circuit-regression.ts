@@ -110,13 +110,16 @@ try {
   assert.equal(inspectClientIpErrorCircuit({
     ...scope,
     groupId: 'grp_security_other'
-  }).blocked, false, '不同分组不应继承认证后错误熔断')
+  }).blocked, true, '同一 API Key 下不同分组应共享认证后错误熔断')
   assert.equal(inspectClientIpErrorCircuit({
     ...scope,
     systemAccountId: 'sys_security_other'
   }).blocked, false, '不同系统账户不应继承认证后错误熔断')
 
-  const cleared = recordClientIpErrorCircuitSuccess(scope)
+  const cleared = recordClientIpErrorCircuitSuccess({
+    ...scope,
+    groupId: 'grp_security_other'
+  })
   assert.equal(cleared, true, '成功请求应清理当前认证后来源错误态')
   assert.equal(inspectClientIpErrorCircuit(scope).blocked, false, '成功恢复后当前来源不应继续熔断')
 

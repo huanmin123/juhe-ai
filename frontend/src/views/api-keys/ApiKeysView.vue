@@ -215,18 +215,20 @@
         <a-form-item label="绑定分组路由" required>
           <div class="api-key-group-bindings-field">
             <div v-for="(binding, index) in form.groupBindings" :key="binding.key" class="api-key-group-binding-row">
-              <span class="binding-priority">P{{ index + 1 }}</span>
+              <span class="binding-priority">{{ groupBindingPriorityText(index) }}</span>
               <GroupSelect
                 v-model:value="binding.groupId"
                 v-model:selected-group="binding.group"
                 class="binding-group-select"
                 :disabled="groupFilterDisabled"
                 :filter-option="false"
-                :groups="groups"
+                :groups="groupOptionsForBinding(index)"
                 :loading="groupOptionsLoading"
                 :placeholder="groupFilterDisabled ? '请先选择系统账户' : '输入分组名称搜索'"
                 :selected-ids="formGroupBindingIds"
                 :selected-groups="formGroupBindingSelections"
+                :hidden-option-values="hiddenGroupBindingIds(index)"
+                @change="handleGroupBindingChange(index)"
                 @dropdown-visible-change="handleGroupOptionsDropdown"
                 @search="handleGroupOptionsSearch"
               />
@@ -251,7 +253,7 @@
                 </a-popconfirm>
               </div>
             </div>
-            <a-button type="dashed" block @click="addGroupBinding">
+            <a-button type="dashed" block :disabled="!canAddGroupBinding" :title="addGroupBindingDisabledReason" @click="addGroupBinding">
               <template #icon><plus-outlined /></template>
               添加分组
             </a-button>
@@ -499,6 +501,13 @@ const targetSystemAccountLabel = computed(() => {
     || principalLabelForId('system_account', systemAccountId)
     || ''
 })
+const addGroupBindingDisabledReason = computed(() => {
+  if (groupFilterDisabled.value) return '请先选择系统账户'
+  if (form.groupBindings.some((binding) => !binding.groupId.trim())) return '请先选择已有绑定分组'
+  if (!nextAvailableGroupForNewBinding()) return '没有可继续绑定的分组'
+  return undefined
+})
+const canAddGroupBinding = computed(() => !addGroupBindingDisabledReason.value)
 
 function selectedGroupSelection(id: string | undefined): GroupSelection | undefined {
   const normalizedId = id?.trim()
@@ -534,7 +543,8 @@ function apiKeyGroupBindingTagText(binding: ApiKeyGroupBindingSummary): string {
   const suffix = binding.status === 'disabled'
     ? '停用'
     : binding.groupEnabled ? undefined : '分组停用'
-  return suffix ? `P${binding.priority} ${name}（${suffix}）` : `P${binding.priority} ${name}`
+  const routeLabel = groupBindingPriorityTextByPriority(binding.priority)
+  return suffix ? `${routeLabel}：${name}（${suffix}）` : `${routeLabel}：${name}`
 }
 
 function apiKeyGroupRouteText(apiKey: ApiKeySummary): string {
@@ -827,10 +837,14 @@ async function openCreate() {
   resetGroupOptionsSearch()
   await loadGroupOptions()
   editingId.value = undefined
-  const defaultGroup = groups.value[0]
+  const defaultGroup = groups.value.find((group) => group.enabled)
+  if (!defaultGroup) {
+    message.warning('请先创建并启用一个分组，再创建 API Key')
+    return
+  }
   Object.assign(form, {
     name: '',
-    groupBindings: [createGroupBindingFormRow(defaultGroup ? { id: defaultGroup.id, name: defaultGroup.name } : undefined)],
+    groupBindings: [createGroupBindingFormRow({ id: defaultGroup.id, name: defaultGroup.name })],
     status: 'active',
     expiresAt: undefined,
     description: '',
@@ -871,9 +885,34 @@ function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBi
 }
 
 function addGroupBinding() {
-  const selectedIds = new Set(form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
-  const nextGroup = groups.value.find((group) => !selectedIds.has(group.id))
-  form.groupBindings.push(createGroupBindingFormRow(nextGroup ? { id: nextGroup.id, name: nextGroup.name } : undefined))
+  if (addGroupBindingDisabledReason.value) {
+    message.warning(addGroupBindingDisabledReason.value)
+    return
+  }
+  const nextGroup = nextAvailableGroupForNewBinding()
+  if (!nextGroup) {
+    message.warning('没有可继续绑定的分组')
+    return
+  }
+  form.groupBindings.push(createGroupBindingFormRow({ id: nextGroup.id, name: nextGroup.name }))
+}
+
+function handleGroupBindingChange(index: number) {
+  const binding = form.groupBindings[index]
+  if (!binding?.groupId) return
+  const group = groupOptionForId(binding.groupId)
+  if (!group) return
+  const providerCode = selectedGroupBindingProviderCode(index)
+  if (providerCode && group.providerCode !== providerCode) {
+    message.warning('同一个 API Key 的绑定号池必须属于同一供应商')
+    binding.groupId = ''
+    binding.group = undefined
+    return
+  }
+  if (!group.enabled && binding.status === 'active') {
+    message.warning('已停用分组只能作为停用号池保留，不能参与路由')
+    binding.status = 'disabled'
+  }
 }
 
 function removeGroupBinding(index: number) {
@@ -889,16 +928,59 @@ function moveGroupBinding(index: number, offset: -1 | 1) {
   form.groupBindings.splice(nextIndex, 0, item)
 }
 
-function normalizedGroupBindingPayload(): Array<{ groupId: string; priority: number; status: ApiKeyGroupBindingFormStatus }> | undefined {
-  const rows = form.groupBindings
-    .map((binding, index) => ({
-      groupId: binding.groupId.trim(),
-      priority: index + 1,
-      status: binding.status
-    }))
-    .filter((binding) => binding.groupId)
-  if (!rows.length) return undefined
-  return rows
+function normalizedGroupBindingPayload(): Array<{ groupId: string; priority: number; status: ApiKeyGroupBindingFormStatus }> {
+  return form.groupBindings.map((binding, index) => ({
+    groupId: binding.groupId.trim(),
+    priority: index + 1,
+    status: binding.status
+  }))
+}
+
+function nextAvailableGroupForNewBinding(): GroupOptionSummary | undefined {
+  const selectedIds = new Set(form.groupBindings.map((binding) => binding.groupId.trim()).filter(Boolean))
+  const providerCode = selectedGroupBindingProviderCode()
+  return groups.value.find((group) => group.enabled && !selectedIds.has(group.id) && (!providerCode || group.providerCode === providerCode))
+}
+
+function groupBindingPriorityText(index: number): string {
+  return index === 0 ? '主号池' : `备 ${index}`
+}
+
+function groupBindingPriorityTextByPriority(priority: number | undefined): string {
+  const normalizedPriority = typeof priority === 'number' && Number.isFinite(priority)
+    ? Math.max(1, Math.trunc(priority))
+    : 1
+  return normalizedPriority === 1 ? '主号池' : `备 ${normalizedPriority - 1}`
+}
+
+function groupOptionsForBinding(index: number): GroupOptionSummary[] {
+  const providerCode = selectedGroupBindingProviderCode(index)
+  return groups.value.filter((group) => group.enabled && (!providerCode || group.providerCode === providerCode))
+}
+
+function hiddenGroupBindingIds(index: number): string[] {
+  const selectedIds = form.groupBindings
+    .map((binding, bindingIndex) => bindingIndex === index ? undefined : binding.groupId.trim())
+    .filter((groupId): groupId is string => Boolean(groupId))
+  const disabledIds = groups.value
+    .filter((group) => !group.enabled)
+    .map((group) => group.id)
+  return [...new Set([...selectedIds, ...disabledIds])]
+}
+
+function selectedGroupBindingProviderCode(excludeIndex?: number): string | undefined {
+  for (const [index, binding] of form.groupBindings.entries()) {
+    if (excludeIndex === index) continue
+    const providerCode = groupOptionForId(binding.groupId)?.providerCode
+    if (providerCode) return providerCode
+  }
+  return undefined
+}
+
+function groupOptionForId(groupId: string | undefined): GroupOptionSummary | undefined {
+  const id = groupId?.trim()
+  if (!id) return undefined
+  return groups.value.find((group) => group.id === id)
 }
 
 function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
@@ -937,8 +1019,13 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     return
   }
   const groupBindings = normalizedGroupBindingPayload()
-  if (!groupBindings?.length) {
+  if (!groupBindings.length) {
     message.warning('请至少选择一个绑定分组')
+    return
+  }
+  const emptyBindingIndex = groupBindings.findIndex((binding) => !binding.groupId)
+  if (emptyBindingIndex >= 0) {
+    message.warning(`请先选择第 ${emptyBindingIndex + 1} 个绑定分组`)
     return
   }
   if (!groupBindings.some((binding) => binding.status === 'active')) {
@@ -947,6 +1034,19 @@ const saveApiKey = submitAction('api_keys.save', async () => {
   }
   if (new Set(groupBindings.map((binding) => binding.groupId)).size !== groupBindings.length) {
     message.warning('绑定分组不能重复')
+    return
+  }
+  const providerCodes = new Set(groupBindings.map((binding) => groupOptionForId(binding.groupId)?.providerCode).filter(Boolean))
+  if (providerCodes.size > 1) {
+    message.warning('同一个 API Key 的绑定号池必须属于同一供应商')
+    return
+  }
+  const disabledActiveGroups = groupBindings
+    .filter((binding) => binding.status === 'active')
+    .map((binding) => groupOptionForId(binding.groupId))
+    .filter((group): group is GroupOptionSummary => Boolean(group && !group.enabled))
+  if (disabledActiveGroups.length) {
+    message.warning(`已停用分组不能作为启用号池：${disabledActiveGroups.map((group) => group.name).join('、')}`)
     return
   }
   const payload = {
@@ -1179,9 +1279,9 @@ onMounted(loadData)
 
 .api-key-group-binding-row {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 96px auto;
+  grid-template-columns: 64px minmax(0, 1fr) 96px auto;
   gap: 8px;
-  align-items: center;
+  align-items: start;
 }
 
 .binding-priority {
@@ -1189,6 +1289,7 @@ onMounted(loadData)
   align-items: center;
   justify-content: center;
   height: 32px;
+  min-width: 0;
   color: #475569;
   font-size: 12px;
   font-weight: 700;
@@ -1241,7 +1342,7 @@ onMounted(loadData)
 
 @media (max-width: 640px) {
   .api-key-group-binding-row {
-    grid-template-columns: 44px minmax(0, 1fr);
+    grid-template-columns: 64px minmax(0, 1fr);
   }
 
   .binding-status-select,

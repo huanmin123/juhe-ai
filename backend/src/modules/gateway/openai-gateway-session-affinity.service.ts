@@ -60,7 +60,6 @@ export function resolveOpenAIGatewaySessionAffinityKey(req: Request, input: {
     .update(JSON.stringify({
       systemAccountId: input.systemAccountId,
       apiKeyId: input.apiKeyId ?? 'internal',
-      groupId: input.groupId,
       session
     }))
     .digest('hex')
@@ -268,9 +267,6 @@ function sessionBindingMatchesScope(binding: SessionBinding, scope: Partial<Open
     return false
   }
   if (scope.systemAccountId && binding.scope.systemAccountId !== scope.systemAccountId) {
-    return false
-  }
-  if (scope.groupId && binding.scope.groupId !== scope.groupId) {
     return false
   }
   if (scope.apiKeyId && binding.scope.apiKeyId !== scope.apiKeyId) {

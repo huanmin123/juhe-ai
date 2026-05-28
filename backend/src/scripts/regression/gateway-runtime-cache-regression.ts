@@ -143,7 +143,13 @@ try {
   assert(third.apiKey?.id === apiKey.id, '清缓存后读取应返回 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, 5, '清缓存后应重新请求 DB service')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载')
+  const invalidFirst = await gatewayCache.readCachedGatewayRuntimeAsync('sk-runtime-cache-invalid')
+  const invalidSecond = await gatewayCache.readCachedGatewayRuntimeAsync('sk-runtime-cache-invalid')
+  assert.equal(invalidFirst.apiKey, undefined, '无效 API Key 首次读取不应返回运行配置')
+  assert.equal(invalidSecond.apiKey, undefined, '无效 API Key 缓存命中后仍不应返回运行配置')
+  assert.equal(fakeChild.sentOperationCount, 6, '同一无效 API Key 短期重复认证失败应命中负缓存，避免重复请求 DB service')
+
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，并对重复无效 Key 做短期负缓存')
 } finally {
   try {
     databaseModule.getDatabase().close()

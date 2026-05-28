@@ -38,6 +38,7 @@ interface AccountQualityRow {
 const unknownQualityScore = 1_000_000
 const failurePenaltyMs = 60_000
 const stalePenaltyMs = 5_000
+const qualityCleanupBatchLimit = 1000
 
 export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQualityRealtimeRefreshResult {
   const database = getStatsDatabase()
@@ -104,18 +105,11 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       ? cleanupInactiveQualityRows(database, activeIds)
       : database.prepare('DELETE FROM account_quality_scores').run()
     if (activeIds.length > 0) {
-      database.prepare(`
-        DELETE FROM account_quality_minute_stats
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM temp_active_quality_accounts active_accounts
-          WHERE active_accounts.id = account_quality_minute_stats.account_id
-        )
-      `).run()
+      cleanupInactiveQualityMinuteRows(database, qualityCleanupBatchLimit)
     } else {
-      database.prepare('DELETE FROM account_quality_minute_stats').run()
+      cleanupAnyQualityMinuteRows(database, qualityCleanupBatchLimit)
     }
-    database.prepare('DELETE FROM account_quality_minute_stats WHERE stat_minute < ?').run(retentionCutoffMinute)
+    cleanupOldQualityMinuteRows(database, retentionCutoffMinute, qualityCleanupBatchLimit)
     for (const row of rows) {
       const metadata = activeAccounts.get(row.account_id)
       if (!metadata) continue
@@ -233,6 +227,48 @@ function cleanupInactiveQualityRows(database: ReturnType<typeof getStatsDatabase
       WHERE active_accounts.id = account_quality_scores.account_id
     )
   `).run()
+}
+
+function cleanupInactiveQualityMinuteRows(database: ReturnType<typeof getStatsDatabase>, limit: number): { changes?: number | bigint } {
+  return database.prepare(`
+    DELETE FROM account_quality_minute_stats
+    WHERE rowid IN (
+      SELECT rowid
+      FROM account_quality_minute_stats
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM temp_active_quality_accounts active_accounts
+        WHERE active_accounts.id = account_quality_minute_stats.account_id
+      )
+      ORDER BY stat_minute ASC, rowid ASC
+      LIMIT ?
+    )
+  `).run(Math.max(1, Math.trunc(limit)))
+}
+
+function cleanupAnyQualityMinuteRows(database: ReturnType<typeof getStatsDatabase>, limit: number): { changes?: number | bigint } {
+  return database.prepare(`
+    DELETE FROM account_quality_minute_stats
+    WHERE rowid IN (
+      SELECT rowid
+      FROM account_quality_minute_stats
+      ORDER BY stat_minute ASC, rowid ASC
+      LIMIT ?
+    )
+  `).run(Math.max(1, Math.trunc(limit)))
+}
+
+function cleanupOldQualityMinuteRows(database: ReturnType<typeof getStatsDatabase>, cutoffMinute: string, limit: number): { changes?: number | bigint } {
+  return database.prepare(`
+    DELETE FROM account_quality_minute_stats
+    WHERE rowid IN (
+      SELECT rowid
+      FROM account_quality_minute_stats
+      WHERE stat_minute < ?
+      ORDER BY stat_minute ASC, rowid ASC
+      LIMIT ?
+    )
+  `).run(cutoffMinute, Math.max(1, Math.trunc(limit)))
 }
 
 function markAccountQualityStale(upsertQuality: ReturnType<DatabaseSync['prepare']>, previous: AccountQualityRow, windowStartedAt: string, windowEndedAt: string, updatedAt: string): void {

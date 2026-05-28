@@ -99,7 +99,7 @@ const apiKeyScopeStatsTables = [
   'usage_quota_hourly_windows',
   'usage_scope_range_windows'
 ] as const
-const deletedApiKeyRecordCleanupBatchLimit = 1000
+const deletedApiKeyRecordCleanupBatchLimit = 100
 
 export function registerDeletedApiKeyRecordCleanupTarget(input: DeletedApiKeyRecordCleanupTarget): void {
   upsertDeletedApiKeyRecordCleanupTarget(getDatasetDatabase(), input, nowIso())
@@ -501,13 +501,18 @@ function markApiKeyUsageCleanupRowsDeleted(
 }
 
 function hasApiKeyAuditLogs(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): boolean {
-  const row = database
+  const auditLog = database
     .prepare('SELECT id FROM audit_logs WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
     .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
+  if (auditLog?.id) return true
+  const auditErrorGroup = database
+    .prepare('SELECT id FROM audit_error_groups WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
+    .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
+  return Boolean(auditErrorGroup?.id)
 }
 
 function deleteApiKeyAuditDataBatch(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget, limit: number): number {
+  const batchLimit = Math.max(1, Math.trunc(limit))
   const rows = database
     .prepare(`
       SELECT id
@@ -517,7 +522,7 @@ function deleteApiKeyAuditDataBatch(database: DatabaseSync, input: DeletedApiKey
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(input.apiKeyId, input.systemAccountId, Math.max(1, Math.trunc(limit))) as unknown as Array<{ id?: string }>
+    .all(input.apiKeyId, input.systemAccountId, batchLimit) as unknown as Array<{ id?: string }>
   const auditLogIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   let deletedRows = 0
   if (auditLogIds.length > 0) {
@@ -526,9 +531,21 @@ function deleteApiKeyAuditDataBatch(database: DatabaseSync, input: DeletedApiKey
     deletedRows += changed(database.prepare(`DELETE FROM audit_log_attempts WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
     deletedRows += changed(database.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders}) AND api_key_id = ? AND system_account_id = ?`).run(...auditLogIds, input.apiKeyId, input.systemAccountId))
   }
-  deletedRows += changed(database
-    .prepare('DELETE FROM audit_error_groups WHERE api_key_id = ? AND system_account_id = ?')
-    .run(input.apiKeyId, input.systemAccountId))
+  const groupRows = database
+    .prepare(`
+      SELECT id
+      FROM audit_error_groups
+      WHERE api_key_id = ?
+        AND system_account_id = ?
+      ORDER BY updated_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(input.apiKeyId, input.systemAccountId, batchLimit) as unknown as Array<{ id?: string }>
+  const groupIds = groupRows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (groupIds.length > 0) {
+    const placeholders = sqlPlaceholders(groupIds.length)
+    deletedRows += changed(database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders}) AND api_key_id = ? AND system_account_id = ?`).run(...groupIds, input.apiKeyId, input.systemAccountId))
+  }
   return deletedRows
 }
 

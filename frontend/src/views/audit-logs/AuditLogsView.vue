@@ -401,6 +401,7 @@ let accountOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let accountOptionsRequestSeq = 0
 let accountOptionsLoadingKey: string | undefined
 let accountOptionsLoadingPromise: Promise<void> | undefined
+let auditRuntimeRequestSeq = 0
 
 function handleAccountOptionsSearch(value: string): void {
   accountOptionsKeyword.value = value
@@ -495,11 +496,8 @@ const {
       resetSystemAccountOptionsSearch()
       resetAccountOptionsSearch()
     }
-    const [listResult, runtimeInfo] = await Promise.all([
-      fetchRecords(pageState),
-      api.auditLogs.runtime()
-    ])
-    runtime.value = runtimeInfo
+    const listResult = await fetchRecords(pageState)
+    void refreshAuditRuntimeQuietly()
     return listResult
   },
   onError: (error) => {
@@ -598,6 +596,22 @@ const selectedPayloadCanLoadMore = computed(() => Boolean(
   && selectedPayload.value.bodyTruncated
   && selectedPayload.value.bodyNextOffset !== undefined
 ))
+
+async function refreshAuditRuntimeQuietly(): Promise<void> {
+  const requestSeq = ++auditRuntimeRequestSeq
+  try {
+    const runtimeInfo = await api.auditLogs.runtime()
+    if (requestSeq !== auditRuntimeRequestSeq) return
+    runtime.value = runtimeInfo
+  } catch (error) {
+    if (requestSeq !== auditRuntimeRequestSeq) return
+    console.error(error)
+  }
+}
+
+function cancelAuditRuntimeRequest(): void {
+  auditRuntimeRequestSeq += 1
+}
 
 watch(records, rememberAuditRecordGroupLabels, { immediate: true })
 watch(detail, (nextDetail) => {
@@ -940,9 +954,13 @@ watch(
 )
 
 onMounted(loadData)
-onBeforeUnmount(clearAccountOptionsSearchTimer)
+onBeforeUnmount(() => {
+  clearAccountOptionsSearchTimer()
+  cancelAuditRuntimeRequest()
+})
 onDeactivated(() => {
   clearAccountOptionsSearchTimer()
+  cancelAuditRuntimeRequest()
   closeTransientDetails()
 })
 </script>

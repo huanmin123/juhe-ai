@@ -69,7 +69,7 @@ try {
     statsDatabase.prepare = originalPrepare
   }
 
-  assert.equal(tableCount('account_quality_minute_stats'), 1, '预聚合清理失败时，已执行的前序表删除应随事务回滚')
+  assert.equal(tableCount('account_quality_minute_stats'), 0, '预聚合清理按表独立执行，前序表已清理后失败表等待下一轮')
   assert.equal(tableCount('usage_stats_minute'), 1, '预聚合清理失败时，失败表数据也应保留')
 
   seedModelCheckHistory()
@@ -108,7 +108,7 @@ try {
   }
   assertModelCheckRunCleanupUsesIndex()
 
-  console.log('数据保留 SQL 防护回归通过：预聚合清理失败可回滚，模型检测与运行日志游标可清理，清理列具备索引')
+  console.log('数据保留 SQL 防护回归通过：预聚合清理按表推进，模型检测与运行日志游标可清理，清理列具备索引')
 } finally {
   try {
     databaseModule.getDatabase().close()

@@ -5,6 +5,7 @@ import { nowIso } from '../../storage/database.js'
 import { createUsageRecordsBatch, type UsageRecordInput } from '../../storage/repositories.js'
 import { generateUsageRecordId } from '../../storage/usage-record-shards.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../background/background-ipc.js'
@@ -13,13 +14,23 @@ import { isSensitiveHeaderName } from './openai-gateway-usage.js'
 const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
 const usageRecordBatchSize = 1000
+const usageRecordQueueMaxItems = 10_000
+const usageRecordQueueMaxBytes = 64 * 1024 * 1024
 
-let pendingUsageRecords: UsageRecordInput[] = []
+interface QueuedUsageRecord {
+  input: UsageRecordInput
+  bytes: number
+}
+
+let pendingUsageRecords: QueuedUsageRecord[] = []
+let pendingUsageRecordBytes = 0
 let flushTimer: NodeJS.Timeout | undefined
 let flushing = false
 let retainedOverflowWarningCount = 0
 let flushFailureCount = 0
 let droppedDispatchCount = 0
+let droppedOverflowCount = 0
+let droppedOversizeCount = 0
 let shutdownHooksInstalled = false
 
 interface UsageRecordFlushOptions {
@@ -49,7 +60,21 @@ export function enqueueUsageRecordsLocal(inputs: UsageRecordInput[]): void {
 
 function enqueueUsageRecordLocal(input: UsageRecordInput): void {
   assertLocalUsageRecordWriteAllowed('enqueueUsageRecordLocal')
-  pendingUsageRecords.push(input)
+  const queued = {
+    input,
+    bytes: estimateUsageRecordBytes(input)
+  }
+  if (queued.bytes > usageRecordQueueMaxBytes) {
+    recordUsageRecordLocalDrop(queued, 'oversize')
+    return
+  }
+  if (pendingUsageRecords.length >= usageRecordQueueMaxItems || pendingUsageRecordBytes + queued.bytes > usageRecordQueueMaxBytes) {
+    recordUsageRecordLocalDrop(queued, 'overflow')
+    return
+  }
+
+  pendingUsageRecords.push(queued)
+  pendingUsageRecordBytes += queued.bytes
   scheduleUsageRecordFlush(pendingUsageRecords.length >= usageRecordBatchSize ? 0 : usageRecordFlushIntervalMs)
 }
 
@@ -77,18 +102,21 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
       if (batch.length === 0) {
         break
       }
+      pendingUsageRecordBytes = Math.max(0, pendingUsageRecordBytes - sumQueuedUsageRecordBytes(batch))
       flushedBatches += 1
 
       try {
-        createUsageRecordsBatch(batch)
+        createUsageRecordsBatch(batch.map((item) => item.input))
       } catch (error) {
         failed = true
         pendingUsageRecords = [...batch, ...pendingUsageRecords]
+        pendingUsageRecordBytes = sumQueuedUsageRecordBytes(pendingUsageRecords)
         flushFailureCount += 1
         logger.error(errorLogFields(error, {
           event: 'usage_record_queue_flush_failed',
           batchSize: batch.length,
           pendingCount: pendingUsageRecords.length,
+          pendingBytes: pendingUsageRecordBytes,
           flushFailureCount
         }), '使用记录队列写入失败，已保留记录等待重试')
         shouldRetry = options.retryOnFailure !== false
@@ -110,14 +138,20 @@ export function flushAllUsageRecordQueue(): void {
 
 export function getUsageRecordQueueRuntime(): {
   queueLength: number
+  queueBytes: number
   droppedCount: number
   retainedOverflowWarningCount: number
+  droppedOverflowCount: number
+  droppedOversizeCount: number
   flushFailureCount: number
 } {
   return {
     queueLength: pendingUsageRecords.length,
-    droppedCount: droppedDispatchCount,
+    queueBytes: pendingUsageRecordBytes,
+    droppedCount: droppedDispatchCount + droppedOverflowCount + droppedOversizeCount,
     retainedOverflowWarningCount,
+    droppedOverflowCount,
+    droppedOversizeCount,
     flushFailureCount
   }
 }
@@ -182,6 +216,22 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
 
 export function pendingUsageRecordCount(): number {
   return pendingUsageRecords.length
+}
+
+export function clearUsageRecordQueueForTest(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+  pendingUsageRecords = []
+  pendingUsageRecordBytes = 0
+  flushing = false
+  retainedOverflowWarningCount = 0
+  flushFailureCount = 0
+  droppedDispatchCount = 0
+  droppedOverflowCount = 0
+  droppedOversizeCount = 0
+  shutdownHooksInstalled = false
 }
 
 function sanitizeUsageRecordSnapshot(value: unknown): unknown {
@@ -333,6 +383,42 @@ const usageSnapshotMaxDepth = 6
 
 function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
+}
+
+function estimateUsageRecordBytes(input: UsageRecordInput): number {
+  return estimateJsonLikeBytes(input) + 256
+}
+
+function sumQueuedUsageRecordBytes(items: QueuedUsageRecord[]): number {
+  return items.reduce((sum, item) => sum + item.bytes, 0)
+}
+
+function recordUsageRecordLocalDrop(item: QueuedUsageRecord, reason: 'overflow' | 'oversize'): void {
+  if (reason === 'overflow') {
+    droppedOverflowCount += 1
+    retainedOverflowWarningCount += 1
+  } else {
+    droppedOversizeCount += 1
+  }
+  const droppedCount = droppedDispatchCount + droppedOverflowCount + droppedOversizeCount
+  if (droppedCount > 10 && droppedCount % 100 !== 0) {
+    return
+  }
+  logger.warn({
+    event: 'usage_record_queue_dropped',
+    reason,
+    usageRecordId: item.input.id,
+    traceId: item.input.traceId,
+    trafficSource: item.input.trafficSource,
+    systemAccountId: item.input.systemAccountId,
+    endpoint: item.input.endpoint,
+    statusCode: item.input.statusCode,
+    bytes: item.bytes,
+    pendingCount: pendingUsageRecords.length,
+    pendingBytes: pendingUsageRecordBytes,
+    droppedOverflowCount,
+    droppedOversizeCount
+  }, '使用记录队列达到保护上限，已丢弃新记录')
 }
 
 function assertLocalUsageRecordWriteAllowed(operation: string): void {

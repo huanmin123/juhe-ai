@@ -32,11 +32,26 @@ interface LocalAccountSuppression {
 
 type SuppressibleGatewayAccount = {
   id: string
+  accessType?: 'owner' | 'authorized'
   accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
   bindingSystemAccountId?: string
   groupOwnerSystemAccountId?: string
   boundGroupId?: string
   accountAuthorizationId?: string
+}
+
+export interface GatewayAccountRuntimeClearTarget {
+  accountId: string
+  authorizedBinding?: {
+    systemAccountId?: string
+    groupId?: string
+    accountAuthorizationId?: string
+  }
+}
+
+export interface GatewayAccountRuntimeClearResult {
+  cleared: boolean
+  clearedKeys: string[]
 }
 
 interface GatewayAccountFailurePrecheckInput {
@@ -118,6 +133,7 @@ const precheckMaxAttempts = 2
 const precheckAttemptTimeoutMs = 45_000
 const precheckRetryDelayMs = 5_000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
+const maxSideEffectQueueLength = 5000
 
 const sideEffectQueue: QueuedAccountSideEffect[] = []
 const localAccountSuppressions = new Map<string, LocalAccountSuppression>()
@@ -135,7 +151,7 @@ let expiredCount = 0
 
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
   if (isHealthySuccessfulAccountSideEffect(operation)) {
-    clearLocalAccountSuppression(gatewayAccountRuntimeKey(operation.account))
+    clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
     skippedHealthySuccessCount += 1
     return
   }
@@ -395,14 +411,50 @@ export async function flushGatewayAccountSideEffectsForTest(): Promise<void> {
   await flushGatewayAccountSideEffects()
 }
 
-export function suppressGatewayAccountLocallyForTest(accountId: string, durationMs: number, reason = '测试本地屏蔽'): void {
-  suppressLocalAccount(accountId, Math.max(0, Math.trunc(durationMs)), reason)
+export function clearGatewayAccountSideEffectQueueForTest(): void {
+  sideEffectQueue.splice(0)
+  if (drainTimer) {
+    clearTimeout(drainTimer)
+    drainTimer = undefined
+    drainTimerDueAtMs = undefined
+  }
+}
+
+export function suppressGatewayAccountLocallyForTest(
+  accountId: string,
+  durationMs: number,
+  reason = '测试本地屏蔽',
+  status: AccountRuntimeAvailability['status'] = 'local_suppressed'
+): void {
+  suppressLocalAccount(accountId, Math.max(0, Math.trunc(durationMs)), reason, status)
 }
 
 export function clearGatewayLocalAccountSuppressionsForTest(): void {
   localAccountSuppressions.clear()
   failureStorms.clear()
   precheckStates.clear()
+}
+
+export function clearGatewayAccountRuntimeAvailability(
+  account: GatewayAccountRuntimeClearTarget | SuppressibleGatewayAccount | string
+): GatewayAccountRuntimeClearResult {
+  const clearedKeys: string[] = []
+  for (const runtimeKey of gatewayAccountRuntimeClearKeys(account)) {
+    if (clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)) {
+      clearedKeys.push(runtimeKey)
+    }
+  }
+  if (clearedKeys.length > 0) {
+    clearGatewayRuntimeCache()
+    logger.info({
+      event: 'gateway_account_runtime_availability_cleared',
+      runtimeKeys: clearedKeys
+    }, '已手动清理账号网关运行态避让')
+  }
+  return {
+    cleared: clearedKeys.length > 0,
+    clearedKeys
+  }
 }
 
 export async function flushGatewayAccountSideEffects(): Promise<void> {
@@ -424,6 +476,11 @@ export async function flushGatewayAccountSideEffects(): Promise<void> {
 }
 
 function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
+  if (sideEffectQueue.length >= maxSideEffectQueueLength) {
+    droppedCount += 1
+    logDroppedAccountSideEffect(operation)
+    return
+  }
   const now = Date.now()
   sideEffectQueue.push({
     operation,
@@ -435,6 +492,19 @@ function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
   sortSideEffectQueue()
   enqueuedCount += 1
   scheduleSideEffectDrain(0)
+}
+
+function logDroppedAccountSideEffect(operation: AccountSideEffectOperation): void {
+  if (droppedCount > 10 && droppedCount % 100 !== 0) {
+    return
+  }
+  logger.warn({
+    event: 'gateway_account_side_effect_queue_full',
+    operationType: operation.type,
+    accountId: operationAccountId(operation),
+    queueLength: sideEffectQueue.length,
+    droppedCount
+  }, '网关账号副作用队列已满，已丢弃本次副作用')
 }
 
 function isHealthySuccessfulAccountSideEffect(operation: AccountErrorHandlingOperation): boolean {
@@ -527,7 +597,7 @@ async function executeAccountSideEffect(operation: AccountSideEffectOperation): 
   if (operation.type === 'apply_account_error_handling') {
     const result = await requestDbService(operation)
     if (operation.input.success && result.accountStatus === 'active') {
-      clearLocalAccountSuppression(gatewayAccountRuntimeKey(operation.account))
+      clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
     }
     if (result.changed) {
       if (result.accountStatus === 'rate_limited' || result.accountStatus === 'temporary_unavailable') {
@@ -573,7 +643,7 @@ function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string):
   if (typeof account === 'string') {
     return account
   }
-  if (account.accountAccessType === 'account_authorized') {
+  if (account.accountAccessType === 'account_authorized' || account.accessType === 'authorized') {
     const systemAccountId = account.bindingSystemAccountId ?? account.groupOwnerSystemAccountId ?? ''
     const groupId = account.boundGroupId ?? ''
     const authorizationId = account.accountAuthorizationId ?? ''
@@ -582,6 +652,34 @@ function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string):
     }
   }
   return account.id
+}
+
+function gatewayAccountRuntimeClearKeys(account: GatewayAccountRuntimeClearTarget | SuppressibleGatewayAccount | string): string[] {
+  if (typeof account === 'string') {
+    return account.trim() ? [account.trim()] : []
+  }
+  const isClearTarget = 'accountId' in account
+  const accountId = (isClearTarget ? account.accountId : account.id)?.trim()
+  if (!accountId) {
+    return []
+  }
+  const keys = new Set<string>([accountId])
+  const authorizedBinding = isClearTarget
+    ? account.authorizedBinding
+    : account.accountAccessType === 'account_authorized' || account.accessType === 'authorized'
+      ? {
+          systemAccountId: account.bindingSystemAccountId ?? account.groupOwnerSystemAccountId,
+          groupId: account.boundGroupId,
+          accountAuthorizationId: account.accountAuthorizationId
+        }
+      : undefined
+  const systemAccountId = authorizedBinding?.systemAccountId
+  const groupId = authorizedBinding?.groupId
+  const authorizationId = authorizedBinding?.accountAuthorizationId
+  if (systemAccountId?.trim() && groupId?.trim() && authorizationId?.trim()) {
+    keys.add(`${accountId}:authorized:${systemAccountId.trim()}:${groupId.trim()}:${authorizationId.trim()}`)
+  }
+  return [...keys]
 }
 
 function suppressLocalAccount(
@@ -614,6 +712,14 @@ function suppressLocalAccount(
 
 function clearLocalAccountSuppression(accountId: string): void {
   localAccountSuppressions.delete(accountId)
+}
+
+function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean {
+  let cleared = false
+  cleared = localAccountSuppressions.delete(accountId) || cleared
+  cleared = failureStorms.delete(accountId) || cleared
+  cleared = precheckStates.delete(accountId) || cleared
+  return cleared
 }
 
 function cleanupExpiredLocalSuppressions(): void {
@@ -676,9 +782,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       })
       const result = await runSingleGatewayAccountPrecheck(latestState)
       if (result.success || result.accountFailureEligible === false) {
-        precheckStates.delete(runtimeKey)
-        clearLocalAccountSuppression(runtimeKey)
-        failureStorms.delete(runtimeKey)
+        clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
         logger.info({
           event: 'gateway_account_precheck_recovered',
           accountId: latestState.account.id,
@@ -703,25 +807,29 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
     const markResult = await requestDbService({
       type: 'mark_account_precheck_temporary_unavailable',
       account: finalState.account,
-      reason
+      reason,
+      precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
     })
-    suppressLocalAccount(runtimeKey, localSuppressionMs(finalState.settings), reason, 'precheck_failed', {
-      failureCount: finalState.failureCount,
-      distinctClientIpCount: finalState.distinctClientIpCount,
-      distinctApiKeyCount: finalState.distinctApiKeyCount,
-      precheckAttemptCount: finalState.attemptCount
-    })
+    if (markResult.updated) {
+      suppressLocalAccount(runtimeKey, localSuppressionMs(finalState.settings), reason, 'precheck_failed', {
+        failureCount: finalState.failureCount,
+        distinctClientIpCount: finalState.distinctClientIpCount,
+        distinctApiKeyCount: finalState.distinctApiKeyCount,
+        precheckAttemptCount: finalState.attemptCount
+      })
+      clearGatewayRuntimeCache()
+    } else {
+      clearLocalAccountSuppression(runtimeKey)
+    }
     precheckStates.delete(runtimeKey)
     failureStorms.delete(runtimeKey)
-    if (markResult.updated) {
-      clearGatewayRuntimeCache()
-    }
     logger.warn({
       event: 'gateway_account_precheck_failed_marked',
       accountId: finalState.account.id,
       accountName: finalState.account.name,
       runtimeKey,
       updated: markResult.updated,
+      skippedReason: markResult.skippedReason,
       attemptCount: finalState.attemptCount
     }, '账号事前确认探针连续失败，已写入临时不可调用')
   } catch (error) {

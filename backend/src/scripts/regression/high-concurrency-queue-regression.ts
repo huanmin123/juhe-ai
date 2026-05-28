@@ -115,14 +115,14 @@ try {
   clearAccountConcurrency()
   clearHighConcurrencyGroupQueues()
 
-  const unlimitedQueueSlot = tryAcquireAccountConcurrency('acct_unlimited_queue', 1)
-  assert.equal(unlimitedQueueSlot.acquired, true, '无限队列测试前应先占用账号并发')
+  const protectedQueueSlot = tryAcquireAccountConcurrency('acct_protected_queue', 1)
+  assert.equal(protectedQueueSlot.acquired, true, '队列上限测试前应先占用账号并发')
   const firstWaitAbort = new AbortController()
   const firstWait = waitForHighConcurrencyGroupCapacity({
     systemAccountId: 'sys_queue',
-    groupId: 'grp_unlimited_queue',
-    apiKeyId: 'key_unlimited_queue',
-    accountIds: ['acct_unlimited_queue'],
+    groupId: 'grp_protected_queue',
+    apiKeyId: 'key_protected_queue',
+    accountIds: ['acct_protected_queue'],
     policy: {
       maxQueueWaitMs: 500,
       maxQueueSize: 1,
@@ -130,28 +130,61 @@ try {
     },
     signal: firstWaitAbort.signal
   })
-  const secondWaitAbort = new AbortController()
-  const secondWait = waitForHighConcurrencyGroupCapacity({
+  const apiKeyQueueFull = await waitForHighConcurrencyGroupCapacity({
     systemAccountId: 'sys_queue',
-    groupId: 'grp_unlimited_queue',
-    apiKeyId: 'key_unlimited_queue',
-    accountIds: ['acct_unlimited_queue'],
+    groupId: 'grp_protected_queue',
+    apiKeyId: 'key_protected_queue',
+    accountIds: ['acct_protected_queue'],
     policy: {
       maxQueueWaitMs: 500,
       maxQueueSize: 1,
       perApiKeyQueueLimit: 1
-    },
-    signal: secondWaitAbort.signal
+    }
   })
-  const unlimitedQueueSnapshot = highConcurrencyGroupQueueSnapshot()[0]
-  assert.equal(unlimitedQueueSnapshot?.queueSize, 2, '超过旧队列上限后仍应保留等待项')
-  assert.equal(unlimitedQueueSnapshot?.perApiKeyQueueSize.key_unlimited_queue, 2, '超过旧 API Key 队列上限后仍应按 Key 记录排队数')
+  assert.equal(apiKeyQueueFull.ready, false, '同一 API Key 超过短队列上限时应快速拒绝')
+  assert.equal(apiKeyQueueFull.ready === false ? apiKeyQueueFull.reason : '', 'queue_full', '分组队列满应优先按分组上限拒绝')
+  const protectedQueueSnapshot = highConcurrencyGroupQueueSnapshot()[0]
+  assert.equal(protectedQueueSnapshot?.queueSize, 1, '超过队列上限后不应继续保留等待项')
+  assert.equal(protectedQueueSnapshot?.perApiKeyQueueSize.key_protected_queue, 1, '单 Key 排队数不应突破上限')
   firstWaitAbort.abort()
-  secondWaitAbort.abort()
-  const [firstAbortResult, secondAbortResult] = await Promise.all([firstWait, secondWait])
+  const firstAbortResult = await firstWait
   assert.equal(firstAbortResult.ready === false ? firstAbortResult.reason : '', 'aborted')
-  assert.equal(secondAbortResult.ready === false ? secondAbortResult.reason : '', 'aborted')
-  unlimitedQueueSlot.release()
+  protectedQueueSlot.release()
+  clearAccountConcurrency()
+  clearHighConcurrencyGroupQueues()
+
+  const perKeyLimitSlot = tryAcquireAccountConcurrency('acct_per_key_queue_limit', 1)
+  assert.equal(perKeyLimitSlot.acquired, true, '单 Key 队列上限测试前应先占用账号并发')
+  const perKeyWaitAbort = new AbortController()
+  const perKeyWait = waitForHighConcurrencyGroupCapacity({
+    systemAccountId: 'sys_queue',
+    groupId: 'grp_per_key_queue_limit',
+    apiKeyId: 'key_per_key_limit',
+    accountIds: ['acct_per_key_queue_limit'],
+    policy: {
+      maxQueueWaitMs: 500,
+      maxQueueSize: 2,
+      perApiKeyQueueLimit: 1
+    },
+    signal: perKeyWaitAbort.signal
+  })
+  const perKeyQueueFull = await waitForHighConcurrencyGroupCapacity({
+    systemAccountId: 'sys_queue',
+    groupId: 'grp_per_key_queue_limit',
+    apiKeyId: 'key_per_key_limit',
+    accountIds: ['acct_per_key_queue_limit'],
+    policy: {
+      maxQueueWaitMs: 500,
+      maxQueueSize: 2,
+      perApiKeyQueueLimit: 1
+    }
+  })
+  assert.equal(perKeyQueueFull.ready, false, '同一 API Key 超过单 Key 队列上限时应快速拒绝')
+  assert.equal(perKeyQueueFull.ready === false ? perKeyQueueFull.reason : '', 'api_key_queue_full')
+  perKeyWaitAbort.abort()
+  const perKeyAbortResult = await perKeyWait
+  assert.equal(perKeyAbortResult.ready === false ? perKeyAbortResult.reason : '', 'aborted')
+  perKeyLimitSlot.release()
   clearAccountConcurrency()
   clearHighConcurrencyGroupQueues()
 
@@ -173,7 +206,7 @@ try {
   assert.equal(timeoutResult.ready === false ? timeoutResult.reason : '', 'timeout')
   timeoutSlot.release()
 
-  console.log('高并发分组短队列回归通过：账号释放唤醒、通道容量检查、旧队列上限不再拒绝和等待超时均符合预期')
+  console.log('高并发分组短队列回归通过：账号释放唤醒、通道容量检查、队列硬上限和等待超时均符合预期')
 } finally {
   clearAccountConcurrency()
   clearHighConcurrencyGroupQueues()

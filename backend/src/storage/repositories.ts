@@ -24,7 +24,7 @@ import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
 import { findGroupRowForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions } from './group-read.repository.js'
-import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
+import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds, type GroupAccountStatsRow } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
@@ -76,7 +76,7 @@ import { getSettings } from './settings.repository.js'
 import { systemAccountPrincipalSummaryFromRow } from './system-account-mappers.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
-import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
+import { GROUP_ACCOUNT_STATS_DIRTY_ALL, markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
@@ -91,6 +91,7 @@ import {
 } from './value-utils.js'
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
+const GROUP_ACCOUNT_STATS_FALLBACK_MAX_GROUPS = 500
 const manualTrafficMigrationReason = '手动迁移流量'
 const defaultResourceAuthorizationUsageDetailPageSize = 200
 const temporaryUnavailableInitialBackoffSeconds = 3
@@ -723,6 +724,12 @@ function isLaterIso(value?: string, current?: string): boolean {
   const nextTime = Date.parse(value)
   const currentTime = Date.parse(current)
   return Number.isFinite(nextTime) && (!Number.isFinite(currentTime) || nextTime > currentTime)
+}
+
+function latestIsoText(left?: string | null, right?: string | null): string | undefined {
+  if (!left) return right ?? undefined
+  if (!right) return left
+  return right > left ? right : left
 }
 
 function writeSystemAccountId(access?: AccessScope): string {
@@ -2221,6 +2228,12 @@ export interface AuthorizedAccountBindingRuntimeTarget {
   accountAuthorizationId?: string
 }
 
+export interface AccountPrecheckMutationState {
+  status: AccountStatus
+  updatedAt?: string
+  lastUsedAt?: string
+}
+
 function normalizedAuthorizedAccountBindingRuntimeTarget(
   input: AuthorizedAccountBindingRuntimeTarget
 ): Required<AuthorizedAccountBindingRuntimeTarget> | undefined {
@@ -2232,6 +2245,67 @@ function normalizedAuthorizedAccountBindingRuntimeTarget(
     return undefined
   }
   return { accountId, systemAccountId, groupId, accountAuthorizationId }
+}
+
+export function getAccountPrecheckMutationState(input: {
+  accountId: string
+  authorizedBinding?: AuthorizedAccountBindingRuntimeTarget
+}): AccountPrecheckMutationState | undefined {
+  const target = input.authorizedBinding
+    ? normalizedAuthorizedAccountBindingRuntimeTarget(input.authorizedBinding)
+    : undefined
+  if (target) {
+    const row = getDatabase()
+      .prepare(`
+        SELECT
+          accounts.status AS account_status,
+          accounts.updated_at AS account_updated_at,
+          accounts.last_used_at,
+          group_accounts.local_status,
+          group_accounts.updated_at AS binding_updated_at
+        FROM group_accounts
+        INNER JOIN accounts ON accounts.id = group_accounts.account_id
+        WHERE group_accounts.account_id = ?
+          AND group_accounts.system_account_id = ?
+          AND group_accounts.group_id = ?
+          AND group_accounts.enabled = 1
+          AND group_accounts.account_authorization_id = ?
+        LIMIT 1
+      `)
+      .get(target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId) as unknown as {
+        account_status?: AccountStatus | null
+        account_updated_at?: string | null
+        last_used_at?: string | null
+        local_status?: AccountStatus | null
+        binding_updated_at?: string | null
+      } | undefined
+    if (!row) {
+      return undefined
+    }
+    const accountStatus = normalizeAccountStatus(row.account_status, 'active')
+    const localStatus = normalizeAccountStatus(row.local_status, 'active')
+    return {
+      status: isHardUnavailableAccountStatus(accountStatus) ? accountStatus : localStatus,
+      updatedAt: latestIsoText(row.account_updated_at, row.binding_updated_at),
+      lastUsedAt: row.last_used_at ?? undefined
+    }
+  }
+
+  const row = getDatabase()
+    .prepare('SELECT status, updated_at, last_used_at FROM accounts WHERE id = ? LIMIT 1')
+    .get(input.accountId) as unknown as {
+      status?: AccountStatus | null
+      updated_at?: string | null
+      last_used_at?: string | null
+    } | undefined
+  if (!row) {
+    return undefined
+  }
+  return {
+    status: normalizeAccountStatus(row.status, 'active'),
+    updatedAt: row.updated_at ?? undefined,
+    lastUsedAt: row.last_used_at ?? undefined
+  }
 }
 
 export function clearAuthorizedAccountBindingFailureStateByContext(
@@ -3240,7 +3314,7 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
   const timezone = usageStatsTimezone()
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const groupIds = rows.map((row) => row.id)
-  const groupStatsByGroup = loadGroupAccountStatsByGroupIds(groupIds)
+  const groupStatsByGroup = withFallbackGroupAccountStats(groupIds, loadGroupAccountStatsByGroupIds(groupIds))
   const accountIdsByGroup = loadGroupAccountIdsByGroupIds(groupIds)
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds([...accountIdsByGroup.values()].flat())
   const groupUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
@@ -3289,6 +3363,125 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
   })
+}
+
+function withFallbackGroupAccountStats(groupIds: string[], statsByGroup: Map<string, GroupAccountStatsRow>): Map<string, GroupAccountStatsRow> {
+  const ids = [...new Set(groupIds)].filter(Boolean)
+  const missingGroupIds = ids.filter((groupId) => !statsByGroup.has(groupId))
+  if (missingGroupIds.length > GROUP_ACCOUNT_STATS_FALLBACK_MAX_GROUPS) return statsByGroup
+  const fallbackGroupIds = new Set(missingGroupIds)
+  if (ids.length <= GROUP_ACCOUNT_STATS_FALLBACK_MAX_GROUPS) {
+    for (const groupId of loadDirtyGroupAccountStatsGroupIds(ids)) {
+      fallbackGroupIds.add(groupId)
+    }
+  }
+  if (!fallbackGroupIds.size || fallbackGroupIds.size > GROUP_ACCOUNT_STATS_FALLBACK_MAX_GROUPS) return statsByGroup
+  const fallbackStats = loadGroupAccountStatsFallbackByGroupIds([...fallbackGroupIds])
+  if (!fallbackStats.size) return statsByGroup
+  return new Map([...statsByGroup, ...fallbackStats])
+}
+
+function loadDirtyGroupAccountStatsGroupIds(groupIds: string[]): Set<string> {
+  const ids = [...new Set(groupIds.filter(Boolean))]
+  const result = new Set<string>()
+  if (!ids.length) return result
+  const rows = getStatsDatabase()
+    .prepare(`
+      SELECT group_id
+      FROM group_account_stats_dirty
+      WHERE group_id = ?
+        OR group_id IN (${sqlPlaceholders(ids.length)})
+    `)
+    .all(GROUP_ACCOUNT_STATS_DIRTY_ALL, ...ids) as unknown as Array<{ group_id: string }>
+  if (rows.some((row) => row.group_id === GROUP_ACCOUNT_STATS_DIRTY_ALL)) {
+    return new Set(ids)
+  }
+  for (const row of rows) {
+    if (row.group_id) result.add(row.group_id)
+  }
+  return result
+}
+
+function loadGroupAccountStatsFallbackByGroupIds(groupIds: string[]): Map<string, GroupAccountStatsRow> {
+  const ids = [...new Set(groupIds.filter(Boolean))]
+  const result = new Map<string, GroupAccountStatsRow>()
+  if (!ids.length) return result
+  const database = getDatabase()
+  const updatedAt = nowIso()
+  type GroupAccountStatsFallbackRow = {
+    group_id: string
+    system_account_id: string
+    account_id: string | null
+    account_system_account_id: string | null
+    status: string | null
+    schedulable: number | null
+    cooldown_until: string | null
+    concurrency_limit: number | null
+    authorization_status: string | null
+    authorization_expires_at: string | null
+  }
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = database.prepare(`
+      SELECT
+        groups.id AS group_id,
+        groups.system_account_id AS system_account_id,
+        accounts.id AS account_id,
+        accounts.system_account_id AS account_system_account_id,
+        accounts.status,
+        accounts.schedulable,
+        accounts.cooldown_until,
+        accounts.concurrency_limit,
+        account_authorizations.status AS authorization_status,
+        account_authorizations.expires_at AS authorization_expires_at
+      FROM groups
+      LEFT JOIN group_accounts
+        ON group_accounts.group_id = groups.id
+       AND group_accounts.enabled = 1
+      LEFT JOIN accounts ON accounts.id = group_accounts.account_id
+      LEFT JOIN resource_authorizations account_authorizations
+        ON account_authorizations.id = group_accounts.account_authorization_id
+      WHERE groups.id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as GroupAccountStatsFallbackRow[]
+    for (const row of rows) {
+      const stats = result.get(row.group_id) ?? emptyGroupAccountStatsRow(row.group_id, row.system_account_id)
+      result.set(row.group_id, stats)
+      if (!row.account_id || !row.account_system_account_id) continue
+      const authorized = row.account_system_account_id === row.system_account_id
+        || (row.authorization_status === 'active' && (!row.authorization_expires_at || row.authorization_expires_at > updatedAt))
+      if (!authorized) continue
+      stats.total += 1
+      stats.concurrency_limit += Number(row.concurrency_limit ?? 0)
+      if (row.status === 'active') {
+        stats.active += 1
+        if (row.schedulable === 1 && (!row.cooldown_until || row.cooldown_until <= updatedAt)) {
+          stats.available += 1
+        }
+      } else if (row.status === 'disabled') {
+        stats.disabled += 1
+      } else {
+        stats.error += 1
+      }
+      if (row.status === 'rate_limited') {
+        stats.rate_limited += 1
+      }
+    }
+  }
+  return result
+}
+
+function emptyGroupAccountStatsRow(groupId: string, systemAccountId: string): GroupAccountStatsRow {
+  return {
+    system_account_id: systemAccountId,
+    group_id: groupId,
+    total: 0,
+    active: 0,
+    disabled: 0,
+    rate_limited: 0,
+    error: 0,
+    available: 0,
+    current_concurrency: 0,
+    concurrency_limit: 0
+  }
 }
 
 function groupTypeFromRow(row: Pick<GroupListRow, 'group_type'>): GroupType {
@@ -3397,23 +3590,175 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   return findGroupSummary(id, access)
 }
 
-export function deleteGroup(id: string, access?: AccessScope): boolean {
+export interface DeletedGroupApiKeyRouteChange {
+  apiKeyId: string
+  apiKeyName: string
+  removedGroupId: string
+  removedGroupName?: string
+  removedBindingStatus?: string
+  primaryGroupChanged: boolean
+  nextGroupId?: string
+  nextGroupName?: string
+}
+
+export interface DeleteGroupResult {
+  deleted: boolean
+  affectedApiKeyRoutes: DeletedGroupApiKeyRouteChange[]
+}
+
+export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult {
   const current = findGroupSummary(id, access)
   if (current?.isDefault) {
     throw new Error('默认分组不能删除')
   }
   const owner = groupOwnerAndProvider(id)
   if (!owner || !canManageResourceOwner(owner.systemAccountId, access)) {
-    return false
+    return { deleted: false, affectedApiKeyRoutes: [] }
   }
-  const result = getDatabase().prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
-  if (Number(result.changes ?? 0) > 0) {
+  const database = getDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let deleted = false
+  let affectedApiKeyRoutes: DeletedGroupApiKeyRouteChange[] = []
+  try {
+    affectedApiKeyRoutes = preserveApiKeyRoutesBeforeGroupDelete(database, id, owner.systemAccountId, current?.name)
+    database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
+    const result = database.prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
+    deleted = Number(result.changes ?? 0) > 0
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  if (deleted) {
     refreshGroupAccountStatsAfterWrite({ groupIds: [id], reason: 'group_deleted' })
     invalidateGroupLookupCache(id)
     invalidateGroupAccountIdsCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('group_deleted')
   }
-  return result.changes > 0
+  return { deleted, affectedApiKeyRoutes: deleted ? affectedApiKeyRoutes : [] }
+}
+
+type ApiKeyAffectedByGroupDeleteRow = {
+  id: string
+  name: string
+  groupId: string
+  targetBindingStatus?: string | null
+}
+
+type NextApiKeyGroupBindingRow = {
+  apiKeyId: string
+  groupId: string
+  groupName?: string | null
+}
+
+function preserveApiKeyRoutesBeforeGroupDelete(
+  database: DatabaseSync,
+  groupId: string,
+  systemAccountId: string,
+  groupName?: string
+): DeletedGroupApiKeyRouteChange[] {
+  const affectedApiKeys = database
+    .prepare(`
+      SELECT DISTINCT
+        api_keys.id,
+        api_keys.name,
+        api_keys.group_id AS groupId,
+        target_binding.status AS targetBindingStatus
+      FROM api_keys
+      LEFT JOIN api_key_group_bindings target_binding
+        ON target_binding.api_key_id = api_keys.id
+        AND target_binding.system_account_id = api_keys.system_account_id
+        AND target_binding.group_id = ?
+      WHERE api_keys.system_account_id = ?
+        AND (api_keys.group_id = ? OR target_binding.id IS NOT NULL)
+      ORDER BY api_keys.updated_at DESC, api_keys.id DESC
+    `)
+    .all(groupId, systemAccountId, groupId) as unknown as ApiKeyAffectedByGroupDeleteRow[]
+  if (!affectedApiKeys.length) return []
+
+  const nextActiveGroupByApiKeyId = loadNextActiveApiKeyGroupByApiKeyId(
+    database,
+    groupId,
+    systemAccountId,
+    affectedApiKeys.map((apiKey) => apiKey.id)
+  )
+  const blockers = affectedApiKeys.filter((apiKey) => {
+    const needsActiveReplacement = apiKey.groupId === groupId || apiKey.targetBindingStatus === 'active'
+    return needsActiveReplacement && !nextActiveGroupByApiKeyId.has(apiKey.id)
+  })
+  if (blockers.length) {
+    const names = blockers.slice(0, 3).map((apiKey) => apiKey.name).join('、')
+    const suffix = blockers.length > 3 ? ` 等 ${blockers.length} 个` : ''
+    throw new Error(`删除分组前，请先为以下 API Key 添加或启用备用分组：${names}${suffix}`)
+  }
+
+  const now = nowIso()
+  const updatePrimaryGroup = database.prepare(`
+    UPDATE api_keys
+    SET group_id = ?, updated_at = ?
+    WHERE id = ? AND system_account_id = ? AND group_id = ?
+  `)
+  for (const apiKey of affectedApiKeys) {
+    if (apiKey.groupId !== groupId) continue
+    const nextGroup = nextActiveGroupByApiKeyId.get(apiKey.id)
+    if (!nextGroup) continue
+    updatePrimaryGroup.run(nextGroup.groupId, now, apiKey.id, systemAccountId, groupId)
+  }
+  return affectedApiKeys.map((apiKey) => {
+    const nextGroup = nextActiveGroupByApiKeyId.get(apiKey.id)
+    return {
+      apiKeyId: apiKey.id,
+      apiKeyName: apiKey.name,
+      removedGroupId: groupId,
+      removedGroupName: groupName,
+      removedBindingStatus: apiKey.targetBindingStatus ?? undefined,
+      primaryGroupChanged: apiKey.groupId === groupId,
+      nextGroupId: apiKey.groupId === groupId ? nextGroup?.groupId : undefined,
+      nextGroupName: apiKey.groupId === groupId ? nextGroup?.groupName ?? undefined : undefined
+    }
+  })
+}
+
+function loadNextActiveApiKeyGroupByApiKeyId(
+  database: DatabaseSync,
+  groupId: string,
+  systemAccountId: string,
+  apiKeyIds: string[]
+): Map<string, NextApiKeyGroupBindingRow> {
+  const result = new Map<string, NextApiKeyGroupBindingRow>()
+  const uniqueIds = [...new Set(apiKeyIds.filter(Boolean))]
+  for (const chunk of chunkValues(uniqueIds, 500)) {
+    const rows = database
+      .prepare(`
+        SELECT apiKeyId, groupId, groupName FROM (
+          SELECT
+            api_key_group_bindings.api_key_id AS apiKeyId,
+            api_key_group_bindings.group_id AS groupId,
+            groups.name AS groupName,
+            ROW_NUMBER() OVER (
+              PARTITION BY api_key_group_bindings.api_key_id
+              ORDER BY api_key_group_bindings.priority ASC,
+                api_key_group_bindings.created_at ASC,
+                api_key_group_bindings.id ASC
+            ) AS routeRank
+          FROM api_key_group_bindings
+          INNER JOIN groups
+            ON groups.id = api_key_group_bindings.group_id
+            AND groups.system_account_id = api_key_group_bindings.system_account_id
+            AND groups.enabled = 1
+          WHERE api_key_group_bindings.system_account_id = ?
+            AND api_key_group_bindings.status = 'active'
+            AND api_key_group_bindings.group_id <> ?
+            AND api_key_group_bindings.api_key_id IN (${sqlPlaceholders(chunk.length)})
+        )
+        WHERE routeRank = 1
+    `)
+      .all(systemAccountId, groupId, ...chunk) as unknown as NextApiKeyGroupBindingRow[]
+    for (const row of rows) {
+      result.set(row.apiKeyId, row)
+    }
+  }
+  return result
 }
 
 export function setAccountGroup(
@@ -3996,9 +4341,7 @@ export function returnResourceAuthorizationForGrantee(authorizationId: string, a
   const granteeSystemAccountId = userVisibleSystemAccountId(access)
   if (!granteeSystemAccountId) return undefined
   const database = getDatabase()
-  const authorization = database
-    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? AND grantee_system_account_id = ? LIMIT 1`)
-    .get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+  const authorization = findReturnableRuntimeAuthorizationForGrantee(authorizationId, granteeSystemAccountId, database)
   if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
     return undefined
   }
@@ -4067,6 +4410,37 @@ export function returnResourceAuthorizationForGrantee(authorizationId: string, a
   return database
     .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
     .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
+}
+
+function findReturnableRuntimeAuthorizationForGrantee(authorizationId: string, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationRow | undefined {
+  const runtimeAuthorization = database
+    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? AND grantee_system_account_id = ? LIMIT 1`)
+    .get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+  if (runtimeAuthorization) return runtimeAuthorization
+
+  const grant = database
+    .prepare(`
+      SELECT *
+      FROM resource_authorization_grants
+      WHERE id = ?
+        AND grantee_type = 'system_account'
+        AND grantee_system_account_id = ?
+        AND status <> 'revoked'
+      LIMIT 1
+    `)
+    .get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationGrantRow | undefined
+  if (!grant) return undefined
+  return database
+    .prepare(`
+      SELECT ${resourceAuthorizationSelectColumns()}
+      FROM resource_authorizations
+      WHERE resource_type = ?
+        AND resource_id = ?
+        AND resource_owner_system_account_id = ?
+        AND grantee_system_account_id = ?
+      LIMIT 1
+    `)
+    .get(grant.resource_type, grant.resource_id, grant.resource_owner_system_account_id, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
 }
 
 export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {

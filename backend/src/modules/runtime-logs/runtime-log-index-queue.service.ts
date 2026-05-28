@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { nowIso } from '../../storage/database.js'
 import {
@@ -15,12 +16,22 @@ const runtimeLogFlushIntervalMs = 200
 const runtimeLogRetryPolicy = fixedRetryPolicy('runtime_log_index_queue_flush', 1000)
 const runtimeLogBatchSize = 500
 const runtimeLogMaxRawJsonChars = 128 * 1024
+const runtimeLogQueueMaxItems = 5_000
+const runtimeLogQueueMaxBytes = 32 * 1024 * 1024
 
-let pendingRuntimeLogs: RuntimeLogIndexInput[] = []
+interface QueuedRuntimeLog {
+  input: RuntimeLogIndexInput
+  bytes: number
+}
+
+let pendingRuntimeLogs: QueuedRuntimeLog[] = []
+let pendingRuntimeLogBytes = 0
 let flushTimer: NodeJS.Timeout | undefined
 let flushTimerDelayMs: number | undefined
 let flushing = false
 let droppedRuntimeLogCount = 0
+let droppedRuntimeLogOverflowCount = 0
+let droppedRuntimeLogOversizeCount = 0
 let flushLastSuccessAt: string | undefined
 let flushLastError: string | undefined
 let shutdownHooksInstalled = false
@@ -39,7 +50,10 @@ export interface RuntimeLogLineIndexOptions {
 
 export interface RuntimeLogIndexRuntime {
   queueLength: number
+  queueBytes: number
   droppedCount: number
+  droppedOverflowCount: number
+  droppedOversizeCount: number
   flushLastSuccessAt?: string
   flushLastError?: string
   retentionDays: number
@@ -57,7 +71,20 @@ export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogL
   const input = runtimeLogInputFromLine(rawLine, options)
   if (!input) return
 
-  pendingRuntimeLogs.push(input)
+  const queued = {
+    input,
+    bytes: estimateRuntimeLogBytes(input)
+  }
+  if (queued.bytes > runtimeLogQueueMaxBytes) {
+    recordRuntimeLogDrop(queued, 'oversize')
+    return
+  }
+  if (pendingRuntimeLogs.length >= runtimeLogQueueMaxItems || pendingRuntimeLogBytes + queued.bytes > runtimeLogQueueMaxBytes) {
+    recordRuntimeLogDrop(queued, 'overflow')
+    return
+  }
+  pendingRuntimeLogs.push(queued)
+  pendingRuntimeLogBytes += queued.bytes
 
   scheduleRuntimeLogFlush(pendingRuntimeLogs.length >= runtimeLogBatchSize ? 0 : runtimeLogFlushIntervalMs)
 }
@@ -82,14 +109,16 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
       if (batch.length === 0) {
         break
       }
+      pendingRuntimeLogBytes = Math.max(0, pendingRuntimeLogBytes - sumQueuedRuntimeLogBytes(batch))
 
       try {
-        createRuntimeLogsBatch(batch)
+        createRuntimeLogsBatch(batch.map((item) => item.input))
         flushLastSuccessAt = nowIso()
         flushLastError = undefined
       } catch (error) {
         failed = true
         pendingRuntimeLogs = [...batch, ...pendingRuntimeLogs]
+        pendingRuntimeLogBytes = sumQueuedRuntimeLogBytes(pendingRuntimeLogs)
         flushLastError = error instanceof Error ? error.message : String(error)
         writeRuntimeLogIndexError(`运行日志索引写入失败：${flushLastError}`)
         shouldRetry = options.retryOnFailure !== false
@@ -113,7 +142,10 @@ export function flushAllRuntimeLogIndexQueue(): boolean {
 export function getRuntimeLogIndexRuntime(): RuntimeLogIndexRuntime {
   return {
     queueLength: pendingRuntimeLogs.length,
+    queueBytes: pendingRuntimeLogBytes,
     droppedCount: droppedRuntimeLogCount,
+    droppedOverflowCount: droppedRuntimeLogOverflowCount,
+    droppedOversizeCount: droppedRuntimeLogOversizeCount,
     flushLastSuccessAt,
     flushLastError,
     retentionDays: runtimeLogIndexRetentionDays
@@ -128,6 +160,23 @@ export function installRuntimeLogIndexQueueShutdownHooks(): void {
 
   process.once('beforeExit', flushAllRuntimeLogIndexQueue)
   process.once('exit', flushAllRuntimeLogIndexQueue)
+}
+
+export function clearRuntimeLogIndexQueueForTest(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+    flushTimerDelayMs = undefined
+  }
+  pendingRuntimeLogs = []
+  pendingRuntimeLogBytes = 0
+  flushing = false
+  droppedRuntimeLogCount = 0
+  droppedRuntimeLogOverflowCount = 0
+  droppedRuntimeLogOversizeCount = 0
+  flushLastSuccessAt = undefined
+  flushLastError = undefined
+  shutdownHooksInstalled = false
 }
 
 function runtimeLogInputFromLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): RuntimeLogIndexInput | undefined {
@@ -253,4 +302,25 @@ function scheduleRuntimeLogFlush(delayMs: number): void {
 
 function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
+}
+
+function estimateRuntimeLogBytes(input: RuntimeLogIndexInput): number {
+  return estimateJsonLikeBytes(input) + 256
+}
+
+function sumQueuedRuntimeLogBytes(items: QueuedRuntimeLog[]): number {
+  return items.reduce((sum, item) => sum + item.bytes, 0)
+}
+
+function recordRuntimeLogDrop(item: QueuedRuntimeLog, reason: 'overflow' | 'oversize'): void {
+  droppedRuntimeLogCount += 1
+  if (reason === 'overflow') {
+    droppedRuntimeLogOverflowCount += 1
+  } else {
+    droppedRuntimeLogOversizeCount += 1
+  }
+  if (droppedRuntimeLogCount > 10 && droppedRuntimeLogCount % 100 !== 0) {
+    return
+  }
+  writeRuntimeLogIndexError(`运行日志索引队列达到保护上限，已丢弃新日志：reason=${reason} bytes=${item.bytes} pending=${pendingRuntimeLogs.length}`)
 }

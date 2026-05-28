@@ -68,6 +68,7 @@ try {
     '被授权用户归还账户授权不应删除授权方原账户'
   )
   const ownerAccess = { systemAccountId: seed.ownerId, role: 'user' as const }
+  const granteeAccess = { systemAccountId: seed.granteeId, role: 'user' as const }
   const returnedAccountGrant = repositories
     .listResourceAuthorizations({}, ownerAccess)
     .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
@@ -91,6 +92,20 @@ try {
     .find((account) => account.id === seed.ownerAccountId)
   assert.equal(pausedAccount?.authorizationStatus, 'paused', '暂停授权后被授权账户仍应可见但标记为暂停')
   repositories.updateResourceAuthorization(restoredAccountGrant.id, { status: 'active' }, ownerAccess)
+  const inboundAccountGrant = repositories
+    .listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAccess)
+    .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
+  assert.equal(inboundAccountGrant?.id, restoredAccountGrant.id, '个人授权列表应返回授权业务记录 ID')
+  await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${inboundAccountGrant.id}/return`, seed.granteeCookie)
+  assert.equal(
+    repositories.listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const }).some((account) => account.id === seed.ownerAccountId),
+    false,
+    '被授权用户通过个人授权列表归还后不应继续看到该授权账户'
+  )
+  const returnedAccountGrantByListId = repositories
+    .listResourceAuthorizations({}, ownerAccess)
+    .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
+  assert.equal(returnedAccountGrantByListId?.status, 'returned', '个人授权列表归还后，授权方授权列表仍应保留已归还记录')
 
   const groupAuthorizationId = repositories
     .listGroups({ systemAccountId: seed.granteeId, role: 'user' as const })

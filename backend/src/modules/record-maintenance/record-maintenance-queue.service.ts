@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { cleanupProcessedUsageRecordsBeforeWithResult } from '../../storage/data-retention.repository.js'
 import { newId, nowIso } from '../../storage/database.js'
@@ -49,7 +50,9 @@ export type RecordMaintenanceJob =
 
 const recordMaintenanceFlushIntervalMs = 100
 const recordMaintenanceRetryPolicy = fixedRetryPolicy('record_maintenance_queue_flush', 1000)
-const recordMaintenanceBatchSize = 50
+const recordMaintenanceBatchSize = 10
+const recordMaintenanceQueueMaxItems = 5_000
+const recordMaintenanceQueueMaxBytes = 32 * 1024 * 1024
 const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
 
 export interface RecordMaintenanceEnqueueResult {
@@ -58,13 +61,21 @@ export interface RecordMaintenanceEnqueueResult {
   droppedReason?: string
 }
 
-let pendingJobs: RecordMaintenanceJob[] = []
+interface QueuedRecordMaintenanceJob {
+  job: RecordMaintenanceJob
+  bytes: number
+}
+
+let pendingJobs: QueuedRecordMaintenanceJob[] = []
+let pendingJobBytes = 0
 let flushTimer: NodeJS.Timeout | undefined
 let flushing = false
 let completedCount = 0
 let flushFailureCount = 0
 let retainedOverflowWarningCount = 0
 let droppedDispatchCount = 0
+let droppedOverflowCount = 0
+let droppedOversizeCount = 0
 let shutdownHooksInstalled = false
 
 interface RecordMaintenanceFlushOptions {
@@ -112,8 +123,12 @@ export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJo
     return { job, queued: false, droppedReason: 'worker_ipc_unavailable' }
   }
 
-  enqueueRecordMaintenanceJobLocal(job)
-  return { job, queued: true }
+  const queued = enqueueRecordMaintenanceJobLocal(job)
+  return {
+    job,
+    queued,
+    droppedReason: queued ? undefined : 'worker_local_queue_full'
+  }
 }
 
 export function enqueueRecordMaintenanceJobsLocal(inputs: RecordMaintenanceJob[]): void {
@@ -147,11 +162,13 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
       if (batch.length === 0) {
         break
       }
+      pendingJobBytes = Math.max(0, pendingJobBytes - sumQueuedRecordMaintenanceJobBytes(batch))
+      const batchJobs = batch.map((item) => item.job)
       flushedBatches += 1
 
-      for (let index = 0; index < batch.length; index += 1) {
-        const job = batch[index]
-        const snapshotJobs = collectAccountUsageSnapshotJobs(batch, index)
+      for (let index = 0; index < batchJobs.length; index += 1) {
+        const job = batchJobs[index]
+        const snapshotJobs = collectAccountUsageSnapshotJobs(batchJobs, index)
         try {
           if (snapshotJobs.length > 0) {
             processAccountUsageSnapshotUpsertJobs(snapshotJobs)
@@ -163,13 +180,15 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
           }
         } catch (error) {
           failed = true
-          pendingJobs = [job, ...batch.slice(index + 1), ...pendingJobs]
+          pendingJobs = [...batch.slice(index), ...pendingJobs]
+          pendingJobBytes = sumQueuedRecordMaintenanceJobBytes(pendingJobs)
           flushFailureCount += 1
           logger.error(errorLogFields(error, {
             event: 'record_maintenance_queue_flush_failed',
             jobType: job.type,
             jobId: job.id,
             pendingCount: pendingJobs.length,
+            pendingBytes: pendingJobBytes,
             flushFailureCount
           }), '数据维护队列执行失败，已保留任务等待重试')
           shouldRetry = options.retryOnFailure !== false
@@ -191,16 +210,22 @@ export function flushAllRecordMaintenanceQueue(): void {
 
 export function getRecordMaintenanceQueueRuntime(): {
   queueLength: number
+  queueBytes: number
   droppedCount: number
   completedCount: number
   retainedOverflowWarningCount: number
+  droppedOverflowCount: number
+  droppedOversizeCount: number
   flushFailureCount: number
 } {
   return {
     queueLength: pendingJobs.length,
-    droppedCount: droppedDispatchCount,
+    queueBytes: pendingJobBytes,
+    droppedCount: droppedDispatchCount + droppedOverflowCount + droppedOversizeCount,
     completedCount,
     retainedOverflowWarningCount,
+    droppedOverflowCount,
+    droppedOversizeCount,
     flushFailureCount
   }
 }
@@ -218,10 +243,32 @@ export function installRecordMaintenanceQueueShutdownHooks(): void {
   process.once('SIGTERM', () => exitAfterRecordMaintenanceFlush(0))
 }
 
-function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): void {
+function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): boolean {
   assertLocalRecordMaintenanceWriteAllowed('enqueueRecordMaintenanceJobLocal')
-  pendingJobs.push(job)
+  const queued = {
+    job,
+    bytes: estimateRecordMaintenanceJobBytes(job)
+  }
+  if (queued.bytes > recordMaintenanceQueueMaxBytes) {
+    recordRecordMaintenanceLocalDrop(queued, 'oversize')
+    return false
+  }
+  const mergeResult = mergeAccountUsageSnapshotJob(queued)
+  if (mergeResult !== 'not_found') {
+    if (mergeResult === 'queued') {
+      scheduleRecordMaintenanceFlush(pendingJobs.length >= recordMaintenanceBatchSize ? 0 : recordMaintenanceFlushIntervalMs)
+      return true
+    }
+    return false
+  }
+  if (pendingJobs.length >= recordMaintenanceQueueMaxItems || pendingJobBytes + queued.bytes > recordMaintenanceQueueMaxBytes) {
+    recordRecordMaintenanceLocalDrop(queued, 'overflow')
+    return false
+  }
+  pendingJobs.push(queued)
+  pendingJobBytes += queued.bytes
   scheduleRecordMaintenanceFlush(pendingJobs.length >= recordMaintenanceBatchSize ? 0 : recordMaintenanceFlushIntervalMs)
+  return true
 }
 
 function processRecordMaintenanceJob(job: RecordMaintenanceJob): void {
@@ -444,12 +491,87 @@ function recordRecordMaintenanceDispatchFailure(error: unknown, job: RecordMaint
   }), 'DB service 数据维护任务投递失败，已跳过投递')
 }
 
+export function clearRecordMaintenanceQueueForTest(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+  pendingJobs = []
+  pendingJobBytes = 0
+  flushing = false
+  completedCount = 0
+  flushFailureCount = 0
+  retainedOverflowWarningCount = 0
+  droppedDispatchCount = 0
+  droppedOverflowCount = 0
+  droppedOversizeCount = 0
+  shutdownHooksInstalled = false
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
 function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
+}
+
+function estimateRecordMaintenanceJobBytes(job: RecordMaintenanceJob): number {
+  return estimateJsonLikeBytes(job) + 256
+}
+
+function sumQueuedRecordMaintenanceJobBytes(items: QueuedRecordMaintenanceJob[]): number {
+  return items.reduce((sum, item) => sum + item.bytes, 0)
+}
+
+function mergeAccountUsageSnapshotJob(queued: QueuedRecordMaintenanceJob): 'not_found' | 'queued' | 'dropped' {
+  if (queued.job.type !== 'account_usage_snapshot_upsert') {
+    return 'not_found'
+  }
+  const snapshotJob = queued.job
+  const index = pendingJobs.findIndex((item) => {
+    const job = item.job
+    return job.type === 'account_usage_snapshot_upsert'
+      && job.accountId === snapshotJob.accountId
+      && job.kind === snapshotJob.kind
+      && (job.source ?? '') === (snapshotJob.source ?? '')
+  })
+  if (index < 0) {
+    return 'not_found'
+  }
+  const previous = pendingJobs[index]
+  const nextBytes = Math.max(0, pendingJobBytes - previous.bytes + queued.bytes)
+  if (nextBytes > recordMaintenanceQueueMaxBytes) {
+    recordRecordMaintenanceLocalDrop(queued, 'overflow')
+    return 'dropped'
+  }
+  pendingJobs[index] = queued
+  pendingJobBytes = nextBytes
+  return 'queued'
+}
+
+function recordRecordMaintenanceLocalDrop(item: QueuedRecordMaintenanceJob, reason: 'overflow' | 'oversize'): void {
+  if (reason === 'overflow') {
+    droppedOverflowCount += 1
+    retainedOverflowWarningCount += 1
+  } else {
+    droppedOversizeCount += 1
+  }
+  const droppedCount = droppedDispatchCount + droppedOverflowCount + droppedOversizeCount
+  if (droppedCount > 10 && droppedCount % 100 !== 0) {
+    return
+  }
+  logger.warn({
+    event: 'record_maintenance_queue_dropped',
+    reason,
+    jobType: item.job.type,
+    jobId: item.job.id,
+    bytes: item.bytes,
+    pendingCount: pendingJobs.length,
+    pendingBytes: pendingJobBytes,
+    droppedOverflowCount,
+    droppedOversizeCount
+  }, '数据维护队列达到保护上限，已丢弃新任务')
 }
 
 function assertLocalRecordMaintenanceWriteAllowed(operation: string): void {

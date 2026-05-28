@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorization-quota-batch-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorization-quota-batch.sqlite3')
@@ -170,6 +171,43 @@ try {
     assert.equal(grantSelects, 0, '没有团队授权来源时单次检查不应读取团队授权表')
     assert(usageSelects <= 5, `单次检查用量窗口查询应保持常量，实际 ${usageSelects}`)
 
+    quotaService.clearAuthorizationQuotaCache()
+    authorizationSelects = 0
+    grantSelects = 0
+    usageSelects = 0
+    const asyncFirstDecisions = await quotaService.checkGatewayAuthorizationQuotaBatchAsync({
+      groupAccess: quotaGroupAccess(groupAuthorization.id),
+      accounts: [
+        quotaAccount('async-manual-ok', accountAuthorizationIds[0]),
+        quotaAccount('async-manual-over-limit', exceededAuthorizationId)
+      ]
+    })
+    assert.deepEqual(
+      [asyncFirstDecisions.get('async-manual-ok')?.allowed, asyncFirstDecisions.get('async-manual-over-limit')?.allowed],
+      [true, false],
+      '异步授权额度检查首次应返回正确判定'
+    )
+    assert(authorizationSelects > 0, '异步授权额度检查首次 miss 时允许读取授权主表')
+    assert(usageSelects > 0, '异步授权额度检查首次 miss 时允许读取额度窗口')
+    authorizationSelects = 0
+    grantSelects = 0
+    usageSelects = 0
+    const asyncSecondDecisions = await quotaService.checkGatewayAuthorizationQuotaBatchAsync({
+      groupAccess: quotaGroupAccess(groupAuthorization.id),
+      accounts: [
+        quotaAccount('async-manual-ok-second', accountAuthorizationIds[0]),
+        quotaAccount('async-manual-over-limit-second', exceededAuthorizationId)
+      ]
+    })
+    assert.deepEqual(
+      [asyncSecondDecisions.get('async-manual-ok-second')?.allowed, asyncSecondDecisions.get('async-manual-over-limit-second')?.allowed],
+      [true, false],
+      '异步授权额度检查缓存命中时仍应返回正确判定'
+    )
+    assert.equal(authorizationSelects, 0, '异步授权额度检查缓存命中时不应重复读取授权主表')
+    assert.equal(grantSelects, 0, '异步授权额度检查缓存命中时不应重复读取团队授权表')
+    assert.equal(usageSelects, 0, '异步授权额度检查缓存命中时不应重复读取额度窗口')
+
     const team = repositories.createSystemTeam({
       name: '额度批量团队',
       status: 'active'
@@ -261,4 +299,19 @@ function insertUsageHourlyWindow(database: ReturnType<typeof databaseModule.getS
       system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?)
   `).run(systemAccountId, scopeType, scopeId, windowHours, totalCost, new Date().toISOString())
+}
+
+function quotaGroupAccess(groupAuthorizationId?: string): GroupUsageAccessMetadata {
+  return {
+    groupOwnerSystemAccountId: 'quota_batch_owner',
+    groupAccessType: 'authorized',
+    groupAuthorizationId
+  } as GroupUsageAccessMetadata
+}
+
+function quotaAccount(accountId: string, accountAuthorizationId?: string): OpenAIAccountSecret {
+  return {
+    id: accountId,
+    accountAuthorizationId
+  } as OpenAIAccountSecret
 }

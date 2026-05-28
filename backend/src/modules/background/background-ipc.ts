@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { runtimeConfig } from '../../config/runtime.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { GatewayQuotaSnapshot } from '../gateway/gateway-quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
@@ -78,6 +79,7 @@ type BackgroundWorkerMessage =
   | { type: 'background_worker_process_event_loop_request'; requestId: string }
   | { type: 'background_worker_process_event_loop_response'; requestId: string; samples: ProcessEventLoopSample[] }
   | { type: 'gateway_runtime_cache_invalidate' }
+  | { type: 'gateway_quota_snapshot_update'; snapshot: GatewayQuotaSnapshot }
 
 interface PendingRequest {
   resolve: (snapshot: BackgroundWorkerRuntimeSnapshot | undefined) => void
@@ -191,6 +193,10 @@ class HeadIndexedQueue<T> {
 let workerProcess: ChildProcess | undefined
 let workerReady = false
 let workerPid: number | undefined
+const usageRecordMessageQueueMaxMessages = 10_000
+const usageRecordMessageQueueMaxBytes = 64 * 1024 * 1024
+const regularWorkerMessageQueueMaxMessages = 5_000
+const regularWorkerMessageQueueMaxBytes = 64 * 1024 * 1024
 const usageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 let usageRecordMessageQueueBytes = 0
@@ -293,6 +299,24 @@ export function sendRuntimeLogLineToWorker(line: string, options: RuntimeLogLine
     logOffset: options.logOffset,
     lineNumber: options.lineNumber
   })
+}
+
+export function sendGatewayQuotaSnapshotToServer(snapshot: GatewayQuotaSnapshot): void {
+  if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
+    return
+  }
+  try {
+    process.send({
+      type: 'gateway_quota_snapshot_update',
+      snapshot
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) {
+        markParentIpcBroken(error)
+      }
+    })
+  } catch (error) {
+    markParentIpcBroken(error)
+  }
 }
 
 export function sendBackgroundWorkerMessage(message: BackgroundWorkerMessage): boolean {
@@ -419,6 +443,11 @@ function handleWorkerMessage(message: unknown): void {
         void clearServerGatewayRuntimeCache()
       }
       break
+    case 'gateway_quota_snapshot_update':
+      if (runtimeConfig.processRole === 'server' && isGatewayQuotaSnapshot(record.snapshot)) {
+        void replaceServerGatewayQuotaSnapshot(record.snapshot)
+      }
+      break
     default:
       break
   }
@@ -438,6 +467,10 @@ function handleParentMessage(message: unknown): void {
 
 function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
   const messageBytes = estimateWorkerMessageBytes(message)
+  if (!canQueueWorkerMessage(message, messageBytes)) {
+    pendingMessageRejectCounts[ipcQueueKeyForMessage(message)] += 1
+    return false
+  }
   if (message.type === 'background_worker_usage_records') {
     usageRecordMessageQueue.push(message)
     usageRecordMessageQueueBytes += messageBytes
@@ -448,6 +481,15 @@ function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
 
   flushWorkerMessageQueue()
   return true
+}
+
+function canQueueWorkerMessage(message: BackgroundWorkerMessage, messageBytes: number): boolean {
+  if (message.type === 'background_worker_usage_records') {
+    return usageRecordMessageQueue.length < usageRecordMessageQueueMaxMessages
+      && usageRecordMessageQueueBytes + messageBytes <= usageRecordMessageQueueMaxBytes
+  }
+  return regularWorkerMessageQueue.length < regularWorkerMessageQueueMaxMessages
+    && regularWorkerMessageQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
 }
 
 function flushWorkerMessageQueue(): void {
@@ -560,6 +602,8 @@ function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueueKey {
       return 'processEventLoopResponses'
     case 'gateway_runtime_cache_invalidate':
       return 'gatewayRuntimeCacheInvalidations'
+    case 'gateway_quota_snapshot_update':
+      return 'other'
     default:
       return 'other'
   }
@@ -624,6 +668,7 @@ function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
     case 'background_worker_status_response':
     case 'background_worker_ready':
     case 'gateway_runtime_cache_invalidate':
+    case 'gateway_quota_snapshot_update':
       return 512
     default:
       return 512
@@ -746,6 +791,21 @@ async function clearServerGatewayRuntimeCache(): Promise<void> {
   const gatewayCache = await import('../gateway/gateway-runtime-cache.service.js')
   gatewayCache.clearGatewayRuntimeCacheLocal()
   dbServiceIpc.clearDbServiceGatewayRuntimeCache()
+}
+
+async function replaceServerGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): Promise<void> {
+  const quotaSnapshotCache = await import('../gateway/gateway-quota-snapshot-cache.service.js')
+  quotaSnapshotCache.replaceGatewayQuotaSnapshot(snapshot)
+}
+
+function isGatewayQuotaSnapshot(value: unknown): value is GatewayQuotaSnapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return typeof record.generatedAt === 'string'
+    && Array.isArray(record.costEntries)
+    && Array.isArray(record.authorizationEntries)
 }
 
 async function respondToProcessEventLoopRequest(requestId: string): Promise<void> {

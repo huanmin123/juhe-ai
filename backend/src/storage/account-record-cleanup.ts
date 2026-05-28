@@ -70,7 +70,7 @@ const accountScopeStatsTables = [
   'usage_scope_range_windows'
 ] as const
 
-const deletedAccountRecordCleanupBatchLimit = 1000
+const deletedAccountRecordCleanupBatchLimit = 100
 
 export function registerDeletedAccountRecordCleanupTarget(input: DeletedAccountRecordCleanupTarget): void {
   upsertDeletedAccountRecordCleanupTarget(getDatasetDatabase(), input, nowIso())
@@ -456,6 +456,7 @@ function hasAccountAuditData(database: DatabaseSync, input: DeletedAccountRecord
 }
 
 function deleteAccountAuditDataBatch(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget, limit: number): number {
+  const batchLimit = Math.max(1, Math.trunc(limit))
   const rows = database
     .prepare(`
       SELECT id
@@ -464,7 +465,7 @@ function deleteAccountAuditDataBatch(database: DatabaseSync, input: DeletedAccou
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(input.accountId, Math.max(1, Math.trunc(limit))) as unknown as Array<{ id?: string }>
+    .all(input.accountId, batchLimit) as unknown as Array<{ id?: string }>
   const auditLogIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   let deletedRows = 0
   if (auditLogIds.length > 0) {
@@ -473,9 +474,20 @@ function deleteAccountAuditDataBatch(database: DatabaseSync, input: DeletedAccou
     deletedRows += changed(database.prepare(`DELETE FROM audit_log_attempts WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
     deletedRows += changed(database.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders}) AND account_id = ?`).run(...auditLogIds, input.accountId))
   }
-  deletedRows += changed(database
-    .prepare('DELETE FROM audit_error_groups WHERE account_id = ?')
-    .run(input.accountId))
+  const groupRows = database
+    .prepare(`
+      SELECT id
+      FROM audit_error_groups
+      WHERE account_id = ?
+      ORDER BY updated_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(input.accountId, batchLimit) as unknown as Array<{ id?: string }>
+  const groupIds = groupRows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (groupIds.length > 0) {
+    const placeholders = sqlPlaceholders(groupIds.length)
+    deletedRows += changed(database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders}) AND account_id = ?`).run(...groupIds, input.accountId))
+  }
   return deletedRows
 }
 
@@ -487,6 +499,7 @@ function hasAccountModelCheckRuns(database: DatabaseSync, input: DeletedAccountR
 }
 
 function deleteAccountModelCheckRunsBatch(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget, limit: number): number {
+  const batchLimit = Math.max(1, Math.trunc(limit))
   const rows = database
     .prepare(`
       SELECT id
@@ -496,11 +509,16 @@ function deleteAccountModelCheckRunsBatch(database: DatabaseSync, input: Deleted
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(input.accountId, input.accountId, Math.max(1, Math.trunc(limit))) as unknown as Array<{ id?: string }>
+    .all(input.accountId, input.accountId, batchLimit) as unknown as Array<{ id?: string }>
   const runIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   if (!runIds.length) return 0
-  const placeholders = sqlPlaceholders(runIds.length)
-  return changed(database.prepare(`DELETE FROM model_check_runs WHERE id IN (${placeholders})`).run(...runIds))
+  let deletedRows = 0
+  for (const chunk of chunkValues(runIds, 100)) {
+    const childPlaceholders = sqlPlaceholders(chunk.length)
+    deletedRows += changed(database.prepare(`DELETE FROM model_check_items WHERE run_id IN (${childPlaceholders})`).run(...chunk))
+    deletedRows += changed(database.prepare(`DELETE FROM model_check_runs WHERE id IN (${childPlaceholders})`).run(...chunk))
+  }
+  return deletedRows
 }
 
 function deleteAccountScopeStatsRows(

@@ -15,6 +15,8 @@ import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
 
 const gatewayRuntimeTtlMs = 60_000
+const fallbackGatewayRuntimeTtlMs = 10_000
+const invalidGatewayRuntimeTtlMs = 10_000
 const gatewaySettingsTtlMs = 60_000
 const groupUsageAccessTtlMs = 60_000
 const openAIAccountsTtlMs = 60_000
@@ -122,7 +124,7 @@ export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, sys
 export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbServiceGatewayRuntime> {
   const cacheKey = hashSecret(apiKey)
   const cached = gatewayRuntimeCache.get(cacheKey)
-  if (cached && cached.apiKey) {
+  if (cached !== undefined) {
     return cloneGatewayRuntimeForDispatch(cached)
   }
 
@@ -131,6 +133,8 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
     key: apiKey
   })
   if (!runtime.apiKey) {
+    gatewayRuntimeCache.set(cacheKey, cloneStaticGatewayRuntime(runtime), { ttlMs: invalidGatewayRuntimeTtlMs })
+    gatewaySettingsCache.set('current', runtime.settings)
     return cloneStaticGatewayRuntime(runtime)
   }
 
@@ -218,6 +222,10 @@ function cloneGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime): DbSer
 
 function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime): number {
   let ttlMs = gatewayRuntimeTtlMs
+  const primaryBindingGroupId = runtime.apiKey?.group_bindings?.[0]?.group_id
+  if (primaryBindingGroupId && runtime.apiKey?.group_id && runtime.apiKey.group_id !== primaryBindingGroupId) {
+    ttlMs = Math.min(ttlMs, fallbackGatewayRuntimeTtlMs)
+  }
   for (const expiresAt of runtimeCacheExpiryCandidates(runtime)) {
     const expiresAtMs = Date.parse(expiresAt)
     if (!Number.isFinite(expiresAtMs)) {

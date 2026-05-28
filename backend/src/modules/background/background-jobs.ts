@@ -22,6 +22,7 @@ import {
   refreshUsageQuotaHourlyWindowsCache,
   refreshUsageRankSnapshotsInStages
 } from '../../storage/usage-stats.repository.js'
+import { buildGatewayQuotaSnapshot } from '../../storage/gateway-quota-snapshot.repository.js'
 import { collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
@@ -32,7 +33,7 @@ import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repos
 import { cleanupPendingDeletedAccountRecordTargets } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargets } from '../../storage/api-key-record-cleanup.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
-import { requestServerProcessEventLoopSamples } from './background-ipc.js'
+import { requestServerProcessEventLoopSamples, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
 import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
 import { WorkerScheduler } from './worker-scheduler.js'
 
@@ -42,6 +43,7 @@ let missingRemoteProcessEventLoopSampleWarningCount = 0
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 const dailyIntervalMs = 24 * 60 * 60 * 1000
+const usageRecordPreAggregationFlushMaxBatches = 2
 const scheduler = new WorkerScheduler()
 
 export function startBackgroundJobs(): void {
@@ -84,6 +86,7 @@ async function runUsageStatsAggregation(): Promise<void> {
     }
     await yieldToEventLoop()
     refreshUsageQuotaHourlyWindowsCache()
+    sendGatewayQuotaSnapshotToServer(buildGatewayQuotaSnapshot())
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
     throw error
@@ -93,7 +96,11 @@ async function runUsageStatsAggregation(): Promise<void> {
 }
 
 function flushUsageRecordsBeforeStatsAggregation(): void {
-  flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+  flushUsageRecordQueue({
+    drain: true,
+    retryOnFailure: false,
+    maxBatches: usageRecordPreAggregationFlushMaxBatches
+  })
   const pendingCount = pendingUsageRecordCount()
   if (pendingCount > 0) {
     throw new Error(`使用记录队列仍有 ${pendingCount} 条未落库，本轮跳过统计聚合，避免统计游标越过排队记录`)
@@ -120,7 +127,7 @@ async function runResourceAuthorizationExpirySweep(): Promise<void> {
 
 async function runApiKeyRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = cleanupPendingDeletedApiKeyRecordTargets(50)
+    const summary = cleanupPendingDeletedApiKeyRecordTargets(1)
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_api_key_record_cleanup_retry_completed',
@@ -135,7 +142,7 @@ async function runApiKeyRecordCleanupRetry(): Promise<void> {
 
 async function runAccountRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = cleanupPendingDeletedAccountRecordTargets(50)
+    const summary = cleanupPendingDeletedAccountRecordTargets(1)
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_account_record_cleanup_retry_completed',
@@ -299,7 +306,11 @@ async function runProxyLatencyRefresh(): Promise<void> {
 
 async function runAccountQualityRefresh(): Promise<void> {
   try {
-    flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+    flushUsageRecordQueue({
+      drain: true,
+      retryOnFailure: false,
+      maxBatches: usageRecordPreAggregationFlushMaxBatches
+    })
     await yieldToEventLoop()
     const windowMinutes = settingsNumber('accountQualityWindowMinutes', 10, 1, 60)
     const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)
@@ -359,7 +370,7 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
 }
 
 async function runDataRetentionCleanup(): Promise<void> {
-  cleanupExpiredRetainedData()
+  await cleanupExpiredRetainedData()
 }
 
 function settingsNumber(key: string, fallback: number, min: number, max: number): number {

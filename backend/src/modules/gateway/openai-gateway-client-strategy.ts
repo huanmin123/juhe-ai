@@ -101,7 +101,6 @@ function buildCodexTurnContext(
   const keyPayload = {
     systemAccountId: identity.systemAccountId,
     apiKeyId: identity.apiKeyId ?? 'internal',
-    groupId: identity.groupId,
     endpoint: identity.endpoint,
     codexTurnId: metadata.turnId,
     rawBodyHash

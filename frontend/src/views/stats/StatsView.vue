@@ -104,8 +104,8 @@
     <a-row v-if="showAdminDetailCharts" :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="14">
         <StatsChartCard
-          title="进程事件循环延迟（最近 24 小时）"
-          description="主进程、后台 worker 和 DB service 独立采样，按分钟展示峰值；上方为最近 24 小时最大值。单位为毫秒。"
+          :title="`进程事件循环延迟（${currentWindowLabel}）`"
+          description="主进程、后台 worker 和 DB service 独立采样，按后台窗口缓存展示峰值；上方为最近 24 小时最大值。单位为毫秒。"
           :loading="systemInitialLoading"
           :has-data="hasProcessEventLoopData"
           :empty-description="processEventLoopEmptyDescription"
@@ -284,6 +284,7 @@ const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStats
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
+const systemMetricsLoading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
@@ -314,14 +315,18 @@ const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
 const systemMetricsChart = shallowRef<ECharts>()
 const processEventLoopChart = shallowRef<ECharts>()
-const { requestRender: renderCharts } = useEchartsPageLifecycle({
+const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderStatsCharts,
   resizeCharts,
   disposeCharts,
-  onMounted: loadData
+  onMounted: loadData,
+  onDeactivate: cancelPendingSystemMetricsLoad,
+  onBeforeUnmount: cancelPendingSystemMetricsLoad
 })
 const backgroundJobPageSize = 10
 const backgroundJobPage = ref(1)
+let statsRequestSeq = 0
+let systemMetricsLoadTimer: ReturnType<typeof window.setTimeout> | undefined
 
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
@@ -373,7 +378,7 @@ const systemRuntimeAlertDescription = computed(() => {
 })
 const hasUsageOverview = computed(() => Boolean(usageOverview.value))
 const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
-const systemInitialLoading = computed(() => loading.value && isManagementView.value && !systemMetrics.value)
+const systemInitialLoading = computed(() => systemMetricsLoading.value && isManagementView.value && !systemMetrics.value)
 const showAdminDetailCharts = computed(() => isManagementView.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
@@ -384,7 +389,7 @@ const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.v
 const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无失败请求` : `${currentWindowLabel.value}暂无失败请求`)
 const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
 const processEventLoopEmptyDescription = computed(() => '等待进程事件循环采样')
-const processEventLoopTrendEmptyDescription = computed(() => '最近 24 小时暂无事件循环分钟趋势，等待后台采样')
+const processEventLoopTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无事件循环趋势，等待后台窗口缓存刷新`)
 const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
 const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
 const backgroundJobColumns = [
@@ -408,27 +413,76 @@ const summaryCards = computed(() => {
 })
 
 async function loadData() {
+  const requestSeq = ++statsRequestSeq
   loading.value = true
+  cancelPendingSystemMetricsLoad()
   try {
-    const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
+    const managementView = isManagementView.value
+    const systemAccountId = managementView ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
     const rangeParams = selectedRangeParams()
-    const overview = isManagementView.value
+    const overview = managementView
       ? await api.stats.usageOverview({ ...rangeParams, systemAccountId })
       : await api.myStats.usageOverview(rangeParams)
+    if (requestSeq !== statsRequestSeq) return
     usageOverview.value = overview
-    if (isManagementView.value) {
-      systemMetrics.value = await api.stats.systemMetrics(rangeParams)
-    } else {
+    if (!managementView) {
       systemMetrics.value = undefined
+      systemMetricsLoading.value = false
     }
     syncDateRangeFromResponse(overview.range)
+    if (managementView) {
+      scheduleSystemMetricsLoad(rangeParams, requestSeq)
+    }
   } catch (error) {
+    if (requestSeq !== statsRequestSeq) return
     console.error(error)
     message.error('统计数据加载失败')
   } finally {
-    loading.value = false
-    renderCharts()
+    if (requestSeq === statsRequestSeq) {
+      loading.value = false
+      renderCharts()
+    }
   }
+}
+
+function scheduleSystemMetricsLoad(rangeParams: { startDate?: string; endDate?: string }, requestSeq: number) {
+  systemMetrics.value = undefined
+  systemMetricsLoading.value = true
+  systemMetricsLoadTimer = window.setTimeout(() => {
+    systemMetricsLoadTimer = undefined
+    if (requestSeq !== statsRequestSeq || !pageActive.value || !isManagementView.value) {
+      if (requestSeq === statsRequestSeq) {
+        systemMetricsLoading.value = false
+      }
+      return
+    }
+    void loadSystemMetrics(rangeParams, requestSeq)
+  }, 0)
+}
+
+async function loadSystemMetrics(rangeParams: { startDate?: string; endDate?: string }, requestSeq: number) {
+  try {
+    const metrics = await api.stats.systemMetrics(rangeParams)
+    if (requestSeq !== statsRequestSeq) return
+    systemMetrics.value = metrics
+    renderCharts()
+  } catch (error) {
+    if (requestSeq !== statsRequestSeq) return
+    console.error(error)
+  } finally {
+    if (requestSeq === statsRequestSeq) {
+      systemMetricsLoading.value = false
+      renderCharts()
+    }
+  }
+}
+
+function cancelPendingSystemMetricsLoad() {
+  if (systemMetricsLoadTimer !== undefined) {
+    window.clearTimeout(systemMetricsLoadTimer)
+    systemMetricsLoadTimer = undefined
+  }
+  systemMetricsLoading.value = false
 }
 
 function handleDateRangeChange() {

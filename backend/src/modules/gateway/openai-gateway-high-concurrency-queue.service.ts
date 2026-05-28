@@ -26,6 +26,8 @@ interface HighConcurrencyQueueItem {
 
 export type HighConcurrencyQueueRejectReason =
   | 'queue_disabled'
+  | 'queue_full'
+  | 'api_key_queue_full'
   | 'timeout'
   | 'aborted'
 
@@ -69,6 +71,8 @@ subscribeAccountConcurrencyRelease((event) => {
 export function waitForHighConcurrencyGroupCapacity(input: HighConcurrencyQueueWaitInput): Promise<HighConcurrencyQueueWaitResult> {
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
   const maxQueueWaitMs = normalizeNonNegativeInteger(policy.maxQueueWaitMs, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueWaitMs)
+  const maxQueueSize = normalizePositiveInteger(policy.maxQueueSize, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueSize)
+  const perApiKeyQueueLimit = normalizePositiveInteger(policy.perApiKeyQueueLimit, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.perApiKeyQueueLimit)
   const lane = input.lane === 'image' ? 'image' : 'text'
   const groupKey = highConcurrencyGroupQueueKey(input.systemAccountId, input.groupId, lane)
   const apiKeyKey = input.apiKeyId?.trim() || 'internal'
@@ -87,6 +91,12 @@ export function waitForHighConcurrencyGroupCapacity(input: HighConcurrencyQueueW
   }
   if (maxQueueWaitMs <= 0) {
     return Promise.resolve(rejectedQueueWait('queue_disabled', 0, state.items.length, perApiKeyQueueSize))
+  }
+  if (state.items.length >= maxQueueSize) {
+    return Promise.resolve(rejectedQueueWait('queue_full', 0, state.items.length, perApiKeyQueueSize))
+  }
+  if (perApiKeyQueueSize >= perApiKeyQueueLimit) {
+    return Promise.resolve(rejectedQueueWait('api_key_queue_full', 0, state.items.length, perApiKeyQueueSize))
   }
   queues.set(groupKey, state)
   const itemId = nextQueueItemId

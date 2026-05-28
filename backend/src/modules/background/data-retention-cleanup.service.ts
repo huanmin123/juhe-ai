@@ -30,8 +30,8 @@ const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
 const modelCheckRetentionMaxDays = 365
-const defaultCleanupBatchSize = 10000
-const defaultCleanupMaxBatchesPerRun = 10
+const defaultCleanupBatchSize = 1000
+const defaultCleanupMaxBatchesPerRun = 2
 
 let cleanupRunning = false
 
@@ -87,7 +87,7 @@ export interface DataRetentionCleanupResult {
   systemSessions: number
 }
 
-export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
+export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanupResult> {
   if (runtimeConfig.processRole !== 'worker') {
     return emptyCleanupResult()
   }
@@ -99,8 +99,8 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
   try {
     const settings = getSettings()
     const timezone = usageStatsTimezone()
-    const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', defaultCleanupBatchSize, 100, 50000)
-    const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', defaultCleanupMaxBatchesPerRun, 1, 100)
+    const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', defaultCleanupBatchSize, 100, 1000)
+    const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', defaultCleanupMaxBatchesPerRun, 1, 2)
     const now = Date.now()
     const retention = {
       auditLogSuccessDays: readAuditLogSettings().successRetentionDays,
@@ -124,25 +124,30 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
     }
 
     const result = emptyCleanupResult()
-    result.operationLogs = cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
-    result.auditLogs = cleanupInBatches(() => cleanupAuditLogsByRetention({
+    result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
+    await yieldToEventLoop()
+    result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetention({
       successCutoffCreatedAt: cutoffIso(now, retention.auditLogSuccessDays),
       failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
       errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
       limit: batchSize
     }), batchSize, maxBatches)
-    result.runtimeLogs = cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
-    result.runtimeLogFileCursors = cleanupInBatches(
+    await yieldToEventLoop()
+    result.runtimeLogs = await cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
+    await yieldToEventLoop()
+    result.runtimeLogFileCursors = await cleanupInBatches(
       () => cleanupRuntimeLogFileCursorsBefore(cutoffIso(now, retention.runtimeLogDays), batchSize),
       batchSize,
       maxBatches
     )
-    cleanupRetentionInBatches(
+    await yieldToEventLoop()
+    await cleanupRetentionInBatches(
       result,
       () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),
       maxBatches
     )
-    const usageRecordCleanup = cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches)
+    await yieldToEventLoop()
+    const usageRecordCleanup = await cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches)
     result.usageRecords = usageRecordCleanup.deletedRows
     if (usageRecordCleanup.blockedReason) {
       logger.warn({
@@ -154,7 +159,8 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       }, '使用记录保留清理被统计安全游标拦截')
     }
 
-    cleanupRetentionInBatches(result, () => cleanupUsageStatsBucketsBefore({
+    await yieldToEventLoop()
+    await cleanupRetentionInBatches(result, () => cleanupUsageStatsBucketsBefore({
       accountQualityMinuteCutoffMinute: cutoffMinuteKey(now, accountQualityMinuteRetentionHours, timezone),
       minuteCutoffMinute: cutoffMinuteKey(now, retention.statsMinuteHours, timezone),
       hourlyCutoffHour: cutoffHourKey(now, retention.statsHourlyDays, timezone),
@@ -167,19 +173,22 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       limit: batchSize
     }), maxBatches)
 
-    cleanupRetentionInBatches(result, () => cleanupSystemMetricsBefore({
+    await yieldToEventLoop()
+    await cleanupRetentionInBatches(result, () => cleanupSystemMetricsBefore({
       samplesCutoffIso: cutoffIso(now, retention.systemMetricsSampleDays),
       hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays, timezone),
       trendWindowCutoffDate: cutoffDateKey(now, retention.fixedWindowDays, timezone),
       limit: batchSize
     }), maxBatches)
 
-    result.tableStorageSnapshots = cleanupInBatches(
+    await yieldToEventLoop()
+    result.tableStorageSnapshots = await cleanupInBatches(
       () => cleanupTableStorageSnapshotsBefore(cutoffIso(now, retention.tableStorageSnapshotDays), batchSize),
       batchSize,
       maxBatches
     )
 
+    await yieldToEventLoop()
     result.systemSessions = cleanupExpiredSystemSessions(new Date(now).toISOString())
 
     logger.info({
@@ -199,11 +208,12 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
   }
 }
 
-function cleanupInBatches(cleanupBatch: () => number, batchSize: number, maxBatches: number): number {
+async function cleanupInBatches(cleanupBatch: () => number, batchSize: number, maxBatches: number): Promise<number> {
   let total = 0
   for (let index = 0; index < maxBatches; index += 1) {
     const deleted = cleanupBatch()
     total += deleted
+    await yieldToEventLoop()
     if (deleted < batchSize) {
       break
     }
@@ -211,12 +221,12 @@ function cleanupInBatches(cleanupBatch: () => number, batchSize: number, maxBatc
   return total
 }
 
-function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, batchSize: number, maxBatches: number): {
+async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, batchSize: number, maxBatches: number): Promise<{
   cutoffCreatedAt: string
   deletedRows: number
   batches: number
   blockedReason?: string
-} {
+}> {
   let deletedRows = 0
   let batches = 0
   let blockedReason: string | undefined
@@ -227,6 +237,7 @@ function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, batchSiz
     if (batch.deletedRows > 0) {
       batches += 1
     }
+    await yieldToEventLoop()
     if (batch.blockedReason || batch.deletedRows < batchSize || !batch.hasMore) {
       break
     }
@@ -239,14 +250,15 @@ function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, batchSiz
   }
 }
 
-function cleanupRetentionInBatches(
+async function cleanupRetentionInBatches(
   result: DataRetentionCleanupResult,
   cleanupBatch: () => Partial<Record<keyof DataRetentionCleanupResult, number>>,
   maxBatches: number
-): void {
+): Promise<void> {
   for (let index = 0; index < maxBatches; index += 1) {
     const deleted = cleanupBatch()
     addCleanupResult(result, deleted)
+    await yieldToEventLoop()
     if (sumDeleted(deleted) === 0) {
       break
     }
@@ -350,4 +362,8 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     tableStorageSnapshots: 0,
     systemSessions: 0
   }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
 }

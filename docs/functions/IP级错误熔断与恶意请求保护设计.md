@@ -4,7 +4,7 @@
 
 当前网关已经具备两类客户端 IP 相关保护：
 
-- **IP 级账号回避**：当前序账号未确认失败、后续账号成功后，让同一 `clientIp + API Key + 分组` 短期优先避让前序失败账号。
+- **IP 级账号回避**：当前序账号未确认失败、后续账号成功后，让同一 `clientIp + API Key` 短期优先避让前序失败账号。
 - **单 IP 并发保护**：高并发分组可按同一 `系统账户 + 分组 + API Key + 客户端 IP` 限制同时进入调度的请求数量。
 
 这两类能力都不是“错误频率拦截”。如果某个客户端 IP 使用有效 API Key 持续构造错误请求，或者在认证前反复缺少 Bearer / 使用无效 API Key 探测，当前系统主要依赖 API Key 额度、账号并发、高并发分组队列和可选单 IP 并发限制来间接保护。它不会因为“这个来源短时间错误过多”就自动短路后续请求。
@@ -15,7 +15,7 @@ IP 级错误熔断的目标是补上这一层：当同一来源在短窗口内�
 
 - 保护账号池：恶意或故障客户端不能通过持续错误请求反复扫账号、触发重试或消耗账号调度资源。
 - 保护网关热路径：对已确认的错误风暴短路处理，减少重复上游调用、重复审计和重复错误处理。
-- 保持来源隔离：熔断只作用于当前 `systemAccountId + apiKeyId + groupId + clientIp`，不影响其他 API Key、分组、系统账户或客户端 IP。
+- 保持来源隔离：熔断只作用于当前 `systemAccountId + apiKeyId + clientIp`，不影响其他 API Key、系统账户或客户端 IP；同一 API Key 下不同分组共享这份来源错误风暴状态。
 - 不扩大账号惩罚：错误熔断不写账号冷却、不写账号异常、不改变账号 `schedulable`，也不进入后台账号复测。
 - 不按状态码定罪：默认逻辑不维护状态码白名单或黑名单，只消费认证前失败和本地校验失败等高置信事实。
 - 不做区域性封禁：不按国家、地区、ASN、运营商、IP 段归属或代理标签做默认拒绝。
@@ -48,11 +48,11 @@ IP 级错误熔断是“止损”的策略：当当前来源持续制造高置�
 
 认证前保护和认证后错误熔断共用“短 TTL、易失、客户体验优先”的安全原则，但作用点不同：
 
-- 认证前还没有 `apiKeyId` 和 `groupId`，只能使用 `clientIp + Bearer token 指纹` 或 `clientIp + missing_bearer` 这样的窄作用域。
+- 认证前还没有 `apiKeyId`，只能使用 `clientIp + Bearer token 指纹` 或 `clientIp + missing_bearer` 这样的窄作用域。
 - 重复同一无效 token 可以在进入 DB service / runtime cache 前短路，减少重复校验成本。
 - 随机无效 token 探测不能在认证前直接按 IP 拦截，因为这会误伤同 NAT 下的有效用户；它只能在“已经验证为无效 token”之后返回短 TTL `429`。
 - 缺少 Bearer 的高频请求可以按 `clientIp + missing_bearer` 短路，但阈值必须高于正常误配和浏览器误访问。
-- 认证后已经有 `systemAccountId + apiKeyId + groupId`，可以使用更精确的来源 scope 做错误熔断。
+- 认证后已经有 `systemAccountId + apiKeyId`，可以使用更精确的来源 scope 做错误熔断。
 
 ### 不解释状态码
 
@@ -94,14 +94,14 @@ IP 级错误熔断是“止损”的策略：当当前来源持续制造高置�
 
 ### 不把池子问题归咎给 IP
 
-如果多个来源、多个 API Key 或多个分组同时出现相似未知失败，更可能是上游或系统问题。IP 级错误熔断只在当前来源已经产生高置信本地请求错误时触发，不能把公共故障错误算到某个 IP 头上。
+如果多个来源或多个 API Key 同时出现相似未知失败，更可能是上游或系统问题。IP 级错误熔断只在当前来源已经产生高置信本地请求错误时触发，不能把公共故障错误算到某个 IP 头上。
 
 ## 作用范围
 
 认证后主作用域为：
 
 ```text
-systemAccountId + apiKeyId + groupId + clientIp
+systemAccountId + apiKeyId + clientIp
 ```
 
 补充维度：
@@ -114,12 +114,13 @@ endpoint + normalizedErrorSignature
 
 - `systemAccountId` 隔离调用方系统账户。
 - `apiKeyId` 隔离同一出口 IP 下不同 API Key。
-- `groupId` 隔离不同账号池。
 - `clientIp` 隔离客户端来源。
 - `endpoint` 用于区分 `/v1/responses`、`/v1/chat/completions`、`/v1/models` 等请求类型。
 - `normalizedErrorSignature` 用于识别同一类错误风暴，但不能保存完整请求体或完整上游错误正文。
 
-缺少 `clientIp` 时，认证前入口保护和认证后错误熔断都不启用。无法定位 API Key / 分组时，只能保留认证前窄作用域保护，不能把未知来源混入认证后网关调度态。
+`groupId` 不参与认证后错误熔断键。同一个 API Key 绑定多个分组时，分组只是路由容器，来源持续制造的本地请求错误应按 API Key 入口止损，不应通过切换分组重置计数。
+
+缺少 `clientIp` 时，认证前入口保护和认证后错误熔断都不启用。无法定位 API Key 时，只能保留认证前窄作用域保护，不能把未知来源混入认证后网关调度态。
 
 认证前作用域为：
 
@@ -143,7 +144,7 @@ clientIp + invalid_token_spray
 | 认证前同一无效 token 高频重复 | 是 | 作用域包含 token 指纹，不影响同 IP 其他 token |
 | 认证前随机无效 token 高频探测 | 是，验证失败后 | 不提前挡有效 token，只减少持续无效探测响应成本 |
 | 本地 JSON 非法 | 是 | 请求体无法解析，属于高置信请求问题 |
-| 本地模型不支持或模型过滤失败 | 是 | 当前 API Key / 分组无法承接该请求，重复高频会消耗本地链路 |
+| 本地模型不支持或模型过滤失败 | 是 | 当前 API Key 路由无法承接该请求，重复高频会消耗本地链路 |
 | OAuth / Codex adapter 本地校验失败 | 是 | 请求在进入上游前已被确认不可转发 |
 | 多账号返回相同或相似上游错误 | 否 | 仍可能是上游公共故障、容量波动或账号池共同问题；普通上游失败只进入账号本地屏蔽、切号、等待和统一网关错误，不作为来源错误熔断样本 |
 | 未知失败后续账号成功 | 否，交给 IP 级账号回避 | 这是账号候选排序问题，不是来源错误熔断依据 |
@@ -246,7 +247,7 @@ flowchart TD
 
 | 机制 | 作用范围 | 与错误熔断关系 |
 | --- | --- | --- |
-| 认证前入口保护 | 缺失 Bearer、重复无效 token、随机无效 token 探测 | 不使用 API Key / 分组 scope；优先保护认证校验路径且不能挡有效 token |
+| 认证前入口保护 | 缺失 Bearer、重复无效 token、随机无效 token 探测 | 不使用 API Key scope；优先保护认证校验路径且不能挡有效 token |
 | API Key 额度 | API Key 成本额度 | 额度是账务边界；错误熔断是高置信错误风暴止损 |
 | 高并发单 IP 并发保护 | 同 IP 同时进入调度的请求数量 | 并发保护挡瞬时并发；错误熔断挡连续错误 |
 | IP 级账号回避 | 同来源对单账号的候选排序 | 回避负责切号救请求；错误熔断负责错误过多时短路 |
@@ -291,13 +292,13 @@ flowchart TD
 - `openai-gateway-response-finalization.ts`：完整成功后降低或清理当前来源错误态。
 - `openai-gateway-upstream-dispatch.ts` / `openai-gateway-failure-dispatch.ts`：账号级、容量级和未知账号池失败都不计入来源错误熔断；普通上游失败必须先走本地账号屏蔽、切号、等待和统一网关错误，不复用 IP 级错误熔断的本地 429。
 - `audit-capture.service.ts`、`openai-gateway-usage.ts`、`usage-record-queue.service.ts`：审计 payload 和使用记录 snapshot 入队 / 落库前统一脱敏凭据类 headers、敏感字段和 URL 敏感查询参数，不影响真实转发 headers。
-- 回归脚本：新增 `client-ip-error-circuit-regression.ts`，覆盖认证前缺失 Bearer 熔断、重复无效 token 熔断、随机无效 token 不挡有效 token、本地高置信错误熔断、成功恢复、不同 IP / API Key / 分组 / 系统账户隔离、未知上游账号池失败不采样、账号失败不触发、容量失败不触发；在审计保全回归中覆盖审计 payload、审计 queryString 和使用记录 snapshot 的敏感信息脱敏。
+- 回归脚本：新增 `client-ip-error-circuit-regression.ts`，覆盖认证前缺失 Bearer 熔断、重复无效 token 熔断、随机无效 token 不挡有效 token、本地高置信错误熔断、成功恢复、同一 API Key 不同分组共享熔断、不同 IP / API Key / 系统账户隔离、未知上游账号池失败不采样、账号失败不触发、容量失败不触发；在审计保全回归中覆盖审计 payload、审计 queryString 和使用记录 snapshot 的敏感信息脱敏。
 
 ## 深度思考与风险
 
 ### 共享 IP 和共享 API Key
 
-办公网、NAT 和代理出口会让多个真实用户共享同一客户端 IP；共享 API Key 又会让多人落在同一个 `apiKeyId + groupId`。因此错误熔断必须短 TTL、阈值保守，并且优先用同类本地错误风暴触发，避免一次偶然错误影响同出口的其他正常请求。
+办公网、NAT 和代理出口会让多个真实用户共享同一客户端 IP；共享 API Key 又会让多人落在同一个 `apiKeyId`。因此错误熔断必须短 TTL、阈值保守，并且优先用同类本地错误风暴触发，避免一次偶然错误影响同出口的其他正常请求。
 
 ### 恶意请求随机化
 
@@ -309,7 +310,7 @@ flowchart TD
 
 ### 认证前攻击
 
-无效 API Key、缺失 Bearer Token 和路径扫描发生在 API Key / 分组定位之前，无法使用认证后 scope。认证前入口保护必须遵守两条体验边界：
+无效 API Key、缺失 Bearer Token 和路径扫描发生在 API Key 定位之前，无法使用认证后 scope。认证前入口保护必须遵守两条体验边界：
 
 - 重复同一无效 token 只熔断该 token 指纹，不影响同 IP 下其他 token。
 - 随机无效 token 的 IP 级喷洒保护只在 token 已确认无效后返回 `429`，不能在认证前拦截同 IP 下的有效 token。
@@ -324,9 +325,9 @@ flowchart TD
 
 ## 验收标准
 
-- 同一 `systemAccountId + apiKeyId + groupId + clientIp` 在短窗口内重复触发高置信本地请求错误后，后续请求被本地 `429` 短路。
+- 同一 `systemAccountId + apiKeyId + clientIp` 在短窗口内重复触发高置信本地请求错误后，后续请求被本地 `429` 短路。
 - 同一错误来源的短路不写账号冷却、账号异常或账号不可调度状态。
-- 不同 IP、不同 API Key、不同分组、不同系统账户之间互不影响。
+- 同一 API Key 下不同分组共享来源错误熔断状态；不同 IP、不同 API Key、不同系统账户之间互不影响。
 - 未知账号池失败、账号策略命中、账号并发满、分组队列满、单 IP 并发满和客户端取消不触发来源错误熔断。
 - 缺失 Bearer、重复同一无效 token 和随机无效 token 探测在短窗口高频时被短 TTL 保护，且不影响同出口的有效 Bearer 请求。
 - 不存在地区、国家、ASN、运营商、IP 段或固定状态码 / 错误码黑名单判断。

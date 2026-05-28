@@ -8,7 +8,6 @@ import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
 import { apiKeySummariesFromRows, type ApiKeyRow } from './api-key-mappers.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -124,13 +123,17 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const scopedOwnerId = manageableSystemAccountId(access)
   let systemAccountId = scopedOwnerId ?? currentSystemAccountId(access)
   const rawBindings = apiKeyGroupBindingInputsFromRequest(input)
+  if (!rawBindings) {
+    throw new Error('API Key 至少需要绑定一个分组')
+  }
   const firstExplicitGroupId = rawBindings?.[0]?.groupId
   const firstGroup = firstExplicitGroupId ? apiKeyGroupOwnerAndProvider(firstExplicitGroupId) : undefined
   if (firstGroup && !scopedOwnerId && canManageApiKeyOwner(firstGroup.systemAccountId, access)) {
     systemAccountId = firstGroup.systemAccountId
   }
-  const bindings = normalizeApiKeyGroupBindings(rawBindings ?? defaultApiKeyGroupBindingInputs(systemAccountId), systemAccountId)
+  const bindings = normalizeApiKeyGroupBindings(rawBindings, systemAccountId)
   const primaryBinding = primaryActiveApiKeyGroupBinding(bindings)
+  assertApiKeyPrimaryGroupInputMatchesBindings(input, primaryBinding.groupId)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
@@ -199,6 +202,9 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     ? normalizeApiKeyGroupBindings(apiKeyGroupBindingInputsFromRequest(input) ?? [], systemAccountId)
     : undefined
   const primaryBinding = nextBindings ? primaryActiveApiKeyGroupBinding(nextBindings) : undefined
+  if (primaryBinding) {
+    assertApiKeyPrimaryGroupInputMatchesBindings(input, primaryBinding.groupId)
+  }
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt') || Object.prototype.hasOwnProperty.call(input, 'expires_at')
   const nextExpiresAt = hasExpiresAtInput
     ? optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at) ?? undefined
@@ -325,6 +331,15 @@ function apiKeyGroupBindingInputsFromRequest(input: Record<string, unknown>): Ap
   return undefined
 }
 
+function assertApiKeyPrimaryGroupInputMatchesBindings(input: Record<string, unknown>, primaryGroupId: string): void {
+  const hasBindings = Object.prototype.hasOwnProperty.call(input, 'groupBindings')
+    || Object.prototype.hasOwnProperty.call(input, 'group_bindings')
+  if (!hasBindings) return
+  const explicitGroupId = optionalString(input.groupId ?? input.group_id)?.trim()
+  if (!explicitGroupId || explicitGroupId === primaryGroupId) return
+  throw new Error('API Key 主分组必须等于最高优先级启用分组')
+}
+
 function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiKeyGroupBindingInput {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('API Key 分组绑定参数无效')
@@ -340,14 +355,6 @@ function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiK
     : index + 1
   const status = item.status === 'disabled' ? 'disabled' : 'active'
   return { groupId, priority, status }
-}
-
-function defaultApiKeyGroupBindingInputs(systemAccountId: string): ApiKeyGroupBindingInput[] {
-  const groupId = defaultOpenAIGroupIdForSystemAccount(systemAccountId)
-  if (!groupId) {
-    throw new Error('API Key 分组无效')
-  }
-  return [{ groupId, priority: 1, status: 'active' }]
 }
 
 function normalizeApiKeyGroupBindings(inputs: ApiKeyGroupBindingInput[], systemAccountId: string): ApiKeyGroupBindingWrite[] {

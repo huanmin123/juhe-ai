@@ -106,36 +106,52 @@ try {
   assert.equal(queuedSlot.queued, true, '唤醒后的请求应标记为排队获得槽位')
   queuedSlot.release()
 
-  const unlimitedQueueFirstSlot = await acquireHighConcurrencyClientIpSlot({
+  const protectedQueueFirstSlot = await acquireHighConcurrencyClientIpSlot({
     systemAccountId: 'sys_ip',
-    groupId: 'grp_unlimited_queue',
-    apiKeyId: 'key_unlimited_queue',
+    groupId: 'grp_protected_queue',
+    apiKeyId: 'key_protected_queue',
     clientIp: '10.0.0.10',
     policy: {
       clientIpConcurrencyLimit: 1,
       clientIpConcurrencyOverflowMode: 'queue',
-      maxQueueWaitMs: 500
+      maxQueueWaitMs: 500,
+      perApiKeyQueueLimit: 2
     }
   })
-  const unlimitedQueueAbort = new AbortController()
-  const queuedItems = Array.from({ length: 21 }, () => acquireHighConcurrencyClientIpSlot({
+  const protectedQueueAbort = new AbortController()
+  const queuedItems = Array.from({ length: 2 }, () => acquireHighConcurrencyClientIpSlot({
     systemAccountId: 'sys_ip',
-    groupId: 'grp_unlimited_queue',
-    apiKeyId: 'key_unlimited_queue',
+    groupId: 'grp_protected_queue',
+    apiKeyId: 'key_protected_queue',
     clientIp: '10.0.0.10',
     policy: {
       clientIpConcurrencyLimit: 1,
       clientIpConcurrencyOverflowMode: 'queue',
-      maxQueueWaitMs: 500
+      maxQueueWaitMs: 500,
+      perApiKeyQueueLimit: 2
     },
-    signal: unlimitedQueueAbort.signal
+    signal: protectedQueueAbort.signal
   }))
-  assert.equal(clientIpConcurrencySnapshot()[0]?.queueSize, 21, '超过旧单 IP 等待队列上限后仍应进入等待队列')
-  unlimitedQueueAbort.abort()
+  const queueFull = await acquireHighConcurrencyClientIpSlot({
+    systemAccountId: 'sys_ip',
+    groupId: 'grp_protected_queue',
+    apiKeyId: 'key_protected_queue',
+    clientIp: '10.0.0.10',
+    policy: {
+      clientIpConcurrencyLimit: 1,
+      clientIpConcurrencyOverflowMode: 'queue',
+      maxQueueWaitMs: 500,
+      perApiKeyQueueLimit: 2
+    }
+  })
+  assert.equal(queueFull.acquired, false, '超过单 IP 等待队列上限后应快速失败')
+  assert.equal(queueFull.acquired === false ? queueFull.reason : '', 'queue_full')
+  assert.equal(clientIpConcurrencySnapshot()[0]?.queueSize, 2, '超过队列上限后不应继续保留等待项')
+  protectedQueueAbort.abort()
   const abortedQueuedItems = await Promise.all(queuedItems)
-  assert(abortedQueuedItems.every((item) => item.acquired === false && item.reason === 'aborted'), '主动取消后旧上限外的等待项都应释放')
-  assert(unlimitedQueueFirstSlot.acquired, '无限队列回归的第一个请求应已占用槽位')
-  unlimitedQueueFirstSlot.release()
+  assert(abortedQueuedItems.every((item) => item.acquired === false && item.reason === 'aborted'), '主动取消后等待项都应释放')
+  assert(protectedQueueFirstSlot.acquired, '队列上限回归的第一个请求应已占用槽位')
+  protectedQueueFirstSlot.release()
 
   const timeoutFirstSlot = await acquireHighConcurrencyClientIpSlot({
     systemAccountId: 'sys_ip',
@@ -164,7 +180,7 @@ try {
   assert(timeoutFirstSlot.acquired, '超时回归的第一个请求应已占用槽位')
   timeoutFirstSlot.release()
 
-  console.log('单 IP 并发保护回归通过：默认关闭、立即拒绝、按 Key 隔离、无限排队等待和超时均符合预期')
+  console.log('单 IP 并发保护回归通过：默认关闭、立即拒绝、按 Key 隔离、队列硬上限和超时均符合预期')
 } finally {
   clearClientIpConcurrency()
 }

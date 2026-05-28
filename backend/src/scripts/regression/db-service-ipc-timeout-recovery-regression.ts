@@ -56,7 +56,7 @@ try {
 
   await assert.rejects(
     dbServiceIpc.requestDbService({ type: 'status' }, { timeoutMs: 10 }),
-    /DB service 请求超时/,
+    /本地数据库服务请求超时/,
     'DB service 普通请求超时应拒绝调用'
   )
 
@@ -70,12 +70,27 @@ try {
 
   await assert.rejects(
     dbServiceIpc.requestDbService({ type: 'status' }, { timeoutMs: 10 }),
-    /DB service 请求超时/,
+    /本地数据库服务请求超时/,
     '后续普通请求仍应独立按自身 timeout 失败，而不是被全局熔断拦截'
   )
   assert.equal(child.sentMessageCount, 2, '单次超时后仍应允许后续请求继续发送给 DB service')
 
-  console.log('DB service IPC 超时恢复回归通过：普通请求超时只失败当前请求，不终止 child、不打开全局熔断')
+  const pendingRequests = Array.from({ length: 2000 }, () => {
+    return dbServiceIpc.requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch((error) => error)
+  })
+  await assert.rejects(
+    dbServiceIpc.requestDbService({ type: 'status' }, { timeoutMs: 1000 }),
+    /请求队列已满/,
+    'DB service pending 请求达到上限后应快速拒绝新请求'
+  )
+  const stateAfterQueueFull = dbServiceIpc.getDbServiceState()
+  assert.equal(stateAfterQueueFull.pendingRequestCount, 2000, '队列满时 pending 数应保持在保护上限')
+  assert(stateAfterQueueFull.rejectedRequestCount >= 1, '队列满快速拒绝应记录 rejected 计数')
+  assert.equal(stateAfterQueueFull.unavailableCircuitOpenUntil, undefined, '队列满快速拒绝不应打开 DB service 全局不可用熔断')
+  await Promise.all(pendingRequests)
+  assert.equal(dbServiceIpc.getDbServiceState().pendingRequestCount, 0, '队列保护回归结束后 pending 请求应按 timeout 清空')
+
+  console.log('DB service IPC 超时恢复回归通过：普通请求超时只失败当前请求，pending 达上限会快速拒绝且不打开全局熔断')
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
 }

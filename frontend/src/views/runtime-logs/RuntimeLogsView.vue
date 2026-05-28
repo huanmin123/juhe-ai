@@ -219,7 +219,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -296,6 +296,7 @@ const detailOpen = ref(false)
 const grepDetailOpen = ref(false)
 let detailRequestId = 0
 let grepSearchRequestId = 0
+let facetsRequestSeq = 0
 const viewMode = ref<RuntimeLogViewMode>(effectiveInitialPageState.viewMode === 'grep' ? 'grep' : 'index')
 let skipNextRouteTraceRestore = false
 
@@ -325,26 +326,17 @@ const {
   fetchPage: async (options, pageState) => {
     const traceId = traceIdFilter.value.trim()
     const range = normalizeOptionalTimeRange(indexTimeRange.value)
-    const facetsRequest = options.refreshFacets === true || !facets.value
-      ? api.runtimeLogs.facets()
-      : Promise.resolve(facets.value)
-    const [result, nextFacets] = await Promise.all([
-      api.runtimeLogs.list({
-        page: pageState.current,
-        pageSize: pageState.pageSize,
-        traceId: traceId || undefined,
-        level: levelFilter.value,
-        event: eventFilter.value || undefined,
-        keyword: keywordFilter.value || undefined,
-        startAt: range?.[0].toISOString(),
-        endAt: range?.[1].toISOString()
-      }),
-      facetsRequest
-    ])
-    if (nextFacets) {
-      facets.value = nextFacets
-    }
-    return result
+    void loadRuntimeLogFacets(options.refreshFacets === true)
+    return await api.runtimeLogs.list({
+      page: pageState.current,
+      pageSize: pageState.pageSize,
+      traceId: traceId || undefined,
+      level: levelFilter.value,
+      event: eventFilter.value || undefined,
+      keyword: keywordFilter.value || undefined,
+      startAt: range?.[0].toISOString(),
+      endAt: range?.[1].toISOString()
+    })
   },
   onError: (error) => {
     console.error(error)
@@ -564,14 +556,22 @@ function refreshIndexLogs(): void {
   void loadData({ refreshFacets: true })
 }
 
-async function loadRuntimeLogFacets(): Promise<void> {
-  if (facets.value) return
+async function loadRuntimeLogFacets(force = false): Promise<void> {
+  if (facets.value && !force) return
+  const requestSeq = ++facetsRequestSeq
   try {
-    facets.value = await api.runtimeLogs.facets()
+    const nextFacets = await api.runtimeLogs.facets()
+    if (requestSeq !== facetsRequestSeq) return
+    facets.value = nextFacets
   } catch (error) {
+    if (requestSeq !== facetsRequestSeq) return
     console.error(error)
     message.error('加载运行日志筛选项失败')
   }
+}
+
+function cancelRuntimeLogFacetsRequest(): void {
+  facetsRequestSeq += 1
 }
 
 async function searchGrepLogs(): Promise<void> {
@@ -756,7 +756,11 @@ function loadCurrentRuntimeLogState(options: { refreshFacets?: boolean } = {}): 
 
 onMounted(loadCurrentRuntimeLogState)
 
-onDeactivated(closeTransientDetails)
+onDeactivated(() => {
+  closeTransientDetails()
+  cancelRuntimeLogFacetsRequest()
+})
+onBeforeUnmount(cancelRuntimeLogFacetsRequest)
 </script>
 
 <style scoped>

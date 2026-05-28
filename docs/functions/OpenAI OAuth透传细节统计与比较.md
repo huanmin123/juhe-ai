@@ -36,7 +36,7 @@ OpenAI 官方 OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`
 | OAuth adapter | `backend/src/modules/gateway/openai-oauth-codex-adapter.ts` | 已拆出专用 adapter，不再复用 API Key raw passthrough 策略 |
 | OAuth 请求体 | `backend/src/modules/gateway/openai-oauth-codex-adapter.ts` | 解析 JSON 对象，校验 `model`，非 compact 校验 `input`，补 `instructions` 空字符串，归一化 input/tools，删除高风险或不兼容字段 |
 | OAuth Header | `backend/src/modules/gateway/openai-oauth-codex-adapter.ts` | 使用 allowlist + 默认值，强制 `content-type: application/json`，按 stream/compact 设置 `accept`，重写认证与 `chatgpt-account-id` |
-| OAuth 会话隔离 | `backend/src/modules/gateway/openai-oauth-codex-adapter.ts` | 对 `session_id`、`conversation_id`、`prompt_cache_key` 混入系统账户、本地 API Key 和分组后生成隔离值，不混入具体上游账号或账号类型 |
+| OAuth 会话隔离 | `backend/src/modules/gateway/openai-oauth-codex-adapter.ts` | 对 `session_id`、`conversation_id`、`prompt_cache_key` 混入系统账户和本地 API Key 后生成隔离值，不混入分组、具体上游账号或账号类型 |
 | API Key 链路 | `backend/src/modules/gateway/openai-gateway-upstream.ts` | 保留 raw body 真透传；Header 过滤危险头、代理链路、SDK/tracing 噪声和组织/项目头 |
 | 回归脚本 | `backend/src/scripts/regression/openai-oauth-codex-adapter-regression.ts` | 覆盖 body normalize、Header allowlist、session isolation、compact、非法 body、缺 `model`/`input` |
 
@@ -110,7 +110,7 @@ compact 会额外删除：
 
 | 来源 | 旧问题 | 当前处理 |
 | --- | --- | --- |
-| header `session_id` | 不同本地 API Key 可能把相同 session 送到同一 OAuth 账号上游 | hash `systemAccountId + apiKeyId + groupId + raw`，不混入具体上游账号，避免同一本地会话切换 OAuth / API Key 候选账号后丢失连续性 |
+| header `session_id` | 不同本地 API Key 可能把相同 session 送到同一 OAuth 账号上游 | hash `systemAccountId + apiKeyId + raw`，不混入分组或具体上游账号，避免同一本地会话切换分组、OAuth / API Key 候选账号后丢失连续性 |
 | header `conversation_id` | 多租户 conversation 标识可能碰撞 | 同样 hash 隔离后再上游 |
 | body `prompt_cache_key` | 客户端默认值或固定值可能跨用户共用 | 非 compact 写入隔离后的 `prompt_cache_key` |
 | body `metadata.session_id` | metadata 不适合上游，但可作为原始 session 来源 | 用于生成隔离 session 后删除 metadata |
