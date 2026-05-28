@@ -35,3 +35,13 @@ export interface RowActionItem {
   confirmOkText?: string
   children?: RowActionItem[]
 }
+
+const rowActionButtonWidth = 28
+const rowActionGap = 2
+const rowActionColumnPadding = 16
+const rowActionColumnMinWidth = 56
+
+export function rowActionColumnWidth(actionCount = 3): number {
+  const count = Number.isFinite(actionCount) ? Math.max(1, Math.trunc(actionCount)) : 3
+  return Math.max(rowActionColumnMinWidth, rowActionColumnPadding + count * rowActionButtonWidth + Math.max(0, count - 1) * rowActionGap)
+}

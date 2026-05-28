@@ -45,6 +45,9 @@ const actions = computed<RowActionItem[]>(() => {
     }]
   }
   if (!canManageAuthorization.value) return []
+  if (props.authorization.status === 'revoked' || props.authorization.status === 'returned') {
+    return [{ key: 'resume', label: '重新授权', icon: 'resume', tone: 'success' }]
+  }
   if (!canRevokeAuthorization(props.authorization)) {
     return []
   }
@@ -63,9 +66,6 @@ const moreActions = computed<RowActionItem[]>(() => {
   }
   if (props.authorization.status === 'paused' || props.authorization.status === 'expired') {
     items.push({ key: 'resume', label: '恢复授权', icon: 'resume', tone: 'success' })
-  }
-  if (props.authorization.status === 'revoked' || props.authorization.status === 'returned') {
-    items.push({ key: 'resume', label: '重新授权', icon: 'resume', tone: 'success' })
   }
   return items
 })

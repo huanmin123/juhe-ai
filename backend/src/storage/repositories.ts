@@ -1796,6 +1796,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       nextCooldownRetestObservationStartedAt = undefined
       if (nextStatus === 'disabled') {
         nextLastErrorCode = undefined
+        nextLastErrorMessage = undefined
         clearCooldownRetestState = true
       }
     } else if (isCoolingAccountStatus(nextStatus) && (nextStatus !== current.status || !nextCooldownUntil)) {

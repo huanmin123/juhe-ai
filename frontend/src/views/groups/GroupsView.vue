@@ -371,7 +371,7 @@ const rawColumns = computed(() => {
     { title: '用量(日)', key: 'usage', width: 180 },
     { title: '状态', key: 'status', width: 100 },
     { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-    { title: '操作', key: 'actions', width: 100, fixed: 'right' }
+    { title: '操作', key: 'actions', actionCount: 2, fixed: 'right' }
   )
   return baseColumns
 })

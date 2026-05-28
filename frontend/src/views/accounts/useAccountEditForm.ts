@@ -72,15 +72,18 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const authResult = ref<OpenAIAuthURLResult>()
   const editingId = ref<string>()
   const editingAccountDetail = ref<AccountSummary>()
+  const cloningSourceId = ref<string>()
+  const creatingAccountScopeParams = ref<AccountScopeParams>()
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
   const providerModelOptions = ref<SelectOption[]>([])
   const providerModelsLoading = ref(false)
   const providerModelOptionsCache = new Map<string, SelectOption[]>()
 
+  const createScopeParams = computed<AccountScopeParams>(() => creatingAccountScopeParams.value ?? options.accountScopeParams.value)
   const targetSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return undefined
-    const systemAccountId = options.accountScopeParams.value?.systemAccountId
+    const systemAccountId = createScopeParams.value?.systemAccountId
     return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId, options.systemAccountSelection?.value)
   })
 
@@ -100,6 +103,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const isOpenAIOAuthForm = computed(() => form.providerCode === 'openai' && form.type === 'oauth')
   const modalTitle = computed(() => {
     if (editingId.value) return '编辑账户'
+    if (cloningSourceId.value) return '克隆账户'
     if (!form.providerCode) return '添加账户'
     if (!form.type) return `添加 ${providerName(form.providerCode)} 账户`
     return `添加 ${accountTypeTitle(form.providerCode, form.type)} 账户`
@@ -116,6 +120,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function resetForm(providerCode = '', type: AccountType = '') {
+    cloningSourceId.value = undefined
     Object.assign(form, defaultForm(providerCode, type))
     providerModelOptions.value = []
     providerModelsLoading.value = false
@@ -162,6 +167,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return
     }
     editingId.value = undefined
+    editingAccountDetail.value = undefined
+    creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
     resetForm('', '')
     void options.loadGroupOptions('', true, { systemAccountId: options.accountScopeParams.value?.systemAccountId })
@@ -190,6 +197,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function selectAccountType(type: AccountType) {
     if (editingId.value || form.type === type) return
+    cloningSourceId.value = undefined
     const providerCode = form.providerCode
     Object.assign(form, {
       ...defaultForm(providerCode, type),
@@ -212,6 +220,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     editingId.value = account.id
     editingAccountDetail.value = account
+    cloningSourceId.value = undefined
+    creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
     const selectedGroup = account.boundGroupId
       ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
@@ -243,6 +253,28 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     void loadProviderModelOptions(account.providerCode)
     void loadEditingAccountDetail(account.id, editScopeParams)
+  }
+
+  function openClone(account: AccountSummary) {
+    const cloneScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+    if (options.isManagementView.value && !cloneScopeParams?.systemAccountId) {
+      message.warning('无法确定克隆目标系统账户，请先筛选目标系统账户后再克隆')
+      return
+    }
+    editingId.value = undefined
+    editingAccountDetail.value = undefined
+    cloningSourceId.value = account.id
+    creatingAccountScopeParams.value = cloneScopeParams
+    void options.loadAccountOptions(cloneScopeParams?.systemAccountId)
+    fillCloneForm(account, account.credentials)
+    modalOpen.value = true
+    void options.loadGroupOptions('', true, {
+      providerCode: account.providerCode,
+      systemAccountId: cloneScopeParams?.systemAccountId,
+      selectedIds: [form.groupId]
+    })
+    void loadProviderModelOptions(account.providerCode)
+    void loadCloneAccountDetail(account.id, cloneScopeParams)
   }
 
   async function loadProviderModelOptions(providerCode: string): Promise<void> {
@@ -304,6 +336,24 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
   }
 
+  async function loadCloneAccountDetail(accountId: string, scopeParams?: AccountScopeParams): Promise<void> {
+    try {
+      const detail = options.isManagementView.value
+        ? await api.accounts.detail(accountId, scopeParams)
+        : await api.myAccounts.detail(accountId)
+      if (cloningSourceId.value !== accountId || editingId.value) return
+      applyCloneCredentialDetails(detail, detail.credentials)
+      void options.loadGroupOptions('', true, {
+        providerCode: detail.providerCode,
+        systemAccountId: creatingAccountScopeParams.value?.systemAccountId,
+        selectedIds: [form.groupId]
+      })
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '加载克隆账户配置失败'))
+    }
+  }
+
   const saveAccount = submitAction('accounts.save', async () => {
     const validationMessage = validateAccountSaveForm({
       editingId: editingId.value,
@@ -337,7 +387,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         message.success('OAuth 账户已创建')
       } else {
         if (options.isManagementView.value) {
-          await api.accounts.create(payload, options.accountScopeParams.value)
+          await api.accounts.create(payload, createScopeParams.value)
         } else {
           await api.myAccounts.create(payload)
         }
@@ -386,7 +436,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
     if (form.oauthMode === 'manual') {
       if (options.isManagementView.value) {
-        await api.openaiOAuth.createFromCode(payload, options.accountScopeParams.value)
+        await api.openaiOAuth.createFromCode(payload, createScopeParams.value)
       } else {
         await api.myOpenaiOAuth.createFromCode(payload)
       }
@@ -394,7 +444,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
 
     if (options.isManagementView.value) {
-      await api.openaiOAuth.createFromRefreshToken(payload, options.accountScopeParams.value)
+      await api.openaiOAuth.createFromRefreshToken(payload, createScopeParams.value)
     } else {
       await api.myOpenaiOAuth.createFromRefreshToken(payload)
     }
@@ -406,6 +456,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     authLoading,
     authResult,
     availableProviders,
+    cloningSourceId,
+    createScopeParams,
     editingId,
     ensureDefaultGroupSelected,
     form,
@@ -421,6 +473,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen,
     modalTitle,
     openAuthUrl,
+    openClone,
     openCreate,
     openEdit,
     providerName,
@@ -442,6 +495,53 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!normalizedName) return form.group?.id === normalizedId ? form.group : undefined
     rememberGroupLabel(normalizedId, normalizedName)
     return { id: normalizedId, name: normalizedName }
+  }
+
+  function fillCloneForm(account: AccountSummary, credentials: Record<string, unknown>): void {
+    const selectedGroup = account.boundGroupId
+      ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
+      : undefined
+    const defaults = defaultForm(account.providerCode, account.type)
+    Object.assign(form, defaults, {
+      providerCode: account.providerCode,
+      name: cloneAccountName(account.name),
+      type: account.type,
+      concurrencyLimit: account.concurrencyLimit,
+      priority: account.priority,
+      proxyProfileId: account.proxyProfileId,
+      accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
+      groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
+      group: selectedGroup,
+      apiKey: '',
+      baseUrl: asString(credentials.base_url) || defaults.baseUrl || 'https://api.openai.com/v1',
+      accessToken: '',
+      refreshToken: '',
+      callbackUrl: '',
+      oauthMode: 'manual',
+      supportedModels: [...(account.supportedModels ?? [])],
+      notes: account.notes ?? ''
+    })
+    accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)
+    authResult.value = undefined
+  }
+
+  function applyCloneCredentialDetails(account: AccountSummary, credentials: Record<string, unknown>): void {
+    const defaults = defaultForm(account.providerCode, account.type)
+    const baseUrl = asString(credentials.base_url)
+    if (baseUrl && (!form.baseUrl || form.baseUrl === defaults.baseUrl)) {
+      form.baseUrl = baseUrl
+    }
+    if (account.boundGroupId && (!form.groupId || form.groupId === account.boundGroupId)) {
+      setFormGroup(groupSelectionForId(account.boundGroupId, account.boundGroupName))
+    }
+    if (accountErrorPolicyRules.value.length === 0) {
+      accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)
+    }
+  }
+
+  function cloneAccountName(name: string): string {
+    const trimmed = name.trim()
+    return trimmed ? `${trimmed} - 克隆` : ''
   }
 
   function setFormGroup(group: GroupSelection | undefined): void {

@@ -6,7 +6,7 @@
         class="form-alert"
         type="info"
         show-icon
-        message="管理端需要先指定授权人，再从该用户自己的资源中选择授权内容。"
+        message="管理端需要先指定授权人，再从该用户自己的资源中选择授权资源。"
       />
       <a-form-item v-if="isManagementView" label="授权人" required>
         <SystemPrincipalSelect
@@ -22,8 +22,18 @@
         />
         <div class="form-help">授权人就是资源归属人；管理员可选择自己，等同于代自己授权。</div>
       </a-form-item>
-      <a-form-item label="授权内容" required>
-        <a-select v-model:value="form.resourceType" :options="resourceTypeOptions" />
+      <a-form-item class="inline-radio-form-item">
+        <div class="inline-radio-row">
+          <span class="inline-radio-label">
+            <span class="inline-radio-required" aria-hidden="true">*</span>
+            授权资源类型
+          </span>
+          <a-radio-group v-model:value="form.resourceType" aria-label="授权资源类型">
+            <a-radio-button v-for="option in resourceTypeOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </a-radio-button>
+          </a-radio-group>
+        </div>
       </a-form-item>
       <a-form-item label="授权资源" required>
         <GroupSelect
@@ -52,11 +62,17 @@
           @search="$emit('resource-search', $event)"
         />
       </a-form-item>
-      <a-form-item label="授权对象类型" required>
-        <a-radio-group v-model:value="form.granteeType">
-          <a-radio-button value="system_account">个人</a-radio-button>
-          <a-radio-button value="team">团队</a-radio-button>
-        </a-radio-group>
+      <a-form-item class="inline-radio-form-item">
+        <div class="inline-radio-row">
+          <span class="inline-radio-label">
+            <span class="inline-radio-required" aria-hidden="true">*</span>
+            授权对象类型
+          </span>
+          <a-radio-group v-model:value="form.granteeType" aria-label="授权对象类型">
+            <a-radio-button value="system_account">个人</a-radio-button>
+            <a-radio-button value="team">团队</a-radio-button>
+          </a-radio-group>
+        </div>
       </a-form-item>
       <a-form-item :label="form.granteeType === 'system_account' ? '被授权用户' : '团队'" required>
         <SystemPrincipalSelect
@@ -167,5 +183,34 @@ defineEmits<{
 <style scoped>
 .form-alert {
   margin-bottom: 16px;
+}
+
+.inline-radio-form-item {
+  margin-bottom: 16px;
+}
+
+.inline-radio-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.inline-radio-label {
+  color: var(--ant-color-text, rgba(0, 0, 0, 0.88));
+  line-height: 32px;
+}
+
+.inline-radio-required {
+  color: var(--ant-color-error, #ff4d4f);
+  margin-inline-end: 4px;
+}
+
+@media (max-width: 575px) {
+  .inline-radio-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
 }
 </style>

@@ -113,16 +113,17 @@ export function applyAccountErrorHandling(
   const statusCode = input.statusCode
   const bodyText = input.bodyText ?? input.errorMessage ?? ''
   const headers = normalizeHeadersInput(input.headers)
+  const upstreamSummary = accountErrorPolicyUpstreamSummary(bodyText, headers)
 
   if (statusCode !== undefined) {
     const decision = decideAccountErrorPolicy(account, statusCode, headers, Buffer.from(bodyText), settings)
     if (decision) {
-      const updated = applyAccountErrorPolicySideEffect(account, statusCode, decision, settings)
+      const updated = applyAccountErrorPolicySideEffect(account, statusCode, decision, settings, upstreamSummary)
       return {
         action: decision.action,
         changed: Boolean(updated),
         accountStatus: updated?.status,
-        reason: accountErrorPolicyReason(statusCode, decision)
+        reason: accountErrorPolicyReason(statusCode, decision, upstreamSummary)
       }
     }
   }
@@ -186,9 +187,10 @@ export function applyAccountErrorPolicySideEffect(
   account: AccountErrorPolicyAccount,
   statusCode: number,
   decision: AccountErrorPolicyDecision,
-  settings: GatewaySettings
+  settings: GatewaySettings,
+  upstreamSummary?: string
 ): { status: AccountStatus } | undefined {
-  const reason = accountErrorPolicyReason(statusCode, decision)
+  const reason = accountErrorPolicyReason(statusCode, decision, upstreamSummary)
   if (decision.action === 'cooldown') {
     const minutes = Math.max(1, decision.cooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes)
     const until = decision.cooldownUntil ?? new Date(Date.now() + minutes * 60_000).toISOString()
@@ -243,10 +245,29 @@ export function parseErrorPayload(text: string, headers: Headers): Record<string
   }
 }
 
-function accountErrorPolicyReason(statusCode: number, decision: AccountErrorPolicyDecision): string {
-  return decision.ruleName
+function accountErrorPolicyReason(statusCode: number, decision: AccountErrorPolicyDecision, upstreamSummary?: string): string {
+  const base = decision.ruleName
     ? '命中错误处理策略：' + decision.ruleName + '（HTTP ' + statusCode + '）'
     : '命中错误处理策略 HTTP ' + statusCode
+  return upstreamSummary ? `${base}；${upstreamSummary}`.slice(0, 1000) : base
+}
+
+function accountErrorPolicyUpstreamSummary(bodyText: string, headers: Headers): string | undefined {
+  const errorPayload = parseErrorPayload(bodyText, headers)
+  const parts: string[] = []
+  const code = stringValue(errorPayload.code)
+  const message = stringValue(errorPayload.message)
+  if (code) {
+    parts.push(code)
+  }
+  if (message && message !== code) {
+    parts.push(message)
+  }
+  return parts.length > 0 ? parts.join('；') : undefined
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
 }
 
 function accountErrorRules(credentials: Record<string, unknown>): Array<Record<string, unknown>> {

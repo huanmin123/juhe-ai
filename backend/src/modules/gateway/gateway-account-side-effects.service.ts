@@ -794,6 +794,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         }, '账号事前确认探针通过，已清理运行态短避让')
         return
       }
+      latestState.reason = accountPrecheckFailureReason(result)
       if (attempt + 1 < precheckMaxAttempts) {
         await delay(precheckRetryDelayMs)
       }
@@ -847,13 +848,15 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
 async function runSingleGatewayAccountPrecheck(state: PrecheckState): Promise<{
   success: boolean
   statusCode?: number
+  errorCode?: string
+  message?: string
   durationMs?: number
   accountFailureEligible?: boolean
 }> {
   const { testOpenAIAccount } = await import('../accounts/account-test.service.js')
   const signal = AbortSignal.timeout(precheckAttemptTimeoutMs)
   return await testOpenAIAccount(accountSummaryFromUpstreamAccount(state.account, state), {
-    diagnostics: 'limited',
+    diagnostics: 'full',
     groupId: state.groupId,
     trafficSource: 'cooldown_retest',
     signal,
@@ -864,6 +867,20 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState): Promise<{
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
   })
+}
+
+function accountPrecheckFailureReason(result: { statusCode?: number; errorCode?: string; message?: string }): string {
+  const parts = ['最近事前确认探针失败']
+  if (typeof result.statusCode === 'number' && Number.isFinite(result.statusCode)) {
+    parts.push(`HTTP ${Math.trunc(result.statusCode)}`)
+  }
+  if (result.errorCode) {
+    parts.push(result.errorCode)
+  }
+  if (result.message) {
+    parts.push(result.message)
+  }
+  return parts.join('；').slice(0, 1000)
 }
 
 function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: Pick<PrecheckState, 'systemAccountId' | 'groupId'>): AccountSummary {

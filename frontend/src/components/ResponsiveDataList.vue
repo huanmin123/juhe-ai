@@ -107,6 +107,7 @@
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import DeferredRender from './DeferredRender.vue'
 import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
+import { rowActionColumnWidth } from './rowActions'
 
 type RowKey = string | ((record: T) => string | number)
 type TablePagination = false | Record<string, any>
@@ -417,9 +418,10 @@ function normalizeTableColumn(column: Record<string, any>, isFlexColumn: boolean
     }
   }
   if (isActionColumn(column)) {
-    const width = resolveActionColumnWidth(column.width)
+    const width = resolveActionColumnWidth(column.width, column.actionCount)
+    const { actionCount: _actionCount, ...restColumn } = column
     return withCellProps({
-      ...column,
+      ...restColumn,
       width,
       className: mergeClassName(column.className, 'responsive-data-list-actions-column')
     }, {
@@ -474,7 +476,7 @@ function isActionColumn(column: Record<string, any>): boolean {
   return column.key === 'actions' || column.dataIndex === 'actions' || column.title === '操作'
 }
 
-function resolveActionColumnWidth(value: unknown): number | string {
+function resolveActionColumnWidth(value: unknown, actionCount: unknown): number | string {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
   if (typeof value === 'string') {
     const trimmedValue = value.trim()
@@ -482,7 +484,8 @@ function resolveActionColumnWidth(value: unknown): number | string {
     if (Number.isFinite(numericWidth) && numericWidth > 0) return numericWidth
     if (Number.isFinite(Number.parseFloat(trimmedValue)) && Number.parseFloat(trimmedValue) > 0) return trimmedValue
   }
-  return 120
+  const numericActionCount = typeof actionCount === 'number' ? actionCount : Number.parseFloat(String(actionCount ?? ''))
+  return rowActionColumnWidth(Number.isFinite(numericActionCount) ? numericActionCount : undefined)
 }
 
 function resolveColumnMinWidth(column: Record<string, any>): number {
@@ -978,11 +981,12 @@ onBeforeUnmount(() => {
   width: calc(100% - var(--responsive-data-list-scrollbar-placeholder-width, 0px)) !important;
 }
 
-.responsive-data-list-table-overlay-scrollbar :deep(.ant-table-header .responsive-data-list-actions-column.ant-table-cell-fix-right) {
+.responsive-data-list-table-overlay-scrollbar :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right) {
   right: 0 !important;
 }
 
 .responsive-data-list-table :deep(.responsive-data-list-actions-column) {
+  padding-inline: 8px !important;
   white-space: nowrap;
 }
 

@@ -43,11 +43,13 @@
   <AccountRowActions
     v-else-if="columnKey === 'actions'"
     :account="account"
+    :can-clone="canClone(account)"
     :can-delete="canDelete(account)"
     :can-edit="canEdit(account)"
     :group-name="groupName(account.id)"
     :menu-items="menuItems(account)"
     @bind-group="$emit('bind-group', account)"
+    @clone="$emit('clone', account)"
     @delete="$emit('delete', account)"
     @edit="$emit('edit', account)"
     @menu-click="$emit('menu-click', $event, account)"
@@ -76,6 +78,7 @@ import { authorizedAccountSourceToneClass } from './accountRules'
 
 defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
+  (event: 'clone', account: AccountSummary): void
   (event: 'delete', account: AccountSummary): void
   (event: 'edit', account: AccountSummary): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
@@ -85,6 +88,7 @@ defineEmits<{
 const props = defineProps<{
   account: AccountSummary
   authorizedTooltip: (account: AccountSummary) => string
+  canClone: (account: AccountSummary) => boolean
   canDelete: (account: AccountSummary) => boolean
   canEdit: (account: AccountSummary) => boolean
   columnKey: string

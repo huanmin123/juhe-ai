@@ -233,16 +233,16 @@ const columns = [
   { title: '成员数', key: 'memberCount', width: 90 },
   { title: '创建时间', key: 'createdAt', width: 170 },
   { title: '说明', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', width: 100, fixed: 'right' }
+  { title: '操作', key: 'actions', actionCount: 2, fixed: 'right' }
 ]
 
 const memberColumns = computed(() => {
-  const baseColumns = [
+  const baseColumns: Array<Record<string, unknown>> = [
     { title: '成员', key: 'memberName', width: 220 },
     { title: '加入时间', key: 'joinedAt', width: 180 }
   ]
   if (isManagementView.value) {
-    baseColumns.push({ title: '操作', key: 'actions', width: 100 })
+    baseColumns.push({ title: '操作', key: 'actions', actionCount: 1 })
   }
   return baseColumns
 })

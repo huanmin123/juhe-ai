@@ -69,7 +69,7 @@
         <RowActions variant="button" :actions="authorizedActions" :more-actions="menuItems" @action-click="handleActionClick" />
       </template>
       <template v-else>
-        <RowActions variant="button" :actions="actions" :more-actions="menuItems" @action-click="handleActionClick" />
+        <RowActions variant="button" :actions="actions" :more-actions="moreActions" @action-click="handleActionClick" />
       </template>
     </div>
   </article>
@@ -98,6 +98,7 @@ import { authorizedAccountSourceToneClass } from './accountRules'
 const props = defineProps<{
   account: AccountSummary
   authorizedTooltip: string
+  canClone: boolean
   canDelete: boolean
   canEdit: boolean
   canSelect: boolean
@@ -110,6 +111,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  (event: 'clone'): void
   (event: 'delete'): void
   (event: 'edit'): void
   (event: 'bind-group'): void
@@ -157,6 +159,13 @@ const actions = computed<RowActionItem[]>(() => {
   }
   return list
 })
+const moreActions = computed<AccountMenuItem[]>(() => {
+  const list: AccountMenuItem[] = []
+  if (props.canClone) {
+    list.push({ key: 'clone', label: '克隆', icon: 'copy', tone: 'info' })
+  }
+  return [...list, ...props.menuItems]
+})
 const authorizedActions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []
   if (props.account.status !== 'error') {
@@ -186,6 +195,10 @@ function handleActionClick(key: string) {
   }
   if (key === 'edit') {
     emit('edit')
+    return
+  }
+  if (key === 'clone') {
+    emit('clone')
     return
   }
   if (key === 'test') {
@@ -280,9 +293,7 @@ function handleActionClick(key: string) {
 }
 
 .account-mobile-card-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  display: block;
 }
 
 .account-mobile-card-actions :deep(.ant-btn),

@@ -1,6 +1,6 @@
 <template>
   <div class="row-actions" :class="[`row-actions-${variant}`]" :style="rootStyle">
-    <template v-for="action in actions" :key="action.key">
+    <template v-for="action in visibleActions" :key="action.key">
       <a-popconfirm
         v-if="action.confirmTitle"
         :title="action.confirmTitle"
@@ -45,7 +45,7 @@
       </a-tooltip>
     </template>
 
-    <a-dropdown v-if="moreActions.length" :trigger="['click']">
+    <a-dropdown v-if="dropdownActions.length" :trigger="['click']">
       <a-tooltip :title="iconOnly ? moreTitle : undefined">
         <a-button class="row-action-button row-action-more-button" :size="size" :type="iconOnly ? 'text' : 'default'" :aria-label="iconOnly ? moreTitle : undefined" aria-haspopup="menu">
           <template #icon>
@@ -56,7 +56,7 @@
       </a-tooltip>
       <template #overlay>
         <a-menu class="row-action-menu" @click="handleMenuClick">
-          <template v-for="item in moreActions" :key="item.key">
+          <template v-for="item in dropdownActions" :key="item.key">
             <a-sub-menu v-if="item.children?.length" :key="item.key" :disabled="item.disabled">
               <template #title>
                 <span class="row-action-menu-label" :class="menuItemClass(item)">
@@ -164,7 +164,14 @@ const iconMap = {
 } satisfies Record<RowActionIcon, unknown>
 
 const iconOnly = computed(() => props.variant === 'icon')
-const actionCount = computed(() => props.actions.length + (props.moreActions.length ? 1 : 0))
+const singleMoreAction = computed(() => {
+  if (props.moreActions.length !== 1) return undefined
+  const [action] = props.moreActions
+  return action.children?.length ? undefined : action
+})
+const visibleActions = computed(() => singleMoreAction.value ? [...props.actions, singleMoreAction.value] : props.actions)
+const dropdownActions = computed(() => singleMoreAction.value ? [] : props.moreActions)
+const actionCount = computed(() => visibleActions.value.length + (dropdownActions.value.length ? 1 : 0))
 const rootStyle = computed(() => props.variant === 'button'
   ? ({ '--row-action-columns': String(Math.max(1, Math.min(actionCount.value, 3))) } as CSSProperties)
   : undefined)
@@ -175,7 +182,7 @@ function emitAction(action: RowActionItem) {
 }
 
 function handleMenuClick(event: { key: string | number }) {
-  const action = findMenuAction(String(event.key), props.moreActions)
+  const action = findMenuAction(String(event.key), dropdownActions.value)
   if (!action || action.disabled) return
   if (action.confirmTitle) {
     Modal.confirm({

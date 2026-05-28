@@ -84,25 +84,29 @@ try {
   const cooldownResult = applyAccountErrorHandling(cooldownGatewayAccount, {
     success: false,
     statusCode: 500,
-    bodyText: JSON.stringify({ error: { message: 'runtime side effect cooldown' } }),
+    bodyText: JSON.stringify({ error: { code: 'insufficient_quota', message: 'runtime side effect cooldown' } }),
     settings: gatewaySettings
   })
   assert.equal(cooldownResult.action, 'cooldown', '授权副本命中错误策略后应进入本地临时不可调用')
   assert.equal(cooldownResult.changed, true, '授权副本错误策略应写入本地绑定状态')
+  assert.match(cooldownResult.reason ?? '', /insufficient_quota；runtime side effect cooldown/, '错误策略返回原因应带上真实上游错误摘要')
   assertOwnerStillActive(cooldownAccount.id, ownerAccess, '错误策略临时不可调用不应修改归属人主账户')
   assertAuthorizedLocalStatus(cooldownAccount.id, granteeAccess, 'temporary_unavailable', '错误策略临时不可调用应只写入被授权本地状态')
+  assertAuthorizedLocalError(cooldownAccount.id, granteeAccess, /insufficient_quota；runtime side effect cooldown/, '错误策略临时不可调用应保留真实上游错误摘要')
 
   const disableGatewayAccount = authorizedGatewayAccount(disableAccount.id, granteeGroup.id, grantee.id)
   const disableResult = applyAccountErrorHandling(disableGatewayAccount, {
     success: false,
     statusCode: 503,
-    bodyText: JSON.stringify({ error: { message: 'runtime side effect disable' } }),
+    bodyText: JSON.stringify({ error: { code: 'server_is_overloaded', message: 'runtime side effect disable' } }),
     settings: gatewaySettings
   })
   assert.equal(disableResult.action, 'disable', '授权副本命中禁用策略后应进入本地异常')
   assert.equal(disableResult.changed, true, '授权副本禁用策略应写入本地绑定状态')
+  assert.match(disableResult.reason ?? '', /server_is_overloaded；runtime side effect disable/, '禁用策略返回原因应带上真实上游错误摘要')
   assertOwnerStillActive(disableAccount.id, ownerAccess, '错误策略异常不应修改归属人主账户')
   assertAuthorizedLocalStatus(disableAccount.id, granteeAccess, 'error', '错误策略异常应只写入被授权本地状态')
+  assertAuthorizedLocalError(disableAccount.id, granteeAccess, /server_is_overloaded；runtime side effect disable/, '错误策略异常应保留真实上游错误摘要')
 
   const streamGatewayAccount = authorizedGatewayAccount(streamAccount.id, granteeGroup.id, grantee.id)
   const streamResult = await requestDbService({
@@ -185,4 +189,9 @@ function assertAuthorizedLocalStatus(accountId: string, granteeAccess: { systemA
   assert.equal(granteeView?.status, expectedStatus, message)
   assert.equal(granteeView?.localStatus, expectedStatus, `${message}：本地状态字段应同步`)
   assert.equal(granteeView?.sourceStatus, 'active', `${message}：来源状态仍应显示归属人主账户正常`)
+}
+
+function assertAuthorizedLocalError(accountId: string, granteeAccess: { systemAccountId: string; role: 'user' }, pattern: RegExp, message: string): void {
+  const granteeView = repositories.findAccountSummary(accountId, granteeAccess)
+  assert.match(granteeView?.localLastErrorMessage ?? '', pattern, message)
 }

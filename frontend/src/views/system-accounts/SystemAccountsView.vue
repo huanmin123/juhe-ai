@@ -158,7 +158,7 @@ const columns = [
   { title: '改密提醒', key: 'mustChangePassword', width: 110 },
   { title: '最后登录', key: 'lastLoginAt', width: 180 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', width: 100, fixed: 'right' }
+  { title: '操作', key: 'actions', actionCount: 2, fixed: 'right' }
 ]
 
 const systemAccountActions: RowActionItem[] = [

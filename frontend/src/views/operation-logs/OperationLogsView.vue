@@ -540,7 +540,7 @@ const rawColumns = computed(() => {
     { title: '摘要', key: 'summary', width: 300, responsiveFlex: true },
     { title: 'traceId', key: 'traceId', width: 190 },
     { title: '时间', key: 'createdAt', width: 180 },
-    { title: '操作', key: 'actions', width: 90, fixed: 'right' }
+    { title: '操作', key: 'actions', actionCount: 1, fixed: 'right' }
   )
   return baseColumns
 })

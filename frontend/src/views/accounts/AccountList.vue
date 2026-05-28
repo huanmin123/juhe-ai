@@ -28,6 +28,7 @@
       <AccountTableCell
         :account="record"
         :authorized-tooltip="authorizedTooltip"
+        :can-clone="canClone"
         :can-delete="canDelete"
         :can-edit="canEdit"
         :column-key="tableColumnKey(column)"
@@ -36,6 +37,7 @@
         :provider-name="providerName"
         :proxy="proxy"
         @bind-group="$emit('bind-group', $event)"
+        @clone="$emit('clone', $event)"
         @delete="$emit('delete', $event.id)"
         @edit="$emit('edit', $event)"
         @menu-click="$emit('menu-click', $event, record)"
@@ -46,6 +48,7 @@
       <AccountMobileCard
         :account="record"
         :authorized-tooltip="authorizedTooltip(record)"
+        :can-clone="canClone(record)"
         :can-delete="canDelete(record)"
         :can-edit="canEdit(record)"
         :can-select="canSelect(record)"
@@ -56,6 +59,7 @@
         :proxy="proxy(record.proxyProfileId)"
         :selected="isSelected(record.id)"
         @delete="$emit('delete', record.id)"
+        @clone="$emit('clone', record)"
         @edit="$emit('edit', record)"
         @bind-group="$emit('bind-group', record)"
         @menu-click="$emit('menu-click', $event, record)"
@@ -78,6 +82,7 @@ import { tableColumnKey } from './accountTableColumns'
 defineProps<{
   accounts: AccountSummary[]
   authorizedTooltip: (account: AccountSummary) => string
+  canClone: (account: AccountSummary) => boolean
   canDelete: (account: AccountSummary) => boolean
   canEdit: (account: AccountSummary) => boolean
   canSelect: (account: AccountSummary) => boolean
@@ -102,6 +107,7 @@ defineProps<{
 defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
   (event: 'change', ...args: unknown[]): void
+  (event: 'clone', account: AccountSummary): void
   (event: 'delete', accountId: string): void
   (event: 'edit', account: AccountSummary): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void

@@ -182,11 +182,13 @@ async function testFailedUsageDoesNotMakePrecheckStale(): Promise<void> {
   const result = await handleDbServiceOperation({
     type: 'mark_account_precheck_temporary_unavailable',
     account: gatewayAccount,
-    reason: '失败使用记录不能伪装成恢复',
+    reason: '失败使用记录不能伪装成恢复；HTTP 403；insufficient_quota；余额和订阅额度均不足',
     precheckStartedAt
   })
   assert.equal(result.updated, true, '仅有失败使用记录时，预检查仍应能写入临时不可调用')
-  assert.equal(repositories.findAccountSummary(account.id, adminAccess)?.status, 'temporary_unavailable', '失败使用记录不应阻止预检查降级')
+  const afterPrecheck = repositories.findAccountSummary(account.id, adminAccess)
+  assert.equal(afterPrecheck?.status, 'temporary_unavailable', '失败使用记录不应阻止预检查降级')
+  assert.match(afterPrecheck?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '预检查写库应保留探针传入的真实上游错误摘要')
 }
 
 async function testFreshPrecheckStillMarksTemporaryUnavailable(): Promise<void> {
@@ -197,11 +199,13 @@ async function testFreshPrecheckStillMarksTemporaryUnavailable(): Promise<void> 
   const result = await handleDbServiceOperation({
     type: 'mark_account_precheck_temporary_unavailable',
     account: gatewayAccount,
-    reason: '模拟当前预检查失败',
+    reason: '模拟当前预检查失败；HTTP 403；insufficient_quota；余额和订阅额度均不足',
     precheckStartedAt
   })
   assert.equal(result.updated, true, '没有更新状态介入时，预检查仍应写入临时不可调用')
-  assert.equal(repositories.findAccountSummary(account.id, adminAccess)?.status, 'temporary_unavailable', '当前预检查失败应能降级账号')
+  const afterPrecheck = repositories.findAccountSummary(account.id, adminAccess)
+  assert.equal(afterPrecheck?.status, 'temporary_unavailable', '当前预检查失败应能降级账号')
+  assert.match(afterPrecheck?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '当前预检查失败应按传入真实错误摘要写入最近错误')
 }
 
 function createGatewayAccount(name: string): {

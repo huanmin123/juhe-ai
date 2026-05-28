@@ -88,17 +88,37 @@ try {
     .run(new Date().toISOString(), new Date(Date.now() - 1000).toISOString(), freshAccount.id)
 
   const stillRecovering = repositories.recordCooldownAccountRetestFailure(freshAccount.id, {
-    statusCode: 503,
-    errorMessage: '短期失败',
+    statusCode: 403,
+    errorCode: 'insufficient_quota',
+    errorMessage: '余额和订阅额度均不足，请充值后再使用',
     maxRecoveryHours: 1,
     maxPauseMinutes: 1440
   })
   assert.equal(stillRecovering.recoveryStage, 'slow', '超过快速阈值后应进入慢速恢复')
   assert.notEqual(stillRecovering.action, 'error', '未超过最长观察时不应转异常')
-  assert.equal(repositories.findAccountSummary(freshAccount.id)?.status, 'temporary_unavailable', '未超过观察窗口时账号应继续恢复')
+  const freshAfterRetest = repositories.findAccountSummary(freshAccount.id)
+  assert.equal(freshAfterRetest?.status, 'temporary_unavailable', '未超过观察窗口时账号应继续恢复')
+  assert.equal(freshAfterRetest?.lastErrorCode, 'insufficient_quota', '后台复测应把上游真实错误码写入账户状态')
+  assert.match(freshAfterRetest?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '后台复测状态原因应保留真实上游错误摘要')
 
   const restored = repositories.clearAccountFailureState(freshAccount.id, access)
   assert.equal(restored?.cooldownRetestObservationStartedAt, undefined, '恢复正常时应清理自动恢复观察起点')
+
+  const disabledCleanupAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '停用清理旧失败原因回归',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cooldown-disable-clear-stale-error'
+    },
+    status: 'active'
+  }, access)
+  repositories.markAccountCooldown(disabledCleanupAccount.id, new Date(Date.now() + 60_000).toISOString(), '旧冷却错误')
+  const disabledCleanup = repositories.updateAccount(disabledCleanupAccount.id, { status: 'disabled' }, access)
+  assert.equal(disabledCleanup?.status, 'disabled', '冷却账号应允许手动停用')
+  assert.equal(disabledCleanup?.lastErrorCode, undefined, '手动停用应清理旧错误码')
+  assert.equal(disabledCleanup?.lastErrorMessage, undefined, '手动停用应清理旧失败原因，避免停用状态展示过期冷却错误')
+  assert.equal(disabledCleanup?.cooldownUntil, undefined, '手动停用应清理旧冷却结束时间')
 
   const rateLimitedAccount = repositories.createAccount({
     providerCode: 'openai',

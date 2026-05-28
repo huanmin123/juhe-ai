@@ -1,7 +1,8 @@
 <template>
   <a-modal v-model:open="open" :title="title" width="920px" :confirm-loading="confirmLoading" :ok-button-props="okButtonProps" @ok="$emit('ok')" @cancel="$emit('cancel')">
     <a-form layout="vertical" class="account-form">
-      <a-alert v-if="editing" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；Access/API Key 与 Refresh Token 只在这里展示和修改。" />
+      <a-alert v-if="cloning" class="form-alert" type="info" show-icon :message="cloneAlertMessage" />
+      <a-alert v-else-if="editing" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；Access/API Key 与 Refresh Token 只在这里展示和修改。" />
       <a-alert v-else-if="targetSystemAccountLabel" class="form-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
 
       <AccountFormSelector
@@ -66,6 +67,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import type { AccountType, OpenAIAuthURLResult, ProviderDefinition } from '@/types/domain'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -91,13 +94,14 @@ interface SelectOption<T = string> {
 const open = defineModel<boolean>('open', { required: true })
 const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
 
-defineProps<{
+const props = defineProps<{
   accountTypeChoices: AccountTypeChoice[]
   authLoading: boolean
   authResult?: OpenAIAuthURLResult
   baseUrlPlaceholder: string
   confirmLoading: boolean
   credentialTitle: string
+  cloning: boolean
   editing: boolean
   form: AccountFormModel
   groupOptions: SelectOption[]
@@ -116,6 +120,11 @@ defineProps<{
   title: string
   targetSystemAccountLabel?: string
 }>()
+
+const cloneAlertMessage = computed(() => {
+  const targetText = props.targetSystemAccountLabel ? `，创建目标：${props.targetSystemAccountLabel}` : ''
+  return `已按源账户预填配置${targetText}；API Key、Access Token 与 Refresh Token 不会复制，请重新填写凭据。`
+})
 
 defineEmits<{
   (event: 'cancel'): void

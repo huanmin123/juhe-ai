@@ -92,6 +92,11 @@ try {
     .find((account) => account.id === seed.ownerAccountId)
   assert.equal(pausedAccount?.authorizationStatus, 'paused', '暂停授权后被授权账户仍应可见但标记为暂停')
   repositories.updateResourceAuthorization(restoredAccountGrant.id, { status: 'active' }, ownerAccess)
+  const reactivatedAccount = repositories
+    .listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const })
+    .find((account) => account.id === seed.ownerAccountId)
+  assert.equal(reactivatedAccount?.authorizationStatus, 'active', '暂停后恢复授权应同步恢复运行态授权状态')
+  assert.equal(reactivatedAccount?.status, 'active', '暂停后恢复授权应让被授权账户恢复可调用状态')
   const inboundAccountGrant = repositories
     .listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAccess)
     .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)

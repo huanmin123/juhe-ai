@@ -13,6 +13,7 @@ import { isAuthorizedAccount } from './accountFormatters'
 
 const props = defineProps<{
   account: AccountSummary
+  canClone: boolean
   canDelete: boolean
   canEdit: boolean
   groupName?: string
@@ -21,6 +22,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'bind-group'): void
+  (event: 'clone'): void
   (event: 'delete'): void
   (event: 'edit'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
@@ -62,7 +64,13 @@ const actions = computed<RowActionItem[]>(() => {
   return list
 })
 
-const moreItems = computed(() => props.menuItems)
+const moreItems = computed<RowActionItem[]>(() => {
+  const list: RowActionItem[] = []
+  if (!isAuthorizedAccount(props.account) && props.canClone) {
+    list.push({ key: 'clone', label: '克隆', icon: 'copy', tone: 'info' })
+  }
+  return [...list, ...props.menuItems]
+})
 
 function handleActionClick(key: string) {
   if (key === 'bind-group') {
@@ -75,6 +83,10 @@ function handleActionClick(key: string) {
   }
   if (key === 'edit') {
     emit('edit')
+    return
+  }
+  if (key === 'clone') {
+    emit('clone')
     return
   }
   if (key === 'test') {

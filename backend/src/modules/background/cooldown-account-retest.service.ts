@@ -73,7 +73,7 @@ async function runCooldownAccountRetestQueueItem(
   const groupId = account.boundGroupId
   const result = await testOpenAIAccount(account, {
     model: item.model,
-    diagnostics: 'limited',
+    diagnostics: 'full',
     groupId,
     requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId),
     trafficSource: 'cooldown_retest',

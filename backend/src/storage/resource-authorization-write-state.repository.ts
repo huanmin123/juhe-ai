@@ -84,12 +84,7 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
   const nextExpiresAt = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
     ? input.expiresAt ?? null
     : existing?.expires_at ?? null
-  const existingStatus = existing?.status
-  const nextStatus: AuthorizationStatus = isResourceAuthorizationExpired(nextExpiresAt)
-    ? 'expired'
-    : existingStatus === 'paused' && !isTeamSource
-      ? 'paused'
-      : 'active'
+  const nextStatus: AuthorizationStatus = isResourceAuthorizationExpired(nextExpiresAt) ? 'expired' : 'active'
   const nextLimitsJson = !isTeamSource && hasActiveTeamSource
     ? existing?.limits_json ?? null
     : requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))

@@ -122,6 +122,12 @@ export function canDeleteAccount(account: AccountSummary): boolean {
   return account.permissions?.canDelete !== false
 }
 
+export function canCloneAccount(account: AccountSummary): boolean {
+  return !isAuthorizedAccount(account)
+    && canEditAccount(account)
+    && account.permissions?.canViewCredentials !== false
+}
+
 export function canUseAccountActions(account: AccountSummary): boolean {
   return account.status !== 'error' && canEditAccount(account) && account.permissions?.canViewCredentials !== false
 }

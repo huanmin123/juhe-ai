@@ -61,6 +61,7 @@
     <AccountList
       :accounts="filteredAccounts"
       :authorized-tooltip="authorizedAccountTooltip"
+      :can-clone="canCloneAccount"
       :can-delete="canDeleteAccount"
       :can-edit="canEditAccount"
       :can-select="canBatchManageAccount"
@@ -82,6 +83,7 @@
       :table-scroll-y="tableScrollY"
       @bind-group="handleOpenBindGroup"
       @change="handleAccountTableChange"
+      @clone="openClone"
       @delete="removeAccount"
       @edit="openEdit"
       @menu-click="handleAccountMenuClick"
@@ -118,6 +120,7 @@
       :base-url-placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
       :confirm-loading="modalConfirmLoading"
       :credential-title="selectedAccountTypeTitle"
+      :cloning="Boolean(cloningSourceId)"
       :editing="Boolean(editingId)"
       :form="form"
       :group-options="groupOptions"
@@ -225,6 +228,7 @@ import {
   accountMenuItems,
   authorizedAccountTooltip,
   canBatchManageAccount,
+  canCloneAccount,
   canDeleteAccount,
   canEditAccount
 } from './accountRules'
@@ -366,6 +370,8 @@ const {
   authLoading,
   authResult,
   availableProviders,
+  cloningSourceId,
+  createScopeParams,
   editingId,
   ensureDefaultGroupSelected,
   form,
@@ -381,6 +387,7 @@ const {
   modalOpen,
   modalTitle,
   openAuthUrl,
+  openClone,
   openCreate,
   openEdit,
   providerName,
@@ -481,6 +488,7 @@ watch(
   [
     () => form.providerCode,
     () => form.groupId,
+    () => createScopeParams.value?.systemAccountId,
     () => editingId.value,
     () => bindGroupModalOpen.value,
     () => bindingAccount.value?.providerCode,
@@ -496,7 +504,7 @@ watch(
         : undefined
     groupOptionProviderCode.value = bindGroupModalOpen.value ? bindingAccount.value?.providerCode ?? '' : form.providerCode
     groupOptionSystemAccountId.value = isManagementView.value
-      ? accountOperationSystemAccountId(activeAccount, accountScopeParams.value) ?? ''
+      ? accountOperationSystemAccountId(activeAccount, createScopeParams.value) ?? ''
       : ''
     selectedGroupIds.value = [form.groupId, bindGroupForm.groupId]
   },

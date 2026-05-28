@@ -179,7 +179,7 @@ const columns = [
   { title: '发布时间', key: 'publishedAt', width: 180 },
   { title: '更新人', key: 'updatedByName', width: 130 },
   { title: '更新时间', key: 'updatedAt', width: 180 },
-  { title: '操作', key: 'actions', width: 132, fixed: 'right' }
+  { title: '操作', key: 'actions', actionCount: 3, fixed: 'right' }
 ]
 
 function rowActions(record: AnnouncementSummary): RowActionItem[] {
