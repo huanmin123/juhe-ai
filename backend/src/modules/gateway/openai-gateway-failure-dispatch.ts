@@ -251,6 +251,7 @@ export async function handleUpstreamRequestError(
 
   if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
     let lastAttempt = input.lastAttempt
+    forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
     if (shouldRecordAbortedUpstreamAttempt(error)) {
       const statusCode = lastAttempt?.accountId === account.id && lastAttempt.upstreamUrl === upstreamUrl
         ? lastAttempt.status

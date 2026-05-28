@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import express from 'express'
+import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
@@ -31,7 +32,8 @@ const [
   accountSideEffects,
   usageRecordQueue,
   auditLogQueue,
-  codexTurnRetry
+  codexTurnRetry,
+  sessionAffinity
 ] = await Promise.all([
   import('../../modules/gateway/openai-gateway.routes.js'),
   import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
@@ -43,7 +45,8 @@ const [
   import('../../modules/gateway/gateway-account-side-effects.service.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
-  import('../../modules/gateway/openai-gateway-codex-turn-retry.service.js')
+  import('../../modules/gateway/openai-gateway-codex-turn-retry.service.js'),
+  import('../../modules/gateway/openai-gateway-session-affinity.service.js')
 ])
 
 interface SeededGateway {
@@ -51,6 +54,7 @@ interface SeededGateway {
   groupId: string
   failedAccountId: string
   freshAccountId: string
+  apiKeyId: string
   failedUpstreamKey: string
   freshUpstreamKey: string
 }
@@ -251,15 +255,17 @@ async function assertClientAbortClearsSessionAffinity(
   const beforePrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
 
-  const bindText = await requestResponsesStream(baseUrl, seeded.apiKey, {
-    scenario: 'bind-sticky-after-primary-503',
-    turnId: 'turn-client-abort-affinity',
-    codex: true,
-    sessionId
+  const sessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionRequest(sessionId), {
+    systemAccountId: 'sys_admin',
+    apiKeyId: seeded.apiKeyId,
+    groupId: seeded.groupId
   })
-  assert(bindText.includes('response.completed'), `预绑定请求应切到备用账号并完成：${bindText}`)
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforePrimaryHits, 1, '预绑定请求应先尝试主账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeStickyHits, 1, '预绑定请求应成功绑定备用账号会话亲和')
+  assert(sessionKey, '测试应能生成会话亲和 key')
+  sessionAffinity.rememberOpenAIAccountForSession(sessionKey, seeded.freshAccountId, {
+    systemAccountId: 'sys_admin',
+    apiKeyId: seeded.apiKeyId,
+    groupId: seeded.groupId
+  })
 
   await requestResponsesStreamAndAbortAfterFirstChunk(baseUrl, seeded.apiKey, {
     scenario: 'client-abort-before-terminal',
@@ -267,7 +273,8 @@ async function assertClientAbortClearsSessionAffinity(
     codex: true,
     sessionId
   })
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeStickyHits, 2, 'client_aborted 请求应命中已绑定的备用账号')
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforePrimaryHits, 0, 'client_aborted 请求不应先走正常顺序主账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeStickyHits, 1, 'client_aborted 请求应命中已绑定的备用账号')
 
   const beforeRetryPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeRetryStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
@@ -280,6 +287,41 @@ async function assertClientAbortClearsSessionAffinity(
   assert(retryText.includes('response.completed'), `client_aborted 后下一次请求应完成：${retryText}`)
   assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeRetryPrimaryHits, 1, 'client_aborted 后应释放会话亲和并回到正常账号顺序')
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeRetryStickyHits, 0, 'client_aborted 后不应继续粘住已断开的备用账号')
+
+  const headerDelaySessionId = `session-client-abort-before-headers-${Date.now()}`
+  const headerDelaySessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionRequest(headerDelaySessionId), {
+    systemAccountId: 'sys_admin',
+    apiKeyId: seeded.apiKeyId,
+    groupId: seeded.groupId
+  })
+  assert(headerDelaySessionKey, '测试应能生成响应头前断开场景的会话亲和 key')
+  sessionAffinity.rememberOpenAIAccountForSession(headerDelaySessionKey, seeded.freshAccountId, {
+    systemAccountId: 'sys_admin',
+    apiKeyId: seeded.apiKeyId,
+    groupId: seeded.groupId
+  })
+  const beforeHeaderAbortPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeHeaderAbortStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  await requestResponsesStreamAndAbortAfterUpstreamRequestStarted(baseUrl, seeded.apiKey, {
+    scenario: 'client-abort-before-upstream-headers',
+    turnId: 'turn-client-abort-before-headers',
+    codex: true,
+    sessionId: headerDelaySessionId
+  }, () => hitCount(upstreamState, seeded.freshUpstreamKey) - beforeHeaderAbortStickyHits >= 1)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeHeaderAbortPrimaryHits, 0, '响应头前 client_aborted 请求不应先走正常顺序主账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeHeaderAbortStickyHits, 1, '响应头前 client_aborted 请求应命中已绑定的备用账号')
+
+  const beforeHeaderAbortRetryPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeHeaderAbortRetryStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  const headerAbortRetryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'after-client-abort',
+    turnId: 'turn-client-abort-before-headers',
+    codex: true,
+    sessionId: headerDelaySessionId
+  })
+  assert(headerAbortRetryText.includes('response.completed'), `响应头前 client_aborted 后下一次请求应完成：${headerAbortRetryText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeHeaderAbortRetryPrimaryHits, 1, '响应头前 client_aborted 后应释放会话亲和并回到正常账号顺序')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeHeaderAbortRetryStickyHits, 0, '响应头前 client_aborted 后不应继续粘住已断开的备用账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
   const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 200 }).items
@@ -342,6 +384,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     groupId: group.id,
     failedAccountId: failedAccount.id,
     freshAccountId: freshAccount.id,
+    apiKeyId: apiKey.id,
     failedUpstreamKey,
     freshUpstreamKey
   }
@@ -376,15 +419,19 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         : undefined
       state.requests.push({ upstreamKey, scenario, turnMetadata })
 
-      if (scenario === 'bind-sticky-after-primary-503' && !upstreamKey.endsWith('-fresh')) {
-        res.writeHead(503, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({
-          error: {
-            message: 'primary temporarily unavailable',
-            type: 'server_error',
-            code: 'service_unavailable'
+      if (scenario === 'client-abort-before-upstream-headers') {
+        const timer = setTimeout(() => {
+          if (res.destroyed || res.writableEnded) {
+            return
           }
-        }))
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache',
+            connection: 'keep-alive'
+          })
+          sendOpenStreamWithoutTerminal(res)
+        }, 1000)
+        res.once('close', () => clearTimeout(timer))
         return
       }
 
@@ -513,6 +560,55 @@ async function requestResponsesStreamAndAbortAfterFirstChunk(
   await sleep(500)
 }
 
+async function requestResponsesStreamAndAbortAfterUpstreamRequestStarted(
+  baseUrl: string,
+  apiKey: string,
+  input: {
+    scenario: string
+    turnId: string
+    codex: boolean
+    sessionId?: string
+  },
+  upstreamRequestStarted: () => boolean
+): Promise<void> {
+  const controller = new AbortController()
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${apiKey}`,
+    'content-type': 'application/json',
+    accept: 'text/event-stream'
+  }
+  if (input.codex) {
+    headers['x-codex-turn-metadata'] = JSON.stringify({
+      turn_id: input.turnId,
+      session_id: `session-${input.turnId}`,
+      thread_id: `thread-${input.turnId}`
+    })
+  }
+  if (input.sessionId) {
+    headers['x-session-id'] = input.sessionId
+  }
+  const request = fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: 'gpt-5.3-codex',
+      input: input.scenario,
+      stream: true
+    }),
+    signal: controller.signal
+  }).then(async (response) => {
+    await response.arrayBuffer()
+  }).catch((error) => {
+    if (!controller.signal.aborted) {
+      throw error
+    }
+  })
+  await waitUntil(upstreamRequestStarted, 1000, '响应头前断开测试应先命中上游账号')
+  controller.abort()
+  await request
+  await sleep(500)
+}
+
 function sendCompletedStream(res: http.ServerResponse): void {
   res.write('event: response.created\n')
   res.write('data: {"type":"response.created","response":{"id":"resp_mock","status":"in_progress"}}\n\n')
@@ -591,6 +687,15 @@ function parseJsonObject(value: string): Record<string, unknown> {
   }
 }
 
+function createSessionRequest(sessionId: string): Request {
+  return {
+    header(name: string) {
+      return name.toLowerCase() === 'x-session-id' ? sessionId : undefined
+    },
+    body: {}
+  } as Request
+}
+
 function listen(server: http.Server): Promise<void> {
   return new Promise((resolveListen, reject) => {
     server.once('error', reject)
@@ -616,6 +721,17 @@ function serverPort(server: http.Server): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs: number, message: string): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return
+    }
+    await sleep(10)
+  }
+  assert(predicate(), message)
 }
 
 function waitForClockTick(): void {

@@ -339,8 +339,9 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const overloadedAfterOutputAccount = repositories.listAccounts().find((item) => item.id === overloadedAfterOutputCredential.account.id)
-    assert.equal(overloadedAfterOutputAccount?.streamFailureCount, 1, '输出后容量错误应按通用流失败累计计数')
+    assert.equal(overloadedAfterOutputAccount?.streamFailureCount, 0, '真实网关流量输出后容量错误不应直接写入账号流失败计数')
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '流失败未达到阈值前不应本地屏蔽账号')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().precheckPendingAccountCount, 0, '单次输出后容量错误不应触发账号事前确认')
     assertFailedUsageRecordHasTokenCost(overloadedAfterOutputCredential.account.id)
 
     const outputItemThenFailureResult = await requestStreamScenario(baseUrl, outputItemThenFailureCredential.apiKey.key, 'output-item-then-failure')
@@ -350,14 +351,14 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const outputItemThenFailureAccount = repositories.listAccounts().find((item) => item.id === outputItemThenFailureCredential.account.id)
-    assert.equal(outputItemThenFailureAccount?.streamFailureCount, 1, 'output item 已算可见输出，后续失败应累计账号流失败计数')
+    assert.equal(outputItemThenFailureAccount?.streamFailureCount, 0, '真实网关流量 output item 后失败不应直接写入账号流失败计数')
 
     const topLevelCodeMessageResult = await requestStreamScenario(baseUrl, topLevelCodeMessageCredential.apiKey.key, 'top-level-code-message-non-error')
     assert(topLevelCodeMessageResult.streamText.includes('response.completed'), `顶层 code/message 普通事件应继续到完成：${topLevelCodeMessageResult.streamText}`)
     assert(topLevelCodeMessageResult.streamText.includes('"code":"diagnostic_code"'), `普通事件的 code 字段应原样透传：${topLevelCodeMessageResult.streamText}`)
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、非 Codex 不伪造可重试码、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、非 Codex 不伪造可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
