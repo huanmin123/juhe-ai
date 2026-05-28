@@ -33,12 +33,19 @@ notepad .\backend\.env
 ```env
 JUHE_AI_HOST=127.0.0.1
 JUHE_AI_PORT=3000
+JUHE_AI_DB_SERVICE_HTTP_HOST=127.0.0.1
+JUHE_AI_DB_SERVICE_HTTP_PORT=0
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
+JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
+JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
+JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
+JUHE_AI_USAGE_SHARD_COUNT=16
 JUHE_AI_SECRET=换成一串足够长且固定保存的随机密钥
 JUHE_AI_OAUTH_PROXY_URL=
+JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=false
 ```
 
-新部署必须修改 `JUHE_AI_SECRET`。迁移旧数据必须沿用旧 `JUHE_AI_SECRET`，否则敏感字段无法解密。
+新部署必须修改 `JUHE_AI_SECRET`。迁移旧数据必须沿用旧 `JUHE_AI_SECRET`，否则敏感字段无法解密。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、运行日志索引、模型检测和 usage shard catalog 在数据集目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。三个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。
 
 ## 启动与验证
 
@@ -66,8 +73,10 @@ curl -I http://127.0.0.1:3000/__aisys__/
 
 ```text
 backend/.env
-backend/data/juhe-ai.sqlite3
+核心业务表数据
 ```
+
+默认备份只需要 `.env` 和业务表导出；数据集目录库、usage shard 目录和统计结果库通常可丢弃、清空或重建。只有做离线取证、迁移完整历史明细或保留审计 payload 时，才停服务后额外备份 `backend/data/juhe-ai-dataset.sqlite3`、`backend/data/usage-shards/` 或 `JUHE_AI_USAGE_SHARD_ROOT` 指向的目录，以及 `backend/data/juhe-ai-stats.sqlite3`。
 
 常驻运行、反向代理、端口开放、数据迁移和常见排障请继续查看 `docs/deploy/部署指南.md`。
 

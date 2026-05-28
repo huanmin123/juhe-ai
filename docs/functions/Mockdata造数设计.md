@@ -69,7 +69,7 @@ pnpm mockdata -- --days 31 --daily-requests 80
 
 执行完成后建议检查：
 
-- 管理后台首页、账号、分组、API Key、授权、团队、公告均有 `造数-` 数据。
+- 默认入口相关页面、账号、分组、API Key、授权、团队、公告均有 `造数-` 数据。
 - 使用记录、审计日志、操作日志、运行日志均可按 `mockdata` 或 `造数` 检索。
 - 用量统计、AI 性能监控、授权用量、API Key 额度窗口、系统指标趋势和表空间监控均有近 31 天数据。
 - `backend/data/mockdata-summary.json` 中的 active API Key 可用于本地网关请求验证。
