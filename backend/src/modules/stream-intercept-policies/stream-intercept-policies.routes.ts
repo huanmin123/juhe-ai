@@ -25,7 +25,7 @@ const matchSchema = z.object({
   textIncludes: textListSchema,
   textExcludes: textListSchema,
   jsonPathsExists: textListSchema
-}).partial().optional()
+}).strict().partial().optional()
 
 const policyBodySchema = z.object({
   name: z.string().trim().min(1, '规则名称不能为空').max(100, '规则名称不能超过 100 个字符'),
@@ -39,7 +39,7 @@ const policyBodySchema = z.object({
   accountState: z.enum(['none', 'runtime_avoidance']).optional(),
   avoidanceTtlSeconds: z.coerce.number().int().min(1).max(86400).nullable().optional(),
   notes: z.string().trim().max(1000, '备注不能超过 1000 个字符').nullable().optional()
-}).superRefine((value, context) => {
+}).strict().superRefine((value, context) => {
   const matcher = value.match ?? {}
   const hasMatcher = [
     matcher.eventTypes,
@@ -68,7 +68,7 @@ const policyBodySchema = z.object({
 streamInterceptPoliciesRouter.get('/', (_req, res) => {
   const result = listStreamInterceptPolicies()
   res.json(ok({
-    presets: result.presets.map(publicPolicySummary),
+    defaultRules: result.defaultRules.map(publicPolicySummary),
     policies: result.policies.map(publicPolicySummary)
   }))
 })

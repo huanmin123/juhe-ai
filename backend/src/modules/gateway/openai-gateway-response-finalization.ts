@@ -405,7 +405,7 @@ function shouldRetryStreamInterceptOnServer(
   const decision = streamResult.streamIntercept
   return decision?.reason === 'configured_stream_policy'
     && decision.retryEnabled === true
-    && decision.policySource !== 'builtin'
+    && decision.policySource !== 'system_default'
     && !res.headersSent
     && !res.writableEnded
     && !res.destroyed

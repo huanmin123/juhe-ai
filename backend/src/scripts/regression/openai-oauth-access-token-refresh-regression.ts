@@ -104,6 +104,15 @@ async function main(): Promise<void> {
       accessToken: undefined,
       expiresAt: new Date(Date.now() - 60_000).toISOString()
     })
+    const legacyStopped = createOAuthAccount('历史 OAuth 刷新异常账户', 'active', true, 'legacy-fail-token', {
+      accessToken: undefined,
+      expiresAt: new Date(Date.now() - 60_000).toISOString()
+    })
+    repositories.markAccountException(
+      legacyStopped.id,
+      'oauth_token_refresh_failed',
+      'OpenAI OAuth 访问令牌连续 432 次刷新失败：refresh_token_reused'
+    )
 
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const failedResult = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
@@ -114,9 +123,17 @@ async function main(): Promise<void> {
       assert(failedResult.failed === 2, `第 ${attempt} 次应记录 2 个刷新失败，实际 ${failedResult.failed}`)
       assert(failedResult.cooldowned === 0, `刷新失败不应改成临时不可调用，实际 ${failedResult.cooldowned}`)
       assert(failedResult.exceptioned === (attempt === 3 ? 1 : 0), `第 ${attempt} 次异常标记数量不正确：${failedResult.exceptioned}`)
-      assertAccountState(failedActive.id, attempt === 3 ? 'error' : 'active', attempt !== 3, attempt === 3 ? 'oauth_token_refresh_failed' : undefined)
+      assertAccountState(
+        failedActive.id,
+        attempt === 3 ? 'error' : 'active',
+        attempt !== 3,
+        attempt === 3 ? 'oauth_token_refresh_failed' : undefined,
+        attempt === 3 ? '已停止自动刷新' : undefined
+      )
       assertAccountState(failedDisabled.id, 'disabled', false)
     }
+    assertAccountState(legacyStopped.id, 'error', false, 'oauth_token_refresh_failed', '已停止自动刷新')
+    assertAccountLastErrorMessageIncludes(legacyStopped.id, '连续 432 次')
 
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => ({
       accessToken: `access-recovered-${refreshToken}`,
@@ -130,11 +147,13 @@ async function main(): Promise<void> {
       batchSize: 20,
       retryBackoffSeconds: 0
     })
-    assert(refreshedAfterException.refreshed === 2, `异常账户仍应后台保活刷新，实际刷新 ${refreshedAfterException.refreshed}`)
-    assertAccountState(failedActive.id, 'active', true)
+    assert(refreshedAfterException.scanned === 6, `OAuth 刷新失败异常账户不应再被扫描，实际扫描 ${refreshedAfterException.scanned}`)
+    assert(refreshedAfterException.due === 1, `OAuth 刷新失败异常账户不应再进入待刷新列表，实际待刷新 ${refreshedAfterException.due}`)
+    assert(refreshedAfterException.refreshed === 1, `仅停用对照账户应继续后台保活刷新，实际刷新 ${refreshedAfterException.refreshed}`)
+    assertAccountState(failedActive.id, 'error', false, 'oauth_token_refresh_failed', '已停止自动刷新')
     assertAccountState(failedDisabled.id, 'disabled', false)
 
-    console.log('OpenAI OAuth Access Token 后台保活回归通过：未删除 OAuth 账户不受调度状态影响，自动刷新异常成功后会自恢复，手动停用不被后台覆盖')
+    console.log('OpenAI OAuth Access Token 后台保活回归通过：连续失败 3 次后标记 OAuth 刷新异常并停止后台自动刷新，手动停用不被后台覆盖')
   } finally {
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
     try {
@@ -183,12 +202,27 @@ function oauthCredentials(refreshToken: string, expiresAt: string, accessToken =
   return credentials
 }
 
-function assertAccountState(accountId: string, status: string, schedulable: boolean, lastErrorCode?: string): void {
+function assertAccountState(accountId: string, status: string, schedulable: boolean, lastErrorCode?: string, lastErrorMessageIncludes?: string): void {
   const latest = repositories.findAccountForTest(accountId, access)
   assert(latest, '账户不存在')
   assert(latest.status === status, `账户状态被错误改变：${latest.status}`)
   assert(latest.schedulable === schedulable, `账户调度标记被错误改变：${latest.schedulable}`)
   assert(latest.lastErrorCode === lastErrorCode, `账户异常类型不正确：${latest.lastErrorCode}`)
+  if (lastErrorMessageIncludes) {
+    assert(
+      typeof latest.lastErrorMessage === 'string' && latest.lastErrorMessage.includes(lastErrorMessageIncludes),
+      `账户异常信息缺少说明：${latest.lastErrorMessage ?? ''}`
+    )
+  }
+}
+
+function assertAccountLastErrorMessageIncludes(accountId: string, expected: string): void {
+  const latest = repositories.findAccountForTest(accountId, access)
+  assert(latest, '账户不存在')
+  assert(
+    typeof latest.lastErrorMessage === 'string' && latest.lastErrorMessage.includes(expected),
+    `账户异常信息缺少 ${expected}：${latest.lastErrorMessage ?? ''}`
+  )
 }
 
 function assert(condition: unknown, message: string): asserts condition {

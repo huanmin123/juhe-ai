@@ -19,7 +19,7 @@ import {
   type OpenAITokenInfo,
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
-import { refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
+import { OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE, refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
 
 export const openAIOAuthRouter = Router()
 
@@ -246,7 +246,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
     return
   }
-  if (account.status === 'error') {
+  if (isBlockedOpenAIOAuthErrorAccount(account)) {
     res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
     return
   }
@@ -294,7 +294,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
     return
   }
-  if (account.status === 'error') {
+  if (isBlockedOpenAIOAuthErrorAccount(account)) {
     res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
     return
   }
@@ -337,7 +337,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
     return
   }
-  if (account.status === 'error') {
+  if (isBlockedOpenAIOAuthErrorAccount(account)) {
     res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
     return
   }
@@ -423,10 +423,14 @@ function updateOpenAIOAuthAccountCredentials(
   if (!updated) {
     throw new Error('OpenAI OAuth 账户不存在或无法更新')
   }
-  if (updated.status !== 'disabled' && updated.status !== 'error') {
+  if (updated.status !== 'disabled' && (updated.status !== 'error' || updated.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE)) {
     return clearAccountFailureState(account.id, access) ?? updated
   }
   return updated
+}
+
+function isBlockedOpenAIOAuthErrorAccount(account: NonNullable<ReturnType<typeof findEditableOpenAIOAuthAccount>>): boolean {
+  return account.status === 'error' && account.lastErrorCode !== OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
 }
 
 function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMessage: string): void {

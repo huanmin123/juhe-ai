@@ -312,6 +312,22 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (account_authorization_id) REFERENCES resource_authorizations(id)
     );
 
+    CREATE TABLE IF NOT EXISTS external_integration_account_push_records (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (system_account_id, provider_code, group_id, external_id),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS api_keys (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
@@ -431,6 +447,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_group_accounts_group_enabled ON group_accounts(group_id, enabled, account_id);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_account_scope_enabled ON group_accounts(account_id, system_account_id, enabled);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_scope_enabled_updated ON group_accounts(system_account_id, account_id, enabled, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_external_account_push_records_account ON external_integration_account_push_records(account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_group ON api_keys(group_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);

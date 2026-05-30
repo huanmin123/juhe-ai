@@ -40,7 +40,7 @@
 
 ## 核心结论
 
-- IP 统计是 `juhe-ai` 的规划基础能力，如后续重启公益站外部接口，应先于外部接口落地。
+- IP 统计已经支撑受保护的公益站 IP 聚合读取接口；如后续扩展公益站用户维度快照或公开展示能力，需要先补对应 schema、worker 快照和接口契约。
 - 页面和接口只读预聚合表或窗口表，不能为了 IP 列表临时扫描 `usage_records`。
 - IP 注册 Set 是懒加载性能优化，不是事实源；启动时不全量读取注册表，最终正确性依赖 SQLite 唯一约束和 `INSERT OR IGNORE`。
 - 首期只为 IP 写 `daily` 和范围窗口，避免把 IP 维度直接接入全套 `minute / hourly / weekly / monthly / totals` 造成写放大。

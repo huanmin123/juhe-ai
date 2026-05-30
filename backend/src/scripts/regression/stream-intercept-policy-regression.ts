@@ -3,14 +3,17 @@ import assert from 'node:assert/strict'
 import {
   OpenAIStreamInterceptBuffer
 } from '../../modules/gateway/openai-gateway-stream-intercept.js'
+import { validateAccountStreamInterceptRules } from '../../modules/accounts/account-stream-intercept-policy-validation.js'
 import { pipeUpstreamStream } from '../../modules/gateway/openai-gateway-stream.js'
 import {
   gatewayStreamClientRetryErrorCode
 } from '../../modules/gateway/openai-gateway-responses.js'
 import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
-import type {
-  RuntimeStreamInterceptPolicy
+import {
+  resolveRuntimeStreamInterceptPolicies,
+  type RuntimeStreamInterceptPolicy
 } from '../../modules/gateway/openai-gateway-stream-policy.js'
+import { listStreamInterceptPolicyDefaultRules } from '../../storage/stream-intercept-policy.repository.js'
 
 function policy(overrides: Partial<RuntimeStreamInterceptPolicy>): RuntimeStreamInterceptPolicy {
   return {
@@ -53,6 +56,21 @@ const settings: GatewaySettings = {
 }
 
 {
+  const legacyValidation = validateAccountStreamInterceptRules([
+    {
+      enabled: true,
+      name: '历史账户规则',
+      match: {
+        textIncludes: ['广告污染'],
+        legacyMatchField: 'old_value'
+      },
+      legacyTopLevelField: true
+    }
+  ])
+  assert.equal(legacyValidation.valid, true, '账户级流式规则应忽略未知历史字段，避免旧配置无法保存')
+}
+
+{
   const interceptor = new OpenAIStreamInterceptBuffer({
     policies: [
       policy({
@@ -89,6 +107,26 @@ const settings: GatewaySettings = {
 
 {
   const interceptor = new OpenAIStreamInterceptBuffer({
+    policies: [
+      policy({
+        match: {
+          eventTypes: ['response.output_text.delta'],
+          textIncludes: ['广告污染']
+        },
+        dataHandling: 'discard_stream'
+      })
+    ]
+  })
+  const normalResult = interceptor.pushChunk(visibleOutputEvent)
+  assert.equal(normalResult.chunks.length, 1, '多字段匹配必须同时命中，不能只因 event 类型命中就拦截')
+  assert.equal(normalResult.intercepted, undefined)
+  const pollutedResult = interceptor.pushChunk(pollutedEvent)
+  assert.equal(pollutedResult.intercepted?.action, 'discard_stream', '多字段匹配在 event 类型和文本同时命中时应拦截')
+  assert.equal(pollutedResult.chunks.length, 0)
+}
+
+{
+  const interceptor = new OpenAIStreamInterceptBuffer({
     clientRetryEnabled: true,
     policies: [
       policy({
@@ -111,6 +149,55 @@ const settings: GatewaySettings = {
   assert.equal(result.intercepted?.action, 'replace_with_failure', 'replace_with_failure 应结束当前流')
   assert.match(text, /response\.failed/, 'replace_with_failure 应写入失败事件')
   assert.match(text, new RegExp(gatewayStreamClientRetryErrorCode), '允许客户端重试时应写入客户端可重试错误码')
+}
+
+{
+  const defaultPolicies = resolveRuntimeStreamInterceptPolicies({
+    account: {
+      providerCode: 'openai',
+      credentials: {}
+    } as never,
+    managementPolicies: listStreamInterceptPolicyDefaultRules()
+  })
+  const interceptor = new OpenAIStreamInterceptBuffer({
+    policies: defaultPolicies
+  })
+  const completed = interceptor.pushChunk(sseEvent('response.completed', {
+    response: {
+      error: null,
+      output: [
+        {
+          type: 'message',
+          content: [{ type: 'output_text', text: '正常完成' }]
+        }
+      ]
+    }
+  }))
+  assert.equal(completed.intercepted, undefined, '默认 response.error 规则不应把 response.error:null 当成错误')
+  assert.equal(completed.chunks.length, 1, 'response.error:null 的成功事件应继续转发')
+  const deltaWithNullError = interceptor.pushChunk(sseEvent('response.output_text.delta', {
+    delta: '正常输出',
+    error: null
+  }))
+  assert.equal(deltaWithNullError.intercepted, undefined, '默认 data.error 规则不应把 error:null 当成错误')
+  assert.equal(deltaWithNullError.chunks.length, 1, 'error:null 的普通事件应继续转发')
+
+  const responseError = interceptor.pushChunk(sseEvent('response.completed', {
+    response: {
+      error: {
+        code: 'bad_gateway',
+        message: '上游失败'
+      }
+    }
+  }))
+  assert.equal(responseError.intercepted?.policyId, 'default_openai_response_error', '默认 response.error 规则应拦截真实错误对象')
+  const dataError = interceptor.pushChunk(sseEvent('response.output_text.delta', {
+    error: {
+      code: 'upstream_error',
+      message: '上游事件错误'
+    }
+  }))
+  assert.equal(dataError.intercepted?.policyId, 'default_openai_data_error', '默认 data.error 规则应拦截真实错误对象')
 }
 
 {
@@ -227,4 +314,60 @@ const settings: GatewaySettings = {
   assert.equal(result.intercepted, undefined)
 }
 
-console.log('流式拦截策略回归通过：事件丢弃、流丢弃、失败替换、试运行、写下游前服务端重试和图像文本扫描跳过符合预期')
+{
+  const resolved = resolveRuntimeStreamInterceptPolicies({
+    account: {
+      providerCode: 'openai',
+      credentials: {
+        stream_intercept_rules: [
+          {
+            id: 'account_rule_high_priority',
+            name: '账户高优先级数字规则',
+            priority: 9999,
+            match: { textIncludes: ['广告污染'] },
+            dataHandling: 'discard_stream'
+          }
+        ]
+      }
+    } as never,
+    managementPolicies: [
+      {
+        id: 'default_rule_low_priority',
+        defaultRule: true,
+        editable: false,
+        name: '默认低数字规则',
+        enabled: true,
+        executionMode: 'intercept',
+        priority: 1,
+        providerCode: 'openai',
+        match: { textIncludes: ['广告污染'] },
+        dataHandling: 'replace_with_failure',
+        retryEnabled: true,
+        accountSwitch: 'request_next_account',
+        accountState: 'none'
+      },
+      {
+        id: 'management_rule_low_priority',
+        defaultRule: false,
+        editable: true,
+        name: '管理端低数字规则',
+        enabled: true,
+        executionMode: 'intercept',
+        priority: 1,
+        providerCode: 'openai',
+        match: { textIncludes: ['广告污染'] },
+        dataHandling: 'replace_with_failure',
+        retryEnabled: true,
+        accountSwitch: 'request_next_account',
+        accountState: 'none'
+      }
+    ]
+  })
+  assert.deepEqual(
+    resolved.map((item) => item.id),
+    ['account_rule_high_priority', 'management_rule_low_priority', 'default_rule_low_priority'],
+    '运行时合并必须先按账户 / 管理端 / 默认来源排序，同来源内再按优先级排序'
+  )
+}
+
+console.log('流式拦截策略回归通过：事件丢弃、流丢弃、失败替换、试运行、来源排序、写下游前服务端重试和图像文本扫描跳过符合预期')

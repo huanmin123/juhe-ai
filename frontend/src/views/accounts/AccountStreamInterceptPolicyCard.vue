@@ -8,7 +8,7 @@
               <h4>账户流式拦截规则</h4>
               <a-space :size="6">
                 <a-tag color="purple">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
-                <a-tag color="blue">继承内置和管理端策略</a-tag>
+                <a-tag color="blue">继承默认和管理端策略</a-tag>
               </a-space>
             </div>
           </div>
@@ -146,7 +146,7 @@
             row-key="key"
             size="small"
           />
-          <p class="guide-note">多个值用逗号、分号或换行分隔；同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。账户规则适合处理单个中转的广告、私有错误码或异常事件格式。</p>
+          <p class="guide-note">账户规则中，多个值用逗号、分号或换行分隔；同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。账户规则适合处理单个中转的广告、私有错误码或异常事件格式。</p>
         </section>
 
         <section class="guide-section">

@@ -47,11 +47,19 @@ async function runChild(): Promise<void> {
   const { createSystemApiApp } = await import('../../modules/system-api/system-api-app.js')
   const {
     createExternalIntegrationSourceToken,
+    externalIntegrationAccountPushScope,
     externalIntegrationIpUsageReadScope,
     externalIntegrationSourceAuthDemoScope,
     externalIntegrationTestToken,
     upsertExternalIntegrationSource
   } = await import('../../storage/external-integration-source.repository.js')
+  const {
+    findSystemAccountByUsername,
+    getOperationLogDetail,
+    listOperationLogs,
+    listAccounts,
+    listGroupOptions
+  } = await import('../../storage/repositories.js')
   const { closeStorageDatabases, getDatabase, getStatsDatabase } = await import('../../storage/database.js')
   const clientIpStats = await import('../../storage/client-ip-stats.repository.js')
   const usageStatsHelpers = await import('../../storage/usage-stats-helpers.js')
@@ -62,6 +70,7 @@ async function runChild(): Promise<void> {
   const disabledSourceToken = 'juis_disabled_source_demo_token_32_chars'
   const limitedSourceToken = 'juis_limited_source_demo_token_32_chars'
   const ipUsageToken = 'juis_valid_ip_usage_public_token_32_chars'
+  const accountPushToken = 'juis_valid_account_push_public_token_32_chars'
 
   const source = upsertExternalIntegrationSource({
     name: sourceName,
@@ -113,6 +122,17 @@ async function runChild(): Promise<void> {
     name: 'ip-usage-token',
     token: ipUsageToken,
     scopes: [externalIntegrationIpUsageReadScope]
+  })
+  const accountPushSource = upsertExternalIntegrationSource({
+    name: '公益账号推送来源',
+    status: 'active',
+    scopes: [externalIntegrationAccountPushScope]
+  })
+  createExternalIntegrationSourceToken({
+    sourceRefId: accountPushSource.id,
+    name: 'account-push-token',
+    token: accountPushToken,
+    scopes: [externalIntegrationAccountPushScope]
   })
   seedClientIpUsageWindow(clientIpStats, usageStatsHelpers, getStatsDatabase)
 
@@ -199,6 +219,12 @@ async function runChild(): Promise<void> {
     assert.equal(ipUsage.body.data.items[0].averageDurationMs, 240)
     assert.equal(ipUsage.body.data.items[0].maxDurationMs, 400)
 
+    const customIpUsage = await requestJson(baseUrl, '/__aipublic__/juhe-ai/ip-usage?startDate=2026-05-24&endDate=2026-05-30', {
+      Authorization: `Bearer ${ipUsageToken}`
+    })
+    assert.equal(customIpUsage.status, 400)
+    assert.match(customIpUsage.body.message, /暂不支持自定义日期范围/, '公开 IP 聚合接口不应宣称并接受未预生成的自定义窗口')
+
     const consumptionRanking = await requestJson(baseUrl, '/__aipublic__/juhe-ai/consumption-ranking?range=today&limit=1&metric=requestCount', {
       Authorization: `Bearer ${ipUsageToken}`
     })
@@ -212,7 +238,204 @@ async function runChild(): Promise<void> {
     })
     assert.equal(accessInfo.status, 200)
     assert.equal(accessInfo.body.data.dataDimension, 'client_ip')
+    assert.deepEqual(accessInfo.body.data.supportedRanges, ['today', 'last7d', 'last31d'], '接入信息只能声明后台已维护的固定窗口')
     assert(accessInfo.body.data.boundary.notProvided.includes('公益站用户维度排行榜快照'), '接入信息应明确公益站业务快照不由 sub2api-lite 提供')
+
+    const accountPushNoScope = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${ipUsageToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      name: '公益站测试账号',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-001'
+    })
+    assert.equal(accountPushNoScope.status, 403)
+    assert.equal(accountPushNoScope.body.code, 'external_source_scope_forbidden', '账号推送接口必须使用独立写入 scope')
+
+    const mockAccountPush = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${externalIntegrationTestToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      name: '公益站测试账号',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-mock',
+      supportedModels: ['gpt-5.5']
+    })
+    assert.equal(mockAccountPush.status, 200)
+    assert.equal(mockAccountPush.body.data.source, 'mock')
+    assert.equal(Object.prototype.hasOwnProperty.call(mockAccountPush.body.data.account, 'credentials'), false, '账号推送响应不能返回凭据')
+
+    const illegalTypePush = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${accountPushToken}`
+    }, 'POST', {
+      targetUsername: 'illegal_type_user',
+      targetGroupName: '非法类型分组',
+      providerCode: 'openai',
+      name: '非法 OAuth 推送账号',
+      type: 'oauth',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-illegal-type'
+    })
+    assert.equal(illegalTypePush.status, 400)
+    assert.match(illegalTypePush.body.message, /仅支持 API Key/, '账号推送不应接受 OAuth 或其他非 API Key 类型')
+    assert.equal(findSystemAccountByUsername('illegal_type_user'), undefined, '非法类型在路由校验阶段不应创建目标用户')
+
+    const invalidModelPush = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${accountPushToken}`
+    }, 'POST', {
+      targetUsername: 'invalid_model_user',
+      targetGroupName: '无效模型分组',
+      providerCode: 'openai',
+      name: '无效模型推送账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-invalid-model',
+      supportedModels: ['definitely-not-a-real-model']
+    })
+    assert.equal(invalidModelPush.status, 400)
+    assert.match(invalidModelPush.body.message, /账户支持模型不在供应商模型目录中/, '无效模型应由账号校验拒绝')
+    assert.equal(findSystemAccountByUsername('invalid_model_user'), undefined, '账号创建失败后不应残留自动创建的目标用户')
+    const invalidModelGroupResidue = getDatabase()
+      .prepare("SELECT COUNT(*) AS total FROM groups WHERE name = '无效模型分组'")
+      .get() as { total?: number } | undefined
+    assert.equal(Number(invalidModelGroupResidue?.total ?? 0), 0, '账号创建失败后不应残留自动创建的目标分组')
+
+    const businessDatabaseForAccountPush = getDatabase()
+    const originalAccountPushPrepare = businessDatabaseForAccountPush.prepare.bind(businessDatabaseForAccountPush) as typeof businessDatabaseForAccountPush.prepare
+    const accountNotesLookupSqls: string[] = []
+    businessDatabaseForAccountPush.prepare = ((sql: string) => {
+      if (/\baccounts\.notes\s+LIKE\s+\?/i.test(sql)) {
+        accountNotesLookupSqls.push(sql)
+      }
+      return originalAccountPushPrepare(sql)
+    }) as typeof businessDatabaseForAccountPush.prepare
+    try {
+      const longExternalId = 'juhe-ai-public-welfare:ai-registration:10012'
+      const shortExternalId = 'juhe-ai-public-welfare:ai-registration:1001'
+      const longExternalIdPush = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+        Authorization: `Bearer ${accountPushToken}`
+      }, 'POST', {
+        targetUsername: 'external_id_collision_user',
+        targetGroupName: '外部 ID 碰撞分组',
+        providerCode: 'openai',
+        name: '外部 ID 长前缀账号',
+        type: 'api_key',
+        baseUrl: 'https://push.example/v1',
+        apiKey: 'sk-public-push-regression-long-external-id',
+        supportedModels: ['gpt-5.5'],
+        externalId: longExternalId
+      })
+      assert.equal(longExternalIdPush.status, 201)
+
+      const shortExternalIdPush = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+        Authorization: `Bearer ${accountPushToken}`
+      }, 'POST', {
+        targetUsername: 'external_id_collision_user',
+        targetGroupName: '外部 ID 碰撞分组',
+        providerCode: 'openai',
+        name: '外部 ID 短前缀账号',
+        type: 'api_key',
+        baseUrl: 'https://push.example/v1',
+        apiKey: 'sk-public-push-regression-short-external-id',
+        supportedModels: ['gpt-5.5'],
+        externalId: shortExternalId
+      })
+      assert.equal(shortExternalIdPush.status, 201, '前缀相同但不完全相同的 externalId 不应更新已有账号')
+      assert.notEqual(shortExternalIdPush.body.data.account.id, longExternalIdPush.body.data.account.id, '不同 externalId 应绑定到不同账号')
+    } finally {
+      businessDatabaseForAccountPush.prepare = originalAccountPushPrepare
+    }
+    assert.equal(accountNotesLookupSqls.length, 0, '账号推送 externalId 幂等匹配不应扫描 accounts.notes 长文本')
+
+    const accountPush = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${accountPushToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'openai',
+      name: '公益站测试账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-001',
+      supportedModels: ['gpt-5.5'],
+      status: 'active',
+      externalId: 'juhe-ai-public-welfare:ai-registration:1001'
+    })
+    assert.equal(accountPush.status, 201)
+    assert.equal(accountPush.body.data.source, 'stats')
+    assert.equal(accountPush.body.data.action, 'created')
+    assert.equal(accountPush.body.data.target.username, 'huanmin')
+    assert.equal(accountPush.body.data.target.groupName, '福利')
+    assert.equal(accountPush.body.data.target.created, true)
+    assert.equal(accountPush.body.data.target.groupCreated, true)
+    assert.equal(accountPush.body.data.account.name, '公益站测试账号')
+    assert.equal(Object.prototype.hasOwnProperty.call(accountPush.body.data.account, 'credentials'), false, '正式推送响应不能返回凭据')
+
+    const targetAccount = findSystemAccountByUsername('huanmin')
+    assert(targetAccount, '账号推送应自动创建目标用户 huanmin')
+    const targetAccess = { systemAccountId: targetAccount.id, role: 'user' as const }
+    const welfareGroup = listGroupOptions(targetAccess, { keyword: '福利', providerCode: 'openai' })
+      .find((item) => item.name === '福利')
+    assert(welfareGroup, '账号推送应自动创建福利分组')
+    const pushedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号', providerCode: 'openai', groupId: welfareGroup.id })
+      .find((item) => item.name === '公益站测试账号')
+    assert(pushedAccount, '账号推送应把账号绑定到福利分组')
+    assert.equal(pushedAccount.boundGroupId, welfareGroup.id)
+    const pushLogs = listOperationLogs({
+      module: 'external_integrations',
+      action: 'account_push',
+      resourceId: pushedAccount.id,
+      pageSize: 10
+    })
+    assert.equal(pushLogs.items.length, 1, '正式公益账号推送应写入可追踪的操作日志')
+    const pushLogDetail = getOperationLogDetail(pushLogs.items[0].id)
+    assert(pushLogDetail, '正式公益账号推送操作日志应可读取详情')
+    assert.equal(pushLogDetail.metadata?.sourceRefId, accountPushSource.id, '操作日志详情应记录来源系统 ID')
+    assert.equal(pushLogDetail.metadata?.tokenPrefix, accountPushToken.slice(0, 12), '操作日志详情应记录来源 token 前缀')
+
+    const accountPushUpdate = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${accountPushToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'openai',
+      name: '公益站测试账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-001',
+      supportedModels: ['gpt-5.5', 'gpt-5.4'],
+      status: 'disabled',
+      externalId: 'juhe-ai-public-welfare:ai-registration:1001'
+    })
+    assert.equal(accountPushUpdate.status, 200)
+    assert.equal(accountPushUpdate.body.data.action, 'updated')
+    assert.equal(accountPushUpdate.body.data.account.id, accountPush.body.data.account.id)
+    assert.equal(accountPushUpdate.body.data.account.status, 'disabled')
+
+    const accountPushRename = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${accountPushToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'openai',
+      name: '公益站测试账号新版',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-001',
+      supportedModels: ['gpt-5.5', 'gpt-5.4'],
+      status: 'active',
+      externalId: 'juhe-ai-public-welfare:ai-registration:1001'
+    })
+    assert.equal(accountPushRename.status, 200)
+    assert.equal(accountPushRename.body.data.action, 'updated')
+    assert.equal(accountPushRename.body.data.account.id, accountPush.body.data.account.id)
+    assert.equal(accountPushRename.body.data.account.name, '公益站测试账号新版')
+    assert.equal(accountPushRename.body.data.account.status, 'active')
+    const renamedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号新版', providerCode: 'openai', groupId: welfareGroup.id })
+      .find((item) => item.name === '公益站测试账号新版')
+    assert.equal(renamedAccount?.id, pushedAccount.id, '同一 externalId 的公益账号改名应更新原账号，不能因凭据重复创建失败')
 
     await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
       Authorization: `Bearer ${limitedSourceToken}`
@@ -246,7 +469,7 @@ async function runChild(): Promise<void> {
     closeStorageDatabases()
   }
 
-  console.log('外部来源系统鉴权和公开 IP 聚合接口回归通过：公开前缀、Bearer token、测试 token mock、scope、停用来源、限频、后台登录边界和 IP 聚合读取均符合预期')
+  console.log('外部来源系统鉴权、公开 IP 聚合和公益账号推送接口回归通过：公开前缀、Bearer token、测试 token mock、scope、停用来源、限频、后台登录边界、IP 聚合读取和账号推送均符合预期')
 }
 
 function seedClientIpUsageWindow(
@@ -341,11 +564,21 @@ function closeServer(server: Server): Promise<void> {
   })
 }
 
-async function requestJson(baseUrl: string, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: any }> {
-  const response = await fetch(`${baseUrl}${path}`, { headers })
-  const body = await response.json()
+async function requestJson(
+  baseUrl: string,
+  path: string,
+  headers: Record<string, string> = {},
+  method = 'GET',
+  body?: unknown
+): Promise<{ status: number; body: any }> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  })
+  const responseBody = await response.json()
   return {
     status: response.status,
-    body
+    body: responseBody
   }
 }

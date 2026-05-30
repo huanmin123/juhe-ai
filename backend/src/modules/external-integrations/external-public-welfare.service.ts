@@ -17,8 +17,6 @@ export type PublicWelfareDataSource = 'stats' | 'mock'
 
 export interface PublicClientIpUsageQuery {
   range?: PublicWelfareRangePreset
-  startDate?: string
-  endDate?: string
   page?: number
   pageSize?: number
   limit?: number
@@ -29,14 +27,12 @@ export interface PublicClientIpUsageQuery {
 
 export interface PublicConsumptionRankingQuery {
   range?: PublicWelfareRangePreset
-  startDate?: string
-  endDate?: string
   limit?: number
   metric?: PublicConsumptionRankingMetric
 }
 
 export interface PublicWelfareRange {
-  preset: PublicWelfareRangePreset | 'custom'
+  preset: PublicWelfareRangePreset
   label: string
   startDate: string
   endDate: string
@@ -103,10 +99,10 @@ export interface PublicAccessInfoResponse {
   publicApiPrefix: '/__aipublic__'
   dataDimension: 'client_ip'
   authType: 'Bearer'
-  supportedRanges: Array<PublicWelfareRangePreset | 'custom'>
+  supportedRanges: PublicWelfareRangePreset[]
   supportedMetrics: PublicConsumptionRankingMetric[]
   endpoints: Array<{
-    method: 'GET'
+    method: 'GET' | 'POST'
     path: string
     description: string
   }>
@@ -236,8 +232,6 @@ export function getPublicConsumptionRanking(input: PublicConsumptionRankingQuery
   const metric = input.metric ?? 'totalTokens'
   const usage = getPublicClientIpUsage({
     range: input.range,
-    startDate: input.startDate,
-    endDate: input.endDate,
     page: 1,
     pageSize: boundedInteger(input.limit, 1, 100, 20),
     sortField: consumptionMetricSortField(metric),
@@ -267,7 +261,7 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
     publicApiPrefix: '/__aipublic__',
     dataDimension: 'client_ip',
     authType: 'Bearer',
-    supportedRanges: ['today', 'last7d', 'last31d', 'custom'],
+    supportedRanges: ['today', 'last7d', 'last31d'],
     supportedMetrics: ['totalTokens', 'totalCost', 'requestCount'],
     endpoints: [
       {
@@ -284,13 +278,19 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
         method: 'GET',
         path: '/__aipublic__/juhe-ai/access-info',
         description: '读取公开接口接入边界和可用指标。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/juhe-ai/accounts',
+        description: '把公益站登记账号推送到指定系统用户和分组。'
       }
     ],
     boundary: {
       provides: [
         '来源系统 Bearer token 鉴权',
         'IP 维度请求数、Token、缓存、成本、活跃天数和速度指标聚合',
-        '基于 IP 聚合表的消耗排行便利视图'
+        '基于 IP 聚合表的消耗排行便利视图',
+        '公益站登记账号向指定系统用户和分组的写入入口'
       ],
       notProvided: [
         '公益站用户维度排行榜快照',
@@ -302,17 +302,13 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
   }
 }
 
-function resolvePublicRange(input: { range?: PublicWelfareRangePreset; startDate?: string; endDate?: string }): PublicWelfareRange {
+function resolvePublicRange(input: { range?: PublicWelfareRangePreset }): PublicWelfareRange {
   const timezone = usageStatsTimezone()
-  const preset = input.startDate || input.endDate ? 'custom' : input.range ?? 'today'
+  const preset = input.range ?? 'today'
   const today = new Date()
-  let startDate = input.startDate
-  let endDate = input.endDate
-  if (!startDate && !endDate) {
-    const days = preset === 'last31d' ? 31 : preset === 'last7d' ? 7 : 1
-    startDate = dateKey(new Date(today.getTime() - (days - 1) * dayMs), timezone)
-    endDate = dateKey(today, timezone)
-  }
+  const days = preset === 'last31d' ? 31 : preset === 'last7d' ? 7 : 1
+  const startDate = dateKey(new Date(today.getTime() - (days - 1) * dayMs), timezone)
+  const endDate = dateKey(today, timezone)
   const range = normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
   return {
     preset,
@@ -327,8 +323,6 @@ function publicRangeLabel(preset: PublicWelfareRange['preset']): string {
       return '最近31天'
     case 'last7d':
       return '最近7天'
-    case 'custom':
-      return '自定义'
     case 'today':
     default:
       return '今日'

@@ -64,6 +64,7 @@ export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './u
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
 const PROCESS_EVENT_LOOP_PEAK_WINDOW_MS = 24 * 60 * 60 * 1000
+const USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY = 1
 export const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
 let usageStatsShardScanOffset = 0
 
@@ -453,6 +454,21 @@ interface UsageRankSnapshotContext {
 interface UsageRankSnapshotStage {
   name: string
   run: (database: DatabaseSync, context: UsageRankSnapshotContext) => void
+  runInBackground?: (database: DatabaseSync, context: UsageRankSnapshotContext, options: UsageRankSnapshotBackgroundStageOptions) => Promise<void>
+}
+
+interface UsageRankSnapshotBackgroundStageOptions {
+  yieldToEventLoop: () => Promise<void>
+}
+
+export interface UsageRankSnapshotStageRuntime {
+  name: string
+  durationMs: number
+}
+
+export interface UsageRankSnapshotRefreshResult {
+  durationMs: number
+  stages: UsageRankSnapshotStageRuntime[]
 }
 
 export function refreshUsageRankSnapshots(): void {
@@ -484,23 +500,48 @@ export function refreshUsageQuotaHourlyWindowsCache(): void {
 
 export async function refreshUsageRankSnapshotsInStages(options: {
   yieldToEventLoop?: () => Promise<void>
-} = {}): Promise<void> {
+} = {}): Promise<UsageRankSnapshotRefreshResult> {
   const database = getStatsDatabase()
   const context = createUsageRankSnapshotContext(database)
   const stages = usageRankSnapshotStages()
   const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
+  const startedAt = Date.now()
+  const stageRuntimes: UsageRankSnapshotStageRuntime[] = []
   for (let index = 0; index < stages.length; index += 1) {
-    const transactionStarted = beginDatabaseTransaction(database)
-    try {
-      stages[index].run(database, context)
-      commitDatabaseTransaction(database, transactionStarted)
-    } catch (error) {
-      rollbackDatabaseTransaction(database, transactionStarted)
-      throw error
-    }
+    const stageStartedAt = Date.now()
+    await runUsageRankSnapshotStageInBackground(database, context, stages[index], yieldToEventLoop)
+    stageRuntimes.push({
+      name: stages[index].name,
+      durationMs: Date.now() - stageStartedAt
+    })
     if (index < stages.length - 1) {
       await yieldToEventLoop()
     }
+  }
+  return {
+    durationMs: Date.now() - startedAt,
+    stages: stageRuntimes
+  }
+}
+
+async function runUsageRankSnapshotStageInBackground(
+  database: DatabaseSync,
+  context: UsageRankSnapshotContext,
+  stage: UsageRankSnapshotStage,
+  yieldToEventLoop: () => Promise<void>
+): Promise<void> {
+  if (stage.runInBackground) {
+    await stage.runInBackground(database, context, { yieldToEventLoop })
+    return
+  }
+
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    stage.run(database, context)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
   }
 }
 
@@ -560,11 +601,13 @@ function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
     },
     {
       name: 'usage_scope_range_windows',
-      run: (database, context) => refreshUsageScopeRangeWindowSnapshots(database, context.updatedAt, context.timezone)
+      run: (database, context) => refreshUsageScopeRangeWindowSnapshots(database, context.updatedAt, context.timezone),
+      runInBackground: (database, context, options) => refreshUsageScopeRangeWindowSnapshotsInStages(database, context.updatedAt, context.timezone, options.yieldToEventLoop)
     },
     {
       name: 'authorization_usage_range_windows',
-      run: (database, context) => refreshAuthorizationUsageRangeWindowSnapshots(database, context.updatedAt, context.timezone)
+      run: (database, context) => refreshAuthorizationUsageRangeWindowSnapshots(database, context.updatedAt, context.timezone),
+      runInBackground: (database, context, options) => refreshAuthorizationUsageRangeWindowSnapshotsInStages(database, context.updatedAt, context.timezone, options.yieldToEventLoop)
     }
   ]
 }
@@ -1167,6 +1210,331 @@ function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, u
       insertTeamRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
       insertUserRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
     }
+  }
+}
+
+async function refreshUsageScopeRangeWindowSnapshotsInStages(
+  database: DatabaseSync,
+  updatedAt: string,
+  timezone: string,
+  yieldToEventLoop: () => Promise<void>
+): Promise<void> {
+  const todayKey = dateKey(new Date(), timezone)
+  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  if (!dates.length) return
+  const tempTableName = 'usage_scope_range_windows_refresh_tmp'
+  prepareUsageScopeRangeWindowRefreshTempTable(database, tempTableName)
+  try {
+    database.prepare(`DELETE FROM ${tempTableName}`).run()
+    const insert = database.prepare(`
+      INSERT INTO ${tempTableName} (
+        system_account_id, scope_type, scope_id, start_date, end_date,
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      )
+      SELECT
+        system_account_id,
+        scope_type,
+        scope_id,
+        ?,
+        ?,
+        COALESCE(SUM(request_count), 0),
+        COALESCE(SUM(input_tokens), 0),
+        COALESCE(SUM(output_tokens), 0),
+        COALESCE(SUM(cache_read_tokens), 0),
+        COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(total_cost_usd), 0),
+        MAX(last_used_at),
+        ?
+      FROM usage_stats_daily
+      WHERE stat_date >= ?
+        AND stat_date <= ?
+      GROUP BY system_account_id, scope_type, scope_id
+      HAVING COALESCE(SUM(request_count), 0) > 0
+        OR COALESCE(SUM(input_tokens), 0) > 0
+        OR COALESCE(SUM(output_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
+    `)
+    let processedRanges = 0
+    for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
+      for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
+        const startDate = dates[startIndex]
+        const rangeEndDate = dates[endIndex]
+        insert.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
+        processedRanges += 1
+        if (processedRanges % USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY === 0) {
+          await yieldToEventLoop()
+        }
+      }
+    }
+    publishUsageScopeRangeWindowSnapshots(database, dates[0], todayKey, tempTableName)
+  } finally {
+    clearTemporaryRangeWindowTable(database, tempTableName)
+  }
+}
+
+async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
+  database: DatabaseSync,
+  updatedAt: string,
+  timezone: string,
+  yieldToEventLoop: () => Promise<void>
+): Promise<void> {
+  const todayKey = dateKey(new Date(), timezone)
+  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  if (!dates.length) return
+  const teamTempTableName = 'authorization_team_usage_range_windows_refresh_tmp'
+  const userTempTableName = 'authorization_user_usage_range_windows_refresh_tmp'
+  prepareAuthorizationUsageRangeWindowRefreshTempTables(database, teamTempTableName, userTempTableName)
+  try {
+    database.prepare(`DELETE FROM ${teamTempTableName}`).run()
+    database.prepare(`DELETE FROM ${userTempTableName}`).run()
+
+    const insertTeamRange = database.prepare(`
+      INSERT INTO ${teamTempTableName} (
+        system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      )
+      SELECT
+        system_account_id,
+        ?,
+        ?,
+        team_filter_id,
+        resource_filter_type,
+        resource_filter_id,
+        COALESCE(SUM(request_count), 0),
+        COALESCE(SUM(input_tokens), 0),
+        COALESCE(SUM(output_tokens), 0),
+        COALESCE(SUM(cache_read_tokens), 0),
+        COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(total_cost_usd), 0),
+        MAX(last_used_at),
+        ?
+      FROM authorization_team_usage_summary_daily
+      WHERE stat_date >= ?
+        AND stat_date <= ?
+      GROUP BY system_account_id, team_filter_id, resource_filter_type, resource_filter_id
+      HAVING COALESCE(SUM(request_count), 0) > 0
+        OR COALESCE(SUM(input_tokens), 0) > 0
+        OR COALESCE(SUM(output_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
+    `)
+    const insertUserRange = database.prepare(`
+      INSERT INTO ${userTempTableName} (
+        system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      )
+      SELECT
+        system_account_id,
+        ?,
+        ?,
+        team_filter_id,
+        grantee_filter_system_account_id,
+        resource_filter_type,
+        resource_filter_id,
+        COALESCE(SUM(request_count), 0),
+        COALESCE(SUM(input_tokens), 0),
+        COALESCE(SUM(output_tokens), 0),
+        COALESCE(SUM(cache_read_tokens), 0),
+        COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(total_cost_usd), 0),
+        MAX(last_used_at),
+        ?
+      FROM authorization_user_usage_summary_daily
+      WHERE stat_date >= ?
+        AND stat_date <= ?
+      GROUP BY system_account_id, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id
+      HAVING COALESCE(SUM(request_count), 0) > 0
+        OR COALESCE(SUM(input_tokens), 0) > 0
+        OR COALESCE(SUM(output_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
+    `)
+    let processedRanges = 0
+    for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
+      for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
+        const startDate = dates[startIndex]
+        const rangeEndDate = dates[endIndex]
+        insertTeamRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
+        insertUserRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
+        processedRanges += 1
+        if (processedRanges % USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY === 0) {
+          await yieldToEventLoop()
+        }
+      }
+    }
+    publishAuthorizationUsageRangeWindowSnapshots(database, dates[0], todayKey, teamTempTableName, userTempTableName)
+  } finally {
+    clearTemporaryRangeWindowTable(database, teamTempTableName)
+    clearTemporaryRangeWindowTable(database, userTempTableName)
+  }
+}
+
+function prepareUsageScopeRangeWindowRefreshTempTable(database: DatabaseSync, tableName: string): void {
+  database.prepare(`
+    CREATE TEMP TABLE IF NOT EXISTS ${tableName} (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, start_date, end_date)
+    )
+  `).run()
+}
+
+function prepareAuthorizationUsageRangeWindowRefreshTempTables(database: DatabaseSync, teamTableName: string, userTableName: string): void {
+  database.prepare(`
+    CREATE TEMP TABLE IF NOT EXISTS ${teamTableName} (
+      system_account_id TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      team_filter_id TEXT NOT NULL DEFAULT '',
+      resource_filter_type TEXT NOT NULL DEFAULT 'all',
+      resource_filter_id TEXT NOT NULL DEFAULT '',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)
+    )
+  `).run()
+  database.prepare(`
+    CREATE TEMP TABLE IF NOT EXISTS ${userTableName} (
+      system_account_id TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      team_filter_id TEXT NOT NULL DEFAULT '',
+      grantee_filter_system_account_id TEXT NOT NULL DEFAULT '',
+      resource_filter_type TEXT NOT NULL DEFAULT 'all',
+      resource_filter_id TEXT NOT NULL DEFAULT '',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
+    )
+  `).run()
+}
+
+function publishUsageScopeRangeWindowSnapshots(database: DatabaseSync, startDate: string, endDate: string, tempTableName: string): void {
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date >= ? AND end_date <= ?').run(startDate, endDate)
+    database.prepare(`
+      INSERT INTO usage_scope_range_windows (
+        system_account_id, scope_type, scope_id, start_date, end_date,
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      )
+      SELECT
+        system_account_id,
+        scope_type,
+        scope_id,
+        start_date,
+        end_date,
+        request_count,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_read_cost_usd,
+        total_cost_usd,
+        last_used_at,
+        updated_at
+      FROM ${tempTableName}
+    `).run()
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function publishAuthorizationUsageRangeWindowSnapshots(
+  database: DatabaseSync,
+  startDate: string,
+  endDate: string,
+  teamTempTableName: string,
+  userTempTableName: string
+): void {
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database.prepare('DELETE FROM authorization_team_usage_range_windows WHERE end_date >= ? AND end_date <= ?').run(startDate, endDate)
+    database.prepare('DELETE FROM authorization_user_usage_range_windows WHERE end_date >= ? AND end_date <= ?').run(startDate, endDate)
+    database.prepare(`
+      INSERT INTO authorization_team_usage_range_windows (
+        system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      )
+      SELECT
+        system_account_id,
+        start_date,
+        end_date,
+        team_filter_id,
+        resource_filter_type,
+        resource_filter_id,
+        request_count,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_read_cost_usd,
+        total_cost_usd,
+        last_used_at,
+        updated_at
+      FROM ${teamTempTableName}
+    `).run()
+    database.prepare(`
+      INSERT INTO authorization_user_usage_range_windows (
+        system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      )
+      SELECT
+        system_account_id,
+        start_date,
+        end_date,
+        team_filter_id,
+        grantee_filter_system_account_id,
+        resource_filter_type,
+        resource_filter_id,
+        request_count,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_read_cost_usd,
+        total_cost_usd,
+        last_used_at,
+        updated_at
+      FROM ${userTempTableName}
+    `).run()
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function clearTemporaryRangeWindowTable(database: DatabaseSync, tableName: string): void {
+  try {
+    database.prepare(`DELETE FROM ${tableName}`).run()
+  } catch {
   }
 }
 

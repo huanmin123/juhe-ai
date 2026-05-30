@@ -2075,6 +2075,53 @@ function buildDeletedAccountCleanupTarget(database: DatabaseSync, row: AccountDe
 }
 
 function detachAuthorizationInstancesFromDeletedSourceAccount(database: DatabaseSync, sourceAccountId: string): void {
+  const source = database
+    .prepare(`
+      SELECT provider_code, type, credentials_encrypted, credential_mask, proxy_profile_id,
+        concurrency_limit, passthrough_enabled, error_policy_id
+      FROM accounts
+      WHERE id = ?
+      LIMIT 1
+    `)
+    .get(sourceAccountId) as unknown as Pick<AccountRow, 'provider_code' | 'type' | 'credentials_encrypted' | 'credential_mask' | 'proxy_profile_id' | 'concurrency_limit' | 'passthrough_enabled' | 'error_policy_id'> | undefined
+  const instances = database
+    .prepare('SELECT id FROM accounts WHERE authorization_instance_source_account_id = ?')
+    .all(sourceAccountId) as unknown as Array<{ id?: string }>
+  const updatedAt = nowIso()
+  if (source && instances.length > 0) {
+    const supportedModels = loadSupportedModelsByAccountIds([sourceAccountId]).get(sourceAccountId) ?? []
+    const updateInstance = database.prepare(`
+      UPDATE accounts
+      SET type = ?,
+          credentials_encrypted = ?,
+          credential_mask = ?,
+          proxy_profile_id = ?,
+          concurrency_limit = ?,
+          passthrough_enabled = ?,
+          error_policy_id = ?,
+          authorization_instance_source_account_id = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND authorization_instance_source_account_id = ?
+    `)
+    for (const instance of instances) {
+      if (!instance.id) continue
+      updateInstance.run(
+        source.type,
+        source.credentials_encrypted,
+        source.credential_mask ?? '',
+        source.proxy_profile_id ?? null,
+        source.concurrency_limit,
+        source.passthrough_enabled,
+        source.error_policy_id ?? null,
+        updatedAt,
+        instance.id,
+        sourceAccountId
+      )
+      replaceAccountSupportedModels(instance.id, source.provider_code, supportedModels)
+    }
+    return
+  }
   database
     .prepare(`
       UPDATE accounts
@@ -2082,7 +2129,7 @@ function detachAuthorizationInstancesFromDeletedSourceAccount(database: Database
           updated_at = ?
       WHERE authorization_instance_source_account_id = ?
     `)
-    .run(nowIso(), sourceAccountId)
+    .run(updatedAt, sourceAccountId)
 }
 
 interface ClearAccountFailureStateOptions {

@@ -20,6 +20,7 @@ const usageRecordSortColumns: Record<UsageRecordSortField, string> = {
 
 const usageRecordDefaultPageSize = 50
 const usageRecordMaxPageSize = 200
+const usageRecordMaxPage = 1000
 
 export function normalizeUsageRecordListOptions(options?: UsageRecordListOptions): NormalizedUsageRecordListOptions {
   const sortBy = options?.sortBy && Object.prototype.hasOwnProperty.call(usageRecordSortColumns, options.sortBy)
@@ -28,7 +29,7 @@ export function normalizeUsageRecordListOptions(options?: UsageRecordListOptions
   const sortOrder = options?.sortOrder === 'asc' ? 'asc' : 'desc'
   const rawPage = options?.page
   const rawPageSize = options?.pageSize ?? options?.limit
-  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.min(usageRecordMaxPage, Math.max(1, rawPage)) : 1
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(usageRecordMaxPageSize, Math.max(1, rawPageSize))
     : usageRecordDefaultPageSize

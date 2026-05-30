@@ -345,7 +345,7 @@ export interface ExternalIntegrationSourceListParams {
   status?: ExternalIntegrationSourceStatus | 'all'
 }
 
-export type StreamInterceptPolicyPayload = Omit<StreamInterceptPolicySummary, 'id' | 'builtIn' | 'editable' | 'createdAt' | 'updatedAt'>
+export type StreamInterceptPolicyPayload = Omit<StreamInterceptPolicySummary, 'id' | 'defaultRule' | 'editable' | 'createdAt' | 'updatedAt'>
 
 export type ModelCheckListParams = ModelCheckRunListParams
 

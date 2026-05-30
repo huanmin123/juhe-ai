@@ -6,12 +6,14 @@ import { getDatabase, newId, nowIso } from './database.js'
 
 export const externalIntegrationSourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
 export const externalIntegrationIpUsageReadScope = 'juhe_ai_ip_usage:read'
+export const externalIntegrationAccountPushScope = 'juhe_ai_account_push:write'
 export const externalIntegrationTestToken = process.env.JUHE_AI_EXTERNAL_SOURCE_TEST_TOKEN?.trim() || 'juis_test_mock_public_token'
 export const externalIntegrationTestTokenPrefix = externalIntegrationTestToken.slice(0, 12)
 
 export const externalIntegrationScopeOptions = [
   { value: externalIntegrationSourceAuthDemoScope, label: '来源鉴权 demo' },
-  { value: externalIntegrationIpUsageReadScope, label: 'IP 聚合读取' }
+  { value: externalIntegrationIpUsageReadScope, label: 'IP 聚合读取' },
+  { value: externalIntegrationAccountPushScope, label: '公益账号推送' }
 ] as const
 
 export type ExternalIntegrationSourceStatus = 'active' | 'disabled'

@@ -15,7 +15,7 @@ export interface StreamInterceptPolicyMatch {
 
 export interface StreamInterceptPolicySummary {
   id: string
-  builtIn: boolean
+  defaultRule: boolean
   editable: boolean
   name: string
   enabled: boolean
@@ -33,6 +33,6 @@ export interface StreamInterceptPolicySummary {
 }
 
 export interface StreamInterceptPolicyListResult {
-  presets: StreamInterceptPolicySummary[]
+  defaultRules: StreamInterceptPolicySummary[]
   policies: StreamInterceptPolicySummary[]
 }

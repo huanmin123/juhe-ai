@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { getUsageRecordDetail, listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
-import { startOfZonedDateKeyIso, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
+import { dateKey, startOfZonedDateKeyIso, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { buildProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
 
@@ -28,6 +28,8 @@ usageRecordsRouter.get('/:id', (req, res) => {
 
 const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt', 'firstTokenMs', 'durationMs', 'costUsd'])
 const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest'])
+const usageRecordDefaultLookbackDays = 31
+const dayMs = 24 * 60 * 60 * 1000
 
 function withCostBreakdown(record: UsageRecordSummary) {
   return {
@@ -90,7 +92,9 @@ function dateRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?
   const startDate = dateQueryValue(startValue)
   const endDate = dateQueryValue(endValue)
   if (!startDate && !endDate) {
-    return {}
+    return optionalQueryText(startValue) || optionalQueryText(endValue)
+      ? {}
+      : defaultUsageRecordDateRange()
   }
   const start = startDate ?? endDate
   const end = endDate ?? startDate
@@ -102,6 +106,17 @@ function dateRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?
   return {
     startAt: startOfDateKeyIso(rangeStart),
     endAt: startOfDateKeyIso(nextDateKey(rangeEnd))
+  }
+}
+
+function defaultUsageRecordDateRange(): { startAt?: string; endAt?: string } {
+  const timezone = usageStatsTimezone()
+  const today = new Date()
+  const startDate = dateKey(new Date(today.getTime() - (usageRecordDefaultLookbackDays - 1) * dayMs), timezone)
+  const endDate = dateKey(today, timezone)
+  return {
+    startAt: startOfDateKeyIso(startDate),
+    endAt: startOfDateKeyIso(nextDateKey(endDate))
   }
 }
 

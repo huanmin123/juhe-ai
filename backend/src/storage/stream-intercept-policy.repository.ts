@@ -18,7 +18,7 @@ export interface StreamInterceptPolicyMatch {
 
 export interface StreamInterceptPolicySummary {
   id: string
-  builtIn: boolean
+  defaultRule: boolean
   editable: boolean
   name: string
   enabled: boolean
@@ -74,34 +74,87 @@ const dataHandlings = new Set<StreamInterceptPolicyDataHandling>(['discard_event
 const accountSwitches = new Set<StreamInterceptPolicyAccountSwitch>(['none', 'request_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl'])
 const accountStates = new Set<StreamInterceptPolicyAccountState>(['none', 'runtime_avoidance'])
 
-const builtInPresets: StreamInterceptPolicySummary[] = [
+const systemDefaultRules: StreamInterceptPolicySummary[] = [
   {
-    id: 'builtin_openai_sse_stream_failure',
-    builtIn: true,
+    id: 'default_openai_response_failed',
+    defaultRule: true,
     editable: false,
-    name: 'OpenAI SSE 流内失败',
+    name: 'OpenAI response.failed',
     enabled: true,
     executionMode: 'intercept',
     priority: 10,
     providerCode: 'openai',
     match: {
-      eventTypes: ['response.failed', 'error'],
-      jsonPathsExists: ['error', 'response.error']
+      eventTypes: ['response.failed']
     },
     dataHandling: 'replace_with_failure',
     retryEnabled: true,
     accountSwitch: 'request_next_account',
     accountState: 'none',
-    notes: 'OpenAI SSE 流内失败事件兜底；是否写客户端可重试错误码由运行时客户端能力决定。'
+    notes: 'OpenAI SSE response.failed 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
   },
   {
-    id: 'builtin_openai_cyber_policy',
-    builtIn: true,
+    id: 'default_openai_event_error',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI event:error',
+    enabled: true,
+    executionMode: 'intercept',
+    priority: 11,
+    providerCode: 'openai',
+    match: {
+      eventTypes: ['error']
+    },
+    dataHandling: 'replace_with_failure',
+    retryEnabled: true,
+    accountSwitch: 'request_next_account',
+    accountState: 'none',
+    notes: 'OpenAI SSE event:error 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
+  },
+  {
+    id: 'default_openai_data_error',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI data.error',
+    enabled: true,
+    executionMode: 'intercept',
+    priority: 12,
+    providerCode: 'openai',
+    match: {
+      jsonPathsExists: ['error']
+    },
+    dataHandling: 'replace_with_failure',
+    retryEnabled: true,
+    accountSwitch: 'request_next_account',
+    accountState: 'none',
+    notes: 'OpenAI SSE data.error 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
+  },
+  {
+    id: 'default_openai_response_error',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI response.error',
+    enabled: true,
+    executionMode: 'intercept',
+    priority: 13,
+    providerCode: 'openai',
+    match: {
+      jsonPathsExists: ['response.error']
+    },
+    dataHandling: 'replace_with_failure',
+    retryEnabled: true,
+    accountSwitch: 'request_next_account',
+    accountState: 'none',
+    notes: 'OpenAI SSE response.error 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
+  },
+  {
+    id: 'default_openai_cyber_policy',
+    defaultRule: true,
     editable: false,
     name: 'OpenAI cyber_policy',
     enabled: true,
     executionMode: 'intercept',
-    priority: 11,
+    priority: 14,
     providerCode: 'openai',
     match: {
       errorCodes: ['cyber_policy']
@@ -115,17 +168,17 @@ const builtInPresets: StreamInterceptPolicySummary[] = [
 ]
 
 export interface StreamInterceptPolicyListResult {
-  presets: StreamInterceptPolicySummary[]
+  defaultRules: StreamInterceptPolicySummary[]
   policies: StreamInterceptPolicySummary[]
 }
 
-export function listStreamInterceptPolicyPresets(): StreamInterceptPolicySummary[] {
-  return builtInPresets.map(clonePolicy)
+export function listStreamInterceptPolicyDefaultRules(): StreamInterceptPolicySummary[] {
+  return systemDefaultRules.map(clonePolicy)
 }
 
 export function listStreamInterceptPolicies(): StreamInterceptPolicyListResult {
   return {
-    presets: listStreamInterceptPolicyPresets(),
+    defaultRules: listStreamInterceptPolicyDefaultRules(),
     policies: listStreamInterceptPolicyRows().map(policyFromRow)
   }
 }
@@ -140,7 +193,7 @@ export function listActiveStreamInterceptPoliciesForGateway(): StreamInterceptPo
     `)
     .all() as unknown as StreamInterceptPolicyRow[]
   return [
-    ...listStreamInterceptPolicyPresets().filter((policy) => policy.enabled),
+    ...listStreamInterceptPolicyDefaultRules().filter((policy) => policy.enabled),
     ...rows.map(policyFromRow)
   ]
 }
@@ -269,7 +322,7 @@ function normalizePolicyInput(
   const retryEnabled = typeof input.retryEnabled === 'boolean' ? input.retryEnabled : fallback?.retryEnabled ?? false
   return {
     id: metadata.id,
-    builtIn: false,
+    defaultRule: false,
     editable: true,
     name: stringValue(input.name) || fallback?.name || '未命名流式拦截策略',
     enabled: typeof input.enabled === 'boolean' ? input.enabled : fallback?.enabled ?? true,
@@ -291,7 +344,7 @@ function normalizePolicyInput(
 function policyFromRow(row: StreamInterceptPolicyRow): StreamInterceptPolicySummary {
   return {
     id: row.id,
-    builtIn: false,
+    defaultRule: false,
     editable: true,
     name: row.name,
     enabled: row.enabled === 1,

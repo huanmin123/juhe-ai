@@ -29,7 +29,7 @@ export interface StreamInterceptDecision {
   downstreamWritten: boolean
   policyId?: string
   policyName?: string
-  policySource?: 'builtin' | 'management' | 'account'
+  policySource?: 'system_default' | 'management' | 'account'
   executionMode?: 'intercept' | 'dry_run'
   dataHandling?: StreamInterceptPolicyDataHandling
   retryEnabled?: boolean
@@ -323,7 +323,7 @@ function buildConfiguredPolicyDecision(
 }
 
 function configuredPolicyReason(policy: RuntimeStreamInterceptPolicy, event: ParsedOpenAIStreamEvent, downstreamWritten: boolean): StreamInterceptDecision['reason'] {
-  if (policy.source !== 'builtin') {
+  if (policy.source !== 'system_default') {
     return 'configured_stream_policy'
   }
   return downstreamWritten && isCodexRetryableAfterOutputStreamFailureCode(event.errorCode)

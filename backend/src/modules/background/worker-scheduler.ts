@@ -3,6 +3,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 interface WorkerScheduledJobOptions {
   name: string
   intervalMs: number
+  initialDelayMs?: number
   runImmediately?: boolean
   task: () => void | Promise<void>
 }
@@ -10,6 +11,7 @@ interface WorkerScheduledJobOptions {
 export interface WorkerScheduledJobRuntimeSnapshot {
   name: string
   intervalMs: number
+  initialDelayMs: number
   running: boolean
   lastStartedAt?: string
   lastFinishedAt?: string
@@ -25,8 +27,9 @@ export interface WorkerScheduledJobRuntimeSnapshot {
 }
 
 interface WorkerScheduledJobState {
-  timer: NodeJS.Timeout
+  timer?: NodeJS.Timeout
   intervalMs: number
+  initialDelayMs: number
   running: boolean
   stopped: boolean
   lastStartedAt?: string
@@ -51,8 +54,9 @@ export class WorkerScheduler {
     }
 
     const state = {
-      timer: setInterval(() => { void this.runJob(options.name, options.task) }, options.intervalMs),
+      timer: undefined,
       intervalMs: options.intervalMs,
+      initialDelayMs: normalizedInitialDelayMs(options.initialDelayMs),
       running: false,
       stopped: false,
       runCount: 0,
@@ -60,18 +64,40 @@ export class WorkerScheduler {
       failureCount: 0,
       skippedCount: 0
     }
-    state.timer.unref()
     this.jobs.set(options.name, state)
+    this.startJobTimer(options.name, options.task, state, options.runImmediately !== false)
+  }
 
-    if (options.runImmediately !== false) {
-      void this.runJob(options.name, options.task)
+  private startJobTimer(
+    name: string,
+    task: () => void | Promise<void>,
+    state: WorkerScheduledJobState,
+    runImmediately: boolean
+  ): void {
+    const startInterval = (): void => {
+      if (state.stopped) return
+      state.timer = setInterval(() => { void this.runJob(name, task) }, state.intervalMs)
+      state.timer.unref()
+      if (runImmediately) {
+        void this.runJob(name, task)
+      }
     }
+
+    if (state.initialDelayMs > 0) {
+      state.timer = setTimeout(startInterval, state.initialDelayMs)
+      state.timer.unref()
+      return
+    }
+
+    startInterval()
   }
 
   stop(): void {
     for (const state of this.jobs.values()) {
       state.stopped = true
-      clearInterval(state.timer)
+      if (state.timer) {
+        clearTimeout(state.timer)
+      }
     }
     this.jobs.clear()
   }
@@ -81,6 +107,7 @@ export class WorkerScheduler {
       .map(([name, state]) => ({
         name,
         intervalMs: state.intervalMs,
+        initialDelayMs: state.initialDelayMs,
         running: state.running,
         lastStartedAt: state.lastStartedAt,
         lastFinishedAt: state.lastFinishedAt,
@@ -139,4 +166,9 @@ export class WorkerScheduler {
       state.running = false
     }
   }
+}
+
+function normalizedInitialDelayMs(value: number | undefined): number {
+  const number = Number(value ?? 0)
+  return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : 0
 }

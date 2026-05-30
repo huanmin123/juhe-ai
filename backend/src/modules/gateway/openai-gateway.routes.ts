@@ -185,7 +185,8 @@ export async function handleOpenAIGatewayRequest(
 
       try {
         const contentType = upstreamResponse.headers.get('content-type') ?? ''
-        const shouldHandleAsStream = isOpenAIStreamContentType(contentType) || isEffectiveOpenAIStreamRequest(req, account)
+        const shouldHandleAsStream = isOpenAIStreamContentType(contentType)
+          || (isEffectiveOpenAIStreamRequest(req, account) && !isJsonResponseContentType(contentType))
         if (!shouldHandleAsStream) {
           prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
         }
@@ -395,6 +396,11 @@ function shouldExcludeCurrentAccountForStreamRetry(decision: StreamInterceptDeci
     || decision.accountSwitch === 'avoid_account_ttl'
     || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
     || decision.accountState === 'runtime_avoidance'
+}
+
+function isJsonResponseContentType(contentType: string): boolean {
+  const normalized = contentType.toLowerCase()
+  return normalized.includes('application/json') || normalized.includes('+json')
 }
 
 function sendStreamServerRetryExhaustedResponse(input: {

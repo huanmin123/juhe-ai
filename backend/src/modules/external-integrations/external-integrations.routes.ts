@@ -1,12 +1,21 @@
-import { Router } from 'express'
+import { Router, type Request } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import {
+  type ExternalIntegrationSourceAuthContext,
+  externalIntegrationAccountPushScope,
   externalIntegrationIpUsageReadScope,
   externalIntegrationSourceAuthDemoScope
 } from '../../storage/external-integration-source.repository.js'
+import { createOperationLog } from '../../storage/repositories.js'
 import { getExternalIntegrationSourceContext, requireExternalIntegrationSource } from './external-source-auth.middleware.js'
+import {
+  mockPublicWelfareAccountPush,
+  pushPublicWelfareAccount,
+  type PublicAccountPushResponse
+} from './external-public-account-push.service.js'
 import {
   getPublicAccessInfo,
   getPublicClientIpUsage,
@@ -16,11 +25,13 @@ import {
 export const externalIntegrationsRouter = Router()
 
 const rangePresetSchema = z.enum(['today', 'last7d', 'last31d'])
-const dateKeySchema = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD')
+const unsupportedDateRangeSchema = z.undefined({
+  invalid_type_error: '公开 IP 聚合接口暂不支持自定义日期范围'
+}).optional()
 const ipUsageQuerySchema = z.object({
   range: rangePresetSchema.optional(),
-  startDate: dateKeySchema.optional(),
-  endDate: dateKeySchema.optional(),
+  startDate: unsupportedDateRangeSchema,
+  endDate: unsupportedDateRangeSchema,
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
@@ -30,10 +41,26 @@ const ipUsageQuerySchema = z.object({
 })
 const consumptionRankingQuerySchema = z.object({
   range: rangePresetSchema.optional(),
-  startDate: dateKeySchema.optional(),
-  endDate: dateKeySchema.optional(),
+  startDate: unsupportedDateRangeSchema,
+  endDate: unsupportedDateRangeSchema,
   limit: z.coerce.number().int().min(1).max(100).optional(),
   metric: z.enum(['totalTokens', 'totalCost', 'requestCount']).optional()
+})
+const accountPushSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  targetDisplayName: z.string().trim().min(1).max(80).optional(),
+  targetGroupName: z.string().trim().min(1).max(80),
+  providerCode: z.string().trim().min(1).max(60).optional(),
+  name: z.string().trim().min(1).max(120),
+  type: z.string().trim().optional().refine((value) => value === undefined || value === 'api_key', '公益账号推送仅支持 API Key 账户'),
+  baseUrl: z.string().trim().min(1).max(500),
+  apiKey: z.string().trim().min(1).max(1000),
+  supportedModels: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
+  status: z.enum(['active', 'disabled']).optional(),
+  concurrencyLimit: z.coerce.number().int().min(1).max(100000).optional(),
+  priority: z.coerce.number().int().min(0).max(100000).optional(),
+  notes: z.string().trim().max(1000).optional(),
+  externalId: z.string().trim().max(200).optional()
 })
 
 externalIntegrationsRouter.get(
@@ -107,6 +134,100 @@ externalIntegrationsRouter.get(
     res.json(ok(getPublicAccessInfo({ mock: context.isTestToken })))
   }
 )
+
+externalIntegrationsRouter.post(
+  '/juhe-ai/accounts',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = accountPushSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '公益账号推送参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicWelfareAccountPush(parsed.data)))
+      return
+    }
+
+    try {
+      const result = pushPublicWelfareAccount(parsed.data)
+      const statusCode = result.action === 'created' ? 201 : 200
+      recordPublicWelfareAccountPushOperation(context, result, req, statusCode)
+      res.status(statusCode).json(ok(result))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '公益账号推送失败'
+      res.status(message.includes('已存在') || message.includes('重复') ? 409 : 400).json(badRequest(message))
+    }
+  }
+)
+
+function recordPublicWelfareAccountPushOperation(
+  context: ExternalIntegrationSourceAuthContext,
+  result: PublicAccountPushResponse,
+  req: Request,
+  statusCode: number
+): void {
+  try {
+    createOperationLog({
+      actorSystemAccountId: `external:${context.sourceRefId}`,
+      actorUsername: context.sourceName,
+      actorDisplayName: `外部来源：${context.sourceName}`,
+      actorRole: 'user',
+      operationScopeSystemAccountId: result.target.systemAccountId,
+      mode: 'self',
+      module: 'external_integrations',
+      action: 'account_push',
+      operationKey: 'external_integrations.public_account_push',
+      resourceType: 'account',
+      resourceId: result.account.id,
+      resourceName: result.account.name,
+      summary: `${context.sourceName} 推送公益账号：${result.account.name}`,
+      detailLevel: 'full',
+      visibilityScope: 'admin_only',
+      changes: [
+        { field: 'action', label: '写入动作', after: result.action },
+        { field: 'status', label: '账户状态', after: result.account.status },
+        { field: 'schedulable', label: '可调度', after: result.account.schedulable },
+        { field: 'targetCreated', label: '新建目标用户', after: result.target.created },
+        { field: 'groupCreated', label: '新建目标分组', after: result.target.groupCreated },
+        { field: 'externalId', label: '外部登记 ID', after: result.externalId }
+      ],
+      metadata: {
+        sourceRefId: context.sourceRefId,
+        sourceName: context.sourceName,
+        tokenId: context.tokenId,
+        tokenName: context.tokenName,
+        tokenPrefix: context.tokenPrefix,
+        targetUsername: result.target.username,
+        targetSystemAccountId: result.target.systemAccountId,
+        groupId: result.target.groupId,
+        groupName: result.target.groupName,
+        accountId: result.account.id,
+        accountName: result.account.name,
+        providerCode: result.account.providerCode,
+        type: result.account.type,
+        supportedModels: result.account.supportedModels,
+        externalId: result.externalId
+      },
+      method: req.method,
+      path: `${req.baseUrl}${req.path}`,
+      statusCode,
+      targets: [
+        { targetType: 'external_integration_source', targetId: context.sourceRefId, targetName: context.sourceName, relation: 'affected' },
+        { targetType: 'system_account', targetId: result.target.systemAccountId, targetName: result.target.username, relation: result.target.created ? 'created' : 'affected' },
+        { targetType: 'group', targetId: result.target.groupId, targetName: result.target.groupName, targetOwnerSystemAccountId: result.target.systemAccountId, relation: result.target.groupCreated ? 'created' : 'affected' },
+        { targetType: 'account', targetId: result.account.id, targetName: result.account.name, targetOwnerSystemAccountId: result.target.systemAccountId, relation: result.action === 'created' ? 'created' : 'affected' }
+      ]
+    })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'external_account_push_operation_log_failed',
+      sourceRefId: context.sourceRefId,
+      accountId: result.account.id
+    }), '公益账号推送操作日志写入失败')
+  }
+}
 
 const mockRankingItems = [
   {

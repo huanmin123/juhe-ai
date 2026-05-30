@@ -122,6 +122,21 @@ try {
       createdAt: new Date(createdAtBase + 4).toISOString()
     },
     {
+      id: 'client_ip_stats_v6_loopback_ignored',
+      traceId: 'trace-client-ip-stats-v6-loopback-ignored',
+      systemAccountId: 'sys_admin',
+      clientIp: '::1',
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.1',
+      statusCode: 200,
+      success: true,
+      inputTokens: 88,
+      outputTokens: 88,
+      costUsd: 0.88,
+      createdAt: new Date(createdAtBase + 5).toISOString()
+    },
+    {
       id: 'client_ip_stats_cooldown_ignored',
       traceId: 'trace-client-ip-stats-cooldown-ignored',
       trafficSource: 'cooldown_retest',
@@ -135,7 +150,7 @@ try {
       inputTokens: 999,
       outputTokens: 999,
       costUsd: 9,
-      createdAt: new Date(createdAtBase + 5).toISOString()
+      createdAt: new Date(createdAtBase + 6).toISOString()
     },
     {
       id: 'client_ip_stats_missing_ip_cursor',
@@ -149,17 +164,18 @@ try {
       inputTokens: 500,
       outputTokens: 500,
       costUsd: 1,
-      createdAt: new Date(createdAtBase + 6).toISOString()
+      createdAt: new Date(createdAtBase + 7).toISOString()
     }
   ])
 
-  assert.equal(clientIpStats.aggregateClientIpStatsBatch(100), 6, 'IP 统计应扫描非 cooldown 使用记录并跳过无 IP 和非 IPv4 行')
+  assert.equal(clientIpStats.aggregateClientIpStatsBatch(100), 7, 'IP 统计应扫描非 cooldown 使用记录并跳过无 IP 和非 IPv4 行')
 
   const ipv4Identity = clientIpStats.normalizeClientIpForStats('203.0.113.10')
   const secondaryIpv4Identity = clientIpStats.normalizeClientIpForStats('198.51.100.25')
   assert(ipv4Identity, 'IPv4 应可规范化')
   assert(secondaryIpv4Identity, '第二个 IPv4 来源应可规范化')
   assert.equal(clientIpStats.normalizeClientIpForStats('not-an-ip'), undefined, '非 IPv4 来源不参与 IP 管理')
+  assert.equal(clientIpStats.normalizeClientIpForStats('::1'), undefined, '非 IPv4 回环地址不应折算进 IPv4 汇总')
   assert.equal(clientIpStats.pendingClientIpRangeWindowDirtyCountForTest(), 2, 'IP 聚合后应只标记变更 IP 等待增量刷新窗口')
   clientIpStats.clearClientIpRangeWindowDirtyMemoryForTest()
 

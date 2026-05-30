@@ -10,6 +10,7 @@ release/
 !**/.env.example
 *.log
 logs/
+tmp/
 reports/*.json
 !reports/perf-limit-report-2026-05-17.json
 reports/profiles/

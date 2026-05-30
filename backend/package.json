@@ -70,6 +70,7 @@
     "test:log-list-query-guard": "tsx src/scripts/regression/log-list-query-guard-regression.ts",
     "test:usage-stats-batch-statement": "tsx src/scripts/regression/usage-stats-batch-statement-regression.ts",
     "test:usage-overview-window-atomic": "tsx src/scripts/regression/usage-overview-window-atomic-regression.ts",
+    "test:usage-rank-staged-refresh": "tsx src/scripts/regression/usage-rank-staged-refresh-regression.ts",
     "test:upstream-request-failure": "tsx src/scripts/regression/upstream-request-failure-regression.ts",
     "test:openai-oauth-codex-adapter": "tsx src/scripts/regression/openai-oauth-codex-adapter-regression.ts",
     "test:openai-oauth-credentials-patch": "tsx src/scripts/regression/openai-oauth-credentials-patch-regression.ts",

@@ -35,9 +35,6 @@ export function validateAccountStreamInterceptRules(rules: AccountStreamIntercep
     if (rule.retryEnabled && rule.dataHandling === 'discard_event') {
       return { valid: false, index: ruleIndex, message: `第 ${ruleIndex} 条流式拦截规则需要重试时不能只丢弃命中事件` }
     }
-    if ((rule.accountSwitch === 'avoid_account_ttl' || rule.accountSwitch === 'avoid_upstream_bucket_ttl' || rule.accountState === 'runtime_avoidance') && !positiveInt(rule.avoidanceTtlSeconds)) {
-      return { valid: false, index: ruleIndex, message: `第 ${ruleIndex} 条流式拦截规则需要填写避让秒数` }
-    }
   }
   return { valid: true }
 }

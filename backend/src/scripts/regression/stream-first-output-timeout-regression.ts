@@ -106,12 +106,13 @@ async function main(): Promise<void> {
     const genericErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '未知 error 事件默认重试')
     const cyberPolicyCredential = createScenarioCredential(upstreamBaseUrl, 'cyber_policy 未输出前重试')
     const contextWindowCredential = createScenarioCredential(upstreamBaseUrl, '上下文超限未输出前重试')
-    const nonCodexErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '普通客户端未输出前内置规则')
+    const nonCodexErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '普通客户端未输出前默认规则')
     const overloadedNoBoundaryCredential = createScenarioCredential(upstreamBaseUrl, '容量错误缺少收尾边界')
     const overloadedAfterOutputCredential = createScenarioCredential(upstreamBaseUrl, '输出后容量错误不拦截')
     const cyberPolicyAfterOutputCredential = createScenarioCredential(upstreamBaseUrl, '输出后 cyber_policy 重试')
     const outputItemThenFailureCredential = createScenarioCredential(upstreamBaseUrl, 'output item 后失败')
     const topLevelCodeMessageCredential = createScenarioCredential(upstreamBaseUrl, '顶层 code message 非失败')
+    const jsonResponseForStreamCredential = createScenarioCredential(upstreamBaseUrl, 'stream 请求返回 JSON')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -325,7 +326,7 @@ async function main(): Promise<void> {
     assert(contextWindowResult.streamText.includes('upstream_retryable_error'), `未输出前 context_length_exceeded 应改写为可重试错误：${contextWindowResult.streamText}`)
 
     const nonCodexErrorEventResult = await requestGenericStreamFailureBeforeOutput(baseUrl, nonCodexErrorEventCredential.apiKey.key, 'generic-error-event-before-output')
-    assert(nonCodexErrorEventResult.streamText.includes('stream_intercepted'), `普通客户端未输出前失败应按供应商内置规则替换为普通失败事件：${nonCodexErrorEventResult.streamText}`)
+    assert(nonCodexErrorEventResult.streamText.includes('stream_intercepted'), `普通客户端未输出前失败应按供应商默认规则替换为普通失败事件：${nonCodexErrorEventResult.streamText}`)
     assert(!nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `普通客户端未输出前失败不应伪造客户端专用可重试错误：${nonCodexErrorEventResult.streamText}`)
 
     const overloadedNoBoundaryResult = await requestStreamFailureBeforeOutput(baseUrl, overloadedNoBoundaryCredential.apiKey.key, 'server-overloaded-before-output-no-boundary')
@@ -357,7 +358,12 @@ async function main(): Promise<void> {
     assert(topLevelCodeMessageResult.streamText.includes('"code":"diagnostic_code"'), `普通事件的 code 字段应原样透传：${topLevelCodeMessageResult.streamText}`)
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
+    const jsonResponseForStreamResult = await requestJsonResponseForStreamRequest(baseUrl, jsonResponseForStreamCredential.apiKey.key)
+    assert.equal(jsonResponseForStreamResult.contentType.includes('application/json'), true, `stream:true 但上游明确返回 JSON 时应按非流式响应转发：${jsonResponseForStreamResult.contentType}`)
+    assert(jsonResponseForStreamResult.text.includes('json response ok'), `stream:true 的明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
+    assert(!jsonResponseForStreamResult.text.includes('response.failed'), `stream:true 的明确 JSON 响应不应被 SSE 解析器追加失败事件：${jsonResponseForStreamResult.text}`)
+
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -416,6 +422,17 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         const body = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')) as { input?: unknown }
         scenario = typeof body.input === 'string' ? body.input : scenario
       } catch {
+      }
+
+      if (scenario === 'json-response-for-stream-request') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'resp_json_for_stream',
+          object: 'response',
+          output_text: 'json response ok',
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+        }))
+        return
       }
 
       res.writeHead(200, {
@@ -936,6 +953,34 @@ async function requestStreamScenario(
   return {
     streamText: await response.text(),
     durationMs: Date.now() - startedAt
+  }
+}
+
+async function requestJsonResponseForStreamRequest(
+  baseUrl: string,
+  apiKey: string
+): Promise<{ text: string; contentType: string }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 10,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: codexStreamHeaders(apiKey, 'json-response-for-stream-request'),
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'json-response-for-stream-request',
+      stream: true
+    })
+  })
+  assert.equal(response.status, 200)
+  return {
+    text: await response.text(),
+    contentType: response.headers.get('content-type') ?? ''
   }
 }
 

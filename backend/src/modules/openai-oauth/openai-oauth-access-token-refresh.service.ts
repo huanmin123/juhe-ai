@@ -46,7 +46,7 @@ export interface RefreshedOpenAIOAuthAccount {
 }
 
 const oauthTokenRefreshFailureThreshold = 3
-const oauthTokenRefreshFailedErrorCode = 'oauth_token_refresh_failed'
+export const OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE = 'oauth_token_refresh_failed'
 const openAIOAuthRefreshRaceRetryPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_race', 0, 1)
 const refreshFailureStateByAccountId = new Map<string, { count: number; backoffUntil: number }>()
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
@@ -211,7 +211,9 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   const retryBackoffPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_backoff', retryBackoffMs)
   cleanupRefreshFailureBackoff(now)
 
-  const eligibleAccounts = listAccounts()
+  const accounts = listAccounts()
+  normalizeOpenAIOAuthStoppedRefreshExceptionMessages(accounts)
+  const eligibleAccounts = accounts
     .filter(isExistingOpenAIOAuthAccountWithRefreshToken)
   const dueAccounts = eligibleAccounts
     .filter((account) => shouldPreRefreshAccessToken(account.credentials, now, leadMs))
@@ -260,11 +262,12 @@ export async function refreshDueOpenAIOAuthAccessTokens(
       if (failureState.count >= oauthTokenRefreshFailureThreshold) {
         const updated = markAccountException(
           account.id,
-          oauthTokenRefreshFailedErrorCode,
-          `OpenAI OAuth 访问令牌连续 ${failureState.count} 次刷新失败：${message}`
+          OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
+          openAIOAuthTokenRefreshStoppedMessage(failureState.count, message)
         )
         if (updated) {
           clearGatewayRuntimeCache()
+          refreshFailureStateByAccountId.delete(account.id)
           result.exceptioned += 1
         }
       }
@@ -278,7 +281,35 @@ function isExistingOpenAIOAuthAccountWithRefreshToken(account: AccountSummary): 
   return account.providerCode === 'openai'
     && account.type === 'oauth'
     && account.accessType !== 'authorized'
+    && !shouldStopOpenAIOAuthBackgroundRefresh(account)
     && Boolean(stringCredential(account.credentials, 'refresh_token'))
+}
+
+function shouldStopOpenAIOAuthBackgroundRefresh(account: AccountSummary): boolean {
+  return account.status === 'error'
+    && account.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
+}
+
+function normalizeOpenAIOAuthStoppedRefreshExceptionMessages(accounts: AccountSummary[]): void {
+  for (const account of accounts) {
+    if (!shouldStopOpenAIOAuthBackgroundRefresh(account) || account.lastErrorMessage?.includes('已停止自动刷新')) {
+      continue
+    }
+    const updated = markAccountException(
+      account.id,
+      OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
+      openAIOAuthTokenRefreshStoppedMessage(openAIOAuthRefreshFailureCountFromMessage(account.lastErrorMessage), account.lastErrorMessage ?? '历史后台刷新失败')
+    )
+    if (updated) {
+      clearGatewayRuntimeCache()
+    }
+  }
+}
+
+function openAIOAuthRefreshFailureCountFromMessage(message: string | undefined): number {
+  const matched = /连续\s+(\d+)\s+次/.exec(message ?? '')
+  const count = matched ? Number(matched[1]) : NaN
+  return Number.isFinite(count) && count > 0 ? Math.trunc(count) : oauthTokenRefreshFailureThreshold
 }
 
 function shouldPreRefreshAccessToken(credentials: Record<string, unknown>, now: number, leadMs: number): boolean {
@@ -348,7 +379,7 @@ async function findLatestRefreshableOpenAIOAuthAccount(
 }
 
 function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: AccountSummary): void {
-  if (account.status !== 'error' || account.lastErrorCode !== oauthTokenRefreshFailedErrorCode) {
+  if (account.status !== 'error' || account.lastErrorCode !== OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE) {
     return
   }
   const restored = clearAccountFailureState(account.id)
@@ -390,7 +421,7 @@ function finalizeSuccessfulTokenRefresh(account: OpenAIOAuthRefreshAccount, opti
     clearGatewayRuntimeCache()
     return account
   }
-  const updated = account.status !== 'disabled' && account.status !== 'error'
+  const updated = account.status !== 'disabled' && (account.status !== 'error' || account.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE)
     ? clearAccountFailureState(account.id, options.access) ?? account as AccountSummary
     : account
   clearGatewayRuntimeCache()
@@ -518,6 +549,15 @@ function stringCredential(credentials: Record<string, unknown>, key: string): st
 function errorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : 'OpenAI OAuth 访问令牌刷新失败'
   return message.length > 240 ? `${message.slice(0, 237)}...` : message
+}
+
+function openAIOAuthTokenRefreshStoppedMessage(failureCount: number, lastError: string): string {
+  return [
+    `OpenAI OAuth 访问令牌连续 ${failureCount} 次后台刷新失败，已停止自动刷新。`,
+    '该 Refresh Token 可能已失效、被重复使用，或账号授权已被上游撤销。',
+    '请在账户页手动刷新、重新登录/重新授权该 OAuth 账号；如果不再使用，建议禁用或删除该账号。',
+    `最后错误：${lastError}`
+  ].join(' ').slice(0, 1000)
 }
 
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {

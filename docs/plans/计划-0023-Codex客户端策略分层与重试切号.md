@@ -56,6 +56,8 @@
 | OAuth Codex adapter 和 OAuth Codex 429 | 已按 OAuth 账号类型隔离 | 不属于下游客户端泛化问题 | 保持现状，后续只补文档命名和审计口径 |
 | 非 2xx 上游错误响应特征规则 | provider / endpoint scoped | 主要判断请求级错误，不依赖 Codex 自动重试语义 | 继续作为 OpenAI provider 规则，不纳入本次 Codex turn 计数 |
 
+> 2026-05-30 注记：上表保留历史复盘语境；后续流式事件特征规则已经迁移到配置化流式拦截策略和系统默认规则，不再从旧 feature-rules 结论恢复实现。
+
 ## 方案概述
 
 ### 策略分层

@@ -9,7 +9,7 @@ import type {
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 import type { ParsedOpenAIStreamEvent } from './openai-gateway-stream-events.js'
 
-export type StreamInterceptPolicySource = 'builtin' | 'management' | 'account'
+export type StreamInterceptPolicySource = 'system_default' | 'management' | 'account'
 export type StreamInterceptRuntimePhase = 'before_downstream_write' | 'after_downstream_write'
 
 export interface RuntimeStreamInterceptPolicy {
@@ -47,7 +47,7 @@ export function resolveRuntimeStreamInterceptPolicies(input: ResolveStreamInterc
     .filter((policy) => policy.enabled && policyMatchesProvider(policy, input))
     .map((policy): RuntimeStreamInterceptPolicy => ({
       id: policy.id,
-      source: policy.builtIn ? 'builtin' : 'management',
+      source: policy.defaultRule ? 'system_default' : 'management',
       name: policy.name,
       enabled: policy.enabled,
       executionMode: policy.executionMode,
@@ -60,7 +60,7 @@ export function resolveRuntimeStreamInterceptPolicies(input: ResolveStreamInterc
       avoidanceTtlSeconds: policy.avoidanceTtlSeconds
     }))
   const accountRules = accountStreamInterceptRules(input.account.credentials)
-  return [...management, ...accountRules].sort((left, right) => left.priority - right.priority || sourceOrder(left.source) - sourceOrder(right.source) || left.id.localeCompare(right.id))
+  return [...management, ...accountRules].sort((left, right) => sourceOrder(left.source) - sourceOrder(right.source) || left.priority - right.priority || left.id.localeCompare(right.id))
 }
 
 export function matchRuntimeStreamInterceptPolicy(
@@ -88,20 +88,27 @@ function policyMatchesProvider(policy: StreamInterceptPolicySummary, input: Reso
 }
 
 function firstPositiveMatch(event: ParsedOpenAIStreamEvent, match: StreamInterceptPolicyMatch): Pick<StreamInterceptPolicyMatchResult, 'matchedField' | 'matchedValue' | 'snippet'> | undefined {
+  const matched: Array<Pick<StreamInterceptPolicyMatchResult, 'matchedField' | 'matchedValue' | 'snippet'>> = []
   const eventTypeValues = [event.eventType, event.eventName].filter(Boolean)
   const eventType = findListMatch(match.eventTypes, eventTypeValues)
-  if (eventType) return { matchedField: 'eventType', matchedValue: eventType }
+  if (match.eventTypes?.length && !eventType) return undefined
+  if (eventType) matched.push({ matchedField: 'eventType', matchedValue: eventType })
   const dataType = findListMatch(match.dataTypes, [event.eventType])
-  if (dataType) return { matchedField: 'data.type', matchedValue: dataType }
+  if (match.dataTypes?.length && !dataType) return undefined
+  if (dataType) matched.push({ matchedField: 'data.type', matchedValue: dataType })
   const errorCode = findListMatch(match.errorCodes, [event.errorCode])
-  if (errorCode) return { matchedField: 'error.code', matchedValue: errorCode }
+  if (match.errorCodes?.length && !errorCode) return undefined
+  if (errorCode) matched.push({ matchedField: 'error.code', matchedValue: errorCode })
   const errorType = findListMatch(match.errorTypes, [stringPath(event.data, ['error', 'type']), stringPath(event.data, ['response', 'error', 'type'])])
-  if (errorType) return { matchedField: 'error.type', matchedValue: errorType }
+  if (match.errorTypes?.length && !errorType) return undefined
+  if (errorType) matched.push({ matchedField: 'error.type', matchedValue: errorType })
   const jsonPath = (match.jsonPathsExists ?? []).find((path) => jsonPathExists(event.data, path))
-  if (jsonPath) return { matchedField: 'jsonPath', matchedValue: jsonPath }
+  if (match.jsonPathsExists?.length && !jsonPath) return undefined
+  if (jsonPath) matched.push({ matchedField: 'jsonPath', matchedValue: jsonPath })
   const textMatch = findTextIncludesMatch(event, match.textIncludes)
-  if (textMatch) return { matchedField: 'textIncludes', matchedValue: textMatch.keyword, snippet: textMatch.snippet }
-  return undefined
+  if (match.textIncludes?.length && !textMatch) return undefined
+  if (textMatch) matched.push({ matchedField: 'textIncludes', matchedValue: textMatch.keyword, snippet: textMatch.snippet })
+  return matched.find((item) => item.snippet) ?? matched[0]
 }
 
 function textExcluded(event: ParsedOpenAIStreamEvent, match: StreamInterceptPolicyMatch): boolean {
@@ -157,6 +164,14 @@ function jsonPathExists(value: unknown, path: string): boolean {
     if (!Object.prototype.hasOwnProperty.call(current, part)) return false
     current = (current as Record<string, unknown>)[part]
   }
+  return hasJsonPathMeaningfulValue(current)
+}
+
+function hasJsonPathMeaningfulValue(value: unknown): boolean {
+  if (value === null || value === undefined || value === false) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0
   return true
 }
 

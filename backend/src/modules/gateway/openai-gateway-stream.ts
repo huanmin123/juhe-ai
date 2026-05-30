@@ -896,7 +896,7 @@ function shouldReturnInterceptBeforeDownstreamWrite(
 ): boolean {
   return decision?.reason === 'configured_stream_policy'
     && decision.retryEnabled === true
-    && decision.policySource !== 'builtin'
+    && decision.policySource !== 'system_default'
     && totalResponseBytes === 0
     && !res.headersSent
     && !res.writableEnded

@@ -27,7 +27,7 @@ const accountStreamInterceptRuleSchema = z.object({
   accountState: z.enum(['none', 'runtime_avoidance']).optional(),
   avoidanceTtlSeconds: z.coerce.number().int().min(1).max(86400).optional(),
   notes: z.string().trim().max(1000).optional()
-}).passthrough()
+})
 
 export function validateAccountStreamInterceptRules(value: unknown): AccountStreamInterceptPolicyValidationResult {
   if (value === undefined) {

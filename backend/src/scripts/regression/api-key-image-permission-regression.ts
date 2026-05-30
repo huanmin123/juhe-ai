@@ -98,7 +98,7 @@ try {
   assert.equal(allowed.status, 200, `开启图像生成后同一个 API Key 应通过，实际 ${allowed.status}: ${allowed.text}`)
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/images/generations'), 1, '开启图像生成后应命中上游图片接口')
 
-  console.log('API Key 图像生成权限回归通过：默认禁用不上游，开启后同一 Key 立即放行')
+  console.log('API Key 图像生成权限回归通过：默认禁用不上游，大 JSON 后段 image_generation 工具也会拦截，开启后同一 Key 立即放行')
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()

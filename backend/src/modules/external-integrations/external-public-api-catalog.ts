@@ -1,4 +1,5 @@
 import {
+  externalIntegrationAccountPushScope,
   externalIntegrationIpUsageReadScope,
   externalIntegrationSourceAuthDemoScope,
   externalIntegrationTestToken
@@ -143,20 +144,8 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             name: 'range',
             type: 'string',
             required: false,
-            description: '快捷范围：today、last7d、last31d。传 startDate 或 endDate 时按自定义范围处理。',
+            description: '快捷范围：today、last7d、last31d。公开接口只读取后台已维护的固定窗口。',
             example: 'last7d'
-          },
-          {
-            name: 'startDate',
-            type: 'string',
-            required: false,
-            description: '自定义开始日期，格式 YYYY-MM-DD，最大支持最近 31 天窗口。'
-          },
-          {
-            name: 'endDate',
-            type: 'string',
-            required: false,
-            description: '自定义结束日期，格式 YYYY-MM-DD。'
           },
           {
             name: 'page',
@@ -315,12 +304,137 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             publicApiPrefix: '/__aipublic__',
             dataDimension: 'client_ip',
             authType: 'Bearer',
-            supportedRanges: ['today', 'last7d', 'last31d', 'custom'],
+            supportedRanges: ['today', 'last7d', 'last31d'],
             supportedMetrics: ['totalTokens', 'totalCost', 'requestCount'],
             boundary: {
               provides: ['来源系统 Bearer token 鉴权', 'IP 维度聚合事实'],
               notProvided: ['公益站用户维度排行榜快照', 'IP 到公益站用户的业务归属']
             }
+          }
+        }
+      },
+      {
+        id: 'juhe-ai-account-push',
+        name: '公益账号推送',
+        summary: '由公益站后端把审核后的公益 AI 登记推送到指定系统用户和分组；目标用户或分组不存在时自动创建，externalId 使用结构化映射精确幂等更新。',
+        status: 'available',
+        method: 'POST',
+        path: '/__aipublic__/juhe-ai/accounts',
+        scope: externalIntegrationAccountPushScope,
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            {
+              name: 'targetUsername',
+              type: 'string',
+              required: true,
+              description: '目标系统用户账号，例如 huanmin。',
+              example: 'huanmin'
+            },
+            {
+              name: 'targetGroupName',
+              type: 'string',
+              required: true,
+              description: '目标账号分组名称，例如 福利。',
+              example: '福利'
+            },
+            {
+              name: 'providerCode',
+              type: 'string',
+              required: false,
+              description: '供应商编码，默认 openai。',
+              example: 'openai'
+            },
+            {
+              name: 'name',
+              type: 'string',
+              required: true,
+              description: '推送后的账号名称。',
+              example: '公益站-青芽主通道'
+            },
+            {
+              name: 'type',
+              type: 'string',
+              required: false,
+              description: '账号类型；当前公开推送只支持 api_key。',
+              example: 'api_key'
+            },
+            {
+              name: 'baseUrl',
+              type: 'string',
+              required: true,
+              description: 'OpenAI 兼容 Base URL。',
+              example: 'https://api.openai.com/v1'
+            },
+            {
+              name: 'apiKey',
+              type: 'string',
+              required: true,
+              description: '上游 API Key；响应不会回显。',
+              example: 'sk-...'
+            },
+            {
+              name: 'supportedModels',
+              type: 'string[]',
+              required: false,
+              description: '该账号支持的模型列表，必须属于供应商模型目录。'
+            },
+            {
+              name: 'status',
+              type: 'string',
+              required: false,
+              description: '账号状态：active 或 disabled，默认 active。',
+              example: 'active'
+            },
+            {
+              name: 'externalId',
+              type: 'string',
+              required: false,
+              description: '公益站登记 ID；同一目标用户、分组和供应商内按该值精确更新原账号。',
+              example: 'juhe-ai-public-welfare:ai-registration:12'
+            }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            targetGroupName: '福利',
+            providerCode: 'openai',
+            name: '公益站-青芽主通道',
+            type: 'api_key',
+            baseUrl: 'https://api.openai.com/v1',
+            apiKey: 'sk-...',
+            supportedModels: ['gpt-5.5', 'gpt-5.4'],
+            status: 'active',
+            externalId: 'juhe-ai-public-welfare:ai-registration:12'
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'created',
+            target: {
+              username: 'huanmin',
+              displayName: 'huanmin',
+              systemAccountId: 'sysacc_xxx',
+              created: true,
+              groupId: 'grp_xxx',
+              groupName: '福利',
+              groupCreated: true
+            },
+            account: {
+              id: 'acc_xxx',
+              name: '公益站-青芽主通道',
+              providerCode: 'openai',
+              type: 'api_key',
+              status: 'active',
+              supportedModels: ['gpt-5.5', 'gpt-5.4'],
+              boundGroupId: 'grp_xxx',
+              boundGroupName: '福利',
+              schedulable: true
+            },
+            externalId: 'juhe-ai-public-welfare:ai-registration:12'
           }
         }
       }

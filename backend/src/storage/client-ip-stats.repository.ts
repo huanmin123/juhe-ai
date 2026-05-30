@@ -1100,7 +1100,7 @@ function normalizePlainClientIp(value?: string | null): string | undefined {
   if (ip.toLowerCase().startsWith('::ffff:')) {
     ip = ip.slice('::ffff:'.length)
   }
-  return ip === '::1' ? '127.0.0.1' : ip.toLowerCase()
+  return ip.toLowerCase()
 }
 
 function normalizeIpv4(value: string): string | undefined {

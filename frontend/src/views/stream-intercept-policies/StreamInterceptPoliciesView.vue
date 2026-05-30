@@ -38,7 +38,7 @@
           <div class="policy-name-cell">
             <strong>{{ record.name }}</strong>
             <a-space :size="6" wrap>
-              <a-tag :color="record.builtIn ? 'blue' : 'purple'">{{ record.builtIn ? '内置' : '自定义' }}</a-tag>
+              <a-tag :color="record.defaultRule ? 'blue' : 'purple'">{{ record.defaultRule ? '默认' : '自定义' }}</a-tag>
               <a-tag>P{{ record.priority }}</a-tag>
             </a-space>
           </div>
@@ -73,7 +73,7 @@
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">{{ record.name }}</div>
             <div class="mobile-list-card-tags">
-              <a-tag :color="record.builtIn ? 'blue' : 'purple'">{{ record.builtIn ? '内置' : '自定义' }}</a-tag>
+              <a-tag :color="record.defaultRule ? 'blue' : 'purple'">{{ record.defaultRule ? '默认' : '自定义' }}</a-tag>
               <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
             </div>
           </div>
@@ -218,7 +218,7 @@
             row-key="key"
             size="small"
           />
-          <p class="guide-note">多个值用逗号、分号或换行分隔；同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。</p>
+          <p class="guide-note">自定义规则中，多个值用逗号、分号或换行分隔；同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。</p>
         </section>
 
         <section class="guide-section">
@@ -291,7 +291,7 @@ const listSeparators = /[,;，；\n]/
 const loading = ref(false)
 const saving = ref(false)
 const keyword = ref('')
-const presets = ref<StreamInterceptPolicySummary[]>([])
+const defaultRules = ref<StreamInterceptPolicySummary[]>([])
 const policies = ref<StreamInterceptPolicySummary[]>([])
 const modalOpen = ref(false)
 const modalReadonly = ref(false)
@@ -374,7 +374,7 @@ const accountStateLabels: Record<StreamInterceptPolicyAccountState, string> = {
   runtime_avoidance: '仅运行态避让'
 }
 
-const allPolicies = computed(() => [...presets.value, ...policies.value])
+const allPolicies = computed(() => [...defaultRules.value, ...policies.value])
 const filteredPolicies = computed(() => {
   const text = keyword.value.trim().toLowerCase()
   if (!text) return allPolicies.value
@@ -382,7 +382,7 @@ const filteredPolicies = computed(() => {
 })
 
 const modalTitle = computed(() => {
-  if (modalReadonly.value) return '查看内置策略'
+  if (modalReadonly.value) return '查看默认策略'
   return editingId.value ? '编辑流式拦截策略' : '新建流式拦截策略'
 })
 
@@ -420,7 +420,7 @@ async function loadPolicies(): Promise<void> {
   loading.value = true
   try {
     const result = await api.streamInterceptPolicies.list()
-    presets.value = result.presets
+    defaultRules.value = result.defaultRules
     policies.value = result.policies
   } catch (error) {
     console.error(error)
@@ -579,7 +579,6 @@ function validateForm(): string | undefined {
   if (!form.name.trim()) return '请填写策略名称'
   if (!hasAnyMatcher()) return '至少需要填写一个匹配条件'
   if (form.retryEnabled && form.dataHandling === 'discard_event') return '需要重试时不能只丢弃命中事件'
-  if (needsAvoidanceTtl() && !positiveInt(form.avoidanceTtlSeconds)) return '切号避让或运行态避让需要填写避让秒数'
   return undefined
 }
 
@@ -614,12 +613,6 @@ function hasAnyMatcher(): boolean {
     form.textIncludes,
     form.jsonPathsExists
   ].some((value) => (splitList(value) ?? []).length > 0)
-}
-
-function needsAvoidanceTtl(): boolean {
-  return form.accountSwitch === 'avoid_account_ttl'
-    || form.accountSwitch === 'avoid_upstream_bucket_ttl'
-    || form.accountState === 'runtime_avoidance'
 }
 
 function splitList(value: unknown): string[] | undefined {

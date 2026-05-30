@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import http from 'node:http'
 import type { SQLInputValue } from 'node:sqlite'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -18,11 +19,29 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, usageRecordShards] = await Promise.all([
+const [{ createSystemApiApp }, databaseModule, repositories, usageRecordShards] = await Promise.all([
+  import('../../modules/system-api/system-api-app.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/usage-record-shards.js')
 ])
+
+interface ApiEnvelope<T> {
+  data: T
+  message?: string
+}
+
+interface UsageRecordListResult {
+  items: Array<{
+    id: string
+    model?: string
+    createdAt: string
+  }>
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -515,6 +534,67 @@ try {
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '最近请求形态不应传入前导通配符参数')
   }
 
+  const admin = repositories.listSystemAccounts().find((systemAccount) => systemAccount.username === 'admin')
+  assert(admin, '使用记录路由回归需要默认管理员')
+  const routeApp = createSystemApiApp({ systemApiPrefix: '/__aisys__/api' })
+  const routeServer = routeApp.listen(0, '127.0.0.1')
+  await listen(routeServer)
+  try {
+    const routeBaseUrl = `http://127.0.0.1:${serverAddress(routeServer).port}`
+    const routeDefaultWindowInsideAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
+    const routeDefaultWindowOutsideAt = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString()
+    const routeDefaultWindowModel = `route-default-window-model-${Date.now()}`
+    const routeDefaultWindowInsideId = usageRecordShards.generateUsageRecordId(routeDefaultWindowInsideAt, 'inside')
+    const routeDefaultWindowOutsideId = usageRecordShards.generateUsageRecordId(routeDefaultWindowOutsideAt, 'outside')
+    repositories.createUsageRecordsBatch([
+      {
+        id: routeDefaultWindowInsideId,
+        traceId: 'trace-route-default-window-inside',
+        apiKeyId: apiKey.id,
+        groupId: group.id,
+        accountId: account.id,
+        endpoint: '/v1/responses',
+        providerCode: 'openai',
+        model: routeDefaultWindowModel,
+        stream: false,
+        statusCode: 200,
+        success: true,
+        createdAt: routeDefaultWindowInsideAt
+      },
+      {
+        id: routeDefaultWindowOutsideId,
+        traceId: 'trace-route-default-window-outside',
+        apiKeyId: apiKey.id,
+        groupId: group.id,
+        accountId: account.id,
+        endpoint: '/v1/responses',
+        providerCode: 'openai',
+        model: routeDefaultWindowModel,
+        stream: false,
+        statusCode: 200,
+        success: true,
+        createdAt: routeDefaultWindowOutsideAt
+      }
+    ])
+
+    const routeDefaultWindow = await getEnvelope<UsageRecordListResult>(
+      routeBaseUrl,
+      `/__aisys__/api/usage-records?model=${encodeURIComponent(routeDefaultWindowModel)}&page=1&pageSize=20`,
+      sessionCookie(admin.id)
+    )
+    assert.deepEqual(routeDefaultWindow.items.map((item) => item.id), [routeDefaultWindowInsideId], '使用记录路由未传日期时应默认限制最近 31 天')
+
+    const routePageClamp = await getEnvelope<UsageRecordListResult>(
+      routeBaseUrl,
+      `/__aisys__/api/usage-records?model=${encodeURIComponent(routeDefaultWindowModel)}&page=999999&pageSize=1`,
+      sessionCookie(admin.id)
+    )
+    assert.equal(routePageClamp.page, 1000, '使用记录路由页码应在 1000 以内')
+    assert.equal(routePageClamp.pageSize, 1, '使用记录路由分页大小应保持请求值')
+  } finally {
+    await closeServer(routeServer)
+  }
+
   console.log('使用记录列表查询防护回归通过：model 精确匹配，clientIp 前缀范围匹配，accountKeyword 和最近请求形态都不再对 usage_records 做前导通配符扫描')
 } finally {
   try {
@@ -541,4 +621,44 @@ function uniquePrefix(value: string, otherValue: string): string {
     if (!otherValue.startsWith(prefix)) return prefix
   }
   return value
+}
+
+function sessionCookie(systemAccountId: string): string {
+  return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
+}
+
+async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, { headers: { cookie } })
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`${path} HTTP ${response.status}: ${text}`)
+  }
+  return (JSON.parse(text) as ApiEnvelope<T>).data
+}
+
+async function listen(listeningServer: http.Server): Promise<void> {
+  if (listeningServer.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    listeningServer.once('listening', resolvePromise)
+    listeningServer.once('error', rejectPromise)
+  })
+}
+
+async function closeServer(listeningServer?: http.Server): Promise<void> {
+  if (!listeningServer?.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    listeningServer.close((error) => {
+      if (error) {
+        rejectPromise(error)
+      } else {
+        resolvePromise()
+      }
+    })
+  })
+}
+
+function serverAddress(listeningServer: http.Server): { port: number } {
+  const address = listeningServer.address()
+  assert(address && typeof address !== 'string', '使用记录路由回归服务器应监听 TCP 地址')
+  return { port: address.port }
 }

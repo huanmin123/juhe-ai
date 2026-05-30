@@ -514,7 +514,8 @@ async function loadScopes(): Promise<void> {
   } catch {
     scopeOptions.value = [
       { value: 'external_integrations:source_auth_demo:read', label: '来源鉴权 demo' },
-      { value: 'juhe_ai_ip_usage:read', label: 'IP 聚合读取' }
+      { value: 'juhe_ai_ip_usage:read', label: 'IP 聚合读取' },
+      { value: 'juhe_ai_account_push:write', label: '公益账号推送' }
     ]
   }
 }
