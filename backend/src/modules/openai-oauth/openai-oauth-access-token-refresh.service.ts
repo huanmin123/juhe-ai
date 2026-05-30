@@ -277,6 +277,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
 function isExistingOpenAIOAuthAccountWithRefreshToken(account: AccountSummary): boolean {
   return account.providerCode === 'openai'
     && account.type === 'oauth'
+    && account.accessType !== 'authorized'
     && Boolean(stringCredential(account.credentials, 'refresh_token'))
 }
 

@@ -19,8 +19,10 @@ interface ApiKeyQuotaSnapshotRow {
 interface AuthorizationQuotaSnapshotRow {
   id: string
   resource_owner_system_account_id: string
+  grantee_system_account_id: string
   resource_type: 'account' | 'group'
   resource_id: string
+  instance_account_id: string | null
   effective_source_team_id: string | null
   limits_json: string | null
 }
@@ -28,8 +30,10 @@ interface AuthorizationQuotaSnapshotRow {
 interface TeamAuthorizationQuotaSnapshotRow {
   authorization_id: string
   resource_owner_system_account_id: string
+  authorization_grantee_system_account_id: string | null
   resource_type: 'account' | 'group'
   resource_id: string
+  authorization_instance_account_id: string | null
   effective_source_team_id: string
   limits_json: string | null
 }
@@ -114,9 +118,13 @@ function loadApiKeyQuotaSnapshotRows(database: DatabaseSync): ApiKeyQuotaSnapsho
 
 function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): AuthorizationQuotaSnapshotRow[] {
   return database.prepare(`
-    SELECT id, resource_owner_system_account_id, resource_type, resource_id, effective_source_team_id, limits_json
-    FROM resource_authorizations
-    WHERE status = 'active'
+    SELECT ra.id, ra.resource_owner_system_account_id, ra.grantee_system_account_id, ra.resource_type, ra.resource_id,
+      instance_accounts.id AS instance_account_id,
+      ra.effective_source_team_id, ra.limits_json
+    FROM resource_authorizations ra
+    LEFT JOIN accounts instance_accounts
+      ON instance_accounts.authorization_instance_authorization_id = ra.id
+    WHERE ra.status = 'active'
   `).all() as unknown as AuthorizationQuotaSnapshotRow[]
 }
 
@@ -125,8 +133,10 @@ function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): TeamAut
     SELECT
       ra.id AS authorization_id,
       grant_rows.resource_owner_system_account_id,
+      ra.grantee_system_account_id AS authorization_grantee_system_account_id,
       grant_rows.resource_type,
       grant_rows.resource_id,
+      instance_accounts.id AS authorization_instance_account_id,
       ra.effective_source_team_id,
       grant_rows.limits_json
     FROM resource_authorizations ra
@@ -136,6 +146,8 @@ function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): TeamAut
       AND grant_rows.grantee_type = 'team'
       AND grant_rows.grantee_team_id = ra.effective_source_team_id
       AND grant_rows.status = 'active'
+    LEFT JOIN accounts instance_accounts
+      ON instance_accounts.authorization_instance_authorization_id = ra.id
     WHERE ra.status = 'active'
       AND ra.effective_source_team_id IS NOT NULL
   `).all() as unknown as TeamAuthorizationQuotaSnapshotRow[]
@@ -169,11 +181,12 @@ function authorizationQuotaCostCheck(
   if (!hasEnabledRequestQuotaLimit(limits)) {
     return undefined
   }
+  const systemAccountId = authorizationQuotaStatsSystemAccountId(row, scopeType)
   return {
-    key: `authorization\u0000${row.resource_owner_system_account_id}\u0000${scopeType}\u0000${row.id}\u0000${row.limits_json ?? ''}`,
+    key: `authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${row.id}\u0000${row.limits_json ?? ''}`,
     limits,
     costInput: {
-      systemAccountId: row.resource_owner_system_account_id,
+      systemAccountId,
       scopeType,
       scopeId: row.id,
       now,
@@ -191,13 +204,15 @@ function teamAuthorizationQuotaCostCheck(
   if (!hasEnabledRequestQuotaLimit(limits)) {
     return undefined
   }
+  const systemAccountId = teamAuthorizationQuotaStatsSystemAccountId(row, scopeType)
+  const scopeId = `${teamAuthorizationResourceId(row, scopeType)}:${row.effective_source_team_id}`
   return {
-    key: `team_authorization\u0000${row.resource_owner_system_account_id}\u0000${scopeType}\u0000${row.effective_source_team_id}\u0000${row.resource_id}\u0000${row.limits_json ?? ''}`,
+    key: `team_authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${row.effective_source_team_id}\u0000${scopeId}\u0000${row.limits_json ?? ''}`,
     limits,
     costInput: {
-      systemAccountId: row.resource_owner_system_account_id,
+      systemAccountId,
       scopeType: scopeType === 'account_authorization' ? 'account_authorization_team' : 'group_authorization_team',
-      scopeId: `${row.resource_id}:${row.effective_source_team_id}`,
+      scopeId,
       now,
       hourlyWindowHours: limits.hourly?.hours
     }
@@ -206,6 +221,25 @@ function teamAuthorizationQuotaCostCheck(
 
 function authorizationScopeType(resourceType: 'account' | 'group'): 'account_authorization' | 'group_authorization' {
   return resourceType === 'account' ? 'account_authorization' : 'group_authorization'
+}
+
+function authorizationQuotaStatsSystemAccountId(row: AuthorizationQuotaSnapshotRow, scopeType: 'account_authorization' | 'group_authorization'): string {
+  return scopeType === 'account_authorization'
+    ? row.grantee_system_account_id
+    : row.resource_owner_system_account_id
+}
+
+function teamAuthorizationQuotaStatsSystemAccountId(row: TeamAuthorizationQuotaSnapshotRow, scopeType: 'account_authorization' | 'group_authorization'): string {
+  return scopeType === 'account_authorization'
+    ? row.authorization_grantee_system_account_id ?? row.resource_owner_system_account_id
+    : row.resource_owner_system_account_id
+}
+
+function teamAuthorizationResourceId(row: TeamAuthorizationQuotaSnapshotRow, scopeType: 'account_authorization' | 'group_authorization'): string {
+  if (scopeType === 'account_authorization' && row.authorization_instance_account_id) {
+    return row.authorization_instance_account_id
+  }
+  return row.resource_id
 }
 
 function uniqueQuotaCostChecks(checks: QuotaCostCheck[]): QuotaCostCheck[] {

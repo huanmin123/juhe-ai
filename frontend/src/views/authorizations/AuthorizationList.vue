@@ -98,7 +98,7 @@ import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns, type AuthorizationDirectionFilter } from './authorizationTableColumns'
-import { authorizationDirectionColor, authorizationDirectionText, authorizationRevokeActionCount, formatDateTime, granteeTargetName } from './authorizationFormatters'
+import { authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName } from './authorizationFormatters'
 import type { AuthorizationResourceType } from '@/types/domain'
 
 const props = defineProps<{
@@ -126,41 +126,19 @@ const hasReturnableInboundAuthorization = computed(() => {
   if (props.isManagementView || props.direction !== 'inbound') return false
   return props.authorizations.some((authorization) => canReturnAuthorization(authorization))
 })
-const actionColumnWidth = computed(() => {
-  if (!showActions.value) return 0
-  const maxActionCount = props.authorizations.reduce((maxCount, authorization) => {
-    if (canReturnAuthorization(authorization)) return Math.max(maxCount, 1)
-    if (!canManageAuthorization(authorization)) return maxCount
-    return Math.max(maxCount, authorizationActionCount(authorization))
-  }, 0)
-  return Math.max(84, 24 + maxActionCount * 30)
-})
 const defaultColumns = computed(() => authorizationColumns.filter((column) => {
   if (props.isManagementView && column.key === 'direction') return false
   if (['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
   if (!showActions.value && column.key === 'actions') return false
   return true
-}).map((column) => {
-  if (column.key === 'actions') return { ...column, width: actionColumnWidth.value }
-  return column
 }))
 const columns = computed(() => props.columns ?? defaultColumns.value)
 const tableScrollX = computed(() => props.isManagementView ? 1240 : 1320)
-
-function canManageAuthorization(authorization: ResourceAuthorizationSummary): boolean {
-  return props.isManagementView || authorization.permissions?.canEdit === true
-}
 
 function canReturnAuthorization(authorization: ResourceAuthorizationSummary): boolean {
   if (props.isManagementView || props.direction !== 'inbound') return false
   if (authorization.granteeType !== 'system_account') return false
   return authorization.status !== 'revoked' && authorization.status !== 'returned'
-}
-
-function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
-  const revokeCount = authorizationRevokeActionCount(authorization)
-  const hasMore = canManageAuthorization(authorization) ? 1 : 0
-  return revokeCount + hasMore
 }
 
 function resourceTypeTag(resourceType: AuthorizationResourceType) {

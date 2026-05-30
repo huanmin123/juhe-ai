@@ -40,9 +40,9 @@ interface AccountListNormalizationOptions {
 }
 
 const accountListSortColumns: Record<AccountListSortField, string> = {
-  priority: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.priority END",
-  superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.super_priority_enabled END",
-  fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.fallback_enabled END",
+  priority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_priority, account_rows.priority) ELSE account_rows.priority END",
+  superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END",
+  fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END",
   qualityScore: 'quality_score',
   name: 'account_rows.name COLLATE NOCASE',
   type: 'account_rows.type COLLATE NOCASE',
@@ -59,11 +59,7 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
         WHEN account_rows.status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
         WHEN account_rows.schedulable <> 1 THEN 'disabled'
         WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'temporary_unavailable'
-        WHEN group_bindings.local_status IN ('temporary_unavailable', 'rate_limited')
-          AND group_bindings.local_cooldown_until IS NOT NULL
-          AND group_bindings.local_cooldown_until <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        THEN 'active'
-        ELSE COALESCE(group_bindings.local_status, 'active')
+        ELSE account_rows.status
       END
     ELSE account_rows.status
   END COLLATE NOCASE`,

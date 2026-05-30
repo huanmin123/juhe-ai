@@ -424,9 +424,15 @@ export function resolveProxyUrlsForProfiles(proxyProfileIds: string[]): Map<stri
   const rowsById = new Map(rows.map((row) => [row.id, row]))
   for (const id of ids) {
     const row = rowsById.get(id)
-    output.set(id, row && row.enabled === 1
-      ? { proxyUrl: proxyUrlFromRow(row) }
-      : { unavailable: true, errorMessage: new ProxyProfileUnavailableError(id).message })
+    if (!row || row.enabled !== 1) {
+      output.set(id, { unavailable: true, errorMessage: new ProxyProfileUnavailableError(id).message })
+      continue
+    }
+    try {
+      output.set(id, { proxyUrl: proxyUrlFromRow(row) })
+    } catch {
+      output.set(id, { unavailable: true, errorMessage: '代理凭据不可解密，请检查代理配置' })
+    }
   }
   return output
 }

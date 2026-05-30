@@ -596,24 +596,17 @@ async function drainSideEffectQueue(): Promise<void> {
 async function executeAccountSideEffect(operation: AccountSideEffectOperation): Promise<void> {
   if (operation.type === 'apply_account_error_handling') {
     const result = await requestDbService(operation)
-    if (operation.input.success && result.accountStatus === 'active') {
-      clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
-    }
     if (result.changed) {
-      if (result.accountStatus === 'rate_limited' || result.accountStatus === 'temporary_unavailable') {
-        suppressLocalAccount(gatewayAccountRuntimeKey(operation.account), localSuppressionMs(operation.input.settings), result.reason ?? operation.input.errorMessage ?? '上游账号请求失败')
-      }
+      clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
       clearGatewayRuntimeCache()
+    } else if (operation.input.success && result.accountStatus === 'active') {
+      clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
     }
     return
   }
   const result = await requestDbService(operation)
   if (result.triggered) {
-    suppressLocalAccount(
-      gatewayAccountRuntimeKey(operation.input.account ?? operation.input.accountId),
-      localSuppressionMsFromMinutes(operation.input.cooldownMinutes),
-      operation.input.reason
-    )
+    clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.input.account ?? operation.input.accountId))
     clearGatewayRuntimeCache()
   }
 }
@@ -708,10 +701,6 @@ function suppressLocalAccount(
     runtimeStatus: status,
     reason
   }, '网关账号已进入 Web 进程本地短期屏蔽')
-}
-
-function clearLocalAccountSuppression(accountId: string): void {
-  localAccountSuppressions.delete(accountId)
 }
 
 function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean {
@@ -812,15 +801,10 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
     })
     if (markResult.updated) {
-      suppressLocalAccount(runtimeKey, localSuppressionMs(finalState.settings), reason, 'precheck_failed', {
-        failureCount: finalState.failureCount,
-        distinctClientIpCount: finalState.distinctClientIpCount,
-        distinctApiKeyCount: finalState.distinctApiKeyCount,
-        precheckAttemptCount: finalState.attemptCount
-      })
+      clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
       clearGatewayRuntimeCache()
     } else {
-      clearLocalAccountSuppression(runtimeKey)
+      clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
     }
     precheckStates.delete(runtimeKey)
     failureStorms.delete(runtimeKey)

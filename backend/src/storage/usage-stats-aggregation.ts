@@ -6,10 +6,17 @@ import {
   type UsageStatsRecordRow
 } from './usage-stats-types.js'
 
-export function usageStatsEntries(row: UsageStatsRecordRow): UsageStatsEntry[] {
+export interface UsageStatsAuthorizationLookup {
+  accountAuthorizationInstanceAccountIds?: Map<string, string>
+}
+
+export function usageStatsEntries(row: UsageStatsRecordRow, lookup?: UsageStatsAuthorizationLookup): UsageStatsEntry[] {
   const accumulator = usageStatsAccumulatorFromRecord(row)
   const callerSystemAccountId = row.system_account_id
   const accountOwnerSystemAccountId = row.account_owner_system_account_id ?? callerSystemAccountId
+  const accountStatsSystemAccountId = row.account_access_type === 'account_authorized'
+    ? callerSystemAccountId
+    : accountOwnerSystemAccountId
   const groupOwnerSystemAccountId = row.group_owner_system_account_id ?? callerSystemAccountId
   const entries = [
     { systemAccountId: callerSystemAccountId, scopeType: 'system_account', scopeId: callerSystemAccountId, accumulator },
@@ -18,11 +25,11 @@ export function usageStatsEntries(row: UsageStatsRecordRow): UsageStatsEntry[] {
   if (row.provider_code) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'provider', scopeId: row.provider_code, accumulator })
   if (row.group_id) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'caller_account', scopeId: row.account_id, accumulator })
-  if (row.account_id) entries.push({ systemAccountId: accountOwnerSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
+  if (row.account_id) entries.push({ systemAccountId: accountStatsSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'account', scopeId: row.account_id, accumulator })
-  if (row.account_authorization_id && accountOwnerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: accountOwnerSystemAccountId, scopeType: 'account_authorization', scopeId: row.account_authorization_id, accumulator })
+  if (row.account_authorization_id && accountOwnerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'account_authorization', scopeId: row.account_authorization_id, accumulator })
   if (row.account_id && row.account_authorization_source_team_id && accountOwnerSystemAccountId !== callerSystemAccountId) {
-    entries.push({ systemAccountId: accountOwnerSystemAccountId, scopeType: 'account_authorization_team', scopeId: `${row.account_id}:${row.account_authorization_source_team_id}`, accumulator })
+    entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'account_authorization_team', scopeId: `${accountAuthorizationTeamAccountId(row, lookup)}:${row.account_authorization_source_team_id}`, accumulator })
   }
   if (row.group_authorization_id && groupOwnerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group_authorization', scopeId: row.group_authorization_id, accumulator })
   if (row.group_id && row.group_authorization_source_team_id && groupOwnerSystemAccountId !== callerSystemAccountId) {
@@ -32,6 +39,14 @@ export function usageStatsEntries(row: UsageStatsRecordRow): UsageStatsEntry[] {
   if (row.model) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'model', scopeId: row.model, accumulator })
   if (row.endpoint) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'endpoint', scopeId: row.endpoint, accumulator })
   return entries
+}
+
+function accountAuthorizationTeamAccountId(row: UsageStatsRecordRow, lookup?: UsageStatsAuthorizationLookup): string {
+  if (row.account_authorization_id) {
+    const instanceAccountId = lookup?.accountAuthorizationInstanceAccountIds?.get(row.account_authorization_id)
+    if (instanceAccountId) return instanceAccountId
+  }
+  return row.account_id ?? ''
 }
 
 export function shouldAggregateUsageStatsRecord(row: UsageStatsRecordRow): boolean {

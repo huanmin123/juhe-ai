@@ -137,7 +137,7 @@ try {
   assert(usageRows.every((row) => row.system_account_id === seed.granteeId), '用户侧授权账户检测消耗应计入当前用户系统账户')
   const upstreamRows = usageRows.filter((row) => row.account_id)
   assert(upstreamRows.length > 0, '用户侧授权账户检测应产生命中上游账号的 Responses 使用记录')
-  assert(upstreamRows.every((row) => row.account_id === seed.ownerAccountId), '用户侧授权账户 Responses 调用应命中被授权的所有者账户')
+  assert(upstreamRows.every((row) => row.account_id === seed.ownerAccountId), '用户侧授权账户 Responses 调用应命中被授权实例账户')
   assert(upstreamRows.every((row) => row.account_owner_system_account_id === seed.ownerId), '使用记录应保留账户所有者用于审计')
   assert(upstreamRows.some((row) => row.account_access_type === 'account_authorized'), '使用记录应标记账号授权访问类型')
   assert(
@@ -221,14 +221,17 @@ function seedData(upstreamBaseUrl: string): SeedState {
     name: '模型检测授权用户分组',
     providerCode: 'openai'
   }, granteeAccess)
-  assert(repositories.setAccountGroup(ownerAccount.id, granteeGroup.id, granteeAccess), '授权账户绑定到被授权用户分组失败')
-  const authorizedAccount = repositories.findAccountForTest(ownerAccount.id, granteeAccess)
+  const authorizedInstance = repositories.listAccounts(granteeAccess)
+    .find((account) => account.authorizationInstanceSourceAccountId === ownerAccount.id)
+  assert(authorizedInstance, '被授权用户视角应能读取授权实例账户')
+  assert(repositories.setAccountGroup(authorizedInstance.id, granteeGroup.id, granteeAccess), '授权实例账户绑定到被授权用户分组失败')
+  const authorizedAccount = repositories.findAccountForTest(authorizedInstance.id, granteeAccess)
   assert(authorizedAccount?.accountAuthorizationId, '绑定后应能读取授权账户有效授权 ID')
   return {
     ownerId: owner.id,
     granteeId: grantee.id,
     intruderId: intruder.id,
-    ownerAccountId: ownerAccount.id,
+    ownerAccountId: authorizedInstance.id,
     granteeGroupId: granteeGroup.id,
     accountAuthorizationId: authorizedAccount.accountAuthorizationId,
     granteeCookie: sessionCookie(grantee.id),

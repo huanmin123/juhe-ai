@@ -408,7 +408,9 @@ const {
   handleTableChange,
   loadData,
   loadMoreMobile: loadMoreMobileApiKeys,
-  resetPagination
+  removeItems: removeApiKeyItems,
+  resetPagination,
+  updateItems: updateApiKeyItems
 } = useResponsivePagedList<ApiKeySummary, { forceOptions?: boolean }>({
   pageSize,
   initialPagination: initialPageState.pagination,
@@ -444,7 +446,7 @@ const rawColumns = computed(() => {
     { title: '美元额度', key: 'quotaLimits', width: 220 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
     { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-    { title: '操作', key: 'actions', width: 90, fixed: 'right' }
+    { title: '操作', key: 'actions', fixed: 'right' }
   )
   return baseColumns
 })
@@ -1000,9 +1002,10 @@ function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
 async function updateApiKeyStatus(apiKey: ApiKeySummary, status: 'active' | 'disabled') {
   statusUpdatingId.value = apiKey.id
   try {
-    await apiKeysApi.update(apiKey.id, { status }, apiKeyScopeParams.value)
+    const updated = await apiKeysApi.update(apiKey.id, { status }, apiKeyScopeParams.value)
+    updateApiKeyItems((item) => item.id === apiKey.id, () => updated)
     message.success(status === 'active' ? 'API Key 已启用' : 'API Key 已停用')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, status === 'active' ? '启用 API Key 失败' : '停用 API Key 失败'))
@@ -1059,17 +1062,20 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     quotaLimits: quotaLimitsPayload()
   }
   try {
-    if (editingId.value) {
-      await apiKeysApi.update(editingId.value, payload, apiKeyScopeParams.value)
+    const targetId = editingId.value
+    if (targetId) {
+      const updated = await apiKeysApi.update(targetId, payload, apiKeyScopeParams.value)
+      updateApiKeyItems((item) => item.id === targetId, () => updated)
       message.success('API Key 已更新')
+      void loadData({ quiet: true })
     } else {
       const result = await apiKeysApi.create(payload, apiKeyScopeParams.value)
       createdKey.value = result.key
       createdKeyOpen.value = true
       message.success('API Key 已创建')
+      await loadData()
     }
     modalOpen.value = false
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存 API Key 失败'))
@@ -1108,8 +1114,9 @@ function normalizeGatewayBaseUrl(value: string) {
 async function removeApiKey(id: string) {
   try {
     await apiKeysApi.delete(id, apiKeyScopeParams.value)
+    removeApiKeyItems((item) => item.id === id)
     message.success('API Key 已删除，关联记录将后台清理')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除 API Key 失败'))

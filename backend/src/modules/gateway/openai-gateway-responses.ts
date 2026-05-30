@@ -6,6 +6,7 @@ export interface GatewayErrorPayload {
     message: string
     type: string
     code?: string
+    [key: string]: unknown
   }
 }
 

@@ -51,24 +51,23 @@ try {
   }
   const baseUrl = `http://127.0.0.1:${address.port}`
   const seed = seedData()
+  const ownerAccess = { systemAccountId: seed.ownerId, role: 'user' as const }
+  const granteeAccess = { systemAccountId: seed.granteeId, role: 'user' as const }
 
-  const accountAuthorizationId = repositories
-    .listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const })
-    .find((account) => account.id === seed.ownerAccountId)?.accountAuthorizationId
+  const authorizedAccount = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)
+  const accountAuthorizationId = authorizedAccount?.accountAuthorizationId
   assert(accountAuthorizationId, '被授权账户应带运行态授权 ID')
   await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${accountAuthorizationId}/return`, seed.granteeCookie)
   assert.equal(
-    repositories.listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const }).some((account) => account.id === seed.ownerAccountId),
+    repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.ownerAccountId),
     false,
     '被授权用户归还账户授权后不应继续看到该授权账户'
   )
   assert.equal(
-    repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const }).some((account) => account.id === seed.ownerAccountId),
+    repositories.listAccounts(ownerAccess).some((account) => account.id === seed.ownerAccountId),
     true,
     '被授权用户归还账户授权不应删除授权方原账户'
   )
-  const ownerAccess = { systemAccountId: seed.ownerId, role: 'user' as const }
-  const granteeAccess = { systemAccountId: seed.granteeId, role: 'user' as const }
   const returnedAccountGrant = repositories
     .listResourceAuthorizations({}, ownerAccess)
     .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
@@ -81,20 +80,14 @@ try {
     remark: '授权账户归还后重新授权'
   }, ownerAccess)
   assert.equal(restoredAccountGrant.id, returnedAccountGrant?.id, '归还后重新授权应复用原授权业务记录')
-  const restoredRuntimeAuthorizationId = repositories
-    .listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const })
-    .find((account) => account.id === seed.ownerAccountId)?.accountAuthorizationId
+  const restoredRuntimeAuthorizationId = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)?.accountAuthorizationId
   assert.equal(restoredRuntimeAuthorizationId, accountAuthorizationId, '归还后重新授权应复用原用户级授权 ID')
   const pausedAccountGrant = repositories.updateResourceAuthorization(restoredAccountGrant.id, { status: 'paused' }, ownerAccess)
   assert.equal(pausedAccountGrant?.status, 'paused', '授权方暂停后授权状态应为 paused')
-  const pausedAccount = repositories
-    .listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const })
-    .find((account) => account.id === seed.ownerAccountId)
+  const pausedAccount = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)
   assert.equal(pausedAccount?.authorizationStatus, 'paused', '暂停授权后被授权账户仍应可见但标记为暂停')
   repositories.updateResourceAuthorization(restoredAccountGrant.id, { status: 'active' }, ownerAccess)
-  const reactivatedAccount = repositories
-    .listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const })
-    .find((account) => account.id === seed.ownerAccountId)
+  const reactivatedAccount = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)
   assert.equal(reactivatedAccount?.authorizationStatus, 'active', '暂停后恢复授权应同步恢复运行态授权状态')
   assert.equal(reactivatedAccount?.status, 'active', '暂停后恢复授权应让被授权账户恢复可调用状态')
   const inboundAccountGrant = repositories
@@ -103,7 +96,7 @@ try {
   assert.equal(inboundAccountGrant?.id, restoredAccountGrant.id, '个人授权列表应返回授权业务记录 ID')
   await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${inboundAccountGrant.id}/return`, seed.granteeCookie)
   assert.equal(
-    repositories.listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const }).some((account) => account.id === seed.ownerAccountId),
+    repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.ownerAccountId),
     false,
     '被授权用户通过个人授权列表归还后不应继续看到该授权账户'
   )
@@ -141,9 +134,7 @@ try {
     granteeId: seed.granteeId,
     remark: '管理员代归还授权使用权'
   }, { systemAccountId: seed.ownerId, role: 'user' as const })
-  const adminManagedAuthorizationId = repositories
-    .listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const })
-    .find((account) => account.id === adminManagedAccount.id)?.accountAuthorizationId
+  const adminManagedAuthorizationId = authorizedAccountForSource(adminManagedAccount.id, granteeAccess)?.accountAuthorizationId
   assert(adminManagedAuthorizationId, '管理员代归还前应能看到被授权账户')
   await returnOk(
     baseUrl,
@@ -151,7 +142,7 @@ try {
     seed.adminCookie
   )
   assert.equal(
-    repositories.listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const }).some((account) => account.id === adminManagedAccount.id),
+    repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === adminManagedAccount.id),
     false,
     '管理员按用户作用域归还授权使用权后，该用户不应继续看到授权账户'
   )
@@ -223,6 +214,11 @@ function seedData() {
 
 function sessionCookie(systemAccountId: string): string {
   return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
+}
+
+function authorizedAccountForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {
+  return repositories.listAccounts(access)
+    .find((account) => account.authorizationInstanceSourceAccountId === sourceAccountId)
 }
 
 async function returnOk(baseUrl: string, path: string, cookie: string): Promise<void> {

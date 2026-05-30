@@ -105,8 +105,9 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
         ? await api.accounts.migrateTraffic(source.id, payload, accountOperationScopeParams(source, options.accountScopeParams.value))
         : await api.myAccounts.migrateTraffic(source.id, payload)
       const statusText = result.sourceStatus === 'disabled' ? '停用账户' : '临时不可调用'
+      const sourceText = isAuthorizedAccount(source) ? '当前授权实例' : '原账户'
       const scopeText = isAuthorizedAccount(source) ? '你的分组内' : ''
-      message.success(`后续请求将在${scopeText}切到 ${result.targetAccount.name}，当前连接不中断；原账户已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
+      message.success(`后续请求将在${scopeText}切到 ${result.targetAccount.name}，当前连接不中断；${sourceText}已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
       trafficMigrationModalOpen.value = false
       trafficMigrationSourceAccount.value = undefined
       trafficMigrationForm.targetAccount = undefined

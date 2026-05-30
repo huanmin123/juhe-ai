@@ -10,7 +10,7 @@ import {
   canEditAccount,
   canManageOpenAIOAuth,
   canRestoreException,
-  hasAuthorizedLocalFailureState,
+  hasAuthorizedInstanceFailureState,
   canUseAccountActions,
   canUseBoundAuthorizedAccount
 } from './accountRules'
@@ -93,7 +93,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     if (key === 'restore-normal') {
       if (isAuthorizedAccount(account)) {
-        if (!hasAccountRuntimeRecoveryState(account) && !hasAuthorizedLocalFailureState(account)) {
+        if (!hasAccountRuntimeRecoveryState(account) && !hasAuthorizedInstanceFailureState(account)) {
           message.warning('当前授权账户不需要恢复')
           return
         }
@@ -137,7 +137,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
           message.warning('请先把授权账户绑定到你的分组')
           return
         }
-        const nextStatus = account.localStatus === 'disabled' ? 'active' : 'disabled'
+        const nextStatus = account.status === 'disabled' ? 'active' : 'disabled'
         await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
         return
       }

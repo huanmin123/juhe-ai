@@ -189,6 +189,7 @@ const menuIconMap = {
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
   '/table-monitor': DatabaseOutlined,
+  '/ip-stats': GlobalOutlined,
   '/announcements': BellOutlined,
   '/settings': SettingOutlined,
   '/system-accounts': TeamOutlined

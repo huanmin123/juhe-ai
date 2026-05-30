@@ -314,9 +314,12 @@ function accountUsageScope(account: AccountSummary, access?: AccessScope): Usage
     }
   }
 
+  const systemAccountId = account.accessType === 'authorized' && account.accountAuthorizationId
+    ? account.systemAccountId ?? currentSystemAccountId(access)
+    : account.ownerSystemAccountId ?? account.systemAccountId ?? currentSystemAccountId(access)
   return {
     rowKey: accountUsageStatsRowKey(account),
-    systemAccountId: account.ownerSystemAccountId ?? account.systemAccountId ?? currentSystemAccountId(access),
+    systemAccountId,
     scopeType: account.accessType === 'authorized' && account.accountAuthorizationId ? 'account_authorization' : 'account',
     scopeId: account.accessType === 'authorized' && account.accountAuthorizationId ? account.accountAuthorizationId : account.id
   }
@@ -493,10 +496,16 @@ function loadAccountUsageMetadataRows(access: AccessScope | undefined, accountId
   const authorizationJoin = scopeType === 'caller_account'
     ? `LEFT JOIN resource_authorizations usage_authorization
         ON usage_authorization.resource_type = 'account'
-        AND usage_authorization.resource_id = accounts.id
         AND usage_authorization.grantee_system_account_id = ?
         AND usage_authorization.status = 'active'
-        AND (usage_authorization.expires_at IS NULL OR usage_authorization.expires_at > ?)`
+        AND (usage_authorization.expires_at IS NULL OR usage_authorization.expires_at > ?)
+        AND (
+          usage_authorization.id = accounts.authorization_instance_authorization_id
+          OR (
+            accounts.authorization_instance_authorization_id IS NULL
+            AND usage_authorization.resource_id = accounts.id
+          )
+        )`
     : ''
   const rows: AccountUsageMetadataRow[] = []
   const database = getDatabase()
@@ -513,8 +522,8 @@ function loadAccountUsageMetadataRows(access: AccessScope | undefined, accountId
         accounts.name,
         accounts.type,
         accounts.status,
-        ${scopeType === 'caller_account' ? "CASE WHEN accounts.system_account_id = ? THEN 'owner' ELSE 'authorized' END" : "'owner'"} AS access_type,
-        ${scopeType === 'caller_account' ? 'usage_authorization.id' : 'NULL'} AS authorization_id
+        ${scopeType === 'caller_account' ? "CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' WHEN accounts.system_account_id = ? THEN 'owner' ELSE 'authorized' END" : "'owner'"} AS access_type,
+        ${scopeType === 'caller_account' ? 'COALESCE(accounts.authorization_instance_authorization_id, usage_authorization.id)' : 'NULL'} AS authorization_id
       FROM accounts
       LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
       ${authorizationJoin}

@@ -1,8 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
+import { getDatabase } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
-import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
+import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries, type UsageStatsAuthorizationLookup } from './usage-stats-aggregation.js'
 import { updateUsageRecordCacheReadCost } from './usage-record-shards.js'
 import {
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
@@ -52,8 +54,10 @@ interface AuthorizationReportSummaryKey {
   resourceFilterId: string
 }
 
-export interface UsageStatsAggregationContext {
+export interface UsageStatsAggregationContext extends UsageStatsAuthorizationLookup {
   usageStatsUpsertStatements?: UsageStatsUpsertStatements
+  accountAuthorizationResourceIds?: Map<string, string>
+  accountAuthorizationInstanceAccountIds?: Map<string, string>
 }
 
 type SqliteStatement = ReturnType<DatabaseSync['prepare']>
@@ -99,8 +103,51 @@ const usageLatencyTimeBuckets: TimeBucketDefinition[] = [
 const latencyBucketUpperBoundsMs = [100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000, -1] as const
 
 export function createUsageStatsAggregationContext(rows: UsageStatsRecordRow[]): UsageStatsAggregationContext {
-  void rows
-  return {}
+  const accountAuthorizationIds = uniqueIds(rows.map((row) => row.account_authorization_id))
+  return {
+    ...loadUsageStatsAccountAuthorizationLookup(accountAuthorizationIds)
+  }
+}
+
+function loadUsageStatsAccountAuthorizationLookup(accountAuthorizationIds: string[]): UsageStatsAuthorizationLookup & { accountAuthorizationResourceIds: Map<string, string> } {
+  const accountAuthorizationResourceIds = new Map<string, string>()
+  const accountAuthorizationInstanceAccountIds = new Map<string, string>()
+  if (!accountAuthorizationIds.length) {
+    return { accountAuthorizationResourceIds, accountAuthorizationInstanceAccountIds }
+  }
+  const database = getDatabase()
+  for (const chunk of chunkValues(accountAuthorizationIds, 900)) {
+    const rows = database.prepare(`
+      SELECT
+        authorizations.id,
+        authorizations.resource_id,
+        instance_accounts.id AS instance_account_id
+      FROM resource_authorizations authorizations
+      LEFT JOIN accounts instance_accounts
+        ON instance_accounts.authorization_instance_authorization_id = authorizations.id
+        AND instance_accounts.system_account_id = authorizations.grantee_system_account_id
+      WHERE authorizations.resource_type = 'account'
+        AND authorizations.id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as Array<{
+      id?: string | null
+      resource_id?: string | null
+      instance_account_id?: string | null
+    }>
+    for (const row of rows) {
+      if (!row.id) continue
+      if (row.resource_id) {
+        accountAuthorizationResourceIds.set(row.id, row.resource_id)
+      }
+      if (row.instance_account_id) {
+        accountAuthorizationInstanceAccountIds.set(row.id, row.instance_account_id)
+      }
+    }
+  }
+  return { accountAuthorizationResourceIds, accountAuthorizationInstanceAccountIds }
+}
+
+function uniqueIds(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
 }
 
 export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string, context?: UsageStatsAggregationContext): void {
@@ -110,11 +157,11 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
   persistEstimatedCacheReadCost(row)
 
   const timeKeys = usageStatsTimeKeys(database, row)
-  for (const entry of usageStatsEntries(row)) {
+  for (const entry of usageStatsEntries(row, context)) {
     upsertUsageStatsEntry(database, entry, timeKeys, updatedAt, context)
     upsertUsageLatencyEntry(database, entry, row, timeKeys, updatedAt)
   }
-  upsertAuthorizationUsageReportRows(database, row, timeKeys, updatedAt)
+  upsertAuthorizationUsageReportRows(database, row, timeKeys, updatedAt, context)
   upsertUsageModelBuckets(database, row, timeKeys, updatedAt)
   if (row.success !== 1) {
     upsertUsageErrorBuckets(database, row, timeKeys, updatedAt)
@@ -128,11 +175,12 @@ export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStats
   }
 
   const timeKeys = usageStatsTimeKeys(database, row)
-  for (const entry of usageStatsEntries(row)) {
+  const context = createUsageStatsAggregationContext([row])
+  for (const entry of usageStatsEntries(row, context)) {
     subtractUsageStatsEntry(database, entry, timeKeys, updatedAt)
     subtractUsageLatencyEntry(database, entry, row, timeKeys, updatedAt)
   }
-  subtractAuthorizationUsageReportRows(database, row, timeKeys, updatedAt)
+  subtractAuthorizationUsageReportRows(database, row, timeKeys, updatedAt, context)
   subtractUsageModelBuckets(database, row, timeKeys, updatedAt)
   if (row.success !== 1) {
     subtractUsageErrorBuckets(database, row, timeKeys, updatedAt)
@@ -378,9 +426,9 @@ function deleteEmptyUsageStatsTimeBucket(database: DatabaseSync, bucket: TimeBuc
   `).run(systemAccountId, scopeType, scopeId, timeValue)
 }
 
-function upsertAuthorizationUsageReportRows(database: DatabaseSync, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys, updatedAt: string): void {
+function upsertAuthorizationUsageReportRows(database: DatabaseSync, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys, updatedAt: string, context?: UsageStatsAggregationContext): void {
   const stats = usageStatsAccumulatorFromRecord(row)
-  for (const reportRow of authorizationReportRows(row)) {
+  for (const reportRow of authorizationReportRows(row, context)) {
     const reportScopeRows = authorizationReportScopeRows(reportRow)
     const filters = authorizationReportResourceFilters(reportRow)
     for (const scopedReportRow of reportScopeRows) {
@@ -389,9 +437,9 @@ function upsertAuthorizationUsageReportRows(database: DatabaseSync, row: UsageSt
   }
 }
 
-function subtractAuthorizationUsageReportRows(database: DatabaseSync, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys, updatedAt: string): void {
+function subtractAuthorizationUsageReportRows(database: DatabaseSync, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys, updatedAt: string, context?: UsageStatsAggregationContext): void {
   const stats = usageStatsAccumulatorFromRecord(row)
-  for (const reportRow of authorizationReportRows(row)) {
+  for (const reportRow of authorizationReportRows(row, context)) {
     const reportScopeRows = authorizationReportScopeRows(reportRow)
     const filters = authorizationReportResourceFilters(reportRow)
     for (const scopedReportRow of reportScopeRows) {
@@ -400,16 +448,17 @@ function subtractAuthorizationUsageReportRows(database: DatabaseSync, row: Usage
   }
 }
 
-function authorizationReportRows(row: UsageStatsRecordRow): AuthorizationReportRow[] {
+function authorizationReportRows(row: UsageStatsRecordRow, context?: UsageStatsAggregationContext): AuthorizationReportRow[] {
   const rows: AuthorizationReportRow[] = []
   const seen = new Set<string>()
   if (row.account_authorization_id && row.account_id && row.account_owner_system_account_id && row.account_owner_system_account_id !== row.system_account_id) {
+    const resourceId = context?.accountAuthorizationResourceIds?.get(row.account_authorization_id) ?? row.account_id
     addAuthorizationReportRow(rows, seen, {
       authorizationId: `account:${row.account_authorization_id}`,
       ownerSystemAccountId: row.account_owner_system_account_id,
       granteeSystemAccountId: row.system_account_id,
       resourceType: 'account',
-      resourceId: row.account_id,
+      resourceId,
       hitAccountId: row.account_id,
       hitAccountOwnerSystemAccountId: row.account_owner_system_account_id,
       sourceType: row.account_authorization_source_type,

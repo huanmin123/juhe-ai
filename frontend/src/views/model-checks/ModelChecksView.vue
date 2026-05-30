@@ -331,7 +331,7 @@ const columns = [
   { title: '级别', key: 'level', width: 100 },
   { title: '摘要', key: 'summary', width: 320 },
   { title: '创建时间', key: 'createdAt', width: 180 },
-  { title: '操作', key: 'actions', width: 90, fixed: 'right' }
+  { title: '操作', key: 'actions', fixed: 'right' }
 ]
 const modelCheckPageSize = 20
 type AccountSelectOption = { label: string; value: string }
@@ -941,14 +941,34 @@ onBeforeUnmount(() => {
 <style scoped>
 .model-checks-page {
   display: flex;
+  height: calc(100dvh - 154px);
+  min-height: 0;
   flex-direction: column;
   gap: 16px;
+}
+
+.model-checks-run-card {
+  flex: 0 0 auto;
 }
 
 .model-checks-run-card,
 .model-checks-history-card {
   border: 1px solid #e8edf5;
   border-radius: 16px;
+}
+
+.model-checks-history-card {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.model-checks-history-card :deep(.ant-card-body) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
 }
 
 .model-checks-form :deep(.ant-form-item) {
@@ -1008,7 +1028,11 @@ onBeforeUnmount(() => {
 }
 
 .model-check-terminal {
+  display: flex;
+  height: 344px;
   margin-top: 14px;
+  min-height: 0;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid #1e293b;
   border-radius: 10px;
@@ -1017,6 +1041,7 @@ onBeforeUnmount(() => {
 
 .model-check-terminal-head {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1038,7 +1063,8 @@ onBeforeUnmount(() => {
 }
 
 .model-check-terminal-body {
-  max-height: 280px;
+  min-height: 0;
+  flex: 1 1 auto;
   padding: 12px;
   overflow: auto;
   color: #cbd5e1;
@@ -1162,7 +1188,13 @@ onBeforeUnmount(() => {
 }
 
 .history-toolbar {
+  flex: 0 0 auto;
   margin-bottom: 14px;
+}
+
+.model-checks-responsive-list {
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .history-filter {
@@ -1281,6 +1313,11 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
+  .model-checks-page {
+    height: auto;
+    min-height: calc(100dvh - 108px);
+  }
+
   .history-toolbar,
   .run-detail-head,
   .check-item-head {
@@ -1318,6 +1355,10 @@ onBeforeUnmount(() => {
   .model-check-terminal-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .model-check-terminal {
+    height: 320px;
   }
 
   .history-filter,

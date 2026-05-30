@@ -798,7 +798,7 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(ownerAccount.id, grantee.id) as unknown as { id?: string } | undefined
   assert(runtimeAuthorization?.id, '授权额度切后备回归需要运行时授权记录')
-  insertUsageTotal(databaseModule.getStatsDatabase(), owner.id, 'account_authorization', runtimeAuthorization.id, 5)
+  insertUsageTotal(databaseModule.getStatsDatabase(), grantee.id, 'account_authorization', runtimeAuthorization.id, 5)
   authorizationQuotaService.clearAuthorizationQuotaCache()
 
   const fallbackUpstreamKey = 'sk-route-authorization-quota-fallback'

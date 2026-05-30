@@ -121,6 +121,7 @@ const props = withDefaults(defineProps<{
   tableScrollY?: number | string
   tableScrollEnabled?: boolean
   pagination?: TablePagination
+  paginationSummary?: boolean
   rowSelection?: Record<string, any>
   expandable?: Record<string, any>
   mobileDataSource?: T[]
@@ -146,6 +147,7 @@ const props = withDefaults(defineProps<{
   tableScrollY: 'calc(100dvh - 286px)',
   tableScrollEnabled: true,
   pagination: undefined,
+  paginationSummary: true,
   mobileBreakpoint: 900,
   tableClass: '',
   cardClass: '',
@@ -202,6 +204,7 @@ let listResizeObserver: ResizeObserver | undefined
 let tableMutationObserver: MutationObserver | undefined
 let mobileItemResizeObserver: ResizeObserver | undefined
 let tableScrollbarPlaceholderFrame = 0
+let actionColumnMeasureFrame = 0
 let mobileMeasurementFrame = 0
 let tableScrollbarPlaceholderTimers: number[] = []
 let tableScrollbarPlaceholderUpdateQueued = false
@@ -222,6 +225,7 @@ const mobileEstimatedItemHeight = ref(defaultMobileItemHeight)
 const mobileItemHeightVersion = ref(0)
 const mobileItemHeights = new Map<string, number>()
 const mobileItemElements = new Map<string, HTMLElement>()
+const measuredActionColumnWidth = ref(0)
 const tableColumns = computed(() => normalizeTableColumns(props.columns))
 const tableClassNames = computed(() => [
   'responsive-data-list-table',
@@ -234,13 +238,19 @@ const tableStyleVars = computed(() => ({
 }))
 const tablePagination = computed<TablePagination>(() => {
   if (props.pagination === false) return false
-  return {
+  const mergedPagination: Record<string, any> = {
     pageSize: defaultPageSize,
     hideOnSinglePage: true,
     showSizeChanger: false,
     showTotal: (total: number) => `共 ${total} 条`,
     ...(props.pagination ?? {})
   }
+  if (!props.paginationSummary || mergedPagination.showTotal === false) {
+    const paginationWithoutTotal = { ...mergedPagination }
+    delete paginationWithoutTotal.showTotal
+    return paginationWithoutTotal
+  }
+  return mergedPagination
 })
 
 const hasTablePagination = computed(() => {
@@ -477,6 +487,7 @@ function isActionColumn(column: Record<string, any>): boolean {
 }
 
 function resolveActionColumnWidth(value: unknown, actionCount: unknown): number | string {
+  if (measuredActionColumnWidth.value > 0) return measuredActionColumnWidth.value
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
   if (typeof value === 'string') {
     const trimmedValue = value.trim()
@@ -568,6 +579,58 @@ function queueTableScrollbarPlaceholderUpdate() {
   }, delay))
 }
 
+function queueActionColumnMeasure() {
+  if (typeof window === 'undefined') return
+  window.cancelAnimationFrame(actionColumnMeasureFrame)
+  actionColumnMeasureFrame = window.requestAnimationFrame(() => {
+    actionColumnMeasureFrame = 0
+    measureActionColumnSlots()
+  })
+}
+
+function cancelActionColumnMeasure() {
+  if (typeof window === 'undefined') return
+  window.cancelAnimationFrame(actionColumnMeasureFrame)
+  actionColumnMeasureFrame = 0
+}
+
+function measureActionColumnSlots() {
+  if (isMobile.value) return
+  const root = listRootRef.value
+  if (!root) return
+  const actionRoots = root.querySelectorAll<HTMLElement>('.responsive-data-list-actions-column .row-actions[data-row-action-slots]')
+  let nextSlotCount = 0
+  actionRoots.forEach((element) => {
+    const slotCount = Number.parseInt(element.dataset.rowActionSlots ?? '', 10)
+    if (Number.isFinite(slotCount) && slotCount > nextSlotCount) {
+      nextSlotCount = slotCount
+    }
+  })
+  const nextWidth = Math.max(
+    nextSlotCount > 0 ? rowActionColumnWidth(nextSlotCount) : 0,
+    measureActionColumnContentWidth(root)
+  )
+  if (nextWidth > 0 && nextWidth !== measuredActionColumnWidth.value) {
+    measuredActionColumnWidth.value = nextWidth
+    nextTick(queueTableScrollbarPlaceholderUpdate)
+  }
+}
+
+function measureActionColumnContentWidth(root: HTMLElement): number {
+  const cells = root.querySelectorAll<HTMLElement>('.ant-table-tbody .responsive-data-list-actions-column')
+  let maxContentWidth = 0
+  cells.forEach((cell) => {
+    const rects = Array.from(cell.children)
+      .map((child) => child.getBoundingClientRect())
+      .filter((rect) => rect.width > 0)
+    if (!rects.length) return
+    const left = Math.min(...rects.map((rect) => rect.left))
+    const right = Math.max(...rects.map((rect) => rect.right))
+    maxContentWidth = Math.max(maxContentWidth, Math.ceil(right - left) + 16)
+  })
+  return maxContentWidth
+}
+
 function cancelTableScrollbarPlaceholderUpdate() {
   if (typeof window === 'undefined') return
   window.cancelAnimationFrame(tableScrollbarPlaceholderFrame)
@@ -607,7 +670,10 @@ function updateTableScrollbarPlaceholderState() {
 function observeTableMutations() {
   if (typeof MutationObserver === 'undefined' || !listRootRef.value) return
   tableMutationObserver?.disconnect()
-  tableMutationObserver = new MutationObserver(queueTableScrollbarPlaceholderUpdate)
+  tableMutationObserver = new MutationObserver(() => {
+    queueTableScrollbarPlaceholderUpdate()
+    queueActionColumnMeasure()
+  })
   tableMutationObserver.observe(listRootRef.value, {
     childList: true,
     subtree: true,
@@ -846,7 +912,10 @@ watch([
   () => props.loading,
   () => props.dataSource.length
 ], () => {
-  nextTick(queueTableScrollbarPlaceholderUpdate)
+  nextTick(() => {
+    queueTableScrollbarPlaceholderUpdate()
+    queueActionColumnMeasure()
+  })
 }, { flush: 'post' })
 
 watch([
@@ -867,6 +936,7 @@ onMounted(() => {
   updateListHeight()
   nextTick(() => {
     queueTableScrollbarPlaceholderUpdate()
+    queueActionColumnMeasure()
     observeRenderedMobileItems()
     queueMobileItemMeasurement()
   })
@@ -886,6 +956,7 @@ onActivated(() => {
     updateViewportState()
     updateListHeight()
     queueTableScrollbarPlaceholderUpdate()
+    queueActionColumnMeasure()
     observeRenderedMobileItems()
     queueMobileItemMeasurement()
   })
@@ -899,6 +970,7 @@ onDeactivated(() => {
   disconnectListResize()
   removeViewportListeners()
   cancelTableScrollbarPlaceholderUpdate()
+  cancelActionColumnMeasure()
   disconnectMobileItemResizeObserver()
 })
 
@@ -906,6 +978,7 @@ onBeforeUnmount(() => {
   pageActive.value = false
   unlockBodyScroll()
   cancelTableScrollbarPlaceholderUpdate()
+  cancelActionColumnMeasure()
   disconnectMobileItemResizeObserver()
   disconnectListResize()
   tableMutationObserver?.disconnect()

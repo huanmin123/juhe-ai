@@ -99,10 +99,14 @@ try {
     granteeId: grantee.id,
     remark: '实时并发快照授权账户回归'
   }, access)
+  const authorizedAccountA = repositories.listAccounts({ systemAccountId: grantee.id, role: 'user' as const })
+    .find((account) => account.authorizationInstanceSourceAccountId === accountA.id)
+  assert(authorizedAccountA?.id, '被授权用户应看到授权实例账户')
 
   serverConcurrency = {
     [accountA.id]: 2,
-    [accountB.id]: 1
+    [accountB.id]: 1,
+    [authorizedAccountA.id]: 4
   }
 
   const fakeParent = new FakeServerParent()
@@ -124,10 +128,10 @@ try {
 
     const granteeAccountPage = repositories.listAccountsPage({ systemAccountId: grantee.id, role: 'user' as const }, { limit: 20 })
     const authorizedAccountPageWithRuntime = await runtimeSnapshot.applyServerAccountConcurrencyToAccountList(granteeAccountPage)
-    const authorizedAccount = findAccount(authorizedAccountPageWithRuntime.items, accountA.id)
+    const authorizedAccount = findAccount(authorizedAccountPageWithRuntime.items, authorizedAccountA.id)
     assert.equal(authorizedAccount.accessType, 'authorized', '被授权用户账户列表应返回授权账户视角')
-    assert.equal(authorizedAccount.concurrencyLimit, 10, '授权账户应展示物理账号并发上限')
-    assert.equal(authorizedAccount.currentConcurrency, 2, '授权账户应合并 server 当前并发')
+    assert.equal(authorizedAccount.concurrencyLimit, 10, '授权账户应展示来源账号并发上限')
+    assert.equal(authorizedAccount.currentConcurrency, 4, '授权实例账户应按自己的账户 ID 合并 server 当前并发')
     assert.equal(authorizedAccount.currentConcurrencyAvailable, true, '授权账户应标记 server 并发快照可用')
     assert.equal(authorizedAccountPageWithRuntime.runtimeSnapshot.accountConcurrencyAvailable, true, '仅包含授权账户时也应标记 server 并发快照可用')
 
@@ -137,7 +141,7 @@ try {
     assert.equal(targetGroup.accountStats.currentConcurrency, 3, '分组列表应汇总 server 当前并发')
     assert.equal(targetGroup.accountStats.currentConcurrencyAvailable, true, '分组列表应标记 server 并发快照可用')
     assert.equal(requestedScopes.length, 3, '管理账户列表、授权账户列表和分组列表应各请求一次 server 并发快照')
-    assert(requestedScopes.every((scope) => scope === 'account_concurrency'), '系统 API 应只请求轻量并发快照')
+    assert.deepEqual(requestedScopes, ['account_runtime', 'account_runtime', 'account_concurrency'], '系统 API 应按账户运行态和分组并发分别请求轻量快照')
   } finally {
     runtimeConfig.processRole = previousProcessRole
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = previousSend

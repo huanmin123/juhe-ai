@@ -338,8 +338,10 @@ const {
   handleTableChange,
   loadData,
   loadMoreMobile: loadMoreMobileGroups,
+  removeItems: removeGroupItems,
   refreshMobile: refreshMobileGroupsData,
-  resetPagination
+  resetPagination,
+  updateItems: updateGroupItems
 } = useResponsivePagedList<GroupSummary, { forceOptions?: boolean }>({
   pageSize,
   initialPagination: initialPageState.pagination,
@@ -371,7 +373,7 @@ const rawColumns = computed(() => {
     { title: '用量(日)', key: 'usage', width: 180 },
     { title: '状态', key: 'status', width: 100 },
     { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-    { title: '操作', key: 'actions', actionCount: 2, fixed: 'right' }
+    { title: '操作', key: 'actions', fixed: 'right' }
   )
   return baseColumns
 })
@@ -780,15 +782,18 @@ const saveGroup = submitAction('groups.save', async () => {
   }
   try {
     const payload = groupFormPayload()
-    if (editingId.value) {
-      await groupsApi.update(editingId.value, payload, groupScopeParams.value)
+    const targetId = editingId.value
+    if (targetId) {
+      const updated = await groupsApi.update(targetId, payload, groupScopeParams.value)
+      updateGroupItems((item) => item.id === targetId, () => updated)
       message.success('分组已更新')
+      void loadData({ quiet: true })
     } else {
       await groupsApi.create(payload, groupScopeParams.value)
       message.success('分组已创建')
+      await loadData()
     }
     modalOpen.value = false
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存分组失败'))
@@ -828,8 +833,9 @@ async function removeGroup(id: string) {
       } else {
         await api.myAuthorizations.returnAuthorization(group.groupAuthorizationId)
       }
+      removeGroupItems((item) => item.id === id)
       message.success('授权分组已归还')
-      await loadData()
+      void loadData({ quiet: true })
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, '归还授权分组失败'))
@@ -846,8 +852,9 @@ async function removeGroup(id: string) {
   }
   try {
     await groupsApi.delete(id, groupScopeParams.value)
+    removeGroupItems((item) => item.id === id)
     message.success('分组已删除')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除分组失败'))

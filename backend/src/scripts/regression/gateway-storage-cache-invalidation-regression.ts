@@ -154,10 +154,32 @@ try {
     granteeId: grantee.id,
     remark: '缓存失效账号授权'
   }, ownerAccess)
+  const sharedAuthorizedInstance = authorizedInstanceForSource(sharedAccount.id, granteeAccess)
 
   assert.deepEqual(await runtimeAccountIds(granteeApiKey.key), [], '绑定前被授权分组应没有候选账号')
-  assert(repositories.setAccountGroup(sharedAccount.id, granteeGroup.id, granteeAccess), '被授权账号绑定分组失败')
-  assert.deepEqual(await runtimeAccountIds(granteeApiKey.key), [sharedAccount.id], '直接绑定授权账号后候选账号缓存应立即出现该账号')
+  assert(repositories.setAccountGroup(sharedAuthorizedInstance.id, granteeGroup.id, granteeAccess), '被授权实例账号绑定分组失败')
+  assert.deepEqual(await runtimeAccountIds(granteeApiKey.key), [sharedAuthorizedInstance.id], '直接绑定授权实例账号后候选账号缓存应立即出现该账号')
+  const sharedRuntimeBeforeSourceUpdate = await gatewayCache.readCachedGatewayRuntimeAsync(granteeApiKey.key)
+  assert.equal(sharedRuntimeBeforeSourceUpdate.accounts[0]?.apiKey, 'sk-cache-invalidation-shared', '授权实例运行配置应读取父账户初始凭据')
+  assert.equal(
+    gatewayCache.listCachedOpenAIAccountsForGroup(granteeGroup.id, grantee.id)[0]?.apiKey,
+    'sk-cache-invalidation-shared',
+    '授权实例分组账号缓存应读取父账户初始凭据'
+  )
+  repositories.updateAccount(sharedAccount.id, {
+    credentials: {
+      api_key: 'sk-cache-invalidation-shared-updated',
+      base_url: 'https://cache-source-updated.example/v1'
+    },
+    supportedModels: ['gpt-5.5']
+  }, ownerAccess)
+  const sharedRuntimeAfterSourceUpdate = await gatewayCache.readCachedGatewayRuntimeAsync(granteeApiKey.key)
+  const sharedRuntimeAccount = sharedRuntimeAfterSourceUpdate.accounts.find((item) => item.id === sharedAuthorizedInstance.id)
+  assert.equal(sharedRuntimeAccount?.apiKey, 'sk-cache-invalidation-shared-updated', '父账户 API Key 更新后授权实例运行配置缓存应立即刷新')
+  assert.equal(sharedRuntimeAccount?.baseUrl, 'https://cache-source-updated.example/v1', '父账户 base_url 更新后授权实例运行配置缓存应立即刷新')
+  assert.deepEqual(sharedRuntimeAccount?.supportedModels, ['gpt-5.5'], '父账户模型更新后授权实例运行配置缓存应立即刷新')
+  const sharedGroupCacheAccount = gatewayCache.listCachedOpenAIAccountsForGroup(granteeGroup.id, grantee.id).find((item) => item.id === sharedAuthorizedInstance.id)
+  assert.equal(sharedGroupCacheAccount?.apiKey, 'sk-cache-invalidation-shared-updated', '父账户凭据更新后授权实例分组账号缓存应立即刷新')
   assert(repositories.revokeResourceAuthorization(accountAuthorization.id, {}, ownerAccess), '回收账号授权失败')
   assert.deepEqual(await runtimeAccountIds(granteeApiKey.key), [], '直接回收账号授权后候选账号缓存应立即移除该账号')
 
@@ -219,4 +241,11 @@ try {
 
 async function runtimeAccountIds(apiKey: string): Promise<string[]> {
   return (await gatewayCache.readCachedGatewayRuntimeAsync(apiKey)).accounts.map((account) => account.id)
+}
+
+function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {
+  const account = repositories.listAccounts(access)
+    .find((item) => item.authorizationInstanceSourceAccountId === sourceAccountId)
+  assert(account, `被授权用户视角应能读取来源账户 ${sourceAccountId} 的授权实例`)
+  return account
 }

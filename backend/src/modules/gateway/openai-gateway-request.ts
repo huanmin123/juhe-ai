@@ -4,6 +4,7 @@ import { createTraceId, getRequestContext, getRequestLogger, sanitizeUrlForLog }
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { recordDroppedAuditCapture } from '../audit-logs/audit-log-queue.service.js'
 import { readCachedGatewayRuntimeAsync } from './gateway-runtime-cache.service.js'
+import { inspectClientIpPolicy, recordClientIpPolicyHitAsync } from './client-ip-policy-cache.service.js'
 import { extractBearerToken, extractClientIp, requestStream } from './openai-gateway-usage.js'
 import {
   gatewayErrorPayload,
@@ -62,6 +63,9 @@ export async function resolveGatewayRuntimeAsync(
   }
   const clientIp = extractClientIp(req)
   const authorization = req.header('authorization')
+  if (await rejectCachedClientIpBlacklist(req, res, clientIp, options)) {
+    return undefined
+  }
   const preAuthDecision = inspectGatewayPreAuthCircuit({ clientIp, authorization })
   if (preAuthDecision.blocked) {
     getRequestLogger().warn({
@@ -92,6 +96,9 @@ export async function resolveGatewayRuntimeAsync(
   }
 
   const runtime = await readCachedGatewayRuntimeAsync(gatewayApiKey)
+  if (await rejectCachedClientIpBlacklist(req, res, clientIp, options)) {
+    return undefined
+  }
   if (!runtime.apiKey) {
     const failureDecision = recordPreAuthFailure(req, res, 'invalid_api_key', options)
     if (failureDecision.blocked) {
@@ -118,6 +125,32 @@ function prepareEarlyAuthFailureResponse(res: Response, options: ResolveGatewayR
   if (options.closeConnectionOnAuthFailure && !res.headersSent) {
     res.setHeader('Connection', 'close')
   }
+}
+
+async function rejectCachedClientIpBlacklist(
+  req: Request,
+  res: Response,
+  clientIp: string | undefined,
+  options: ResolveGatewayRuntimeOptions
+): Promise<boolean> {
+  const ipPolicyDecision = await inspectClientIpPolicy(clientIp, { cacheOnly: true })
+  if (!ipPolicyDecision.blocked || !ipPolicyDecision.blacklistPolicy) {
+    return false
+  }
+  getRequestLogger().warn({
+    event: 'gateway_client_ip_blacklist_blocked',
+    policyId: ipPolicyDecision.blacklistPolicy.id,
+    ipHash: ipPolicyDecision.blacklistPolicy.ipHash,
+    endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
+  }, '网关来源 IP 命中管理员封禁')
+  recordClientIpPolicyHitAsync(ipPolicyDecision.blacklistPolicy)
+  prepareEarlyAuthFailureResponse(res, options)
+  sendClientIpBlacklistResponse(res, {
+    reason: ipPolicyDecision.blacklistPolicy.reason,
+    clientIp: ipPolicyDecision.normalizedIp?.clientIp ?? ipPolicyDecision.blacklistPolicy.clientIp,
+    aggregateIpKey: ipPolicyDecision.normalizedIp?.aggregateIpKey ?? ipPolicyDecision.blacklistPolicy.aggregateIpKey
+  })
+  return true
 }
 
 function recordPreAuthFailure(
@@ -156,6 +189,35 @@ function sendPreAuthCircuitResponse(res: Response, decision: GatewayCircuitDecis
     errorCode: 'client_ip_pre_auth_circuit_open'
   })
   sendGatewayJsonError(res, 429, gatewayErrorPayload(message, 'rate_limit_exceeded', 'client_ip_pre_auth_circuit_open'))
+}
+
+function sendClientIpBlacklistResponse(res: Response, input: { reason?: string; clientIp?: string; aggregateIpKey?: string }): void {
+  const ipText = blacklistIpMessage(input.clientIp, input.aggregateIpKey)
+  const message = input.reason
+    ? `当前来源${ipText}已被管理员封禁：${input.reason}`
+    : `当前来源${ipText}已被管理员封禁`
+  setGatewayAuthFailureAudit(res, {
+    errorMessage: message,
+    errorCode: 'client_ip_blacklisted'
+  })
+  const payload = gatewayErrorPayload(message, 'forbidden', 'client_ip_blacklisted')
+  if (input.clientIp) {
+    payload.error.client_ip = input.clientIp
+  }
+  if (input.aggregateIpKey && input.aggregateIpKey !== input.clientIp) {
+    payload.error.aggregate_ip_key = input.aggregateIpKey
+  }
+  sendGatewayJsonError(res, 403, payload)
+}
+
+function blacklistIpMessage(clientIp?: string, aggregateIpKey?: string): string {
+  const displayIp = clientIp?.trim()
+  const displayRange = aggregateIpKey?.trim()
+  if (!displayIp && !displayRange) return ''
+  if (displayIp && displayRange && displayIp !== displayRange) {
+    return ` IP ${displayIp}（封禁范围：${displayRange}）`
+  }
+  return ` IP ${displayIp || displayRange}`
 }
 
 function setGatewayAuthFailureAudit(res: Response, input: { errorMessage: string; errorCode: string }): void {

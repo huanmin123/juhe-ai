@@ -9,6 +9,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
+import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -108,6 +109,11 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
     res.status(400).json(badRequest('账户分组无效'))
     return
   }
+  const errorPolicyValidationMessage = oauthCredentialsPatchValidationMessage(parsed.data.credentialsPatch)
+  if (errorPolicyValidationMessage) {
+    res.status(400).json(badRequest(errorPolicyValidationMessage))
+    return
+  }
 
   try {
     const { code, state } = extractCodeAndState(parsed.data)
@@ -176,6 +182,11 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
   }
   if (parsed.data.groupId && !isOpenAIGroup(parsed.data.groupId, requestAccess)) {
     res.status(400).json(badRequest('账户分组无效'))
+    return
+  }
+  const errorPolicyValidationMessage = oauthCredentialsPatchValidationMessage(parsed.data.credentialsPatch)
+  if (errorPolicyValidationMessage) {
+    res.status(400).json(badRequest(errorPolicyValidationMessage))
     return
   }
 
@@ -356,6 +367,11 @@ function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchS
   return patch?.error_handling_rules === undefined
     ? {}
     : { error_handling_rules: patch.error_handling_rules }
+}
+
+function oauthCredentialsPatchValidationMessage(patch?: z.infer<typeof oauthCredentialsPatchSchema>): string | undefined {
+  if (patch?.error_handling_rules === undefined) return undefined
+  return accountErrorPolicyValidationMessage(validateAccountErrorHandlingRules(patch.error_handling_rules))
 }
 
 export function buildSafeOpenAIOAuthCredentials(

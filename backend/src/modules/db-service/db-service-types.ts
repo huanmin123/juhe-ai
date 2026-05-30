@@ -1,12 +1,14 @@
 import type { AccountSummary } from '../../domain/types.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OperationLogInput } from '../../storage/repositories.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
+import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
+import type { AuditFullBodyCaptureRuntimeConfig } from '../../config/runtime.js'
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'precheck_pending' | 'precheck_failed'
 
@@ -118,6 +120,7 @@ export interface DbServiceServerRuntimeSnapshot {
   activeAuditCaptureCount?: number
   audit?: {
     fullBodyCaptureEnabled: boolean
+    fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
   }
 }
 
@@ -143,6 +146,7 @@ export interface DbServiceGatewayRuntime {
   settings: GatewaySettings
   groupAccess?: GroupUsageAccessMetadata
   accounts: OpenAIAccountSecret[]
+  clientIpPolicies?: ActiveClientIpPolicy[]
 }
 
 export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId' | 'lastErrorCode'> & {
@@ -248,6 +252,13 @@ export type DbServiceOperation =
     type: 'clear_gateway_runtime_cache'
   }
   | {
+    type: 'list_active_client_ip_policies'
+  }
+  | {
+    type: 'record_client_ip_policy_hits'
+    hits: ClientIpPolicyHitInput[]
+  }
+  | {
     type: 'list_runtime_logs'
     options: RuntimeLogListOptions
   }
@@ -280,6 +291,8 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean; skippedReason?: string } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
+  T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :
+  T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :
   T extends { type: 'get_runtime_log_detail' } ? RuntimeLogDetail | undefined :
   T extends { type: 'get_runtime_log_facets' } ? RuntimeLogFacets :
@@ -314,6 +327,7 @@ export type DbServiceParentMessage =
     ok: true
     result: {
       fullBodyCaptureEnabled: boolean
+      fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
     }
   }
   | {
@@ -367,7 +381,7 @@ export type DbServiceChildMessage =
   | {
     type: 'db_service_server_audit_full_body_capture_update_request'
     requestId: string
-    enabled: boolean
+    config: AuditFullBodyCaptureRuntimeConfig
   }
   | {
     type: 'db_service_server_account_runtime_clear_request'
@@ -376,6 +390,9 @@ export type DbServiceChildMessage =
   }
   | {
     type: 'gateway_runtime_cache_invalidate'
+  }
+  | {
+    type: 'client_ip_policy_cache_invalidate'
   }
   | {
     type: 'background_worker_operation_logs'

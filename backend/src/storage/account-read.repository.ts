@@ -5,7 +5,7 @@ import { loadSupportedModelsByAccountIds } from './account-supported-models.repo
 import { decryptJson } from './crypto.js'
 import { getDatabase, getStatsDatabase, statsDatabasePath } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
-import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
 export interface AccountRowsPage {
@@ -22,17 +22,7 @@ type AccountRowQuerySettings = {
 const accountQualityDatabaseAlias = 'account_quality_records'
 const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
-function authorizedAccountLocalRuntimeStatusExpression(groupBindingsAlias = 'group_bindings'): string {
-  return `CASE
-    WHEN ${groupBindingsAlias}.local_status IN ('temporary_unavailable', 'rate_limited')
-      AND ${groupBindingsAlias}.local_cooldown_until IS NOT NULL
-      AND ${groupBindingsAlias}.local_cooldown_until <= ${currentIsoSql}
-    THEN 'active'
-    ELSE COALESCE(${groupBindingsAlias}.local_status, 'active')
-  END`
-}
-
-function authorizedSharedResourceEffectiveStatusExpression(): string {
+function authorizedAccountEffectiveStatusExpression(): string {
   return `CASE
     WHEN account_rows.authorization_status <> 'active'
       OR (account_rows.authorization_expires_at IS NOT NULL AND account_rows.authorization_expires_at <= ${currentIsoSql})
@@ -41,13 +31,13 @@ function authorizedSharedResourceEffectiveStatusExpression(): string {
     WHEN account_rows.status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
     WHEN account_rows.schedulable <> 1 THEN 'disabled'
     WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    ELSE ${authorizedAccountLocalRuntimeStatusExpression()}
+    ELSE account_rows.status
   END`
 }
 
 function accountEffectiveStatusFilterExpression(): string {
   return `CASE
-    WHEN account_rows.access_type = 'authorized' THEN ${authorizedSharedResourceEffectiveStatusExpression()}
+    WHEN account_rows.access_type = 'authorized' THEN ${authorizedAccountEffectiveStatusExpression()}
     ELSE account_rows.status
   END`
 }
@@ -63,20 +53,20 @@ function authorizedAuthorizationAvailableExpression(): string {
     AND (account_rows.authorization_expires_at IS NULL OR account_rows.authorization_expires_at > ${currentIsoSql})`
 }
 
-function authorizedSharedResourceAvailableExpression(): string {
+function authorizedAccountAvailableExpression(): string {
   return `account_rows.schedulable = 1
     AND account_rows.status = 'active'
     AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ${currentIsoSql})
     AND (account_rows.account_expires_at IS NULL OR account_rows.account_expires_at > ${currentIsoSql})`
 }
 
-function authorizedSharedResourceHardUnavailableExpression(): string {
+function authorizedAccountHardUnavailableExpression(): string {
   return `account_rows.schedulable <> 1
     OR account_rows.status IN ('disabled', 'error')
     OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql})`
 }
 
-function authorizedSharedResourceCoolingExpression(): string {
+function authorizedAccountCoolingExpression(): string {
   return `account_rows.status IN ('rate_limited', 'temporary_unavailable')
     OR (account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql})`
 }
@@ -93,8 +83,7 @@ function accountEffectiveSchedulableExpression(): string {
       CASE
         WHEN ${authorizedBindingAvailableExpression()}
           AND ${authorizedAuthorizationAvailableExpression()}
-          AND ${authorizedSharedResourceAvailableExpression()}
-          AND ${authorizedAccountLocalRuntimeStatusExpression()} = 'active'
+          AND ${authorizedAccountAvailableExpression()}
         THEN 1
         ELSE 0
       END
@@ -112,12 +101,8 @@ function accountCoolingFilterExpression(): string {
       CASE
         WHEN ${authorizedBindingAvailableExpression()}
           AND ${authorizedAuthorizationAvailableExpression()}
-          AND NOT (${authorizedSharedResourceHardUnavailableExpression()})
-          AND (
-            ${authorizedSharedResourceCoolingExpression()}
-            OR ${authorizedAccountLocalRuntimeStatusExpression()} IN ('rate_limited', 'temporary_unavailable')
-            OR (group_bindings.local_cooldown_until IS NOT NULL AND group_bindings.local_cooldown_until > ${currentIsoSql})
-          )
+          AND NOT (${authorizedAccountHardUnavailableExpression()})
+          AND (${authorizedAccountCoolingExpression()})
         THEN 1
         ELSE 0
       END
@@ -187,8 +172,16 @@ function queryAccountRowsForAccess(
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
           ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
-          SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json, NULL AS authorization_effective_source_type, NULL AS authorization_effective_source_team_id
+          SELECT ${accountSelectColumns}, CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
+            ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
+            ra.limits_json AS authorization_limits_json, ra.effective_source_type AS authorization_effective_source_type,
+            ra.effective_source_team_id AS authorization_effective_source_team_id,
+            ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
+            ra.resource_id AS authorization_resource_id
           FROM accounts
+          LEFT JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
+          WHERE accounts.authorization_instance_authorization_id IS NULL
+            OR ra.status IN ('active', 'paused', 'expired')
         ) account_rows
         ${accountQualityJoinClause(includeQualityInQuery)}
         LEFT JOIN ${accountBindingSubquery()} group_bindings
@@ -205,8 +198,16 @@ function queryAccountRowsForAccess(
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
           ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
-          SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json, NULL AS authorization_effective_source_type, NULL AS authorization_effective_source_team_id
+          SELECT ${accountSelectColumns}, CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
+            ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
+            ra.limits_json AS authorization_limits_json, ra.effective_source_type AS authorization_effective_source_type,
+            ra.effective_source_team_id AS authorization_effective_source_team_id,
+            ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
+            ra.resource_id AS authorization_resource_id
           FROM accounts
+          LEFT JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
+          WHERE accounts.authorization_instance_authorization_id IS NULL
+            OR ra.status IN ('active', 'paused', 'expired')
         ) account_rows
         ${accountQualityJoinClause(includeQualityInQuery)}
         LEFT JOIN ${accountBindingSubquery()} group_bindings
@@ -222,17 +223,19 @@ function queryAccountRowsForAccess(
         COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
         ${accountQualitySelectColumns(includeQualityInQuery)}
       FROM (
-        SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json, NULL AS authorization_effective_source_type, NULL AS authorization_effective_source_team_id
+        SELECT ${accountSelectColumns}, CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
+          ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
+          ra.limits_json AS authorization_limits_json, ra.effective_source_type AS authorization_effective_source_type,
+          ra.effective_source_team_id AS authorization_effective_source_team_id,
+          ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
+          ra.resource_id AS authorization_resource_id
         FROM accounts
+        LEFT JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
         WHERE accounts.system_account_id = ?
-        UNION ALL
-        SELECT ${accountSelectColumns}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at, ra.limits_json AS authorization_limits_json, ra.effective_source_type AS authorization_effective_source_type, ra.effective_source_team_id AS authorization_effective_source_team_id
-        FROM resource_authorizations ra
-        INNER JOIN accounts ON accounts.id = ra.resource_id
-        WHERE ra.resource_type = 'account'
-          AND ra.grantee_system_account_id = ?
-          AND ra.status IN ('active', 'paused', 'expired')
-          AND accounts.system_account_id <> ?
+          AND (
+            accounts.authorization_instance_authorization_id IS NULL
+            OR ra.status IN ('active', 'paused', 'expired')
+          )
       ) account_rows
       ${accountQualityJoinClause(includeQualityInQuery)}
       LEFT JOIN ${accountBindingSubquery()} group_bindings
@@ -241,7 +244,7 @@ function queryAccountRowsForAccess(
         AND group_bindings.enabled = 1
       LEFT JOIN groups bound_groups ON bound_groups.id = group_bindings.group_id
       LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
-    `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId])
+    `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId])
 }
 
 function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 'sorts'>): boolean {
@@ -310,6 +313,9 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.cooldown_retest_last_status_code',
     'accounts.stream_failure_count',
     'accounts.stream_failure_window_started_at',
+    'accounts.authorization_instance_source_account_id',
+    'accounts.authorization_instance_authorization_id',
+    'accounts.authorization_instance_owner_system_account_id',
     'accounts.created_at',
     'accounts.updated_at'
   ]
@@ -346,6 +352,9 @@ function accountListOuterSelectColumns(): string {
     'cooldown_retest_last_status_code',
     'stream_failure_count',
     'stream_failure_window_started_at',
+    'authorization_instance_source_account_id',
+    'authorization_instance_authorization_id',
+    'authorization_instance_owner_system_account_id',
     'created_at',
     'updated_at',
     'access_type',
@@ -354,15 +363,20 @@ function accountListOuterSelectColumns(): string {
     'authorization_expires_at',
     'authorization_limits_json',
     'authorization_effective_source_type',
-    'authorization_effective_source_team_id'
+    'authorization_effective_source_team_id',
+    'authorization_resource_owner_system_account_id',
+    'authorization_resource_id'
   ].map((column) => `account_rows.${column}`).join(', ')
 }
 
-export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): AccountListRow[] {
+export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[], options: { includeCredentials?: boolean } = {}): AccountListRow[] {
   if (rows.length === 0) return rows
+  const includeCredentials = options.includeCredentials ?? true
+  const rowsWithSources = hydrateAuthorizedAccountSourceFacts(rows, includeCredentials)
   const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))]
   if (ids.length === 0) return rows
-  const supportedModelsByAccountId = loadSupportedModelsByAccountIds(ids)
+  const supportedModelAccountIds = [...new Set(rowsWithSources.map((row) => supportedModelAccountIdForRow(row)).filter(Boolean))]
+  const supportedModelsByAccountId = loadSupportedModelsByAccountIds(supportedModelAccountIds)
   const qualityRows = getStatsDatabase()
     .prepare(`
       SELECT account_id, quality_score, quality_state, ewma_first_token_ms, recent_avg_first_token_ms,
@@ -381,9 +395,9 @@ export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): Ac
       updated_at: string | null
     }>
   const qualityByAccount = new Map(qualityRows.map((row) => [row.account_id, row]))
-  return rows.map((row) => {
+  return rowsWithSources.map((row) => {
     const quality = qualityByAccount.get(row.id)
-    const supportedModels = supportedModelsByAccountId.get(row.id) ?? []
+    const supportedModels = supportedModelsByAccountId.get(supportedModelAccountIdForRow(row)) ?? []
     if (!quality) return { ...row, supported_models: supportedModels }
     return {
       ...row,
@@ -401,11 +415,70 @@ export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): Ac
 
 export function accountCredentialsForList(row: AccountListRow, includeCredentials = true): Record<string, unknown> {
   if (!includeCredentials) return {}
-  const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+  const credentialsEncrypted = row.access_type === 'authorized' && row.source_credentials_encrypted
+    ? row.source_credentials_encrypted
+    : row.credentials_encrypted
+  const credentials = decryptJson<Record<string, unknown>>(credentialsEncrypted)
   if (row.access_type !== 'authorized') {
     return credentials
   }
   return typeof credentials.base_url === 'string' && credentials.base_url ? { base_url: credentials.base_url } : {}
+}
+
+function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCredentials: boolean): AccountListRow[] {
+  const sourceIds = [...new Set(rows
+    .filter((row) => row.access_type === 'authorized')
+    .map((row) => row.authorization_instance_source_account_id ?? '')
+    .filter(Boolean))]
+  if (!sourceIds.length) return rows
+
+  const sourceRows: Array<{
+    id: string
+    provider_code: AccountListRow['provider_code']
+    type: AccountListRow['type']
+    credential_mask: string | null
+    credentials_encrypted: string | null
+    proxy_profile_id: string | null
+    concurrency_limit: number | null
+    passthrough_enabled: number | null
+    error_policy_id: string | null
+  }> = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(sourceIds, 900)) {
+    sourceRows.push(...database
+      .prepare(`
+        SELECT id, provider_code, type, credential_mask,
+          ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
+          proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id
+        FROM accounts
+        WHERE id IN (${sqlPlaceholders(chunk.length)})
+      `)
+      .all(...chunk) as unknown as typeof sourceRows)
+  }
+  const sourceById = new Map(sourceRows.map((row) => [row.id, row]))
+  return rows.map((row) => {
+    const source = row.access_type === 'authorized' && row.authorization_instance_source_account_id
+      ? sourceById.get(row.authorization_instance_source_account_id)
+      : undefined
+    if (!source) return row
+    return {
+      ...row,
+      source_provider_code: source.provider_code,
+      source_type: source.type,
+      source_credential_mask: source.credential_mask,
+      source_credentials_encrypted: source.credentials_encrypted,
+      source_proxy_profile_id: source.proxy_profile_id,
+      source_concurrency_limit: source.concurrency_limit,
+      source_passthrough_enabled: source.passthrough_enabled,
+      source_error_policy_id: source.error_policy_id
+    }
+  })
+}
+
+function supportedModelAccountIdForRow(row: AccountListRow): string {
+  return row.access_type === 'authorized' && row.authorization_instance_source_account_id && row.source_provider_code
+    ? row.authorization_instance_source_account_id
+    : row.id
 }
 
 export function loadAccountAuthorizationUsageSummaries(
@@ -427,6 +500,7 @@ function groupBindingSelectColumns(): string {
           group_bindings.local_status AS bound_group_local_status,
           group_bindings.local_cooldown_until AS bound_group_local_cooldown_until,
           group_bindings.local_last_error_message AS bound_group_local_last_error_message,
+          group_bindings.local_priority AS bound_group_local_priority,
           group_bindings.local_stream_failure_count AS bound_group_local_stream_failure_count,
           group_bindings.local_stream_failure_window_started_at AS bound_group_local_stream_failure_window_started_at,
           group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled,

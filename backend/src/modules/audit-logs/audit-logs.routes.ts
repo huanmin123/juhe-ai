@@ -13,8 +13,8 @@ import {
   type AuditOutcome,
   type AuditTrafficSource
 } from '../../storage/repositories.js'
-import { readAuditLogSettings } from './audit-log-settings.js'
-import { requestServerRuntimeSnapshot, updateServerAuditFullBodyCaptureEnabled } from '../db-service/db-service-ipc.js'
+import { readAuditLogSettings, type AuditFullBodyCaptureConfigInput } from './audit-log-settings.js'
+import { requestServerRuntimeSnapshot, updateServerAuditFullBodyCaptureConfig } from '../db-service/db-service-ipc.js'
 
 export const auditLogsRouter = Router()
 
@@ -39,6 +39,9 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
   const settings = readAuditLogSettings()
   if (typeof serverRuntime?.audit?.fullBodyCaptureEnabled === 'boolean') {
     settings.fullBodyCaptureEnabled = serverRuntime.audit.fullBodyCaptureEnabled
+    if (serverRuntime.audit.fullBodyCapture) {
+      settings.fullBodyCapture = serverRuntime.audit.fullBodyCapture
+    }
   }
   res.json(ok({
     runtimeAvailable,
@@ -67,15 +70,13 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
 })
 
 auditLogsRouter.patch('/runtime/full-body-capture', async (req, res) => {
-  const enabled = typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
-    ? (req.body as Record<string, unknown>).enabled
-    : undefined
-  if (typeof enabled !== 'boolean') {
-    res.status(400).json(badRequest('临时全量捕获参数无效'))
+  const parsed = parseAuditFullBodyCaptureUpdate(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.message))
     return
   }
 
-  const result = await updateServerAuditFullBodyCaptureEnabled(enabled)
+  const result = await updateServerAuditFullBodyCaptureConfig(parsed.data)
   if (!result) {
     res.status(503).json({ message: '临时全量捕获运行期切换失败，请稍后重试' })
     return
@@ -83,6 +84,7 @@ auditLogsRouter.patch('/runtime/full-body-capture', async (req, res) => {
 
   res.json(ok({
     fullBodyCaptureEnabled: result.fullBodyCaptureEnabled,
+    fullBodyCapture: result.fullBodyCapture,
     settings: readAuditLogSettings()
   }))
 })
@@ -177,6 +179,42 @@ function parseAuditErrorGroupListOptions(query: Record<string, unknown>): AuditE
 
 function isHttpStatusCode(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
+}
+
+function parseAuditFullBodyCaptureUpdate(body: unknown): { success: true; data: AuditFullBodyCaptureConfigInput } | { success: false; message: string } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { success: false, message: '临时全量捕获参数无效' }
+  }
+  const record = body as Record<string, unknown>
+  if (typeof record.enabled !== 'boolean') {
+    return { success: false, message: '临时全量捕获参数无效' }
+  }
+  const enabled = record.enabled
+  const scope = record.scope === 'account' ? 'account' : 'global'
+  const accountId = typeof record.accountId === 'string' ? record.accountId.trim() : ''
+  if (enabled && scope === 'account' && !accountId) {
+    return { success: false, message: '请选择要定向捕获的 AI 账户' }
+  }
+
+  const durationMinutes = typeof record.durationMinutes === 'number' && Number.isFinite(record.durationMinutes)
+    ? Math.min(Math.max(Math.trunc(record.durationMinutes), 1), 24 * 60)
+    : undefined
+  const expiresAt = typeof record.expiresAt === 'string' ? record.expiresAt : undefined
+  if (enabled && durationMinutes === undefined && expiresAt !== undefined && !Number.isFinite(Date.parse(expiresAt))) {
+    return { success: false, message: '临时全量捕获过期时间无效' }
+  }
+
+  return {
+    success: true,
+    data: {
+      enabled,
+      scope,
+      accountId: scope === 'account' ? accountId : undefined,
+      includeSuccess: record.includeSuccess === true,
+      durationMinutes,
+      expiresAt
+    }
+  }
 }
 
 function auditTrafficSourceQueryValue(value: unknown): AuditTrafficSource | undefined {

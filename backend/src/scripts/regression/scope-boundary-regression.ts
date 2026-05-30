@@ -92,6 +92,9 @@ interface AccountSummary {
   status?: string
   accessType?: string
   proxyProfileId?: string
+  accountAuthorizationId?: string
+  authorizationInstanceSourceAccountId?: string
+  boundGroupId?: string
   credentials?: Record<string, unknown>
 }
 
@@ -159,6 +162,7 @@ interface AccountUsageStatsRow {
   ownerSystemAccountId: string
   name: string
   type: string
+  accessType?: string
   rangeUsage: {
     requestCount: number
   }
@@ -256,6 +260,8 @@ interface SeedState {
   userBCookie: string
   userAAccountId: string
   userBAccountId: string
+  userAAuthorizedUserBAccountId: string
+  userAAuthorizedUserBProxyId: string
   userBProxyId: string
   teamSharedId: string
   teamUserBOnlyId: string
@@ -263,6 +269,7 @@ interface SeedState {
   userCId: string
   userATargetGroupId: string
   inboundAuthorizationId: string
+  inboundRuntimeAuthorizationId: string
   teamInboundAuthorizationId: string
   userBGroupId: string
   usageToday: string
@@ -297,10 +304,13 @@ async function main(): Promise<void> {
     summary.push('仅管理员菜单接口拦截通过')
 
     const userAMyAccounts = await getAccountItems(baseUrl, '/__aisys__/api/my-accounts', seed.userACookie)
-    assertSameIds(userAMyAccounts, [{ id: seed.userAAccountId }, { id: seed.userBAccountId }], '用户 A 的 my-accounts 未返回自有账户和授权给自己的账户')
+    assertSameIds(userAMyAccounts, [{ id: seed.userAAccountId }, { id: seed.userAAuthorizedUserBAccountId }], '用户 A 的 my-accounts 未返回自有账户和授权实例账户')
     assert(userAMyAccounts.some((account) => account.id === seed.userAAccountId && account.ownerSystemAccountId === seed.userAId), '用户 A 的 my-accounts 缺少自有账户')
-    assert(userAMyAccounts.some((account) => account.id === seed.userBAccountId && account.ownerSystemAccountId === seed.userBId && account.accessType === 'authorized'), '用户 A 的 my-accounts 缺少授权给自己的账户')
-    assert(userAMyAccounts.some((account) => account.id === seed.userBAccountId && account.proxyProfileId === seed.userBProxyId), '用户 A 的授权账户应保留所有者绑定的代理标记')
+    const userAAuthorizedAccount = userAMyAccounts.find((account) => account.id === seed.userAAuthorizedUserBAccountId)
+    assert(userAAuthorizedAccount?.ownerSystemAccountId === seed.userBId && userAAuthorizedAccount.accessType === 'authorized', '用户 A 的 my-accounts 缺少授权给自己的实例账户')
+    assert(userAAuthorizedAccount.accountAuthorizationId === seed.inboundRuntimeAuthorizationId, '用户 A 的授权实例应带最终用户运行时授权 ID')
+    assert(userAAuthorizedAccount.authorizationInstanceSourceAccountId === seed.userBAccountId, '用户 A 的授权实例应保留来源账户快照')
+    assert(userAAuthorizedAccount.proxyProfileId === seed.userBProxyId, '用户 A 的授权实例应从来源账户补齐代理配置')
     const userAMyAccountsWithQuery = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.userACookie)
     assertSameIds(userAMyAccounts, userAMyAccountsWithQuery, '用户 A 传 systemAccountId 后 my-accounts 结果发生变化')
     const userAOwnAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}`, seed.userACookie)
@@ -324,8 +334,14 @@ async function main(): Promise<void> {
     await assertStatus(
       `${baseUrl}/__aisys__/api/my-accounts/${seed.userBAccountId}`,
       seed.userACookie,
+      404,
+      '用户 A 不应通过授权账户详情接口查看用户 B 原账户'
+    )
+    await assertStatus(
+      `${baseUrl}/__aisys__/api/my-accounts/${seed.userAAuthorizedUserBAccountId}`,
+      seed.userACookie,
       403,
-      '用户 A 不应通过授权账户详情接口查看用户 B 凭据'
+      '用户 A 不应通过授权实例详情接口查看克隆凭据'
     )
     summary.push('我的账户自有作用域检查通过')
 
@@ -345,7 +361,7 @@ async function main(): Promise<void> {
     assert(userAApiKeyAccounts.total === userAMyAccounts.length && userAApiKeyAccounts.items.every((account) => account.type === 'api_key'), '用户侧账户类型筛选异常')
     const userAAccountOptions = await getEnvelope<AccountSummary[]>(baseUrl, '/__aisys__/api/my-accounts/options?limit=50', seed.userACookie)
     assert(userAAccountOptions.some((account) => account.id === seed.userAAccountId), '普通用户应能查询自有账户选项用于用户侧下拉')
-    assert(userAAccountOptions.some((account) => account.id === seed.userBAccountId && account.accessType === 'authorized'), '普通用户应能查询授权账户选项用于授权资源下拉')
+    assert(userAAccountOptions.some((account) => account.id === seed.userAAuthorizedUserBAccountId && account.accessType === 'authorized'), '普通用户应能查询授权实例账户选项用于用户侧下拉')
     summary.push('账户分页筛选检查通过')
 
     const createdGroup = await postEnvelope<GroupSummary>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}`, seed.adminCookie, {
@@ -361,6 +377,7 @@ async function main(): Promise<void> {
     assert(userAMyGroupPage1.hasMore === true, '用户侧分组分页应提示还有更多')
     const userAGroupOptions = await getEnvelope<GroupSummary[]>(baseUrl, '/__aisys__/api/my-groups/options?limit=50', seed.userACookie)
     assert(userAGroupOptions.length >= 1 && userAGroupOptions.every((group) => group.ownerSystemAccountId === seed.userAId || group.accessType === 'authorized'), '普通用户应能查询用户侧分组选项且不能混入不可见分组')
+    assert(userAGroupOptions.some((group) => group.id === seed.userBGroupId && group.ownerSystemAccountId === seed.userBId && group.accessType === 'authorized'), '团队分组授权应让用户 A 看到授权分组')
     summary.push('管理员代建分组归属检查通过')
 
     const createdApiKey = await postEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}`, seed.adminCookie, {
@@ -434,7 +451,8 @@ async function main(): Promise<void> {
     const userAKeywordUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/__aisys__/api/my-stats/account-usage?keyword=${encodeURIComponent('用户 A')}&page=1&pageSize=10`, seed.userACookie)
     assert(userAKeywordUsage.total === 1 && userAKeywordUsage.rows[0]?.id === seed.userAAccountId, '用户侧账号用量统计关键词筛选异常')
     const userAAuthorizedAccountUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/__aisys__/api/my-stats/account-usage?keyword=${encodeURIComponent('用户 B')}&page=1&pageSize=10`, seed.userACookie)
-    assert(userAAuthorizedAccountUsage.total === 1 && userAAuthorizedAccountUsage.rows[0]?.id === seed.userBAccountId, '用户 A 我的用量应能看到自己使用的授权账户')
+    assert(userAAuthorizedAccountUsage.total === 1 && userAAuthorizedAccountUsage.rows[0]?.id === seed.userAAuthorizedUserBAccountId, '用户 A 我的用量应能看到自己使用的授权实例账户')
+    assert(userAAuthorizedAccountUsage.rows[0]?.accessType === 'authorized', '用户 A 我的用量应按授权实例口径标记授权来源')
     assert(userAAuthorizedAccountUsage.rows[0]?.rangeUsage.requestCount === 1, `用户 A 我的用量授权账户请求数异常：${userAAuthorizedAccountUsage.rows[0]?.rangeUsage.requestCount}`)
 
     const userBAccountUsagePage1 = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/__aisys__/api/stats/account-usage?systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
@@ -449,20 +467,26 @@ async function main(): Promise<void> {
     assert(userBTypeIgnoredUsage.total === 1 && userBTypeIgnoredUsage.rows[0]?.id === seed.userBAccountId, '管理账号用量统计不应按账号类型过滤')
     const adminAllAccountUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, '/__aisys__/api/stats/account-usage', seed.adminCookie)
     assert(adminAllAccountUsage.range.days === 31 && adminAllAccountUsage.range.maxDays === 31, '管理账号用量统计默认范围应为最近 31 天')
-    assert(adminAllAccountUsage.defaultTrendAccountIds.length === 2, `管理员全部用户默认趋势账户数量异常：${adminAllAccountUsage.defaultTrendAccountIds.length}`)
-    assert(adminAllAccountUsage.defaultTrendAccountIds[0] === seed.userBAccountId && adminAllAccountUsage.defaultTrendAccountIds[1] === seed.userAAccountId, '管理员全部用户默认趋势账户应按全局可见账户用量排序')
+    assert(adminAllAccountUsage.defaultTrendAccountIds.length === 3, `管理员全部用户默认趋势账户数量异常：${adminAllAccountUsage.defaultTrendAccountIds.length}`)
+    assert(
+      adminAllAccountUsage.defaultTrendAccountIds[0] === seed.userBAccountId
+      && adminAllAccountUsage.defaultTrendAccountIds[1] === seed.userAAccountId
+      && adminAllAccountUsage.defaultTrendAccountIds[2] === seed.userAAuthorizedUserBAccountId,
+      '管理员全部用户默认趋势账户应按全局可见账户用量排序并包含授权实例'
+    )
     summary.push('账号用量统计分页筛选检查通过')
 
     const userAAiPerformanceAccounts = await getEnvelope<AiPerformanceAccountOption[]>(baseUrl, `/__aisys__/api/my-stats/ai-performance/accounts?keyword=${encodeURIComponent('用户 B')}`, seed.userACookie)
-    assert(!userAAiPerformanceAccounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控不应返回别人授权给我的账户')
+    assert(userAAiPerformanceAccounts.some((account) => account.id === seed.userAAuthorizedUserBAccountId), 'AI性能监控应返回当前用户自己的授权实例账户')
     const aiPerformanceRangeQuery = `startDate=${seed.usageToday}&endDate=${seed.usageToday}`
-    const userAAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/__aisys__/api/my-stats/ai-performance?${aiPerformanceRangeQuery}&accountIds=${seed.userBAccountId}`, seed.userACookie)
-    assert(!userAAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控选中参数不应越权加入授权账户')
+    const userAAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/__aisys__/api/my-stats/ai-performance?${aiPerformanceRangeQuery}&accountIds=${seed.userAAuthorizedUserBAccountId}`, seed.userACookie)
+    assert(userAAiPerformance.accounts.some((account) => account.id === seed.userAAuthorizedUserBAccountId), 'AI性能监控选中参数应能加入当前用户自己的授权实例')
+    assert(userAAiPerformance.summary.requestCount === 3, `AI性能监控用户 A 摘要应包含自有和授权实例调用，实际 ${userAAiPerformance.summary.requestCount}`)
     const userBAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/__aisys__/api/my-stats/ai-performance?${aiPerformanceRangeQuery}`, seed.userBCookie)
     assert(userBAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控拥有者应能看到自己的账户')
-    assert(userBAiPerformance.summary.requestCount === 4, `AI性能监控应按账户整体统计包含被授权人调用，实际 ${userBAiPerformance.summary.requestCount}`)
+    assert(userBAiPerformance.summary.requestCount === 3, `AI性能监控归属人原账户不应混入授权实例调用，实际 ${userBAiPerformance.summary.requestCount}`)
     await assertForbidden(`${baseUrl}/__aisys__/api/my-stats/system-metrics`, seed.userACookie, '用户侧统计命名空间里的系统指标仍是管理员能力，普通用户不可访问')
-    summary.push('AI性能监控拥有者口径和授权账户隔离检查通过')
+    summary.push('AI性能监控授权实例独立统计检查通过')
 
     const userATeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userACookie)
     const userATeams = userATeamsPage.items
@@ -491,9 +515,10 @@ async function main(): Promise<void> {
     assert(userAGranteeGroups.some((group) => group.id === seed.userATargetGroupId), '授权目标分组选项应返回被授权用户自己的同供应商分组')
     assert(userAGranteeGroups.every((group) => group.ownerSystemAccountId === seed.userAId), '授权目标分组选项不应混入其他用户分组')
     const selectedBinding = databaseModule.getDatabase()
-      .prepare('SELECT group_id FROM group_accounts WHERE account_id = ? AND system_account_id = ? AND enabled = 1 LIMIT 1')
-      .get(seed.userBAccountId, seed.userAId) as unknown as { group_id?: string } | undefined
+      .prepare('SELECT group_id, account_authorization_id FROM group_accounts WHERE account_id = ? AND system_account_id = ? AND enabled = 1 LIMIT 1')
+      .get(seed.userAAuthorizedUserBAccountId, seed.userAId) as unknown as { group_id?: string; account_authorization_id?: string | null } | undefined
     assert(selectedBinding?.group_id === seed.userATargetGroupId, '新增授权指定目标分组后应直接绑定到该分组')
+    assert(selectedBinding.account_authorization_id === seed.inboundRuntimeAuthorizationId, '授权实例分组绑定应记录对应的用户级授权 ID')
     summary.push('授权候选用户、团队和目标分组选项检查通过')
 
     const userAAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, `/__aisys__/api/my-authorizations?status=all&systemAccountId=${seed.userBId}`, seed.userACookie)
@@ -629,6 +654,13 @@ function seedData(): SeedState {
     targetGroupId: userATargetGroup.id,
     remark: '用户 B 授权给用户 A 的账户'
   }, userBAccess)
+  const userAAuthorizedUserBAccount = repositories.listAccounts(userAAccess)
+    .find((account) => account.authorizationInstanceSourceAccountId === userBAccount.id)
+  assert(userAAuthorizedUserBAccount?.id, '账户授权应为用户 A 创建独立授权实例账户')
+  assert(userAAuthorizedUserBAccount.accountAuthorizationId, '授权实例账户应绑定用户 A 的运行时授权 ID')
+  const inboundRuntimeAuthorizationId = userAAuthorizedUserBAccount.accountAuthorizationId
+  assert(userAAuthorizedUserBAccount.boundGroupId === userATargetGroup.id, '账户授权指定目标分组后应绑定到用户 A 的目标分组')
+  assert(userAAuthorizedUserBAccount.proxyProfileId === userBProxy.id, '授权实例账户列表应从来源账户补齐代理配置')
   const teamInboundAuthorization = repositories.createResourceAuthorization({
     resourceType: 'group',
     resourceId: userBGroup.id,
@@ -659,7 +691,7 @@ function seedData(): SeedState {
   repositories.createUsageRecordsBatch([
     usageRecord('scope_usage_a_1', userA.id, userAAccount.id, 'GET /v1/models', 'scope-model-a', 200, true, usageAt(usageToday, 1)),
     usageRecord('scope_usage_a_2', userA.id, userAAccount.id, 'POST /v1/responses', 'scope-model-a', 500, false, usageAt(usageToday, 2)),
-    usageRecord('scope_usage_a_authorized_b_1', userA.id, userBAccount.id, 'POST /v1/responses', 'scope-model-authorized', 200, true, usageAt(usageToday, 3)),
+    usageRecord('scope_usage_a_authorized_b_1', userA.id, userAAuthorizedUserBAccount.id, 'POST /v1/responses', 'scope-model-authorized', 200, true, usageAt(usageToday, 3), userATargetGroup.id),
     usageRecord('scope_usage_b_1', userB.id, userBAccount.id, 'GET /v1/models', 'scope-model-b', 200, true, usageAt(usageToday, 4), userBGroup.id),
     usageRecord('scope_usage_b_2', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-b', 429, false, usageAt(usageToday, 5), userBGroup.id),
     usageRecord('scope_usage_b_3', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-c', 200, true, usageAt(usageToday, 6), userBGroup.id)
@@ -677,12 +709,15 @@ function seedData(): SeedState {
     userBCookie: sessionCookie(userB.id),
     userAAccountId: userAAccount.id,
     userBAccountId: userBAccount.id,
+    userAAuthorizedUserBAccountId: userAAuthorizedUserBAccount.id,
+    userAAuthorizedUserBProxyId: userAAuthorizedUserBAccount.proxyProfileId,
     userBProxyId: userBProxy.id,
     teamSharedId: teamShared.id,
     teamUserBOnlyId: teamUserBOnly.id,
     teamNoUserAId: teamNoUserA.id,
     userATargetGroupId: userATargetGroup.id,
     inboundAuthorizationId: inboundAuthorization.id,
+    inboundRuntimeAuthorizationId,
     teamInboundAuthorizationId: teamInboundAuthorization.id,
     userBGroupId: userBGroup.id,
     usageToday,
@@ -843,7 +878,7 @@ async function fetchRegression(url: string, init: RequestInit = {}, label = url)
 function assertSameIds(left: Array<{ id: string }>, right: Array<{ id: string }>, message: string): void {
   const leftIds = left.map((item) => item.id).sort().join(',')
   const rightIds = right.map((item) => item.id).sort().join(',')
-  assert(leftIds === rightIds, message)
+  assert(leftIds === rightIds, `${message}，实际 ${leftIds || '<empty>'}，期望 ${rightIds || '<empty>'}`)
 }
 
 async function onceListening(server: ReturnType<typeof app.listen>): Promise<void> {

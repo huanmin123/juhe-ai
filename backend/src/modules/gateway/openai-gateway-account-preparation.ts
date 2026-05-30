@@ -80,7 +80,10 @@ export async function prepareUpstreamAccount(account: UpstreamAccount, signal?: 
   }
   throwIfRequestAborted(signal)
 
-  const updated = await refreshOpenAIOAuthAccountAccessToken(account, { signal, force: false, persistMode: 'db-service' })
+  const credentialSourceAccount = account.credentialSourceAccountId
+    ? { ...account, id: account.credentialSourceAccountId }
+    : account
+  const updated = await refreshOpenAIOAuthAccountAccessToken(credentialSourceAccount, { signal, force: false, persistMode: 'db-service' })
   const credentials = updated.credentials
   const accessToken = typeof credentials.access_token === 'string' ? credentials.access_token : account.apiKey
   return {

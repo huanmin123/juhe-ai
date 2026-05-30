@@ -110,11 +110,16 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_last_status_code INTEGER,
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
       stream_failure_window_started_at TEXT,
+      authorization_instance_source_account_id TEXT,
+      authorization_instance_authorization_id TEXT,
+      authorization_instance_owner_system_account_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code),
       FOREIGN KEY (proxy_profile_id) REFERENCES proxy_profiles(id),
-      FOREIGN KEY (error_policy_id) REFERENCES error_policies(id)
+      FOREIGN KEY (error_policy_id) REFERENCES error_policies(id),
+      FOREIGN KEY (authorization_instance_source_account_id) REFERENCES accounts(id),
+      FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id)
     );
 
     CREATE TABLE IF NOT EXISTS account_supported_models (
@@ -246,6 +251,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       local_status TEXT NOT NULL DEFAULT 'active',
       local_cooldown_until TEXT,
       local_last_error_message TEXT,
+      local_priority INTEGER NOT NULL DEFAULT 0,
       local_super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
       local_stream_failure_count INTEGER NOT NULL DEFAULT 0,
@@ -343,6 +349,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_type_lookup ON accounts(type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_type_lookup ON accounts(system_account_id, type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_authorization ON accounts(authorization_instance_authorization_id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source ON accounts(authorization_instance_source_account_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);
     CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);
@@ -416,8 +424,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   cleanupDuplicateApiKeyGroupBindings(database)
   ensureApiKeyGroupBindingUniqueIndexes(database)
   ensureColumn(database, 'system_accounts', 'image_generation_enabled', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'group_accounts', 'local_priority', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'group_accounts', 'local_stream_failure_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'group_accounts', 'local_stream_failure_window_started_at', 'TEXT')
+  ensureColumn(database, 'accounts', 'authorization_instance_source_account_id', 'TEXT')
+  ensureColumn(database, 'accounts', 'authorization_instance_authorization_id', 'TEXT')
+  ensureColumn(database, 'accounts', 'authorization_instance_owner_system_account_id', 'TEXT')
+  ensureAuthorizationInstanceIndexes(database)
 }
 
 function cleanupDuplicateApiKeyGroupBindings(database: DatabaseSync): void {
@@ -447,6 +460,14 @@ function ensureApiKeyGroupBindingUniqueIndexes(database: DatabaseSync): void {
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_key_group_unique ON api_key_group_bindings(api_key_id, group_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_active_priority_unique ON api_key_group_bindings(api_key_id, priority) WHERE status = 'active';
+  `)
+}
+
+function ensureAuthorizationInstanceIndexes(database: DatabaseSync): void {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_authorization ON accounts(authorization_instance_authorization_id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source ON accounts(authorization_instance_source_account_id);
+    CREATE INDEX IF NOT EXISTS idx_group_accounts_dispatch_priority ON group_accounts(group_id, enabled, local_fallback_enabled, local_super_priority_enabled, local_priority, created_at, account_id);
   `)
 }
 

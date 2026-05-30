@@ -36,17 +36,14 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
   if (account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
     lines.push('授权额度已用完，当前调用会被拦截。')
   }
-  const sourceUnavailable = authorizedAccountSourceUnavailableText(account)
-  if (sourceUnavailable) {
-    lines.push(`${sourceUnavailable}。`)
-  } else if (isAccountPackageExpiredStatus(account)) {
+  if (isAccountPackageExpiredStatus(account)) {
     lines.push('账户已到期，当前不可用。')
   } else if (isAuthorizedAccount(account) && account.status === 'disabled') {
     lines.push('账户已停用，当前不可用。')
   } else if (isAuthorizedAccount(account) && account.status === 'error') {
-    lines.push('授权账户本地状态异常，当前不可用。')
+    lines.push('授权账户状态异常，当前不可用。')
   } else if (isTemporaryAccountStatus(account) || (isAuthorizedAccount(account) && !account.schedulable)) {
-    lines.push(isAuthorizedAccount(account) ? '授权账户在当前分组暂时不可调用，恢复前不会参与调度。' : '账户暂时不可调用，恢复前不会参与调度。')
+    lines.push(isAuthorizedAccount(account) ? '授权账户实例暂时不可调用，恢复前不会参与调度。' : '账户暂时不可调用，恢复前不会参与调度。')
   }
   if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人。')
@@ -94,7 +91,6 @@ function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
     || isAuthorizationExpired(account)
     || isAuthorizationPaused(account)
     || isAuthorizationBindingUnavailable(account)
-    || authorizedAccountSourceUnavailableText(account)
     || account.status === 'disabled'
     || account.status === 'error'
     || isTemporaryAccountStatus(account)
@@ -157,17 +153,9 @@ export function authorizedAccountUnavailableText(account: AccountSummary): strin
   if (isAuthorizationBindingUnavailable(account)) return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
   if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
   if (account.status === 'disabled') return '账户已停用，当前不可用'
-  if (account.status === 'error') return '授权账户本地状态异常，当前不可用'
-  if (isTemporaryAccountStatus(account) || isFutureTime(account.localCooldownUntil)) return '授权账户在当前分组暂时不可调用，恢复前不会参与调度'
-  const sourceUnavailable = authorizedAccountSourceUnavailableText(account)
-  if (sourceUnavailable) return sourceUnavailable
-  if (!account.schedulable) return '授权账户暂时不可调用，恢复前不会参与调度'
-  return undefined
-}
-
-export function authorizedAccountSourceUnavailableText(account: AccountSummary): string | undefined {
-  if (!isAuthorizedAccount(account)) return undefined
-  if (isAccountPackageExpiredStatus(account)) return '授权来源账户已到期，当前不可用'
+  if (account.status === 'error') return '授权账户状态异常，当前不可用'
+  if (isTemporaryAccountStatus(account) || isFutureTime(account.cooldownUntil)) return '授权账户实例暂时不可调用，恢复前不会参与调度'
+  if (!account.schedulable) return '授权账户实例暂时不可调用，恢复前不会参与调度'
   return undefined
 }
 
@@ -190,18 +178,18 @@ export function canTestAccount(account: AccountSummary): boolean {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
     if (isAuthorizationExpired(account) || isAuthorizationPaused(account) || isAuthorizationBindingUnavailable(account) || isAccountPackageExpiredStatus(account)) return false
     if (account.authorizationQuotaExceeded || account.status === 'error') return false
-    const localFailureState = hasAuthorizedLocalFailureState(account)
-    if (isTemporaryAccountStatus(account) && !localFailureState) return false
-    return account.schedulable || account.status === 'disabled' || localFailureState
+    const instanceFailureState = hasAuthorizedInstanceFailureState(account)
+    if (isTemporaryAccountStatus(account) && !instanceFailureState) return false
+    return account.schedulable || account.status === 'disabled' || instanceFailureState
   }
   return account.permissions?.canUse !== false
 }
 
-export function hasAuthorizedLocalFailureState(account: AccountSummary): boolean {
+export function hasAuthorizedInstanceFailureState(account: AccountSummary): boolean {
   return Boolean(
-    (account.localStatus && account.localStatus !== 'active' && account.localStatus !== 'disabled')
-    || account.localCooldownUntil
-    || account.localLastErrorMessage
+    (account.status !== 'active' && account.status !== 'disabled')
+    || account.cooldownUntil
+    || account.lastErrorMessage
   )
 }
 
@@ -237,7 +225,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       pushDispatchFlagItems(items, account)
       return items.map(normalizeAccountMenuItem)
     }
-    if (hasAccountRuntimeRecoveryState(account) || (account.boundGroupId && hasAuthorizedLocalFailureState(account))) {
+    if (hasAccountRuntimeRecoveryState(account) || (account.boundGroupId && hasAuthorizedInstanceFailureState(account))) {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
     pushDispatchFlagItems(items, account)
@@ -245,17 +233,17 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
     }
     if (canBatchManageAccount(account)) {
-      const localDisabled = account.localStatus === 'disabled'
+      const instanceDisabled = account.status === 'disabled'
       items.push({
         key: 'toggle-status',
-        label: localDisabled ? '启用账户' : '停用账户',
-        danger: !localDisabled,
-        icon: localDisabled ? 'enable' : 'pause',
-        tone: localDisabled ? 'success' : 'warning',
-        confirmTitle: localDisabled
-          ? `确认启用账户「${account.name}」？启用后这个账户在你这里恢复可用，不影响授权来源账户。`
-          : `确认停用账户「${account.name}」？停用后这个账户在你这里不可用，不影响授权来源账户。`,
-        confirmOkText: localDisabled ? '启用' : '停用'
+        label: instanceDisabled ? '启用账户' : '停用账户',
+        danger: !instanceDisabled,
+        icon: instanceDisabled ? 'enable' : 'pause',
+        tone: instanceDisabled ? 'success' : 'warning',
+        confirmTitle: instanceDisabled
+          ? `确认启用账户「${account.name}」？启用后只恢复你这里的授权账户实例。`
+          : `确认停用账户「${account.name}」？停用后只影响你这里的授权账户实例。`,
+        confirmOkText: instanceDisabled ? '启用' : '停用'
       })
     }
     return items.map(normalizeAccountMenuItem)
@@ -293,6 +281,18 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     })
   }
   return items.map(normalizeAccountMenuItem)
+}
+
+export function accountMenuItemsWithClone(menuItems: AccountMenuItem[], canClone: boolean): AccountMenuItem[] {
+  if (!canClone) return menuItems
+  const cloneItem: AccountMenuItem = { key: 'clone', label: '克隆', icon: 'copy', tone: 'info' }
+  const testIndex = menuItems.findIndex((item) => item.key === 'test')
+  if (testIndex < 0) return [...menuItems, cloneItem]
+  return [
+    ...menuItems.slice(0, testIndex + 1),
+    cloneItem,
+    ...menuItems.slice(testIndex + 1)
+  ]
 }
 
 function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountSummary): void {

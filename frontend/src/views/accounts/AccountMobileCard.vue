@@ -93,7 +93,7 @@ import {
   isAccountDisplayExpired,
   isAuthorizedAccount
 } from './accountFormatters'
-import { authorizedAccountSourceToneClass } from './accountRules'
+import { accountMenuItemsWithClone, authorizedAccountSourceToneClass } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
@@ -160,11 +160,7 @@ const actions = computed<RowActionItem[]>(() => {
   return list
 })
 const moreActions = computed<AccountMenuItem[]>(() => {
-  const list: AccountMenuItem[] = []
-  if (props.canClone) {
-    list.push({ key: 'clone', label: '克隆', icon: 'copy', tone: 'info' })
-  }
-  return [...list, ...props.menuItems]
+  return accountMenuItemsWithClone(props.menuItems, props.canClone)
 })
 const authorizedActions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []

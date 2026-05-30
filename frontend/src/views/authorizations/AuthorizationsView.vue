@@ -155,7 +155,6 @@ import {
   authorizationSourceOptions,
   createAuthorizationResourceTypeOptions
 } from './authorizationTableColumns'
-import { authorizationRevokeActionCount } from './authorizationFormatters'
 
 const pageSize = 50
 const { submitAction, submittingRef } = useSubmitAction('authorizations')
@@ -298,8 +297,10 @@ const {
   handleTableChange,
   loadData,
   loadMoreMobile: loadMoreMobileAuthorizations,
-  resetPagination
-} = useResponsivePagedList<ResourceAuthorizationSummary, Record<string, never>>({
+  removeItems: removeAuthorizationItems,
+  resetPagination,
+  updateItems: updateAuthorizationItems
+} = useResponsivePagedList<ResourceAuthorizationSummary>({
   pageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -430,19 +431,11 @@ const createOwnedAccounts = computed(() => createAccounts.value.filter((account)
 const createOwnedGroups = computed(() => createGroups.value.filter((group) => group.permissions?.canAuthorize !== false))
 const rawColumns = computed(() => {
   const showActions = isManagementView.value || filters.direction === 'outbound' || hasReturnableInboundAuthorization.value
-  const actionColumnWidth = Math.max(84, 24 + authorizations.value.reduce((maxCount, authorization) => {
-    if (canReturnAuthorization(authorization)) return Math.max(maxCount, 1)
-    if (!canManageAuthorization(authorization)) return maxCount
-    return Math.max(maxCount, authorizationActionCount(authorization))
-  }, 0) * 30)
   return authorizationColumns.filter((column) => {
     if (isManagementView.value && column.key === 'direction') return false
     if (['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
     if (!showActions && column.key === 'actions') return false
     return true
-  }).map((column) => {
-    if (column.key === 'actions') return { ...column, width: actionColumnWidth }
-    return column
   })
 })
 const {
@@ -521,12 +514,6 @@ function canReturnAuthorization(authorization: ResourceAuthorizationSummary): bo
   if (isManagementView.value || filters.direction !== 'inbound') return false
   if (authorization.granteeType !== 'system_account') return false
   return authorization.status !== 'revoked' && authorization.status !== 'returned'
-}
-
-function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
-  const revokeCount = authorizationRevokeActionCount(authorization)
-  const hasMore = canManageAuthorization(authorization) ? 1 : 0
-  return revokeCount + hasMore
 }
 
 function authorizationListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -1421,13 +1408,15 @@ const createAuthorization = submitAction('authorizations.create', async () => {
 
 async function revokeManualSource(item: ResourceAuthorizationSummary) {
   try {
+    let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      await api.authorizations.revoke(item.id, { sourceType: 'manual' }, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, { sourceType: 'manual' }, authorizationScopeParams.value)
     } else {
-      await api.myAuthorizations.revoke(item.id, { sourceType: 'manual' })
+      updated = await api.myAuthorizations.revoke(item.id, { sourceType: 'manual' })
     }
+    updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
     message.success('个人授权来源已回收')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '回收个人授权失败'))
@@ -1436,13 +1425,15 @@ async function revokeManualSource(item: ResourceAuthorizationSummary) {
 
 async function revokeTeamSource(item: ResourceAuthorizationSummary, sourceTeamId: string) {
   try {
+    let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      await api.authorizations.revoke(item.id, { sourceType: 'team', sourceTeamId }, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, { sourceType: 'team', sourceTeamId }, authorizationScopeParams.value)
     } else {
-      await api.myAuthorizations.revoke(item.id, { sourceType: 'team', sourceTeamId })
+      updated = await api.myAuthorizations.revoke(item.id, { sourceType: 'team', sourceTeamId })
     }
+    updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
     message.success('团队授权来源已回收')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '回收团队授权失败'))
@@ -1451,13 +1442,15 @@ async function revokeTeamSource(item: ResourceAuthorizationSummary, sourceTeamId
 
 async function revokeAuthorization(item: ResourceAuthorizationSummary) {
   try {
+    let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      await api.authorizations.revoke(item.id, undefined, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, undefined, authorizationScopeParams.value)
     } else {
-      await api.myAuthorizations.revoke(item.id)
+      updated = await api.myAuthorizations.revoke(item.id)
     }
+    updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
     message.success(item.granteeType === 'team' ? '团队授权已回收' : '授权已回收')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, item.granteeType === 'team' ? '回收团队授权失败' : '回收授权失败'))
@@ -1467,8 +1460,9 @@ async function revokeAuthorization(item: ResourceAuthorizationSummary) {
 async function returnAuthorization(item: ResourceAuthorizationSummary) {
   try {
     await api.myAuthorizations.returnAuthorization(item.id)
+    removeAuthorizationItems((authorization) => authorization.id === item.id)
     message.success('授权已归还')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '归还授权失败'))
@@ -1520,12 +1514,14 @@ async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, sta
       payload.expiresAt = null
     }
     if (isManagementView.value) {
-      await api.authorizations.update(item.id, payload, authorizationScopeParams.value)
+      const updated = await api.authorizations.update(item.id, payload, authorizationScopeParams.value)
+      updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
     } else {
-      await api.myAuthorizations.update(item.id, payload)
+      const updated = await api.myAuthorizations.update(item.id, payload)
+      updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
     }
     message.success(status === 'active' ? '授权已恢复' : '授权已暂停')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, status === 'active' ? '恢复授权失败' : '暂停授权失败'))
@@ -1554,14 +1550,16 @@ async function confirmExpireChange() {
       limits: quotaLimitsPayload(expireForm.quotaLimits)
     }
     if (isManagementView.value) {
-      await api.authorizations.updateExpire(authorization.id, payload, authorizationScopeParams.value)
+      const updated = await api.authorizations.updateExpire(authorization.id, payload, authorizationScopeParams.value)
+      updateAuthorizationItems((item) => item.id === authorization.id, () => updated)
     } else {
-      await api.myAuthorizations.updateExpire(authorization.id, payload)
+      const updated = await api.myAuthorizations.updateExpire(authorization.id, payload)
+      updateAuthorizationItems((item) => item.id === authorization.id, () => updated)
     }
     expireModalOpen.value = false
     expireAuthorization.value = undefined
     message.success('授权配置已更新')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '修改授权配置失败'))

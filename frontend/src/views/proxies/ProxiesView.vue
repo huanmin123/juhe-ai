@@ -277,7 +277,7 @@ const columns = [
   { title: '出口 IP', key: 'outboundIp', width: 140 },
   { title: '地区', key: 'outboundRegion', width: 100 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', width: 110, fixed: 'right', customRender: () => '' }
+  { title: '操作', key: 'actions', fixed: 'right', customRender: () => '' }
 ]
 
 const proxyActions: RowActionItem[] = [
@@ -317,8 +317,10 @@ const {
   handleTableChange,
   loadData,
   loadMoreMobile: loadMoreMobileProxies,
+  removeItems: removeProxyItems,
   refreshMobile: refreshMobileProxies,
-  resetPagination
+  resetPagination,
+  updateItems: updateProxyItems
 } = useResponsivePagedList<ProxyProfileSummary>({
   pageSize,
   showTotal: (total, range, context) => context?.hasMore
@@ -413,16 +415,19 @@ const saveProxy = submitAction('proxies.save', async () => {
     return
   }
   try {
-    if (editingId.value) {
-      await api.proxies.update(editingId.value, { ...form })
+    const targetId = editingId.value
+    if (targetId) {
+      const updated = await api.proxies.update(targetId, { ...form })
+      updateProxyItems((item) => item.id === targetId, () => updated)
       message.success('代理已更新')
+      void loadData({ quiet: true })
     } else {
       await api.proxies.create({ ...form })
       message.success('代理已创建')
+      resetPagination()
+      await loadData()
     }
     modalOpen.value = false
-    resetPagination()
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存代理失败'))
@@ -436,7 +441,7 @@ async function runProxyTest() {
   try {
     testReport.value = await api.proxies.test(id)
     testReportOpen.value = true
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '代理检测失败'))
@@ -448,8 +453,9 @@ async function runProxyTest() {
 async function removeProxy(id: string) {
   try {
     await api.proxies.delete(id)
+    removeProxyItems((item) => item.id === id)
     message.success('代理已删除')
-    await loadData()
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除代理失败'))

@@ -273,8 +273,10 @@ export function refreshGroupAccountStatsCache(groupIds?: Array<string | null | u
     const stats = statsByGroup.get(row.group_id) ?? emptyGroupAccountStatsAccumulator(row.group_id, row.group_system_account_id)
     statsByGroup.set(row.group_id, stats)
     if (!row.account_id || !row.account_system_account_id) continue
-    const authorized = row.account_system_account_id === row.group_system_account_id
-      || (row.authorization_status === 'active' && (!row.authorization_expires_at || row.authorization_expires_at > updatedAt))
+    const authorizationActive = row.authorization_status === 'active' && (!row.authorization_expires_at || row.authorization_expires_at > updatedAt)
+    const authorized = row.account_authorization_id
+      ? authorizationActive
+      : row.account_system_account_id === row.group_system_account_id
     if (!authorized) continue
     stats.total += 1
     stats.concurrencyLimit += Number(row.concurrency_limit ?? 0)

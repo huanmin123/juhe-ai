@@ -350,6 +350,8 @@ export interface AccountSummary {
   oauthUsage?: AccountOAuthUsageSnapshot
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
+  authorizationInstanceSourceAccountId?: string
+  authorizationInstanceOwnerSystemAccountId?: string
   boundGroupId?: string
   boundGroupName?: string
   groupBindStatus?: AccountGroupBindStatus

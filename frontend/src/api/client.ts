@@ -22,6 +22,8 @@ import type {
   AuditLogRuntime,
   AuditLogSummary,
   AuditOutcome,
+  AuditFullBodyCaptureConfig,
+  AuditFullBodyCaptureScope,
   AuditTrafficSource,
   AuthorizationResourceType,
   AuthorizationTeamUsageOverview,
@@ -39,6 +41,10 @@ import type {
   GroupListResult,
   GroupOptionSummary,
   GroupSummary,
+  ClientIpPolicySummary,
+  ClientIpStatsListResult,
+  ClientIpStatsSortField,
+  ClientIpStatus,
   OpenAIAuthURLResult,
   OperationLogDetail,
   OperationLogListResult,
@@ -232,6 +238,14 @@ export interface AuditLogPayloadParams {
   limit?: number
 }
 
+export interface AuditFullBodyCaptureUpdatePayload {
+  enabled: boolean
+  scope?: AuditFullBodyCaptureScope
+  accountId?: string
+  includeSuccess?: boolean
+  durationMinutes?: number
+}
+
 export interface RuntimeLogGrepParams {
   keyword?: string[]
   keywords?: string
@@ -293,6 +307,24 @@ interface UsageRecordsCleanupPayload {
   cutoffAt: string
   batchSize?: number
   maxBatches?: number
+}
+
+export interface ClientIpStatsListParams {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  status?: ClientIpStatus
+  startDate?: string
+  endDate?: string
+  sortField?: ClientIpStatsSortField
+  sortOrder?: SortDirection
+}
+
+export interface ClientIpPolicyPayload {
+  reason?: string
+  expiresAt?: string
+  durationMinutes?: number
+  durationDays?: number
 }
 
 export type ModelCheckListParams = ModelCheckRunListParams
@@ -541,7 +573,7 @@ export const api = {
     importConfirm: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
-    updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
+    updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
     bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
     test: (id: string, payload?: { model?: string; prompt?: string }, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, timeout: 130000, signal: options?.signal })),
@@ -553,7 +585,7 @@ export const api = {
     detail: (id: string) => unwrap<AccountSummary>(http.get(`/my-accounts/${id}`)),
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
-    updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
+    updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
     bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
     test: (id: string, payload?: { model?: string; prompt?: string }, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { timeout: 130000, signal: options?.signal })),
@@ -676,8 +708,8 @@ export const api = {
   auditLogs: {
     list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
     runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
-    updateFullBodyCapture: (enabled: boolean) => unwrap<{ fullBodyCaptureEnabled: boolean; settings: AuditLogRuntime['settings'] }>(
-      http.patch('/audit-logs/runtime/full-body-capture', { enabled }, noTimeout)
+    updateFullBodyCapture: (payload: AuditFullBodyCaptureUpdatePayload) => unwrap<{ fullBodyCaptureEnabled: boolean; fullBodyCapture: AuditFullBodyCaptureConfig; settings: AuditLogRuntime['settings'] }>(
+      http.patch('/audit-logs/runtime/full-body-capture', payload, noTimeout)
     ),
     detail: (id: string) => unwrap<AuditLogDetail>(http.get(`/audit-logs/${id}`, noTimeout)),
     payload: (id: string, payloadId: string, params?: AuditLogPayloadParams) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, { params, ...noTimeout }))
@@ -708,6 +740,11 @@ export const api = {
     databaseHistory: (params?: TableMonitorDatabaseHistoryParams) => unwrap<DatabaseStorageSnapshotSummary[]>(http.get('/table-monitor/database-history', { params })),
     history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params })),
     cleanupUsageRecords: (payload: UsageRecordsCleanupPayload) => unwrap<UsageRecordsCleanupResult>(http.post('/table-monitor/usage-records/cleanup', payload, noTimeout))
+  },
+  ipStats: {
+    list: (params?: ClientIpStatsListParams) => unwrap<ClientIpStatsListResult>(http.get('/ip-stats', { params })),
+    blacklist: (ipHash: string, payload: ClientIpPolicyPayload) => unwrap<ClientIpPolicySummary>(http.post(`/ip-stats/${ipHash}/blacklist`, payload)),
+    unblock: (ipHash: string, payload: Pick<ClientIpPolicyPayload, 'reason'>) => unwrap<{ disabledCount: number }>(http.post(`/ip-stats/${ipHash}/unblock`, payload))
   },
   modelChecks: {
     options: () => unwrap<ModelCheckOptions>(http.get('/model-checks/options')),

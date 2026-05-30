@@ -383,6 +383,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/ip-stats',
+    component: () => import('@/views/ip-stats/IpStatsView.vue'),
+    meta: {
+      title: 'IP管理',
+      description: '查看来源 IP 的请求、Token、成本、失败率、活跃天数和封禁状态。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: ['admin'],
+      heavy: true
+    }
+  },
+  {
     path: '/announcements',
     component: () => import('@/views/announcements/AnnouncementsView.vue'),
     meta: {

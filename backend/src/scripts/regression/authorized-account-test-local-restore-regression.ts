@@ -52,9 +52,13 @@ interface ApiEnvelope<T> {
 interface AccountView {
   id: string
   status: string
+  schedulable: boolean
+  cooldownUntil?: string
+  lastErrorMessage?: string
   localStatus?: string
   localCooldownUntil?: string
   localLastErrorMessage?: string
+  authorizationInstanceSourceAccountId?: string
   ownerSystemAccountId?: string
 }
 
@@ -130,32 +134,67 @@ try {
     granteeId: grantee.id,
     remark: '授权账户测试本地恢复回归'
   }, ownerAccess)
-  assert(repositories.setAccountGroup(ownerAccount.id, granteeGroup.id, granteeAccess), '授权账户绑定到被授权用户分组失败')
-
-  const granteeAccount = repositories.findAccountSummary(ownerAccount.id, granteeAccess)
-  assert(granteeAccount, '被授权用户视角应能读取授权账户')
+  const granteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
+  assert(repositories.setAccountGroup(granteeAccount.id, granteeGroup.id, granteeAccess), '授权实例账户绑定到被授权用户分组失败')
   const cooled = repositories.markAccountTestTemporaryUnavailable(granteeAccount, '模拟授权账户测试失败', granteeAccess)
-  assert.equal(cooled?.status, 'temporary_unavailable', '授权账户测试失败应写入被授权人本地临时不可调用')
-  assert.equal(cooled?.localStatus, 'temporary_unavailable', '授权账户临时不可调用应保留本地状态')
-  assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '本地临时不可调用不应改变所有者物理账户')
+  assert.equal(cooled?.status, 'temporary_unavailable', '授权账户测试失败应写入被授权实例临时不可调用')
+  assert.equal(cooled?.localStatus, 'temporary_unavailable', '兼容字段应同步授权实例状态')
+  assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '实例临时不可调用不应改变所有者原账户')
+
+  const expiredLocalCooldownUntil = new Date(Date.now() - 1000).toISOString()
+  databaseModule.getDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET cooldown_until = ?,
+          updated_at = ?
+      WHERE id = ?
+        AND system_account_id = ?
+    `)
+    .run(expiredLocalCooldownUntil, expiredLocalCooldownUntil, granteeAccount.id, grantee.id)
+  const expiredCooledView = repositories.findAccountSummary(granteeAccount.id, granteeAccess) as AccountView | undefined
+  assert.equal(expiredCooledView?.status, 'temporary_unavailable', '授权实例冷却到期后仍应显示临时不可调用，直到测试成功或手动恢复')
+  assert.equal(expiredCooledView?.schedulable, false, '授权实例冷却到期但未恢复前不应重新进入调度')
+  assert.equal(expiredCooledView?.localStatus, 'temporary_unavailable', '兼容字段应保留授权实例失败态')
+  assert.equal(
+    repositories.listAccounts(granteeAccess, { status: 'active' }).some((account) => account.id === granteeAccount.id),
+    false,
+    '授权实例失败态冷却到期后不应命中正常状态筛选'
+  )
+  assert(
+    repositories.listAccounts(granteeAccess, { status: 'temporary_unavailable' }).some((account) => account.id === granteeAccount.id),
+    '授权实例失败态冷却到期后应命中临时不可调用筛选'
+  )
+  assert(
+    repositories.listAccounts(granteeAccess, { schedulable: 'cooling' }).some((account) => account.id === granteeAccount.id),
+    '授权实例失败态冷却到期后应命中冷却筛选'
+  )
+  assert.equal(
+    repositories.findOpenAIAccountForGroup(granteeGroup.id, granteeAccount.id, grantee.id),
+    undefined,
+    '授权实例失败态冷却到期后网关调度仍不应选中'
+  )
+  assert(
+    repositories.findOpenAIAccountForGroup(granteeGroup.id, granteeAccount.id, grantee.id, { ignoreAvailability: true }),
+    '授权实例失败态仍应允许测试链路按单账号诊断'
+  )
 
   const result = await postEnvelope<AccountTestResult>(
     appBaseUrl,
-    `/__aisys__/api/my-accounts/${ownerAccount.id}/test`,
+    `/__aisys__/api/my-accounts/${granteeAccount.id}/test`,
     sessionCookie(grantee.id),
     { model: 'gpt-5.5' }
   )
-  assert.equal(result.success, true, `授权账户本地临时不可调用时手动测试应允许探活：${result.message}`)
-  assert.equal(result.statusCode, 200, '授权账户探活成功应返回上游状态码')
-  assert.equal(result.accountStatusChanged, true, '授权账户本地状态恢复应在测试结果中标记状态变化')
-  assert.equal(result.accountStatus, 'active', '授权账户本地状态恢复后结果状态应为正常')
+  assert.equal(result.success, true, `授权实例临时不可调用时手动测试应允许探活：${result.message}`)
+  assert.equal(result.statusCode, 200, '授权实例探活成功应返回上游状态码')
+  assert.equal(result.accountStatusChanged, true, '授权实例状态恢复应在测试结果中标记状态变化')
+  assert.equal(result.accountStatus, 'active', '授权实例状态恢复后结果状态应为正常')
 
-  const granteeView = repositories.findAccountSummary(ownerAccount.id, granteeAccess) as AccountView | undefined
+  const granteeView = repositories.findAccountSummary(granteeAccount.id, granteeAccess) as AccountView | undefined
   assert.equal(granteeView?.status, 'active', '测试成功后被授权用户视角应恢复正常')
-  assert.equal(granteeView?.localStatus, 'active', '测试成功后应清理授权账户本地状态')
-  assert.equal(granteeView?.localCooldownUntil, undefined, '测试成功后应清理授权账户本地冷却时间')
-  assert.equal(granteeView?.localLastErrorMessage, undefined, '测试成功后应清理授权账户本地错误信息')
-  assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '测试恢复授权本地状态不应修改所有者物理账户')
+  assert.equal(granteeView?.localStatus, 'active', '兼容字段应同步清理授权实例状态')
+  assert.equal(granteeView?.cooldownUntil, undefined, '测试成功后应清理授权实例冷却时间')
+  assert.equal(granteeView?.lastErrorMessage, undefined, '测试成功后应清理授权实例错误信息')
+  assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '测试恢复授权实例状态不应修改所有者原账户')
 
   const failingOwnerAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -170,27 +209,40 @@ try {
     granteeId: grantee.id,
     remark: '授权账户测试本地失败回归'
   }, ownerAccess)
-  assert(repositories.setAccountGroup(failingOwnerAccount.id, granteeGroup.id, granteeAccess), '失败授权账户绑定到被授权用户分组失败')
+  const failingGranteeAccount = authorizedInstanceForSource(failingOwnerAccount.id, granteeAccess)
+  assert(repositories.setAccountGroup(failingGranteeAccount.id, granteeGroup.id, granteeAccess), '失败授权实例账户绑定到被授权用户分组失败')
 
   const failureResult = await postEnvelope<AccountTestResult>(
     appBaseUrl,
-    `/__aisys__/api/accounts/${failingOwnerAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
+    `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
     sessionCookie(admin.id),
     { model: 'gpt-5.5' }
   )
   assert.equal(failureResult.success, false, '授权账户测试收到上游失败时测试结果不应成功')
   assert.equal(failureResult.statusCode, 400, '授权账户测试应保留上游失败状态码用于诊断')
-  assert.equal(failureResult.accountStatusChanged, true, '授权账户测试失败应返回本地状态已变更')
-  assert.equal(failureResult.accountStatus, 'temporary_unavailable', '授权账户测试失败应写入被授权人本地临时不可调用')
+  assert.equal(failureResult.accountStatusChanged, true, '授权账户测试失败应返回实例状态已变更')
+  assert.equal(failureResult.accountStatus, 'temporary_unavailable', '授权账户测试失败应写入被授权实例临时不可调用')
 
-  const failedGranteeView = repositories.findAccountSummary(failingOwnerAccount.id, granteeAccess) as AccountView | undefined
+  const failedGranteeView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
   assert.equal(failedGranteeView?.status, 'temporary_unavailable', '测试失败后被授权用户视角应为临时不可调用')
-  assert.equal(failedGranteeView?.localStatus, 'temporary_unavailable', '测试失败应写入授权账户本地状态')
-  assert(failedGranteeView?.localCooldownUntil, '测试失败应写入授权账户本地冷却时间')
-  assert(failedGranteeView?.localLastErrorMessage?.includes('账户测试失败'), `测试失败应写入授权账户本地错误信息，实际 ${failedGranteeView?.localLastErrorMessage}`)
-  assert.equal(repositories.findAccountSummary(failingOwnerAccount.id, ownerAccess)?.status, 'active', '测试失败不应修改所有者物理账户')
+  assert.equal(failedGranteeView?.localStatus, 'temporary_unavailable', '兼容字段应同步授权实例状态')
+  assert(failedGranteeView?.cooldownUntil, '测试失败应写入授权实例冷却时间')
+  assert(failedGranteeView?.lastErrorMessage?.includes('账户测试失败'), `测试失败应写入授权实例错误信息，实际 ${failedGranteeView?.lastErrorMessage}`)
 
-  console.log('授权账户测试本地状态恢复和失败隔离回归通过')
+  const secondFailureResult = await postEnvelope<AccountTestResult>(
+    appBaseUrl,
+    `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
+    sessionCookie(admin.id),
+    { model: 'gpt-5.5' }
+  )
+  assert.equal(secondFailureResult.success, false, '再次测试失败时结果仍不应成功')
+  assert.equal(secondFailureResult.accountStatusChanged, true, '再次测试失败应覆盖上一条结果并返回状态变化')
+  const secondFailedView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
+  assert.equal(secondFailedView?.status, 'temporary_unavailable', '再次测试失败后仍应保持临时不可调用')
+  assert(secondFailedView?.lastErrorMessage?.includes('第二次'), `再次测试失败应覆盖最近错误，实际 ${secondFailedView?.lastErrorMessage}`)
+  assert.equal(repositories.findAccountSummary(failingOwnerAccount.id, ownerAccess)?.status, 'active', '测试失败不应修改所有者原账户')
+
+  console.log('授权账户测试实例状态恢复和失败隔离回归通过')
 } finally {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
@@ -204,6 +256,7 @@ try {
 }
 
 function createMockOpenAIServer(): http.Server {
+  const failureCounts = new Map<string, number>()
   return http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url?.split('?', 1)[0] !== '/v1/responses') {
       res.writeHead(404, { 'content-type': 'application/json' })
@@ -212,11 +265,13 @@ function createMockOpenAIServer(): http.Server {
     }
     req.on('end', () => {
       if (req.headers.authorization?.includes('sk-authorized-local-failure')) {
+        const attempt = (failureCounts.get('sk-authorized-local-failure') ?? 0) + 1
+        failureCounts.set('sk-authorized-local-failure', attempt)
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({
           error: {
             code: 'key_switch_cooldown',
-            message: '切换key需要冷却30秒',
+            message: attempt === 1 ? '切换key需要冷却30秒' : '第二次测试失败仍需保持最新错误',
             type: 'invalid_request_error'
           }
         }))
@@ -246,6 +301,13 @@ function createMockOpenAIServer(): http.Server {
     })
     req.resume()
   })
+}
+
+function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {
+  const account = repositories.listAccounts(access)
+    .find((item) => item.authorizationInstanceSourceAccountId === sourceAccountId)
+  assert(account, `被授权用户视角应能读取来源账户 ${sourceAccountId} 的授权实例`)
+  return account
 }
 
 function sessionCookie(systemAccountId: string): string {

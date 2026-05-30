@@ -15,6 +15,7 @@ import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-s
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { submitAccountRelatedCleanup } from './account-cleanup.service.js'
+import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 export const accountsRouter = Router()
@@ -55,6 +56,7 @@ const accountTrafficMigrationSchema = z.object({
 
 const authorizedAccountDispatchSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
+  priority: z.number().int().min(0).optional(),
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   clearFailureState: z.boolean().optional()
@@ -295,6 +297,11 @@ accountsRouter.post('/', mutationGuard({
   const parsed = accountCreateSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('账户参数无效'))
+    return
+  }
+  const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(parsed.data.credentials))
+  if (errorPolicyValidationMessage) {
+    res.status(400).json(badRequest(errorPolicyValidationMessage))
     return
   }
 
@@ -554,10 +561,11 @@ accountsRouter.patch('/:id/authorized-dispatch', async (req, res) => {
           resourceName: account.name,
           summary: `调整授权账户使用设置：${account.name}`,
           changes: [
-            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'status') ? [safeChange('localStatus', '本地状态', undefined, parsed.data.status)] : []),
-            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'superPriorityEnabled') ? [safeChange('localSuperPriorityEnabled', '本地超级优先', undefined, parsed.data.superPriorityEnabled)] : []),
-            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'fallbackEnabled') ? [safeChange('localFallbackEnabled', '本地降级备用', undefined, parsed.data.fallbackEnabled)] : []),
-            ...(parsed.data.clearFailureState === true ? [safeChange('clearLocalFailureState', '恢复本地异常状态', false, true)] : [])
+            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'status') ? [safeChange('status', '实例状态', undefined, parsed.data.status)] : []),
+            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'priority') ? [safeChange('priority', '分组内优先级', undefined, parsed.data.priority)] : []),
+            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'superPriorityEnabled') ? [safeChange('superPriorityEnabled', '分组内超级优先', undefined, parsed.data.superPriorityEnabled)] : []),
+            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'fallbackEnabled') ? [safeChange('fallbackEnabled', '分组内降级备用', undefined, parsed.data.fallbackEnabled)] : []),
+            ...(parsed.data.clearFailureState === true ? [safeChange('clearFailureState', '恢复实例异常状态', false, true)] : [])
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }
@@ -600,6 +608,11 @@ accountsRouter.patch('/:id', async (req, res) => {
       res.status(400).json(badRequest('账户分组无效'))
       return
     }
+  }
+  const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(body.credentials))
+  if (errorPolicyValidationMessage) {
+    res.status(400).json(badRequest(errorPolicyValidationMessage))
+    return
   }
   try {
     const account = runLoggedOperation(() => {
@@ -732,7 +745,7 @@ accountsRouter.post('/:id/test', async (req, res) => {
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
-    if (result.success && shouldClearAuthorizedAccountTestLocalFailure(account)) {
+    if (result.success && shouldClearAuthorizedAccountTestInstanceFailure(account)) {
       const restored = clearAuthorizedAccountBindingFailureState(account.id, requestAccess)
       if (restored.changed && restored.account) {
         accountTestStatusChanges = accountTestStatusLogChanges(account, restored.account)
@@ -748,12 +761,14 @@ accountsRouter.post('/:id/test', async (req, res) => {
     }
     if (shouldMarkAccountTestFailureAsTemporaryUnavailable(account, result)) {
       const updatedAccount = markAccountTestTemporaryUnavailable(account, accountTestFailureCooldownReason(result), requestAccess)
-      if (updatedAccount && updatedAccount.status !== result.accountStatus) {
+      if (updatedAccount) {
         accountTestStatusChanges = accountTestStatusLogChanges(account, updatedAccount)
-        result = {
-          ...result,
-          accountStatusChanged: updatedAccount.status !== account.status,
-          accountStatus: updatedAccount.status
+        if (accountTestStatusChanges.length > 0 || updatedAccount.status !== result.accountStatus) {
+          result = {
+            ...result,
+            accountStatusChanged: accountTestStatusChanges.length > 0,
+            accountStatus: updatedAccount.status
+          }
         }
       }
     }
@@ -783,13 +798,13 @@ accountsRouter.post('/:id/test', async (req, res) => {
   }
 })
 
-function shouldClearAuthorizedAccountTestLocalFailure(account: AccountSummary): boolean {
+function shouldClearAuthorizedAccountTestInstanceFailure(account: AccountSummary): boolean {
   if (account.accessType !== 'authorized') return false
-  if (account.localStatus === 'disabled') return false
+  if (account.status === 'disabled') return false
   return Boolean(
-    (account.localStatus && account.localStatus !== 'active')
-    || account.localCooldownUntil
-    || account.localLastErrorMessage
+    account.status !== 'active'
+    || account.cooldownUntil
+    || account.lastErrorMessage
   )
 }
 
@@ -798,16 +813,11 @@ function accountTestStatusLogChanges(before: AccountSummary, after: AccountSumma
   if (before.status !== after.status) {
     changes.push(safeChange('status', '状态', before.status, after.status))
   }
-  if (before.accessType === 'authorized' || after.accessType === 'authorized') {
-    if ((before.localStatus ?? 'active') !== (after.localStatus ?? 'active')) {
-      changes.push(safeChange('localStatus', '本地状态', before.localStatus ?? 'active', after.localStatus ?? 'active'))
-    }
-    if ((before.localCooldownUntil ?? null) !== (after.localCooldownUntil ?? null)) {
-      changes.push(safeChange('localCooldownUntil', '本地冷却结束时间', before.localCooldownUntil, after.localCooldownUntil))
-    }
-    if ((before.localLastErrorMessage ?? null) !== (after.localLastErrorMessage ?? null)) {
-      changes.push(safeChange('localLastErrorMessage', '本地错误信息', before.localLastErrorMessage, after.localLastErrorMessage))
-    }
+  if ((before.cooldownUntil ?? null) !== (after.cooldownUntil ?? null)) {
+    changes.push(safeChange('cooldownUntil', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例冷却结束时间' : '冷却结束时间', before.cooldownUntil, after.cooldownUntil))
+  }
+  if ((before.lastErrorMessage ?? null) !== (after.lastErrorMessage ?? null)) {
+    changes.push(safeChange('lastErrorMessage', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例错误信息' : '错误信息', before.lastErrorMessage, after.lastErrorMessage))
   }
   return changes
 }
@@ -816,10 +826,10 @@ function shouldMarkAccountTestFailureAsTemporaryUnavailable(account: AccountSumm
   if (result.success) return false
   if (result.accountStatusChanged) return false
   if (result.accountFailureEligible === false) return false
-  if (account.status !== 'active') return false
-  if (!account.schedulable) return false
+  if (account.status !== 'active' && account.status !== 'rate_limited' && account.status !== 'temporary_unavailable') return false
+  if (account.status === 'active' && !account.schedulable) return false
   const observedStatus = result.accountStatus ?? account.status
-  if (observedStatus !== 'active') return false
+  if (observedStatus !== 'active' && observedStatus !== 'rate_limited' && observedStatus !== 'temporary_unavailable') return false
   return true
 }
 

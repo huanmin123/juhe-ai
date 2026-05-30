@@ -22,6 +22,10 @@ import {
   refreshUsageQuotaHourlyWindowsCache,
   refreshUsageRankSnapshotsInStages
 } from '../../storage/usage-stats.repository.js'
+import {
+  aggregateClientIpStatsBatch,
+  refreshClientIpUsageRangeWindows
+} from '../../storage/client-ip-stats.repository.js'
 import { buildGatewayQuotaSnapshot } from '../../storage/gateway-quota-snapshot.repository.js'
 import { collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
@@ -39,11 +43,15 @@ import { WorkerScheduler } from './worker-scheduler.js'
 
 let started = false
 let usageStatsAggregationRunning = false
+let clientIpStatsAggregationRunning = false
 let missingRemoteProcessEventLoopSampleWarningCount = 0
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 const dailyIntervalMs = 24 * 60 * 60 * 1000
 const usageRecordPreAggregationFlushMaxBatches = 2
+const clientIpStatsAggregationBatchSizeCap = 1000
+const clientIpStatsAggregationMaxBatchesCap = 10
+const clientIpStatsAggregationMaxRunMs = 5000
 const scheduler = new WorkerScheduler()
 
 export function startBackgroundJobs(): void {
@@ -51,6 +59,7 @@ export function startBackgroundJobs(): void {
   started = true
 
   scheduler.schedule({ name: 'usage-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * 1000, task: runUsageStatsAggregation })
+  scheduler.schedule({ name: 'client-ip-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * 1000, task: runClientIpStatsAggregation })
   scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * 1000, task: runGroupAccountStatsRefresh })
   scheduler.schedule({ name: 'usage-rank-snapshots-refresh', intervalMs: 30 * 60 * 1000, task: runUsageRankSnapshotsRefresh })
   scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * 60 * 1000, task: runUsageStatsConsistencyCheck })
@@ -92,6 +101,31 @@ async function runUsageStatsAggregation(): Promise<void> {
     throw error
   } finally {
     usageStatsAggregationRunning = false
+  }
+}
+
+async function runClientIpStatsAggregation(): Promise<void> {
+  if (clientIpStatsAggregationRunning) return
+  clientIpStatsAggregationRunning = true
+  try {
+    flushUsageRecordsBeforeStatsAggregation()
+    await yieldToEventLoop()
+    const batchSize = Math.min(settingsNumber('statsAggregationBatchSize', 2000, 100, 10000), clientIpStatsAggregationBatchSizeCap)
+    const maxBatches = Math.min(settingsNumber('statsAggregationMaxBatchesPerRun', 5, 1, 100), clientIpStatsAggregationMaxBatchesCap)
+    const startedAtMs = Date.now()
+    for (let index = 0; index < maxBatches; index += 1) {
+      const processed = aggregateClientIpStatsBatch(batchSize)
+      if (processed < batchSize) break
+      await yieldToEventLoop()
+      if (Date.now() - startedAtMs >= clientIpStatsAggregationMaxRunMs) break
+    }
+    await yieldToEventLoop()
+    refreshClientIpUsageRangeWindows()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_client_ip_stats_aggregation_failed' }), 'IP 统计聚合失败')
+    throw error
+  } finally {
+    clientIpStatsAggregationRunning = false
   }
 }
 

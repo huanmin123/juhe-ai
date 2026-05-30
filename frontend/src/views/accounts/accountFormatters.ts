@@ -54,11 +54,6 @@ export function accountStatusColor(account: AccountSummary) {
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
   if (isAccountPackageExpiredStatus(account)) return 'red'
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return 'red'
-  const sourceStatus = authorizedSourceUnavailableStatus(account)
-  if (sourceStatus === 'error') return 'red'
-  if (sourceStatus === 'cooling') return 'gold'
-  if (sourceStatus === 'disabled') return 'default'
-  if (isOwnerDisabledAuthorizedAccount(account)) return 'default'
   const runtimeStatus = activeRuntimeAvailabilityStatus(account)
   if (runtimeStatus === 'precheck_pending') return 'blue'
   if (runtimeStatus === 'local_suppressed') return 'gold'
@@ -72,9 +67,6 @@ export function accountStatusText(account: AccountSummary) {
   if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
   if (isAccountPackageExpiredStatus(account)) return '账户到期'
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return '授权额度已用完'
-  const sourceStatusText = authorizedSourceUnavailableStatusText(account)
-  if (sourceStatusText) return sourceStatusText
-  if (isOwnerDisabledAuthorizedAccount(account)) return '停用'
   const runtimeStatus = activeRuntimeAvailabilityStatus(account)
   if (runtimeStatus === 'precheck_pending') return '待探针确认'
   if (runtimeStatus === 'local_suppressed') return '短暂避让'
@@ -85,14 +77,6 @@ export function accountStatusText(account: AccountSummary) {
 export function accountCooldownText(account: AccountSummary) {
   if (!isCoolingDown(account)) return ''
   return `暂停至 ${formatDateTime(account.cooldownUntil)}`
-}
-
-export function sourceAccountStatusText(account: AccountSummary): string {
-  const sourceStatus = account.sourceStatus ? statusText(account.sourceStatus) : '正常'
-  if (account.sourceCooldownUntil && isFutureTime(account.sourceCooldownUntil)) {
-    return `${sourceStatus}，暂停至 ${formatDateTime(account.sourceCooldownUntil)}`
-  }
-  return sourceStatus
 }
 
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
@@ -116,16 +100,6 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
     lines.push('授权额度已用完，当前调用会被拦截')
   }
-  if (isAuthorizedAccount(account) && account.sourceStatus) {
-    lines.push(`授权来源状态：${sourceAccountStatusText(account)}`)
-  }
-  if (isAuthorizedAccount(account) && account.sourceSchedulable === false) {
-    lines.push('授权来源已暂停调度')
-  }
-  const sourceUnavailableText = authorizedSourceUnavailableTooltipText(account)
-  if (sourceUnavailableText) {
-    lines.push(sourceUnavailableText)
-  }
   lines.push(...accountRuntimeAvailabilityTooltipLines(account))
   if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
@@ -138,7 +112,9 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     }
   } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
     lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
-    lines.push('等待后台复测；也可手动测试或在更多菜单恢复正常')
+    lines.push(isAuthorizedAccount(account)
+      ? '可手动测试，测试通过后恢复正常；也可在更多菜单恢复正常'
+      : '等待后台复测；也可手动测试或在更多菜单恢复正常')
     if (account.cooldownRetestFailureCount) {
       lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
     }
@@ -242,10 +218,6 @@ export function isAccountPackageExpired(account: AccountSummary) {
 }
 
 export function isAccountPackageExpiredStatus(account: AccountSummary): boolean {
-  if (isAuthorizedAccount(account)) {
-    return isAccountPackageExpired(account)
-      || account.sourceLastErrorCode === 'account_expired'
-  }
   return isAccountPackageExpired(account)
     || account.lastErrorCode === 'account_expired'
 }
@@ -303,41 +275,6 @@ export function accountTypeDescription(providerCode: string, type: AccountType) 
 
 export function isAuthorizedAccount(account: AccountSummary): boolean {
   return account.accessType === 'authorized'
-}
-
-export function isOwnerDisabledAuthorizedAccount(account: AccountSummary): boolean {
-  return isAuthorizedAccount(account)
-    && account.status === 'disabled'
-    && !authorizedSourceUnavailableStatus(account)
-}
-
-function authorizedSourceUnavailableStatus(account: AccountSummary): 'disabled' | 'error' | 'cooling' | undefined {
-  if (!isAuthorizedAccount(account)) return undefined
-  if (account.sourceStatus === 'disabled') return 'disabled'
-  if (account.sourceStatus === 'error') return 'error'
-  if (account.sourceSchedulable === false) return 'disabled'
-  if (account.sourceStatus === 'rate_limited' || account.sourceStatus === 'temporary_unavailable') return 'cooling'
-  if (account.sourceCooldownUntil && isFutureTime(account.sourceCooldownUntil)) return 'cooling'
-  return undefined
-}
-
-function authorizedSourceUnavailableStatusText(account: AccountSummary): string | undefined {
-  if (!isAuthorizedAccount(account)) return undefined
-  if (account.sourceStatus === 'disabled') return '授权来源停用'
-  if (account.sourceStatus === 'error') return '授权来源异常'
-  if (account.sourceSchedulable === false) return '授权来源停调'
-  if (account.sourceStatus === 'rate_limited' || account.sourceStatus === 'temporary_unavailable') return '授权来源冷却'
-  if (account.sourceCooldownUntil && isFutureTime(account.sourceCooldownUntil)) return '授权来源冷却'
-  return undefined
-}
-
-function authorizedSourceUnavailableTooltipText(account: AccountSummary): string | undefined {
-  const status = authorizedSourceUnavailableStatus(account)
-  if (!status) return undefined
-  if (status === 'error') return '授权来源账户异常，当前不会参与调度'
-  if (status === 'cooling') return '授权来源账户暂时不可调用，当前不会参与调度'
-  if (account.sourceSchedulable === false) return '授权来源账户已暂停调度，当前不会参与调度'
-  return '授权来源账户已停用，当前不会参与调度'
 }
 
 export function asString(value: unknown): string {

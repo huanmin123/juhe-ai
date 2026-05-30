@@ -30,6 +30,7 @@ const [databaseModule, repositories, backgroundIpc, usageRecordQueue] = await Pr
 ])
 const auditCapture = await import('../../modules/gateway/audit-capture.service.js')
 const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
+const auditSettings = await import('../../modules/audit-logs/audit-log-settings.js')
 
 const now = '2026-05-11T00:00:00.000Z'
 const repeatedBody = JSON.stringify({
@@ -235,6 +236,40 @@ try {
     assert.equal(fullBodyPayloadDetail?.bodyTruncated, true, '完整大 body 读取接口仍应按窗口返回')
   } finally {
     runtimeConfig.audit.fullBodyCaptureEnabled = previousFullBodyCaptureEnabled
+  }
+
+  const previousTargetedCapture = { ...runtimeConfig.audit.fullBodyCapture }
+  const previousTargetedCaptureEnabled = runtimeConfig.audit.fullBodyCaptureEnabled
+  auditSettings.setAuditLogFullBodyCaptureConfig({
+    enabled: true,
+    scope: 'account',
+    accountId: 'account_targeted_full_capture',
+    includeSuccess: true,
+    durationMinutes: 15
+  })
+  try {
+    const targetedSuccessTraceId = traceIdForBucket((bucket) => bucket >= 1000, 'trace-targeted-success-full-capture')
+    finalizeSuccessfulAccountRequestWithBody(targetedSuccessTraceId, largeSuccessRequestBody, 'account_targeted_full_capture')
+    auditQueue.flushAllAuditLogQueue()
+    const targetedSuccessEvents = repositories.listAuditLogs({ traceId: targetedSuccessTraceId })
+    assert.equal(targetedSuccessEvents.total, 1, '定向临时全量捕获开启后，命中账户的未采样 200 成功请求也应进入审计')
+    assert.equal(targetedSuccessEvents.items[0]?.sampleReason, 'targeted_full_capture_success', '定向 200 成功请求应记录定向捕获采样原因')
+    const targetedSuccessDetail = repositories.getAuditLogDetail(targetedSuccessEvents.items[0]?.id ?? '')
+    const targetedClientPayload = targetedSuccessDetail?.payloads.find((payload) => payload.partType === 'client_request')
+    const targetedUpstreamRequestPayload = targetedSuccessDetail?.payloads.find((payload) => payload.partType === 'upstream_request')
+    assert(targetedClientPayload, '定向 200 成功请求应补充客户端请求 payload')
+    assert(targetedUpstreamRequestPayload, '定向 200 成功请求应捕获命中账户的上游请求 payload')
+    assert.equal(targetedClientPayload.captureStatus, 'complete', '定向全量捕获下成功大 body 不应转为摘要')
+    const targetedPayloadDetail = await repositories.getAuditLogPayload(targetedSuccessEvents.items[0]?.id ?? '', targetedClientPayload.id, { limit: 1024 * 1024 })
+    assert.equal(targetedPayloadDetail?.bodyTotalBytes, largeSuccessRequestBody.byteLength, '定向全量捕获应保存成功大 body 完整原文大小')
+
+    const nonTargetSuccessTraceId = traceIdForBucket((bucket) => bucket >= 1000, 'trace-targeted-success-non-target')
+    finalizeSuccessfulAccountRequestWithBody(nonTargetSuccessTraceId, largeSuccessRequestBody, 'account_other_full_capture')
+    auditQueue.flushAllAuditLogQueue()
+    assert.equal(repositories.listAuditLogs({ traceId: nonTargetSuccessTraceId }).total, 0, '定向临时全量捕获不应放大非目标账户的未采样 200 成功请求')
+  } finally {
+    runtimeConfig.audit.fullBodyCapture = previousTargetedCapture
+    runtimeConfig.audit.fullBodyCaptureEnabled = previousTargetedCaptureEnabled
   }
 
   const previousProcessRole = runtimeConfig.processRole
@@ -462,6 +497,37 @@ function finalizeSuccessfulRequestWithBody(traceId: string, body: Buffer<ArrayBu
   })
 }
 
+function finalizeSuccessfulAccountRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>, accountId: string): void {
+  const capture = auditCapture.createAuditCapture({
+    req: auditRequest(body),
+    traceId,
+    clientIp: '127.0.0.1',
+    startedAtMs: Date.parse(now)
+  })
+  const attemptId = capture.startAttempt({
+    account: auditOpenAIAccount(accountId),
+    attemptIndex: 0,
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body
+  })
+  capture.completeAttempt(attemptId, {
+    success: true,
+    statusCode: 200,
+    responseHeaders: new Headers({ 'content-type': 'application/json' }),
+    responseBody: JSON.stringify({ ok: true })
+  })
+  capture.finalize({
+    outcome: 'success',
+    success: true,
+    statusCode: 200,
+    accountId,
+    responseHeaders: { 'content-type': 'application/json' },
+    responseBody: JSON.stringify({ ok: true })
+  })
+}
+
 function finalizeFailedRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>): void {
   const capture = auditCapture.createAuditCapture({
     req: auditRequest(body),
@@ -580,6 +646,26 @@ function auditRequest(
       return headers[name.toLowerCase()]
     }
   } as Request & { rawBody?: Buffer }
+}
+
+function auditOpenAIAccount(accountId: string): Parameters<ReturnType<typeof auditCapture.createAuditCapture>['startAttempt']>[0]['account'] {
+  return {
+    id: accountId,
+    systemAccountId: 'sys_admin',
+    accountOwnerSystemAccountId: 'sys_admin',
+    groupOwnerSystemAccountId: 'sys_admin',
+    accountAccessType: 'owner',
+    groupAccessType: 'owner',
+    name: accountId,
+    type: 'api_key',
+    status: 'active',
+    concurrencyLimit: 1,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    baseUrl: 'https://api.openai.com',
+    apiKey: 'sk-test'
+  } as Parameters<ReturnType<typeof auditCapture.createAuditCapture>['startAttempt']>[0]['account']
 }
 
 function traceIdForBucket(predicate: (bucket: number) => boolean, prefix = 'trace-sampling'): string {

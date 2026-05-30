@@ -12,7 +12,7 @@ import type {
   OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { enqueueAuditLog } from '../audit-logs/audit-log-queue.service.js'
-import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
+import { readAuditLogSettings, type AuditFullBodyCaptureConfig } from '../audit-logs/audit-log-settings.js'
 import {
   headersToSafeObject,
   requestModel,
@@ -114,7 +114,7 @@ export class AuditCaptureContext {
   private readonly enabled: boolean
   private readonly successSampleRate: number
   private readonly activeCaptureMaxBytes: number
-  private readonly fullBodyCaptureEnabled: boolean
+  private readonly fullBodyCapture: AuditFullBodyCaptureConfig
   private readonly payloads: AuditLogPayloadInput[] = []
   private readonly attempts: AuditLogAttemptInput[] = []
   private gatewayContext: AuditGatewayContext = {}
@@ -122,6 +122,7 @@ export class AuditCaptureContext {
   private finalized = false
   private hadFailedAttempt = false
   private clientAborted = false
+  private fullBodyCaptureAccountMatched = false
   private overflowed = false
   private approximateBytes = 0
   private sequenceIndex = 0
@@ -132,7 +133,7 @@ export class AuditCaptureContext {
     this.enabled = settings.enabled
     this.successSampleRate = settings.successSampleRate
     this.activeCaptureMaxBytes = Math.min(settings.activeCaptureMaxBytes, auditActiveCaptureHardLimitBytes)
-    this.fullBodyCaptureEnabled = settings.fullBodyCaptureEnabled
+    this.fullBodyCapture = settings.fullBodyCapture
     this.req = input.req
     this.traceId = input.traceId
     this.clientIp = input.clientIp
@@ -176,7 +177,42 @@ export class AuditCaptureContext {
   }
 
   shouldCaptureSuccessPayloads(): boolean {
-    return this.enabled && !this.metadataOnly && this.successCaptureSelected
+    return this.enabled && !this.metadataOnly && (this.successCaptureSelected || this.shouldForceCaptureSuccess())
+  }
+
+  private shouldForceCaptureSuccess(): boolean {
+    if (!this.fullBodyCapture.enabled || !this.fullBodyCapture.includeSuccess) {
+      return false
+    }
+    if (this.fullBodyCapture.scope === 'global') {
+      return true
+    }
+    return this.fullBodyCaptureAccountMatched
+  }
+
+  private shouldPreserveFullPayloadBodies(): boolean {
+    if (!this.fullBodyCapture.enabled) {
+      return false
+    }
+    if (this.fullBodyCapture.scope === 'global') {
+      return true
+    }
+    return this.fullBodyCaptureAccountMatched
+  }
+
+  private mayPreserveFullPayloadBodiesAfterAccountMatch(): boolean {
+    return this.fullBodyCapture.enabled && this.fullBodyCapture.scope === 'account'
+  }
+
+  private markFullBodyCaptureAccount(accountId?: string): void {
+    if (
+      this.fullBodyCapture.enabled
+      && this.fullBodyCapture.scope === 'account'
+      && this.fullBodyCapture.accountId
+      && accountId === this.fullBodyCapture.accountId
+    ) {
+      this.fullBodyCaptureAccountMatched = true
+    }
   }
 
   addGatewayMetadata(input: AddGatewayMetadataInput): void {
@@ -194,7 +230,7 @@ export class AuditCaptureContext {
 
   omitPayloadBodies(input: AddGatewayMetadataInput): void {
     if (!this.enabled) return
-    if (this.fullBodyCaptureEnabled) {
+    if (this.shouldPreserveFullPayloadBodies()) {
       this.addGatewayMetadata({
         label: input.label,
         metadata: {
@@ -236,6 +272,7 @@ export class AuditCaptureContext {
 
   startAttempt(input: StartAttemptInput): string {
     if (!this.enabled) return ''
+    this.markFullBodyCaptureAccount(input.account.id)
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const startedAtMs = Date.now()
     const attempt: AuditLogAttemptInput = {
@@ -271,6 +308,7 @@ export class AuditCaptureContext {
     const state = this.activeAttemptByTempId.get(tempId)
     if (!state || state.completed) return
 
+    this.markFullBodyCaptureAccount(state.attempt.accountId)
     state.completed = true
     const endedAtMs = Date.now()
     state.attempt.endedAt = new Date(endedAtMs).toISOString()
@@ -313,13 +351,15 @@ export class AuditCaptureContext {
         ? 'success_after_retry'
         : input.outcome
     const success = input.success && outcome !== 'client_aborted'
-    const shouldCapture = this.metadataOnly || outcome !== 'success' || this.successCaptureSelected
+    this.markFullBodyCaptureAccount(input.accountId)
+    const forceCaptureSuccess = this.shouldForceCaptureSuccess()
+    const shouldCapture = this.metadataOnly || outcome !== 'success' || this.successCaptureSelected || forceCaptureSuccess
     if (!shouldCapture) {
       return
     }
 
-    const shouldCapturePayloadBodies = !this.metadataOnly && (outcome !== 'success' || this.successCaptureSelected)
-    if (outcome !== 'success') {
+    const shouldCapturePayloadBodies = !this.metadataOnly && (outcome !== 'success' || this.successCaptureSelected || forceCaptureSuccess)
+    if (outcome !== 'success' || forceCaptureSuccess) {
       this.addClientRequestPayload()
     }
     if (input.accountId) {
@@ -357,7 +397,7 @@ export class AuditCaptureContext {
       errorCode: input.errorCode,
       errorMessage: clientAborted ? input.errorMessage ?? 'Client aborted request' : input.errorMessage,
       sampleBucket: this.sampleBucket,
-      sampleReason: this.metadataOnly ? `${this.trafficSource}_metadata_only` : outcome === 'success' ? `success_sample_${this.successSampleRate}` : 'full_capture',
+      sampleReason: this.sampleReasonForOutcome(outcome, forceCaptureSuccess),
       captureStatus: this.overflowed ? 'overflow' : 'complete',
       startedAt: this.startedAtIso,
       endedAt: new Date(endedAtMs).toISOString(),
@@ -384,7 +424,7 @@ export class AuditCaptureContext {
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
-    if (!this.fullBodyCaptureEnabled) {
+    if (!this.shouldPreserveFullPayloadBodies() && !this.mayPreserveFullPayloadBodiesAfterAccountMatch()) {
       summarizePayloadForLimit(payload, failedAuditFullBodyLimitBytes)
     }
     const nextApproximateBytes = this.approximateBytes + estimatePayloadBytes(payload)
@@ -409,7 +449,7 @@ export class AuditCaptureContext {
   }
 
   private applyPayloadRetention(mode: 'success' | 'failure'): void {
-    if (this.fullBodyCaptureEnabled) {
+    if (this.shouldPreserveFullPayloadBodies()) {
       this.recalculateApproximateBytes()
       return
     }
@@ -420,6 +460,21 @@ export class AuditCaptureContext {
       summarizePayloadForLimit(payload, fullBodyLimit)
     }
     this.recalculateApproximateBytes()
+  }
+
+  private sampleReasonForOutcome(outcome: AuditOutcome, forceCaptureSuccess: boolean): string {
+    if (this.metadataOnly) {
+      return `${this.trafficSource}_metadata_only`
+    }
+    if (outcome !== 'success') {
+      return 'full_capture'
+    }
+    if (forceCaptureSuccess) {
+      return this.fullBodyCapture.scope === 'account'
+        ? 'targeted_full_capture_success'
+        : 'full_capture_success'
+    }
+    return `success_sample_${this.successSampleRate}`
   }
 }
 

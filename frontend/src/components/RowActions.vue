@@ -1,5 +1,5 @@
 <template>
-  <div class="row-actions" :class="[`row-actions-${variant}`]" :style="rootStyle">
+  <div class="row-actions" :class="[`row-actions-${variant}`]" :style="rootStyle" :data-row-action-slots="actionCount">
     <template v-for="action in visibleActions" :key="action.key">
       <a-popconfirm
         v-if="action.confirmTitle"
@@ -115,7 +115,7 @@ import {
 import { Modal } from 'ant-design-vue'
 import { computed, type CSSProperties } from 'vue'
 
-import type { RowActionIcon, RowActionItem, RowActionTone } from './rowActions'
+import { rowActionVisibleSlotCount, type RowActionIcon, type RowActionItem, type RowActionTone } from './rowActions'
 
 type ButtonSize = 'small' | 'middle' | 'large'
 type RowActionVariant = 'icon' | 'button'
@@ -171,7 +171,7 @@ const singleMoreAction = computed(() => {
 })
 const visibleActions = computed(() => singleMoreAction.value ? [...props.actions, singleMoreAction.value] : props.actions)
 const dropdownActions = computed(() => singleMoreAction.value ? [] : props.moreActions)
-const actionCount = computed(() => visibleActions.value.length + (dropdownActions.value.length ? 1 : 0))
+const actionCount = computed(() => rowActionVisibleSlotCount(props.actions, props.moreActions))
 const rootStyle = computed(() => props.variant === 'button'
   ? ({ '--row-action-columns': String(Math.max(1, Math.min(actionCount.value, 3))) } as CSSProperties)
   : undefined)

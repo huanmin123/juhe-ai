@@ -1,6 +1,16 @@
 export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'client_aborted'
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
 export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest'
+export type AuditFullBodyCaptureScope = 'global' | 'account'
+
+export interface AuditFullBodyCaptureConfig {
+  enabled: boolean
+  scope: AuditFullBodyCaptureScope
+  accountId?: string
+  includeSuccess: boolean
+  expiresAt?: string
+  updatedAt?: string
+}
 
 export interface AuditLogSummary {
   id: string
@@ -133,6 +143,7 @@ export interface AuditLogRuntime {
     queueMaxBytes: number
     activeCaptureMaxBytes: number
     fullBodyCaptureEnabled: boolean
+    fullBodyCapture: AuditFullBodyCaptureConfig
     successRetentionDays: number
     failureRetentionDays: number
     errorGroupRetentionDays: number

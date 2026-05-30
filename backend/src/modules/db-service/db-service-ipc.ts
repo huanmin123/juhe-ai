@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
-import { runtimeConfig } from '../../config/runtime.js'
+import { runtimeConfig, type AuditFullBodyCaptureRuntimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import { setAuditLogFullBodyCaptureEnabled } from '../audit-logs/audit-log-settings.js'
+import { normalizeAuditFullBodyCaptureConfig, readAuditFullBodyCaptureConfig, setAuditLogFullBodyCaptureConfig, type AuditFullBodyCaptureConfigInput } from '../audit-logs/audit-log-settings.js'
 import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
 import type {
   AccountRuntimeAvailabilityClearResult,
@@ -87,8 +87,13 @@ interface PendingServerRuntimeRequest {
 }
 
 interface PendingServerAuditFullBodyCaptureUpdateRequest {
-  resolve: (result: { fullBodyCaptureEnabled: boolean } | undefined) => void
+  resolve: (result: AuditFullBodyCaptureUpdateResult | undefined) => void
   timeout: NodeJS.Timeout
+}
+
+interface AuditFullBodyCaptureUpdateResult {
+  fullBodyCaptureEnabled: boolean
+  fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
 }
 
 interface PendingServerAccountRuntimeClearRequest {
@@ -254,6 +259,16 @@ export async function requestServerAccountConcurrencySnapshot(timeoutMs = 300): 
   return snapshot?.accountConcurrency
 }
 
+export function notifyClientIpPolicyCacheInvalidated(): void {
+  if (runtimeConfig.processRole === 'server') {
+    void clearServerClientIpPolicyCache()
+    return
+  }
+  if (runtimeConfig.processRole === 'db-service' && typeof process.send === 'function') {
+    sendDbServiceChildMessage({ type: 'client_ip_policy_cache_invalidate' })
+  }
+}
+
 export async function requestServerAccountRuntimeSnapshot(timeoutMs = 300): Promise<Pick<DbServiceServerRuntimeSnapshot, 'accountConcurrency' | 'accountRuntimeAvailability'> | undefined> {
   const snapshot = await requestServerRuntimeSnapshotByScope('account_runtime', timeoutMs)
   return snapshot
@@ -312,13 +327,26 @@ export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): P
 export async function updateServerAuditFullBodyCaptureEnabled(
   enabled: boolean,
   timeoutMs = 1000
-): Promise<{ fullBodyCaptureEnabled: boolean } | undefined> {
+): Promise<AuditFullBodyCaptureUpdateResult | undefined> {
+  return updateServerAuditFullBodyCaptureConfig({
+    enabled,
+    scope: 'global',
+    includeSuccess: false
+  }, timeoutMs)
+}
+
+export async function updateServerAuditFullBodyCaptureConfig(
+  config: AuditFullBodyCaptureConfigInput,
+  timeoutMs = 1000
+): Promise<AuditFullBodyCaptureUpdateResult | undefined> {
+  const normalizedConfig = normalizeAuditFullBodyCaptureConfig(config)
   if (runtimeConfig.processRole !== 'db-service' || !process.send) {
-    return { fullBodyCaptureEnabled: setAuditLogFullBodyCaptureEnabled(enabled).fullBodyCaptureEnabled }
+    const settings = setAuditLogFullBodyCaptureConfig(normalizedConfig)
+    return { fullBodyCaptureEnabled: settings.fullBodyCaptureEnabled, fullBodyCapture: settings.fullBodyCapture }
   }
 
   const requestId = randomUUID()
-  return await new Promise<{ fullBodyCaptureEnabled: boolean } | undefined>((resolve) => {
+  return await new Promise<AuditFullBodyCaptureUpdateResult | undefined>((resolve) => {
     const timeout = setTimeout(() => {
       const pending = pendingServerAuditFullBodyCaptureUpdateRequests.get(requestId)
       if (!pending) {
@@ -331,7 +359,7 @@ export async function updateServerAuditFullBodyCaptureEnabled(
     sendDbServiceChildMessage({
       type: 'db_service_server_audit_full_body_capture_update_request',
       requestId,
-      enabled
+      config: normalizedConfig
     }, () => {
       finishServerAuditFullBodyCaptureUpdateRequest(requestId, undefined)
     })
@@ -393,7 +421,7 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
       ? record.result
       : undefined
     if (result) {
-      setAuditLogFullBodyCaptureEnabled(result.fullBodyCaptureEnabled)
+      setAuditLogFullBodyCaptureConfig(result.fullBodyCapture)
     }
     finishServerAuditFullBodyCaptureUpdateRequest(record.requestId, result)
     return true
@@ -464,8 +492,8 @@ function handleDbServiceMessage(message: unknown): void {
       }
       break
     case 'db_service_server_audit_full_body_capture_update_request':
-      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && typeof record.enabled === 'boolean') {
-        respondToServerAuditFullBodyCaptureUpdateRequest(record.requestId, record.enabled)
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && isAuditFullBodyCaptureConfig(record.config)) {
+        respondToServerAuditFullBodyCaptureUpdateRequest(record.requestId, record.config)
       }
       break
     case 'db_service_server_account_runtime_clear_request':
@@ -476,6 +504,11 @@ function handleDbServiceMessage(message: unknown): void {
     case 'gateway_runtime_cache_invalidate':
       if (runtimeConfig.processRole === 'server') {
         void clearServerGatewayRuntimeCache()
+      }
+      break
+    case 'client_ip_policy_cache_invalidate':
+      if (runtimeConfig.processRole === 'server') {
+        void clearServerClientIpPolicyCache()
       }
       break
     case 'background_worker_operation_logs':
@@ -693,7 +726,7 @@ function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServer
 
 function finishServerAuditFullBodyCaptureUpdateRequest(
   requestId: string,
-  result: { fullBodyCaptureEnabled: boolean } | undefined
+  result: AuditFullBodyCaptureUpdateResult | undefined
 ): void {
   const pending = pendingServerAuditFullBodyCaptureUpdateRequests.get(requestId)
   if (!pending) {
@@ -750,6 +783,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
   const workerSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined)
   const workerState = backgroundIpc.getBackgroundWorkerState()
   const dbServiceState = getDbServiceState()
+  const fullBodyCapture = readAuditFullBodyCaptureConfig()
 
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
@@ -802,25 +836,27 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
     activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
     audit: {
-      fullBodyCaptureEnabled: runtimeConfig.audit.fullBodyCaptureEnabled
+      fullBodyCaptureEnabled: fullBodyCapture.enabled,
+      fullBodyCapture
     }
   }
 }
 
-function respondToServerAuditFullBodyCaptureUpdateRequest(requestId: string, enabled: boolean): void {
+function respondToServerAuditFullBodyCaptureUpdateRequest(requestId: string, config: AuditFullBodyCaptureRuntimeConfig): void {
   const child = dbServiceProcess
   if (!child) {
     return
   }
 
   try {
-    const settings = setAuditLogFullBodyCaptureEnabled(enabled)
+    const settings = setAuditLogFullBodyCaptureConfig(config)
     sendToDbServiceProcess(child, {
       type: 'db_service_server_audit_full_body_capture_update_response',
       requestId,
       ok: true,
       result: {
-        fullBodyCaptureEnabled: settings.fullBodyCaptureEnabled
+        fullBodyCaptureEnabled: settings.fullBodyCaptureEnabled,
+        fullBodyCapture: settings.fullBodyCapture
       }
     })
   } catch (error) {
@@ -861,11 +897,38 @@ async function respondToServerAccountRuntimeClearRequest(
   }
 }
 
-function isAuditFullBodyCaptureUpdateResult(value: unknown): value is { fullBodyCaptureEnabled: boolean } {
+function isAuditFullBodyCaptureUpdateResult(value: unknown): value is AuditFullBodyCaptureUpdateResult {
   return typeof value === 'object'
     && value !== null
     && !Array.isArray(value)
     && typeof (value as Record<string, unknown>).fullBodyCaptureEnabled === 'boolean'
+    && isAuditFullBodyCaptureConfig((value as Record<string, unknown>).fullBodyCapture)
+}
+
+function isAuditFullBodyCaptureConfig(value: unknown): value is AuditFullBodyCaptureRuntimeConfig {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  if (typeof record.enabled !== 'boolean') {
+    return false
+  }
+  if (record.scope !== 'global' && record.scope !== 'account') {
+    return false
+  }
+  if (typeof record.includeSuccess !== 'boolean') {
+    return false
+  }
+  if (record.accountId !== undefined && typeof record.accountId !== 'string') {
+    return false
+  }
+  if (record.expiresAt !== undefined && typeof record.expiresAt !== 'string') {
+    return false
+  }
+  if (record.updatedAt !== undefined && typeof record.updatedAt !== 'string') {
+    return false
+  }
+  return true
 }
 
 function isAccountRuntimeClearTarget(value: unknown): value is AccountRuntimeAvailabilityClearTarget {
@@ -928,6 +991,12 @@ async function clearServerGatewayRuntimeCache(): Promise<void> {
   ])
   gatewayCache.clearGatewayRuntimeCacheLocal()
   oauthRefresh.clearOpenAIOAuthRecentRefreshCache()
+}
+
+async function clearServerClientIpPolicyCache(): Promise<void> {
+  const policyCache = await import('../gateway/client-ip-policy-cache.service.js')
+  policyCache.clearClientIpPolicyCacheLocal()
+  void policyCache.refreshClientIpPolicyCacheLocal()
 }
 
 async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {

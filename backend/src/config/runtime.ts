@@ -19,6 +19,7 @@ export interface RuntimeConfig {
   oauthProxyUrl?: string
   audit: {
     fullBodyCaptureEnabled: boolean
+    fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
   }
   log: {
     level: LogLevel
@@ -42,6 +43,16 @@ export interface RuntimeConfig {
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent'
 export type ProcessRole = 'server' | 'worker' | 'db-service'
+export type AuditFullBodyCaptureScope = 'global' | 'account'
+
+export interface AuditFullBodyCaptureRuntimeConfig {
+  enabled: boolean
+  scope: AuditFullBodyCaptureScope
+  accountId?: string
+  includeSuccess: boolean
+  expiresAt?: string
+  updatedAt?: string
+}
 
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
@@ -51,6 +62,7 @@ export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-st
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 
 const localEnv = loadLocalEnv(localEnvPath)
+const initialAuditFullBodyCaptureEnabled = booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', false)
 
 export const runtimeConfig: RuntimeConfig = {
   processRole: processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server'),
@@ -66,7 +78,12 @@ export const runtimeConfig: RuntimeConfig = {
   secret: stringConfig('JUHE_AI_SECRET', 'juhe-ai-dev-secret-change-me'),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   audit: {
-    fullBodyCaptureEnabled: booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', false)
+    fullBodyCaptureEnabled: initialAuditFullBodyCaptureEnabled,
+    fullBodyCapture: {
+      enabled: initialAuditFullBodyCaptureEnabled,
+      scope: 'global',
+      includeSuccess: false
+    }
   },
   log: {
     level: logLevelConfig('JUHE_AI_LOG_LEVEL', 'info'),

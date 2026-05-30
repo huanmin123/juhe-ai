@@ -80,7 +80,7 @@ try {
   }], ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
   const streamAccount = createAuthorizedAccount('授权副作用流式失败账户', 'sk-runtime-side-effect-stream', [], ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
 
-  const cooldownGatewayAccount = authorizedGatewayAccount(cooldownAccount.id, granteeGroup.id, grantee.id)
+  const cooldownGatewayAccount = authorizedGatewayAccount(cooldownAccount.instanceId, granteeGroup.id, grantee.id)
   const cooldownResult = applyAccountErrorHandling(cooldownGatewayAccount, {
     success: false,
     statusCode: 500,
@@ -90,11 +90,11 @@ try {
   assert.equal(cooldownResult.action, 'cooldown', '授权副本命中错误策略后应进入本地临时不可调用')
   assert.equal(cooldownResult.changed, true, '授权副本错误策略应写入本地绑定状态')
   assert.match(cooldownResult.reason ?? '', /insufficient_quota；runtime side effect cooldown/, '错误策略返回原因应带上真实上游错误摘要')
-  assertOwnerStillActive(cooldownAccount.id, ownerAccess, '错误策略临时不可调用不应修改归属人主账户')
-  assertAuthorizedLocalStatus(cooldownAccount.id, granteeAccess, 'temporary_unavailable', '错误策略临时不可调用应只写入被授权本地状态')
-  assertAuthorizedLocalError(cooldownAccount.id, granteeAccess, /insufficient_quota；runtime side effect cooldown/, '错误策略临时不可调用应保留真实上游错误摘要')
+  assertOwnerStillActive(cooldownAccount.sourceId, ownerAccess, '错误策略临时不可调用不应修改归属人原账户')
+  assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'temporary_unavailable', '错误策略临时不可调用应只写入被授权实例状态')
+  assertAuthorizedInstanceError(cooldownAccount.instanceId, granteeAccess, /insufficient_quota；runtime side effect cooldown/, '错误策略临时不可调用应保留真实上游错误摘要')
 
-  const disableGatewayAccount = authorizedGatewayAccount(disableAccount.id, granteeGroup.id, grantee.id)
+  const disableGatewayAccount = authorizedGatewayAccount(disableAccount.instanceId, granteeGroup.id, grantee.id)
   const disableResult = applyAccountErrorHandling(disableGatewayAccount, {
     success: false,
     statusCode: 503,
@@ -104,11 +104,11 @@ try {
   assert.equal(disableResult.action, 'disable', '授权副本命中禁用策略后应进入本地异常')
   assert.equal(disableResult.changed, true, '授权副本禁用策略应写入本地绑定状态')
   assert.match(disableResult.reason ?? '', /server_is_overloaded；runtime side effect disable/, '禁用策略返回原因应带上真实上游错误摘要')
-  assertOwnerStillActive(disableAccount.id, ownerAccess, '错误策略异常不应修改归属人主账户')
-  assertAuthorizedLocalStatus(disableAccount.id, granteeAccess, 'error', '错误策略异常应只写入被授权本地状态')
-  assertAuthorizedLocalError(disableAccount.id, granteeAccess, /server_is_overloaded；runtime side effect disable/, '错误策略异常应保留真实上游错误摘要')
+  assertOwnerStillActive(disableAccount.sourceId, ownerAccess, '错误策略异常不应修改归属人原账户')
+  assertAuthorizedInstanceStatus(disableAccount.instanceId, granteeAccess, 'error', '错误策略异常应只写入被授权实例状态')
+  assertAuthorizedInstanceError(disableAccount.instanceId, granteeAccess, /server_is_overloaded；runtime side effect disable/, '错误策略异常应保留真实上游错误摘要')
 
-  const streamGatewayAccount = authorizedGatewayAccount(streamAccount.id, granteeGroup.id, grantee.id)
+  const streamGatewayAccount = authorizedGatewayAccount(streamAccount.instanceId, granteeGroup.id, grantee.id)
   const streamResult = await requestDbService({
     type: 'record_account_stream_failure',
     input: {
@@ -123,8 +123,8 @@ try {
   })
   assert.equal(streamResult.count, 1, '授权副本流式失败应累计到本地绑定窗口')
   assert.equal(streamResult.triggered, true, '授权副本流式失败达到阈值后应触发本地冷却')
-  assertOwnerStillActive(streamAccount.id, ownerAccess, '流式失败阈值不应修改归属人主账户')
-  assertAuthorizedLocalStatus(streamAccount.id, granteeAccess, 'temporary_unavailable', '流式失败阈值应只写入被授权本地状态')
+  assertOwnerStillActive(streamAccount.sourceId, ownerAccess, '流式失败阈值不应修改归属人原账户')
+  assertAuthorizedInstanceStatus(streamAccount.instanceId, granteeAccess, 'temporary_unavailable', '流式失败阈值应只写入被授权实例状态')
 
   console.log('授权账户运行时副作用隔离回归通过')
 } finally {
@@ -161,8 +161,9 @@ function createAuthorizedAccount(
     granteeId,
     remark: `${name} 授权副作用隔离回归`
   }, ownerAccess)
-  assert(repositories.setAccountGroup(account.id, granteeGroupId, granteeAccess), `${name} 绑定到被授权用户分组失败`)
-  return account
+  const instance = authorizedInstanceForSource(account.id, granteeAccess)
+  assert(repositories.setAccountGroup(instance.id, granteeGroupId, granteeAccess), `${name} 授权实例绑定到被授权用户分组失败`)
+  return { sourceId: account.id, instanceId: instance.id }
 }
 
 function authorizedGatewayAccount(accountId: string, granteeGroupId: string, granteeId: string) {
@@ -184,14 +185,21 @@ function assertOwnerStillActive(accountId: string, ownerAccess: { systemAccountI
   assert.equal(ownerView?.streamFailureCount ?? 0, 0, `${message}：主账户流式失败计数不应被写入`)
 }
 
-function assertAuthorizedLocalStatus(accountId: string, granteeAccess: { systemAccountId: string; role: 'user' }, expectedStatus: string, message: string): void {
+function assertAuthorizedInstanceStatus(accountId: string, granteeAccess: { systemAccountId: string; role: 'user' }, expectedStatus: string, message: string): void {
   const granteeView = repositories.findAccountSummary(accountId, granteeAccess)
   assert.equal(granteeView?.status, expectedStatus, message)
-  assert.equal(granteeView?.localStatus, expectedStatus, `${message}：本地状态字段应同步`)
-  assert.equal(granteeView?.sourceStatus, 'active', `${message}：来源状态仍应显示归属人主账户正常`)
+  assert.equal(granteeView?.localStatus, expectedStatus, `${message}：兼容字段应同步实例状态`)
+  assert.equal(granteeView?.sourceStatus, undefined, `${message}：列表不应再暴露父账户来源状态`)
 }
 
-function assertAuthorizedLocalError(accountId: string, granteeAccess: { systemAccountId: string; role: 'user' }, pattern: RegExp, message: string): void {
+function assertAuthorizedInstanceError(accountId: string, granteeAccess: { systemAccountId: string; role: 'user' }, pattern: RegExp, message: string): void {
   const granteeView = repositories.findAccountSummary(accountId, granteeAccess)
-  assert.match(granteeView?.localLastErrorMessage ?? '', pattern, message)
+  assert.match(granteeView?.lastErrorMessage ?? '', pattern, message)
+}
+
+function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {
+  const account = repositories.listAccounts(access)
+    .find((item) => item.authorizationInstanceSourceAccountId === sourceAccountId)
+  assert(account, `被授权用户视角应能读取来源账户 ${sourceAccountId} 的授权实例`)
+  return account
 }

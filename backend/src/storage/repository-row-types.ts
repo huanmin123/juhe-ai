@@ -44,6 +44,9 @@ export interface AccountRow {
   cooldown_retest_last_status_code: number | null
   stream_failure_count: number
   stream_failure_window_started_at: string | null
+  authorization_instance_source_account_id: string | null
+  authorization_instance_authorization_id: string | null
+  authorization_instance_owner_system_account_id: string | null
   created_at: string
   updated_at: string
 }
@@ -166,6 +169,8 @@ export type AccountListRow = AccountRow & {
   authorization_limits_json?: string | null
   authorization_effective_source_type?: ResourceAuthorizationSourceType | null
   authorization_effective_source_team_id?: string | null
+  authorization_resource_owner_system_account_id?: string | null
+  authorization_resource_id?: string | null
   system_account_sort_name?: string | null
   binding_system_account_id?: string | null
   bound_group_id?: string | null
@@ -174,10 +179,19 @@ export type AccountListRow = AccountRow & {
   bound_group_local_status?: AccountStatus | null
   bound_group_local_cooldown_until?: string | null
   bound_group_local_last_error_message?: string | null
+  bound_group_local_priority?: number | null
   bound_group_local_stream_failure_count?: number | null
   bound_group_local_stream_failure_window_started_at?: string | null
   bound_group_local_super_priority_enabled?: number | null
   bound_group_local_fallback_enabled?: number | null
+  source_provider_code?: ProviderCode | null
+  source_type?: AccountType | null
+  source_credential_mask?: string | null
+  source_credentials_encrypted?: string | null
+  source_proxy_profile_id?: string | null
+  source_concurrency_limit?: number | null
+  source_passthrough_enabled?: number | null
+  source_error_policy_id?: string | null
   quality_score?: number | null
   quality_state?: string | null
   quality_ewma_first_token_ms?: number | null

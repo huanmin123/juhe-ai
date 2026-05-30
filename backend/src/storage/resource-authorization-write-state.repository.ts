@@ -9,6 +9,7 @@ import type {
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, newId, nowIso } from './database.js'
+import { encryptJson } from './crypto.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
@@ -16,6 +17,7 @@ import { isResourceAuthorizationExpired } from './resource-authorization-helpers
 import { loadRuntimeAuthorizationForUserGrant } from './resource-authorization-read.repository.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import type {
+  AccountRow,
   ResourceAuthorizationGrantRow,
   ResourceAuthorizationRow,
   ResourceAuthorizationSourceRow,
@@ -141,10 +143,10 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
 function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, authorization: ResourceAuthorizationRow, now: string, targetGroupId?: string): void {
   if (authorization.resource_type !== 'account') return
   if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
-  const account = database
-    .prepare('SELECT provider_code, system_account_id FROM accounts WHERE id = ?')
-    .get(authorization.resource_id) as unknown as { provider_code?: string; system_account_id?: string } | undefined
-  if (!account?.provider_code || account.system_account_id === authorization.grantee_system_account_id) return
+  const instance = ensureAccountAuthorizationInstance(database, authorization, now)
+  if (!instance?.id || !instance.provider_code) return
+  const migratedGroupId = migrateAccountAuthorizationBindingsToInstance(database, authorization, instance.id, now)
+  const repairedGroupId = repairAccountAuthorizationInstanceBindings(database, authorization, instance.id, now)
   const requestedGroupId = targetGroupId?.trim()
   const existingBinding = database
     .prepare(`
@@ -152,18 +154,19 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
       FROM group_accounts
       WHERE account_id = ?
         AND system_account_id = ?
+        AND account_authorization_id = ?
         AND enabled = 1
       ORDER BY updated_at DESC, group_id ASC, account_id ASC
       LIMIT 1
     `)
-    .get(authorization.resource_id, authorization.grantee_system_account_id) as unknown as { group_id?: string } | undefined
+    .get(instance.id, authorization.grantee_system_account_id, authorization.id) as unknown as { group_id?: string } | undefined
   if (existingBinding?.group_id && (!requestedGroupId || existingBinding.group_id === requestedGroupId)) return
-  const bindGroupId = groupIdForAuthorizationBinding(database, account.provider_code, authorization.grantee_system_account_id, now, requestedGroupId)
+  const bindGroupId = groupIdForAuthorizationBinding(database, instance.provider_code, authorization.grantee_system_account_id, now, requestedGroupId ?? migratedGroupId ?? repairedGroupId)
   if (!bindGroupId) return
   if (existingBinding?.group_id && existingBinding.group_id !== bindGroupId) {
     database
-      .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
-      .run(authorization.resource_id, authorization.grantee_system_account_id)
+      .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ? AND account_authorization_id = ?')
+      .run(instance.id, authorization.grantee_system_account_id, authorization.id)
     invalidateGroupAccountIdsCache(existingBinding.group_id)
   }
   database
@@ -176,8 +179,271 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
         enabled = 1,
         updated_at = excluded.updated_at
     `)
-    .run(authorization.grantee_system_account_id, bindGroupId, authorization.resource_id, authorization.id, now, now)
+    .run(authorization.grantee_system_account_id, bindGroupId, instance.id, authorization.id, now, now)
   invalidateGroupAccountIdsCache(bindGroupId)
+}
+
+export function ensureAccountAuthorizationInstancesForGrantee(granteeSystemAccountId: string, database = getDatabase(), now = nowIso()): number {
+  const granteeId = granteeSystemAccountId.trim()
+  if (!granteeId) return 0
+  const rows = database
+    .prepare(`
+      SELECT *
+      FROM resource_authorizations
+      WHERE resource_type = 'account'
+        AND grantee_system_account_id = ?
+        AND status IN ('active', 'paused', 'expired')
+      ORDER BY updated_at ASC, id ASC
+    `)
+    .all(granteeId) as unknown as ResourceAuthorizationRow[]
+  let changed = 0
+  for (const authorization of rows) {
+    const instance = ensureAccountAuthorizationInstance(database, authorization, now)
+    if (!instance?.id) continue
+    const migratedGroupId = migrateAccountAuthorizationBindingsToInstance(database, authorization, instance.id, now)
+    const repairedGroupId = repairAccountAuthorizationInstanceBindings(database, authorization, instance.id, now)
+    if (migratedGroupId || repairedGroupId) changed += 1
+    if (authorization.status === 'active' && !isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) {
+      bindActiveAccountAuthorizationToGranteeGroup(database, authorization, now, migratedGroupId ?? repairedGroupId)
+    }
+  }
+  if (changed > 0) {
+    notifyGatewayRuntimeCacheInvalidation('authorization_instance_migrated')
+  }
+  return changed
+}
+
+interface LegacyAccountAuthorizationBindingRow {
+  group_id: string
+  local_status?: string | null
+  local_cooldown_until?: string | null
+  local_last_error_message?: string | null
+  local_priority?: number | null
+  local_super_priority_enabled?: number | null
+  local_fallback_enabled?: number | null
+  local_stream_failure_count?: number | null
+  local_stream_failure_window_started_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+function migrateAccountAuthorizationBindingsToInstance(database: DatabaseSync, authorization: ResourceAuthorizationRow, instanceAccountId: string, now: string): string | undefined {
+  const legacyRows = database
+    .prepare(`
+      SELECT group_id, local_status, local_cooldown_until, local_last_error_message,
+        local_priority, local_super_priority_enabled, local_fallback_enabled,
+        local_stream_failure_count, local_stream_failure_window_started_at,
+        created_at, updated_at
+      FROM group_accounts
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND account_authorization_id = ?
+        AND enabled = 1
+      ORDER BY updated_at DESC, group_id ASC, account_id ASC
+    `)
+    .all(authorization.resource_id, authorization.grantee_system_account_id, authorization.id) as unknown as LegacyAccountAuthorizationBindingRow[]
+  if (!legacyRows.length) return undefined
+  const latestRuntime = legacyRows[0]
+  applyLegacyAccountAuthorizationRuntimeToInstance(database, instanceAccountId, authorization.id, latestRuntime, now)
+  for (const row of legacyRows) {
+    database
+      .prepare(`
+        INSERT INTO group_accounts (
+          system_account_id, group_id, account_id, account_authorization_id,
+          local_priority, local_super_priority_enabled, local_fallback_enabled,
+          enabled, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        ON CONFLICT(group_id, account_id) DO UPDATE SET
+          system_account_id = excluded.system_account_id,
+          account_authorization_id = excluded.account_authorization_id,
+          local_priority = excluded.local_priority,
+          local_super_priority_enabled = excluded.local_super_priority_enabled,
+          local_fallback_enabled = excluded.local_fallback_enabled,
+          enabled = 1,
+          updated_at = excluded.updated_at
+      `)
+      .run(
+        authorization.grantee_system_account_id,
+        row.group_id,
+        instanceAccountId,
+        authorization.id,
+        Math.max(0, Number(row.local_priority ?? 0)),
+        row.local_super_priority_enabled === 1 ? 1 : 0,
+        row.local_fallback_enabled === 1 ? 1 : 0,
+        row.created_at ?? now,
+        now
+      )
+    invalidateGroupAccountIdsCache(row.group_id)
+  }
+  database
+    .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ? AND account_authorization_id = ?')
+    .run(authorization.resource_id, authorization.grantee_system_account_id, authorization.id)
+  return latestRuntime.group_id
+}
+
+function repairAccountAuthorizationInstanceBindings(database: DatabaseSync, authorization: ResourceAuthorizationRow, instanceAccountId: string, now: string): string | undefined {
+  const rows = database
+    .prepare(`
+      SELECT group_id
+      FROM group_accounts
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND enabled = 1
+        AND (
+          account_authorization_id IS NULL
+          OR account_authorization_id <> ?
+        )
+      ORDER BY updated_at DESC, group_id ASC, account_id ASC
+    `)
+    .all(instanceAccountId, authorization.grantee_system_account_id, authorization.id) as unknown as Array<{ group_id?: string }>
+  if (!rows.length) return undefined
+  for (const row of rows) {
+    if (!row.group_id) continue
+    database
+      .prepare(`
+        UPDATE group_accounts
+        SET account_authorization_id = ?,
+            updated_at = ?
+        WHERE account_id = ?
+          AND system_account_id = ?
+          AND group_id = ?
+          AND enabled = 1
+      `)
+      .run(authorization.id, now, instanceAccountId, authorization.grantee_system_account_id, row.group_id)
+    invalidateGroupAccountIdsCache(row.group_id)
+  }
+  return rows.find((row) => row.group_id)?.group_id
+}
+
+function applyLegacyAccountAuthorizationRuntimeToInstance(database: DatabaseSync, instanceAccountId: string, authorizationId: string, row: LegacyAccountAuthorizationBindingRow, now: string): void {
+  const localStatus = normalizedLegacyAccountStatus(row.local_status)
+  const nextStatus = localStatus ?? 'active'
+  database
+    .prepare(`
+      UPDATE accounts
+      SET status = ?,
+          schedulable = ?,
+          cooldown_until = ?,
+          last_error_message = ?,
+          stream_failure_count = ?,
+          stream_failure_window_started_at = ?,
+          updated_at = ?
+      WHERE id = ?
+        AND authorization_instance_authorization_id = ?
+    `)
+    .run(
+      nextStatus,
+      nextStatus === 'disabled' || nextStatus === 'error' ? 0 : 1,
+      row.local_cooldown_until ?? null,
+      row.local_last_error_message ?? null,
+      Math.max(0, Number(row.local_stream_failure_count ?? 0)),
+      row.local_stream_failure_window_started_at ?? null,
+      now,
+      instanceAccountId,
+      authorizationId
+    )
+}
+
+function normalizedLegacyAccountStatus(value: string | null | undefined): 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable' | undefined {
+  return value === 'active' || value === 'disabled' || value === 'error' || value === 'rate_limited' || value === 'temporary_unavailable'
+    ? value
+    : undefined
+}
+
+function ensureAccountAuthorizationInstance(database: DatabaseSync, authorization: ResourceAuthorizationRow, now: string): AccountRow | undefined {
+  const existing = database
+    .prepare('SELECT * FROM accounts WHERE authorization_instance_authorization_id = ? LIMIT 1')
+    .get(authorization.id) as unknown as AccountRow | undefined
+  if (existing) {
+    const sourceExists = existing.authorization_instance_source_account_id
+      ? true
+      : Boolean(database.prepare('SELECT id FROM accounts WHERE id = ? LIMIT 1').get(authorization.resource_id))
+    const sourceAccountId = sourceExists ? authorization.resource_id : null
+    if ((sourceAccountId && !existing.authorization_instance_source_account_id) || !existing.authorization_instance_owner_system_account_id) {
+      database
+        .prepare(`
+          UPDATE accounts
+          SET authorization_instance_source_account_id = CASE
+                WHEN authorization_instance_source_account_id IS NULL AND ? IS NOT NULL THEN ?
+                ELSE authorization_instance_source_account_id
+              END,
+              authorization_instance_owner_system_account_id = COALESCE(authorization_instance_owner_system_account_id, ?),
+              updated_at = ?
+          WHERE id = ?
+        `)
+        .run(sourceAccountId, sourceAccountId, authorization.resource_owner_system_account_id, now, existing.id)
+    }
+    return {
+      ...existing,
+      authorization_instance_source_account_id: existing.authorization_instance_source_account_id ?? sourceAccountId,
+      authorization_instance_owner_system_account_id: existing.authorization_instance_owner_system_account_id ?? authorization.resource_owner_system_account_id
+    }
+  }
+  const source = database
+    .prepare('SELECT * FROM accounts WHERE id = ? LIMIT 1')
+    .get(authorization.resource_id) as unknown as AccountRow | undefined
+  if (!source || source.system_account_id === authorization.grantee_system_account_id) return undefined
+  const id = newId('acc')
+  const name = uniqueAuthorizedAccountInstanceName(database, source.name, authorization.grantee_system_account_id, source.provider_code, authorization.id)
+  database
+    .prepare(`
+      INSERT INTO accounts (
+        id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+        proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
+        priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+        cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+        authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      id,
+      authorization.grantee_system_account_id,
+      source.provider_code,
+      name,
+      source.type,
+      encryptJson({}),
+      '',
+      null,
+      source.concurrency_limit,
+      source.passthrough_enabled,
+      null,
+      0,
+      0,
+      0,
+      authorization.resource_id,
+      authorization.id,
+      authorization.resource_owner_system_account_id,
+      now,
+      now
+    )
+  return database.prepare('SELECT * FROM accounts WHERE id = ? LIMIT 1').get(id) as unknown as AccountRow | undefined
+}
+
+function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName: string, systemAccountId: string, providerCode: string, authorizationId: string): string {
+  const baseName = sourceName.trim() || '授权账户'
+  const shortId = authorizationId.split('_').pop()?.slice(0, 6) || authorizationId.slice(-6)
+  const candidates = [
+    baseName,
+    `${baseName}（授权）`,
+    `${baseName}（授权 ${shortId}）`
+  ]
+  for (const candidate of candidates) {
+    if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate)) return candidate
+  }
+  for (let index = 2; index <= 1000; index += 1) {
+    const candidate = `${baseName}（授权 ${shortId}-${index}）`
+    if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate)) return candidate
+  }
+  return `${baseName}（授权 ${shortId}-${Date.now()}）`
+}
+
+function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string, providerCode: string, name: string): boolean {
+  const row = database
+    .prepare('SELECT id FROM accounts WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?) LIMIT 1')
+    .get(systemAccountId, providerCode, name) as unknown as { id?: string } | undefined
+  return !row?.id
 }
 
 function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, now: string, targetGroupId?: string): string | undefined {

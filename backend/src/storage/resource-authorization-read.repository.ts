@@ -18,7 +18,7 @@ import { resourceAuthorizationSelectColumns, usageScope } from './resource-autho
 import { loadAccountLookupMap, loadGroupNameMap, loadSystemAccountPrincipalMapByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
-import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
@@ -239,6 +239,7 @@ export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationG
 
 function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow[], options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   const accounts = loadAccountLookupMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
+  const authorizationInstanceAccountNames = loadAuthorizationInstanceAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
   const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
   const systemAccounts = loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
   const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
@@ -259,7 +260,7 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
       id: row.id,
       resourceType: row.resource_type,
       resourceId: row.resource_id,
-      resourceName: row.resource_type === 'account' ? account?.name : groupNames.get(row.resource_id),
+      resourceName: row.resource_type === 'account' ? account?.name ?? authorizationInstanceAccountNames.get(row.resource_id) : groupNames.get(row.resource_id),
       resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
       resourceOwnerSystemAccountName: owner?.displayName,
       granteeType: row.grantee_type,
@@ -298,6 +299,31 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
       updatedAt: row.updated_at
     }
   })
+}
+
+function loadAuthorizationInstanceAccountNameMap(resourceIds: string[]): Map<string, string> {
+  const ids = [...new Set(resourceIds.map((id) => id.trim()).filter(Boolean))]
+  if (!ids.length) return new Map()
+  const output = new Map<string, string>()
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = database.prepare(`
+      SELECT ra.resource_id, accounts.name
+      FROM resource_authorizations ra
+      INNER JOIN accounts ON accounts.authorization_instance_authorization_id = ra.id
+      WHERE ra.resource_type = 'account'
+        AND ra.resource_id IN (${sqlPlaceholders(chunk.length)})
+      ORDER BY ra.created_at ASC, ra.id ASC
+    `).all(...chunk) as unknown as Array<{ resource_id?: string | null; name?: string | null }>
+    for (const row of rows) {
+      const resourceId = String(row.resource_id ?? '')
+      const name = String(row.name ?? '')
+      if (resourceId && name && !output.has(resourceId)) {
+        output.set(resourceId, name)
+      }
+    }
+  }
+  return output
 }
 
 function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {

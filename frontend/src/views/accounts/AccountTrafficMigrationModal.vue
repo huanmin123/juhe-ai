@@ -33,12 +33,12 @@
         />
         <div class="form-help">{{ isAuthorizedSource ? '只显示你当前同一分组下处于正常状态且可调度的授权账户。' : '只显示同一系统账户、同一供应商、同一分组下处于正常状态且可调度的账户。' }}</div>
       </a-form-item>
-      <a-form-item label="迁移后原账户状态">
+      <a-form-item :label="isAuthorizedSource ? '迁移后当前授权实例状态' : '迁移后原账户状态'">
         <a-radio-group :value="sourceStatus" @update:value="handleSourceStatusChange">
           <a-radio value="temporary_unavailable">临时不可调用</a-radio>
           <a-radio value="disabled">停用账户</a-radio>
         </a-radio-group>
-        <div class="form-help">{{ isAuthorizedSource ? '该状态只保存在你的分组绑定上，不会停用或冷却账户所有者的原账户。' : '迁移只影响后续请求；已经建立的流式输出不会被这次操作中断。' }}</div>
+        <div class="form-help">{{ isAuthorizedSource ? '该状态只更新你自己的授权实例账户；不会停用、冷却或修改账户所有者的原账户。' : '迁移只影响后续请求；已经建立的流式输出不会被这次操作中断。' }}</div>
       </a-form-item>
     </a-form>
   </a-modal>

@@ -158,7 +158,8 @@ try {
     providerCode: 'openai',
     enabled: true
   }, granteeAccess)
-  const quotaBinding = repositories.setAccountGroup(account.id, granteeQuotaGroup.id, granteeAccess)
+  const quotaAuthorizedAccount = authorizedInstanceForSource(account.id, granteeAccess)
+  const quotaBinding = repositories.setAccountGroup(quotaAuthorizedAccount.id, granteeQuotaGroup.id, granteeAccess)
   assert.equal(quotaBinding?.boundGroupId, granteeQuotaGroup.id, '额度账户应能先绑定到被授权人的分组')
   const migrationSourceAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -173,12 +174,13 @@ try {
     granteeId: grantee.id,
     expiresAt: validAuthorizationExpiresAt
   }, ownerAccess)
-  const sourceBinding = repositories.setAccountGroup(migrationSourceAccount.id, granteeQuotaGroup.id, granteeAccess)
+  const migrationSourceAuthorizedAccount = authorizedInstanceForSource(migrationSourceAccount.id, granteeAccess)
+  const sourceBinding = repositories.setAccountGroup(migrationSourceAuthorizedAccount.id, granteeQuotaGroup.id, granteeAccess)
   assert.equal(sourceBinding?.boundGroupId, granteeQuotaGroup.id, '迁移源授权账户应能绑定到同一个分组')
   assert.throws(() => repositories.updateResourceAuthorization(accountAuthorization.id, {
     expiresAt: new Date(Date.parse(accountExpiresAt) + 60_000).toISOString()
   }, ownerAccess), /授权到期时间不能晚于账户到期时间/, '修改账户授权不应允许晚于账户到期时间')
-  const authorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === account.id)
+  const authorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === quotaAuthorizedAccount.id)
   assert.equal(authorizedAccount?.authorizationExpiresAt, validAuthorizationExpiresAt, '被授权账户列表应返回授权到期时间')
   assert.equal(authorizedAccount?.authorizationLimits?.daily?.limit, 12, '被授权账户列表应返回日限额')
   assert.equal(authorizedAccount?.authorizationLimits?.total?.limit, 30, '被授权账户列表应返回总限额')
@@ -188,19 +190,19 @@ try {
   const statDate = usageStatsHelpers.todayDateKey(usageStatsHelpers.usageStatsTimezone())
   const runtimeAccountAuthorizationId = runtimeAuthorizationId('account', account.id, grantee.id)
   assert(runtimeAccountAuthorizationId, '账号授权运行时记录不存在')
-  insertUsageTotal(recordDatabase, owner.id, 'account_authorization', runtimeAccountAuthorizationId, 30)
-  insertUsageDaily(recordDatabase, owner.id, 'account_authorization', runtimeAccountAuthorizationId, statDate, 12)
-  const quotaExceededAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === account.id)
+  insertUsageTotal(recordDatabase, grantee.id, 'account_authorization', runtimeAccountAuthorizationId, 30)
+  insertUsageDaily(recordDatabase, grantee.id, 'account_authorization', runtimeAccountAuthorizationId, statDate, 12)
+  const quotaExceededAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === quotaAuthorizedAccount.id)
   assert.equal(quotaExceededAccount?.authorizationQuotaExceeded, true, '授权额度用完时被授权账户列表应返回超限标记')
-  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(account.id, {
+  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(quotaAuthorizedAccount.id, {
     superPriorityEnabled: true
   }, granteeAccess), /授权额度已用完/, '授权额度用完后不应允许开启本地调度标记')
   assert.throws(() => repositories.migrateAccountTraffic({
-    sourceAccountId: migrationSourceAccount.id,
-    targetAccountId: account.id,
+    sourceAccountId: migrationSourceAuthorizedAccount.id,
+    targetAccountId: quotaAuthorizedAccount.id,
     sourceStatus: 'temporary_unavailable'
   }, granteeAccess), /授权额度已用完/, '授权额度用完账户不应作为迁移目标')
-  const quotaExceededTestAccount = repositories.findAccountForTest(account.id, granteeAccess)
+  const quotaExceededTestAccount = repositories.findAccountForTest(quotaAuthorizedAccount.id, granteeAccess)
   assert(quotaExceededTestAccount, '额度用完账户仍应能被解析出来用于测试前置校验')
   assert.equal(repositories.accountTestUnavailableMessage(quotaExceededTestAccount), '授权额度已用完，当前账户不能调用', '测试接口应在实际调用前拦截授权额度用完账户')
 
@@ -218,17 +220,19 @@ try {
     granteeId: grantee.id,
     expiresAt: validAuthorizationExpiresAt
   }, ownerAccess)
-  const ownerPausedBinding = repositories.setAccountGroup(ownerPausedAccount.id, granteeQuotaGroup.id, granteeAccess)
-  assert.equal(ownerPausedBinding?.boundGroupId, granteeQuotaGroup.id, '所有者停调账户应能先绑定到被授权人的分组')
-  const ownerPausedAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerPausedAccount.id)
-  assert.equal(ownerPausedAuthorizedAccount?.status, 'disabled', '所有者停调应让授权账户有效状态不可用')
-  assert.equal(ownerPausedAuthorizedAccount?.localStatus, 'active', '所有者停调不应回写被授权用户本地状态')
-  assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, false, '所有者停调应作为授权来源状态返回')
-  assert.equal(ownerPausedAuthorizedAccount?.schedulable, false, '所有者停调应阻断被授权账户调度')
-  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAccount.id, {
+  const ownerPausedAuthorizedInstance = authorizedInstanceForSource(ownerPausedAccount.id, granteeAccess)
+  const ownerPausedBinding = repositories.setAccountGroup(ownerPausedAuthorizedInstance.id, granteeQuotaGroup.id, granteeAccess)
+  assert.equal(ownerPausedBinding?.boundGroupId, granteeQuotaGroup.id, '所有者停调账户的授权实例应能绑定到被授权人的分组')
+  const ownerPausedAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerPausedAuthorizedInstance.id)
+  assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '所有者停调不应影响授权实例状态')
+  assert.equal(ownerPausedAuthorizedAccount?.localStatus, 'active', '兼容字段应同步授权实例状态')
+  assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, undefined, '授权实例不再暴露父账户来源调度状态')
+  assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '所有者停调不应阻断被授权实例调度')
+  const ownerPausedDispatch = repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAuthorizedInstance.id, {
     fallbackEnabled: true
-  }, granteeAccess), /授权来源账户已暂停调度/, '所有者停调后不应允许被授权用户开启本地调度标记')
-  const ownerPausedTestAccount = repositories.findAccountForTest(ownerPausedAccount.id, granteeAccess)
+  }, granteeAccess)
+  assert.equal(ownerPausedDispatch?.fallbackEnabled, true, '所有者停调后仍应允许被授权用户管理自己的授权实例调度标记')
+  const ownerPausedTestAccount = repositories.findAccountForTest(ownerPausedAuthorizedInstance.id, granteeAccess)
   assert(ownerPausedTestAccount, '所有者停调账户仍应能被解析出来用于测试前置校验')
   assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), undefined, '测试接口不应因所有者停调拦截被授权账户')
 
@@ -248,10 +252,11 @@ try {
     }
   }, ownerAccess)
   const teamMemberAccess = { systemAccountId: teamMember.id, role: 'user' as const }
-  const teamAuthorizedAccount = repositories.listAccounts(teamMemberAccess).find((item) => item.id === teamQuotaAccount.id)
+  const teamAuthorizedAccount = repositories.listAccounts(teamMemberAccess).find((item) => item.authorizationInstanceSourceAccountId === teamQuotaAccount.id)
   assert.equal(teamAuthorizedAccount?.authorizationQuotaExceeded, false, '团队来源授权未超限时列表不应标记额度用完')
-  insertUsageDaily(recordDatabase, owner.id, 'account_authorization_team', `${teamQuotaAccount.id}:${team.id}`, statDate, 5)
-  const teamQuotaExceededAccount = repositories.listAccounts(teamMemberAccess).find((item) => item.id === teamQuotaAccount.id)
+  assert(teamAuthorizedAccount?.id, '团队来源授权应创建独立授权实例账户')
+  insertUsageDaily(recordDatabase, teamMember.id, 'account_authorization_team', `${teamAuthorizedAccount.id}:${team.id}`, statDate, 5)
+  const teamQuotaExceededAccount = repositories.listAccounts(teamMemberAccess).find((item) => item.id === teamAuthorizedAccount?.id)
   assert.equal(teamQuotaExceededAccount?.authorizationQuotaExceeded, true, '团队来源授权额度用完时列表应返回超限标记')
 
   console.log('资源授权有效期清空回归通过：grant 和 runtime 过期时间保持一致')
@@ -290,6 +295,13 @@ function runtimeStatus(resourceType: string, resourceId: string, granteeSystemAc
     .prepare('SELECT status FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?')
     .get(resourceType, resourceId, granteeSystemAccountId) as { status?: string } | undefined
   return row?.status
+}
+
+function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {
+  const account = repositories.listAccounts(access)
+    .find((item) => item.authorizationInstanceSourceAccountId === sourceAccountId)
+  assert(account, `被授权用户视角应能读取来源账户 ${sourceAccountId} 的授权实例`)
+  return account
 }
 
 function insertUsageTotal(database: ReturnType<typeof databaseModule.getStatsDatabase>, systemAccountId: string, scopeType: string, scopeId: string, totalCost: number) {

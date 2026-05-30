@@ -1,10 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 export function applyStatsSchema(database: DatabaseSync): void {
+  migrateClientIpPoliciesWithoutPolicyType(database)
   database.exec(`
     PRAGMA foreign_keys = ON;
 
     PRAGMA journal_mode = WAL;
+
+    DROP TABLE IF EXISTS client_ip_usage_range_summaries;
 
     CREATE TABLE IF NOT EXISTS account_quality_minute_stats (
           account_id TEXT NOT NULL,
@@ -669,6 +672,95 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (system_account_id, scope_type, scope_id, start_date, end_date)
         );
 
+    CREATE TABLE IF NOT EXISTS client_ip_registry (
+          ip_hash TEXT PRIMARY KEY,
+          bucket_no INTEGER NOT NULL,
+          aggregate_ip_key TEXT NOT NULL,
+          client_ip TEXT NOT NULL,
+          ip_version INTEGER NOT NULL,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+    CREATE TABLE IF NOT EXISTS client_ip_stats_daily (
+          ip_hash TEXT NOT NULL,
+          stat_date TEXT NOT NULL,
+          request_count INTEGER NOT NULL DEFAULT 0,
+          success_count INTEGER NOT NULL DEFAULT 0,
+          error_count INTEGER NOT NULL DEFAULT 0,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+          total_cost_usd REAL NOT NULL DEFAULT 0,
+          duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+          duration_ms_count INTEGER NOT NULL DEFAULT 0,
+          duration_ms_max INTEGER NOT NULL DEFAULT 0,
+          first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+          first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+          last_used_at TEXT,
+          last_error_at TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (ip_hash, stat_date)
+        );
+
+    CREATE TABLE IF NOT EXISTS client_ip_usage_range_windows (
+          ip_hash TEXT NOT NULL,
+          start_date TEXT NOT NULL,
+          end_date TEXT NOT NULL,
+          request_count INTEGER NOT NULL DEFAULT 0,
+          success_count INTEGER NOT NULL DEFAULT 0,
+          error_count INTEGER NOT NULL DEFAULT 0,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+          total_cost_usd REAL NOT NULL DEFAULT 0,
+          duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+          duration_ms_count INTEGER NOT NULL DEFAULT 0,
+          duration_ms_max INTEGER NOT NULL DEFAULT 0,
+          average_duration_ms REAL,
+          first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+          first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+          average_first_token_ms REAL,
+          active_days INTEGER NOT NULL DEFAULT 0,
+          last_used_at TEXT,
+          last_error_at TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (ip_hash, start_date, end_date)
+        );
+
+    CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips (
+          ip_hash TEXT PRIMARY KEY,
+          updated_at TEXT NOT NULL
+        );
+
+    CREATE TABLE IF NOT EXISTS client_ip_policies (
+          id TEXT PRIMARY KEY,
+          ip_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          reason TEXT,
+          expires_at TEXT,
+          created_by_system_account_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          disabled_at TEXT,
+          disabled_by_system_account_id TEXT,
+          disabled_reason TEXT
+        );
+
+    CREATE TABLE IF NOT EXISTS client_ip_policy_hits (
+          ip_hash TEXT NOT NULL,
+          stat_date TEXT NOT NULL,
+          policy_id TEXT NOT NULL,
+          hit_count INTEGER NOT NULL DEFAULT 0,
+          last_hit_at TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (ip_hash, stat_date, policy_id)
+        );
+
     CREATE TABLE IF NOT EXISTS stats_job_state (
           scope_type TEXT NOT NULL,
           scope_id TEXT NOT NULL DEFAULT '',
@@ -980,6 +1072,40 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_end ON usage_scope_range_windows(end_date);
 
+    CREATE INDEX IF NOT EXISTS idx_client_ip_registry_bucket ON client_ip_registry(bucket_no, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_registry_last_seen ON client_ip_registry(last_seen_at DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_registry_ip ON client_ip_registry(aggregate_ip_key);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_registry_client_ip ON client_ip_registry(client_ip);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_stats_daily_date ON client_ip_stats_daily(stat_date, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_cost ON client_ip_usage_range_windows(start_date, end_date, total_cost_usd DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_tokens ON client_ip_usage_range_windows(start_date, end_date, input_tokens DESC, output_tokens DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_total_tokens ON client_ip_usage_range_windows(start_date, end_date, (input_tokens + output_tokens) DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_requests ON client_ip_usage_range_windows(start_date, end_date, request_count DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_errors ON client_ip_usage_range_windows(start_date, end_date, error_count DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_error_rate ON client_ip_usage_range_windows(start_date, end_date, (CASE WHEN request_count > 0 THEN CAST(error_count AS REAL) / request_count ELSE 0 END) DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_active_days ON client_ip_usage_range_windows(start_date, end_date, active_days DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_last_used ON client_ip_usage_range_windows(start_date, end_date, last_used_at DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_dirty_updated ON client_ip_range_window_dirty_ips(updated_at ASC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_policies_active ON client_ip_policies(status, ip_hash, expires_at);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_policies_ip ON client_ip_policies(ip_hash, status, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_policy_hits_date ON client_ip_policy_hits(stat_date DESC, ip_hash);
+
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_updated ON account_usage_snapshots(updated_at);
 
     CREATE INDEX IF NOT EXISTS idx_system_metrics_trend_windows_lookup ON system_metrics_trend_windows(window_key, bucket_key);
@@ -1004,8 +1130,84 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)
+  ensureColumn(database, 'client_ip_stats_daily', 'duration_ms_max', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'client_ip_usage_range_windows', 'duration_ms_max', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'client_ip_usage_range_windows', 'average_duration_ms', 'REAL')
+  ensureColumn(database, 'client_ip_usage_range_windows', 'average_first_token_ms', 'REAL')
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_account
       ON usage_record_cleanup_deductions(account_id, shard_deleted_at);
   `)
+}
+
+function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {
+  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
+  if (rows.some((row) => row.name === column)) return
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+}
+
+function migrateClientIpPoliciesWithoutPolicyType(database: DatabaseSync): void {
+  const rows = database.prepare('PRAGMA table_info(client_ip_policies)').all() as Array<{ name?: string }>
+  if (!rows.some((row) => row.name === 'policy_type')) return
+  const legacyTable = `client_ip_policies_policy_type_legacy_${Date.now().toString(36)}`
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(`
+      DROP INDEX IF EXISTS idx_client_ip_policies_active;
+      DROP INDEX IF EXISTS idx_client_ip_policies_ip;
+
+      ALTER TABLE client_ip_policies RENAME TO ${legacyTable};
+
+      CREATE TABLE client_ip_policies (
+        id TEXT PRIMARY KEY,
+        ip_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reason TEXT,
+        expires_at TEXT,
+        created_by_system_account_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        disabled_at TEXT,
+        disabled_by_system_account_id TEXT,
+        disabled_reason TEXT
+      );
+
+      INSERT INTO client_ip_policies (
+        id,
+        ip_hash,
+        status,
+        reason,
+        expires_at,
+        created_by_system_account_id,
+        created_at,
+        updated_at,
+        disabled_at,
+        disabled_by_system_account_id,
+        disabled_reason
+      )
+      SELECT
+        id,
+        ip_hash,
+        status,
+        reason,
+        expires_at,
+        created_by_system_account_id,
+        created_at,
+        updated_at,
+        disabled_at,
+        disabled_by_system_account_id,
+        disabled_reason
+      FROM ${legacyTable}
+      WHERE policy_type = 'blacklist';
+
+      DROP TABLE ${legacyTable};
+    `)
+    database.exec('COMMIT')
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+    }
+    throw error
+  }
 }

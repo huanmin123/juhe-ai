@@ -36,6 +36,7 @@ const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
 try {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   testRuntimePrecheckPendingAndSuccessRecovery()
+  await testPersistedAccountErrorClearsRuntimeAvailability()
   await testStalePrecheckAfterManualRestoreIsSkipped()
   await testFailedUsageDoesNotMakePrecheckStale()
   await testFreshPrecheckStillMarksTemporaryUnavailable()
@@ -134,6 +135,40 @@ function testRuntimePrecheckPendingAndSuccessRecovery(): void {
   assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[authorizedRuntimeKey], undefined, '授权账号绑定维度运行态清理后不应残留')
 }
 
+async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<void> {
+  const { account, gatewayAccount } = createGatewayAccount('落库错误清理运行态', {
+    error_handling_rules: [{
+      name: '测试 529 冷却',
+      statusCode: '529',
+      action: 'temporary_unavailable',
+      durationMinutes: 1
+    }]
+  })
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 60_000, '写库前临时避让')
+  assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.status, 'local_suppressed', '写库前应允许运行态短避让')
+
+  gatewaySideEffects.enqueueGatewayAccountErrorHandlingSideEffect({
+    type: 'apply_account_error_handling',
+    account: gatewayAccount,
+    input: {
+      success: false,
+      statusCode: 529,
+      bodyText: '{"error":{"code":"overloaded","message":"模拟 529 失败"}}',
+      trafficSource: 'manual_account_test'
+    }
+  })
+  await gatewaySideEffects.flushGatewayAccountSideEffectsForTest()
+
+  const latest = repositories.findAccountSummary(account.id, adminAccess)
+  assert.equal(latest?.status, 'temporary_unavailable', '错误策略落库后账号应进入临时不可调用')
+  assert.match(latest?.lastErrorMessage ?? '', /模拟 529 失败/, '落库后的最后错误应保留策略命中的真实摘要')
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id],
+    undefined,
+    '错误已经落库后不应再保留同一账号运行态错误，避免前端出现双来源原因'
+  )
+}
+
 async function testStalePrecheckAfterManualRestoreIsSkipped(): Promise<void> {
   const { account, group, gatewayAccount } = createGatewayAccount('预检查旧写回手动恢复')
   await delay(5)
@@ -208,7 +243,7 @@ async function testFreshPrecheckStillMarksTemporaryUnavailable(): Promise<void> 
   assert.match(afterPrecheck?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '当前预检查失败应按传入真实错误摘要写入最近错误')
 }
 
-function createGatewayAccount(name: string): {
+function createGatewayAccount(name: string, credentialExtras: Record<string, unknown> = {}): {
   account: AccountSummary
   group: ReturnType<typeof repositories.createGroup>
   gatewayAccount: OpenAIAccountSecret
@@ -224,7 +259,8 @@ function createGatewayAccount(name: string): {
     groupId: group.id,
     credentials: {
       api_key: `sk-${Math.random().toString(16).slice(2)}`,
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'http://127.0.0.1:9/v1',
+      ...credentialExtras
     },
     status: 'active',
     schedulable: true

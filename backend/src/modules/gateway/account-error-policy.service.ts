@@ -145,6 +145,9 @@ export function decideAccountErrorPolicy(
   body: Buffer,
   settings: GatewaySettings
 ): AccountErrorPolicyDecision | undefined {
+  if (statusCode >= 200 && statusCode <= 299) {
+    return undefined
+  }
   const bodyText = body.toString('utf8')
   const errorPayload = parseErrorPayload(bodyText, headers)
 

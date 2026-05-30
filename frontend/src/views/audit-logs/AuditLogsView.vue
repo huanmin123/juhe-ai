@@ -59,16 +59,16 @@
       </template>
       <template #actions>
         <a-tooltip :title="fullBodyCaptureTooltip">
-          <div class="audit-full-capture-switch">
-            <span>临时全量捕获</span>
-            <a-switch
-              :checked="fullBodyCaptureEnabled"
-              :disabled="!runtime"
-              :loading="fullBodyCaptureUpdating"
-              checked-children="开"
-              un-checked-children="关"
-              @change="toggleFullBodyCapture"
-            />
+          <div class="audit-full-capture-control">
+            <a-tag :color="fullBodyCaptureEnabled ? 'orange' : 'default'">{{ fullBodyCaptureStatusText }}</a-tag>
+            <a-button size="small" :disabled="!runtime" :loading="fullBodyCaptureUpdating" @click="openFullBodyCaptureModal">
+              <template #icon><SettingOutlined /></template>
+              配置
+            </a-button>
+            <a-button v-if="fullBodyCaptureEnabled" size="small" danger :loading="fullBodyCaptureUpdating" @click="disableFullBodyCapture">
+              <template #icon><PoweroffOutlined /></template>
+              关闭
+            </a-button>
           </div>
         </a-tooltip>
         <TableColumnManager
@@ -144,6 +144,49 @@
       @mobile-load-more="loadMoreMobileRecords"
       @mobile-refresh="refreshMobileRecords"
     />
+
+    <a-modal
+      v-model:open="fullBodyCaptureModalOpen"
+      title="临时全量捕获"
+      ok-text="保存配置"
+      cancel-text="取消"
+      :confirm-loading="fullBodyCaptureUpdating"
+      @ok="submitFullBodyCaptureConfig"
+    >
+      <a-form layout="vertical" class="full-capture-form">
+        <a-alert
+          type="warning"
+          show-icon
+          message="临时捕获会放大审计写入，建议只选择一个 AI 账户并设置较短有效期。"
+        />
+        <a-form-item label="捕获范围" required>
+          <a-radio-group v-model:value="fullBodyCaptureForm.scope" button-style="solid">
+            <a-radio-button value="account">指定 AI 账户</a-radio-button>
+            <a-radio-button value="global">全局</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item v-if="fullBodyCaptureForm.scope === 'account'" label="AI 账户" required>
+          <AccountSelect
+            v-model:value="fullBodyCaptureForm.accountId"
+            v-model:selected-account="fullBodyCaptureAccountSelection"
+            :accounts="accountOptions"
+            :filter-option="false"
+            :loading="accountOptionsLoading"
+            placeholder="选择要观察的 AI 账户"
+            @dropdown-visible-change="handleAccountOptionsDropdown"
+            @search="handleAccountOptionsSearch"
+          />
+        </a-form-item>
+        <a-form-item label="普通成功请求">
+          <a-switch v-model:checked="fullBodyCaptureForm.includeSuccess" checked-children="捕获 200" un-checked-children="按采样" />
+          <div class="form-help">开启后命中范围内的普通成功请求也会写入原始审计，不再只按 10% 成功采样。</div>
+        </a-form-item>
+        <a-form-item label="有效期" required>
+          <a-input-number v-model:value="fullBodyCaptureForm.durationMinutes" :min="1" :max="1440" :precision="0" addon-after="分钟" />
+          <div class="form-help">到期后自动关闭；最大 1440 分钟。单请求仍受 64MB 活跃捕获硬上限约束。</div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
 
     <a-drawer v-model:open="detailOpen" width="min(980px, 96vw)" title="审计详情" :body-style="{ padding: '18px' }">
       <a-spin :spinning="detailLoading">
@@ -324,13 +367,13 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRightOutlined, CopyOutlined } from '@ant-design/icons-vue'
+import { ArrowRightOutlined, CopyOutlined, PoweroffOutlined, SettingOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { AccountOptionSummary, AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, AuditTrafficSource } from '@/types/domain'
+import type { AccountOptionSummary, AuditFullBodyCaptureScope, AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, AuditTrafficSource } from '@/types/domain'
 import AccountSelect from '@/components/AccountSelect.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
@@ -377,6 +420,19 @@ const detailLoading = ref(false)
 const payloadLoadingId = ref('')
 const runtime = ref<AuditLogRuntime>()
 const fullBodyCaptureUpdating = ref(false)
+const fullBodyCaptureModalOpen = ref(false)
+const fullBodyCaptureAccountSelection = ref<AccountSelection | undefined>()
+const fullBodyCaptureForm = ref<{
+  scope: AuditFullBodyCaptureScope
+  accountId: string
+  includeSuccess: boolean
+  durationMinutes: number
+}>({
+  scope: 'account',
+  accountId: '',
+  includeSuccess: true,
+  durationMinutes: 15
+})
 const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
@@ -566,11 +622,26 @@ const auditRuntimeAlertDescription = computed(() => {
   return `${reasons.join('；') || '运行态状态未知'}。${workerText}。`
 })
 const fullBodyCaptureEnabled = computed(() => runtime.value?.settings.fullBodyCaptureEnabled ?? false)
+const fullBodyCaptureConfig = computed(() => runtime.value?.settings.fullBodyCapture)
+const fullBodyCaptureStatusText = computed(() => {
+  const config = fullBodyCaptureConfig.value
+  if (!config?.enabled) return '捕获关闭'
+  const scopeText = config.scope === 'account'
+    ? `账户：${accountOptionText(config.accountId) ?? config.accountId ?? '未指定'}`
+    : '全局'
+  const successText = config.includeSuccess ? '含 200' : '按采样'
+  const expiresText = config.expiresAt ? `，至 ${formatDateTime(config.expiresAt)}` : ''
+  return `${scopeText} / ${successText}${expiresText}`
+})
 const fullBodyCaptureTooltip = computed(() => {
   if (!runtime.value) return '正在读取运行期配置'
-  return runtime.value.settings.fullBodyCaptureEnabled
-    ? '已开启：进入原始审计的 body 会跳过摘要化'
-    : '已关闭：成功样本超过 512KB、问题链路超过 2MB 会转为摘要'
+  const config = fullBodyCaptureConfig.value
+  if (!config?.enabled) {
+    return '已关闭：成功样本超过 512KB、问题链路超过 2MB 会转为摘要'
+  }
+  const scopeText = config.scope === 'account' ? '指定账户' : '全局'
+  const successText = config.includeSuccess ? '，普通 200 成功请求也会进入审计' : '，普通成功请求仍按 10% 采样'
+  return `已开启：${scopeText}命中后 body 跳过摘要化${successText}`
 })
 let skipNextRouteTraceRestore = false
 
@@ -624,30 +695,81 @@ function applyFilters(): void {
   void loadData()
 }
 
-async function toggleFullBodyCapture(checked: boolean): Promise<void> {
+function openFullBodyCaptureModal(): void {
+  if (!runtime.value || fullBodyCaptureUpdating.value) return
+  const config = runtime.value.settings.fullBodyCapture
+  const fallbackAccountId = config.accountId || accountIdFilter.value || ''
+  fullBodyCaptureForm.value = {
+    scope: config.scope === 'global' ? 'global' : 'account',
+    accountId: fallbackAccountId,
+    includeSuccess: config.enabled ? config.includeSuccess : true,
+    durationMinutes: remainingDurationMinutes(config.expiresAt) ?? 15
+  }
+  fullBodyCaptureAccountSelection.value = accountSelectionForId(fallbackAccountId) ?? accountSelection.value
+  if (fallbackAccountId) {
+    void ensureAccountOptionById(fallbackAccountId)
+  }
+  fullBodyCaptureModalOpen.value = true
+}
+
+async function submitFullBodyCaptureConfig(): Promise<void> {
+  if (!runtime.value || fullBodyCaptureUpdating.value) return
+  const form = fullBodyCaptureForm.value
+  if (form.scope === 'account' && !form.accountId) {
+    message.warning('请选择要定向捕获的 AI 账户')
+    return
+  }
+  if (!Number.isFinite(form.durationMinutes) || form.durationMinutes < 1) {
+    message.warning('请填写有效期')
+    return
+  }
+  await updateFullBodyCapture({
+    enabled: true,
+    scope: form.scope,
+    accountId: form.scope === 'account' ? form.accountId : undefined,
+    includeSuccess: form.includeSuccess,
+    durationMinutes: Math.trunc(form.durationMinutes)
+  }, '临时全量捕获配置已保存')
+  fullBodyCaptureModalOpen.value = false
+}
+
+async function disableFullBodyCapture(): Promise<void> {
+  await updateFullBodyCapture({ enabled: false }, '临时全量捕获已关闭')
+}
+
+async function updateFullBodyCapture(
+  payload: Parameters<typeof api.auditLogs.updateFullBodyCapture>[0],
+  successMessage: string
+): Promise<void> {
   if (!runtime.value || fullBodyCaptureUpdating.value) return
   const previousRuntime = runtime.value
-  runtime.value = {
-    ...previousRuntime,
-    settings: {
-      ...previousRuntime.settings,
-      fullBodyCaptureEnabled: checked
+  if (payload.enabled === false) {
+    runtime.value = {
+      ...previousRuntime,
+      settings: {
+        ...previousRuntime.settings,
+        fullBodyCaptureEnabled: false,
+        fullBodyCapture: {
+          ...previousRuntime.settings.fullBodyCapture,
+          enabled: false
+        }
+      }
     }
   }
   fullBodyCaptureUpdating.value = true
   try {
-    const result = await api.auditLogs.updateFullBodyCapture(checked)
+    const result = await api.auditLogs.updateFullBodyCapture(payload)
     if (runtime.value) {
       runtime.value = {
         ...runtime.value,
         settings: result.settings
       }
     }
-    message.success(checked ? '临时全量捕获已开启' : '临时全量捕获已关闭')
+    message.success(successMessage)
   } catch (error) {
     runtime.value = previousRuntime
     console.error(error)
-    message.error('切换临时全量捕获失败')
+    message.error('保存临时全量捕获配置失败')
   } finally {
     fullBodyCaptureUpdating.value = false
   }
@@ -722,7 +844,7 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
 async function loadAccountOptions(keyword = accountOptionsKeyword.value, force = false): Promise<void> {
   accountOptionsKeyword.value = keyword
   const requestKeyword = keyword.trim() || undefined
-  const selectedIds = accountIdFilter.value ? [accountIdFilter.value] : []
+  const selectedIds = [accountIdFilter.value, fullBodyCaptureForm.value.accountId].filter(Boolean)
   const requestKey = JSON.stringify([requestKeyword ?? '', selectedIds])
   if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
     return accountOptionsLoadingPromise
@@ -767,13 +889,23 @@ async function loadAccountOptions(keyword = accountOptionsKeyword.value, force =
 }
 
 async function ensureSelectedAccountOption(options: AccountOptionSummary[]): Promise<AccountOptionSummary[]> {
-  const selectedId = accountIdFilter.value
-  if (!selectedId || options.some((account) => account.id === selectedId)) return options
+  const selectedIds = [accountIdFilter.value, fullBodyCaptureForm.value.accountId].filter(Boolean)
+  const missingIds = selectedIds.filter((id) => !options.some((account) => account.id === id))
+  if (!missingIds.length) return options
   try {
-    const selectedOptions = await api.accounts.options({ ids: [selectedId], limit: 50 })
+    const selectedOptions = await api.accounts.options({ ids: missingIds, limit: 50 })
     return mergeOptionsById(selectedOptions, options)
   } catch {
     return options
+  }
+}
+
+async function ensureAccountOptionById(accountId: string): Promise<void> {
+  if (!accountId || accountOptions.value.some((account) => account.id === accountId)) return
+  try {
+    const selectedOptions = await api.accounts.options({ ids: [accountId], limit: 50 })
+    accountOptions.value = mergeOptionsById(selectedOptions, accountOptions.value)
+  } catch {
   }
 }
 
@@ -911,6 +1043,21 @@ function runtimeReadyText(value: boolean | null): string {
   return '状态未知'
 }
 
+function remainingDurationMinutes(expiresAt?: string): number | undefined {
+  if (!expiresAt) return undefined
+  const remainingMs = Date.parse(expiresAt) - Date.now()
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return undefined
+  return Math.min(Math.max(Math.ceil(remainingMs / 60_000), 1), 1440)
+}
+
+function accountOptionText(accountId?: string): string | undefined {
+  if (!accountId) return undefined
+  const account = accountOptions.value.find((item) => item.id === accountId)
+  if (!account) return accountSelectionForId(accountId)?.name
+  const ownerText = account.systemAccountName || account.ownerSystemAccountName
+  return ownerText ? `${account.name}（${ownerText}）` : account.name
+}
+
 function snapshotPageState(): AuditLogsPageState {
   return {
     accountIdFilter: accountIdFilter.value,
@@ -982,18 +1129,46 @@ onDeactivated(() => {
   width: 190px;
 }
 
-.audit-full-capture-switch {
+.audit-full-capture-control {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   min-height: 32px;
-  padding: 0 10px;
+  max-width: min(56vw, 560px);
+  padding: 0 8px;
   color: #475569;
   font-size: 13px;
   white-space: nowrap;
   border: 1px solid #e2e8f0;
-  border-radius: 999px;
+  border-radius: 8px;
   background: #fff;
+}
+
+.audit-full-capture-control :deep(.ant-tag) {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.full-capture-form {
+  display: grid;
+  gap: 14px;
+}
+
+.full-capture-form :deep(.ant-alert) {
+  margin-bottom: 2px;
+}
+
+.full-capture-form :deep(.ant-input-number) {
+  width: 180px;
+}
+
+.form-help {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .advanced-filter-form :deep(.ant-input) {

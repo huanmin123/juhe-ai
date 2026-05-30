@@ -35,6 +35,34 @@ export function activeResourceAuthorization(resourceType: ResourceAuthorizationR
     .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
 }
 
+export function activeResourceAuthorizationById(authorizationId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
+  const now = nowIso()
+  return getDatabase()
+    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1`)
+    .get(authorizationId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
+}
+
+export function activeResourceAuthorizationsByIds(authorizationIds: string[], granteeSystemAccountId: string): Map<string, ResourceAuthorizationRow> {
+  const ids = [...new Set(authorizationIds.filter(Boolean))]
+  if (!ids.length) return new Map()
+  const now = nowIso()
+  const rows: ResourceAuthorizationRow[] = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database
+      .prepare(`
+        SELECT ${resourceAuthorizationSelectColumns()}
+        FROM resource_authorizations
+        WHERE grantee_system_account_id = ?
+          AND status = 'active'
+          AND (expires_at IS NULL OR expires_at > ?)
+          AND id IN (${sqlPlaceholders(chunk.length)})
+      `)
+      .all(granteeSystemAccountId, now, ...chunk) as unknown as ResourceAuthorizationRow[])
+  }
+  return new Map(rows.map((row) => [row.id, row]))
+}
+
 export function activeResourceAuthorizationsByResourceIds(resourceType: ResourceAuthorizationResourceType, resourceIds: string[], granteeSystemAccountId: string): Map<string, ResourceAuthorizationRow> {
   const ids = [...new Set(resourceIds.filter(Boolean))]
   if (!ids.length) return new Map()

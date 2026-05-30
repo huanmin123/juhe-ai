@@ -34,7 +34,7 @@ type UseResponsivePagedListOptions<T, ExtraOptions extends Record<string, unknow
   onError?: (error: unknown) => void
 }
 
-export function useResponsivePagedList<T, ExtraOptions extends Record<string, unknown> = Record<string, never>>(
+export function useResponsivePagedList<T, ExtraOptions extends Record<string, unknown> = Record<never, never>>(
   options: UseResponsivePagedListOptions<T, ExtraOptions>
 ) {
   const loading = ref(false)
@@ -120,6 +120,34 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     options.onLoaded?.(result, loadOptions)
   }
 
+  function removeItems(predicate: (item: T) => boolean): number {
+    const previousItems = items.value
+    const nextItems = previousItems.filter((item) => !predicate(item))
+    const removedCount = previousItems.length - nextItems.length
+    if (removedCount <= 0) {
+      return 0
+    }
+    items.value = nextItems
+    pagination.total = Math.max(0, pagination.total - removedCount)
+    currentPageCount.value = Math.max(0, currentPageCount.value - removedCount)
+    return removedCount
+  }
+
+  function updateItems(predicate: (item: T) => boolean, updater: (item: T) => T): number {
+    let updatedCount = 0
+    const nextItems = items.value.map((item) => {
+      if (!predicate(item)) {
+        return item
+      }
+      updatedCount += 1
+      return updater(item)
+    })
+    if (updatedCount > 0) {
+      items.value = nextItems
+    }
+    return updatedCount
+  }
+
   function handleTableChange(paginationInfo: unknown): void {
     if (!paginationInfo || typeof paginationInfo !== 'object') return
     const next = paginationInfo as { current?: unknown; pageSize?: unknown }
@@ -165,7 +193,9 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     handleTableChange,
     loadData,
     loadMoreMobile,
+    removeItems,
     refreshMobile,
-    resetPagination
+    resetPagination,
+    updateItems
   }
 }

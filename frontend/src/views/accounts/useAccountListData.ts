@@ -74,6 +74,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     handleTableChange: handleAccountTableChange,
     loadData,
     loadMoreMobile: loadMoreMobileAccounts,
+    removeItems: removeAccountItems,
     refreshMobile: refreshMobileAccounts,
     resetPagination: resetAccountListPagination
   } = useResponsivePagedList<AccountSummary, { forceOptions?: boolean }>({
@@ -162,6 +163,10 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     filters.group = undefined
     filters.status = []
     resetAccountPagination()
+  }
+
+  function removeLoadedAccount(accountId: string): boolean {
+    return removeAccountItems((account) => account.id === accountId) > 0
   }
 
   function snapshotPageState(): AccountsPageState {
@@ -256,6 +261,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     handleAccountSortChange,
     handleSystemAccountFilterChange,
     focusCreatedAccount,
+    removeLoadedAccount,
     resetAccountPagination,
     resetFilters
   }

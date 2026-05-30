@@ -74,6 +74,88 @@ try {
     name: '使用记录查询防护其他 Key',
     groupId: otherGroup.id
   }, access)
+  const owner = repositories.createSystemAccount({
+    username: 'usage_record_source_owner',
+    displayName: '使用记录来源归属人',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const grantee = repositories.createSystemAccount({
+    username: 'usage_record_source_grantee',
+    displayName: '使用记录被授权人',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const adminGranteeAccess = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: grantee.id }
+  const granteeGroup = repositories.createGroup({
+    name: '使用记录被授权人分组',
+    providerCode: 'openai',
+    enabled: true
+  }, granteeAccess)
+  const renamedAuthorizedSourceAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权使用记录旧名',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-usage-record-authorized-source',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: repositories.createGroup({
+      name: '使用记录来源账户分组',
+      providerCode: 'openai',
+      enabled: true
+    }, ownerAccess).id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: renamedAuthorizedSourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeGroup.id
+  }, ownerAccess)
+  const businessSetupDatabase = databaseModule.getDatabase()
+  const runtimeAccountAuthorization = businessSetupDatabase
+    .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
+    .get(renamedAuthorizedSourceAccount.id, grantee.id) as unknown as { id?: string } | undefined
+  assert(runtimeAccountAuthorization?.id, '使用记录授权实例回归需要运行时账号授权 ID')
+  const authorizedInstance = businessSetupDatabase
+    .prepare('SELECT id, name FROM accounts WHERE authorization_instance_authorization_id = ? LIMIT 1')
+    .get(runtimeAccountAuthorization.id) as unknown as { id?: string; name?: string } | undefined
+  assert(authorizedInstance?.id, '使用记录授权实例回归需要被授权实例账户')
+  businessSetupDatabase
+    .prepare('UPDATE accounts SET name = ?, updated_at = ? WHERE id = ?')
+    .run('授权使用记录账户A', '2026-01-02T00:00:04.000Z', renamedAuthorizedSourceAccount.id)
+  const ownerGroup = repositories.createGroup({
+    name: '使用记录来源分组授权分组',
+    providerCode: 'openai',
+    enabled: true
+  }, ownerAccess)
+  const groupAuthorizedSourceAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '分组授权使用记录账户A',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-usage-record-group-authorized-source',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: ownerGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: ownerGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id
+  }, ownerAccess)
+  const runtimeGroupAuthorization = businessSetupDatabase
+    .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
+    .get(ownerGroup.id, grantee.id) as unknown as { id?: string } | undefined
+  assert(runtimeGroupAuthorization?.id, '使用记录分组授权回归需要运行时分组授权 ID')
   repositories.createUsageRecordsBatch([
     {
       id: 'usage_list_query_guard_exact',
@@ -134,6 +216,60 @@ try {
       statusCode: 200,
       success: true,
       createdAt: '2026-01-02T00:00:03.000Z'
+    },
+    {
+      id: 'usage_list_query_guard_authorized_source_owner_record',
+      traceId: 'trace-usage-list-query-guard-authorized-source-owner-record',
+      groupId: ownerGroup.id,
+      accountId: renamedAuthorizedSourceAccount.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.5-owner-source',
+      clientIp: '127.0.2.4',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:04.000Z'
+    },
+    {
+      id: 'usage_list_query_guard_authorized_instance_source_name',
+      traceId: 'trace-usage-list-query-guard-authorized-instance-source-name',
+      systemAccountId: grantee.id,
+      groupId: granteeGroup.id,
+      accountId: authorizedInstance.id,
+      accountOwnerSystemAccountId: owner.id,
+      groupOwnerSystemAccountId: grantee.id,
+      accountAccessType: 'account_authorized',
+      groupAccessType: 'owner',
+      accountAuthorizationId: runtimeAccountAuthorization.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.5-authorized-source',
+      clientIp: '127.0.2.5',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:05.000Z'
+    },
+    {
+      id: 'usage_list_query_guard_group_authorized_source_name',
+      traceId: 'trace-usage-list-query-guard-group-authorized-source-name',
+      systemAccountId: grantee.id,
+      groupId: ownerGroup.id,
+      accountId: groupAuthorizedSourceAccount.id,
+      accountOwnerSystemAccountId: owner.id,
+      groupOwnerSystemAccountId: owner.id,
+      accountAccessType: 'group_authorized',
+      groupAccessType: 'authorized',
+      groupAuthorizationId: runtimeGroupAuthorization.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.5-group-authorized-source',
+      clientIp: '127.0.2.6',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:06.000Z'
     }
   ])
 
@@ -195,6 +331,17 @@ try {
 
     const accountPrefix = repositories.listUsageRecords(access, { accountKeyword: uniquePrefix(account.id, middleNameAccount.id), page: 1, pageSize: 10 })
     assert.equal(accountPrefix.items.length, 0, '账号名称关键字不应支持账号 ID 前缀定位使用记录')
+
+    const authorizedInstanceBySourceName = repositories.listUsageRecords(granteeAccess, { accountKeyword: '授权使用记录账户A', page: 1, pageSize: 10 })
+    assert.deepEqual(authorizedInstanceBySourceName.items.map((item) => item.id), ['usage_list_query_guard_authorized_instance_source_name'], '被授权用户应能通过来源账户当前名称查询自己的授权实例使用记录，且不应混入授权方原账户记录')
+    assert.equal(authorizedInstanceBySourceName.items[0]?.accountId, authorizedInstance.id, '来源账户名筛选应返回被授权实例自己的使用记录账户 ID')
+
+    const adminAuthorizedInstanceBySourceName = repositories.listUsageRecords(adminGranteeAccess, { accountKeyword: '授权使用记录账户A', page: 1, pageSize: 10 })
+    assert.deepEqual(adminAuthorizedInstanceBySourceName.items.map((item) => item.id), ['usage_list_query_guard_authorized_instance_source_name'], '管理员按被授权人筛选时也应能通过来源账户当前名称查询授权实例使用记录')
+    assert(adminAuthorizedInstanceBySourceName.items.every((item) => item.systemAccountId === grantee.id), '管理员按被授权人来源账户名筛选不应返回授权方原账户使用记录')
+
+    const groupAuthorizedBySourceName = repositories.listUsageRecords(granteeAccess, { accountKeyword: '分组授权使用记录账户A', page: 1, pageSize: 10 })
+    assert.deepEqual(groupAuthorizedBySourceName.items.map((item) => item.id), ['usage_list_query_guard_group_authorized_source_name'], '被授权用户应能通过来源账户名称查询分组授权产生的自己的使用记录')
 
     const groupFiltered = repositories.listUsageRecords(access, { groupId: group.id, page: 1, pageSize: 10 })
     assert.deepEqual(groupFiltered.items.map((item) => item.id), ['usage_list_query_guard_middle_name', 'usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '分组筛选应只返回目标分组的使用记录')

@@ -30,7 +30,7 @@ const normalizeStatusCodeItem = (item: unknown): number | null => {
   const text = String(item).trim()
   if (!/^\d+$/.test(text)) return null
   const code = Number(text)
-  return Number.isInteger(code) && code >= 100 && code <= 599 ? code : null
+  return Number.isInteger(code) && code >= 100 && code <= 599 && !isSuccessStatusCode(code) ? code : null
 }
 
 const normalizeStatusCodes = (value: unknown): number[] => {
@@ -51,6 +51,19 @@ const hasInvalidStatusCodeItems = (value: unknown): boolean => {
     .filter(Boolean)
     .some((item) => normalizeStatusCodeItem(item) === null)
 }
+
+const hasSuccessStatusCodeItems = (value: unknown): boolean => {
+  return getStatusCodeItems(value)
+    .map((item) => String(item).trim())
+    .filter(Boolean)
+    .some((item) => /^\d+$/.test(item) && isSuccessStatusCode(Number(item)))
+}
+
+const hasSuccessErrorCodeItems = (value: unknown): boolean => {
+  return splitList(value).some((item) => /^\d+$/.test(item) && isSuccessStatusCode(Number(item)))
+}
+
+const isSuccessStatusCode = (code: number): boolean => code >= 200 && code <= 299
 
 const formatList = (value: unknown): string => splitList(value).join(', ')
 const formatStatusCodes = (value: unknown): string => normalizeStatusCodes(value).join(', ')
@@ -122,7 +135,9 @@ export const validateAccountErrorPolicyRules = (rules: AccountErrorPolicyRuleFor
     if (rule.enabled === false) continue
     const ruleIndex = index + 1
     const statusCodes = normalizeStatusCodes(rule.status_codes)
+    if (hasSuccessStatusCodeItems(rule.status_codes)) return { valid: false, message: `第 ${ruleIndex} 条规则的状态码不能填写 2xx 成功状态码，例如 200`, index: ruleIndex }
     if (hasInvalidStatusCodeItems(rule.status_codes)) return { valid: false, message: `第 ${ruleIndex} 条规则的状态码不合法`, index: ruleIndex }
+    if (hasSuccessErrorCodeItems(rule.error_codes)) return { valid: false, message: `第 ${ruleIndex} 条规则的错误码不能填写 2xx 成功码，例如 200`, index: ruleIndex }
     const hasMatcher = statusCodes.length > 0 || splitList(rule.error_codes).length > 0 || splitList(rule.error_types).length > 0 || splitList(rule.keywords).length > 0
     if (!hasMatcher) return { valid: false, message: `第 ${ruleIndex} 条规则至少需要一个匹配条件`, index: ruleIndex }
     if (rule.action === 'temp_unschedulable' && normalizeOptionalPositiveInt(rule.duration_minutes) === null) {

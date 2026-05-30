@@ -22,7 +22,7 @@ export const auditLogColumns = [
   { title: '系统账户', key: 'systemAccount', width: 150 },
   { title: '耗时', key: 'duration', width: 90 },
   { title: '时间', key: 'createdAt', width: 180 },
-  { title: '操作', key: 'actions', actionCount: 1, fixed: 'right' }
+  { title: '操作', key: 'actions', fixed: 'right' }
 ]
 
 export const auditAttemptColumns = [
@@ -45,5 +45,5 @@ export const auditPayloadColumns = [
   { title: '时间', key: 'createdAt', width: 132 },
   { title: 'Headers SHA256', key: 'headersSha256', width: 92 },
   { title: 'Body SHA256', key: 'bodySha256', width: 92 },
-  { title: '操作', key: 'actions', actionCount: 1 }
+  { title: '操作', key: 'actions' }
 ]

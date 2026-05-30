@@ -213,7 +213,7 @@ const columns = [
   { title: '能力', key: 'capabilities', width: 360 },
   { title: '默认 Base URL', dataIndex: 'baseUrl', key: 'baseUrl', width: 240 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', fixed: 'right', width: 90 }
+  { title: '操作', key: 'actions', fixed: 'right' }
 ]
 
 const providerActions: RowActionItem[] = [

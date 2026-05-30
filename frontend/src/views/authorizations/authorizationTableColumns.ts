@@ -13,7 +13,7 @@ export const authorizationColumns = [
   { title: '状态', key: 'status', width: 90 },
   { title: '授权时间', key: 'createdAt', width: 170 },
   { title: '说明', key: 'remark', width: 200 },
-  { title: '操作', key: 'actions', width: 120, fixed: 'right' }
+  { title: '操作', key: 'actions', fixed: 'right' }
 ]
 
 export const authorizationResourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }> = [

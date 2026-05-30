@@ -81,6 +81,7 @@ try {
 
   const accountCount = 925
   const accountAuthorizationIds: string[] = []
+  const accountInstanceIds: string[] = []
   for (let index = 0; index < accountCount; index += 1) {
     const account = repositories.createAccount({
       providerCode: 'openai',
@@ -106,18 +107,21 @@ try {
       .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
       .get(account.id, grantee.id) as unknown as { id?: string } | undefined
     assert(runtimeAuthorization?.id, `运行时授权不存在：${account.name}`)
+    const authorizedInstance = authorizedInstanceForSource(account.id, granteeAccess)
+    assert.equal(authorizedInstance.accountAuthorizationId, runtimeAuthorization.id, `授权实例应绑定运行时授权：${account.name}`)
     accountAuthorizationIds.push(runtimeAuthorization.id)
-    const bound = repositories.setAccountGroup(account.id, granteeGroup.id, granteeAccess)
-    assert(bound, `授权账户绑定分组失败：${account.name}`)
+    accountInstanceIds.push(authorizedInstance.id)
+    const bound = repositories.setAccountGroup(authorizedInstance.id, granteeGroup.id, granteeAccess)
+    assert(bound, `授权实例绑定分组失败：${account.name}`)
   }
 
   const exceededAuthorizationId = accountAuthorizationIds[accountAuthorizationIds.length - 1]
   const recordDatabase = databaseModule.getStatsDatabase()
   const now = new Date()
   const statDate = now.toISOString().slice(0, 10)
-  insertUsageTotal(recordDatabase, owner.id, 'account_authorization', exceededAuthorizationId, 5)
-  insertUsageDaily(recordDatabase, owner.id, 'account_authorization', exceededAuthorizationId, statDate, 5)
-  insertUsageHourlyWindow(recordDatabase, owner.id, 'account_authorization', exceededAuthorizationId, 3, 5)
+  insertUsageTotal(recordDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, 5)
+  insertUsageDaily(recordDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, statDate, 5)
+  insertUsageHourlyWindow(recordDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, 3, 5)
 
   quotaService.clearAuthorizationQuotaCache()
   const businessDatabase = databaseModule.getDatabase()
@@ -145,7 +149,7 @@ try {
   try {
     const decisions = quotaService.checkGatewayAuthorizationQuotaBatchByIds({
       accounts: accountAuthorizationIds.map((authorizationId, index) => ({
-        accountId: `account-${index}`,
+        accountId: accountInstanceIds[index],
         accountAuthorizationId: authorizationId
       })),
       now
@@ -238,9 +242,11 @@ try {
       .get(teamAccount.id, teamGrantee.id) as unknown as { id?: string; effective_source_team_id?: string | null } | undefined
     assert(teamMemberAuthorization?.id, '团队来源账号授权运行时记录不存在')
     assert.equal(teamMemberAuthorization.effective_source_team_id, team.id, '团队来源账号授权应记录来源团队')
-    insertUsageTotal(recordDatabase, owner.id, 'account_authorization_team', `${teamAccount.id}:${team.id}`, 150)
-    insertUsageDaily(recordDatabase, owner.id, 'account_authorization_team', `${teamAccount.id}:${team.id}`, statDate, 150)
-    insertUsageHourlyWindow(recordDatabase, owner.id, 'account_authorization_team', `${teamAccount.id}:${team.id}`, 3, 150)
+    const teamAuthorizedInstance = authorizedInstanceForSource(teamAccount.id, { systemAccountId: teamGrantee.id, role: 'user' as const })
+    assert.equal(teamAuthorizedInstance.accountAuthorizationId, teamMemberAuthorization.id, '团队来源授权实例应绑定成员运行时授权')
+    insertUsageTotal(recordDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, 150)
+    insertUsageDaily(recordDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, statDate, 150)
+    insertUsageHourlyWindow(recordDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, 3, 150)
 
     quotaService.clearAuthorizationQuotaCache()
     authorizationSelects = 0
@@ -249,10 +255,10 @@ try {
     const mixedDecisions = quotaService.checkGatewayAuthorizationQuotaBatchByIds({
       groupAuthorizationId: groupAuthorization.id,
       accounts: [
-        { accountId: 'team-source', accountAuthorizationId: teamMemberAuthorization.id },
-        { accountId: 'manual-ok', accountAuthorizationId: accountAuthorizationIds[0] },
-        { accountId: 'manual-over-limit', accountAuthorizationId: exceededAuthorizationId },
-        { accountId: 'team-source-duplicate', accountAuthorizationId: teamMemberAuthorization.id },
+        { accountId: teamAuthorizedInstance.id, accountAuthorizationId: teamMemberAuthorization.id },
+        { accountId: accountInstanceIds[0], accountAuthorizationId: accountAuthorizationIds[0] },
+        { accountId: accountInstanceIds[accountInstanceIds.length - 1], accountAuthorizationId: exceededAuthorizationId },
+        { accountId: `${teamAuthorizedInstance.id}:duplicate`, accountAuthorizationId: teamMemberAuthorization.id },
         { accountId: 'owner-account-without-authorization' }
       ],
       now
@@ -314,4 +320,21 @@ function quotaAccount(accountId: string, accountAuthorizationId?: string): OpenA
     id: accountId,
     accountAuthorizationId
   } as OpenAIAccountSecret
+}
+
+function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {
+  const row = databaseModule.getDatabase()
+    .prepare(`
+      SELECT id, authorization_instance_authorization_id
+      FROM accounts
+      WHERE authorization_instance_source_account_id = ?
+        AND system_account_id = ?
+      LIMIT 1
+    `)
+    .get(sourceAccountId, access.systemAccountId) as { id?: string; authorization_instance_authorization_id?: string | null } | undefined
+  assert(row?.id, `被授权用户视角应能读取来源账户 ${sourceAccountId} 的授权实例`)
+  return {
+    id: row.id,
+    accountAuthorizationId: row.authorization_instance_authorization_id ?? undefined
+  }
 }

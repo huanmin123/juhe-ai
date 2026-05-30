@@ -10,6 +10,7 @@ import { forceSelfAccessScope, requireAdmin, requireAuth } from '../auth/auth.mi
 import { authRouter } from '../auth/auth.routes.js'
 import { errorPoliciesRouter } from '../error-policies/error-policies.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
+import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
 import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
 import { openAIOAuthRouter } from '../openai-oauth/openai-oauth.routes.js'
@@ -79,6 +80,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/audit-logs`, requireAdmin, auditLogsRouter)
   app.use(`${systemApiPrefix}/runtime-logs`, requireAdmin, runtimeLogsRouter)
   app.use(`${systemApiPrefix}/stats`, requireAdmin, statsRouter)
+  app.use(`${systemApiPrefix}/ip-stats`, requireAdmin, ipStatsRouter)
   app.use(`${systemApiPrefix}/table-monitor`, requireAdmin, tableMonitorRouter)
   app.use(`${systemApiPrefix}/settings`, settingsRouter)
   app.use(`${systemApiPrefix}/system-accounts`, systemAccountsRouter)

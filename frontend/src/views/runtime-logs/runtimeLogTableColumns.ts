@@ -19,5 +19,5 @@ export const runtimeLogColumns = [
   { title: 'traceId', key: 'traceId', width: 250 },
   { title: '事件', key: 'event', width: 230 },
   { title: '消息', key: 'message', width: 620, responsiveFlex: true },
-  { title: '操作', key: 'actions', actionCount: 1, fixed: 'right' }
+  { title: '操作', key: 'actions', fixed: 'right' }
 ]

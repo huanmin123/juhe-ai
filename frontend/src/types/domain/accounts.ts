@@ -111,13 +111,21 @@ export interface AccountSummary {
   cooldownRetestLastStatusCode?: number
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
+  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
   sourceStatus?: AccountStatus
+  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
   sourceSchedulable?: boolean
+  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
   sourceCooldownUntil?: string
+  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
   sourceLastErrorCode?: string
+  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
   sourceLastErrorMessage?: string
+  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，分组内优先级使用 priority / superPriorityEnabled / fallbackEnabled。 */
   localStatus?: AccountStatus
+  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，分组内优先级使用 priority / superPriorityEnabled / fallbackEnabled。 */
   localCooldownUntil?: string
+  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，分组内优先级使用 priority / superPriorityEnabled / fallbackEnabled。 */
   localLastErrorMessage?: string
   lastUsedAt?: string
   todayUsage: AccountUsageSummary
@@ -125,6 +133,8 @@ export interface AccountSummary {
   oauthUsage?: AccountOAuthUsageSnapshot
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
+  authorizationInstanceSourceAccountId?: string
+  authorizationInstanceOwnerSystemAccountId?: string
   boundGroupId?: string
   boundGroupName?: string
   groupBindStatus?: AccountGroupBindStatus
@@ -165,9 +175,6 @@ export type AccountOptionSummary = Pick<
   | 'name'
   | 'type'
   | 'status'
-  | 'sourceStatus'
-  | 'sourceSchedulable'
-  | 'sourceCooldownUntil'
   | 'accessType'
   | 'accountAuthorizationId'
   | 'authorizationStatus'

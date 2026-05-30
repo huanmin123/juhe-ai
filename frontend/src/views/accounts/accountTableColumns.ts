@@ -23,7 +23,7 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
     sortableColumn({ title: '最近使用时间', key: 'lastUsedAt', width: 180 }, 'lastUsedAt', sortOrder),
     sortableColumn({ title: '账户到期时间', key: 'accountExpiresAt', width: 180 }, 'accountExpiresAt', sortOrder),
     { title: '说明', dataIndex: 'notes', key: 'notes', width: 200 },
-    { title: '操作', key: 'actions', actionCount: 3, fixed: 'right' }
+    { title: '操作', key: 'actions', fixed: 'right' }
   )
   return baseColumns
 }

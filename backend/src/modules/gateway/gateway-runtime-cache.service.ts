@@ -13,6 +13,7 @@ import { clearSettingsRepositoryCache } from '../../storage/settings.repository.
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
+import { primeClientIpPolicyCacheLocal } from './client-ip-policy-cache.service.js'
 
 const gatewayRuntimeTtlMs = 60_000
 const fallbackGatewayRuntimeTtlMs = 10_000
@@ -132,6 +133,7 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
     type: 'read_gateway_runtime',
     key: apiKey
   })
+  primeClientIpPoliciesFromRuntime(runtime)
   if (!runtime.apiKey) {
     gatewayRuntimeCache.set(cacheKey, cloneStaticGatewayRuntime(runtime), { ttlMs: invalidGatewayRuntimeTtlMs })
     gatewaySettingsCache.set('current', runtime.settings)
@@ -211,6 +213,13 @@ function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceG
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
     accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret)
   }
+}
+
+function primeClientIpPoliciesFromRuntime(runtime: DbServiceGatewayRuntime): void {
+  if (!runtime.clientIpPolicies) {
+    return
+  }
+  primeClientIpPolicyCacheLocal(runtime.clientIpPolicies)
 }
 
 function cloneGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {

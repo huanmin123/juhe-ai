@@ -408,7 +408,7 @@ const columns = [
   { title: '被授权团队', key: 'team', width: 240 },
   { title: '范围消耗', key: 'usage', width: 220 },
   { title: '最后使用', key: 'lastUsedAt', width: 180 },
-  { title: '操作', key: 'actions', actionCount: 1, fixed: 'right' }
+  { title: '操作', key: 'actions', fixed: 'right' }
 ]
 
 const initialLoading = computed(() => loading.value && !overview.value)

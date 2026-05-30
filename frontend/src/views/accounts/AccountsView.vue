@@ -281,6 +281,7 @@ const {
   handleAccountTableChangeAndLoad,
   handleAccountSortChange,
   handleSystemAccountFilterChange: handleAccountListSystemAccountFilterChange,
+  removeLoadedAccount,
   resetFilters: resetAccountListFilters
 } = useAccountListData({
   isManagementView,
@@ -318,7 +319,10 @@ async function loadData(options?: { append?: boolean; quiet?: boolean; forceOpti
   await loadAccountListData(options)
 }
 
-const rawColumns = computed(() => buildAccountTableColumns(isManagementView.value, (field) => resolveAccountColumnSortOrder(accountSorts.value, field)))
+const rawColumns = computed(() => buildAccountTableColumns(
+  isManagementView.value,
+  (field) => resolveAccountColumnSortOrder(accountSorts.value, field)
+))
 const columnStorageKey = computed(() => (isManagementView.value ? 'accounts:management' : 'accounts:self'))
 const {
   managedColumns,
@@ -671,8 +675,10 @@ async function removeAccount(id: string) {
       } else {
         await api.myAuthorizations.returnAuthorization(account.accountAuthorizationId)
       }
+      removeLoadedAccount(id)
+      selectedAccountIds.value = selectedAccountIds.value.filter((selectedId) => selectedId !== id)
       message.success('授权账户已归还')
-      await loadData()
+      void loadData({ quiet: true })
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, '归还授权账户失败'))
@@ -685,8 +691,10 @@ async function removeAccount(id: string) {
     } else {
       await api.myAccounts.delete(id)
     }
-    message.success('账户已删除')
-    await loadData()
+    removeLoadedAccount(id)
+    selectedAccountIds.value = selectedAccountIds.value.filter((selectedId) => selectedId !== id)
+    message.success('账户已删除，关联记录将由后台继续清理')
+    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除账户失败'))

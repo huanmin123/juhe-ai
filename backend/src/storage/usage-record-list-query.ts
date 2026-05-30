@@ -1,4 +1,4 @@
-import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase } from './database.js'
 import type { UsageRecordListOptions, UsageRecordSortField } from './usage-records.repository.js'
 
@@ -103,18 +103,79 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
 }
 
 function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
+  const database = getDatabase()
   const pattern = `${escapeLikePrefix(keyword)}%`
-  const scope = buildSystemAccountScopeClause(access, 'accounts.system_account_id')
-  const rows = getDatabase()
+  const ownerSystemAccountId = scopedSystemAccountId(access)
+  const ids: string[] = []
+  appendAccountIds(ids, database
     .prepare(`
       SELECT accounts.id
       FROM accounts
-      WHERE (accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\')${scope.clause}
+      WHERE (accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\')${accountOwnerFilterClause(ownerSystemAccountId)}
       ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
-      LIMIT 200
+      LIMIT ?
     `)
-    .all(keyword, pattern, ...scope.params) as unknown as Array<{ id?: string }>
-  return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
+    .all(keyword, pattern, ...accountOwnerFilterParams(ownerSystemAccountId), accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
+  appendAccountIds(ids, database
+    .prepare(`
+      SELECT instance_accounts.id
+      FROM accounts source_accounts
+      INNER JOIN accounts instance_accounts
+        ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
+      WHERE (source_accounts.name COLLATE NOCASE = ? OR source_accounts.name LIKE ? ESCAPE '\\')${accountOwnerFilterClause(ownerSystemAccountId, 'instance_accounts')}
+      ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
+      LIMIT ?
+    `)
+    .all(keyword, pattern, ...accountOwnerFilterParams(ownerSystemAccountId), accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
+  if (ownerSystemAccountId) {
+    appendAccountIds(ids, database
+      .prepare(`
+        SELECT accounts.id
+        FROM accounts
+        INNER JOIN resource_authorizations ra
+          ON ra.resource_type = 'account'
+          AND ra.resource_id = accounts.id
+          AND ra.grantee_system_account_id = ?
+        WHERE accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\'
+        ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+        LIMIT ?
+      `)
+      .all(ownerSystemAccountId, keyword, pattern, accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
+    appendAccountIds(ids, database
+      .prepare(`
+        SELECT accounts.id
+        FROM accounts
+        INNER JOIN group_accounts ga
+          ON ga.account_id = accounts.id
+          AND ga.enabled = 1
+        INNER JOIN resource_authorizations ra
+          ON ra.resource_type = 'group'
+          AND ra.resource_id = ga.group_id
+          AND ra.grantee_system_account_id = ?
+        WHERE accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\'
+        ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+        LIMIT ?
+      `)
+      .all(ownerSystemAccountId, keyword, pattern, accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
+  }
+  return ids.slice(0, accountKeywordMatchLimit)
+}
+
+function appendAccountIds(target: string[], rows: Array<{ id?: string }>): void {
+  const seen = new Set(target)
+  for (const row of rows) {
+    if (!row.id || seen.has(row.id) || target.length >= accountKeywordMatchLimit) continue
+    target.push(row.id)
+    seen.add(row.id)
+  }
+}
+
+function accountOwnerFilterClause(systemAccountId?: string, tableName = 'accounts'): string {
+  return systemAccountId ? ` AND ${tableName}.system_account_id = ?` : ''
+}
+
+function accountOwnerFilterParams(systemAccountId?: string): string[] {
+  return systemAccountId ? [systemAccountId] : []
 }
 
 function escapeLikePrefix(value: string): string {
@@ -131,3 +192,5 @@ function pushPrefixFilter(clauses: string[], params: UsageRecordFilterValue[], c
   clauses.push(`${column} >= ? AND ${column} < ?`)
   params.push(text, `${text}\uffff`)
 }
+
+const accountKeywordMatchLimit = 200
