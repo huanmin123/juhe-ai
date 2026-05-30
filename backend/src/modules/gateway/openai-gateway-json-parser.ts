@@ -468,7 +468,7 @@ function restartJsonWorker(slot: GatewayJsonWorkerSlot): void {
 }
 
 function gatewayJsonWorkerPoolSize(): number {
-  return Math.max(1, availableParallelism())
+  return Math.max(1, Math.min(4, availableParallelism()))
 }
 
 const gatewayJsonWorkerSlowQueueWaitMs = 500
