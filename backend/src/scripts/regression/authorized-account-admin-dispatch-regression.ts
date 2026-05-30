@@ -452,6 +452,7 @@ function seedData(mockBaseUrl: string): SeedState {
     resourceId: ownerAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeDefaultGroup.id,
     remark: '管理员代操作调度回归'
   }, ownerAccess)
   const defaultBoundAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
@@ -462,6 +463,7 @@ function seedData(mockBaseUrl: string): SeedState {
     resourceId: ownerErrorAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeDefaultGroup.id,
     remark: '管理员代操作调度错误脱敏回归'
   }, ownerAccess)
   const ownerErrorAuthorizedAccount = authorizedInstanceForSource(ownerErrorAccount.id, granteeAccess)
@@ -470,6 +472,7 @@ function seedData(mockBaseUrl: string): SeedState {
     resourceId: ownerPausedAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeDefaultGroup.id,
     remark: '管理员代操作归属人停用隔离回归'
   }, ownerAccess)
   const ownerPausedAuthorizedAccount = authorizedInstanceForSource(ownerPausedAccount.id, granteeAccess)

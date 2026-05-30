@@ -39,8 +39,8 @@
                   <div class="rule-summary-main">
                     <a-switch v-model:checked="rule.enabled" size="small" checked-children="启" un-checked-children="停" @click.stop />
                     <a-tag color="blue">P{{ rule.priority ?? '-' }}</a-tag>
-                    <a-tag :color="rule.executionMode === 'dry_run' ? 'gold' : 'purple'">{{ rule.executionMode === 'dry_run' ? '试运行' : '拦截' }}</a-tag>
-                    <a-tag :color="rule.retryEnabled ? 'green' : 'default'">{{ rule.retryEnabled ? '重试' : '不重试' }}</a-tag>
+                    <a-tag color="cyan">{{ actionLabel(rule) }}</a-tag>
+                    <a-tag v-if="positiveInt(rule.avoidanceTtlSeconds)">{{ positiveInt(rule.avoidanceTtlSeconds) }}s</a-tag>
                     <strong>{{ rule.name || '未命名规则' }}</strong>
                   </div>
                   <span class="rule-condition-summary">{{ conditionSummary(rule) }}</span>
@@ -62,9 +62,6 @@
                   </a-form-item>
                   <a-form-item label="优先级">
                     <a-input-number v-model:value="rule.priority" :min="1" :max="9999" style="width: 100%" />
-                  </a-form-item>
-                  <a-form-item label="执行模式">
-                    <a-select v-model:value="rule.executionMode" :options="streamInterceptExecutionModeOptions" />
                   </a-form-item>
                 </div>
 
@@ -93,18 +90,27 @@
                 </div>
 
                 <div class="form-grid compact">
-                  <a-form-item label="数据处理">
-                    <a-select v-model:value="rule.dataHandling" :options="dataHandlingOptions(rule)" @change="normalizeRule(rule)" />
+                  <a-form-item class="wide-form-item" label="处置模板">
+                    <div class="action-option-grid">
+                      <button
+                        v-for="template in streamInterceptActionTemplates"
+                        :key="template.action"
+                        class="action-option"
+                        :class="{ active: rule.action === template.action }"
+                        type="button"
+                        @click="selectRuleAction(rule, template.action)"
+                      >
+                        <span class="action-option-title">
+                          <span class="action-option-dot" />
+                          <strong>{{ template.label }}</strong>
+                          <a-tag :color="actionTagColor(template)">{{ actionTagText(template) }}</a-tag>
+                        </span>
+                        <span class="action-option-description">{{ template.description }}</span>
+                      </button>
+                    </div>
                   </a-form-item>
-                  <a-form-item label="是否重试">
-                    <a-switch v-model:checked="rule.retryEnabled" checked-children="是" un-checked-children="否" @change="normalizeRule(rule)" />
-                  </a-form-item>
-                  <a-form-item label="是否切号">
-                    <a-select v-model:value="rule.accountSwitch" :options="accountSwitchOptions(rule)" />
-                  </a-form-item>
-                  <a-form-item label="账户状态">
-                    <a-select v-model:value="rule.accountState" :options="streamInterceptAccountStateOptions" />
-                  </a-form-item>
+                </div>
+                <div v-if="actionUsesTtl(rule)" class="form-grid compact">
                   <a-form-item label="避让秒数">
                     <a-input-number v-model:value="rule.avoidanceTtlSeconds" :min="1" :max="86400" style="width: 100%" />
                   </a-form-item>
@@ -175,11 +181,7 @@ import { computed, ref } from 'vue'
 
 import {
   createBlankAccountStreamInterceptRule,
-  nextStreamInterceptRulePriority,
-  streamInterceptAccountStateOptions,
-  streamInterceptAccountSwitchOptions,
-  streamInterceptDataHandlingOptions,
-  streamInterceptExecutionModeOptions
+  nextStreamInterceptRulePriority
 } from './accountStreamInterceptPolicyOptions'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import {
@@ -188,6 +190,14 @@ import {
   streamInterceptPolicyGuideFields,
   streamInterceptPolicyGuideSources
 } from '../stream-intercept-policies/streamInterceptPolicyGuide'
+import {
+  defaultAvoidanceTtlSeconds,
+  streamInterceptActionLabel,
+  streamInterceptActionTemplates,
+  type StreamInterceptActionTemplate,
+  streamInterceptActionUsesTtl
+} from '../stream-intercept-policies/streamInterceptActionTemplates'
+import type { StreamInterceptPolicyAction } from '@/types/domain'
 
 const rules = defineModel<AccountStreamInterceptRuleForm[]>('rules', { required: true })
 
@@ -253,25 +263,44 @@ function collapseAll(): void {
   ruleKeys.value = []
 }
 
-function normalizeRule(rule: AccountStreamInterceptRuleForm): void {
-  if (rule.retryEnabled && rule.dataHandling === 'discard_event') {
-    rule.dataHandling = 'discard_stream'
-  }
-  if (!rule.retryEnabled && rule.accountSwitch === 'request_next_account') {
-    rule.accountSwitch = 'none'
+function handleRuleActionChange(rule: AccountStreamInterceptRuleForm): void {
+  if (streamInterceptActionUsesTtl(rule.action)) {
+    rule.avoidanceTtlSeconds = positiveInt(rule.avoidanceTtlSeconds) ?? defaultAvoidanceTtlSeconds
+  } else {
+    rule.avoidanceTtlSeconds = null
   }
 }
 
-function dataHandlingOptions(rule: AccountStreamInterceptRuleForm) {
-  return rule.retryEnabled
-    ? streamInterceptDataHandlingOptions.filter((option) => option.value !== 'discard_event')
-    : streamInterceptDataHandlingOptions
+function selectRuleAction(rule: AccountStreamInterceptRuleForm, action: StreamInterceptPolicyAction): void {
+  rule.action = action
+  handleRuleActionChange(rule)
 }
 
-function accountSwitchOptions(rule: AccountStreamInterceptRuleForm) {
-  return rule.retryEnabled
-    ? streamInterceptAccountSwitchOptions
-    : streamInterceptAccountSwitchOptions.filter((option) => option.value !== 'request_next_account')
+function actionUsesTtl(rule: AccountStreamInterceptRuleForm): boolean {
+  return streamInterceptActionUsesTtl(rule.action)
+}
+
+function actionLabel(rule: AccountStreamInterceptRuleForm): string {
+  return streamInterceptActionLabel(rule.action)
+}
+
+function actionTagText(template: StreamInterceptActionTemplate): string {
+  if (template.action === 'observe') return '观察'
+  if (template.action === 'drop_event' || template.action === 'fail_stream') return '不重试'
+  if (template.ttlRequired) return '短期避让'
+  return '重试'
+}
+
+function actionTagColor(template: StreamInterceptActionTemplate): string {
+  if (template.action === 'observe') return 'gold'
+  if (template.action === 'drop_event' || template.action === 'fail_stream') return 'default'
+  if (template.ttlRequired) return 'orange'
+  return 'green'
+}
+
+function positiveInt(value: unknown): number | undefined {
+  const numberValue = Number(value)
+  return Number.isFinite(numberValue) && numberValue > 0 ? Math.trunc(numberValue) : undefined
 }
 
 function conditionSummary(rule: AccountStreamInterceptRuleForm): string {
@@ -387,6 +416,77 @@ function fieldSummary(label: string, value: string): string {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.wide-form-item {
+  grid-column: 1 / -1;
+}
+
+.action-option-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.action-option {
+  display: flex;
+  min-height: 78px;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.action-option:hover {
+  border-color: #91caff;
+  background: #f8fbff;
+}
+
+.action-option.active {
+  border-color: #1677ff;
+  background: #f0f7ff;
+  box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.18);
+}
+
+.action-option-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-option-title strong {
+  overflow: hidden;
+  color: #111827;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-option-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border: 2px solid #cbd5e1;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.action-option.active .action-option-dot {
+  border-color: #1677ff;
+  box-shadow: inset 0 0 0 2px #fff;
+  background: #1677ff;
+}
+
+.action-option-description {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .compact-empty {
   padding: 14px 0;
 }
@@ -451,7 +551,8 @@ function fieldSummary(label: string, value: string): string {
 
   .form-grid,
   .form-grid.compact,
-  .matcher-grid {
+  .matcher-grid,
+  .action-option-grid {
     grid-template-columns: 1fr;
   }
 }

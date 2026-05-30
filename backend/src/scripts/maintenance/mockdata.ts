@@ -256,7 +256,7 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
   const accounts = createAccounts(adminAccess, groups, policies, proxies)
   const teams = createTeams(adminAccess, users)
   const authorizations = createAuthorizations(adminAccess, groups, accounts, users, teams)
-  bindAuthorizedAccountToUserGroup(accounts.proxied, groups.opsDefault, users.ops)
+  bindAuthorizedAccountToUserGroup(authorizationInstanceAccount(accounts.proxied, users.ops), groups.opsDefault, users.ops)
   const apiKeys = createApiKeys(adminAccess, groups, users)
   createAnnouncements(admin.id, users)
   seedOauthUsageSnapshots(accounts)
@@ -817,6 +817,7 @@ function createAuthorizations(
     resourceId: accounts.proxied.id,
     granteeType: 'system_account',
     granteeId: users.ops.id,
+    targetGroupId: defaultOpenAIGroup(users.ops.id).id,
     remark: `${namePrefix}运维用户可调用带代理账户`,
     limits: quotaLimits(8, 60, 200)
   }, adminAccess))
@@ -828,6 +829,41 @@ function createAuthorizations(
     remark: `${namePrefix}研发团队可调用主力账户`,
     limits: quotaLimits(10, 80, 240)
   }, adminAccess))
+
+  const pausedTeam = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.experiment.id,
+    granteeType: 'team',
+    granteeId: teams.opsTeam.id,
+    remark: `${namePrefix}运维团队暂停实验分组授权`,
+    limits: quotaLimits(6, 36, 120),
+    modelPolicy: { allowedModels: ['gpt-4.1-mini'] }
+  }, adminAccess)
+  repositories.updateResourceAuthorization(pausedTeam.id, { status: 'paused' }, adminAccess)
+  result.push(refreshAuthorization(pausedTeam.id, adminAccess))
+
+  const revokedTeam = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.normal.id,
+    granteeType: 'team',
+    granteeId: teams.opsTeam.id,
+    remark: `${namePrefix}运维团队已回收普通账户授权`,
+    limits: quotaLimits(5, 30, 100)
+  }, adminAccess)
+  repositories.revokeResourceAuthorization(revokedTeam.id, { reason: 'Mockdata 团队授权回收演示' }, adminAccess)
+  result.push(refreshAuthorization(revokedTeam.id, adminAccess))
+
+  const returned = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.oauthBackup.id,
+    granteeType: 'system_account',
+    granteeId: users.viewer.id,
+    targetGroupId: defaultOpenAIGroup(users.viewer.id).id,
+    remark: `${namePrefix}观察用户已归还 OAuth 账户授权`,
+    limits: quotaLimits(2, 10, 40)
+  }, adminAccess)
+  repositories.returnResourceAuthorizationForGrantee(returned.id, { systemAccountId: users.viewer.id, role: 'user' })
+  result.push(refreshAuthorization(returned.id, adminAccess))
 
   const paused = repositories.createResourceAuthorization({
     resourceType: 'group',
@@ -845,6 +881,7 @@ function createAuthorizations(
     resourceId: accounts.fallback.id,
     granteeType: 'system_account',
     granteeId: users.tester.id,
+    targetGroupId: defaultOpenAIGroup(users.tester.id).id,
     remark: `${namePrefix}测试用户已过期账户授权`,
     expiresAt: new Date(Date.now() + dayMs).toISOString(),
     limits: quotaLimits(3, 16, 50)
@@ -860,6 +897,7 @@ function createAuthorizations(
     resourceId: accounts.normal.id,
     granteeType: 'system_account',
     granteeId: users.viewer.id,
+    targetGroupId: defaultOpenAIGroup(users.viewer.id).id,
     remark: `${namePrefix}观察用户已回收账户授权`,
     limits: quotaLimits(2, 12, 40)
   }, adminAccess)
@@ -1076,6 +1114,10 @@ function tuneGroupAccountBindings(groups: MockGroups, accounts: MockAccounts): v
 }
 
 function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions): UsageRecordSeed[] {
+  const devPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.dev)
+  const testerPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.tester)
+  const opsPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.ops)
+  const opsProxiedInstance = authorizationInstanceAccount(created.accounts.proxied, created.users.ops)
   const scenarios: KeyScenario[] = [
     {
       key: created.apiKeys.adminMain,
@@ -1112,26 +1154,50 @@ function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions)
     {
       key: created.apiKeys.devGroupAuthorized,
       owner: created.users.dev,
-      group: created.groups.devDefault,
-      accounts: [created.accounts.primary],
-      label: 'dev-account-auth',
+      group: created.groups.main,
+      accounts: [created.accounts.primary, created.accounts.proxied, created.accounts.normal],
+      label: 'dev-direct-group-auth',
       clientIpBase: '10.20.1.'
+    },
+    {
+      key: created.apiKeys.devGroupAuthorized,
+      owner: created.users.dev,
+      group: created.groups.devDefault,
+      accounts: [devPrimaryInstance],
+      label: 'dev-team-account-auth',
+      clientIpBase: '10.20.2.'
+    },
+    {
+      key: created.apiKeys.testerTeamAuthorized,
+      owner: created.users.tester,
+      group: created.groups.backup,
+      accounts: [created.accounts.fallback, created.accounts.rateLimited],
+      label: 'tester-team-group-auth',
+      clientIpBase: '10.20.3.'
     },
     {
       key: created.apiKeys.testerTeamAuthorized,
       owner: created.users.tester,
       group: created.groups.testerDefault,
-      accounts: [created.accounts.primary],
+      accounts: [testerPrimaryInstance],
       label: 'tester-team-account-auth',
-      clientIpBase: '10.20.2.'
+      clientIpBase: '10.20.4.'
+    },
+    {
+      key: created.apiKeys.opsAccountAuthorized,
+      owner: created.users.ops,
+      group: created.groups.oauth,
+      accounts: [created.accounts.oauth, created.accounts.oauthBackup],
+      label: 'ops-team-group-auth',
+      clientIpBase: '10.20.5.'
     },
     {
       key: created.apiKeys.opsAccountAuthorized,
       owner: created.users.ops,
       group: created.groups.opsDefault,
-      accounts: [created.accounts.proxied],
+      accounts: [opsProxiedInstance, opsPrimaryInstance],
       label: 'ops-account-auth',
-      clientIpBase: '10.20.3.'
+      clientIpBase: '10.20.6.'
     }
   ]
 
@@ -2355,9 +2421,26 @@ function defaultOpenAIGroup(systemAccountId: string): GroupSummary {
 }
 
 function refreshAccount(id: string): AccountSummary {
-  const account = repositories.findAccountSummary(id, { systemAccountId: 'sys_admin', role: 'admin', systemAccountFilterId: 'sys_admin' })
+  const account = repositories.findAccountSummary(id, { systemAccountId: 'sys_admin', role: 'admin' })
   if (!account) throw new Error(`读取 Mockdata 账户失败：${id}`)
   return account
+}
+
+function authorizationInstanceAccount(sourceAccount: AccountSummary, grantee: SystemAccountSummary): AccountSummary {
+  const row = getDatabase()
+    .prepare(`
+      SELECT id
+      FROM accounts
+      WHERE authorization_instance_source_account_id = ?
+        AND system_account_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `)
+    .get(sourceAccount.id, grantee.id) as unknown as { id?: string } | undefined
+  if (!row?.id) {
+    throw new Error(`未找到 Mockdata 授权账户实例：${sourceAccount.name} -> ${grantee.displayName || grantee.username}`)
+  }
+  return refreshAccount(row.id)
 }
 
 function refreshTeam(id: string, access: AccessScope): SystemTeamSummary {

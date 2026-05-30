@@ -77,6 +77,7 @@ try {
     resourceId: seed.ownerAccountId,
     granteeType: 'system_account',
     granteeId: seed.granteeId,
+    targetGroupId: seed.granteeTargetGroupId,
     remark: '授权账户归还后重新授权'
   }, ownerAccess)
   assert.equal(restoredAccountGrant.id, returnedAccountGrant?.id, '归还后重新授权应复用原授权业务记录')
@@ -132,6 +133,7 @@ try {
     resourceId: adminManagedAccount.id,
     granteeType: 'system_account',
     granteeId: seed.granteeId,
+    targetGroupId: seed.granteeTargetGroupId,
     remark: '管理员代归还授权使用权'
   }, { systemAccountId: seed.ownerId, role: 'user' as const })
   const adminManagedAuthorizationId = authorizedAccountForSource(adminManagedAccount.id, granteeAccess)?.accountAuthorizationId
@@ -181,6 +183,10 @@ function seedData() {
     name: '授权归还分组',
     providerCode: 'openai'
   }, ownerAccess)
+  const granteeTargetGroup = repositories.createGroup({
+    name: '授权归还被授权人目标分组',
+    providerCode: 'openai'
+  }, { systemAccountId: grantee.id, role: 'user' as const })
   const ownerAccount = repositories.createAccount({
     providerCode: 'openai',
     groupId: ownerGroup.id,
@@ -193,6 +199,7 @@ function seedData() {
     resourceId: ownerAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeTargetGroup.id,
     remark: '授权账户归还回归'
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -206,6 +213,7 @@ function seedData() {
     adminCookie: sessionCookie(admin.id),
     granteeCookie: sessionCookie(grantee.id),
     granteeId: grantee.id,
+    granteeTargetGroupId: granteeTargetGroup.id,
     ownerAccountId: ownerAccount.id,
     ownerGroupId: ownerGroup.id,
     ownerId: owner.id

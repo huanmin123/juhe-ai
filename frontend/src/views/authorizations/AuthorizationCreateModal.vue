@@ -74,7 +74,7 @@
           </a-radio-group>
         </div>
       </a-form-item>
-      <a-form-item :label="form.granteeType === 'system_account' ? '被授权用户' : '团队'" required>
+      <a-form-item :label="form.granteeType === 'system_account' ? '被授权用户' : '被授权团队'" required>
         <SystemPrincipalSelect
           v-model:value="form.granteeId"
           :accounts="users"
@@ -85,16 +85,15 @@
           :loading="granteeLoading"
           :disabled="isManagementView && !form.ownerSystemAccountId"
           :not-found-content="granteeNotFoundContent"
-          :placeholder="isManagementView && !form.ownerSystemAccountId ? '请先选择授权人' : form.granteeType === 'system_account' ? '选择一个用户' : '选择一个团队'"
+          :placeholder="isManagementView && !form.ownerSystemAccountId ? '请先选择授权人' : form.granteeType === 'system_account' ? '选择一个用户' : '选择一个被授权团队'"
           @dropdown-visible-change="$emit('grantee-dropdown', $event)"
           @search="$emit('grantee-search', $event)"
         />
       </a-form-item>
-      <a-form-item v-if="targetGroupVisible" label="目标分组">
+      <a-form-item v-if="targetGroupVisible" label="目标分组" required>
         <GroupSelect
           v-model:value="form.targetGroupId"
           v-model:selected-group="form.targetGroup"
-          allow-clear
           :disabled="targetGroupDisabled"
           :filter-option="false"
           :groups="targetGroups"
@@ -164,7 +163,7 @@ const granteeNotFoundContent = computed(() => props.hasGranteeOptions
   ? undefined
   : props.form.granteeType === 'system_account'
     ? '暂无可授权用户'
-    : '暂无可授权团队')
+    : '暂无可被授权团队')
 
 defineEmits<{
   (event: 'grantee-dropdown', open: boolean): void

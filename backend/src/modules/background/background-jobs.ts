@@ -20,7 +20,8 @@ import {
   latestUsageStatsLagSeconds,
   refreshDirtyGroupAccountStatsCache,
   refreshUsageQuotaHourlyWindowsCache,
-  refreshUsageRankSnapshotsInStages
+  refreshUsageRankSnapshotsInStages,
+  type UsageRankSnapshotStageName
 } from '../../storage/usage-stats.repository.js'
 import {
   aggregateClientIpStatsBatch,
@@ -44,6 +45,7 @@ import { WorkerScheduler } from './worker-scheduler.js'
 let started = false
 let usageStatsAggregationRunning = false
 let clientIpStatsAggregationRunning = false
+let usageRankSnapshotsRefreshRunning = false
 let missingRemoteProcessEventLoopSampleWarningCount = 0
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
@@ -55,6 +57,18 @@ const clientIpStatsAggregationBatchSizeCap = 1000
 const clientIpStatsAggregationMaxBatchesCap = 10
 const clientIpStatsAggregationMaxRunMs = 5000
 const usageRankSnapshotSlowStageMs = 1000
+const usageRankSnapshotCoreStageNames: UsageRankSnapshotStageName[] = [
+  'account_last7d_request_rank',
+  'caller_account_last7d_request_rank',
+  'api_key_current_month_cost_rank',
+  'account_authorization_current_month_cost_rank',
+  'group_authorization_current_month_cost_rank',
+  'ai_performance_summary_windows'
+]
+const systemMetricsTrendStageNames: UsageRankSnapshotStageName[] = ['system_metrics_trend_windows']
+const usageOverviewWindowStageNames: UsageRankSnapshotStageName[] = ['usage_overview_windows']
+const usageScopeRangeWindowStageNames: UsageRankSnapshotStageName[] = ['usage_scope_range_windows']
+const authorizationUsageRangeWindowStageNames: UsageRankSnapshotStageName[] = ['authorization_usage_range_windows']
 const scheduler = new WorkerScheduler()
 
 export function startBackgroundJobs(): void {
@@ -64,7 +78,11 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'usage-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * secondMs, task: runUsageStatsAggregation })
   scheduler.schedule({ name: 'client-ip-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
   scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
-  scheduler.schedule({ name: 'usage-rank-snapshots-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: runUsageRankSnapshotsRefresh })
+  scheduler.schedule({ name: 'usage-rank-snapshots-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh('usage-rank-snapshots-refresh', usageRankSnapshotCoreStageNames) })
+  scheduler.schedule({ name: 'system-metrics-trend-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, task: () => runUsageRankSnapshotsRefresh('system-metrics-trend-windows-refresh', systemMetricsTrendStageNames) })
+  scheduler.schedule({ name: 'usage-overview-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh('usage-overview-windows-refresh', usageOverviewWindowStageNames) })
+  scheduler.schedule({ name: 'usage-scope-range-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs, task: () => runUsageRankSnapshotsRefresh('usage-scope-range-windows-refresh', usageScopeRangeWindowStageNames) })
+  scheduler.schedule({ name: 'authorization-usage-range-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs + 50 * secondMs, task: () => runUsageRankSnapshotsRefresh('authorization-usage-range-windows-refresh', authorizationUsageRangeWindowStageNames) })
   scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
   scheduler.schedule({ name: 'api-key-record-cleanup-retry', intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
   scheduler.schedule({ name: 'account-record-cleanup-retry', intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
@@ -523,13 +541,40 @@ async function readNetworkCounterSnapshot(): Promise<NetworkCounterSnapshot | un
   return { ...counters, sampledAtMs: Date.now() }
 }
 
-async function runUsageRankSnapshotsRefresh(): Promise<void> {
+async function runUsageRankSnapshotsRefresh(jobName: string, stageNames: UsageRankSnapshotStageName[]): Promise<void> {
+  if (usageRankSnapshotsRefreshRunning) {
+    logger.debug({
+      event: 'background_usage_rank_snapshots_refresh_busy',
+      jobName,
+      stageNames
+    }, '用量排行快照刷新仍在运行，跳过本轮')
+    return
+  }
+  usageRankSnapshotsRefreshRunning = true
   try {
-    const result = await refreshUsageRankSnapshotsInStages({ yieldToEventLoop })
+    const result = await refreshUsageRankSnapshotsInStages({
+      yieldToEventLoop,
+      stageNames,
+      skipIfUnchanged: true,
+      jobName
+    })
+    if (result.skipped) {
+      logger.debug({
+        event: 'background_usage_rank_snapshots_refresh_skipped',
+        jobName,
+        stageNames,
+        sourceWatermark: result.sourceWatermark,
+        refreshDate: result.refreshDate,
+        skipReason: result.skipReason,
+        durationMs: result.durationMs
+      }, '用量排行快照刷新无新增聚合数据，跳过本轮')
+      return
+    }
     const slowStages = result.stages.filter((stage) => stage.durationMs >= usageRankSnapshotSlowStageMs)
     if (slowStages.length > 0) {
       logger.warn({
         event: 'background_usage_rank_snapshots_refresh_slow_stages',
+        jobName,
         durationMs: result.durationMs,
         slowStageCount: slowStages.length,
         slowStages
@@ -537,15 +582,20 @@ async function runUsageRankSnapshotsRefresh(): Promise<void> {
     }
     logger.info({
       event: 'background_usage_rank_snapshots_refresh_completed',
+      jobName,
       durationMs: result.durationMs,
       stageCount: result.stages.length,
+      sourceWatermark: result.sourceWatermark,
+      refreshDate: result.refreshDate,
       topStages: [...result.stages]
         .sort((left, right) => right.durationMs - left.durationMs)
         .slice(0, 5)
     }, '用量排行快照刷新完成')
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_usage_rank_snapshots_refresh_failed' }), '用量排行快照刷新失败')
+    logger.error(errorLogFields(error, { event: 'background_usage_rank_snapshots_refresh_failed', jobName, stageNames }), '用量排行快照刷新失败')
     throw error
+  } finally {
+    usageRankSnapshotsRefreshRunning = false
   }
 }
 

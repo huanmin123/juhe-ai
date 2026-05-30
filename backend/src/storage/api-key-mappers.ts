@@ -1,5 +1,7 @@
 import type { ApiKeyGroupBindingSummary, ApiKeySummary } from '../domain/types.js'
+import { normalizeApiKeyGroupRouteStrategy } from '../domain/api-key-routing.js'
 import { includeSystemAccountFields, type AccessScope } from './access-scope.js'
+import { parseApiKeyAvailabilityScheduleJson } from './api-key-availability-schedule.js'
 import { loadApiKeyGroupBindingSummariesByApiKeyIds } from './api-key-group-bindings.repository.js'
 import { decryptJson } from './crypto.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -16,10 +18,12 @@ export interface ApiKeyRow {
   key_secret_encrypted: string
   status: 'active' | 'disabled'
   group_id: string
+  group_route_strategy?: ApiKeySummary['groupRouteStrategy'] | null
   group_name?: string | null
   group_owner_system_account_name?: string | null
   expires_at: string | null
   quota_limits_json: string | null
+  availability_schedule_json?: string | null
 }
 
 export function apiKeySummariesFromRows(
@@ -51,10 +55,12 @@ export function apiKeySummariesFromRows(
       groupName,
       primaryGroupId: groupId,
       primaryGroupName: groupName,
+      groupRouteStrategy: normalizeApiKeyGroupRouteStrategy(row.group_route_strategy),
       groupBindings,
       groupOwnerSystemAccountName: row.group_owner_system_account_name ?? undefined,
       expiresAt: row.expires_at ?? undefined,
       quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
+      availabilitySchedule: parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json),
       usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
     }
   })
@@ -75,6 +81,7 @@ function apiKeyGroupBindingsForRow(row: ApiKeyRow, bindings: ApiKeyGroupBindingS
     groupId: row.group_id,
     groupName: row.group_name ?? undefined,
     priority: 1,
+    weight: 1,
     status: 'active',
     groupEnabled: true
   }]

@@ -12,21 +12,26 @@ import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperatio
 
 export const apiKeysRouter = Router()
 
-const apiKeyCreateSchema = z.object({
+const apiKeyMutationSchema = z.object({
   name: z.string().trim().min(1, '请填写 API Key 名称'),
   description: z.string().trim().max(200).nullable().optional(),
   groupId: z.string().trim().min(1, 'API Key 分组无效').optional(),
   groupBindings: z.array(z.object({
     groupId: z.string().trim().min(1, 'API Key 分组无效'),
     priority: z.number().int().positive().optional(),
+    weight: z.number({ invalid_type_error: '分组权重必须是数字' }).int('分组权重必须是整数').min(1, '分组权重必须在 1-100 之间').max(100, '分组权重必须在 1-100 之间').optional(),
     status: z.enum(['active', 'disabled']).optional()
   })).min(1, 'API Key 至少需要绑定一个分组').max(20).optional(),
+  groupRouteStrategy: z.string().optional().refine((value) => value === undefined || value === 'priority_failover' || value === 'round_robin' || value === 'weighted_round_robin', '分组路由策略无效'),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().optional(),
-  quotaLimits: z.record(z.string(), z.unknown()).nullable().optional()
-}).refine((value) => Boolean(value.groupId || value.groupBindings?.length), {
+  quotaLimits: z.record(z.string(), z.unknown()).nullable().optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional()
+})
+const apiKeyCreateSchema = apiKeyMutationSchema.refine((value) => Boolean(value.groupId || value.groupBindings?.length), {
   message: 'API Key 至少需要绑定一个分组'
 })
+const apiKeyUpdateSchema = apiKeyMutationSchema.partial()
 
 apiKeysRouter.get('/', (req, res) => {
   res.json(ok(listApiKeysPage(getRequestAccessScope(req.query.systemAccountId), parseApiKeyListOptions(req.query))))
@@ -86,7 +91,9 @@ apiKeysRouter.post('/', mutationGuard({
           changes: [
             safeChange('name', '名称', undefined, apiKey.name),
             safeChange('status', '状态', undefined, apiKey.status),
+            safeChange('groupRouteStrategy', '分组路由策略', undefined, apiKey.groupRouteStrategy),
             safeChange('groupBindings', '绑定分组路由', undefined, apiKey.groupBindings),
+            safeChange('availabilitySchedule', '自动启停计划', undefined, apiKey.availabilitySchedule),
             safeChange('key', '密钥', undefined, apiKey.keyPrefix)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -108,9 +115,14 @@ apiKeysRouter.patch('/:id', (req, res) => {
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const before = findApiKeySummary(req.params.id, requestAccess)
+  const parsed = apiKeyUpdateSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 参数无效')))
+    return
+  }
   try {
     const apiKey = runLoggedOperation(() => {
-      const apiKey = updateApiKey(req.params.id, req.body as Record<string, unknown>, requestAccess)
+      const apiKey = updateApiKey(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
       if (!apiKey) {
         throw new Error('API Key 不存在')
       }
@@ -132,9 +144,11 @@ apiKeysRouter.patch('/:id', (req, res) => {
             description: '说明',
             status: '状态',
             groupId: '主分组',
+            groupRouteStrategy: '分组路由策略',
             groupBindings: '绑定分组路由',
             expiresAt: '过期时间',
-            quotaLimits: '额度限制'
+            quotaLimits: '额度限制',
+            availabilitySchedule: '自动启停计划'
           }),
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }

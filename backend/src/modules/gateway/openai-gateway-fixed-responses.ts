@@ -35,8 +35,14 @@ export function finalizeGatewayAuthFailureAudit(
   res: Response,
   auditCapture: AuditCaptureContext
 ): void {
-  const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少访问令牌'
-  const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error')
+  const locals = res.locals as Record<string, unknown>
+  const authErrorMessage = typeof locals.gatewayAuthFailureErrorMessage === 'string'
+    ? locals.gatewayAuthFailureErrorMessage
+    : extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少访问令牌'
+  const authErrorCode = typeof locals.gatewayAuthFailureErrorCode === 'string'
+    ? locals.gatewayAuthFailureErrorCode
+    : 'invalid_request_error'
+  const authErrorPayload = gatewayErrorPayload(authErrorMessage, authErrorCode === 'api_key_schedule_inactive' ? 'forbidden' : 'invalid_request_error', authErrorCode)
   auditCapture.finalize({
     outcome: 'gateway_failed',
     success: false,
@@ -45,7 +51,7 @@ export function finalizeGatewayAuthFailureAudit(
     responseBody: JSON.stringify(authErrorPayload),
     responsePartType: 'gateway_error',
     errorPhase: 'auth',
-    errorCode: 'invalid_request_error',
+    errorCode: authErrorCode,
     errorMessage: authErrorMessage
   })
 }

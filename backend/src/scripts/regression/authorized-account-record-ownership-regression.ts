@@ -98,6 +98,7 @@ try {
     resourceId: ownerAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
     remark: '授权账户记录归属回归'
   }, ownerAccess)
 

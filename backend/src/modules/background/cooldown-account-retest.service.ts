@@ -142,7 +142,9 @@ async function runCooldownAccountRetestQueueItem(
     observationElapsedSeconds: failure.observationElapsedSeconds,
     message: result.message
   }
-  if (failure.recoveryStage === 'slow') {
+  if (failure.action === 'exception') {
+    logger.warn(logFields, '冷却账户复测超过最大恢复窗口，已标记异常并停止自动复测')
+  } else if (failure.recoveryStage === 'slow') {
     logger.warn(logFields, '冷却账户复测未通过，已进入慢速恢复通道')
   } else {
     logger.debug(logFields, '冷却账户快速恢复通道复测未通过，已按短退避等待下次复测')

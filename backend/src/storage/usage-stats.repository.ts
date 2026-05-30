@@ -65,6 +65,9 @@ const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
 const PROCESS_EVENT_LOOP_PEAK_WINDOW_MS = 24 * 60 * 60 * 1000
 const USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY = 1
+const USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
+const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE = 'global'
+const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID = ''
 export const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
 let usageStatsShardScanOffset = 0
 
@@ -451,8 +454,33 @@ interface UsageRankSnapshotContext {
   uniqueSystemAccountIds: string[]
 }
 
+export type UsageRankSnapshotStageName =
+  | 'account_last7d_request_rank'
+  | 'caller_account_last7d_request_rank'
+  | 'api_key_current_month_cost_rank'
+  | 'account_authorization_current_month_cost_rank'
+  | 'group_authorization_current_month_cost_rank'
+  | 'usage_overview_windows'
+  | 'ai_performance_summary_windows'
+  | 'system_metrics_trend_windows'
+  | 'usage_scope_range_windows'
+  | 'authorization_usage_range_windows'
+
+type UsageRankSnapshotSourceTable =
+  | 'usage_stats_totals'
+  | 'usage_stats_daily'
+  | 'usage_stats_hourly'
+  | 'usage_stats_monthly'
+  | 'usage_model_daily'
+  | 'usage_error_daily'
+  | 'authorization_team_usage_summary_daily'
+  | 'authorization_user_usage_summary_daily'
+  | 'system_metrics_hourly'
+  | 'process_event_loop_hourly'
+
 interface UsageRankSnapshotStage {
-  name: string
+  name: UsageRankSnapshotStageName
+  sourceTables: UsageRankSnapshotSourceTable[]
   run: (database: DatabaseSync, context: UsageRankSnapshotContext) => void
   runInBackground?: (database: DatabaseSync, context: UsageRankSnapshotContext, options: UsageRankSnapshotBackgroundStageOptions) => Promise<void>
 }
@@ -469,6 +497,18 @@ export interface UsageRankSnapshotStageRuntime {
 export interface UsageRankSnapshotRefreshResult {
   durationMs: number
   stages: UsageRankSnapshotStageRuntime[]
+  skipped?: boolean
+  skipReason?: 'source_watermark_unchanged'
+  sourceWatermark?: string
+  refreshDate?: string
+  jobName?: string
+}
+
+export interface RefreshUsageRankSnapshotsInStagesOptions {
+  yieldToEventLoop?: () => Promise<void>
+  stageNames?: readonly UsageRankSnapshotStageName[]
+  skipIfUnchanged?: boolean
+  jobName?: string
 }
 
 export function refreshUsageRankSnapshots(): void {
@@ -498,14 +538,28 @@ export function refreshUsageQuotaHourlyWindowsCache(): void {
   }
 }
 
-export async function refreshUsageRankSnapshotsInStages(options: {
-  yieldToEventLoop?: () => Promise<void>
-} = {}): Promise<UsageRankSnapshotRefreshResult> {
+export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRankSnapshotsInStagesOptions = {}): Promise<UsageRankSnapshotRefreshResult> {
   const database = getStatsDatabase()
   const context = createUsageRankSnapshotContext(database)
-  const stages = usageRankSnapshotStages()
+  const stages = selectUsageRankSnapshotStages(options.stageNames)
   const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
+  const jobName = options.jobName ?? usageRankSnapshotDefaultJobName(stages)
   const startedAt = Date.now()
+  const sourceWatermark = options.skipIfUnchanged ? usageRankSnapshotSourceWatermark(database, stages) : undefined
+  if (options.skipIfUnchanged && sourceWatermark !== undefined) {
+    const state = usageRankSnapshotRefreshJobState(database, jobName)
+    if (state?.cursor_created_at === sourceWatermark && state.cursor_id === context.todayKey) {
+      return {
+        durationMs: Date.now() - startedAt,
+        stages: [],
+        skipped: true,
+        skipReason: 'source_watermark_unchanged',
+        sourceWatermark,
+        refreshDate: context.todayKey,
+        jobName
+      }
+    }
+  }
   const stageRuntimes: UsageRankSnapshotStageRuntime[] = []
   for (let index = 0; index < stages.length; index += 1) {
     const stageStartedAt = Date.now()
@@ -518,10 +572,85 @@ export async function refreshUsageRankSnapshotsInStages(options: {
       await yieldToEventLoop()
     }
   }
+  if (options.skipIfUnchanged && sourceWatermark !== undefined) {
+    updateUsageRankSnapshotRefreshJobState(database, jobName, {
+      sourceWatermark,
+      refreshDate: context.todayKey,
+      lastSuccessAt: nowIso()
+    })
+  }
   return {
     durationMs: Date.now() - startedAt,
-    stages: stageRuntimes
+    stages: stageRuntimes,
+    skipped: false,
+    sourceWatermark,
+    refreshDate: context.todayKey,
+    jobName
   }
+}
+
+function selectUsageRankSnapshotStages(stageNames?: readonly UsageRankSnapshotStageName[]): UsageRankSnapshotStage[] {
+  const stages = usageRankSnapshotStages()
+  if (!stageNames) return stages
+  if (stageNames.length === 0) {
+    throw new Error('用量排行快照刷新至少需要一个阶段')
+  }
+  const selectedStageNames = new Set<UsageRankSnapshotStageName>(stageNames)
+  const selectedStages = stages.filter((stage) => selectedStageNames.has(stage.name))
+  const missingStageNames = stageNames.filter((stageName) => !selectedStages.some((stage) => stage.name === stageName))
+  if (missingStageNames.length > 0) {
+    throw new Error(`未知用量排行快照刷新阶段: ${missingStageNames.join(', ')}`)
+  }
+  return selectedStages
+}
+
+function usageRankSnapshotDefaultJobName(stages: UsageRankSnapshotStage[]): string {
+  const allStageCount = usageRankSnapshotStages().length
+  if (stages.length === allStageCount) {
+    return 'usage_rank_snapshots_refresh'
+  }
+  return `usage_rank_snapshots_refresh:${stages.map((stage) => stage.name).join('+')}`
+}
+
+function usageRankSnapshotSourceWatermark(database: DatabaseSync, stages: UsageRankSnapshotStage[]): string {
+  const sourceTables = [...new Set(stages.flatMap((stage) => stage.sourceTables))]
+  let watermark = USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
+  for (const table of sourceTables) {
+    const row = database.prepare(`SELECT MAX(updated_at) AS updated_at FROM ${table}`).get() as { updated_at?: string | null } | undefined
+    const updatedAt = row?.updated_at
+    if (typeof updatedAt === 'string' && updatedAt > watermark) {
+      watermark = updatedAt
+    }
+  }
+  return watermark
+}
+
+function usageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string): StatsJobStateRow | undefined {
+  return database
+    .prepare('SELECT cursor_created_at, cursor_id, lag_seconds FROM stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?')
+    .get(USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName) as unknown as StatsJobStateRow | undefined
+}
+
+function updateUsageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string, input: { sourceWatermark: string; refreshDate: string; lastSuccessAt: string }): void {
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      last_error_message = NULL,
+      lag_seconds = NULL,
+      updated_at = excluded.updated_at
+  `).run(
+    USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE,
+    USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID,
+    jobName,
+    input.sourceWatermark,
+    input.refreshDate,
+    input.lastSuccessAt,
+    nowIso()
+  )
 }
 
 async function runUsageRankSnapshotStageInBackground(
@@ -569,43 +698,53 @@ function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
   return [
     {
       name: 'account_last7d_request_rank',
+      sourceTables: ['usage_stats_daily'],
       run: (database, context) => refreshAccountLast7dRequestRankSnapshot(database, context.snapshotAt, context.updatedAt, context.timezone)
     },
     {
       name: 'caller_account_last7d_request_rank',
+      sourceTables: ['usage_stats_daily'],
       run: (database, context) => refreshCallerAccountLast7dRequestRankSnapshot(database, context.snapshotAt, context.updatedAt, context.timezone)
     },
     {
       name: 'api_key_current_month_cost_rank',
+      sourceTables: ['usage_stats_monthly'],
       run: (database, context) => refreshApiKeyCurrentMonthCostRankSnapshot(database, context.snapshotAt, context.updatedAt, context.timezone)
     },
     {
       name: 'account_authorization_current_month_cost_rank',
+      sourceTables: ['usage_stats_monthly'],
       run: (database, context) => refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'account_authorization', context.snapshotAt, context.updatedAt, context.timezone)
     },
     {
       name: 'group_authorization_current_month_cost_rank',
+      sourceTables: ['usage_stats_monthly'],
       run: (database, context) => refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'group_authorization', context.snapshotAt, context.updatedAt, context.timezone)
     },
     {
       name: 'usage_overview_windows',
+      sourceTables: ['usage_stats_totals', 'usage_stats_daily', 'usage_stats_hourly', 'usage_model_daily', 'usage_error_daily'],
       run: refreshUsageOverviewWindowSnapshots
     },
     {
       name: 'ai_performance_summary_windows',
+      sourceTables: ['usage_stats_daily'],
       run: refreshAiPerformanceSummaryWindowSnapshots
     },
     {
       name: 'system_metrics_trend_windows',
+      sourceTables: ['system_metrics_hourly', 'process_event_loop_hourly'],
       run: refreshSystemMetricsTrendWindowSnapshotsStage
     },
     {
       name: 'usage_scope_range_windows',
+      sourceTables: ['usage_stats_daily'],
       run: (database, context) => refreshUsageScopeRangeWindowSnapshots(database, context.updatedAt, context.timezone),
       runInBackground: (database, context, options) => refreshUsageScopeRangeWindowSnapshotsInStages(database, context.updatedAt, context.timezone, options.yieldToEventLoop)
     },
     {
       name: 'authorization_usage_range_windows',
+      sourceTables: ['authorization_team_usage_summary_daily', 'authorization_user_usage_summary_daily'],
       run: (database, context) => refreshAuthorizationUsageRangeWindowSnapshots(database, context.updatedAt, context.timezone),
       runInBackground: (database, context, options) => refreshAuthorizationUsageRangeWindowSnapshotsInStages(database, context.updatedAt, context.timezone, options.yieldToEventLoop)
     }

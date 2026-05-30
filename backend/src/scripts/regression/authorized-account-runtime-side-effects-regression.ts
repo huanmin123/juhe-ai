@@ -159,6 +159,7 @@ function createAuthorizedAccount(
     resourceId: account.id,
     granteeType: 'system_account',
     granteeId,
+    targetGroupId: granteeGroupId,
     remark: `${name} 授权副作用隔离回归`
   }, ownerAccess)
   const instance = authorizedInstanceForSource(account.id, granteeAccess)

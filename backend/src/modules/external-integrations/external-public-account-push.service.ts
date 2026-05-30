@@ -5,6 +5,7 @@ import {
   createAccount,
   createGroup,
   createSystemAccount,
+  deleteAccountWithRelatedCleanup,
   findAccountSummary,
   findGroupSummary,
   findSystemAccountByUsername,
@@ -14,6 +15,7 @@ import {
   updateAccount
 } from '../../storage/repositories.js'
 import { getDatabase, newId, nowIso, runInDatabaseTransaction } from '../../storage/database.js'
+import { submitAccountRelatedCleanup } from '../accounts/account-cleanup.service.js'
 
 export interface PublicAccountPushInput {
   targetUsername: string
@@ -59,6 +61,24 @@ export interface PublicAccountPushResponse {
   externalId?: string
 }
 
+export interface PublicAccountDeleteInput {
+  targetUsername: string
+  targetGroupName: string
+  providerCode?: string
+  accountId?: string
+  name?: string
+  externalId?: string
+}
+
+export interface PublicAccountDeleteResponse {
+  source: 'stats' | 'mock'
+  generatedAt: string
+  action: 'deleted' | 'not_found' | 'mock'
+  target: PublicAccountPushResponse['target']
+  account: PublicAccountPushResponse['account'] | null
+  externalId?: string
+}
+
 type ResolvedTarget = {
   account: SystemAccountSummary
   created: boolean
@@ -67,6 +87,11 @@ type ResolvedTarget = {
 type ResolvedGroup = {
   group: GroupSummary
   created: boolean
+}
+
+type TargetAccess = {
+  systemAccountId: string
+  role: 'user'
 }
 
 export function pushPublicWelfareAccount(input: PublicAccountPushInput): PublicAccountPushResponse {
@@ -134,6 +159,95 @@ export function pushPublicWelfareAccount(input: PublicAccountPushInput): PublicA
   }, getDatabase())
 }
 
+export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): PublicAccountDeleteResponse {
+  const providerCode = normalizedText(input.providerCode) || 'openai'
+  const provider = listProviders().find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+
+  const username = normalizedText(input.targetUsername)
+  if (!username) {
+    throw new Error('目标用户不能为空')
+  }
+  const groupName = normalizedText(input.targetGroupName)
+  if (!groupName) {
+    throw new Error('目标分组不能为空')
+  }
+  const accountId = normalizedText(input.accountId)
+  const name = normalizedText(input.name)
+  const externalId = normalizedText(input.externalId)
+  if (!accountId && !name && !externalId) {
+    throw new Error('删除公益账号时必须提供 accountId、name 或 externalId')
+  }
+
+  const fallbackTarget = targetFromInput(username, groupName)
+  const targetAccount = findSystemAccountByUsername(username)
+  if (!targetAccount) {
+    return notFoundAccountDeleteResponse(input, fallbackTarget)
+  }
+
+  const access: TargetAccess = { systemAccountId: targetAccount.id, role: 'user' }
+  const targetGroup = findExistingTargetGroup({
+    access,
+    providerCode,
+    groupName
+  })
+  const resolvedTarget = {
+    username: targetAccount.username,
+    displayName: targetAccount.displayName,
+    systemAccountId: targetAccount.id,
+    created: false,
+    groupId: targetGroup?.id ?? '',
+    groupName,
+    groupCreated: false
+  }
+  if (!targetGroup) {
+    return notFoundAccountDeleteResponse(input, resolvedTarget)
+  }
+
+  const account = findTargetAccountByExternalId({
+    access,
+    providerCode,
+    groupId: targetGroup.id,
+    externalId
+  }) ?? findTargetAccountById({
+    access,
+    providerCode,
+    groupId: targetGroup.id,
+    accountId
+  }) ?? (name
+    ? findTargetAccount({
+      access,
+      providerCode,
+      groupId: targetGroup.id,
+      name
+    })
+    : undefined)
+
+  if (!account) {
+    return notFoundAccountDeleteResponse(input, resolvedTarget)
+  }
+
+  const deletedAccount = sanitizeAccount(account)
+  const deleteResult = deleteAccountWithRelatedCleanup(account.id, access)
+  if (!deleteResult.deleted) {
+    throw new Error('目标公益账号无法删除，可能正在作为授权实例使用')
+  }
+  if (deleteResult.cleanupTarget) {
+    submitAccountRelatedCleanup(deleteResult.cleanupTarget)
+  }
+
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    action: 'deleted',
+    target: resolvedTarget,
+    account: deletedAccount,
+    externalId
+  }
+}
+
 export function mockPublicWelfareAccountPush(input: PublicAccountPushInput): PublicAccountPushResponse {
   const generatedAt = new Date().toISOString()
   const username = normalizedText(input.targetUsername) || 'huanmin'
@@ -167,6 +281,39 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput): Pub
   }
 }
 
+export function mockPublicWelfareAccountDelete(input: PublicAccountDeleteInput): PublicAccountDeleteResponse {
+  const generatedAt = new Date().toISOString()
+  const username = normalizedText(input.targetUsername) || 'huanmin'
+  const groupName = normalizedText(input.targetGroupName) || '福利'
+  const providerCode = normalizedText(input.providerCode) || 'openai'
+  const accountId = normalizedText(input.accountId) || 'mock_account_public_welfare'
+  return {
+    source: 'mock',
+    generatedAt,
+    action: 'mock',
+    target: {
+      username,
+      displayName: username,
+      systemAccountId: 'mock_system_account_huanmin',
+      created: false,
+      groupId: 'mock_group_welfare',
+      groupName,
+      groupCreated: false
+    },
+    account: {
+      id: accountId,
+      name: normalizedText(input.name) || accountId,
+      providerCode,
+      type: 'api_key',
+      status: 'disabled',
+      boundGroupId: 'mock_group_welfare',
+      boundGroupName: groupName,
+      schedulable: false
+    },
+    externalId: normalizedText(input.externalId)
+  }
+}
+
 function ensureTargetSystemAccount(input: PublicAccountPushInput): ResolvedTarget {
   const username = normalizedText(input.targetUsername)
   if (!username) {
@@ -191,7 +338,7 @@ function ensureTargetSystemAccount(input: PublicAccountPushInput): ResolvedTarge
 }
 
 function ensureTargetGroup(input: {
-  access: { systemAccountId: string; role: 'user' }
+  access: TargetAccess
   providerCode: string
   groupName: string
 }): ResolvedGroup {
@@ -228,8 +375,25 @@ function ensureTargetGroup(input: {
   }
 }
 
+function findExistingTargetGroup(input: {
+  access: TargetAccess
+  providerCode: string
+  groupName: string
+}): GroupSummary | undefined {
+  const groupName = normalizedText(input.groupName)
+  if (!groupName) {
+    throw new Error('目标分组不能为空')
+  }
+  const existing = listGroupOptions(input.access, {
+    keyword: groupName,
+    providerCode: input.providerCode,
+    limit: 20
+  }).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
+  return existing ? findGroupSummary(existing.id, input.access) : undefined
+}
+
 function findTargetAccountByExternalId(input: {
-  access: { systemAccountId: string; role: 'user' }
+  access: TargetAccess
   providerCode: string
   groupId: string
   externalId?: string
@@ -256,6 +420,34 @@ function findTargetAccountByExternalId(input: {
     input.providerCode,
     input.groupId,
     externalId
+  ) as { id?: string } | undefined
+  return row?.id ? findAccountSummary(row.id, input.access) : undefined
+}
+
+function findTargetAccountById(input: {
+  access: TargetAccess
+  providerCode: string
+  groupId: string
+  accountId?: string
+}): AccountSummary | undefined {
+  const accountId = normalizedText(input.accountId)
+  if (!accountId) {
+    return undefined
+  }
+  const row = getDatabase().prepare(`
+    SELECT accounts.id AS id
+    FROM accounts
+    INNER JOIN group_accounts ON group_accounts.account_id = accounts.id
+    WHERE accounts.id = ?
+      AND accounts.system_account_id = ?
+      AND accounts.provider_code = ?
+      AND group_accounts.group_id = ?
+    LIMIT 1
+  `).get(
+    accountId,
+    input.access.systemAccountId,
+    input.providerCode,
+    input.groupId
   ) as { id?: string } | undefined
   return row?.id ? findAccountSummary(row.id, input.access) : undefined
 }
@@ -289,7 +481,7 @@ function upsertExternalAccountPushRecord(input: {
 }
 
 function findTargetAccount(input: {
-  access: { systemAccountId: string; role: 'user' }
+  access: TargetAccess
   providerCode: string
   groupId: string
   name: string
@@ -304,6 +496,32 @@ function findTargetAccount(input: {
     groupId: input.groupId,
     limit: 20
   }).find((item) => item.providerCode === input.providerCode && sameText(item.name, name))
+}
+
+function targetFromInput(username: string, groupName: string): PublicAccountDeleteResponse['target'] {
+  return {
+    username,
+    displayName: username,
+    systemAccountId: '',
+    created: false,
+    groupId: '',
+    groupName,
+    groupCreated: false
+  }
+}
+
+function notFoundAccountDeleteResponse(
+  input: PublicAccountDeleteInput,
+  target: PublicAccountDeleteResponse['target']
+): PublicAccountDeleteResponse {
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    action: 'not_found',
+    target,
+    account: null,
+    externalId: normalizedText(input.externalId)
+  }
 }
 
 function accountInputForPush(input: PublicAccountPushInput, providerCode: string, groupId: string): Record<string, unknown> {

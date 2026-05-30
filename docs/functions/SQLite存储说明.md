@@ -751,6 +751,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled`：当前使用方当前分组绑定的调度事实。被授权人调整排序、超级优先或降级备用时只更新这条绑定，不修改授权实例全局账号字段、来源账户或其他被授权人的绑定。
 - `group_accounts.local_status / local_cooldown_until / local_last_error_message / local_stream_failure_*`：历史兼容字段；授权实例运行态以授权实例 `accounts` 行为准，新运行路径不把这些字段作为状态事实读取。
 - `api_keys.group_id` 保留为兼容主号池字段，指向 active 绑定中优先级最高的分组；新路由以 `api_key_group_bindings` 为准。
+- `api_keys.availability_schedule_json` 保存 API Key 自动启停计划；为空表示不限制时段。该字段只作为网关门禁和列表展示事实，不驱动 `api_keys.status` 自动改写，也不写入统计缓存。
 - `api_key_group_bindings.api_key_id / group_id / priority / status` 保存 API Key 到多个本地分组号池的路由绑定；新建和编辑时只能绑定 API Key 所属系统账户自己的分组，不能绑定授权方分组。至少保留一个 `active` 绑定，同一个 Key 下 active 绑定优先级唯一，同一个 Key 下所有绑定分组必须属于同一供应商。
 - 授权实例账户通过 `group_accounts.account_authorization_id` 进入被授权用户自己的分组后参与调度；调度时必须重新校验最终用户授权、调用方系统账户、实例账户状态、实例绑定状态和额度缓存，不能读取归属人原账户状态作为硬门禁。上游凭据、`base_url`、模型、代理、并发、透传和错误策略从来源账户补齐，并随来源账户资源配置更新同步进入列表、账户测试和网关运行缓存。
 - 当同一用户对同一账户或分组同时拥有个人来源和团队来源时，只允许存在一条用户级授权，并在资源行返回全部来源供排查。
@@ -913,7 +914,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 这是单人自用系统，自有 API Key 列表接口会按权限返回前端需要展示和复制的完整本地密钥；授权账户和授权分组接口不能返回完整密钥，只能返回列表摘要和必要状态。数据库中必须通过 `key_secret_encrypted` 密文保存本地 API Key，`key_hash` 用于网关校验，`key_prefix` 用于摘要展示；API Key 列表通用搜索只按名称匹配。缺少 `key_secret_encrypted` 或密文不可解的旧库不进入运行时兼容范围，应停机离线修复或重建 API Key。
 
-API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。
+API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。API Key 自动启停计划也不属于敏感凭据，保存在 `api_keys.availability_schedule_json`；计划以分钟为粒度判断，网关运行态缓存命中计划边界时最多保留到下一分钟，避免时段切换长时间滞后。
 
 外部来源系统 token 明文只在创建或轮换时展示一次；业务库 `external_integration_source_tokens` 只保存带用途前缀的 SHA-256 摘要 `token_hash`、安全展示用 `token_prefix`、状态、scope 和过期时间。内置测试 token 不写入业务库，只用于公开接口 mock 数据分支。普通日志、运行日志、错误响应、操作记录和 demo 成功响应都不能输出真实明文 token 或 token hash。
 

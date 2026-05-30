@@ -5,6 +5,7 @@ import { effectiveImageLaneConcurrencyLimit } from '../../domain/group-schedulin
 import { logger } from '../../shared/logger.js'
 import { bindRequestContextFields } from '../../shared/request-context.js'
 import { type GatewayApiKeyRow, type GroupUsageAccessMetadata } from '../../storage/repositories.js'
+import { isGatewayApiKeyScheduleInactive } from '../../storage/gateway-api-key.repository.js'
 import {
   listCachedOpenAIAccountsForGroupAsync,
   readCachedGatewaySettingsAsync,
@@ -249,6 +250,26 @@ export async function prepareOpenAIGatewayDispatchContext(
         outcome: 'gateway_failed',
         errorPhase: 'authorization',
         errorCode: 'invalid_api_key',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
+  if (isGatewayApiKeyScheduleInactive(apiKeyRecord)) {
+    const statusCode = 403
+    const responsePayload = gatewayErrorPayload('API Key 当前不在允许使用时段', 'forbidden', 'api_key_schedule_inactive')
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: baseUsageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'authorization',
+        errorCode: 'api_key_schedule_inactive',
         errorMessage: responsePayload.error.message
       }
     })

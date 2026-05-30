@@ -382,6 +382,13 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               description: '该账号支持的模型列表，必须属于供应商模型目录。'
             },
             {
+              name: 'concurrencyLimit',
+              type: 'number',
+              required: false,
+              description: '单账号并发限制，范围 1 到 100000；用于公益站登记并发控制同步。',
+              example: 20
+            },
+            {
               name: 'status',
               type: 'string',
               required: false,
@@ -405,6 +412,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             baseUrl: 'https://api.openai.com/v1',
             apiKey: 'sk-...',
             supportedModels: ['gpt-5.5', 'gpt-5.4'],
+            concurrencyLimit: 20,
             status: 'active',
             externalId: 'juhe-ai-public-welfare:ai-registration:12'
           }
@@ -430,6 +438,99 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               type: 'api_key',
               status: 'active',
               supportedModels: ['gpt-5.5', 'gpt-5.4'],
+              boundGroupId: 'grp_xxx',
+              boundGroupName: '福利',
+              schedulable: true
+            },
+            externalId: 'juhe-ai-public-welfare:ai-registration:12'
+          }
+        }
+      },
+      {
+        id: 'juhe-ai-account-delete',
+        name: '公益账号删除',
+        summary: '由公益站后端在删除本地登记前删除已推送到指定目标用户和分组的 sub2api-lite 账号；接口按 externalId、账号 ID 或名称定位，找不到时幂等返回 not_found。',
+        status: 'available',
+        method: 'DELETE',
+        path: '/__aipublic__/juhe-ai/accounts',
+        scope: externalIntegrationAccountPushScope,
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            {
+              name: 'targetUsername',
+              type: 'string',
+              required: true,
+              description: '目标系统用户账号，例如 huanmin。',
+              example: 'huanmin'
+            },
+            {
+              name: 'targetGroupName',
+              type: 'string',
+              required: true,
+              description: '目标账号分组名称，例如 福利。',
+              example: '福利'
+            },
+            {
+              name: 'providerCode',
+              type: 'string',
+              required: false,
+              description: '供应商编码，默认 openai。',
+              example: 'openai'
+            },
+            {
+              name: 'accountId',
+              type: 'string',
+              required: false,
+              description: '上次推送响应返回的 sub2api-lite 账号 ID；与 externalId、name 至少提供一个。',
+              example: 'acc_xxx'
+            },
+            {
+              name: 'name',
+              type: 'string',
+              required: false,
+              description: '推送后的账号名称；与 accountId、externalId 至少提供一个。',
+              example: '公益站-青芽主通道'
+            },
+            {
+              name: 'externalId',
+              type: 'string',
+              required: false,
+              description: '公益站登记 ID；优先按该结构化映射定位原账号。',
+              example: 'juhe-ai-public-welfare:ai-registration:12'
+            }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            targetGroupName: '福利',
+            providerCode: 'openai',
+            accountId: 'acc_xxx',
+            name: '公益站-青芽主通道',
+            externalId: 'juhe-ai-public-welfare:ai-registration:12'
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'deleted',
+            target: {
+              username: 'huanmin',
+              displayName: 'huanmin',
+              systemAccountId: 'sysacc_xxx',
+              created: false,
+              groupId: 'grp_xxx',
+              groupName: '福利',
+              groupCreated: false
+            },
+            account: {
+              id: 'acc_xxx',
+              name: '公益站-青芽主通道',
+              providerCode: 'openai',
+              type: 'api_key',
+              status: 'active',
               boundGroupId: 'grp_xxx',
               boundGroupName: '福利',
               schedulable: true

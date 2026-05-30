@@ -94,6 +94,7 @@ try {
       resourceId: account.id,
       granteeType: 'system_account',
       granteeId: grantee.id,
+      targetGroupId: granteeGroup.id,
       remark: '额度批量回归',
       limits: {
         hourly: { enabled: true, hours: 3, limit: 1 },

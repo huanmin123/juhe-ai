@@ -7,7 +7,8 @@
     :mode="mode"
     :options="selectOptions"
     :placeholder="placeholder"
-    cache-key="proxies"
+    :cache-key="cacheKey"
+    :preference-key="preferenceKey"
     v-bind="$attrs"
     @change="handleChange"
     @update:value="handleUpdateValue"
@@ -43,6 +44,8 @@ const props = withDefaults(defineProps<{
   selectedProxy?: ProxySelection
   selectedProxies?: Array<ProxySelection | undefined>
   selectedIds?: Array<string | undefined>
+  cacheKey?: string
+  preferenceKey?: string
   allowClear?: boolean
   disabled?: boolean
   loading?: boolean
@@ -54,6 +57,8 @@ const props = withDefaults(defineProps<{
   selectedProxy: undefined,
   selectedProxies: () => [],
   selectedIds: () => [],
+  cacheKey: 'proxies',
+  preferenceKey: undefined,
   allowClear: false,
   disabled: false,
   loading: false,

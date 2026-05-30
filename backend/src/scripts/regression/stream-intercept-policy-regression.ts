@@ -21,6 +21,7 @@ function policy(overrides: Partial<RuntimeStreamInterceptPolicy>): RuntimeStream
     source: 'management',
     name: '测试流式拦截策略',
     enabled: true,
+    action: 'fail_stream',
     executionMode: 'intercept',
     priority: 10,
     match: {},
@@ -56,18 +57,30 @@ const settings: GatewaySettings = {
 }
 
 {
-  const legacyValidation = validateAccountStreamInterceptRules([
+  const oldCombinationValidation = validateAccountStreamInterceptRules([
     {
       enabled: true,
-      name: '历史账户规则',
+      name: '旧开关组合账户规则',
       match: {
-        textIncludes: ['广告污染'],
-        legacyMatchField: 'old_value'
+        textIncludes: ['广告污染']
       },
-      legacyTopLevelField: true
+      dataHandling: 'discard_stream',
+      retryEnabled: true,
+      accountSwitch: 'request_next_account'
     }
   ])
-  assert.equal(legacyValidation.valid, true, '账户级流式规则应忽略未知历史字段，避免旧配置无法保存')
+  assert.equal(oldCombinationValidation.valid, false, '账户级流式规则不再接受底层开关组合')
+  const actionValidation = validateAccountStreamInterceptRules([
+    {
+      enabled: true,
+      name: '模板账户规则',
+      match: {
+        textIncludes: ['广告污染']
+      },
+      action: 'retry_next_account'
+    }
+  ])
+  assert.equal(actionValidation.valid, true, '账户级流式规则应接受 action 模板')
 }
 
 {
@@ -325,7 +338,7 @@ const settings: GatewaySettings = {
             name: '账户高优先级数字规则',
             priority: 9999,
             match: { textIncludes: ['广告污染'] },
-            dataHandling: 'discard_stream'
+            action: 'fail_stream'
           }
         ]
       }
@@ -337,14 +350,10 @@ const settings: GatewaySettings = {
         editable: false,
         name: '默认低数字规则',
         enabled: true,
-        executionMode: 'intercept',
         priority: 1,
         providerCode: 'openai',
         match: { textIncludes: ['广告污染'] },
-        dataHandling: 'replace_with_failure',
-        retryEnabled: true,
-        accountSwitch: 'request_next_account',
-        accountState: 'none'
+        action: 'retry_next_account'
       },
       {
         id: 'management_rule_low_priority',
@@ -352,14 +361,10 @@ const settings: GatewaySettings = {
         editable: true,
         name: '管理端低数字规则',
         enabled: true,
-        executionMode: 'intercept',
         priority: 1,
         providerCode: 'openai',
         match: { textIncludes: ['广告污染'] },
-        dataHandling: 'replace_with_failure',
-        retryEnabled: true,
-        accountSwitch: 'request_next_account',
-        accountState: 'none'
+        action: 'retry_next_account'
       }
     ]
   })

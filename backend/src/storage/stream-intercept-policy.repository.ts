@@ -5,6 +5,14 @@ export type StreamInterceptPolicyExecutionMode = 'intercept' | 'dry_run'
 export type StreamInterceptPolicyDataHandling = 'discard_event' | 'discard_stream' | 'replace_with_failure'
 export type StreamInterceptPolicyAccountSwitch = 'none' | 'request_next_account' | 'avoid_account_ttl' | 'avoid_upstream_bucket_ttl'
 export type StreamInterceptPolicyAccountState = 'none' | 'runtime_avoidance'
+export type StreamInterceptPolicyAction =
+  | 'observe'
+  | 'drop_event'
+  | 'fail_stream'
+  | 'retry_no_avoidance'
+  | 'retry_next_account'
+  | 'avoid_account_ttl'
+  | 'avoid_upstream_bucket_ttl'
 
 export interface StreamInterceptPolicyMatch {
   eventTypes?: string[]
@@ -22,14 +30,10 @@ export interface StreamInterceptPolicySummary {
   editable: boolean
   name: string
   enabled: boolean
-  executionMode: StreamInterceptPolicyExecutionMode
   priority: number
   providerCode: string
   match: StreamInterceptPolicyMatch
-  dataHandling: StreamInterceptPolicyDataHandling
-  retryEnabled: boolean
-  accountSwitch: StreamInterceptPolicyAccountSwitch
-  accountState: StreamInterceptPolicyAccountState
+  action: StreamInterceptPolicyAction
   avoidanceTtlSeconds?: number
   notes?: string
   createdAt?: string
@@ -39,14 +43,10 @@ export interface StreamInterceptPolicySummary {
 export interface StreamInterceptPolicyInput {
   name?: string
   enabled?: boolean
-  executionMode?: StreamInterceptPolicyExecutionMode
   priority?: number
   providerCode?: string
   match?: StreamInterceptPolicyMatch
-  dataHandling?: StreamInterceptPolicyDataHandling
-  retryEnabled?: boolean
-  accountSwitch?: StreamInterceptPolicyAccountSwitch
-  accountState?: StreamInterceptPolicyAccountState
+  action?: StreamInterceptPolicyAction
   avoidanceTtlSeconds?: number | null
   notes?: string | null
 }
@@ -55,24 +55,25 @@ interface StreamInterceptPolicyRow {
   id: string
   name: string
   enabled: number
-  execution_mode: string
   priority: number
   provider_code: string
   match_json: string
-  data_handling: string
-  retry_enabled: number
-  account_switch: string
-  account_state: string
+  action: string
   avoidance_ttl_seconds: number | null
   notes: string | null
   created_at: string
   updated_at: string
 }
 
-const executionModes = new Set<StreamInterceptPolicyExecutionMode>(['intercept', 'dry_run'])
-const dataHandlings = new Set<StreamInterceptPolicyDataHandling>(['discard_event', 'discard_stream', 'replace_with_failure'])
-const accountSwitches = new Set<StreamInterceptPolicyAccountSwitch>(['none', 'request_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl'])
-const accountStates = new Set<StreamInterceptPolicyAccountState>(['none', 'runtime_avoidance'])
+const policyActions = new Set<StreamInterceptPolicyAction>([
+  'observe',
+  'drop_event',
+  'fail_stream',
+  'retry_no_avoidance',
+  'retry_next_account',
+  'avoid_account_ttl',
+  'avoid_upstream_bucket_ttl'
+])
 
 const systemDefaultRules: StreamInterceptPolicySummary[] = [
   {
@@ -81,16 +82,12 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI response.failed',
     enabled: true,
-    executionMode: 'intercept',
     priority: 10,
     providerCode: 'openai',
     match: {
       eventTypes: ['response.failed']
     },
-    dataHandling: 'replace_with_failure',
-    retryEnabled: true,
-    accountSwitch: 'request_next_account',
-    accountState: 'none',
+    action: 'retry_no_avoidance',
     notes: 'OpenAI SSE response.failed 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
   },
   {
@@ -99,16 +96,12 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI event:error',
     enabled: true,
-    executionMode: 'intercept',
     priority: 11,
     providerCode: 'openai',
     match: {
       eventTypes: ['error']
     },
-    dataHandling: 'replace_with_failure',
-    retryEnabled: true,
-    accountSwitch: 'request_next_account',
-    accountState: 'none',
+    action: 'retry_no_avoidance',
     notes: 'OpenAI SSE event:error 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
   },
   {
@@ -117,16 +110,12 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI data.error',
     enabled: true,
-    executionMode: 'intercept',
     priority: 12,
     providerCode: 'openai',
     match: {
       jsonPathsExists: ['error']
     },
-    dataHandling: 'replace_with_failure',
-    retryEnabled: true,
-    accountSwitch: 'request_next_account',
-    accountState: 'none',
+    action: 'retry_no_avoidance',
     notes: 'OpenAI SSE data.error 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
   },
   {
@@ -135,16 +124,12 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI response.error',
     enabled: true,
-    executionMode: 'intercept',
     priority: 13,
     providerCode: 'openai',
     match: {
       jsonPathsExists: ['response.error']
     },
-    dataHandling: 'replace_with_failure',
-    retryEnabled: true,
-    accountSwitch: 'request_next_account',
-    accountState: 'none',
+    action: 'retry_no_avoidance',
     notes: 'OpenAI SSE response.error 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
   },
   {
@@ -153,17 +138,13 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI cyber_policy',
     enabled: true,
-    executionMode: 'intercept',
     priority: 14,
     providerCode: 'openai',
     match: {
       errorCodes: ['cyber_policy']
     },
-    dataHandling: 'replace_with_failure',
-    retryEnabled: true,
-    accountSwitch: 'request_next_account',
-    accountState: 'none',
-    notes: '生产确认过的 OpenAI 流内策略错误；客户端支持专用重试信号时可替换为可重试失败事件。'
+    action: 'retry_no_avoidance',
+    notes: '安全拦截过滤替换为可重试失败事件'
   }
 ]
 
@@ -208,22 +189,18 @@ export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): 
   getDatabase()
     .prepare(`
       INSERT INTO stream_intercept_policies (
-        id, name, enabled, execution_mode, priority, provider_code, match_json,
-        data_handling, retry_enabled, account_switch, account_state, avoidance_ttl_seconds, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, name, enabled, priority, provider_code, match_json,
+        action, avoidance_ttl_seconds, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       policy.id,
       policy.name,
       policy.enabled ? 1 : 0,
-      policy.executionMode,
       policy.priority,
       policy.providerCode,
       JSON.stringify(policy.match),
-      policy.dataHandling,
-      policy.retryEnabled ? 1 : 0,
-      policy.accountSwitch,
-      policy.accountState,
+      policy.action,
       policy.avoidanceTtlSeconds ?? null,
       policy.notes ?? null,
       policy.createdAt ?? now,
@@ -248,14 +225,10 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
       UPDATE stream_intercept_policies
       SET name = ?,
           enabled = ?,
-          execution_mode = ?,
           priority = ?,
           provider_code = ?,
           match_json = ?,
-          data_handling = ?,
-          retry_enabled = ?,
-          account_switch = ?,
-          account_state = ?,
+          action = ?,
           avoidance_ttl_seconds = ?,
           notes = ?,
           updated_at = ?
@@ -264,14 +237,10 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
     .run(
       policy.name,
       policy.enabled ? 1 : 0,
-      policy.executionMode,
       policy.priority,
       policy.providerCode,
       JSON.stringify(policy.match),
-      policy.dataHandling,
-      policy.retryEnabled ? 1 : 0,
-      policy.accountSwitch,
-      policy.accountState,
+      policy.action,
       policy.avoidanceTtlSeconds ?? null,
       policy.notes ?? null,
       policy.updatedAt ?? now,
@@ -318,23 +287,18 @@ function normalizePolicyInput(
   }
 ): StreamInterceptPolicySummary {
   const fallback = metadata.fallback
-  const dataHandling = normalizeSetValue(input.dataHandling, dataHandlings, fallback?.dataHandling, 'discard_stream')
-  const retryEnabled = typeof input.retryEnabled === 'boolean' ? input.retryEnabled : fallback?.retryEnabled ?? false
+  const action = normalizeSetValue(input.action, policyActions, fallback?.action, 'avoid_account_ttl')
   return {
     id: metadata.id,
     defaultRule: false,
     editable: true,
     name: stringValue(input.name) || fallback?.name || '未命名流式拦截策略',
     enabled: typeof input.enabled === 'boolean' ? input.enabled : fallback?.enabled ?? true,
-    executionMode: normalizeSetValue(input.executionMode, executionModes, fallback?.executionMode, 'intercept'),
     priority: normalizePriority(input.priority, fallback?.priority),
     providerCode: normalizeProviderCode(input.providerCode, fallback?.providerCode),
     match: normalizeMatch(input.match ?? fallback?.match),
-    dataHandling,
-    retryEnabled,
-    accountSwitch: normalizeSetValue(input.accountSwitch, accountSwitches, fallback?.accountSwitch, 'none'),
-    accountState: normalizeSetValue(input.accountState, accountStates, fallback?.accountState, 'none'),
-    avoidanceTtlSeconds: normalizeTtl(input.avoidanceTtlSeconds, fallback?.avoidanceTtlSeconds),
+    action,
+    avoidanceTtlSeconds: normalizePolicyTtl(input.avoidanceTtlSeconds, action, fallback?.avoidanceTtlSeconds),
     notes: optionalString(input.notes) ?? fallback?.notes,
     createdAt: metadata.createdAt,
     updatedAt: metadata.updatedAt
@@ -342,21 +306,18 @@ function normalizePolicyInput(
 }
 
 function policyFromRow(row: StreamInterceptPolicyRow): StreamInterceptPolicySummary {
+  const action = normalizeSetValue(row.action, policyActions, undefined, 'avoid_account_ttl')
   return {
     id: row.id,
     defaultRule: false,
     editable: true,
     name: row.name,
     enabled: row.enabled === 1,
-    executionMode: normalizeSetValue(row.execution_mode, executionModes, undefined, 'intercept'),
     priority: normalizePriority(row.priority, 100),
     providerCode: normalizeProviderCode(row.provider_code, 'openai'),
     match: normalizeMatch(parseJsonObject(row.match_json)),
-    dataHandling: normalizeSetValue(row.data_handling, dataHandlings, undefined, 'discard_stream'),
-    retryEnabled: row.retry_enabled === 1,
-    accountSwitch: normalizeSetValue(row.account_switch, accountSwitches, undefined, 'none'),
-    accountState: normalizeSetValue(row.account_state, accountStates, undefined, 'none'),
-    avoidanceTtlSeconds: normalizeTtl(row.avoidance_ttl_seconds, undefined),
+    action,
+    avoidanceTtlSeconds: normalizePolicyTtl(row.avoidance_ttl_seconds, action, undefined),
     notes: row.notes ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -391,6 +352,82 @@ function normalizeTtl(value: unknown, fallback: number | undefined): number | un
   const numberValue = Number(value)
   if (!Number.isFinite(numberValue)) return fallback
   return Math.max(1, Math.min(86_400, Math.trunc(numberValue)))
+}
+
+function normalizePolicyTtl(value: unknown, action: StreamInterceptPolicyAction, fallback: number | undefined): number | undefined {
+  if (!actionUsesTtl(action)) return undefined
+  return normalizeTtl(value, fallback ?? 300)
+}
+
+export function actionUsesTtl(action: StreamInterceptPolicyAction): boolean {
+  return action === 'avoid_account_ttl' || action === 'avoid_upstream_bucket_ttl'
+}
+
+export function streamInterceptPolicyActionRuntime(action: StreamInterceptPolicyAction): {
+  executionMode: StreamInterceptPolicyExecutionMode
+  dataHandling: StreamInterceptPolicyDataHandling
+  retryEnabled: boolean
+  accountSwitch: StreamInterceptPolicyAccountSwitch
+  accountState: StreamInterceptPolicyAccountState
+} {
+  switch (action) {
+    case 'observe':
+      return {
+        executionMode: 'dry_run',
+        dataHandling: 'discard_stream',
+        retryEnabled: false,
+        accountSwitch: 'none',
+        accountState: 'none'
+      }
+    case 'drop_event':
+      return {
+        executionMode: 'intercept',
+        dataHandling: 'discard_event',
+        retryEnabled: false,
+        accountSwitch: 'none',
+        accountState: 'none'
+      }
+    case 'fail_stream':
+      return {
+        executionMode: 'intercept',
+        dataHandling: 'replace_with_failure',
+        retryEnabled: false,
+        accountSwitch: 'none',
+        accountState: 'none'
+      }
+    case 'retry_no_avoidance':
+      return {
+        executionMode: 'intercept',
+        dataHandling: 'replace_with_failure',
+        retryEnabled: true,
+        accountSwitch: 'none',
+        accountState: 'none'
+      }
+    case 'retry_next_account':
+      return {
+        executionMode: 'intercept',
+        dataHandling: 'replace_with_failure',
+        retryEnabled: true,
+        accountSwitch: 'request_next_account',
+        accountState: 'none'
+      }
+    case 'avoid_account_ttl':
+      return {
+        executionMode: 'intercept',
+        dataHandling: 'replace_with_failure',
+        retryEnabled: true,
+        accountSwitch: 'avoid_account_ttl',
+        accountState: 'runtime_avoidance'
+      }
+    case 'avoid_upstream_bucket_ttl':
+      return {
+        executionMode: 'intercept',
+        dataHandling: 'replace_with_failure',
+        retryEnabled: true,
+        accountSwitch: 'avoid_upstream_bucket_ttl',
+        accountState: 'none'
+      }
+  }
 }
 
 function normalizeTextList(value: unknown, maxItems: number, maxLength: number): string[] | undefined {

@@ -149,7 +149,20 @@ try {
   assert.equal(invalidSecond.apiKey, undefined, '无效 API Key 缓存命中后仍不应返回运行配置')
   assert.equal(fakeChild.sentOperationCount, 6, '同一无效 API Key 短期重复认证失败应命中负缓存，避免重复请求 DB service')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，并对重复无效 Key 做短期负缓存')
+  const scheduleActiveAt = Date.parse('2026-06-01T00:00:30.000Z')
+  const scheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
+  assert.equal(scheduledFirst.apiKey?.availability_schedule_active, 1, '计划允许时段内应返回可用 API Key')
+  assert.equal(scheduledFirst.accounts.length, 2, '计划允许时段内应返回候选账号')
+  assert.equal(fakeChild.sentOperationCount, 7, '首次读取计划 API Key 应请求 DB service')
+  const scheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
+  assert.equal(scheduledSecond.apiKey?.availability_schedule_active, 1, '计划边界前应继续命中可用缓存')
+  assert.equal(fakeChild.sentOperationCount, 7, '计划边界前重复读取应命中缓存')
+  const scheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
+  assert.equal(scheduledAfterBoundary.apiKey?.availability_schedule_active, 0, '计划边界后应重新计算为停用')
+  assert.equal(scheduledAfterBoundary.accounts.length, 0, '计划停用后不应返回候选账号')
+  assert.equal(fakeChild.sentOperationCount, 8, '即使缓存被高频命中，计划边界后也应重新请求 DB service')
+
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，并在计划边界后重新计算运行态')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -159,7 +172,7 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string; id: string; key: string } {
+function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string; id: string; key: string; scheduledKey: string } {
   const group = repositories.createGroup({
     name: '运行配置缓存混合账号分组',
     providerCode: 'openai',
@@ -197,11 +210,24 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
     name: '运行配置缓存 API Key',
     groupId: group.id
   }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const scheduledApiKey = repositories.createApiKeyRecord({
+    name: '运行配置缓存计划 API Key',
+    groupId: group.id,
+    availabilitySchedule: {
+      enabled: true,
+      timezone: 'UTC',
+      mode: 'allow_windows',
+      windows: [
+        { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '00:01' }
+      ]
+    }
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
   return {
     apiKeyAccountId: apiKeyAccount.id,
     oauthAccountId: oauthAccount.id,
     id: apiKey.id,
-    key: apiKey.key
+    key: apiKey.key,
+    scheduledKey: scheduledApiKey.key
   }
 }
 
@@ -251,6 +277,22 @@ async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceCh
   } finally {
     runtimeConfig.processRole = previousProcessRole
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = previousSend
+  }
+}
+
+async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T): Promise<T> {
+  const originalNow = Date.now
+  Object.defineProperty(Date, 'now', {
+    configurable: true,
+    value: () => nowMs
+  })
+  try {
+    return await operation()
+  } finally {
+    Object.defineProperty(Date, 'now', {
+      configurable: true,
+      value: originalNow
+    })
   }
 }
 

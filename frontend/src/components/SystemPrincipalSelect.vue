@@ -9,6 +9,8 @@
     :selected-ids="normalizedSelectedIds"
     :selected-options="selectedOptions"
     :cache-key="principalCacheKey"
+    :preference-key="preferenceKey ?? principalCacheKey"
+    :ignored-preference-values="ignoredPreferenceValues"
     v-bind="$attrs"
     @change="handleChange"
     @update:value="handleUpdateValue"
@@ -55,6 +57,7 @@ const props = withDefaults(defineProps<{
   selectedIds?: Array<string | undefined>
   selectedAccounts?: Array<SystemAccountPrincipalSummary | undefined>
   selectedTeams?: Array<SystemTeamPrincipalSummary | undefined>
+  preferenceKey?: string
   mode?: SelectMode
   allowClear?: boolean
   disabled?: boolean
@@ -73,6 +76,7 @@ const props = withDefaults(defineProps<{
   selectedIds: () => [],
   selectedAccounts: () => [],
   selectedTeams: () => [],
+  preferenceKey: undefined,
   mode: undefined,
   allowClear: false,
   disabled: false,
@@ -131,6 +135,7 @@ const selectedOptions = computed<SelectOption[]>(() => [
     .map((team) => ({ label: withStatusLabel(teamLabel(team), team.status), value: principalValue('team', team.id) }))
 ])
 const principalCacheKey = computed(() => `system-principal:${props.scope}`)
+const ignoredPreferenceValues = computed(() => props.includeAll ? [props.allValue] : [])
 
 watch(
   () => props.accounts,

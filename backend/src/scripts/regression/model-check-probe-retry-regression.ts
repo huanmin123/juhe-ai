@@ -5,105 +5,111 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { ModelCheckRunDetail } from '../../domain/types.js'
+import type { ModelCheckItemSummary } from '../../domain/types.js'
 
-const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-full-profile-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-probe-retry-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
-runtimeConfig.secret = 'model-check-full-profile-secret'
+runtimeConfig.secret = 'model-check-probe-retry-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 
-const upstream = createMockUpstream()
+const retryState = {
+  transientBasicAttempts: 0,
+  transientStreamAttempts: 0,
+  persistentBasicAttempts: 0
+}
+const upstream = createRetryAwareUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
   await listen(upstream)
   const [
-    repositories,
     { createMockGatewayFixture },
     { runModelCheck },
-    usageRecordQueue,
     gatewayJsonParser
   ] = await Promise.all([
-    import('../../storage/repositories.js'),
     import('../maintenance/mockdata-fixtures.js'),
     import('../../modules/model-checks/model-checks.service.js'),
-    import('../../modules/gateway/usage-record-queue.service.js'),
     import('../../modules/gateway/openai-gateway-json-parser.js')
   ])
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
 
-  const fixture = createMockGatewayFixture({
-    label: '模型检测完整闭环',
-    upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
-    systemAccountId: 'sys_admin',
-    accountCount: 2
-  })
-  const account = fixture.accounts[0]
-  const secondAccount = fixture.accounts[1]
-  assert(account, 'mock fixture should create a target account')
-  assert(secondAccount, 'mock fixture should create a second group account')
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstream)}/v1`
 
-  const accountRun = await runModelCheck({
+  const transientFixture = createMockGatewayFixture({
+    label: 'model-check-retry-transient',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const transientAccount = transientFixture.accounts[0]
+  assert(transientAccount, 'mock fixture should create a transient target account')
+
+  const transientRun = await runModelCheck({
     targetType: 'account',
-    targetId: account.id,
+    targetId: transientAccount.id,
     model: 'gpt-5.5',
     profile: 'full',
     trustedComparison: false
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
-  await assertRunShape(accountRun, {
-    targetType: 'account',
-    targetId: account.id,
-    expectedAccountId: account.id,
-    highConfidence: true
+  }, access)
+  const transientBasic = requiredCheck(transientRun.checks, 'target.responses_basic')
+  const transientStream = requiredCheck(transientRun.checks, 'target.responses_stream')
+  assert.equal(transientRun.level, 'high_confidence', '瞬态上游异常恢复后不应误判失败')
+  assert.equal(retryState.transientBasicAttempts, 3, '瞬态异常 basic 探针应在同一账号上尝试三次')
+  assert.equal(retryState.transientStreamAttempts, 3, '瞬态流式异常应在同一账号上尝试三次')
+  assert.equal(transientBasic.status, 'passed', '第 3 次恢复后 basic 探针应通过')
+  assert.equal(transientBasic.evidenceSummary.attemptCount, 3, 'basic 探针应记录总尝试次数')
+  assert.equal(transientBasic.evidenceSummary.retryAttemptCount, 2, 'basic 探针应记录重试次数')
+  assert.deepEqual(transientBasic.evidenceSummary.attemptStatusCodes, [503, 503, 200], 'basic 探针应记录每次尝试状态码')
+  assert.equal(transientStream.status, 'passed', '第 3 次恢复后流式探针应通过')
+  assert.equal(transientStream.evidenceSummary.attemptCount, 3, '流式探针应记录总尝试次数')
+  assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [200, 200, 200], '流式探针应记录每次 HTTP 状态码')
+
+  const persistentFixture = createMockGatewayFixture({
+    label: 'model-check-retry-persistent',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
   })
-  assert.equal(accountRun.accountId, account.id, '账户目标报告应记录被测账号 ID')
+  const persistentAccount = persistentFixture.accounts[0]
+  assert(persistentAccount, 'mock fixture should create a persistent target account')
 
-  usageRecordQueue.flushUsageRecordQueue({ drain: true, retryOnFailure: false })
-  const runTraceIds = new Set(accountRun.checks.map((check) => check.traceId).filter((traceId): traceId is string => Boolean(traceId)))
-  const usageRows = repositories.listUsageRecords({ systemAccountId: 'sys_admin', role: 'admin' }, {
-    page: 1,
-    pageSize: 200
-  }).items.filter((row) => runTraceIds.has(row.traceId))
-  assert(usageRows.length > 0, '账户检测应产生可按 traceId 追溯的真实使用记录')
-  assert(usageRows.some((row) => row.accountId === account.id), '账户检测的模型请求应命中被测账号')
-  assert(!usageRows.some((row) => row.accountId && row.accountId !== account.id), '账户目标检测不应静默切到同分组其他账号')
-  assert(!usageRows.some((row) => row.accountId === secondAccount.id), '账户目标检测不应命中第二个分组账号')
+  const persistentRun = await runModelCheck({
+    targetType: 'account',
+    targetId: persistentAccount.id,
+    model: 'gpt-5.5',
+    profile: 'full',
+    trustedComparison: false
+  }, access)
+  const persistentBasic = requiredCheck(persistentRun.checks, 'target.responses_basic')
+  assert.equal(persistentRun.level, 'unavailable', '连续重试仍失败时应落不可检测')
+  assert.equal(retryState.persistentBasicAttempts, 3, '持续异常 basic 探针应达到最大尝试次数')
+  assert.equal(persistentBasic.status, 'failed', '持续异常时 basic 探针应失败')
+  assert.equal(persistentBasic.evidenceSummary.attemptCount, 3, '持续异常报告应记录总尝试次数')
+  assert.equal(persistentBasic.evidenceSummary.retryAttemptCount, 2, '持续异常报告应记录重试次数')
+  assert.deepEqual(persistentBasic.evidenceSummary.attemptStatusCodes, [503, 503, 503], '持续异常报告应记录全部失败状态码')
+  assert(!persistentRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), 'basic 连续失败后不应继续执行重型行为探针')
 
-  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环，辅助模型对照与长上下文探针通过')
+  console.log('模型检测探针重试回归通过：瞬态异常同账号重试后恢复，持续异常三次后失败')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
 }
 
-async function assertRunShape(run: ModelCheckRunDetail, options: {
-  targetType: 'account'
-  targetId: string
-  expectedAccountId?: string
-  highConfidence: boolean
-}): Promise<void> {
-  assert.equal(run.status, 'completed')
-  assert.equal(run.targetType, options.targetType)
-  assert.equal(run.targetId, options.targetId)
-  assert.equal(run.level, options.highConfidence ? 'high_confidence' : run.level)
-  assert(run.score >= 90, `完整检测分数应足够高，actual=${run.score}`)
-  assert(run.checks.some((item) => item.itemKey === 'target.long_context' && item.status === 'passed'), '完整检测应包含并通过长上下文探针')
-  assert(run.checks.some((item) => item.itemKey === 'target.cross_model' && item.status === 'passed'), '完整检测应包含并通过辅助模型对照')
-  assert(run.checks.some((item) => item.itemKey === 'target.stability' && item.status === 'passed'), '完整检测应包含并通过稳定性探针')
-  assert(run.checks.every((item) => item.evidenceSummary.modelMismatch !== true), '通过场景不应出现模型不匹配证据')
-  const serialized = JSON.stringify(run)
-  assert(!serialized.includes('sk-mockdata'), '检测报告不应泄露 mock 上游 API Key')
-  assert(!serialized.includes('Authorization'), '检测报告不应泄露 Authorization 头')
-  if (options.expectedAccountId) {
-    assert.equal(run.accountId, options.expectedAccountId)
-  }
+function requiredCheck(checks: ModelCheckItemSummary[], itemKey: string): ModelCheckItemSummary {
+  const check = checks.find((item) => item.itemKey === itemKey)
+  assert(check, `检测报告应包含 ${itemKey}`)
+  return check
 }
 
-function createMockUpstream(): http.Server {
+function createRetryAwareUpstream(): http.Server {
   return http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const chunks: Buffer[] = []
@@ -123,6 +129,29 @@ function createMockUpstream(): http.Server {
         return
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
+        const authorization = String(req.headers.authorization ?? '').toLowerCase()
+        const bodyText = JSON.stringify(body).toUpperCase()
+        if (bodyText.includes('OK-MODEL-CHECK')) {
+          if (authorization.includes('model-check-retry-transient')) {
+            retryState.transientBasicAttempts += 1
+            if (retryState.transientBasicAttempts <= 2) {
+              sendError(res, '模拟瞬态上游异常')
+              return
+            }
+          }
+          if (authorization.includes('model-check-retry-persistent')) {
+            retryState.persistentBasicAttempts += 1
+            sendError(res, '模拟持续上游异常')
+            return
+          }
+        }
+        if (body.stream === true && bodyText.includes('STREAM-OK') && authorization.includes('model-check-retry-transient')) {
+          retryState.transientStreamAttempts += 1
+          if (retryState.transientStreamAttempts <= 2) {
+            sendStreamFailure(res, String(body.model ?? 'gpt-5.5'), '模拟流式临时异常')
+            return
+          }
+        }
         const outputText = outputForProbe(body)
         if (body.stream === true) {
           sendStream(res, String(body.model ?? 'gpt-5.5'), outputText)
@@ -140,7 +169,7 @@ function createMockUpstream(): http.Server {
 function responsePayload(body: Record<string, unknown>, outputText: string): Record<string, unknown> {
   const hasTool = Array.isArray(body.tools)
   return {
-    id: 'resp_model_check_full_profile',
+    id: 'resp_model_check_probe_retry',
     object: 'response',
     status: 'completed',
     model: String(body.model ?? 'gpt-5.5'),
@@ -186,6 +215,26 @@ function sendStream(res: http.ServerResponse, model: string, outputText: string)
   res.end()
 }
 
+function sendStreamFailure(res: http.ServerResponse, model: string, message: string): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive'
+  })
+  res.write(`event: response.failed\ndata: ${JSON.stringify({
+    type: 'response.failed',
+    response: {
+      status: 'failed',
+      model,
+      error: {
+        code: 'server_error',
+        message
+      }
+    }
+  })}\n\n`)
+  res.end()
+}
+
 function outputForProbe(body: Record<string, unknown>): string {
   const text = JSON.stringify(body).toUpperCase()
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
@@ -207,6 +256,11 @@ function outputForProbe(body: Record<string, unknown>): string {
 function sendJson(res: http.ServerResponse, body: unknown): void {
   res.writeHead(200, { 'content-type': 'application/json' })
   res.end(JSON.stringify(body))
+}
+
+function sendError(res: http.ServerResponse, message: string): void {
+  res.writeHead(503, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ error: { message } }))
 }
 
 function parseJson(text: string): Record<string, unknown> {

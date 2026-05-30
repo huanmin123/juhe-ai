@@ -1,9 +1,18 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { ApiKeyGroupBindingSummary, ApiKeySummary } from '../domain/types.js'
+import {
+  normalizeApiKeyGroupBindingWeight,
+  normalizeApiKeyGroupRouteStrategy
+} from '../domain/api-key-routing.js'
 import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { apiKeyGroupOwnerAndProvider, apiKeySystemAccountId, canBindApiKeyGroup, canManageApiKeyOwner } from './api-key-access.js'
+import {
+  apiKeyAvailabilityScheduleFromRequest,
+  apiKeyAvailabilityScheduleJson,
+  isApiKeyAvailabilityScheduleInputPresent
+} from './api-key-availability-schedule.js'
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
 import { apiKeySummariesFromRows, type ApiKeyRow } from './api-key-mappers.js'
@@ -46,6 +55,7 @@ type ApiKeyGroupBindingStatus = 'active' | 'disabled'
 interface ApiKeyGroupBindingInput {
   groupId: string
   priority: number
+  weight: number
   status: ApiKeyGroupBindingStatus
 }
 
@@ -109,10 +119,12 @@ function apiKeyListColumns(): string {
     'api_keys.key_secret_encrypted',
     'api_keys.status',
     'api_keys.group_id',
+    'api_keys.group_route_strategy',
     'groups.name AS group_name',
     'system_accounts.display_name AS group_owner_system_account_name',
     'api_keys.expires_at',
-    'api_keys.quota_limits_json'
+    'api_keys.quota_limits_json',
+    'api_keys.availability_schedule_json'
   ].join(', ')
 }
 
@@ -135,6 +147,8 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const primaryBinding = primaryActiveApiKeyGroupBinding(bindings)
   assertApiKeyPrimaryGroupInputMatchesBindings(input, primaryBinding.groupId)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
+  const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
+  const groupRouteStrategy = normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy ?? input.group_route_strategy)
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
@@ -147,9 +161,11 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     groupName: primaryBinding.groupName,
     primaryGroupId: primaryBinding.groupId,
     primaryGroupName: primaryBinding.groupName,
+    groupRouteStrategy,
     groupBindings: apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), bindings),
     expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at),
     quotaLimits,
+    availabilitySchedule,
     usage: emptyAccountUsageSummary(),
     key
   }
@@ -159,10 +175,10 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   try {
     database
       .prepare(`
-        INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_route_strategy, expires_at, quota_limits_json, availability_schedule_json, scopes_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
+      .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, record.groupRouteStrategy, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), apiKeyAvailabilityScheduleJson(record.availabilitySchedule), JSON.stringify(input.scopes ?? []), now, now)
     replaceApiKeyGroupBindings(database, record.id, systemAccountId, bindings, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -209,6 +225,15 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   const nextExpiresAt = hasExpiresAtInput
     ? optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at) ?? undefined
     : current.expiresAt
+  const hasAvailabilityScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
+  const nextAvailabilitySchedule = hasAvailabilityScheduleInput
+    ? apiKeyAvailabilityScheduleFromRequest(input)
+    : current.availabilitySchedule
+  const hasGroupRouteStrategyInput = Object.prototype.hasOwnProperty.call(input, 'groupRouteStrategy')
+    || Object.prototype.hasOwnProperty.call(input, 'group_route_strategy')
+  const nextGroupRouteStrategy = hasGroupRouteStrategyInput
+    ? normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy ?? input.group_route_strategy)
+    : current.groupRouteStrategy
   const next: ApiKeySummary = {
     ...current,
     name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
@@ -218,9 +243,11 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     groupName: primaryBinding?.groupName ?? current.groupName,
     primaryGroupId: primaryBinding?.groupId ?? current.primaryGroupId,
     primaryGroupName: primaryBinding?.groupName ?? current.primaryGroupName,
+    groupRouteStrategy: nextGroupRouteStrategy,
     groupBindings: nextBindings ? apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), nextBindings) : current.groupBindings,
     expiresAt: nextExpiresAt,
-    quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits())
+    quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits()),
+    availabilitySchedule: nextAvailabilitySchedule
   }
   assertApiKeyNameAvailable(systemAccountId, next.name, id)
   const database = getDatabase()
@@ -228,8 +255,8 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
-      .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, expires_at = ?, quota_limits_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-      .run(next.name, next.description ?? null, next.status, next.groupId, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), now, id, systemAccountId)
+      .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_route_strategy = ?, expires_at = ?, quota_limits_json = ?, availability_schedule_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+      .run(next.name, next.description ?? null, next.status, next.groupId, next.groupRouteStrategy, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), apiKeyAvailabilityScheduleJson(next.availabilitySchedule), now, id, systemAccountId)
     if (nextBindings) {
       replaceApiKeyGroupBindings(database, id, systemAccountId, nextBindings, now)
     }
@@ -326,7 +353,7 @@ function apiKeyGroupBindingInputsFromRequest(input: Record<string, unknown>): Ap
     if (!groupId) {
       throw new Error('API Key 分组无效')
     }
-    return [{ groupId, priority: 1, status: 'active' }]
+    return [{ groupId, priority: 1, weight: 1, status: 'active' }]
   }
   return undefined
 }
@@ -344,7 +371,7 @@ function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiK
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('API Key 分组绑定参数无效')
   }
-  const item = value as { groupId?: unknown; group_id?: unknown; priority?: unknown; status?: unknown }
+  const item = value as { groupId?: unknown; group_id?: unknown; priority?: unknown; weight?: unknown; status?: unknown }
   const groupId = optionalString(item.groupId ?? item.group_id)?.trim()
   if (!groupId) {
     throw new Error('API Key 分组无效')
@@ -354,7 +381,7 @@ function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiK
     ? rawPriority
     : index + 1
   const status = item.status === 'disabled' ? 'disabled' : 'active'
-  return { groupId, priority, status }
+  return { groupId, priority, weight: normalizeApiKeyGroupBindingWeight(item.weight), status }
 }
 
 function normalizeApiKeyGroupBindings(inputs: ApiKeyGroupBindingInput[], systemAccountId: string): ApiKeyGroupBindingWrite[] {
@@ -384,6 +411,7 @@ function normalizeApiKeyGroupBindings(inputs: ApiKeyGroupBindingInput[], systemA
     return {
       groupId,
       priority: input.priority,
+      weight: input.weight,
       status: input.status
     }
   })
@@ -408,6 +436,7 @@ function normalizeApiKeyGroupBindings(inputs: ApiKeyGroupBindingInput[], systemA
       }
       return {
         ...binding,
+        weight: normalizeApiKeyGroupBindingWeight(binding.weight),
         groupName: group.name ?? undefined,
         providerCode: group.provider_code,
         groupEnabled: group.enabled !== 0
@@ -451,11 +480,11 @@ function replaceApiKeyGroupBindings(
 ): void {
   database.prepare('DELETE FROM api_key_group_bindings WHERE api_key_id = ?').run(apiKeyId)
   const statement = database.prepare(`
-    INSERT INTO api_key_group_bindings (id, api_key_id, system_account_id, group_id, priority, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO api_key_group_bindings (id, api_key_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const binding of bindings) {
-    statement.run(newId('akgb'), apiKeyId, systemAccountId, binding.groupId, binding.priority, binding.status, now, now)
+    statement.run(newId('akgb'), apiKeyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now)
   }
 }
 
@@ -466,6 +495,7 @@ function apiKeyGroupBindingSummariesForRecord(idPrefix: string, bindings: ApiKey
     groupName: binding.groupName,
     providerCode: binding.providerCode,
     priority: binding.priority,
+    weight: binding.weight,
     status: binding.status,
     groupEnabled: binding.groupEnabled
   }))

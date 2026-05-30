@@ -128,11 +128,17 @@ try {
     credentials: { api_key: 'sk-resource-authorization-expire-boundary', base_url: 'https://api.openai.com/v1' },
     accountExpiresAt
   }, ownerAccess)
+  const granteeQuotaGroup = repositories.createGroup({
+    name: '授权额度拦截分组',
+    providerCode: 'openai',
+    enabled: true
+  }, granteeAccess)
   assert.throws(() => repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: account.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeQuotaGroup.id,
     expiresAt: new Date(Date.now() - 60_000).toISOString()
   }, ownerAccess), /授权到期时间不能早于当前时间/, '新增授权不应允许过期时间早于当前时间')
   assert.throws(() => repositories.createResourceAuthorization({
@@ -140,6 +146,7 @@ try {
     resourceId: account.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeQuotaGroup.id,
     expiresAt: new Date(Date.parse(accountExpiresAt) + 60_000).toISOString()
   }, ownerAccess), /授权到期时间不能晚于账户到期时间/, '新增账户授权不应允许晚于账户到期时间')
   const accountAuthorization = repositories.createResourceAuthorization({
@@ -147,17 +154,13 @@ try {
     resourceId: account.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeQuotaGroup.id,
     expiresAt: validAuthorizationExpiresAt,
     limits: {
       daily: { enabled: true, limit: 12 },
       total: { enabled: true, limit: 30 }
     }
   }, ownerAccess)
-  const granteeQuotaGroup = repositories.createGroup({
-    name: '授权额度拦截分组',
-    providerCode: 'openai',
-    enabled: true
-  }, granteeAccess)
   const quotaAuthorizedAccount = authorizedInstanceForSource(account.id, granteeAccess)
   const quotaBinding = repositories.setAccountGroup(quotaAuthorizedAccount.id, granteeQuotaGroup.id, granteeAccess)
   assert.equal(quotaBinding?.boundGroupId, granteeQuotaGroup.id, '额度账户应能先绑定到被授权人的分组')
@@ -172,6 +175,7 @@ try {
     resourceId: migrationSourceAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeQuotaGroup.id,
     expiresAt: validAuthorizationExpiresAt
   }, ownerAccess)
   const migrationSourceAuthorizedAccount = authorizedInstanceForSource(migrationSourceAccount.id, granteeAccess)
@@ -218,6 +222,7 @@ try {
     resourceId: ownerPausedAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeQuotaGroup.id,
     expiresAt: validAuthorizationExpiresAt
   }, ownerAccess)
   const ownerPausedAuthorizedInstance = authorizedInstanceForSource(ownerPausedAccount.id, granteeAccess)

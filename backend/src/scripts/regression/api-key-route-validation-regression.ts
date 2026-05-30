@@ -48,6 +48,10 @@ interface ApiEnvelope<T> {
   message?: string
 }
 
+interface ApiKeySummary {
+  id: string
+}
+
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
   try {
@@ -71,7 +75,59 @@ async function main(): Promise<void> {
       groupBindings: [{ groupId: '' }]
     }, 'API Key 分组无效')
 
-    console.log('API Key 路由校验回归通过：创建接口缺少分组、空分组绑定和空分组 ID 均返回中文错误')
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '非法分组路由策略回归 Key',
+      groupRouteStrategy: 'random_strategy',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }]
+    }, '分组路由策略无效')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '非法分组权重回归 Key',
+      groupRouteStrategy: 'weighted_round_robin',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin', weight: 101 }]
+    }, '分组权重必须在 1-100 之间')
+
+    const validApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
+      name: '更新校验回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }]
+    })
+    await assertPatchBadRequestMessage(baseUrl, adminCookie, validApiKey.id, {
+      groupRouteStrategy: 'random_strategy'
+    }, '分组路由策略无效')
+    await assertPatchBadRequestMessage(baseUrl, adminCookie, validApiKey.id, {
+      groupRouteStrategy: 'weighted_round_robin',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin', weight: 0 }]
+    }, '分组权重必须在 1-100 之间')
+    const disabledApiKey = await patchEnvelope<ApiKeySummary & { status: string }>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}`, adminCookie, {
+      status: 'disabled'
+    })
+    assert(disabledApiKey.status === 'disabled', '仅更新 API Key 状态时不应要求重新提交分组绑定')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '非法自动启停计划回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      availabilitySchedule: {
+        enabled: true,
+        timezone: 'Asia/Shanghai',
+        windows: [
+          { daysOfWeek: [1], start: '22:00', end: '22:00' }
+        ]
+      }
+    }, 'API Key 自动启停计划开始时间和停止时间不能相同')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '非法自动启停星期回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      availabilitySchedule: {
+        enabled: true,
+        timezone: 'Asia/Shanghai',
+        windows: [
+          { daysOfWeek: [1, 9], start: '22:00', end: '23:55' }
+        ]
+      }
+    }, 'API Key 自动启停计划重复日期无效')
+
+    console.log('API Key 路由校验回归通过：创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法自动启停时段和非法星期均返回中文错误')
   } finally {
     operationLogQueue.flushAllOperationLogQueue()
     await closeServer(appServer)
@@ -94,6 +150,18 @@ async function assertBadRequestMessage(baseUrl: string, cookie: string, body: un
   assert(response.status === 400, `创建 API Key 应返回 400，实际 HTTP ${response.status}: ${text}`)
   const parsed = JSON.parse(text) as { message?: string }
   assert(parsed.message === expectedMessage, `创建 API Key 错误文案异常：${parsed.message}`)
+}
+
+async function assertPatchBadRequestMessage(baseUrl: string, cookie: string, id: string, body: unknown, expectedMessage: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/__aisys__/api/api-keys/${id}`, {
+    method: 'PATCH',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert(response.status === 400, `更新 API Key 应返回 400，实际 HTTP ${response.status}: ${text}`)
+  const parsed = JSON.parse(text) as { message?: string }
+  assert(parsed.message === expectedMessage, `更新 API Key 错误文案异常：${parsed.message}`)
 }
 
 async function login(baseUrl: string): Promise<string> {
@@ -124,6 +192,24 @@ function parseCaptchaCode(image: string): string {
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie?: string): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, cookie ? { headers: { cookie } } : undefined)
+  return unwrapEnvelope<T>(response, path)
+}
+
+async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  return unwrapEnvelope<T>(response, path)
+}
+
+async function patchEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'PATCH',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
   return unwrapEnvelope<T>(response, path)
 }
 

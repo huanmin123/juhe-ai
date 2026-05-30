@@ -56,11 +56,16 @@ try {
     mustChangePassword: false
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '脏缓存主分组',
     providerCode: 'openai',
     description: '用于验证授权分组摘要展示'
   }, ownerAccess)
+  const granteeTargetGroup = repositories.createGroup({
+    name: '脏缓存被授权人目标分组',
+    providerCode: 'openai'
+  }, granteeAccess)
   const account = repositories.createAccount({
     providerCode: 'openai',
     groupId: primaryGroup.id,
@@ -121,6 +126,7 @@ try {
     resourceId: account.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeTargetGroup.id,
     remark: '验证全量失效只写哨兵'
   }, ownerAccess)
 

@@ -78,6 +78,11 @@ try {
     },
     groupId: group.id
   }, ownerAccess)
+  const granteeAGroup = repositories.createGroup({
+    name: '授权分页用户A目标分组',
+    providerCode: 'openai',
+    enabled: true
+  }, granteeAAccess)
 
   seedTeamWindow({
     systemAccountId: owner.id,
@@ -189,7 +194,8 @@ try {
     resourceType: 'account',
     resourceId: account.id,
     granteeType: 'system_account',
-    granteeId: granteeA.id
+    granteeId: granteeA.id,
+    targetGroupId: granteeAGroup.id
   }, ownerAccess)
   const runtimeAuthorizationId = runtimeAuthorizationIdFor(account.id, granteeA.id)
   seedUsageScopeRangeWindow(owner.id, 'account_authorization', runtimeAuthorizationId, 9)

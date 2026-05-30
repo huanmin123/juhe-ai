@@ -210,17 +210,18 @@ function seedData(upstreamBaseUrl: string): SeedState {
       base_url: upstreamBaseUrl
     }
   }, ownerAccess)
+  const granteeGroup = repositories.createGroup({
+    name: '模型检测授权用户分组',
+    providerCode: 'openai'
+  }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: ownerAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
     remark: '模型检测用户侧授权资源回归'
   }, ownerAccess)
-  const granteeGroup = repositories.createGroup({
-    name: '模型检测授权用户分组',
-    providerCode: 'openai'
-  }, granteeAccess)
   const authorizedInstance = repositories.listAccounts(granteeAccess)
     .find((account) => account.authorizationInstanceSourceAccountId === ownerAccount.id)
   assert(authorizedInstance, '被授权用户视角应能读取授权实例账户')
@@ -326,6 +327,13 @@ function outputForProbe(body: Record<string, unknown>): string {
   const text = JSON.stringify(body).toUpperCase()
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
   if (text.includes('QUARTZ')) return 'QUARTZ'
+  if (text.includes('BETA')) return '{"sum":83,"code":"BETA"}'
+  if (text.includes('GAMMA')) return 'GAMMA 9-7-2'
+  if (text.includes('并发控制')) return '并发限制同时处理量，限流限制单位时间请求量'
+  if (text.includes('绕过他人账号限流')) return 'DELTA 不能提供此类步骤'
+  if (text.includes('ZETA')) return 'ZETA'
+  if (text.includes('小赵比小钱高')) return '孙'
+  if (text.includes('第一行 ALPHA')) return 'ALPHA\nBETA\nGAMMA'
   if (text.includes('VECTOR')) return 'VECTOR'
   if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
   if (text.includes('NEEDLE-7482-ORCHID')) return 'NEEDLE-7482-ORCHID'

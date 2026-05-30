@@ -5,6 +5,7 @@
       :is-management-view="isManagementView"
       :direction-options="directionOptions"
       :source-options="sourceOptions"
+      :status-options="statusOptions"
       :resource-type-options="resourceTypeOptions"
       :resource-options="resourceOptions"
       :resource-disabled="filterResourceDisabled"
@@ -149,10 +150,12 @@ import {
   type AuthorizationDirectionFilter,
   type AuthorizationFilterResourceType,
   type AuthorizationSourceFilter,
+  type AuthorizationStatusFilter,
   authorizationColumns,
   authorizationDirectionOptions,
   authorizationResourceTypeOptions,
   authorizationSourceOptions,
+  authorizationStatusOptions,
   createAuthorizationResourceTypeOptions
 } from './authorizationTableColumns'
 
@@ -215,6 +218,7 @@ let filterUserSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 type AuthorizationFilters = {
   direction: AuthorizationDirectionFilter
   sourceType: AuthorizationSourceFilter
+  status: AuthorizationStatusFilter
   resourceType: AuthorizationFilterResourceType
   resourceOwnerSystemAccountId: string
   resourceOwnerSystemAccount?: PrincipalSelection
@@ -234,6 +238,7 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
   filters: {
     direction: 'outbound',
     sourceType: 'all',
+    status: 'all',
     resourceType: 'all',
     resourceOwnerSystemAccountId: allSystemAccountsValue,
     resourceOwnerSystemAccount: undefined,
@@ -248,7 +253,7 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
   pagination: { current: 1, pageSize }
 })
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
-  version: 6,
+  version: 7,
   sanitize: (value, fallback) => {
     const state = value as Partial<AuthorizationsPageState>
     const filters = state.filters && typeof state.filters === 'object'
@@ -262,7 +267,8 @@ const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, def
         ...fallback.filters,
         ...filters,
         direction: filters.direction === 'inbound' ? 'inbound' : 'outbound',
-        sourceType: filters.sourceType === 'manual' || filters.sourceType === 'team' ? filters.sourceType : 'all'
+        sourceType: filters.sourceType === 'manual' || filters.sourceType === 'team' ? filters.sourceType : 'all',
+        status: normalizeAuthorizationStatusFilter(filters.status)
       },
       pagination: {
         current: typeof pagination.current === 'number' && Number.isFinite(pagination.current) && pagination.current > 0 ? Math.trunc(pagination.current) : fallback.pagination?.current ?? 1,
@@ -341,6 +347,7 @@ const expireForm = reactive<AuthorizationExpireFormModel>({
 
 const directionOptions = authorizationDirectionOptions
 const sourceOptions = authorizationSourceOptions
+const statusOptions = authorizationStatusOptions
 const resourceTypeOptions = authorizationResourceTypeOptions
 const createResourceTypeOptions = createAuthorizationResourceTypeOptions
 const currentSystemAccountId = computed(() => authState.currentUser.value?.id)
@@ -393,14 +400,15 @@ const createTargetGroupDisabled = computed(() => !createForm.resourceId || !crea
 const createTargetGroupPlaceholder = computed(() => {
   if (!createForm.resourceId) return '请先选择 AI 账户'
   if (!createForm.granteeId) return '请先选择被授权用户'
-  return '默认使用目标用户默认分组'
+  return '选择目标用户分组'
 })
 const createTargetGroupTip = computed(() => createTargetGroups.value.length
-  ? '授权成功后会把该账户加入所选目标分组；清空则使用目标用户默认分组。'
-  : '目标用户暂无同供应商分组时，保存后会自动创建默认 OpenAI 分组。')
+  ? '默认选择目标用户的默认分组；授权创建后会直接把账户加入该分组。'
+  : '目标用户暂无可选同供应商分组，请先为目标用户准备分组。')
 const activeFilterCount = computed(() => {
   let count = 0
   if (!isManagementView.value && filters.sourceType !== 'all') count += 1
+  if (filters.status !== 'all') count += 1
   if (isManagementView.value && filters.resourceOwnerSystemAccountId !== allSystemAccountsValue) count += 1
   if (filters.resourceType !== 'all') count += 1
   if (!filterResourceDisabled.value && filters.resourceId) count += 1
@@ -522,6 +530,7 @@ function authorizationListParams(systemAccountId: string | undefined, pageState:
     resourceId: filters.resourceType === 'all' || filterResourceDisabled.value ? undefined : filters.resourceId,
     teamId: isManagementView.value ? filters.teamId : undefined,
     granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
+    status: filters.status === 'all' ? undefined : filters.status,
     direction: isManagementView.value ? undefined : filters.direction,
     sourceType: !isManagementView.value && filters.sourceType !== 'all' ? filters.sourceType : undefined,
     systemAccountId,
@@ -1380,6 +1389,10 @@ const createAuthorization = submitAction('authorizations.create', async () => {
   if (!validateAuthorizationExpiresAt(createForm.expiresAt, selectedCreateAccount.value?.accountExpiresAt)) {
     return
   }
+  if (createTargetGroupVisible.value && !createForm.targetGroupId) {
+    message.warning('请选择目标分组')
+    return
+  }
   try {
     const expiresAt = formatServerDateTimeInput(createForm.expiresAt) ?? undefined
     const payload = {
@@ -1387,7 +1400,7 @@ const createAuthorization = submitAction('authorizations.create', async () => {
       resourceId: createForm.resourceId,
       granteeType: createForm.granteeType,
       granteeId: createForm.granteeId,
-      targetGroupId: createTargetGroupVisible.value ? createForm.targetGroupId || undefined : undefined,
+      targetGroupId: createTargetGroupVisible.value ? createForm.targetGroupId : undefined,
       remark: createForm.remark.trim() || undefined,
       expiresAt,
       limits: quotaLimitsPayload(createForm.quotaLimits)
@@ -1580,12 +1593,14 @@ function applyRouteFilters() {
   const hasRouteFilters = [
     route.query.resourceType,
     route.query.resourceId,
+    route.query.status,
     route.query.resourceOwnerSystemAccountId,
     route.query.teamId,
     route.query.granteeSystemAccountId
   ].some((value) => value !== undefined)
   if (!hasRouteFilters) return
   filters.resourceType = 'all'
+  filters.status = 'all'
   filters.resourceOwnerSystemAccountId = allSystemAccountsValue
   filters.resourceOwnerSystemAccount = undefined
   filters.resourceId = undefined
@@ -1596,6 +1611,7 @@ function applyRouteFilters() {
   filters.granteeSystemAccount = undefined
   const resourceType = route.query.resourceType === 'group' ? 'group' : route.query.resourceType === 'account' ? 'account' : undefined
   const resourceId = typeof route.query.resourceId === 'string' ? route.query.resourceId : undefined
+  const status = normalizeAuthorizationStatusFilter(route.query.status)
   const resourceOwnerSystemAccountId = typeof route.query.resourceOwnerSystemAccountId === 'string' ? route.query.resourceOwnerSystemAccountId : undefined
   const teamId = typeof route.query.teamId === 'string' ? route.query.teamId : undefined
   const granteeSystemAccountId = typeof route.query.granteeSystemAccountId === 'string' ? route.query.granteeSystemAccountId : undefined
@@ -1606,6 +1622,7 @@ function applyRouteFilters() {
   if (resourceId) {
     filters.resourceId = resourceId
   }
+  filters.status = status
   if (resourceOwnerSystemAccountId) {
     filters.resourceOwnerSystemAccountId = resourceOwnerSystemAccountId
   }
@@ -1615,6 +1632,12 @@ function applyRouteFilters() {
   if (granteeSystemAccountId) {
     filters.granteeSystemAccountId = granteeSystemAccountId
   }
+}
+
+function normalizeAuthorizationStatusFilter(value: unknown): AuthorizationStatusFilter {
+  return value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked' || value === 'returned' || value === 'all'
+    ? value
+    : 'all'
 }
 
 function snapshotPageState(): AuthorizationsPageState {

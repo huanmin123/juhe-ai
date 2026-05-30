@@ -81,6 +81,14 @@ try {
     credentials: { api_key: 'sk-authorized-owned-target', base_url: 'https://api.openai.com/v1' },
     priority: 0
   }, granteeAccess)
+  const granteeGroup = repositories.createGroup({
+    name: '被授权人调度分组',
+    providerCode: 'openai'
+  }, granteeAccess)
+  const otherGranteeGroup = repositories.createGroup({
+    name: '另一个被授权人调度分组',
+    providerCode: 'openai'
+  }, otherGranteeAccess)
 
   for (const account of [superAccount, normalAccount, fallbackAccount]) {
     repositories.createResourceAuthorization({
@@ -88,6 +96,7 @@ try {
       resourceId: account.id,
       granteeType: 'system_account',
       granteeId: grantee.id,
+      targetGroupId: granteeGroup.id,
       remark: '调度标记回归'
     }, ownerAccess)
     repositories.createResourceAuthorization({
@@ -95,6 +104,7 @@ try {
       resourceId: account.id,
       granteeType: 'system_account',
       granteeId: otherGrantee.id,
+      targetGroupId: otherGranteeGroup.id,
       remark: '调度标记第二被授权人回归'
     }, ownerAccess)
   }
@@ -105,14 +115,6 @@ try {
   const otherGranteeNormalAccount = authorizedInstanceForSource(normalAccount.id, otherGranteeAccess)
   const otherGranteeFallbackAccount = authorizedInstanceForSource(fallbackAccount.id, otherGranteeAccess)
 
-  const granteeGroup = repositories.createGroup({
-    name: '被授权人调度分组',
-    providerCode: 'openai'
-  }, granteeAccess)
-  const otherGranteeGroup = repositories.createGroup({
-    name: '另一个被授权人调度分组',
-    providerCode: 'openai'
-  }, otherGranteeAccess)
   for (const account of [granteeSuperAccount, granteeNormalAccount, granteeFallbackAccount, granteeOwnedAccount]) {
     const bound = repositories.setAccountGroup(account.id, granteeGroup.id, granteeAccess)
     assert(bound, `授权账户绑定分组失败：${account.name}`)

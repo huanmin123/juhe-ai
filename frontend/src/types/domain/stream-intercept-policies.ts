@@ -1,7 +1,11 @@
-export type StreamInterceptPolicyExecutionMode = 'intercept' | 'dry_run'
-export type StreamInterceptPolicyDataHandling = 'discard_event' | 'discard_stream' | 'replace_with_failure'
-export type StreamInterceptPolicyAccountSwitch = 'none' | 'request_next_account' | 'avoid_account_ttl' | 'avoid_upstream_bucket_ttl'
-export type StreamInterceptPolicyAccountState = 'none' | 'runtime_avoidance'
+export type StreamInterceptPolicyAction =
+  | 'observe'
+  | 'drop_event'
+  | 'fail_stream'
+  | 'retry_no_avoidance'
+  | 'retry_next_account'
+  | 'avoid_account_ttl'
+  | 'avoid_upstream_bucket_ttl'
 
 export interface StreamInterceptPolicyMatch {
   eventTypes?: string[]
@@ -19,13 +23,9 @@ export interface StreamInterceptPolicySummary {
   editable: boolean
   name: string
   enabled: boolean
-  executionMode: StreamInterceptPolicyExecutionMode
   priority: number
   match: StreamInterceptPolicyMatch
-  dataHandling: StreamInterceptPolicyDataHandling
-  retryEnabled: boolean
-  accountSwitch: StreamInterceptPolicyAccountSwitch
-  accountState: StreamInterceptPolicyAccountState
+  action: StreamInterceptPolicyAction
   avoidanceTtlSeconds?: number
   notes?: string
   createdAt?: string

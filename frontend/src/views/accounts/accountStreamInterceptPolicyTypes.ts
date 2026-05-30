@@ -1,15 +1,9 @@
-import type {
-  StreamInterceptPolicyAccountState,
-  StreamInterceptPolicyAccountSwitch,
-  StreamInterceptPolicyDataHandling,
-  StreamInterceptPolicyExecutionMode
-} from '@/types/domain'
+import type { StreamInterceptPolicyAction } from '@/types/domain'
 
 export interface AccountStreamInterceptRuleForm {
   enabled: boolean
   name: string
   priority: number | null
-  executionMode: StreamInterceptPolicyExecutionMode
   eventTypes: string
   dataTypes: string
   errorCodes: string
@@ -17,10 +11,7 @@ export interface AccountStreamInterceptRuleForm {
   textIncludes: string
   textExcludes: string
   jsonPathsExists: string
-  dataHandling: StreamInterceptPolicyDataHandling
-  retryEnabled: boolean
-  accountSwitch: StreamInterceptPolicyAccountSwitch
-  accountState: StreamInterceptPolicyAccountState
+  action: StreamInterceptPolicyAction
   avoidanceTtlSeconds: number | null
   notes: string
 }
@@ -29,7 +20,6 @@ export interface AccountStreamInterceptRulePayload {
   enabled: boolean
   name: string
   priority: number
-  executionMode: StreamInterceptPolicyExecutionMode
   match: {
     eventTypes?: string[]
     dataTypes?: string[]
@@ -39,10 +29,7 @@ export interface AccountStreamInterceptRulePayload {
     textExcludes?: string[]
     jsonPathsExists?: string[]
   }
-  dataHandling: StreamInterceptPolicyDataHandling
-  retryEnabled: boolean
-  accountSwitch: StreamInterceptPolicyAccountSwitch
-  accountState: StreamInterceptPolicyAccountState
+  action: StreamInterceptPolicyAction
   avoidanceTtlSeconds?: number
   notes?: string
 }

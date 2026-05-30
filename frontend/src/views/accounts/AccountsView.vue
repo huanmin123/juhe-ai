@@ -81,7 +81,6 @@
       :row-selection="rowSelection"
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
-      @bind-group="handleOpenBindGroup"
       @change="handleAccountTableChange"
       @clone="openClone"
       @delete="removeAccount"
@@ -116,6 +115,7 @@
       v-model:error-policy-rules="accountErrorPolicyRules"
       v-model:stream-intercept-rules="accountStreamInterceptRules"
       :account-type-choices="accountTypeChoices"
+      :authorized-editing="editingAuthorizedAccount"
       :auth-loading="authLoading"
       :auth-result="authResult"
       :base-url-placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
@@ -148,21 +148,6 @@
       @open-auth-url="openAuthUrl"
       @select-provider="selectProvider"
       @select-type="selectAccountType"
-    />
-
-    <AccountBindGroupModal
-      v-if="bindGroupModalOpen"
-      v-model:open="bindGroupModalOpen"
-      v-model:group-id="bindGroupForm.groupId"
-      v-model:group-selection="bindGroupForm.group"
-      :account="bindingAccount"
-      :group-options="bindGroupOptions"
-      :group-options-loading="groupOptionsLoading"
-      :saving="bindGroupSaving"
-      :tip="bindGroupTip"
-      @group-options-dropdown="handleGroupOptionsDropdown"
-      @group-options-search="handleGroupOptionsSearch"
-      @save="saveBindGroup"
     />
 
     <AccountTrafficMigrationModal
@@ -233,7 +218,6 @@ import {
   canDeleteAccount,
   canEditAccount
 } from './accountRules'
-import { useAccountBindGroup } from './useAccountBindGroup'
 import { useAccountBatchActions } from './useAccountBatchActions'
 import { useAccountEditForm } from './useAccountEditForm'
 import { useAccountGroupOptions } from './useAccountGroupOptions'
@@ -244,7 +228,6 @@ import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountTestModal } from './useAccountTestModal'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 
-const AccountBindGroupModal = defineAsyncComponent(() => import('./AccountBindGroupModal.vue'))
 const AccountEditModal = defineAsyncComponent(() => import('./AccountEditModal.vue'))
 const AccountImportModal = defineAsyncComponent(() => import('./AccountImportModal.vue'))
 const AccountReauthorizeModal = defineAsyncComponent(() => import('./AccountReauthorizeModal.vue'))
@@ -379,6 +362,7 @@ const {
   cloningSourceId,
   createScopeParams,
   editingId,
+  editingAuthorizedAccount,
   ensureDefaultGroupSelected,
   form,
   generateOAuthUrl,
@@ -438,24 +422,6 @@ const {
   loadData
 })
 const {
-  bindGroupForm,
-  bindGroupModalOpen,
-  bindGroupOptions,
-  bindGroupSaving,
-  bindGroupTip,
-  bindingAccount,
-  openBindGroup,
-  saveBindGroup
-} = useAccountBindGroup({
-  accountScopeParams,
-  extractApiErrorMessage,
-  groupIdForAccount,
-  groups,
-  isManagementView,
-  loadGroupOptions,
-  loadData
-})
-const {
   openTrafficMigration,
   saveTrafficMigration,
   trafficMigrationForm,
@@ -496,23 +462,17 @@ watch(
     () => form.groupId,
     () => createScopeParams.value?.systemAccountId,
     () => editingId.value,
-    () => bindGroupModalOpen.value,
-    () => bindingAccount.value?.providerCode,
-    () => bindingAccount.value?.id,
-    () => bindGroupForm.groupId,
     () => accountScopeParams.value?.systemAccountId
   ],
   () => {
-    const activeAccount = bindGroupModalOpen.value
-      ? bindingAccount.value
-      : editingId.value
-        ? accountById.value.get(editingId.value)
-        : undefined
-    groupOptionProviderCode.value = bindGroupModalOpen.value ? bindingAccount.value?.providerCode ?? '' : form.providerCode
+    const activeAccount = editingId.value
+      ? accountById.value.get(editingId.value)
+      : undefined
+    groupOptionProviderCode.value = form.providerCode
     groupOptionSystemAccountId.value = isManagementView.value
       ? accountOperationSystemAccountId(activeAccount, createScopeParams.value) ?? ''
       : ''
-    selectedGroupIds.value = [form.groupId, bindGroupForm.groupId]
+    selectedGroupIds.value = [form.groupId]
   },
   { immediate: true }
 )
@@ -618,10 +578,6 @@ function handleProviderFilterChange(value: string): void {
 function handleAccountTypeFilterChange(value: string): void {
   filters.type = value || 'all'
   applyFilters()
-}
-
-function handleOpenBindGroup(account: AccountSummary): void {
-  void openBindGroup(account)
 }
 
 async function copyText(value: string) {

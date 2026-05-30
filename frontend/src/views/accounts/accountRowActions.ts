@@ -17,8 +17,8 @@ export function buildAccountRowActions(options: AccountRowActionOptions): RowAct
   const { account } = options
   if (isAuthorizedAccount(account)) {
     const authorizedList: RowActionItem[] = []
-    if (account.status !== 'error') {
-      authorizedList.push({ key: 'bind-group', label: options.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
+    if (options.canEdit) {
+      authorizedList.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
     }
     if (account.accountAuthorizationId) {
       authorizedList.push({

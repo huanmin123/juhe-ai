@@ -25,7 +25,7 @@
       row-key="id"
       :loading="loading"
       :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
-      :scroll-x="1120"
+      :scroll-x="2600"
       pull-refresh-enabled
       :refreshing="loading"
       @mobile-refresh="loadPolicies"
@@ -35,31 +35,46 @@
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
-          <div class="policy-name-cell">
-            <strong>{{ record.name }}</strong>
-            <a-space :size="6" wrap>
-              <a-tag :color="record.defaultRule ? 'blue' : 'purple'">{{ record.defaultRule ? '默认' : '自定义' }}</a-tag>
-              <a-tag>P{{ record.priority }}</a-tag>
-            </a-space>
-          </div>
+          <strong class="policy-name-text">{{ record.name }}</strong>
+        </template>
+        <template v-else-if="column.key === 'type'">
+          <a-tag :color="record.defaultRule ? 'blue' : 'purple'">{{ record.defaultRule ? '默认' : '自定义' }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'priority'">
+          <span>P{{ record.priority }}</span>
         </template>
         <template v-else-if="column.key === 'status'">
-          <a-space :size="6" wrap>
-            <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
-            <a-tag :color="record.executionMode === 'dry_run' ? 'gold' : 'purple'">{{ executionModeText(record.executionMode) }}</a-tag>
-          </a-space>
+          <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
         </template>
-        <template v-else-if="column.key === 'match'">
-          <div class="compact-cell">{{ matchSummary(record) }}</div>
+        <template v-else-if="column.key === 'eventTypes'">
+          <div class="field-cell">{{ listText(record.match.eventTypes) }}</div>
         </template>
-        <template v-else-if="column.key === 'handling'">
-          <a-space :size="6" wrap>
-            <a-tag color="cyan">{{ dataHandlingText(record.dataHandling) }}</a-tag>
-            <a-tag :color="record.retryEnabled ? 'green' : 'default'">{{ record.retryEnabled ? '重试' : '不重试' }}</a-tag>
-          </a-space>
+        <template v-else-if="column.key === 'dataTypes'">
+          <div class="field-cell">{{ listText(record.match.dataTypes) }}</div>
         </template>
-        <template v-else-if="column.key === 'account'">
-          <div class="compact-cell">{{ accountActionSummary(record) }}</div>
+        <template v-else-if="column.key === 'errorCodes'">
+          <div class="field-cell">{{ listText(record.match.errorCodes) }}</div>
+        </template>
+        <template v-else-if="column.key === 'errorTypes'">
+          <div class="field-cell">{{ listText(record.match.errorTypes) }}</div>
+        </template>
+        <template v-else-if="column.key === 'textIncludes'">
+          <div class="field-cell text-field-cell">{{ listText(record.match.textIncludes) }}</div>
+        </template>
+        <template v-else-if="column.key === 'textExcludes'">
+          <div class="field-cell text-field-cell">{{ listText(record.match.textExcludes) }}</div>
+        </template>
+        <template v-else-if="column.key === 'jsonPathsExists'">
+          <div class="field-cell">{{ listText(record.match.jsonPathsExists) }}</div>
+        </template>
+        <template v-else-if="column.key === 'action'">
+          <a-tag color="cyan">{{ actionText(record.action) }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'avoidanceTtlSeconds'">
+          <div class="compact-cell">{{ actionExtraSummary(record) }}</div>
+        </template>
+        <template v-else-if="column.key === 'notes'">
+          <div class="field-cell text-field-cell">{{ record.notes || '-' }}</div>
         </template>
         <template v-else-if="column.key === 'updatedAt'">
           <span>{{ record.updatedAt || '-' }}</span>
@@ -79,28 +94,60 @@
           </div>
           <div class="mobile-list-meta-grid">
             <div class="mobile-list-meta-item">
+              <span>类型</span>
+              <strong>{{ record.defaultRule ? '默认' : '自定义' }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
               <span>优先级</span>
               <strong>P{{ record.priority }}</strong>
             </div>
             <div class="mobile-list-meta-item">
-              <span>执行</span>
-              <strong>{{ executionModeText(record.executionMode) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>匹配</span>
-              <strong>{{ matchSummary(record) }}</strong>
+              <span>状态</span>
+              <strong>{{ record.enabled ? '启用' : '停用' }}</strong>
             </div>
             <div class="mobile-list-meta-item">
-              <span>数据</span>
-              <strong>{{ dataHandlingText(record.dataHandling) }}</strong>
+              <span>模板</span>
+              <strong>{{ actionText(record.action) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
-              <span>重试</span>
-              <strong>{{ record.retryEnabled ? '是' : '否' }}</strong>
+              <span>避让</span>
+              <strong>{{ actionExtraSummary(record) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>账户</span>
-              <strong>{{ accountActionSummary(record) }}</strong>
+              <span>SSE event 类型</span>
+              <strong>{{ listText(record.match.eventTypes) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>data.type</span>
+              <strong>{{ listText(record.match.dataTypes) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>error.code</span>
+              <strong>{{ listText(record.match.errorCodes) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>error.type</span>
+              <strong>{{ listText(record.match.errorTypes) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>文本包含</span>
+              <strong>{{ listText(record.match.textIncludes) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>文本不包含</span>
+              <strong>{{ listText(record.match.textExcludes) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>JSON 字段存在</span>
+              <strong>{{ listText(record.match.jsonPathsExists) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>备注</span>
+              <strong>{{ record.notes || '-' }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>更新时间</span>
+              <strong>{{ record.updatedAt || '-' }}</strong>
             </div>
           </div>
           <div class="mobile-list-card-actions">
@@ -129,9 +176,6 @@
             </a-form-item>
             <a-form-item label="优先级">
               <a-input-number v-model:value="form.priority" :disabled="modalReadonly" :min="1" :max="9999" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="执行模式">
-              <a-select v-model:value="form.executionMode" :disabled="modalReadonly" :options="executionModeOptions" />
             </a-form-item>
           </div>
           <a-form-item label="启用状态">
@@ -168,19 +212,27 @@
 
         <section class="form-section">
           <div class="form-section-title">处置</div>
-          <div class="form-grid three">
-            <a-form-item label="数据处理">
-              <a-select v-model:value="form.dataHandling" :disabled="modalReadonly" :options="dataHandlingOptions" @change="normalizeActions" />
-            </a-form-item>
-            <a-form-item label="是否重试">
-              <a-switch v-model:checked="form.retryEnabled" :disabled="modalReadonly" checked-children="是" un-checked-children="否" @change="normalizeActions" />
-            </a-form-item>
-            <a-form-item label="是否切号">
-              <a-select v-model:value="form.accountSwitch" :disabled="modalReadonly" :options="accountSwitchOptions" @change="normalizeActions" />
-            </a-form-item>
-            <a-form-item label="账户状态">
-              <a-select v-model:value="form.accountState" :disabled="modalReadonly" :options="accountStateOptions" />
-            </a-form-item>
+          <a-form-item label="处置模板">
+            <div class="action-option-grid">
+              <button
+                v-for="template in streamInterceptActionTemplates"
+                :key="template.action"
+                class="action-option"
+                :class="{ active: form.action === template.action }"
+                type="button"
+                :disabled="modalReadonly"
+                @click="selectAction(template.action)"
+              >
+                <span class="action-option-title">
+                  <span class="action-option-dot" />
+                  <strong>{{ template.label }}</strong>
+                  <a-tag :color="actionTagColor(template)">{{ actionTagText(template) }}</a-tag>
+                </span>
+                <span class="action-option-description">{{ template.description }}</span>
+              </button>
+            </div>
+          </a-form-item>
+          <div v-if="actionUsesTtl" class="form-grid three">
             <a-form-item label="避让秒数">
               <a-input-number v-model:value="form.avoidanceTtlSeconds" :disabled="modalReadonly" :min="1" :max="86400" style="width: 100%" />
             </a-form-item>
@@ -253,10 +305,7 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type {
-  StreamInterceptPolicyAccountState,
-  StreamInterceptPolicyAccountSwitch,
-  StreamInterceptPolicyDataHandling,
-  StreamInterceptPolicyExecutionMode,
+  StreamInterceptPolicyAction,
   StreamInterceptPolicySummary
 } from '@/types/domain'
 import {
@@ -265,11 +314,17 @@ import {
   streamInterceptPolicyGuideFields,
   streamInterceptPolicyGuideSources
 } from './streamInterceptPolicyGuide'
+import {
+  defaultAvoidanceTtlSeconds,
+  streamInterceptActionLabel,
+  streamInterceptActionTemplates,
+  type StreamInterceptActionTemplate,
+  streamInterceptActionUsesTtl
+} from './streamInterceptActionTemplates'
 
 interface StreamPolicyForm {
   name: string
   enabled: boolean
-  executionMode: StreamInterceptPolicyExecutionMode
   priority: number
   eventTypes: string
   dataTypes: string
@@ -278,10 +333,7 @@ interface StreamPolicyForm {
   textIncludes: string
   textExcludes: string
   jsonPathsExists: string
-  dataHandling: StreamInterceptPolicyDataHandling
-  retryEnabled: boolean
-  accountSwitch: StreamInterceptPolicyAccountSwitch
-  accountState: StreamInterceptPolicyAccountState
+  action: StreamInterceptPolicyAction
   avoidanceTtlSeconds: number | null
   notes: string
 }
@@ -300,36 +352,22 @@ const editingId = ref<string>()
 const form = reactive<StreamPolicyForm>(defaultForm())
 
 const columns = [
-  { title: '策略', key: 'name', width: 260, fixed: 'left' },
-  { title: '状态', key: 'status', width: 140 },
-  { title: '匹配', key: 'match', width: 320 },
-  { title: '数据 / 重试', key: 'handling', width: 180 },
-  { title: '账户处置', key: 'account', width: 220 },
+  { title: '策略名称', key: 'name', width: 240, fixed: 'left' },
+  { title: '类型', key: 'type', width: 90 },
+  { title: '优先级', key: 'priority', width: 90 },
+  { title: '状态', key: 'status', width: 90 },
+  { title: 'SSE event 类型', key: 'eventTypes', width: 190 },
+  { title: 'data.type', key: 'dataTypes', width: 190 },
+  { title: 'error.code', key: 'errorCodes', width: 160 },
+  { title: 'error.type', key: 'errorTypes', width: 160 },
+  { title: '文本包含', key: 'textIncludes', width: 220 },
+  { title: '文本不包含', key: 'textExcludes', width: 220 },
+  { title: 'JSON 字段存在', key: 'jsonPathsExists', width: 190 },
+  { title: '处置模板', key: 'action', width: 220 },
+  { title: '避让秒数', key: 'avoidanceTtlSeconds', width: 120 },
+  { title: '备注', key: 'notes', width: 220 },
   { title: '更新时间', key: 'updatedAt', width: 180 },
   { title: '操作', key: 'actions', width: 104, fixed: 'right', actionCount: 2 }
-]
-
-const executionModeOptions = [
-  { label: '拦截', value: 'intercept' },
-  { label: '试运行', value: 'dry_run' }
-]
-
-const allDataHandlingOptions = [
-  { label: '丢弃命中事件', value: 'discard_event' },
-  { label: '丢弃当前流', value: 'discard_stream' },
-  { label: '替换为失败事件', value: 'replace_with_failure' }
-]
-
-const allAccountSwitchOptions = [
-  { label: '不切号', value: 'none' },
-  { label: '本次请求切下一个账号', value: 'request_next_account' },
-  { label: '切号并短期避让当前账号', value: 'avoid_account_ttl' },
-  { label: '切号并短期避让上游桶', value: 'avoid_upstream_bucket_ttl' }
-]
-
-const accountStateOptions = [
-  { label: '不修改', value: 'none' },
-  { label: '仅运行态避让', value: 'runtime_avoidance' }
 ]
 
 const guideSourceColumns = [
@@ -351,29 +389,6 @@ const guideActionColumns = [
   { title: '说明', key: 'note', dataIndex: 'note' }
 ]
 
-const modeLabels: Record<StreamInterceptPolicyExecutionMode, string> = {
-  intercept: '拦截',
-  dry_run: '试运行'
-}
-
-const dataHandlingLabels: Record<StreamInterceptPolicyDataHandling, string> = {
-  discard_event: '丢弃命中事件',
-  discard_stream: '丢弃当前流',
-  replace_with_failure: '替换为失败事件'
-}
-
-const accountSwitchLabels: Record<StreamInterceptPolicyAccountSwitch, string> = {
-  none: '不切号',
-  request_next_account: '本次请求切下一个账号',
-  avoid_account_ttl: '切号并短期避让当前账号',
-  avoid_upstream_bucket_ttl: '切号并短期避让上游桶'
-}
-
-const accountStateLabels: Record<StreamInterceptPolicyAccountState, string> = {
-  none: '不修改',
-  runtime_avoidance: '仅运行态避让'
-}
-
 const allPolicies = computed(() => [...defaultRules.value, ...policies.value])
 const filteredPolicies = computed(() => {
   const text = keyword.value.trim().toLowerCase()
@@ -386,19 +401,12 @@ const modalTitle = computed(() => {
   return editingId.value ? '编辑流式拦截策略' : '新建流式拦截策略'
 })
 
-const dataHandlingOptions = computed(() => form.retryEnabled
-  ? allDataHandlingOptions.filter((option) => option.value !== 'discard_event')
-  : allDataHandlingOptions)
-
-const accountSwitchOptions = computed(() => form.retryEnabled
-  ? allAccountSwitchOptions
-  : allAccountSwitchOptions.filter((option) => option.value !== 'request_next_account'))
+const actionUsesTtl = computed(() => streamInterceptActionUsesTtl(form.action))
 
 function defaultForm(): StreamPolicyForm {
-  return {
+  const next: StreamPolicyForm = {
     name: '',
     enabled: true,
-    executionMode: 'intercept',
     priority: 100,
     eventTypes: '',
     dataTypes: '',
@@ -407,13 +415,11 @@ function defaultForm(): StreamPolicyForm {
     textIncludes: '',
     textExcludes: '',
     jsonPathsExists: '',
-    dataHandling: 'discard_stream',
-    retryEnabled: true,
-    accountSwitch: 'avoid_account_ttl',
-    accountState: 'runtime_avoidance',
-    avoidanceTtlSeconds: 300,
+    action: 'avoid_account_ttl',
+    avoidanceTtlSeconds: defaultAvoidanceTtlSeconds,
     notes: ''
   }
+  return next
 }
 
 async function loadPolicies(): Promise<void> {
@@ -531,7 +537,6 @@ function fillForm(policy: StreamInterceptPolicySummary): void {
   Object.assign(form, {
     name: policy.name,
     enabled: policy.enabled,
-    executionMode: policy.executionMode,
     priority: policy.priority,
     eventTypes: formatList(policy.match.eventTypes),
     dataTypes: formatList(policy.match.dataTypes),
@@ -540,11 +545,8 @@ function fillForm(policy: StreamInterceptPolicySummary): void {
     textIncludes: formatList(policy.match.textIncludes),
     textExcludes: formatList(policy.match.textExcludes),
     jsonPathsExists: formatList(policy.match.jsonPathsExists),
-    dataHandling: policy.dataHandling,
-    retryEnabled: policy.retryEnabled,
-    accountSwitch: policy.accountSwitch,
-    accountState: policy.accountState,
-    avoidanceTtlSeconds: policy.avoidanceTtlSeconds ?? null,
+    action: policy.action,
+    avoidanceTtlSeconds: policy.avoidanceTtlSeconds ?? (streamInterceptActionUsesTtl(policy.action) ? defaultAvoidanceTtlSeconds : null),
     notes: policy.notes ?? ''
   })
 }
@@ -553,7 +555,6 @@ function buildPayload(): StreamInterceptPolicyPayload {
   const payload: StreamInterceptPolicyPayload = {
     name: form.name.trim(),
     enabled: form.enabled,
-    executionMode: form.executionMode,
     priority: form.priority,
     match: compactObject({
       eventTypes: splitList(form.eventTypes),
@@ -564,31 +565,33 @@ function buildPayload(): StreamInterceptPolicyPayload {
       textExcludes: splitList(form.textExcludes),
       jsonPathsExists: splitList(form.jsonPathsExists)
     }),
-    dataHandling: form.dataHandling,
-    retryEnabled: form.retryEnabled,
-    accountSwitch: form.retryEnabled ? form.accountSwitch : nonRetryAccountSwitch(form.accountSwitch),
-    accountState: form.accountState,
+    action: form.action,
     notes: form.notes.trim() || undefined
   }
   const ttl = positiveInt(form.avoidanceTtlSeconds)
-  if (ttl) payload.avoidanceTtlSeconds = ttl
+  if (streamInterceptActionUsesTtl(form.action) && ttl) payload.avoidanceTtlSeconds = ttl
   return payload
 }
 
 function validateForm(): string | undefined {
   if (!form.name.trim()) return '请填写策略名称'
   if (!hasAnyMatcher()) return '至少需要填写一个匹配条件'
-  if (form.retryEnabled && form.dataHandling === 'discard_event') return '需要重试时不能只丢弃命中事件'
+  if (streamInterceptActionUsesTtl(form.action) && !positiveInt(form.avoidanceTtlSeconds)) return '请填写避让秒数'
   return undefined
 }
 
-function normalizeActions(): void {
-  if (form.retryEnabled && form.dataHandling === 'discard_event') {
-    form.dataHandling = 'discard_stream'
+function handleActionChange(): void {
+  if (streamInterceptActionUsesTtl(form.action)) {
+    form.avoidanceTtlSeconds = positiveInt(form.avoidanceTtlSeconds) ?? defaultAvoidanceTtlSeconds
+  } else {
+    form.avoidanceTtlSeconds = null
   }
-  if (!form.retryEnabled && form.accountSwitch === 'request_next_account') {
-    form.accountSwitch = 'none'
-  }
+}
+
+function selectAction(action: StreamInterceptPolicyAction): void {
+  if (modalReadonly.value) return
+  form.action = action
+  handleActionChange()
 }
 
 function applySearch(): void {
@@ -657,25 +660,35 @@ function positiveInt(value: unknown): number | undefined {
   return Number.isFinite(numberValue) && numberValue > 0 ? Math.trunc(numberValue) : undefined
 }
 
-function nonRetryAccountSwitch(value: StreamInterceptPolicyAccountSwitch): StreamInterceptPolicyAccountSwitch {
-  return value === 'request_next_account' ? 'none' : value
-}
-
 function searchableText(policy: StreamInterceptPolicySummary): string {
   return [
     policy.name,
     matchSummary(policy),
-    accountActionSummary(policy),
+    policy.defaultRule ? '默认' : '自定义',
+    String(policy.priority),
+    policy.enabled ? '启用' : '停用',
+    streamInterceptActionLabel(policy.action),
+    actionExtraSummary(policy),
     policy.notes
   ].filter(Boolean).join(' ').toLowerCase()
 }
 
-function executionModeText(value: StreamInterceptPolicyExecutionMode): string {
-  return modeLabels[value] ?? value
+function actionText(action: StreamInterceptPolicyAction): string {
+  return streamInterceptActionLabel(action)
 }
 
-function dataHandlingText(value: StreamInterceptPolicyDataHandling): string {
-  return dataHandlingLabels[value] ?? value
+function actionTagText(template: StreamInterceptActionTemplate): string {
+  if (template.action === 'observe') return '观察'
+  if (template.action === 'drop_event' || template.action === 'fail_stream') return '不重试'
+  if (template.ttlRequired) return '短期避让'
+  return '重试'
+}
+
+function actionTagColor(template: StreamInterceptActionTemplate): string {
+  if (template.action === 'observe') return 'gold'
+  if (template.action === 'drop_event' || template.action === 'fail_stream') return 'default'
+  if (template.ttlRequired) return 'orange'
+  return 'green'
 }
 
 function matchSummary(policy: StreamInterceptPolicySummary): string {
@@ -691,13 +704,13 @@ function matchSummary(policy: StreamInterceptPolicySummary): string {
   return parts.length ? parts.join('；') : '-'
 }
 
-function accountActionSummary(policy: StreamInterceptPolicySummary): string {
-  const parts = [
-    accountSwitchLabels[policy.accountSwitch] ?? policy.accountSwitch,
-    accountStateLabels[policy.accountState] ?? policy.accountState,
-    policy.avoidanceTtlSeconds ? `${policy.avoidanceTtlSeconds}s` : ''
-  ].filter(Boolean)
-  return parts.join(' / ')
+function listText(values?: string[]): string {
+  return values?.length ? values.join(', ') : '-'
+}
+
+function actionExtraSummary(policy: StreamInterceptPolicySummary): string {
+  if (!streamInterceptActionUsesTtl(policy.action)) return '-'
+  return policy.avoidanceTtlSeconds ? `${policy.avoidanceTtlSeconds}s` : '未设置'
 }
 
 function scopedList(label: string, values?: string[]): string {
@@ -717,14 +730,8 @@ onMounted(loadPolicies)
   white-space: nowrap;
 }
 
-.policy-name-cell {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.policy-name-cell strong {
+.policy-name-text {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -737,6 +744,18 @@ onMounted(loadPolicies)
   color: #334155;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.field-cell {
+  max-width: 240px;
+  color: #334155;
+  line-height: 20px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.text-field-cell {
+  max-width: 280px;
 }
 
 .policy-form {
@@ -770,6 +789,77 @@ onMounted(loadPolicies)
 
 .form-grid.three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.action-option-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.action-option {
+  display: flex;
+  min-height: 78px;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.action-option:hover:not(:disabled) {
+  border-color: #91caff;
+  background: #f8fbff;
+}
+
+.action-option.active {
+  border-color: #1677ff;
+  background: #f0f7ff;
+  box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.18);
+}
+
+.action-option:disabled {
+  cursor: default;
+}
+
+.action-option-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-option-title strong {
+  overflow: hidden;
+  color: #111827;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-option-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border: 2px solid #cbd5e1;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.action-option.active .action-option-dot {
+  border-color: #1677ff;
+  box-shadow: inset 0 0 0 2px #fff;
+  background: #1677ff;
+}
+
+.action-option-description {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .stream-policy-mobile-card :deep(.mobile-list-meta-item strong) {
@@ -824,6 +914,10 @@ onMounted(loadPolicies)
 @media (max-width: 820px) {
   .form-grid.two,
   .form-grid.three {
+    grid-template-columns: 1fr;
+  }
+
+  .action-option-grid {
     grid-template-columns: 1fr;
   }
 }

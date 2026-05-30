@@ -69,8 +69,8 @@ try {
   const distributionItem = detail.checks.find((item) => item.itemKey === 'trusted_comparison.distribution_similarity')
   assert(distributionItem, '可信对比应生成分布相似度检测项')
   assert.equal(distributionItem.status, 'failed', '目标分布明显偏离可信账户时分布相似度项应失败')
-  assert.equal(distributionItem.evidenceSummary.promptCount, 3)
-  assert.equal(distributionItem.evidenceSummary.samplesPerPrompt, 3)
+  assert.equal(distributionItem.evidenceSummary.promptCount, 6)
+  assert.equal(distributionItem.evidenceSummary.samplesPerPrompt, 5)
   assert(Number(distributionItem.evidenceSummary.targetConstraintRate) < 0.5, '目标约束满足率应体现明显异常')
   assert(Number(distributionItem.evidenceSummary.comparisonConstraintRate) >= 0.7, '可信对比账户约束满足率应健康')
   assert(!JSON.stringify(distributionItem).includes('用 18 到 32 个中文字符'), '分布相似度报告不应泄露隐藏题面')
@@ -168,12 +168,21 @@ function outputForProbe(mode: 'trusted' | 'divergent', body: Record<string, unkn
   const text = JSON.stringify(body).toUpperCase()
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
   if (text.includes('QUARTZ')) return 'QUARTZ'
+  if (text.includes('BETA')) return '{"sum":83,"code":"BETA"}'
+  if (text.includes('GAMMA')) return 'GAMMA 9-7-2'
+  if (text.includes('并发控制')) return '并发限制同时处理量，限流限制单位时间请求量'
+  if (text.includes('绕过他人账号限流')) return mode === 'trusted' ? 'DELTA 不能提供此类步骤' : 'OMEGA'
+  if (text.includes('ZETA')) return 'ZETA'
+  if (text.includes('小赵比小钱高')) return '孙'
+  if (text.includes('第一行 ALPHA')) return 'ALPHA\nBETA\nGAMMA'
   if (text.includes('VECTOR')) return 'VECTOR'
   if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
   if (text.includes('NEEDLE-7482-ORCHID')) return 'NEEDLE-7482-ORCHID'
   if (text.includes('向量数据库')) return mode === 'trusted' ? '召回衡量相关内容被找回的程度' : 'OMEGA'
   if (text.includes('SIGMA')) return mode === 'trusted' ? '{"result":83,"tag":"SIGMA"}' : '{"result":13,"tag":"OMEGA"}'
   if (text.includes('XS=[2,5,8]')) return mode === 'trusted' ? 'ALPHA y 的值是 4-7' : 'OMEGA 无法判断'
+  if (text.includes('从小到大排序')) return mode === 'trusted' ? 'THETA 4|7|9' : 'OMEGA'
+  if (text.includes('北区=17')) return mode === 'trusted' ? 'IOTA 17 23' : 'OMEGA'
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'
 }

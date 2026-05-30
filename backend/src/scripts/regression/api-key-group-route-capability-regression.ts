@@ -159,14 +159,10 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
   streamInterceptPolicyRepository.createStreamInterceptPolicy({
     name: '回归：未写下游污染流切后备',
     enabled: true,
-    executionMode: 'intercept',
     priority: 20,
     providerCode: 'openai',
     match: { textIncludes: ['route-stream-pollution'] },
-    dataHandling: 'discard_stream',
-    retryEnabled: true,
-    accountSwitch: 'request_next_account',
-    accountState: 'none'
+    action: 'retry_next_account'
   })
   const apiKey = repositories.createApiKeyRecord({
     name: '流式拦截切后备 API Key',

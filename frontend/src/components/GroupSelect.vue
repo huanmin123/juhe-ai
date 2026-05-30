@@ -7,7 +7,8 @@
     :mode="mode"
     :options="selectOptions"
     :placeholder="placeholder"
-    cache-key="groups"
+    :cache-key="cacheKey"
+    :preference-key="preferenceKey"
     :hidden-option-values="hiddenOptionValues"
     v-bind="$attrs"
     @change="handleChange"
@@ -45,6 +46,8 @@ const props = withDefaults(defineProps<{
   selectedIds?: Array<string | undefined>
   selectedGroups?: Array<GroupSelection | undefined>
   hiddenOptionValues?: Array<string | undefined>
+  cacheKey?: string
+  preferenceKey?: string
   allowClear?: boolean
   disabled?: boolean
   loading?: boolean
@@ -57,6 +60,8 @@ const props = withDefaults(defineProps<{
   selectedIds: () => [],
   selectedGroups: () => [],
   hiddenOptionValues: () => [],
+  cacheKey: 'groups',
+  preferenceKey: undefined,
   allowClear: false,
   disabled: false,
   loading: false,

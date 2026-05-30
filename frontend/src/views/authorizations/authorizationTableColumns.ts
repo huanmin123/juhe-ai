@@ -1,6 +1,9 @@
+import type { AuthorizationStatus } from '@/types/domain'
+
 export type AuthorizationFilterResourceType = 'all' | 'account' | 'group'
 export type AuthorizationDirectionFilter = 'outbound' | 'inbound'
 export type AuthorizationSourceFilter = 'all' | 'manual' | 'team'
+export type AuthorizationStatusFilter = 'all' | AuthorizationStatus
 
 export const authorizationColumns = [
   { title: '资源名称', key: 'resource', width: 260 },
@@ -17,7 +20,7 @@ export const authorizationColumns = [
 ]
 
 export const authorizationResourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }> = [
-  { label: '全部内容', value: 'all' },
+  { label: '全部资源类型', value: 'all' },
   { label: '单个 AI 账户', value: 'account' },
   { label: '整个分组账号池', value: 'group' }
 ]
@@ -31,6 +34,15 @@ export const authorizationSourceOptions: Array<{ label: string; value: Authoriza
   { label: '全部方式', value: 'all' },
   { label: '直接授权', value: 'manual' },
   { label: '团队授权', value: 'team' }
+]
+
+export const authorizationStatusOptions: Array<{ label: string; value: AuthorizationStatusFilter }> = [
+  { label: '全部状态', value: 'all' },
+  { label: '生效中', value: 'active' },
+  { label: '已暂停', value: 'paused' },
+  { label: '授权到期', value: 'expired' },
+  { label: '已回收', value: 'revoked' },
+  { label: '已归还', value: 'returned' }
 ]
 
 export const createAuthorizationResourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }> = [

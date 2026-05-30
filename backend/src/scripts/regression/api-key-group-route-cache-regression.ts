@@ -42,6 +42,12 @@ interface SeededRoute {
   fallbackUpstreamKey: string
 }
 
+interface SeededRoundRobinRoute {
+  apiKey: string
+  firstUpstreamKey: string
+  secondUpstreamKey: string
+}
+
 const upstreamRequests: MockUpstreamRequest[] = []
 let upstreamServer: http.Server | undefined
 let gatewayServer: http.Server | undefined
@@ -52,6 +58,7 @@ try {
   await listen(upstreamServer)
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
   const seededRoute = seedRoute(upstreamBaseUrl)
+  const roundRobinRoute = seedRoundRobinRoute(upstreamBaseUrl)
 
   const [
     { openAIGatewayRouter },
@@ -192,7 +199,26 @@ try {
   assert.equal(secondUpstreamRequests[0]?.accountKey, seededRoute.fallbackUpstreamKey, '第二次同组合请求应继续命中后备授权账号')
   assert.equal(fakeChild.totalOperationCount(), operationsAfterFirstRequest, '同一 API Key/分组/授权组合第二次请求必须完全命中 server 本地缓存和被动快照，不应再请求 DB service')
 
-  console.log('API Key 多分组路由缓存回归通过：同组合第二次请求不再读取运行时、分组授权、账号列表或统计额度 DB service 慢路径')
+  const operationsBeforeDynamicRoute = fakeChild.operationCount('read_gateway_runtime')
+  const dynamicUpstreamStart = upstreamRequests.length
+  const roundRobinFirstResponse = await requestChatCompletion(gatewayBaseUrl, roundRobinRoute.apiKey, 'trace-route-cache-round-robin-first')
+  assert.equal(roundRobinFirstResponse.status, 200, `轮询策略首次请求应成功，实际 ${roundRobinFirstResponse.status}: ${roundRobinFirstResponse.text}`)
+  const roundRobinSecondResponse = await requestChatCompletion(gatewayBaseUrl, roundRobinRoute.apiKey, 'trace-route-cache-round-robin-second')
+  assert.equal(roundRobinSecondResponse.status, 200, `轮询策略第二次请求应成功，实际 ${roundRobinSecondResponse.status}: ${roundRobinSecondResponse.text}`)
+  const dynamicUpstreamRequests = upstreamRequests.slice(dynamicUpstreamStart)
+  assert.equal(dynamicUpstreamRequests.length, 2, '轮询策略两次请求应各派发一次上游')
+  assert.deepEqual(
+    dynamicUpstreamRequests.map((request) => request.accountKey),
+    [roundRobinRoute.firstUpstreamKey, roundRobinRoute.secondUpstreamKey],
+    '轮询策略不能缓存首次命中的分组，第二次请求应重新选择下一个号池'
+  )
+  assert.equal(
+    fakeChild.operationCount('read_gateway_runtime'),
+    operationsBeforeDynamicRoute + 2,
+    '轮询策略每次请求都应重新读取运行时以计算候选分组起点'
+  )
+
+  console.log('API Key 多分组路由缓存回归通过：主备同组合第二次请求不再读取运行时；轮询策略不会缓存最终命中分组，连续请求可重新选组')
 } finally {
   closeGatewayUpstreamAgentsForTest?.()
   await closeServer(gatewayServer)
@@ -203,6 +229,67 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
+  const owner = repositories.createSystemAccount({
+    username: 'route_cache_round_robin_owner',
+    displayName: '路由缓存轮询用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const firstGroup = repositories.createGroup({
+    name: '路由缓存轮询 A 号池',
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, access)
+  const secondGroup = repositories.createGroup({
+    name: '路由缓存轮询 B 号池',
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, access)
+  const firstUpstreamKey = 'sk-route-cache-round-robin-a'
+  const secondUpstreamKey = 'sk-route-cache-round-robin-b'
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '路由缓存轮询 A 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: firstUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: firstGroup.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '路由缓存轮询 B 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: secondUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: secondGroup.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '路由缓存轮询 API Key',
+    groupRouteStrategy: 'round_robin',
+    groupBindings: [
+      { groupId: firstGroup.id, priority: 1, status: 'active' },
+      { groupId: secondGroup.id, priority: 2, status: 'active' }
+    ]
+  }, access)
+  return {
+    apiKey: apiKey.key,
+    firstUpstreamKey,
+    secondUpstreamKey
+  }
 }
 
 function seedRoute(upstreamBaseUrl: string): SeededRoute {

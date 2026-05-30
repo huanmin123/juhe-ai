@@ -30,13 +30,17 @@ const matchSchema = z.object({
 const policyBodySchema = z.object({
   name: z.string().trim().min(1, '规则名称不能为空').max(100, '规则名称不能超过 100 个字符'),
   enabled: z.boolean().optional(),
-  executionMode: z.enum(['intercept', 'dry_run']).optional(),
   priority: z.coerce.number().int().min(1).max(9999).optional(),
   match: matchSchema,
-  dataHandling: z.enum(['discard_event', 'discard_stream', 'replace_with_failure']).optional(),
-  retryEnabled: z.boolean().optional(),
-  accountSwitch: z.enum(['none', 'request_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl']).optional(),
-  accountState: z.enum(['none', 'runtime_avoidance']).optional(),
+  action: z.enum([
+    'observe',
+    'drop_event',
+    'fail_stream',
+    'retry_no_avoidance',
+    'retry_next_account',
+    'avoid_account_ttl',
+    'avoid_upstream_bucket_ttl'
+  ]),
   avoidanceTtlSeconds: z.coerce.number().int().min(1).max(86400).nullable().optional(),
   notes: z.string().trim().max(1000, '备注不能超过 1000 个字符').nullable().optional()
 }).strict().superRefine((value, context) => {
@@ -56,11 +60,14 @@ const policyBodySchema = z.object({
       message: '至少需要填写一个匹配条件'
     })
   }
-  if (value.retryEnabled === true && value.dataHandling === 'discard_event') {
+  if (
+    (value.action === 'avoid_account_ttl' || value.action === 'avoid_upstream_bucket_ttl')
+    && value.avoidanceTtlSeconds === null
+  ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['dataHandling'],
-      message: '需要重试时不能只丢弃命中事件'
+      path: ['avoidanceTtlSeconds'],
+      message: '短期避让模板需要配置避让秒数'
     })
   }
 })

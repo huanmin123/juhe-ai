@@ -13,6 +13,7 @@
       <a-segmented v-if="!isManagementView" v-model:value="filters.direction" class="direction-filter responsive-list-inline-filter" :options="directionOptions" @change="$emit('refresh')" />
       <a-select v-if="!isManagementView" v-model:value="filters.sourceType" class="filter-select responsive-list-inline-filter" :options="sourceOptions" @change="$emit('refresh')" />
       <a-select v-if="isManagementView" v-model:value="filters.resourceType" class="filter-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
+      <a-select v-model:value="filters.status" class="filter-select responsive-list-inline-filter" :options="statusOptions" @change="$emit('refresh')" />
       <SystemPrincipalSelect
         v-if="isManagementView"
         v-model:value="filters.resourceOwnerSystemAccountId"
@@ -39,7 +40,7 @@
         :filter-option="false"
         :loading="teamLoading"
         class="filter-user responsive-list-inline-filter"
-        placeholder="筛选授权团队"
+        placeholder="筛选被授权团队"
         scope="team"
         @dropdown-visible-change="$emit('team-dropdown', $event)"
         @search="$emit('team-search', $event)"
@@ -105,6 +106,10 @@
         <span>授权方式</span>
         <a-select v-model:value="filters.sourceType" :options="sourceOptions" @change="$emit('refresh')" />
       </label>
+      <label class="mobile-filter-field">
+        <span>授权状态</span>
+        <a-select v-model:value="filters.status" :options="statusOptions" @change="$emit('refresh')" />
+      </label>
       <label v-if="isManagementView" class="mobile-filter-field">
         <span>授权内容</span>
         <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
@@ -159,7 +164,7 @@
         />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
-        <span>授权团队</span>
+        <span>被授权团队</span>
         <SystemPrincipalSelect
           v-model:value="filters.teamId"
           v-model:selected-principal="filters.team"
@@ -169,7 +174,7 @@
           :filter-option="false"
           :loading="teamLoading"
           scope="team"
-          placeholder="筛选授权团队"
+          placeholder="筛选被授权团队"
           @dropdown-visible-change="$emit('team-dropdown', $event)"
           @search="$emit('team-search', $event)"
           @change="$emit('refresh')"
@@ -214,12 +219,13 @@ import type { AccountSelection } from '@/shared/accountLabelCache'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
-import type { AuthorizationDirectionFilter, AuthorizationFilterResourceType, AuthorizationSourceFilter } from './authorizationTableColumns'
+import type { AuthorizationDirectionFilter, AuthorizationFilterResourceType, AuthorizationSourceFilter, AuthorizationStatusFilter } from './authorizationTableColumns'
 
 const props = defineProps<{
   filters: {
     direction: AuthorizationDirectionFilter
     sourceType: AuthorizationSourceFilter
+    status: AuthorizationStatusFilter
     resourceType: AuthorizationFilterResourceType
     resourceOwnerSystemAccountId: string
     resourceOwnerSystemAccount?: PrincipalSelection
@@ -234,6 +240,7 @@ const props = defineProps<{
   isManagementView: boolean
   directionOptions: Array<{ label: string; value: AuthorizationDirectionFilter }>
   sourceOptions: Array<{ label: string; value: AuthorizationSourceFilter }>
+  statusOptions: Array<{ label: string; value: AuthorizationStatusFilter }>
   resourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }>
   resourceOptions: Array<{ label: string; value: string }>
   resourceDisabled?: boolean

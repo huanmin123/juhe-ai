@@ -84,7 +84,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/authorizations/AuthorizationTeamUsageView.vue'),
     meta: {
       title: '团队消耗明细',
-      description: '按授权团队查看自己授权出去资源的日期范围团队消耗，并可跳转到成员用户消耗。',
+      description: '按被授权团队查看自己授权出去资源的日期范围团队消耗，并可跳转到成员用户消耗。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
       viewScope: 'self',
@@ -96,7 +96,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/authorizations/AuthorizationUserUsageView.vue'),
     meta: {
       title: '用户消耗明细',
-      description: '按被授权用户查看自己授权出去资源的日期范围消耗，包含授权团队里的成员用户。',
+      description: '按被授权用户查看自己授权出去资源的日期范围消耗，包含被授权团队里的成员用户。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
       viewScope: 'self',
@@ -203,19 +203,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/stream-intercept-policies',
-    component: () => import('@/views/stream-intercept-policies/StreamInterceptPoliciesView.vue'),
-    meta: {
-      title: '流式拦截策略',
-      description: '管理 200 + SSE 内部事件、广告污染和协议内失败的拦截策略。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
-      viewScope: 'admin',
-      roles: ['admin'],
-      heavy: true
-    }
-  },
-  {
     path: '/groups',
     component: () => import('@/views/groups/GroupsView.vue'),
     meta: {
@@ -245,7 +232,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/authorizations/AuthorizationTeamUsageView.vue'),
     meta: {
       title: '团队消耗明细',
-      description: '按授权团队查看日期范围内的团队总消耗，并可跳转到团队成员用户消耗。',
+      description: '按被授权团队查看日期范围内的团队总消耗，并可跳转到团队成员用户消耗。',
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
@@ -258,7 +245,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/authorizations/AuthorizationUserUsageView.vue'),
     meta: {
       title: '用户消耗明细',
-      description: '按被授权用户查看日期范围内的授权消耗，包含授权团队里的成员用户。',
+      description: '按被授权用户查看日期范围内的授权消耗，包含被授权团队里的成员用户。',
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
@@ -401,6 +388,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'IP管理',
       description: '查看来源 IP 的请求、Token、成本、失败率、活跃天数和封禁状态。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: ['admin'],
+      heavy: true
+    }
+  },
+  {
+    path: '/stream-intercept-policies',
+    component: () => import('@/views/stream-intercept-policies/StreamInterceptPoliciesView.vue'),
+    meta: {
+      title: '流式拦截策略',
+      description: '管理 200 + SSE 内部事件、广告污染和协议内失败的拦截策略。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

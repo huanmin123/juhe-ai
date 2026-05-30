@@ -3,6 +3,14 @@ import { onBeforeUnmount, ref } from 'vue'
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
+import {
+  localSelectStorageKey,
+  readLocalSelectOptionWindow,
+  removeLocalSelectOptionWindowValues,
+  removeLocalSelectPreferenceValues,
+  writeLocalSelectOptionWindow,
+  type LocalSelectStorageKeyPart
+} from '@/shared/selectLocalPreferenceCache'
 import type { SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -11,6 +19,9 @@ interface RemoteSystemAccountOptionsConfig {
   errorMessage?: string
   limit?: number
   cacheTtlMs?: number
+  localCacheKeyParts?: () => LocalSelectStorageKeyPart[]
+  onMissingSelectedIds?: (ids: string[]) => void
+  preferenceKeys?: () => string[]
   searchDelayMs?: number
   selectedIds?: () => Array<string | undefined>
 }
@@ -26,6 +37,7 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
   let searchTimer: ReturnType<typeof window.setTimeout> | undefined
+  let lastMissingNoticeKey = ''
 
   async function load(nextKeyword = keyword.value): Promise<void> {
     if (config.enabled?.() === false) {
@@ -35,29 +47,38 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
       return
     }
     const selectedIds = normalizedSelectedIds()
-    const requestKey = JSON.stringify([normalizeOptionKeyword(nextKeyword) ?? '', selectedIds])
+    const requestKeyword = normalizeOptionKeyword(nextKeyword)
+    const requestKey = JSON.stringify([requestKeyword ?? '', selectedIds])
     if (loadingKey === requestKey && loadingPromise) {
       return loadingPromise
     }
     const currentRequestId = ++requestId
+    const optionWindowKey = localOptionWindowKey(requestKeyword)
+    const localWindowOptions = readLocalSelectOptionWindow<SystemAccountPrincipalSummary>(optionWindowKey)
+    if (localWindowOptions?.length) {
+      systemAccounts.value = localWindowOptions
+      loading.value = false
+    }
     const cachedOptions = optionCache.get(requestKey)
     if (cachedOptions) {
       loadingKey = undefined
       loadingPromise = undefined
       loading.value = false
+      writeLocalSelectOptionWindow(optionWindowKey, cachedOptions)
       systemAccounts.value = cachedOptions
       return
     }
-    loading.value = true
+    loading.value = !localWindowOptions?.length
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
         let options = await api.systemAccounts.options({
-          keyword: normalizeOptionKeyword(nextKeyword),
+          keyword: requestKeyword,
           limit
         })
-        options = await ensureSelectedSystemAccountOptions(options, selectedIds)
+        options = await ensureSelectedSystemAccountOptions(options, selectedIds, optionWindowKey)
         optionCache.set(requestKey, options)
+        writeLocalSelectOptionWindow(optionWindowKey, options)
         if (currentRequestId !== requestId) return
         systemAccounts.value = options
       } catch (error) {
@@ -104,7 +125,7 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     }
   }
 
-  async function ensureSelectedSystemAccountOptions(options: SystemAccountPrincipalSummary[], selectedIds: string[]): Promise<SystemAccountPrincipalSummary[]> {
+  async function ensureSelectedSystemAccountOptions(options: SystemAccountPrincipalSummary[], selectedIds: string[], optionWindowKey: string): Promise<SystemAccountPrincipalSummary[]> {
     const missingSelectedIds = selectedIds.filter((id) => !options.some((account) => account.id === id))
     if (!missingSelectedIds.length) return options
     try {
@@ -112,9 +133,27 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
         ids: missingSelectedIds,
         limit: Math.min(50, Math.max(limit, missingSelectedIds.length))
       })
+      const foundIds = new Set(selectedOptions.map((option) => option.id))
+      const invalidSelectedIds = missingSelectedIds.filter((id) => !foundIds.has(id))
+      handleMissingSelectedIds(invalidSelectedIds, optionWindowKey)
       return mergeOptionsById(selectedOptions, options)
     } catch {
       return options
+    }
+  }
+
+  function handleMissingSelectedIds(ids: string[], optionWindowKey: string): void {
+    const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+    if (!missingIds.length) return
+    removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
+    for (const preferenceKey of config.preferenceKeys?.() ?? ['system-principal:system_account']) {
+      removeLocalSelectPreferenceValues(preferenceKey, missingIds)
+    }
+    config.onMissingSelectedIds?.(missingIds)
+    const noticeKey = missingIds.join('|')
+    if (noticeKey !== lastMissingNoticeKey) {
+      lastMissingNoticeKey = noticeKey
+      message.warning('已移除不存在或无权访问的系统账户，请重新选择')
     }
   }
 
@@ -122,6 +161,14 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     return [...new Set((config.selectedIds?.() ?? [])
       .filter((id): id is string => Boolean(id && id !== allSystemAccountsValue))
       .sort())]
+  }
+
+  function localOptionWindowKey(requestKeyword: string | undefined): string {
+    return localSelectStorageKey([
+      'system-account-options',
+      ...(config.localCacheKeyParts?.() ?? []),
+      requestKeyword ?? ''
+    ])
   }
 
   onBeforeUnmount(clearSearchTimer)

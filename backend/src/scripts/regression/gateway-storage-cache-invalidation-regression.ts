@@ -152,13 +152,12 @@ try {
     resourceId: sharedAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
     remark: '缓存失效账号授权'
   }, ownerAccess)
   const sharedAuthorizedInstance = authorizedInstanceForSource(sharedAccount.id, granteeAccess)
 
-  assert.deepEqual(await runtimeAccountIds(granteeApiKey.key), [], '绑定前被授权分组应没有候选账号')
-  assert(repositories.setAccountGroup(sharedAuthorizedInstance.id, granteeGroup.id, granteeAccess), '被授权实例账号绑定分组失败')
-  assert.deepEqual(await runtimeAccountIds(granteeApiKey.key), [sharedAuthorizedInstance.id], '直接绑定授权实例账号后候选账号缓存应立即出现该账号')
+  assert.deepEqual(await runtimeAccountIds(granteeApiKey.key), [sharedAuthorizedInstance.id], '授权创建时绑定目标分组后候选账号缓存应立即出现该账号')
   const sharedRuntimeBeforeSourceUpdate = await gatewayCache.readCachedGatewayRuntimeAsync(granteeApiKey.key)
   assert.equal(sharedRuntimeBeforeSourceUpdate.accounts[0]?.apiKey, 'sk-cache-invalidation-shared', '授权实例运行配置应读取父账户初始凭据')
   assert.equal(

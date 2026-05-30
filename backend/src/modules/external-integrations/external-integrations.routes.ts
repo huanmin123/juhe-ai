@@ -12,8 +12,11 @@ import {
 import { createOperationLog } from '../../storage/repositories.js'
 import { getExternalIntegrationSourceContext, requireExternalIntegrationSource } from './external-source-auth.middleware.js'
 import {
+  deletePublicWelfareAccount,
+  mockPublicWelfareAccountDelete,
   mockPublicWelfareAccountPush,
   pushPublicWelfareAccount,
+  type PublicAccountDeleteResponse,
   type PublicAccountPushResponse
 } from './external-public-account-push.service.js'
 import {
@@ -61,6 +64,21 @@ const accountPushSchema = z.object({
   priority: z.coerce.number().int().min(0).max(100000).optional(),
   notes: z.string().trim().max(1000).optional(),
   externalId: z.string().trim().max(200).optional()
+})
+const accountDeleteSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  targetGroupName: z.string().trim().min(1).max(80),
+  providerCode: z.string().trim().min(1).max(60).optional(),
+  accountId: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+  externalId: z.string().trim().min(1).max(200).optional()
+}).superRefine((value, context) => {
+  if (!value.accountId && !value.name && !value.externalId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '删除公益账号时必须提供 accountId、name 或 externalId'
+    })
+  }
 })
 
 externalIntegrationsRouter.get(
@@ -162,6 +180,32 @@ externalIntegrationsRouter.post(
   }
 )
 
+externalIntegrationsRouter.delete(
+  '/juhe-ai/accounts',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = accountDeleteSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '公益账号删除参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicWelfareAccountDelete(parsed.data)))
+      return
+    }
+
+    try {
+      const result = deletePublicWelfareAccount(parsed.data)
+      recordPublicWelfareAccountDeleteOperation(context, result, req, 200)
+      res.json(ok(result))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '公益账号删除失败'
+      res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
+    }
+  }
+)
+
 function recordPublicWelfareAccountPushOperation(
   context: ExternalIntegrationSourceAuthContext,
   result: PublicAccountPushResponse,
@@ -226,6 +270,71 @@ function recordPublicWelfareAccountPushOperation(
       sourceRefId: context.sourceRefId,
       accountId: result.account.id
     }), '公益账号推送操作日志写入失败')
+  }
+}
+
+function recordPublicWelfareAccountDeleteOperation(
+  context: ExternalIntegrationSourceAuthContext,
+  result: PublicAccountDeleteResponse,
+  req: Request,
+  statusCode: number
+): void {
+  if (result.action !== 'deleted' || !result.account) {
+    return
+  }
+
+  try {
+    createOperationLog({
+      actorSystemAccountId: `external:${context.sourceRefId}`,
+      actorUsername: context.sourceName,
+      actorDisplayName: `外部来源：${context.sourceName}`,
+      actorRole: 'user',
+      operationScopeSystemAccountId: result.target.systemAccountId,
+      mode: 'self',
+      module: 'external_integrations',
+      action: 'account_delete',
+      operationKey: 'external_integrations.public_account_delete',
+      resourceType: 'account',
+      resourceId: result.account.id,
+      resourceName: result.account.name,
+      summary: `${context.sourceName} 删除公益账号：${result.account.name}`,
+      detailLevel: 'full',
+      visibilityScope: 'admin_only',
+      changes: [
+        { field: 'deleted', label: '删除状态', before: false, after: true },
+        { field: 'externalId', label: '外部登记 ID', after: result.externalId }
+      ],
+      metadata: {
+        sourceRefId: context.sourceRefId,
+        sourceName: context.sourceName,
+        tokenId: context.tokenId,
+        tokenName: context.tokenName,
+        tokenPrefix: context.tokenPrefix,
+        targetUsername: result.target.username,
+        targetSystemAccountId: result.target.systemAccountId,
+        groupId: result.target.groupId,
+        groupName: result.target.groupName,
+        accountId: result.account.id,
+        accountName: result.account.name,
+        providerCode: result.account.providerCode,
+        externalId: result.externalId
+      },
+      method: req.method,
+      path: `${req.baseUrl}${req.path}`,
+      statusCode,
+      targets: [
+        { targetType: 'external_integration_source', targetId: context.sourceRefId, targetName: context.sourceName, relation: 'affected' },
+        { targetType: 'system_account', targetId: result.target.systemAccountId, targetName: result.target.username, relation: 'affected' },
+        { targetType: 'group', targetId: result.target.groupId, targetName: result.target.groupName, targetOwnerSystemAccountId: result.target.systemAccountId, relation: 'affected' },
+        { targetType: 'account', targetId: result.account.id, targetName: result.account.name, targetOwnerSystemAccountId: result.target.systemAccountId, relation: 'deleted' }
+      ]
+    })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'external_account_delete_operation_log_failed',
+      sourceRefId: context.sourceRefId,
+      accountId: result.account.id
+    }), '公益账号删除操作日志写入失败')
   }
 }
 

@@ -85,13 +85,18 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="managedColumns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1800 : 1620" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="managedColumns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 2020 : 1840" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">
           <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
+        </template>
+        <template v-else-if="column.key === 'availabilitySchedule'">
+          <a-tag class="schedule-tag" :color="apiKeyScheduleTagColor(record)">
+            {{ apiKeyScheduleSummary(record.availabilitySchedule) }}
+          </a-tag>
         </template>
         <template v-else-if="column.key === 'usage'">
           <UsageSummaryTags :usage="record.usage" />
@@ -107,11 +112,11 @@
         <template v-else-if="column.key === 'group'">
           <div class="group-route-tags">
             <a-tag
-              v-for="binding in apiKeyGroupBindings(record)"
+              v-for="(binding, index) in apiKeyGroupBindings(record)"
               :key="binding.id"
               :color="apiKeyGroupBindingTagColor(binding)"
             >
-              {{ apiKeyGroupBindingTagText(binding) }}
+              {{ apiKeyGroupBindingTagText(record, binding, index) }}
             </a-tag>
           </div>
         </template>
@@ -135,11 +140,11 @@
             <div class="mobile-list-card-tags">
               <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
               <a-tag
-                v-for="binding in apiKeyGroupBindings(record).slice(0, 2)"
+                v-for="(binding, index) in apiKeyGroupBindings(record).slice(0, 2)"
                 :key="binding.id"
                 :color="apiKeyGroupBindingTagColor(binding)"
               >
-                {{ apiKeyGroupBindingTagText(binding) }}
+                {{ apiKeyGroupBindingTagText(record, binding, index) }}
               </a-tag>
               <a-tag v-if="apiKeyGroupBindings(record).length > 2">+{{ apiKeyGroupBindings(record).length - 2 }}</a-tag>
             </div>
@@ -156,6 +161,10 @@
             <div class="mobile-list-meta-item">
               <span>过期时间</span>
               <strong>{{ formatDateTime(record.expiresAt) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>时间计划</span>
+              <strong>{{ apiKeyScheduleSummary(record.availabilitySchedule) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>累计用量</span>
@@ -212,9 +221,12 @@
         <a-form-item label="名称" required>
           <a-input v-model:value="form.name" />
         </a-form-item>
+        <a-form-item label="分组路由策略">
+          <a-segmented v-model:value="form.groupRouteStrategy" :options="groupRouteStrategyOptions" block />
+        </a-form-item>
         <a-form-item label="绑定分组路由" required>
           <div class="api-key-group-bindings-field">
-            <div v-for="(binding, index) in form.groupBindings" :key="binding.key" class="api-key-group-binding-row">
+            <div v-for="(binding, index) in form.groupBindings" :key="binding.key" class="api-key-group-binding-row" :class="{ 'api-key-group-binding-row-weighted': form.groupRouteStrategy === 'weighted_round_robin' }">
               <span class="binding-priority">{{ groupBindingPriorityText(index) }}</span>
               <GroupSelect
                 v-model:value="binding.groupId"
@@ -231,6 +243,13 @@
                 @change="handleGroupBindingChange(index)"
                 @dropdown-visible-change="handleGroupOptionsDropdown"
                 @search="handleGroupOptionsSearch"
+              />
+              <a-input-number
+                v-if="form.groupRouteStrategy === 'weighted_round_robin'"
+                v-model:value="binding.weight"
+                class="binding-weight-input"
+                :min="1"
+                :max="100"
               />
               <a-select v-model:value="binding.status" class="binding-status-select" :options="bindingStatusOptions" />
               <div class="binding-row-actions">
@@ -261,6 +280,43 @@
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="form.status" :options="statusOptions" />
+        </a-form-item>
+        <a-form-item label="自动启停计划">
+          <div class="api-key-schedule-field">
+            <div class="schedule-toggle-row">
+              <a-switch v-model:checked="form.availabilitySchedule.enabled" />
+              <span>按时间计划限制调用</span>
+            </div>
+            <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
+              <label class="schedule-timezone-field">
+                <span>时区</span>
+                <a-input v-model:value="form.availabilitySchedule.timezone" placeholder="Asia/Shanghai" />
+              </label>
+              <div class="schedule-window-list">
+                <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
+                  <a-select
+                    v-model:value="window.daysOfWeek"
+                    mode="multiple"
+                    class="schedule-days-select"
+                    :max-tag-count="1"
+                    :options="weekdayOptions"
+                    placeholder="重复日期"
+                  />
+                  <a-time-picker v-model:value="window.start" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="开始" />
+                  <a-time-picker v-model:value="window.end" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="停止" />
+                  <a-tooltip title="移除">
+                    <a-button type="text" size="small" danger :disabled="form.availabilitySchedule.windows.length <= 1" @click="removeScheduleWindow(index)">
+                      <template #icon><delete-outlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                </div>
+                <a-button type="dashed" block @click="addScheduleWindow">
+                  <template #icon><plus-outlined /></template>
+                  添加时段
+                </a-button>
+              </div>
+            </div>
+          </div>
         </a-form-item>
         <a-form-item label="过期时间">
           <a-date-picker v-model:value="form.expiresAt" show-time allow-clear style="width: 100%" />
@@ -315,7 +371,7 @@ import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDat
 import { displayGroupName, rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import type { AccountUsageSummary, ApiKeyGroupBindingSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
+import type { AccountUsageSummary, ApiKeyAvailabilitySchedule, ApiKeyGroupBindingSummary, ApiKeyGroupRouteStrategy, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
@@ -343,7 +399,19 @@ interface ApiKeyGroupBindingFormRow {
   key: string
   groupId: string
   group?: GroupSelection
+  weight: number
   status: ApiKeyGroupBindingFormStatus
+}
+interface ApiKeyScheduleWindowFormRow {
+  key: string
+  daysOfWeek: number[]
+  start?: string
+  end?: string
+}
+interface ApiKeyAvailabilityScheduleForm {
+  enabled: boolean
+  timezone: string
+  windows: ApiKeyScheduleWindowFormRow[]
 }
 const defaultApiKeysPageState = (): ApiKeysPageState => ({
   groupFilter: undefined,
@@ -370,13 +438,16 @@ const apiKeyOptionsLoaded = ref(false)
 const apiKeyOptionsScopeKey = ref('')
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
+let scheduleWindowFormKeySeed = 0
 const form = reactive({
   name: '',
+  groupRouteStrategy: 'priority_failover' as ApiKeyGroupRouteStrategy,
   groupBindings: [] as ApiKeyGroupBindingFormRow[],
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
   description: '',
-  quotaLimits: createQuotaLimitForm()
+  quotaLimits: createQuotaLimitForm(),
+  availabilitySchedule: createAvailabilityScheduleForm()
 })
 let groupBindingFormKeySeed = 0
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -442,6 +513,7 @@ const rawColumns = computed(() => {
   baseColumns.push(
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '状态', key: 'status', width: 100 },
+    { title: '时间计划', key: 'availabilitySchedule', width: 220 },
     { title: '累计用量', key: 'usage', width: 180 },
     { title: '美元额度', key: 'quotaLimits', width: 220 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
@@ -472,6 +544,20 @@ const listStatusOptions = [
 const bindingStatusOptions = [
   { label: '启用', value: 'active' },
   { label: '停用', value: 'disabled' }
+]
+const groupRouteStrategyOptions = [
+  { label: '主备优先', value: 'priority_failover' },
+  { label: '轮询分配', value: 'round_robin' },
+  { label: '权重分配', value: 'weighted_round_robin' }
+]
+const weekdayOptions = [
+  { label: '周一', value: 1 },
+  { label: '周二', value: 2 },
+  { label: '周三', value: 3 },
+  { label: '周四', value: 4 },
+  { label: '周五', value: 5 },
+  { label: '周六', value: 6 },
+  { label: '周日', value: 7 }
 ]
 
 const filteredApiKeys = computed(() => apiKeys.value)
@@ -529,6 +615,7 @@ function apiKeyGroupBindings(apiKey: ApiKeySummary): ApiKeyGroupBindingSummary[]
     groupId: apiKey.groupId,
     groupName: apiKey.groupName,
     priority: 1,
+    weight: 1,
     status: 'active',
     groupEnabled: true
   }]
@@ -540,19 +627,127 @@ function apiKeyGroupBindingTagColor(binding: ApiKeyGroupBindingSummary): string 
   return binding.priority === 1 ? 'purple' : 'blue'
 }
 
-function apiKeyGroupBindingTagText(binding: ApiKeyGroupBindingSummary): string {
+function apiKeyGroupBindingTagText(apiKey: ApiKeySummary, binding: ApiKeyGroupBindingSummary, index = 0): string {
   const name = displayGroupName(binding.groupName, binding.groupId)
   const suffix = binding.status === 'disabled'
     ? '停用'
     : binding.groupEnabled ? undefined : '分组停用'
-  const routeLabel = groupBindingPriorityTextByPriority(binding.priority)
-  return suffix ? `${routeLabel}：${name}（${suffix}）` : `${routeLabel}：${name}`
+  const routeLabel = groupBindingLabelByStrategy(apiKey.groupRouteStrategy, binding, index)
+  const text = suffix ? `${routeLabel}：${name}（${suffix}）` : `${routeLabel}：${name}`
+  return apiKey.groupRouteStrategy === 'weighted_round_robin' && binding.status === 'active'
+    ? `${text} 权重 ${binding.weight || 1}`
+    : text
 }
 
 function apiKeyGroupRouteText(apiKey: ApiKeySummary): string {
   return apiKeyGroupBindings(apiKey)
-    .map(apiKeyGroupBindingTagText)
+    .map((binding, index) => apiKeyGroupBindingTagText(apiKey, binding, index))
     .join(' / ')
+}
+
+function groupBindingLabelByStrategy(strategy: ApiKeyGroupRouteStrategy | undefined, binding: ApiKeyGroupBindingSummary, index: number): string {
+  if (strategy === 'round_robin') return `轮询 ${index + 1}`
+  if (strategy === 'weighted_round_robin') return `权重 ${index + 1}`
+  return groupBindingPriorityTextByPriority(binding.priority)
+}
+
+function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {
+  if (!schedule?.enabled || !schedule.windows.length) return '未设置'
+  const windows = schedule.windows
+    .slice(0, 2)
+    .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
+  const suffix = schedule.windows.length > 2 ? ` 等 ${schedule.windows.length} 段` : ''
+  const current = isScheduleCurrentlyAllowed(schedule) ? '当前可用' : '计划停用'
+  return `${current}：${windows.join(' / ')}${suffix}`
+}
+
+function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
+  if (!apiKey.availabilitySchedule?.enabled) return 'default'
+  return isScheduleCurrentlyAllowed(apiKey.availabilitySchedule) ? 'green' : 'orange'
+}
+
+function scheduleWindowText(start: string, end: string): string {
+  return start > end ? `${start}-次日 ${end}` : `${start}-${end}`
+}
+
+function daysOfWeekText(days: number[]): string {
+  const normalized = [...new Set(days)].sort((left, right) => left - right).join(',')
+  if (normalized === '1,2,3,4,5,6,7') return '每天'
+  if (normalized === '1,2,3,4,5') return '工作日'
+  if (normalized === '6,7') return '周末'
+  const labels = new Map(weekdayOptions.map((item) => [item.value, item.label]))
+  return [...new Set(days)].sort((left, right) => left - right).map((day) => labels.get(day) ?? `周${day}`).join('、')
+}
+
+function isScheduleCurrentlyAllowed(schedule: ApiKeyAvailabilitySchedule): boolean {
+  if (!schedule.enabled) return true
+  const current = zonedScheduleParts(new Date(), schedule.timezone)
+  if (schedule.dateRange?.startDate && current.dateKey < schedule.dateRange.startDate) return false
+  if (schedule.dateRange?.endDate && current.dateKey > schedule.dateRange.endDate) return false
+  const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
+  if (exception?.action === 'deny') return false
+  if (exception?.action === 'allow') {
+    return (exception.windows ?? []).some((window) => isCurrentMinuteInScheduleWindow(current, { ...window, daysOfWeek: [current.dayOfWeek] }))
+  }
+  return schedule.windows.some((window) => isCurrentMinuteInScheduleWindow(current, window))
+}
+
+function isCurrentMinuteInScheduleWindow(
+  current: { dayOfWeek: number; minuteOfDay: number },
+  window: { daysOfWeek: number[]; start: string; end: string }
+): boolean {
+  const start = scheduleMinuteOfDay(window.start)
+  const end = scheduleMinuteOfDay(window.end)
+  const days = new Set(window.daysOfWeek)
+  if (start < end) {
+    return days.has(current.dayOfWeek) && current.minuteOfDay >= start && current.minuteOfDay < end
+  }
+  return (days.has(current.dayOfWeek) && current.minuteOfDay >= start)
+    || (days.has(previousScheduleDayOfWeek(current.dayOfWeek)) && current.minuteOfDay < end)
+}
+
+function scheduleMinuteOfDay(value: string): number {
+  const [hour, minute] = value.split(':').map((item) => Number(item))
+  return Math.max(0, Math.min(23, hour || 0)) * 60 + Math.max(0, Math.min(59, minute || 0))
+}
+
+function previousScheduleDayOfWeek(dayOfWeek: number): number {
+  return dayOfWeek === 1 ? 7 : dayOfWeek - 1
+}
+
+function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; dayOfWeek: number; minuteOfDay: number } {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone || defaultScheduleTimezone(),
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    })
+    const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
+    const year = Number(parts.year)
+    const month = Number(parts.month)
+    const day = Number(parts.day)
+    const hour = Number(parts.hour)
+    const minute = Number(parts.minute)
+    const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    const utcDay = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
+    return {
+      dateKey,
+      dayOfWeek: utcDay === 0 ? 7 : utcDay,
+      minuteOfDay: hour * 60 + minute
+    }
+  } catch {
+    const day = date.getDay()
+    const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    return {
+      dateKey,
+      dayOfWeek: day === 0 ? 7 : day,
+      minuteOfDay: date.getHours() * 60 + date.getMinutes()
+    }
+  }
 }
 
 function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
@@ -846,11 +1041,13 @@ async function openCreate() {
   }
   Object.assign(form, {
     name: '',
+    groupRouteStrategy: 'priority_failover',
     groupBindings: [createGroupBindingFormRow({ id: defaultGroup.id, name: defaultGroup.name })],
     status: 'active',
     expiresAt: undefined,
     description: '',
-    quotaLimits: createQuotaLimitForm()
+    quotaLimits: createQuotaLimitForm(),
+    availabilitySchedule: createAvailabilityScheduleForm()
   })
   modalOpen.value = true
 }
@@ -862,28 +1059,70 @@ async function openEdit(apiKey: ApiKeySummary) {
     return createGroupBindingFormRow({
       id: binding.groupId,
       name: displayGroupName(binding.groupName, binding.groupId)
-    }, binding.status)
+    }, binding.status, binding.weight)
   })
   Object.assign(form, {
     name: apiKey.name,
+    groupRouteStrategy: apiKey.groupRouteStrategy ?? 'priority_failover',
     groupBindings: bindings.length ? bindings : [createGroupBindingFormRow(apiKey.groupName ? { id: apiKey.groupId, name: apiKey.groupName } : undefined)],
     status: apiKey.status,
     expiresAt: undefined,
     description: apiKey.description ?? '',
-    quotaLimits: createQuotaLimitForm(apiKey.quotaLimits)
+    quotaLimits: createQuotaLimitForm(apiKey.quotaLimits),
+    availabilitySchedule: createAvailabilityScheduleForm(apiKey.availabilitySchedule)
   })
   resetGroupOptionsSearch()
   await loadGroupOptions()
   modalOpen.value = true
 }
 
-function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBindingFormStatus = 'active'): ApiKeyGroupBindingFormRow {
+function normalizeGroupBindingWeight(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) return 1
+  return Math.min(100, Math.max(1, Math.trunc(numeric)))
+}
+
+function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBindingFormStatus = 'active', weight = 1): ApiKeyGroupBindingFormRow {
   return {
     key: `binding_${Date.now()}_${groupBindingFormKeySeed += 1}`,
     groupId: group?.id ?? '',
     group,
+    weight: normalizeGroupBindingWeight(weight),
     status
   }
+}
+
+function createAvailabilityScheduleForm(schedule?: ApiKeyAvailabilitySchedule): ApiKeyAvailabilityScheduleForm {
+  return {
+    enabled: schedule?.enabled === true,
+    timezone: schedule?.timezone || defaultScheduleTimezone(),
+    windows: schedule?.windows?.length
+      ? schedule.windows.map((window) => createScheduleWindowFormRow(window.daysOfWeek, window.start, window.end))
+      : [createScheduleWindowFormRow()]
+  }
+}
+
+function createScheduleWindowFormRow(daysOfWeek = [1, 2, 3, 4, 5, 6, 7], start = '22:00', end = '23:55'): ApiKeyScheduleWindowFormRow {
+  return {
+    key: `schedule_window_${Date.now()}_${scheduleWindowFormKeySeed += 1}`,
+    daysOfWeek: [...daysOfWeek],
+    start,
+    end
+  }
+}
+
+function defaultScheduleTimezone(): string {
+  if (typeof Intl === 'undefined') return 'Asia/Shanghai'
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
+}
+
+function addScheduleWindow(): void {
+  form.availabilitySchedule.windows.push(createScheduleWindowFormRow())
+}
+
+function removeScheduleWindow(index: number): void {
+  if (form.availabilitySchedule.windows.length <= 1) return
+  form.availabilitySchedule.windows.splice(index, 1)
 }
 
 function addGroupBinding() {
@@ -930,10 +1169,11 @@ function moveGroupBinding(index: number, offset: -1 | 1) {
   form.groupBindings.splice(nextIndex, 0, item)
 }
 
-function normalizedGroupBindingPayload(): Array<{ groupId: string; priority: number; status: ApiKeyGroupBindingFormStatus }> {
+function normalizedGroupBindingPayload(): Array<{ groupId: string; priority: number; weight: number; status: ApiKeyGroupBindingFormStatus }> {
   return form.groupBindings.map((binding, index) => ({
     groupId: binding.groupId.trim(),
     priority: index + 1,
+    weight: normalizeGroupBindingWeight(binding.weight),
     status: binding.status
   }))
 }
@@ -945,6 +1185,8 @@ function nextAvailableGroupForNewBinding(): GroupOptionSummary | undefined {
 }
 
 function groupBindingPriorityText(index: number): string {
+  if (form.groupRouteStrategy === 'round_robin') return `轮询 ${index + 1}`
+  if (form.groupRouteStrategy === 'weighted_round_robin') return `权重 ${index + 1}`
   return index === 0 ? '主号池' : `备 ${index}`
 }
 
@@ -1052,14 +1294,20 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     message.warning(`已停用分组不能作为启用号池：${disabledActiveGroups.map((group) => group.name).join('、')}`)
     return
   }
+  const availabilitySchedule = availabilitySchedulePayload()
+  if (availabilitySchedule === false) {
+    return
+  }
   const payload = {
     name: form.name,
+    groupRouteStrategy: form.groupRouteStrategy,
     groupId: groupBindings.find((binding) => binding.status === 'active')?.groupId ?? groupBindings[0]?.groupId,
     groupBindings,
     status: form.status,
     expiresAt: formatServerDateTimeInput(form.expiresAt) ?? undefined,
     description: form.description,
-    quotaLimits: quotaLimitsPayload()
+    quotaLimits: quotaLimitsPayload(),
+    availabilitySchedule
   }
   try {
     const targetId = editingId.value
@@ -1084,6 +1332,37 @@ const saveApiKey = submitAction('api_keys.save', async () => {
 
 function quotaLimitsPayload(): ApiKeyQuotaLimits {
   return buildQuotaLimitsPayload(form.quotaLimits)
+}
+
+function availabilitySchedulePayload(): ApiKeyAvailabilitySchedule | null | false {
+  if (!form.availabilitySchedule.enabled) {
+    return null
+  }
+  const timezone = form.availabilitySchedule.timezone.trim()
+  if (!timezone) {
+    message.warning('请填写自动启停计划时区')
+    return false
+  }
+  const windows = form.availabilitySchedule.windows.map((window) => ({
+    daysOfWeek: [...new Set(window.daysOfWeek.map((day) => Number(day)))].filter((day) => Number.isInteger(day) && day >= 1 && day <= 7).sort((left, right) => left - right),
+    start: window.start,
+    end: window.end
+  }))
+  const invalidIndex = windows.findIndex((window) => !window.daysOfWeek.length || !window.start || !window.end || window.start === window.end)
+  if (invalidIndex >= 0) {
+    message.warning(`请完整填写第 ${invalidIndex + 1} 个自动启停时段`)
+    return false
+  }
+  return {
+    enabled: true,
+    timezone,
+    mode: 'allow_windows',
+    windows: windows.map((window) => ({
+      daysOfWeek: window.daysOfWeek,
+      start: window.start as string,
+      end: window.end as string
+    }))
+  }
 }
 
 async function copyText(value: string) {
@@ -1291,6 +1570,10 @@ onMounted(loadData)
   align-items: start;
 }
 
+.api-key-group-binding-row-weighted {
+  grid-template-columns: 64px minmax(0, 1fr) 84px 96px auto;
+}
+
 .binding-priority {
   display: inline-flex;
   align-items: center;
@@ -1306,14 +1589,64 @@ onMounted(loadData)
 }
 
 .binding-group-select,
+.binding-weight-input,
 .binding-status-select {
   min-width: 0;
+}
+
+.binding-weight-input {
+  width: 100%;
 }
 
 .binding-row-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+}
+
+.api-key-schedule-field,
+.schedule-config,
+.schedule-window-list {
+  display: grid;
+  gap: 10px;
+}
+
+.schedule-toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.schedule-timezone-field {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.schedule-window-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 112px 112px 32px;
+  gap: 8px;
+  align-items: start;
+}
+
+.schedule-days-select,
+.schedule-time-picker {
+  min-width: 0;
+}
+
+.schedule-tag {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .key-preview-cell {
@@ -1352,6 +1685,7 @@ onMounted(loadData)
     grid-template-columns: 64px minmax(0, 1fr);
   }
 
+  .binding-weight-input,
   .binding-status-select,
   .binding-row-actions {
     grid-column: 2;
@@ -1359,6 +1693,19 @@ onMounted(loadData)
 
   .binding-row-actions {
     justify-content: flex-start;
+  }
+
+  .schedule-window-row {
+    grid-template-columns: minmax(0, 1fr) minmax(96px, 1fr);
+  }
+
+  .schedule-days-select {
+    grid-column: 1 / -1;
+  }
+
+  .schedule-window-row > .ant-btn {
+    grid-column: 2;
+    justify-self: start;
   }
 }
 

@@ -776,6 +776,9 @@ export interface AuthorizationUserUsageOverview {
 }
 
 export type ApiKeyGroupBindingStatus = 'active' | 'disabled'
+export type ApiKeyGroupRouteStrategy = 'priority_failover' | 'round_robin' | 'weighted_round_robin'
+export type ApiKeyAvailabilityScheduleMode = 'allow_windows'
+export type ApiKeyAvailabilityScheduleExceptionAction = 'allow' | 'deny'
 
 export interface ApiKeyGroupBindingSummary {
   id: string
@@ -783,8 +786,33 @@ export interface ApiKeyGroupBindingSummary {
   groupName?: string
   providerCode?: ProviderCode
   priority: number
+  weight: number
   status: ApiKeyGroupBindingStatus
   groupEnabled: boolean
+}
+
+export interface ApiKeyAvailabilityScheduleWindow {
+  daysOfWeek: number[]
+  start: string
+  end: string
+}
+
+export interface ApiKeyAvailabilityScheduleException {
+  date: string
+  action: ApiKeyAvailabilityScheduleExceptionAction
+  windows?: Array<Pick<ApiKeyAvailabilityScheduleWindow, 'start' | 'end'>>
+}
+
+export interface ApiKeyAvailabilitySchedule {
+  enabled: boolean
+  timezone: string
+  mode: ApiKeyAvailabilityScheduleMode
+  windows: ApiKeyAvailabilityScheduleWindow[]
+  dateRange?: {
+    startDate?: string
+    endDate?: string
+  }
+  exceptions?: ApiKeyAvailabilityScheduleException[]
 }
 
 export interface ApiKeySummary {
@@ -800,10 +828,12 @@ export interface ApiKeySummary {
   groupName?: string
   primaryGroupId?: string
   primaryGroupName?: string
+  groupRouteStrategy: ApiKeyGroupRouteStrategy
   groupBindings: ApiKeyGroupBindingSummary[]
   groupOwnerSystemAccountName?: string
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
+  availabilitySchedule?: ApiKeyAvailabilitySchedule
   usage: AccountUsageSummary
 }
 

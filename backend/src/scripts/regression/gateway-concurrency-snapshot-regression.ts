@@ -62,6 +62,11 @@ try {
     status: 'active',
     mustChangePassword: false
   })
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const granteeTargetGroup = repositories.createGroup({
+    name: '实时并发快照被授权目标分组',
+    providerCode: 'openai'
+  }, granteeAccess)
   const accountA = repositories.createAccount({
     providerCode: 'openai',
     name: '实时并发快照账号 A',
@@ -97,6 +102,7 @@ try {
     resourceId: accountA.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeTargetGroup.id,
     remark: '实时并发快照授权账户回归'
   }, access)
   const authorizedAccountA = repositories.listAccounts({ systemAccountId: grantee.id, role: 'user' as const })

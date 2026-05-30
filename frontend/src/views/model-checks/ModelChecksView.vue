@@ -305,7 +305,7 @@ const fallbackOptions: ModelCheckOptions = {
     { value: 'gpt-5.4', label: 'gpt-5.4' }
   ],
   supportedProfiles: [
-    { value: 'full', label: '完整检测', description: '完整检测' }
+    { value: 'full', label: '强诊断完整检测', description: '准确优先，不以成本和耗时为约束' }
   ],
   trustedComparison: { enabledByDefault: false, available: true, message: '可信对比默认关闭；选择可信账户后会额外消耗该账户额度。' },
   defaultModel: 'gpt-5.5',

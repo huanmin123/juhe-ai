@@ -253,6 +253,16 @@ async function runChild(): Promise<void> {
     assert.equal(accountPushNoScope.status, 403)
     assert.equal(accountPushNoScope.body.code, 'external_source_scope_forbidden', '账号推送接口必须使用独立写入 scope')
 
+    const accountDeleteNoScope = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${ipUsageToken}`
+    }, 'DELETE', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      name: '公益站测试账号'
+    })
+    assert.equal(accountDeleteNoScope.status, 403)
+    assert.equal(accountDeleteNoScope.body.code, 'external_source_scope_forbidden', '账号删除接口必须使用独立写入 scope')
+
     const mockAccountPush = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
       Authorization: `Bearer ${externalIntegrationTestToken}`
     }, 'POST', {
@@ -266,6 +276,20 @@ async function runChild(): Promise<void> {
     assert.equal(mockAccountPush.status, 200)
     assert.equal(mockAccountPush.body.data.source, 'mock')
     assert.equal(Object.prototype.hasOwnProperty.call(mockAccountPush.body.data.account, 'credentials'), false, '账号推送响应不能返回凭据')
+
+    const mockAccountDelete = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${externalIntegrationTestToken}`
+    }, 'DELETE', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      accountId: 'acc_mock_delete',
+      name: '公益站测试账号',
+      externalId: 'juhe-ai-public-welfare:ai-registration:mock-delete'
+    })
+    assert.equal(mockAccountDelete.status, 200)
+    assert.equal(mockAccountDelete.body.data.source, 'mock')
+    assert.equal(mockAccountDelete.body.data.action, 'mock')
+    assert.equal(Object.prototype.hasOwnProperty.call(mockAccountDelete.body.data.account, 'credentials'), false, '账号删除 mock 响应不能返回凭据')
 
     const illegalTypePush = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
       Authorization: `Bearer ${accountPushToken}`
@@ -437,6 +461,44 @@ async function runChild(): Promise<void> {
       .find((item) => item.name === '公益站测试账号新版')
     assert.equal(renamedAccount?.id, pushedAccount.id, '同一 externalId 的公益账号改名应更新原账号，不能因凭据重复创建失败')
 
+    const accountDelete = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${accountPushToken}`
+    }, 'DELETE', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'openai',
+      accountId: accountPush.body.data.account.id,
+      name: '公益站测试账号新版',
+      externalId: 'juhe-ai-public-welfare:ai-registration:1001'
+    })
+    assert.equal(accountDelete.status, 200)
+    assert.equal(accountDelete.body.data.source, 'stats')
+    assert.equal(accountDelete.body.data.action, 'deleted')
+    assert.equal(accountDelete.body.data.account.id, accountPush.body.data.account.id)
+    const removedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号新版', providerCode: 'openai', groupId: welfareGroup.id })
+      .find((item) => item.name === '公益站测试账号新版')
+    assert.equal(removedAccount, undefined, '公开账号删除接口应真实删除 sub2api-lite 账号，而不是禁用')
+    const deleteLogs = listOperationLogs({
+      module: 'external_integrations',
+      action: 'account_delete',
+      resourceId: pushedAccount.id,
+      pageSize: 10
+    })
+    assert.equal(deleteLogs.items.length, 1, '正式公益账号删除应写入可追踪的操作日志')
+
+    const accountDeleteAgain = await requestJson(baseUrl, '/__aipublic__/juhe-ai/accounts', {
+      Authorization: `Bearer ${accountPushToken}`
+    }, 'DELETE', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'openai',
+      accountId: accountPush.body.data.account.id,
+      externalId: 'juhe-ai-public-welfare:ai-registration:1001'
+    })
+    assert.equal(accountDeleteAgain.status, 200)
+    assert.equal(accountDeleteAgain.body.data.action, 'not_found', '重复删除应幂等成功，便于公益站删除本地记录')
+    assert.equal(accountDeleteAgain.body.data.account, null)
+
     await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
       Authorization: `Bearer ${limitedSourceToken}`
     })
@@ -469,7 +531,7 @@ async function runChild(): Promise<void> {
     closeStorageDatabases()
   }
 
-  console.log('外部来源系统鉴权、公开 IP 聚合和公益账号推送接口回归通过：公开前缀、Bearer token、测试 token mock、scope、停用来源、限频、后台登录边界、IP 聚合读取和账号推送均符合预期')
+  console.log('外部来源系统鉴权、公开 IP 聚合和公益账号推送/删除接口回归通过：公开前缀、Bearer token、测试 token mock、scope、停用来源、限频、后台登录边界、IP 聚合读取和账号推送/删除均符合预期')
 }
 
 function seedClientIpUsageWindow(

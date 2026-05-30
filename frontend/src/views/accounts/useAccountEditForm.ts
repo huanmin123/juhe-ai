@@ -35,6 +35,7 @@ import {
   accountTypeText,
   accountTypeTitle as buildAccountTypeTitle,
   asString,
+  isAuthorizedAccount,
   parseDatePickerValue
 } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
@@ -106,7 +107,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
   const isOpenAIOAuthForm = computed(() => form.providerCode === 'openai' && form.type === 'oauth')
+  const editingAuthorizedAccount = computed(() => Boolean(editingId.value && editingAccountDetail.value && isAuthorizedAccount(editingAccountDetail.value)))
   const modalTitle = computed(() => {
+    if (editingAuthorizedAccount.value) return '编辑授权账户'
     if (editingId.value) return '编辑账户'
     if (cloningSourceId.value) return '克隆账户'
     if (!form.providerCode) return '添加账户'
@@ -228,7 +231,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingAccountDetail.value = account
     cloningSourceId.value = undefined
     creatingAccountScopeParams.value = undefined
-    void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
+    void options.loadAccountOptions(editScopeParams?.systemAccountId)
     const selectedGroup = account.boundGroupId
       ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
       : undefined
@@ -242,10 +245,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
       group: selectedGroup,
-      apiKey: asString(account.credentials.api_key),
+      apiKey: isAuthorizedAccount(account) ? '' : asString(account.credentials.api_key),
       baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
-      accessToken: asString(account.credentials.access_token),
-      refreshToken: asString(account.credentials.refresh_token),
+      accessToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.access_token),
+      refreshToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.refresh_token),
       supportedModels: [...(account.supportedModels ?? [])],
       notes: account.notes ?? ''
     })
@@ -259,7 +262,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       selectedIds: [form.groupId]
     })
     void loadProviderModelOptions(account.providerCode)
-    void loadEditingAccountDetail(account.id, editScopeParams)
+    if (!isAuthorizedAccount(account)) {
+      void loadEditingAccountDetail(account.id, editScopeParams)
+    }
   }
 
   function openClone(account: AccountSummary) {
@@ -363,6 +368,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   const saveAccount = submitAction('accounts.save', async () => {
+    if (editingAuthorizedAccount.value) {
+      await saveAuthorizedAccountEdit()
+      return
+    }
+
     const validationMessage = validateAccountSaveForm({
       editingId: editingId.value,
       form,
@@ -424,6 +434,47 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
   }
 
+  async function saveAuthorizedAccountEdit(): Promise<void> {
+    const account = editingAccountDetail.value
+    if (!editingId.value || !account || !isAuthorizedAccount(account)) {
+      message.warning('请选择要编辑的授权账户')
+      return
+    }
+    if (!form.groupId) {
+      message.warning('请选择加入分组')
+      return
+    }
+    const priority = Number(form.priority)
+    if (!Number.isFinite(priority) || priority < 0) {
+      message.warning('优先级必须是大于等于 0 的整数')
+      return
+    }
+    const nextPriority = Math.trunc(priority)
+    const scopeParams = editingAccountScopeParams()
+    try {
+      if (form.groupId !== account.boundGroupId) {
+        if (options.isManagementView.value) {
+          await api.accounts.bindGroup(account.id, { groupId: form.groupId }, scopeParams)
+        } else {
+          await api.myAccounts.bindGroup(account.id, { groupId: form.groupId })
+        }
+      }
+      if (nextPriority !== account.priority) {
+        if (options.isManagementView.value) {
+          await api.accounts.updateAuthorizedDispatch(account.id, { priority: nextPriority }, scopeParams)
+        } else {
+          await api.myAccounts.updateAuthorizedDispatch(account.id, { priority: nextPriority })
+        }
+      }
+      message.success('授权账户已更新')
+      modalOpen.value = false
+      await options.loadData()
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '保存授权账户失败'))
+    }
+  }
+
   function openAuthUrl() {
     const url = authUrl(authResult.value?.authUrl)
     if (!url) return
@@ -471,6 +522,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId,
     createScopeParams,
     editingId,
+    editingAuthorizedAccount,
     ensureDefaultGroupSelected,
     form,
     generateOAuthUrl,

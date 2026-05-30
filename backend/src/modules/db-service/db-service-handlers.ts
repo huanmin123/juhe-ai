@@ -4,6 +4,7 @@ import {
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
   getAccountPrecheckMutationState,
+  isGatewayApiKeyScheduleInactive,
   listOpenAIAccountsForGroup,
   listPublicGlobalSettings,
   markAccountCooldown,
@@ -30,6 +31,7 @@ import {
   clearGatewayRuntimeCacheLocal,
   readCachedGatewaySettings,
 } from '../gateway/gateway-runtime-cache.service.js'
+import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
@@ -277,12 +279,24 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       streamInterceptPolicies
     }
   }
+  if (isGatewayApiKeyScheduleInactive(apiKey)) {
+    return {
+      apiKey,
+      settings,
+      accounts: [],
+      clientIpPolicies,
+      streamInterceptPolicies
+    }
+  }
 
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
+  const orderedBindings = operation.groupId
+    ? apiKey.group_bindings ?? []
+    : orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
   const candidateGroupIds = operation.groupId
     ? [operation.groupId]
-    : apiKey.group_bindings?.length
-      ? apiKey.group_bindings.map((binding) => binding.group_id)
+    : orderedBindings.length
+      ? orderedBindings.map((binding) => binding.group_id)
       : [apiKey.group_id]
   const uniqueCandidateGroupIds = [...new Set(candidateGroupIds.filter(Boolean))]
 
@@ -296,7 +310,11 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       continue
     }
     return {
-      apiKey: { ...apiKey, group_id: groupId },
+      apiKey: {
+        ...apiKey,
+        group_id: groupId,
+        group_bindings: orderedBindings.length ? orderedBindings : apiKey.group_bindings
+      },
       settings,
       groupAccess,
       accounts,

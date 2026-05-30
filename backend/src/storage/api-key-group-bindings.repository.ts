@@ -1,4 +1,5 @@
 import type { ApiKeyGroupBindingSummary } from '../domain/types.js'
+import { normalizeApiKeyGroupBindingWeight } from '../domain/api-key-routing.js'
 import { getDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
@@ -11,6 +12,7 @@ export interface ApiKeyGroupBindingRow {
   provider_code: string | null
   group_enabled: number | null
   priority: number
+  weight?: number | null
   status: 'active' | 'disabled' | string
 }
 
@@ -29,6 +31,7 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
           api_key_group_bindings.system_account_id,
           api_key_group_bindings.group_id,
           api_key_group_bindings.priority,
+          api_key_group_bindings.weight,
           api_key_group_bindings.status,
           groups.name AS group_name,
           groups.provider_code,
@@ -50,6 +53,7 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
         groupName: row.group_name ?? undefined,
         providerCode: row.provider_code ?? undefined,
         priority: Number.isFinite(row.priority) ? row.priority : 1,
+        weight: normalizeApiKeyGroupBindingWeight(row.weight),
         status: row.status === 'disabled' ? 'disabled' : 'active',
         groupEnabled: row.group_enabled !== 0
       }

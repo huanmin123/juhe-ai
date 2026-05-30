@@ -96,6 +96,7 @@ try {
       resourceId: account.id,
       granteeType: 'system_account',
       granteeId: grantee.id,
+      targetGroupId: granteeGroup.id,
       remark: '调度授权查询回归'
     }, ownerAccess)
     const authorizedInstance = authorizedInstanceForSource(account.id, granteeAccess)
@@ -118,6 +119,7 @@ try {
     resourceId: staleAuthorizedAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
     remark: '调度授权失效凭据回归'
   }, ownerAccess)
   const staleAuthorizedInstance = authorizedInstanceForSource(staleAuthorizedAccount.id, granteeAccess)
@@ -143,6 +145,7 @@ try {
     resourceId: disabledSourceAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
     remark: '授权父账户停用隔离回归'
   }, ownerAccess)
   const ownerDisabledAuthorizedInstance = authorizedInstanceForSource(disabledSourceAccount.id, granteeAccess)

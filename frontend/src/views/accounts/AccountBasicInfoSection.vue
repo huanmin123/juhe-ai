@@ -3,12 +3,12 @@
     <div class="form-section-head">
       <div>
         <h4>基础信息</h4>
-        <p>账户资源归属创建目标系统账户；这里选择的是初始加入的本地分组，同组可混合 OAuth / API Key 账户。</p>
+        <p>{{ authorizedEditing ? '授权账户只允许调整你自己的本地分组；资源配置由授权方维护。' : '账户资源归属创建目标系统账户；这里选择的是初始加入的本地分组，同组可混合 OAuth / API Key 账户。' }}</p>
       </div>
     </div>
     <div class="form-grid">
       <a-form-item label="账户名称" :required="form.type === 'api_key' || editing">
-        <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
+        <a-input v-model:value="form.name" :disabled="authorizedEditing" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
       </a-form-item>
       <a-form-item label="加入分组" required>
         <GroupSelect
@@ -24,12 +24,12 @@
         <div class="form-help">统计、会话亲和和缓存按本地 API Key 与分组连续。</div>
       </a-form-item>
       <a-form-item label="账户到期时间">
-        <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear style="width: 100%" />
+        <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear :disabled="authorizedEditing" style="width: 100%" />
         <div class="form-help">可选，表示套餐/账号购买到期时间；到期后后端会自动停用账户。</div>
       </a-form-item>
     </div>
     <a-form-item label="说明">
-      <a-textarea v-model:value="form.notes" :rows="2" placeholder="可填写来源、用途或额度说明" />
+      <a-textarea v-model:value="form.notes" :rows="2" :disabled="authorizedEditing" placeholder="可填写来源、用途或额度说明" />
     </a-form-item>
   </section>
 </template>
@@ -39,6 +39,7 @@ import GroupSelect from '@/components/GroupSelect.vue'
 import type { AccountFormModel } from './accountFormTypes'
 
 defineProps<{
+  authorizedEditing: boolean
   editing: boolean
   form: AccountFormModel
   groupOptionsLoading: boolean

@@ -15,7 +15,7 @@ export const streamInterceptPolicyGuideSources = [
     key: 'usage-records',
     name: '使用记录',
     where: '使用记录列表，按 traceId 或账户筛选异常请求',
-    note: '适合确认最终是否失败、耗时、成本、命中账号和后续切号效果。'
+    note: '适合确认最终是否失败、耗时、成本、命中账号和后续重试 / 避让效果。'
   }
 ]
 
@@ -66,28 +66,46 @@ export const streamInterceptPolicyGuideFields = [
 
 export const streamInterceptPolicyGuideActions = [
   {
-    key: 'dry-run',
-    action: '试运行',
+    key: 'observe',
+    action: '先观察命中',
     when: '新规则、文本包含、或不确定误杀范围时',
     note: '只记录命中，不改变下游响应，适合观察几轮真实流量。'
   },
   {
-    key: 'discard-stream',
-    action: '丢弃当前流',
-    when: '上游已经返回污染事件或明确错误，需要阻断继续输出时',
-    note: '常与重试、切号和短期避让配合使用。'
+    key: 'drop_event',
+    action: '只丢弃命中事件',
+    when: '命中内容是独立广告事件或无害污染事件时',
+    note: '不触发重试，也不改变账号候选。'
   },
   {
-    key: 'replace-failure',
-    action: '替换为失败事件',
-    when: '需要给客户端明确失败信号，而不是静默丢弃流时',
-    note: '适合需要向下游明确写出标准失败事件的场景。'
+    key: 'fail_stream',
+    action: '结束当前流',
+    when: '明确失败但不希望触发重试或账号避让时',
+    note: '向下游写普通失败事件。'
   },
   {
-    key: 'account-avoidance',
-    action: '切号 / 运行态避让',
-    when: '同一账号或同一上游桶短时间持续污染或失败时',
-    note: '避让只影响运行态，不会直接停用账户。'
+    key: 'retry_no_avoidance',
+    action: '重试但不避让账号',
+    when: '当前结果不可接受，但证据不足以避让账号时',
+    note: '触发可行的重试，不改变后续账号候选。'
+  },
+  {
+    key: 'retry_next_account',
+    action: '本次重试避开当前账号',
+    when: '当前账号本次结果不可接受，但不想影响后续请求时',
+    note: '只影响本次服务端重试，不写入短期避让状态。'
+  },
+  {
+    key: 'avoid_account_ttl',
+    action: '短期避让当前账号',
+    when: '确认当前账号短时间内持续返回污染或错误时',
+    note: '短期从候选中避让当前账号，并触发可行的重试。'
+  },
+  {
+    key: 'avoid_upstream_bucket_ttl',
+    action: '短期避让上游桶',
+    when: '同代理、baseUrl 或供应商桶内多个账号都可能受影响时',
+    note: '短期避让同桶候选，并触发可行的重试。'
   }
 ]
 

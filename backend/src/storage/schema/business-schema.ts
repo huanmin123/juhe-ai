@@ -84,14 +84,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
-      execution_mode TEXT NOT NULL DEFAULT 'intercept',
       priority INTEGER NOT NULL DEFAULT 100,
       provider_code TEXT NOT NULL DEFAULT 'openai',
       match_json TEXT NOT NULL DEFAULT '{}',
-      data_handling TEXT NOT NULL DEFAULT 'discard_stream',
-      retry_enabled INTEGER NOT NULL DEFAULT 0,
-      account_switch TEXT NOT NULL DEFAULT 'none',
-      account_state TEXT NOT NULL DEFAULT 'none',
+      action TEXT NOT NULL DEFAULT 'avoid_account_ttl',
       avoidance_ttl_seconds INTEGER,
       notes TEXT,
       created_at TEXT NOT NULL,
@@ -338,10 +334,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       key_secret_encrypted TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       group_id TEXT NOT NULL,
+      group_route_strategy TEXT NOT NULL DEFAULT 'priority_failover',
       expires_at TEXT,
       rate_limit INTEGER,
       quota_limit INTEGER,
       quota_limits_json TEXT,
+      availability_schedule_json TEXT,
       scopes_json TEXT NOT NULL DEFAULT '[]',
       last_used_at TEXT,
       created_at TEXT NOT NULL,
@@ -355,6 +353,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       system_account_id TEXT NOT NULL,
       group_id TEXT NOT NULL,
       priority INTEGER NOT NULL DEFAULT 1,
+      weight INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -401,7 +400,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));
     CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_enabled_priority ON stream_intercept_policies(enabled, priority, updated_at DESC, id);
-    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_provider_priority ON stream_intercept_policies(provider_code, priority, updated_at DESC, id);
     CREATE INDEX IF NOT EXISTS idx_external_integration_source_tokens_source ON external_integration_source_tokens(source_ref_id, status, expires_at);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_updated_lookup ON system_accounts(updated_at, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_username_lookup ON system_accounts(username COLLATE NOCASE, id);
@@ -472,6 +470,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  ensureColumn(database, 'stream_intercept_policies', 'provider_code', "TEXT NOT NULL DEFAULT 'openai'")
+  ensureColumn(database, 'stream_intercept_policies', 'action', "TEXT NOT NULL DEFAULT 'avoid_account_ttl'")
   ensureStreamInterceptPolicyIndexes(database)
   migrateExternalIntegrationSourcesNameOnly(database)
   ensureExternalIntegrationSourceIndexes(database)
@@ -498,6 +498,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   ensureColumn(database, 'accounts', 'authorization_instance_source_account_id', 'TEXT')
   ensureColumn(database, 'accounts', 'authorization_instance_authorization_id', 'TEXT')
   ensureColumn(database, 'accounts', 'authorization_instance_owner_system_account_id', 'TEXT')
+  ensureColumn(database, 'api_keys', 'group_route_strategy', "TEXT NOT NULL DEFAULT 'priority_failover'")
+  ensureColumn(database, 'api_key_group_bindings', 'weight', 'INTEGER NOT NULL DEFAULT 1')
+  ensureColumn(database, 'api_keys', 'availability_schedule_json', 'TEXT')
   ensureColumn(database, 'external_integration_sources', 'rate_limits_json', "TEXT NOT NULL DEFAULT '[]'")
   ensureColumn(database, 'external_integration_sources', 'expires_at', 'TEXT')
   ensureAuthorizationInstanceIndexes(database)

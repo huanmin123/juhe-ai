@@ -1,10 +1,15 @@
 import type {
   StreamInterceptPolicyAccountState,
   StreamInterceptPolicyAccountSwitch,
+  StreamInterceptPolicyAction,
   StreamInterceptPolicyDataHandling,
   StreamInterceptPolicyExecutionMode,
   StreamInterceptPolicyMatch,
   StreamInterceptPolicySummary
+} from '../../storage/stream-intercept-policy.repository.js'
+import {
+  actionUsesTtl,
+  streamInterceptPolicyActionRuntime
 } from '../../storage/stream-intercept-policy.repository.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 import type { ParsedOpenAIStreamEvent } from './openai-gateway-stream-events.js'
@@ -17,6 +22,7 @@ export interface RuntimeStreamInterceptPolicy {
   source: StreamInterceptPolicySource
   name: string
   enabled: boolean
+  action: StreamInterceptPolicyAction
   executionMode: StreamInterceptPolicyExecutionMode
   priority: number
   match: StreamInterceptPolicyMatch
@@ -45,20 +51,7 @@ const textScanMaxEventChars = 64 * 1024
 export function resolveRuntimeStreamInterceptPolicies(input: ResolveStreamInterceptPoliciesInput): RuntimeStreamInterceptPolicy[] {
   const management = (input.managementPolicies ?? [])
     .filter((policy) => policy.enabled && policyMatchesProvider(policy, input))
-    .map((policy): RuntimeStreamInterceptPolicy => ({
-      id: policy.id,
-      source: policy.defaultRule ? 'system_default' : 'management',
-      name: policy.name,
-      enabled: policy.enabled,
-      executionMode: policy.executionMode,
-      priority: policy.priority,
-      match: policy.match,
-      dataHandling: policy.dataHandling,
-      retryEnabled: policy.retryEnabled,
-      accountSwitch: policy.accountSwitch,
-      accountState: policy.accountState,
-      avoidanceTtlSeconds: policy.avoidanceTtlSeconds
-    }))
+    .map(runtimePolicyFromSummary)
   const accountRules = accountStreamInterceptRules(input.account.credentials)
   return [...management, ...accountRules].sort((left, right) => sourceOrder(left.source) - sourceOrder(right.source) || left.priority - right.priority || left.id.localeCompare(right.id))
 }
@@ -85,6 +78,21 @@ export function matchRuntimeStreamInterceptPolicy(
 
 function policyMatchesProvider(policy: StreamInterceptPolicySummary, input: ResolveStreamInterceptPoliciesInput): boolean {
   return normalizeComparable(policy.providerCode) === normalizeComparable(input.account.providerCode ?? 'openai')
+}
+
+function runtimePolicyFromSummary(policy: StreamInterceptPolicySummary): RuntimeStreamInterceptPolicy {
+  const runtime = streamInterceptPolicyActionRuntime(policy.action)
+  return {
+    id: policy.id,
+    source: policy.defaultRule ? 'system_default' : 'management',
+    name: policy.name,
+    enabled: policy.enabled,
+    action: policy.action,
+    priority: policy.priority,
+    match: policy.match,
+    ...runtime,
+    avoidanceTtlSeconds: actionUsesTtl(policy.action) ? policy.avoidanceTtlSeconds : undefined
+  }
 }
 
 function firstPositiveMatch(event: ParsedOpenAIStreamEvent, match: StreamInterceptPolicyMatch): Pick<StreamInterceptPolicyMatchResult, 'matchedField' | 'matchedValue' | 'snippet'> | undefined {
@@ -194,20 +202,20 @@ function accountStreamInterceptRules(credentials: Record<string, unknown>): Runt
 function accountStreamInterceptRule(value: unknown, index: number): RuntimeStreamInterceptPolicy | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
+  const action = normalizeAction(record.action)
+  if (!action) return undefined
   const match = normalizeMatch(record.match)
+  const runtime = streamInterceptPolicyActionRuntime(action)
   return {
     id: stringValue(record.id) || `account_rule_${index + 1}`,
     source: 'account',
     name: stringValue(record.name) || `账户追加规则 ${index + 1}`,
     enabled: record.enabled !== false,
-    executionMode: record.executionMode === 'dry_run' ? 'dry_run' : 'intercept',
+    action,
     priority: positiveInt(record.priority, (index + 1) * 10),
     match,
-    dataHandling: normalizeDataHandling(record.dataHandling),
-    retryEnabled: record.retryEnabled === true,
-    accountSwitch: normalizeAccountSwitch(record.accountSwitch),
-    accountState: normalizeAccountState(record.accountState),
-    avoidanceTtlSeconds: optionalPositiveInt(record.avoidanceTtlSeconds)
+    ...runtime,
+    avoidanceTtlSeconds: actionUsesTtl(action) ? optionalPositiveInt(record.avoidanceTtlSeconds) : undefined
   }
 }
 
@@ -224,20 +232,19 @@ function normalizeMatch(value: unknown): StreamInterceptPolicyMatch {
   }
 }
 
-function normalizeDataHandling(value: unknown): StreamInterceptPolicyDataHandling {
-  return value === 'discard_event' || value === 'replace_with_failure' || value === 'discard_stream'
-    ? value
-    : 'discard_stream'
-}
-
-function normalizeAccountSwitch(value: unknown): StreamInterceptPolicyAccountSwitch {
-  return value === 'request_next_account' || value === 'avoid_account_ttl' || value === 'avoid_upstream_bucket_ttl'
-    ? value
-    : 'none'
-}
-
-function normalizeAccountState(value: unknown): StreamInterceptPolicyAccountState {
-  return value === 'runtime_avoidance' ? 'runtime_avoidance' : 'none'
+function normalizeAction(value: unknown): StreamInterceptPolicyAction | undefined {
+  if (
+    value === 'observe'
+    || value === 'drop_event'
+    || value === 'fail_stream'
+    || value === 'retry_no_avoidance'
+    || value === 'retry_next_account'
+    || value === 'avoid_account_ttl'
+    || value === 'avoid_upstream_bucket_ttl'
+  ) {
+    return value
+  }
+  return undefined
 }
 
 function textList(value: unknown): string[] | undefined {

@@ -61,10 +61,13 @@ try {
     maxRecoveryHours: 1,
     maxPauseMinutes: 1440
   })
-  assert.equal(longRecovering.action, 'cooldown', '超过最长观察后也应继续自动恢复，不应转异常')
-  assert.equal(longRecovering.account?.status, 'temporary_unavailable', '超过观察窗口后账号仍应保留临时不可调用')
-  assert.equal(longRecovering.recoveryStage, 'slow', '长时间失败应留在慢速恢复通道')
-  assert.match(longRecovering.errorMessage, /慢速恢复通道/, '失败摘要应说明仍在慢速恢复通道')
+  assert.equal(longRecovering.action, 'exception', '超过最长观察后应标异常并停止自动恢复')
+  assert.equal(longRecovering.account?.status, 'error', '超过观察窗口后账号应转异常')
+  assert.equal(longRecovering.account?.schedulable, false, '超过观察窗口后账号不应继续参与调度')
+  assert.equal(longRecovering.account?.cooldownUntil, undefined, '超过观察窗口后应清理冷却时间，避免继续捞出复测')
+  assert.equal(longRecovering.account?.lastErrorCode, 'cooldown_retest_max_recovery_exceeded', '超过观察窗口后应写入明确异常码')
+  assert.match(longRecovering.errorMessage, /已停止自动复测并标记为异常/, '失败摘要应说明已停止自动复测')
+  assert(!repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '异常账号不应再进入后台复测候选')
 
   const freshAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -95,7 +98,7 @@ try {
     maxPauseMinutes: 1440
   })
   assert.equal(stillRecovering.recoveryStage, 'slow', '超过快速阈值后应进入慢速恢复')
-  assert.notEqual(stillRecovering.action, 'error', '未超过最长观察时不应转异常')
+  assert.notEqual(stillRecovering.action, 'exception', '未超过最长观察时不应转异常')
   const freshAfterRetest = repositories.findAccountSummary(freshAccount.id)
   assert.equal(freshAfterRetest?.status, 'temporary_unavailable', '未超过观察窗口时账号应继续恢复')
   assert.equal(freshAfterRetest?.lastErrorCode, 'insufficient_quota', '后台复测应把上游真实错误码写入账户状态')

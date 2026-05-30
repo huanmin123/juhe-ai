@@ -2,6 +2,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds } from '../../shared/account-concurrency.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { isDynamicApiKeyGroupRouteStrategy } from '../../domain/api-key-routing.js'
 import { hashSecret } from '../../storage/crypto.js'
 import {
   listOpenAIAccountsForGroup,
@@ -10,6 +11,7 @@ import {
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { clearSettingsRepositoryCache } from '../../storage/settings.repository.js'
+import { apiKeyScheduleCacheTtlMs } from '../../storage/api-key-availability-schedule.js'
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
@@ -23,7 +25,12 @@ const gatewaySettingsTtlMs = 60_000
 const groupUsageAccessTtlMs = 60_000
 const openAIAccountsTtlMs = 60_000
 
-const gatewayRuntimeCache = createAppCache<string, DbServiceGatewayRuntime>({
+interface GatewayRuntimeCacheEntry {
+  runtime: DbServiceGatewayRuntime
+  scheduleRevalidateAtMs?: number
+}
+
+const gatewayRuntimeCache = createAppCache<string, GatewayRuntimeCacheEntry>({
   name: 'gateway:runtime',
   max: 10000,
   ttlMs: gatewayRuntimeTtlMs,
@@ -127,7 +134,10 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
   const cacheKey = hashSecret(apiKey)
   const cached = gatewayRuntimeCache.get(cacheKey)
   if (cached !== undefined) {
-    return cloneGatewayRuntimeForDispatch(cached)
+    if (isGatewayRuntimeCacheEntryFresh(cached) && !isGatewayRuntimeCacheEntryDynamic(cached)) {
+      return cloneGatewayRuntimeForDispatch(cached.runtime)
+    }
+    gatewayRuntimeCache.delete(cacheKey)
   }
 
   const runtime = await requestDbService({
@@ -136,12 +146,22 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
   })
   primeClientIpPoliciesFromRuntime(runtime)
   if (!runtime.apiKey) {
-    gatewayRuntimeCache.set(cacheKey, cloneStaticGatewayRuntime(runtime), { ttlMs: invalidGatewayRuntimeTtlMs })
+    gatewayRuntimeCache.set(cacheKey, {
+      runtime: cloneStaticGatewayRuntime(runtime)
+    }, { ttlMs: invalidGatewayRuntimeTtlMs })
     gatewaySettingsCache.set('current', runtime.settings)
     return cloneStaticGatewayRuntime(runtime)
   }
 
-  gatewayRuntimeCache.set(cacheKey, cloneStaticGatewayRuntime(runtime), { ttlMs: gatewayRuntimeCacheTtlMs(runtime) })
+  const nowMs = Date.now()
+  if (!isDynamicApiKeyGroupRouteStrategy(runtime.apiKey.group_route_strategy)) {
+    gatewayRuntimeCache.set(cacheKey, {
+      runtime: cloneStaticGatewayRuntime(runtime),
+      scheduleRevalidateAtMs: runtime.apiKey.availability_schedule_json
+        ? nowMs + apiKeyScheduleCacheTtlMs(nowMs)
+        : undefined
+    }, { ttlMs: gatewayRuntimeCacheTtlMs(runtime, nowMs) })
+  }
   gatewaySettingsCache.set('current', runtime.settings)
   if (runtime.groupAccess) {
     groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), cloneGroupUsageAccessMetadata(runtime.groupAccess))
@@ -209,7 +229,14 @@ function cloneGroupUsageAccessMetadata(value: GroupUsageAccessMetadata): GroupUs
 
 function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {
   return {
-    apiKey: runtime.apiKey ? { ...runtime.apiKey } : undefined,
+    apiKey: runtime.apiKey
+      ? {
+        ...runtime.apiKey,
+        group_bindings: runtime.apiKey.group_bindings
+          ? runtime.apiKey.group_bindings.map((binding) => ({ ...binding }))
+          : undefined
+      }
+      : undefined,
     settings: { ...runtime.settings },
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
     accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret),
@@ -239,18 +266,29 @@ function cloneStreamInterceptPolicy(policy: StreamInterceptPolicySummary): Strea
   }
 }
 
-function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime): number {
+function isGatewayRuntimeCacheEntryFresh(entry: GatewayRuntimeCacheEntry, now = Date.now()): boolean {
+  return entry.scheduleRevalidateAtMs === undefined || entry.scheduleRevalidateAtMs > now
+}
+
+function isGatewayRuntimeCacheEntryDynamic(entry: GatewayRuntimeCacheEntry): boolean {
+  return isDynamicApiKeyGroupRouteStrategy(entry.runtime.apiKey?.group_route_strategy)
+}
+
+function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime, now = Date.now()): number {
   let ttlMs = gatewayRuntimeTtlMs
   const primaryBindingGroupId = runtime.apiKey?.group_bindings?.[0]?.group_id
   if (primaryBindingGroupId && runtime.apiKey?.group_id && runtime.apiKey.group_id !== primaryBindingGroupId) {
     ttlMs = Math.min(ttlMs, fallbackGatewayRuntimeTtlMs)
+  }
+  if (runtime.apiKey?.availability_schedule_json) {
+    ttlMs = Math.min(ttlMs, apiKeyScheduleCacheTtlMs(now))
   }
   for (const expiresAt of runtimeCacheExpiryCandidates(runtime)) {
     const expiresAtMs = Date.parse(expiresAt)
     if (!Number.isFinite(expiresAtMs)) {
       continue
     }
-    ttlMs = Math.min(ttlMs, expiresAtMs - Date.now())
+    ttlMs = Math.min(ttlMs, expiresAtMs - now)
   }
   return Math.max(1, ttlMs)
 }

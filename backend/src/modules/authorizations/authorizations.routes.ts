@@ -72,6 +72,21 @@ const createAuthorizationSchema = z.object({
   expiresAt: z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确').optional(),
   limits: z.record(z.string(), z.unknown()).optional(),
   modelPolicy: z.record(z.string(), z.unknown()).optional()
+}).superRefine((value, ctx) => {
+  if (value.resourceType === 'account' && value.granteeType === 'system_account' && !value.targetGroupId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['targetGroupId'],
+      message: '授权 AI 账户给个人时必须选择目标分组'
+    })
+  }
+  if (value.targetGroupId && (value.resourceType !== 'account' || value.granteeType !== 'system_account')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['targetGroupId'],
+      message: '只有授权 AI 账户给个人时可以指定目标分组'
+    })
+  }
 })
 
 const updateAuthorizationSchema = z.object({

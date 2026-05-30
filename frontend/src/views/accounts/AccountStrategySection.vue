@@ -3,7 +3,7 @@
     <div class="form-section-head">
       <div>
         <h4>请求策略</h4>
-        <p>并发、优先级和代理会影响后续请求转发与账户选择。</p>
+        <p>{{ authorizedEditing ? '授权账户只允许调整你自己的分组内优先级。' : '并发、优先级和代理会影响后续请求转发与账户选择。' }}</p>
       </div>
     </div>
     <a-form-item label="支持模型">
@@ -12,6 +12,7 @@
         allow-clear
         mode="multiple"
         :loading="modelsLoading"
+        :disabled="authorizedEditing"
         option-filter-prop="label"
         placeholder="不限制模型"
         :options="modelOptions"
@@ -21,7 +22,7 @@
     </a-form-item>
     <div class="strategy-grid">
       <a-form-item label="并发上限">
-        <a-input-number v-model:value="form.concurrencyLimit" :min="1" style="width: 100%" />
+        <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
       </a-form-item>
       <a-form-item label="优先级">
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
@@ -32,6 +33,7 @@
       <ProxySelect
         v-model:value="form.proxyProfileId"
         allow-clear
+        :disabled="authorizedEditing"
         placeholder="不使用代理"
         :options="proxyOptions"
       />
@@ -46,6 +48,7 @@ import type { SelectOption } from '@/shared/selectLabelCache'
 import type { AccountFormModel } from './accountFormTypes'
 
 defineProps<{
+  authorizedEditing: boolean
   form: AccountFormModel
   isManagementView: boolean
   modelOptions: Array<{ label: string; value: string }>

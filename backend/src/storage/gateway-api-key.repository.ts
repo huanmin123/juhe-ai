@@ -1,4 +1,14 @@
 import { createAppCache } from '../shared/cache.js'
+import {
+  apiKeyScheduleCacheTtlMs,
+  evaluateApiKeyAvailabilitySchedule,
+  parseApiKeyAvailabilityScheduleJson
+} from './api-key-availability-schedule.js'
+import {
+  normalizeApiKeyGroupBindingWeight,
+  normalizeApiKeyGroupRouteStrategy
+} from '../domain/api-key-routing.js'
+import type { ApiKeyGroupRouteStrategy } from '../domain/types.js'
 import { hashSecret } from './crypto.js'
 import { getDatabase } from './database.js'
 
@@ -9,6 +19,9 @@ export interface GatewayApiKeyRow {
   status: 'active' | 'disabled'
   expires_at: string | null
   quota_limits_json: string | null
+  group_route_strategy: ApiKeyGroupRouteStrategy
+  availability_schedule_json?: string | null
+  availability_schedule_active?: number
   system_account_image_generation_enabled: number
   group_bindings?: GatewayApiKeyGroupBindingRow[]
 }
@@ -19,6 +32,7 @@ export interface GatewayApiKeyGroupBindingRow {
   system_account_id: string
   group_id: string
   priority: number
+  weight: number
   status: 'active' | 'disabled'
   provider_code: string
   group_enabled: number
@@ -27,6 +41,7 @@ export interface GatewayApiKeyGroupBindingRow {
 type GatewayApiKeyCacheEntry = {
   row: GatewayApiKeyRow
   forceRevalidateAtMs: number
+  scheduleRevalidateAtMs?: number
 }
 
 const GATEWAY_API_KEY_CACHE_TTL_MS = 60_000
@@ -45,7 +60,12 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   const keyHash = hashSecret(key)
   const now = Date.now()
   const cached = gatewayApiKeyCache.get(keyHash)
-  if (cached && cached.forceRevalidateAtMs > now && !isGatewayApiKeyRowExpired(cached.row, now)) {
+  if (
+    cached
+    && cached.forceRevalidateAtMs > now
+    && !isGatewayApiKeyRowExpired(cached.row, now)
+    && isGatewayApiKeyCacheEntryScheduleFresh(cached, now)
+  ) {
     return cached.row
   }
 
@@ -57,6 +77,8 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
+      api_keys.group_route_strategy,
+      api_keys.availability_schedule_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
@@ -74,6 +96,8 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
+  applyGatewayApiKeyScheduleState(row, now)
+  row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
   row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
   if (!row.group_bindings.length) {
     gatewayApiKeyCache.delete(keyHash)
@@ -82,7 +106,10 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   row.group_id = row.group_bindings[0]?.group_id ?? row.group_id
   gatewayApiKeyCache.set(keyHash, {
     row,
-    forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
+    forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS,
+    scheduleRevalidateAtMs: row.availability_schedule_json
+      ? now + apiKeyScheduleCacheTtlMs(now)
+      : undefined
   }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
   return row
 }
@@ -98,6 +125,8 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
+      api_keys.group_route_strategy,
+      api_keys.availability_schedule_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
@@ -114,6 +143,8 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
   if (isGatewayApiKeyRowExpired(row)) {
     return undefined
   }
+  applyGatewayApiKeyScheduleState(row)
+  row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
   row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
   if (!row.group_bindings.length) {
     return undefined
@@ -141,9 +172,31 @@ function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boo
 }
 
 function gatewayApiKeyCacheTtlMs(now: number, row: GatewayApiKeyRow): number {
-  if (!row.expires_at) return GATEWAY_API_KEY_CACHE_TTL_MS
-  const keyExpiresAt = Date.parse(row.expires_at)
-  return Number.isFinite(keyExpiresAt) ? Math.max(1, Math.min(GATEWAY_API_KEY_CACHE_TTL_MS, keyExpiresAt - now)) : GATEWAY_API_KEY_CACHE_TTL_MS
+  let ttlMs = GATEWAY_API_KEY_CACHE_TTL_MS
+  if (row.expires_at) {
+    const keyExpiresAt = Date.parse(row.expires_at)
+    if (Number.isFinite(keyExpiresAt)) {
+      ttlMs = Math.min(ttlMs, keyExpiresAt - now)
+    }
+  }
+  if (row.availability_schedule_json) {
+    ttlMs = Math.min(ttlMs, apiKeyScheduleCacheTtlMs(now))
+  }
+  return Math.max(1, ttlMs)
+}
+
+function isGatewayApiKeyCacheEntryScheduleFresh(entry: GatewayApiKeyCacheEntry, now: number): boolean {
+  return entry.scheduleRevalidateAtMs === undefined || entry.scheduleRevalidateAtMs > now
+}
+
+export function isGatewayApiKeyScheduleInactive(row: GatewayApiKeyRow | undefined): boolean {
+  return Boolean(row?.availability_schedule_json && row.availability_schedule_active === 0)
+}
+
+function applyGatewayApiKeyScheduleState(row: GatewayApiKeyRow, now = Date.now()): void {
+  const schedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
+  const decision = evaluateApiKeyAvailabilitySchedule(schedule, new Date(now))
+  row.availability_schedule_active = decision.allowed ? 1 : 0
 }
 
 export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAccountId: string): GatewayApiKeyGroupBindingRow[] {
@@ -154,6 +207,7 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAcc
       api_key_group_bindings.system_account_id,
       api_key_group_bindings.group_id,
       api_key_group_bindings.priority,
+      api_key_group_bindings.weight,
       api_key_group_bindings.status,
       groups.provider_code,
       groups.enabled AS group_enabled
@@ -166,5 +220,9 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAcc
       AND api_key_group_bindings.status = 'active'
       AND groups.enabled = 1
     ORDER BY api_key_group_bindings.priority ASC, api_key_group_bindings.created_at ASC, api_key_group_bindings.id ASC
-  `).all(apiKeyId, systemAccountId) as unknown as GatewayApiKeyGroupBindingRow[]
+  `).all(apiKeyId, systemAccountId)
+    .map((row) => ({
+      ...(row as unknown as GatewayApiKeyGroupBindingRow),
+      weight: normalizeApiKeyGroupBindingWeight((row as unknown as GatewayApiKeyGroupBindingRow).weight)
+    })) as GatewayApiKeyGroupBindingRow[]
 }

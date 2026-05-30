@@ -48,7 +48,7 @@
             :loading="teamOptionsLoading"
             allow-clear
             class="authorization-usage-select responsive-list-inline-filter"
-            placeholder="筛选授权团队"
+            placeholder="筛选被授权团队"
             scope="team"
             @change="handleTeamChange"
             @dropdown-visible-change="handleTeamOptionsDropdown"
@@ -57,10 +57,10 @@
         </template>
         <template #advanced-filters>
           <a-form layout="vertical" class="advanced-filter-form">
-            <a-form-item label="授权内容">
+            <a-form-item label="资源类型">
               <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
             </a-form-item>
-            <a-form-item label="授权资源">
+            <a-form-item label="资源名称">
               <GroupSelect
                 v-if="filters.resourceType === 'group'"
                 v-model:value="filters.resourceId"
@@ -71,7 +71,7 @@
                 :options="resourceOptions"
                 :filter-option="false"
                 :loading="resourceOptionsLoading"
-                :placeholder="resourceGroupDisabled ? '请先选择资源归属用户' : '筛选授权资源'"
+                :placeholder="resourceGroupDisabled ? '请先选择资源归属用户' : '筛选资源'"
                 @change="handleResourceChange"
                 @dropdown-visible-change="handleResourceOptionsDropdown"
                 @search="handleResourceOptionsSearch"
@@ -87,7 +87,7 @@
                 :disabled="filters.resourceType === 'all'"
                 :filter-option="false"
                 :loading="resourceOptionsLoading"
-                :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
+                :placeholder="filters.resourceType === 'all' ? '先选择资源类型' : '筛选资源'"
                 @change="handleResourceChange"
                 @dropdown-visible-change="handleResourceOptionsDropdown"
                 @search="handleResourceOptionsSearch"
@@ -110,7 +110,7 @@
             />
           </label>
           <label class="mobile-filter-field">
-            <span>授权团队</span>
+            <span>被授权团队</span>
             <SystemPrincipalSelect
               v-model:value="filters.teamId"
               v-model:selected-principal="filters.team"
@@ -120,14 +120,14 @@
               :loading="teamOptionsLoading"
               allow-clear
               scope="team"
-              placeholder="筛选授权团队"
+              placeholder="筛选被授权团队"
               @change="handleTeamChange"
               @dropdown-visible-change="handleTeamOptionsDropdown"
               @search="handleTeamOptionsSearch"
             />
           </label>
           <label class="mobile-filter-field">
-            <span>授权内容</span>
+            <span>资源类型</span>
             <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
           </label>
           <label v-if="isManagementView" class="mobile-filter-field">
@@ -148,7 +148,7 @@
             />
           </label>
           <label class="mobile-filter-field">
-            <span>授权资源</span>
+            <span>资源名称</span>
             <GroupSelect
               v-if="filters.resourceType === 'group'"
               v-model:value="filters.resourceId"
@@ -159,7 +159,7 @@
               :options="resourceOptions"
               :filter-option="false"
               :loading="resourceOptionsLoading"
-              :placeholder="resourceGroupDisabled ? '请先选择资源归属用户' : '筛选授权资源'"
+              :placeholder="resourceGroupDisabled ? '请先选择资源归属用户' : '筛选资源'"
               @change="handleResourceChange"
               @dropdown-visible-change="handleResourceOptionsDropdown"
               @search="handleResourceOptionsSearch"
@@ -175,7 +175,7 @@
               :disabled="filters.resourceType === 'all'"
               :filter-option="false"
               :loading="resourceOptionsLoading"
-              :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
+              :placeholder="filters.resourceType === 'all' ? '先选择资源类型' : '筛选资源'"
               @change="handleResourceChange"
               @dropdown-visible-change="handleResourceOptionsDropdown"
               @search="handleResourceOptionsSearch"
@@ -210,7 +210,7 @@
         @mobile-refresh="refreshMobileTeamRows"
       >
         <template #emptyText>
-          <a-empty class="page-empty-card" description="当前筛选范围暂无团队授权消耗。" />
+          <a-empty class="page-empty-card" description="当前筛选范围暂无团队消耗。" />
         </template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'team'">
@@ -357,7 +357,7 @@ const {
   options: teams,
   resetSearch: resetTeamOptionsSearch
 } = useRemoteAuthorizationPrincipalOptions<SystemTeamPrincipalSummary>({
-  errorMessage: '加载授权团队失败',
+  errorMessage: '加载被授权团队失败',
   isManagementView: () => isManagementView.value,
   kind: 'team',
   selectedIds: () => [filters.teamId]
@@ -429,7 +429,7 @@ const advancedFilterCount = computed(() => {
 })
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
 const summaryCards = computed(() => [
-  { key: 'teams', label: overview.value?.hasMore ? '已加载团队' : '授权团队', value: formatNumber(overview.value?.teamCount ?? 0), extra: overview.value?.hasMore ? '还有更多团队消耗' : `范围 ${rangeLabel.value}` },
+  { key: 'teams', label: overview.value?.hasMore ? '已加载团队' : '被授权团队', value: formatNumber(overview.value?.teamCount ?? 0), extra: overview.value?.hasMore ? '还有更多团队消耗' : `范围 ${rangeLabel.value}` },
   { key: 'requests', label: '范围请求', value: formatNumber(totalUsage.value.requestCount), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` },
   { key: 'tokens', label: 'Token 消耗', value: formatUsageAmount(totalUsage.value.totalTokens), extra: `输入 ${formatUsageAmount(totalUsage.value.inputTokens)}` },
   { key: 'cost', label: '成本', value: formatCost(totalUsage.value.totalCost), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` }
@@ -460,7 +460,7 @@ async function loadOptionsNow() {
   ])
   if (teamResult.status === 'rejected') {
     console.error(teamResult.reason)
-    message.error('加载授权团队失败')
+    message.error('加载被授权团队失败')
   }
   if (ownerResult.status === 'rejected') {
     console.error(ownerResult.reason)
@@ -468,7 +468,7 @@ async function loadOptionsNow() {
   }
   if (resourceResult.status === 'rejected') {
     console.error(resourceResult.reason)
-    message.error('加载授权资源选项失败')
+    message.error('加载资源选项失败')
   }
 }
 

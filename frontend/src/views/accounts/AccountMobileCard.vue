@@ -164,8 +164,8 @@ const moreActions = computed<AccountMenuItem[]>(() => {
 })
 const authorizedActions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []
-  if (props.account.status !== 'error') {
-    list.push({ key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
+  if (props.canEdit) {
+    list.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
   }
   if (props.account.accountAuthorizationId) {
     list.push({

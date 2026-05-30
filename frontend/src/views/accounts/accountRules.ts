@@ -111,6 +111,7 @@ export function hasAccountEditPermission(account: AccountSummary): boolean {
 }
 
 export function canEditAccount(account: AccountSummary): boolean {
+  if (isAuthorizedAccount(account)) return account.permissions?.canUse !== false
   return hasAccountEditPermission(account)
 }
 

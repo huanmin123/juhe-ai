@@ -62,8 +62,6 @@
                 <InfoCircleOutlined class="authorized-group-icon" :class="groupInfoIconClass(record)" />
               </a-tooltip>
             </span>
-            <span v-if="record.description" class="group-description-text">{{ record.description }}</span>
-            <span v-if="isAuthorizedGroup(record)" class="group-source-text">{{ authorizedGroupSourceText(record) }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'providerCode'">
@@ -78,7 +76,7 @@
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ groupSystemAccountText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'description'">
-          <span class="group-description-column-text">{{ record.description || '-' }}</span>
+          <span class="group-description-column-text">{{ groupDisplayDescription(record) || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'accountCount'">
           <a-tooltip :title="groupAccountStatsTooltip(record)">
@@ -124,8 +122,6 @@
                   <InfoCircleOutlined class="authorized-group-icon" :class="groupInfoIconClass(record)" />
                 </a-tooltip>
               </div>
-              <span v-if="record.description" class="mobile-list-card-description">{{ record.description }}</span>
-              <span v-if="isAuthorizedGroup(record)" class="group-source-text">{{ authorizedGroupSourceText(record) }}</span>
             </div>
             <div class="mobile-list-card-tags">
               <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
@@ -140,7 +136,7 @@
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>说明</span>
-              <strong>{{ record.description || '-' }}</strong>
+              <strong>{{ groupDisplayDescription(record) || '-' }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>可用账号</span>
@@ -568,10 +564,15 @@ function groupInfoTooltip(group: GroupSummary): string {
   if (isAuthorizedGroup(group)) {
     lines.push(authorizedGroupTooltip(group))
   }
-  if (group.description) {
-    lines.push(`分组说明：${group.description}`)
+  const description = groupDisplayDescription(group)
+  if (description) {
+    lines.push(`分组说明：${description}`)
   }
   return lines.join('\n')
+}
+
+function groupDisplayDescription(group: GroupSummary): string {
+  return group.description?.trim() ?? ''
 }
 
 function authorizedGroupSourceText(group: GroupSummary): string {
@@ -940,10 +941,8 @@ onMounted(() => {
 }
 
 .group-name-text,
-.group-description-text,
 .group-description-column-text,
-.mobile-list-card-name-row span,
-.mobile-list-card-description {
+.mobile-list-card-name-row span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -955,19 +954,8 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.group-description-text,
-.group-description-column-text,
-.mobile-list-card-description {
+.group-description-column-text {
   color: #64748b;
-  font-size: 12px;
-}
-
-.group-source-text {
-  width: fit-content;
-  padding: 1px 6px;
-  color: #7c3aed;
-  background: #f5f3ff;
-  border-radius: 4px;
   font-size: 12px;
 }
 

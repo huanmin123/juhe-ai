@@ -9,6 +9,7 @@
     :hidden-option-values="hiddenOptionValues"
     :placeholder="placeholder"
     :cache-key="cacheKey"
+    :preference-key="preferenceKey"
     v-bind="$attrs"
     @change="handleChange"
     @update:value="handleUpdateValue"
@@ -46,6 +47,7 @@ const props = withDefaults(defineProps<{
   selectedIds?: Array<string | undefined>
   hiddenOptionValues?: Array<string | undefined>
   cacheKey?: string
+  preferenceKey?: string
   allowClear?: boolean
   disabled?: boolean
   loading?: boolean
@@ -59,6 +61,7 @@ const props = withDefaults(defineProps<{
   selectedIds: () => [],
   hiddenOptionValues: () => [],
   cacheKey: 'accounts',
+  preferenceKey: undefined,
   allowClear: false,
   disabled: false,
   loading: false,

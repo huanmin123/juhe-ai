@@ -2,6 +2,7 @@
   <a-modal v-model:open="open" :title="title" width="920px" :confirm-loading="confirmLoading" :ok-button-props="okButtonProps" @ok="$emit('ok')" @cancel="$emit('cancel')">
     <a-form layout="vertical" class="account-form">
       <a-alert v-if="cloning" class="form-alert" type="info" show-icon :message="cloneAlertMessage" />
+      <a-alert v-else-if="authorizedEditing" class="form-alert" type="info" show-icon message="授权账户的上游配置由授权方维护；你只能调整加入分组和分组内优先级。" />
       <a-alert v-else-if="editing" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；Access/API Key 与 Refresh Token 只在这里展示和修改。" />
       <a-alert v-else-if="targetSystemAccountLabel" class="form-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
 
@@ -22,19 +23,20 @@
         :form="form"
         :group-options="groupOptions"
         :group-options-loading="groupOptionsLoading"
+        :authorized-editing="authorizedEditing"
         @group-options-dropdown="$emit('group-options-dropdown', $event)"
         @group-options-search="$emit('group-options-search', $event)"
       />
 
       <AccountApiKeySection
-        v-if="isApiKeyForm"
+        v-if="isApiKeyForm && !authorizedEditing"
         :base-url-placeholder="baseUrlPlaceholder"
         :form="form"
         :title="credentialTitle"
       />
 
       <AccountOAuthSection
-        v-else-if="isOAuthForm"
+        v-else-if="isOAuthForm && !authorizedEditing"
         :auth-loading="authLoading"
         :auth-result="authResult"
         :editing="editing"
@@ -53,10 +55,11 @@
         :model-options="modelOptions"
         :models-loading="modelsLoading"
         :proxy-options="proxyOptions"
+        :authorized-editing="authorizedEditing"
       />
 
       <AccountErrorPolicyCard
-        v-if="hasAccountType"
+        v-if="hasAccountType && !authorizedEditing"
         v-model:rules="errorPolicyRules"
         :account-type="form.type"
         :base-url="form.baseUrl"
@@ -64,7 +67,7 @@
       />
 
       <AccountStreamInterceptPolicyCard
-        v-if="hasAccountType"
+        v-if="hasAccountType && !authorizedEditing"
         v-model:rules="streamInterceptRules"
       />
     </a-form>
@@ -104,6 +107,7 @@ const streamInterceptRules = defineModel<AccountStreamInterceptRuleForm[]>('stre
 
 const props = defineProps<{
   accountTypeChoices: AccountTypeChoice[]
+  authorizedEditing: boolean
   authLoading: boolean
   authResult?: OpenAIAuthURLResult
   baseUrlPlaceholder: string

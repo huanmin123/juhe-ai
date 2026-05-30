@@ -132,6 +132,7 @@ try {
     resourceId: ownerAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
     remark: '授权账户测试本地恢复回归'
   }, ownerAccess)
   const granteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
@@ -207,6 +208,7 @@ try {
     resourceId: failingOwnerAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
     remark: '授权账户测试本地失败回归'
   }, ownerAccess)
   const failingGranteeAccount = authorizedInstanceForSource(failingOwnerAccount.id, granteeAccess)

@@ -118,13 +118,14 @@ try {
 
   const created = repositories.findApiKeySummary(apiKey.id, access)
   assert.equal(created?.groupId, primaryGroup.id, '兼容主分组应等于最高优先级启用分组')
+  assert.equal(created?.groupRouteStrategy, 'priority_failover', '未显式配置策略时应默认主备优先')
   assert.deepEqual(
-    created?.groupBindings.map((binding) => [binding.groupId, binding.priority, binding.status]),
+    created?.groupBindings.map((binding) => [binding.groupId, binding.priority, binding.weight, binding.status]),
     [
-      [primaryGroup.id, 1, 'active'],
-      [fallbackGroup.id, 2, 'active']
+      [primaryGroup.id, 1, 1, 'active'],
+      [fallbackGroup.id, 2, 1, 'active']
     ],
-    '详情应返回完整分组路由'
+    '详情应返回完整分组路由和默认权重'
   )
 
   const filteredByFallback = repositories.listApiKeysPage(access, {
@@ -162,6 +163,120 @@ try {
   assert.equal(restoredRuntime.apiKey?.group_id, primaryGroup.id, '优先分组恢复正常账号后运行时应回到主分组')
   assert(restoredRuntime.accounts.some((account) => account.id === primaryHealthyAccount.id), '恢复后的运行时应包含主分组正常账号')
   assert(!restoredRuntime.accounts.some((account) => account.id === primaryBlockedAccount.id && account.proxyProfileUnavailable !== true), '主分组代理不可用账号不应被视为正常可派发账号')
+
+  const roundRobinGroupA = repositories.createGroup({
+    name: '多分组轮询回归 A 号池',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  const roundRobinGroupB = repositories.createGroup({
+    name: '多分组轮询回归 B 号池',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '多分组轮询回归 A 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-api-key-multi-group-round-robin-a',
+      base_url: 'http://127.0.0.1:9/v1'
+    },
+    groupId: roundRobinGroupA.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '多分组轮询回归 B 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-api-key-multi-group-round-robin-b',
+      base_url: 'http://127.0.0.1:9/v1'
+    },
+    groupId: roundRobinGroupB.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const roundRobinKey = repositories.createApiKeyRecord({
+    name: '多分组轮询策略回归 Key',
+    groupRouteStrategy: 'round_robin',
+    groupBindings: [
+      { groupId: roundRobinGroupA.id, priority: 1, status: 'active' },
+      { groupId: roundRobinGroupB.id, priority: 2, status: 'active' }
+    ]
+  }, access)
+  assert.equal(roundRobinKey.groupRouteStrategy, 'round_robin', '创建时应保存轮询路由策略')
+  assert.deepEqual(
+    await runtimeGroupSequence(roundRobinKey.key, 4),
+    [roundRobinGroupA.id, roundRobinGroupB.id, roundRobinGroupA.id, roundRobinGroupB.id],
+    '轮询策略应在启用号池之间按请求轮转'
+  )
+
+  const weightedGroupA = repositories.createGroup({
+    name: '多分组权重回归 A 号池',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  const weightedGroupB = repositories.createGroup({
+    name: '多分组权重回归 B 号池',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '多分组权重回归 A 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-api-key-multi-group-weighted-a',
+      base_url: 'http://127.0.0.1:9/v1'
+    },
+    groupId: weightedGroupA.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '多分组权重回归 B 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-api-key-multi-group-weighted-b',
+      base_url: 'http://127.0.0.1:9/v1'
+    },
+    groupId: weightedGroupB.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const weightedKey = repositories.createApiKeyRecord({
+    name: '多分组权重策略回归 Key',
+    groupRouteStrategy: 'weighted_round_robin',
+    groupBindings: [
+      { groupId: weightedGroupA.id, priority: 1, weight: 3, status: 'active' },
+      { groupId: weightedGroupB.id, priority: 2, weight: 1, status: 'active' }
+    ]
+  }, access)
+  const weightedSummary = repositories.findApiKeySummary(weightedKey.id, access)
+  assert.equal(weightedSummary?.groupRouteStrategy, 'weighted_round_robin', '详情应返回权重路由策略')
+  assert.deepEqual(
+    weightedSummary?.groupBindings.map((binding) => [binding.groupId, binding.weight]),
+    [
+      [weightedGroupA.id, 3],
+      [weightedGroupB.id, 1]
+    ],
+    '详情应返回每个绑定号池的权重'
+  )
+  const weightedSequence = await runtimeGroupSequence(weightedKey.key, 8)
+  assert.equal(weightedSequence.filter((groupId) => groupId === weightedGroupA.id).length, 6, '权重 3 的号池在 8 次选择中应命中 6 次')
+  assert.equal(weightedSequence.filter((groupId) => groupId === weightedGroupB.id).length, 2, '权重 1 的号池在 8 次选择中应命中 2 次')
+  const strategyUpdated = repositories.updateApiKey(weightedKey.id, {
+    groupRouteStrategy: 'round_robin'
+  }, access)
+  assert.equal(strategyUpdated?.groupRouteStrategy, 'round_robin', '更新 API Key 时应允许单独调整分组路由策略')
+  assert.deepEqual(
+    await runtimeGroupSequence(weightedKey.key, 4),
+    [weightedGroupA.id, weightedGroupB.id, weightedGroupA.id, weightedGroupB.id],
+    '策略更新为轮询后运行时应按新策略重新选择号池'
+  )
 
   const updated = repositories.updateApiKey(apiKey.id, {
     groupBindings: [
@@ -246,7 +361,7 @@ try {
   assertBusinessIndexExists('idx_api_key_group_bindings_key_group_unique')
   assertSqlUniqueIndexRejectsDuplicateBinding(apiKey.id, fallbackGroup.id)
 
-  console.log('API Key 多分组绑定回归通过：创建、筛选、优先级更新、删除主池切后备、最后启用分组删除保护、未绑定拦截、空绑定拦截、重复绑定拦截、历史重复清理、不可派发主池切后备和恢复回主池正常')
+  console.log('API Key 多分组绑定回归通过：创建、筛选、优先级更新、主备/轮询/权重策略、删除主池切后备、最后启用分组删除保护、未绑定拦截、空绑定拦截、重复绑定拦截、历史重复清理、不可派发主池切后备和恢复回主池正常')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -293,4 +408,16 @@ function assertSqlUniqueIndexRejectsDuplicateBinding(apiKeyId: string, groupId: 
       `)
       .run(`akgb_duplicate_rejected_${Date.now()}`, apiKeyId, access.systemAccountId, groupId, 100, 'disabled', now, now)
   }, /UNIQUE|constraint/i, '数据库唯一索引应拒绝直接写入重复分组绑定')
+}
+
+async function runtimeGroupSequence(apiKey: string, count: number): Promise<Array<string | undefined>> {
+  const result: Array<string | undefined> = []
+  for (let index = 0; index < count; index += 1) {
+    const runtime = await dbServiceHandlers.handleDbServiceOperation({
+      type: 'read_gateway_runtime',
+      key: apiKey
+    })
+    result.push(runtime.apiKey?.group_id)
+  }
+  return result
 }

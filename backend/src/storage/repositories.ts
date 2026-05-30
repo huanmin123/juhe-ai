@@ -20,7 +20,7 @@ import { createApiKeyRecord, deleteApiKey, findApiKeySummary, listApiKeys, listA
 import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
+import { defaultGroupIdForSystemAccount, ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
 import { findGroupRowForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions } from './group-read.repository.js'
@@ -250,6 +250,7 @@ export {
 export {
   clearGatewayApiKeyValidationCache,
   findActiveGatewayApiKeyById,
+  isGatewayApiKeyScheduleInactive,
   validateGatewayApiKey,
   type GatewayApiKeyRow
 } from './gateway-api-key.repository.js'
@@ -2624,7 +2625,7 @@ export interface CooldownAccountRetestFailureInput {
 }
 
 export interface CooldownAccountRetestFailureResult {
-  action: 'retry_immediately' | 'cooldown' | 'discard'
+  action: 'retry_immediately' | 'cooldown' | 'exception' | 'discard'
   changed: boolean
   failureCount: number
   account?: AccountSummary
@@ -2663,6 +2664,50 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
   const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
   const observationStartedAt = current.cooldownRetestObservationStartedAt ?? now
   const recovery = cooldownRetestRecoveryPlan(failureCount, input, nowDate, observationStartedAt)
+
+  if (recovery.observationElapsedSeconds >= recovery.maxRecoverySeconds) {
+    const exceptionMessage = cooldownRetestExceptionMessage(failureCount, recovery.maxRecoverySeconds, testErrorMessage)
+    const result = getDatabase()
+      .prepare(`
+        UPDATE accounts
+        SET status = 'error',
+            schedulable = 0,
+            cooldown_until = NULL,
+            last_error_code = 'cooldown_retest_max_recovery_exceeded',
+            last_error_message = ?,
+            cooldown_retest_failure_count = ?,
+            cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
+            cooldown_retest_last_at = ?,
+            cooldown_retest_last_status_code = ?,
+            stream_failure_count = 0,
+            stream_failure_window_started_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+          AND status = ?
+      `)
+      .run(exceptionMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id, current.status)
+    const changed = Number(result.changes ?? 0) > 0
+    if (changed) {
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_exception' })
+      invalidateAccountLookupCache(id)
+      invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_exception')
+    }
+    return {
+      action: 'exception',
+      changed,
+      failureCount,
+      account: failureAccountSummary(id, current),
+      recoveryStage: recovery.stage,
+      fastThresholdSeconds: recovery.fastThresholdSeconds,
+      maxPauseSeconds: recovery.maxPauseSeconds,
+      maxRecoverySeconds: recovery.maxRecoverySeconds,
+      maxedFailureCount: recovery.maxedFailureCount,
+      observationStartedAt: recovery.observationStartedAt,
+      observationElapsedSeconds: recovery.observationElapsedSeconds,
+      errorCode: 'cooldown_retest_max_recovery_exceeded',
+      errorMessage: exceptionMessage
+    }
+  }
 
   const cooldownUntil = new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
   const cooldownMessage = cooldownRetestCooldownMessage(failureCount, recovery.backoffSeconds, recovery.stage, testErrorMessage)
@@ -2792,6 +2837,10 @@ function firstCappedBackoffFailureCount(initialBackoffSeconds: number, multiplie
 function cooldownRetestCooldownMessage(failureCount: number, backoffSeconds: number, stage: 'fast' | 'slow', lastError: string): string {
   const stageText = stage === 'fast' ? '快速恢复通道' : '慢速恢复通道'
   return `后台冷却复测连续失败 ${failureCount} 次，${stageText}下次复测延后 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
+}
+
+function cooldownRetestExceptionMessage(failureCount: number, maxRecoverySeconds: number, lastError: string): string {
+  return `后台冷却复测连续失败 ${failureCount} 次，已超过最大恢复观察窗口 ${formatDurationSeconds(maxRecoverySeconds)}，已停止自动复测并标记为异常；最后错误：${lastError}`.slice(0, 1000)
 }
 
 function secondsToCeilMinutes(seconds: number): number {
@@ -4155,6 +4204,10 @@ export function listAuthorizationGranteeGroups(access?: AccessScope, options: Au
   if (!granteeSystemAccountId) return []
   const grantee = findSystemAccountById(granteeSystemAccountId)
   if (!grantee || grantee.status !== 'active') return []
+  const providerCode = optionalString(options.providerCode)
+  if (providerCode === 'openai' && options.preferDefault !== false) {
+    ensureDefaultOpenAIGroupForSystemAccount(granteeSystemAccountId)
+  }
   const filter = buildAuthorizationGranteeGroupFilter(options, granteeSystemAccountId)
   const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
   const rows = getDatabase()
@@ -4430,6 +4483,9 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
   validateResourceAuthorizationExpiresAt(resourceType, resourceId, expiresAt, Date.parse(now))
   const actor = currentSystemAccountId(access)
   const targetGroupId = optionalString(input.targetGroupId ?? input.target_group_id)
+  if (!targetGroupId && resourceType === 'account' && granteeType === 'system_account') {
+    throw new Error('授权 AI 账户给个人时必须选择目标分组')
+  }
   if (targetGroupId && (resourceType !== 'account' || granteeType !== 'system_account')) {
     throw new Error('只有授权 AI 账户给个人时可以指定目标分组')
   }
