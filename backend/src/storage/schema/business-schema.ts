@@ -80,6 +80,53 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS stream_intercept_policies (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      execution_mode TEXT NOT NULL DEFAULT 'intercept',
+      priority INTEGER NOT NULL DEFAULT 100,
+      provider_code TEXT NOT NULL DEFAULT 'openai',
+      match_json TEXT NOT NULL DEFAULT '{}',
+      data_handling TEXT NOT NULL DEFAULT 'discard_stream',
+      retry_enabled INTEGER NOT NULL DEFAULT 0,
+      account_switch TEXT NOT NULL DEFAULT 'none',
+      account_state TEXT NOT NULL DEFAULT 'none',
+      avoidance_ttl_seconds INTEGER,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS external_integration_sources (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      scopes_json TEXT NOT NULL DEFAULT '[]',
+      rate_limits_json TEXT NOT NULL DEFAULT '[]',
+      expires_at TEXT,
+      notes TEXT,
+      last_used_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS external_integration_source_tokens (
+      id TEXT PRIMARY KEY,
+      source_ref_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      token_prefix TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      scopes_json TEXT NOT NULL DEFAULT '[]',
+      expires_at TEXT,
+      last_used_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      revoked_at TEXT,
+      FOREIGN KEY (source_ref_id) REFERENCES external_integration_sources(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
@@ -337,6 +384,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_system_sessions_expires_at ON system_sessions(expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));
+    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_enabled_priority ON stream_intercept_policies(enabled, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_provider_priority ON stream_intercept_policies(provider_code, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_external_integration_source_tokens_source ON external_integration_source_tokens(source_ref_id, status, expires_at);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_updated_lookup ON system_accounts(updated_at, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_username_lookup ON system_accounts(username COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(display_name COLLATE NOCASE, id);
@@ -349,8 +399,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_type_lookup ON accounts(type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_type_lookup ON accounts(system_account_id, type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_authorization ON accounts(authorization_instance_authorization_id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source ON accounts(authorization_instance_source_account_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);
     CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);
@@ -407,6 +455,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  ensureStreamInterceptPolicyIndexes(database)
+  migrateExternalIntegrationSourcesNameOnly(database)
+  ensureExternalIntegrationSourceIndexes(database)
   database.exec(`
     INSERT OR IGNORE INTO api_key_group_bindings (id, api_key_id, system_account_id, group_id, priority, status, created_at, updated_at)
     SELECT 'akgb_' || api_keys.id || '_' || api_keys.group_id,
@@ -430,7 +481,84 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   ensureColumn(database, 'accounts', 'authorization_instance_source_account_id', 'TEXT')
   ensureColumn(database, 'accounts', 'authorization_instance_authorization_id', 'TEXT')
   ensureColumn(database, 'accounts', 'authorization_instance_owner_system_account_id', 'TEXT')
+  ensureColumn(database, 'external_integration_sources', 'rate_limits_json', "TEXT NOT NULL DEFAULT '[]'")
+  ensureColumn(database, 'external_integration_sources', 'expires_at', 'TEXT')
   ensureAuthorizationInstanceIndexes(database)
+}
+
+function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_external_integration_sources_status ON external_integration_sources(status, name);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_external_integration_sources_name_unique_lower ON external_integration_sources(lower(name));
+  `)
+}
+
+function ensureStreamInterceptPolicyIndexes(database: DatabaseSync): void {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_enabled_priority ON stream_intercept_policies(enabled, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_provider_priority ON stream_intercept_policies(provider_code, priority, updated_at DESC, id);
+  `)
+}
+
+function migrateExternalIntegrationSourcesNameOnly(database: DatabaseSync): void {
+  const rows = database.prepare('PRAGMA table_info(external_integration_sources)').all() as Array<{ name?: string }>
+  if (!rows.some((row) => row.name === 'source_id')) {
+    return
+  }
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec(`
+      BEGIN;
+      DROP TABLE IF EXISTS external_integration_sources_next;
+      CREATE TABLE external_integration_sources_next (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        scopes_json TEXT NOT NULL DEFAULT '[]',
+        rate_limits_json TEXT NOT NULL DEFAULT '[]',
+        expires_at TEXT,
+        notes TEXT,
+        last_used_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO external_integration_sources_next (
+        id, name, status, scopes_json, rate_limits_json, expires_at, notes, last_used_at, created_at, updated_at
+      )
+      SELECT
+        id,
+        CASE WHEN duplicate_rank = 1 THEN name ELSE name || ' (' || source_id || ')' END,
+        status,
+        scopes_json,
+        COALESCE(rate_limits_json, '[]'),
+        expires_at,
+        notes,
+        last_used_at,
+        created_at,
+        updated_at
+      FROM (
+        SELECT
+          external_integration_sources.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY lower(name)
+            ORDER BY updated_at DESC, created_at DESC, id ASC
+          ) AS duplicate_rank
+        FROM external_integration_sources
+      );
+      DROP TABLE external_integration_sources;
+      ALTER TABLE external_integration_sources_next RENAME TO external_integration_sources;
+      COMMIT;
+    `)
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+      // Ignore rollback failures so the original migration error stays visible.
+    }
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
 }
 
 function cleanupDuplicateApiKeyGroupBindings(database: DatabaseSync): void {

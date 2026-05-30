@@ -170,6 +170,15 @@ export function suppressGatewayAccountLocally(
   suppressLocalAccount(gatewayAccountRuntimeKey(account), localSuppressionMs(settings), reason, 'local_suppressed')
 }
 
+export function suppressGatewayAccountLocallyForSeconds(
+  account: SuppressibleGatewayAccount | string,
+  seconds: number | undefined,
+  reason = '流式拦截策略运行态避让'
+): void {
+  const value = typeof seconds === 'number' && Number.isFinite(seconds) ? Math.max(1, Math.trunc(seconds)) : 60
+  suppressLocalAccount(gatewayAccountRuntimeKey(account), Math.min(value * 1000, localSuppressionMaxMs), reason, 'local_suppressed')
+}
+
 export function recordGatewayAccountFailureForPrecheck(
   account: OpenAIAccountSecret,
   settings: GatewaySettings | undefined,

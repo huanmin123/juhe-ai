@@ -114,6 +114,7 @@
       v-if="modalOpen"
       v-model:open="modalOpen"
       v-model:error-policy-rules="accountErrorPolicyRules"
+      v-model:stream-intercept-rules="accountStreamInterceptRules"
       :account-type-choices="accountTypeChoices"
       :auth-loading="authLoading"
       :auth-result="authResult"
@@ -370,6 +371,7 @@ const {
 })
 const {
   accountErrorPolicyRules,
+  accountStreamInterceptRules,
   accountTypeChoices,
   authLoading,
   authResult,

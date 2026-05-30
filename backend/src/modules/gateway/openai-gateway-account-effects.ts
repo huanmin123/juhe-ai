@@ -62,7 +62,7 @@ export function handleStreamFailure(
       errorCode,
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten
-    }, '流式失败发生在可见输出前，暂不累计账号流失败计数')
+    }, '流式失败发生在模型内容输出前，暂不累计账号流失败计数')
     return
   }
 
@@ -77,7 +77,7 @@ export function handleStreamFailure(
       errorCode,
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten
-    }, '可见输出后流失败已被同上游桶多账号失败吸收，暂不累计账号流失败')
+    }, '模型内容输出后流失败已被同上游桶多账号失败吸收，暂不累计账号流失败')
     return
   }
 

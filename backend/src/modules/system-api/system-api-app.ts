@@ -9,6 +9,8 @@ import { authorizationsRouter } from '../authorizations/authorizations.routes.js
 import { forceSelfAccessScope, requireAdmin, requireAuth } from '../auth/auth.middleware.js'
 import { authRouter } from '../auth/auth.routes.js'
 import { errorPoliciesRouter } from '../error-policies/error-policies.routes.js'
+import { externalIntegrationsRouter } from '../external-integrations/external-integrations.routes.js'
+import { externalIntegrationSourcesRouter } from '../external-integrations/external-integration-sources.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
 import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
 import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
@@ -19,6 +21,7 @@ import { proxiesRouter } from '../proxies/proxies.routes.js'
 import { runtimeLogsRouter } from '../runtime-logs/runtime-logs.routes.js'
 import { settingsRouter } from '../settings/settings.routes.js'
 import { statsRouter } from '../stats/stats.routes.js'
+import { streamInterceptPoliciesRouter } from '../stream-intercept-policies/stream-intercept-policies.routes.js'
 import { systemAccountsRouter } from '../system-accounts/system-accounts.routes.js'
 import { myTeamsRouter, systemTeamsRouter } from '../system-teams/system-teams.routes.js'
 import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
@@ -29,6 +32,7 @@ import { listPublicGlobalSettings } from '../../storage/repositories.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
+  publicApiPrefix?: string
 }
 
 type BodyParserError = Error & {
@@ -40,9 +44,11 @@ type BodyParserError = Error & {
 export function createSystemApiApp(options: SystemApiAppOptions): express.Express {
   const app = express()
   const { systemApiPrefix } = options
+  const publicApiPrefix = options.publicApiPrefix ?? '/__aipublic__'
 
   app.use(requestContextMiddleware)
   app.use(systemApiPrefix, express.json({ limit: '2mb' }), handleJsonBodyError)
+  app.use(publicApiPrefix, express.json({ limit: '2mb' }), handleJsonBodyError)
 
   app.get(`${systemApiPrefix}/health`, (_req, res) => {
     res.json({ status: 'ok', service: 'juhe-ai-db-service' })
@@ -52,6 +58,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.get(`${systemApiPrefix}/settings/public`, (_req, res) => {
     res.json(ok(listPublicGlobalSettings()))
   })
+  app.use(publicApiPrefix, externalIntegrationsRouter)
 
   app.use(systemApiPrefix, requireAuth)
   app.use(`${systemApiPrefix}/announcements`, announcementsRouter)
@@ -67,6 +74,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
   app.use(`${systemApiPrefix}/providers`, providersRouter)
   app.use(`${systemApiPrefix}/error-policies`, errorPoliciesRouter)
+  app.use(`${systemApiPrefix}/stream-intercept-policies`, requireAdmin, streamInterceptPoliciesRouter)
   app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)
   app.use(`${systemApiPrefix}/groups`, requireAdmin, groupsRouter)
   app.use(`${systemApiPrefix}/api-keys`, requireAdmin, apiKeysRouter)
@@ -81,6 +89,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/runtime-logs`, requireAdmin, runtimeLogsRouter)
   app.use(`${systemApiPrefix}/stats`, requireAdmin, statsRouter)
   app.use(`${systemApiPrefix}/ip-stats`, requireAdmin, ipStatsRouter)
+  app.use(`${systemApiPrefix}/external-integration-sources`, requireAdmin, externalIntegrationSourcesRouter)
   app.use(`${systemApiPrefix}/table-monitor`, requireAdmin, tableMonitorRouter)
   app.use(`${systemApiPrefix}/settings`, settingsRouter)
   app.use(`${systemApiPrefix}/system-accounts`, systemAccountsRouter)
@@ -88,6 +97,10 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/system-teams`, systemTeamsRouter)
 
   app.use(systemApiPrefix, (_req, res) => {
+    res.status(404).json({ message: '资源不存在' })
+  })
+
+  app.use(publicApiPrefix, (_req, res) => {
     res.status(404).json({ message: '资源不存在' })
   })
 

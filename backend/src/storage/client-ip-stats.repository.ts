@@ -23,7 +23,7 @@ export type ClientIpPolicyFilter = 'all' | 'normal' | 'blacklisted'
 export interface NormalizedClientIp {
   clientIp: string
   aggregateIpKey: string
-  ipVersion: 4 | 6
+  ipVersion: 4
   ipHash: string
   bucketNo: number
 }
@@ -171,14 +171,6 @@ export function normalizeClientIpForStats(value?: string | null): NormalizedClie
     const clientIp = normalizeIpv4(normalizedIp)
     if (!clientIp) return undefined
     return clientIpIdentity(clientIp, clientIp, 4)
-  }
-  if (version === 6) {
-    const bytes = parseIpv6Bytes(normalizedIp)
-    if (!bytes) return undefined
-    const clientIp = formatIpv6Bytes(bytes)
-    const aggregateBytes = bytes.slice()
-    aggregateBytes.fill(0, 8)
-    return clientIpIdentity(clientIp, `${formatIpv6Bytes(aggregateBytes)}/64`, 6)
   }
   return undefined
 }
@@ -1017,11 +1009,11 @@ function clientIpStatsOrderBy(field: ClientIpStatsSortField | undefined, order: 
     case 'lastUsedAt':
       return `range_stats.last_used_at ${direction}`
     case 'requestCount':
-      return `COALESCE(policy_status.blacklisted, 0) ASC, range_stats.request_count ${direction}`
+      return `range_stats.request_count ${direction}`
     case 'totalCost':
       return `range_stats.total_cost_usd ${direction}`
     default:
-      return 'COALESCE(policy_status.blacklisted, 0) ASC, range_stats.request_count DESC'
+      return 'range_stats.request_count DESC'
   }
 }
 
@@ -1118,7 +1110,7 @@ function normalizeIpv4(value: string): string | undefined {
   return parts.join('.')
 }
 
-function clientIpIdentity(clientIp: string, aggregateIpKey: string, ipVersion: 4 | 6): NormalizedClientIp {
+function clientIpIdentity(clientIp: string, aggregateIpKey: string, ipVersion: 4): NormalizedClientIp {
   const ipHash = createHash('sha256').update(`client-ip:${aggregateIpKey}`).digest('hex')
   return {
     clientIp,
@@ -1127,68 +1119,6 @@ function clientIpIdentity(clientIp: string, aggregateIpKey: string, ipVersion: 4
     ipHash,
     bucketNo: Number.parseInt(ipHash.slice(0, 8), 16) % clientIpRegistryBucketCount
   }
-}
-
-function parseIpv6Bytes(value: string): number[] | undefined {
-  if (isIP(value) !== 6) return undefined
-  const normalized = value.toLowerCase()
-  const doubleColonParts = normalized.split('::')
-  if (doubleColonParts.length > 2) return undefined
-  const left = parseIpv6Part(doubleColonParts[0])
-  const right = doubleColonParts.length === 2 ? parseIpv6Part(doubleColonParts[1]) : []
-  if (!left || !right) return undefined
-  const missing = 8 - (left.length + right.length)
-  if (doubleColonParts.length === 1 && missing !== 0) return undefined
-  if (doubleColonParts.length === 2 && missing < 0) return undefined
-  const groups = [...left, ...Array(Math.max(0, missing)).fill(0), ...right]
-  if (groups.length !== 8) return undefined
-  return groups.flatMap((group) => [(group >> 8) & 0xff, group & 0xff])
-}
-
-function parseIpv6Part(part: string): number[] | undefined {
-  if (!part) return []
-  const rawGroups = part.split(':')
-  const groups: number[] = []
-  for (const rawGroup of rawGroups) {
-    if (!rawGroup) return undefined
-    if (rawGroup.includes('.')) {
-      const ipv4 = normalizeIpv4(rawGroup)
-      if (!ipv4) return undefined
-      const octets = ipv4.split('.').map((item) => Number(item))
-      groups.push((octets[0] << 8) + octets[1], (octets[2] << 8) + octets[3])
-      continue
-    }
-    if (!/^[0-9a-f]{1,4}$/i.test(rawGroup)) return undefined
-    groups.push(Number.parseInt(rawGroup, 16))
-  }
-  return groups
-}
-
-function formatIpv6Bytes(bytes: number[]): string {
-  const groups = Array.from({ length: 8 }, (_, index) => ((bytes[index * 2] << 8) | bytes[index * 2 + 1]).toString(16))
-  const zeroRun = longestZeroRun(groups)
-  if (zeroRun.length <= 1) return groups.join(':')
-  const left = groups.slice(0, zeroRun.start).join(':')
-  const right = groups.slice(zeroRun.start + zeroRun.length).join(':')
-  if (!left && !right) return '::'
-  if (!left) return `::${right}`
-  if (!right) return `${left}::`
-  return `${left}::${right}`
-}
-
-function longestZeroRun(groups: string[]): { start: number; length: number } {
-  let best = { start: -1, length: 0 }
-  let current = { start: -1, length: 0 }
-  for (let index = 0; index < groups.length; index += 1) {
-    if (groups[index] === '0') {
-      if (current.start < 0) current = { start: index, length: 0 }
-      current.length += 1
-      if (current.length > best.length) best = { ...current }
-    } else {
-      current = { start: -1, length: 0 }
-    }
-  }
-  return best
 }
 
 function orderedClientIpStatsShardLocations(locations: UsageRecordShardLocation[]): UsageRecordShardLocation[] {

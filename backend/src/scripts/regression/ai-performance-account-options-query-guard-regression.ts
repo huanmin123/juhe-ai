@@ -33,6 +33,13 @@ try {
     mustChangePassword: false
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const grantee = repositories.createSystemAccount({
+    username: 'perf-grantee',
+    displayName: '性能授权用户',
+    password: 'Password-123456',
+    mustChangePassword: false
+  })
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const matchedAccount = repositories.createAccount({
     providerCode: 'openai',
     name: 'perfneedle 主账号',
@@ -41,6 +48,34 @@ try {
       api_key: 'sk-ai-performance-options-query-guard-matched',
       base_url: 'https://api.openai.com/v1'
     }
+  }, ownerAccess)
+  const granteeTargetGroup = repositories.createGroup({
+    name: 'AI 性能授权目标分组',
+    providerCode: 'openai',
+    enabled: true
+  }, granteeAccess)
+  const authorizedSourceAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: 'perfauthold 来源账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ai-performance-authorized-source',
+      base_url: 'https://api.openai.com/v1'
+    }
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: authorizedSourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeTargetGroup.id,
+    remark: 'AI 性能来源名查询回归'
+  }, ownerAccess)
+  const authorizedInstance = repositories.listAccounts(granteeAccess)
+    .find((account) => account.authorizationInstanceSourceAccountId === authorizedSourceAccount.id)
+  assert(authorizedInstance?.id, 'AI 性能回归需要被授权实例账户')
+  repositories.updateAccount(authorizedSourceAccount.id, {
+    name: 'perfauthcurrent 来源账号'
   }, ownerAccess)
   const otherOwnerAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -132,6 +167,58 @@ try {
       limit: 10
     })
     assert(!userScopedKeyword.some((account) => account.id === adminAccount.id), '用户侧 AI 性能账号选项不能因关键词命中其他 owner 账号而越权')
+
+  const authorizedSourceKeyword = usageStatsRepository.listAiPerformanceAccountOptions(granteeAccess, {
+    keyword: 'perfauthcurrent',
+    limit: 10
+  })
+  assert.deepEqual(authorizedSourceKeyword.map((account) => account.id), [authorizedInstance.id], '用户侧 AI 性能账号选项应能通过来源账户当前名称命中自己的授权实例')
+  assert.equal(authorizedSourceKeyword[0]?.accessType, 'authorized', '账号授权实例在用户侧 AI 性能选项中应标记为授权来源')
+
+  const groupAuthorizedGroup = repositories.createGroup({
+    name: 'AI 性能分组授权来源分组',
+    providerCode: 'openai',
+    enabled: true
+  }, ownerAccess)
+  const groupAuthorizedAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: 'perfgroupauth 分组来源账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ai-performance-group-authorized-source',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: groupAuthorizedGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groupAuthorizedGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: 'AI 性能分组授权查询回归'
+  }, ownerAccess)
+  seedUsageStatsHourly(grantee.id, 'caller_account', groupAuthorizedAccount.id, '2026-01-01T00', 7)
+  const groupAuthorizedKeyword = usageStatsRepository.listAiPerformanceAccountOptions(granteeAccess, {
+    keyword: 'perfgroupauth',
+    limit: 10
+  })
+  assert.deepEqual(groupAuthorizedKeyword.map((account) => account.id), [groupAuthorizedAccount.id], '用户侧 AI 性能账号选项应能命中授权分组里的来源账户')
+  assert.equal(groupAuthorizedKeyword[0]?.accessType, 'authorized', '分组授权来源账户在被授权人视角应标记为授权来源')
+  assert.equal(groupAuthorizedKeyword[0]?.ownerSystemAccountId, owner.id, '分组授权来源账户应保留资源归属人用于前端展示')
+
+  const groupAuthorizedOverview = usageStatsRepository.getAiPerformanceOverview(granteeAccess, {
+    startDate: '2026-01-01',
+    endDate: '2026-01-01',
+    days: 1,
+    maxDays: 31
+  }, [groupAuthorizedAccount.id])
+  const groupAuthorizedOverviewAccount = groupAuthorizedOverview.accounts.find((account) => account.id === groupAuthorizedAccount.id)
+  assert.equal(groupAuthorizedOverviewAccount?.accessType, 'authorized', '被授权人的 AI 性能概览应能追加分组授权来源账户')
+  assert.equal(groupAuthorizedOverviewAccount?.ownerSystemAccountId, owner.id, '被授权人的 AI 性能概览应保留分组授权来源账户归属人')
+  const groupAuthorizedPoint = groupAuthorizedOverview.hourlySeries
+    .find((series) => series.accountId === groupAuthorizedAccount.id)
+    ?.points.find((point) => point.statHour === '2026-01-01T00')
+  assert.equal(groupAuthorizedPoint?.requestCount, 7, '分组授权来源账户的 AI 性能小时趋势应读取被授权人自己的 caller_account 数据')
   } finally {
     database.prepare = originalPrepare
   }
@@ -175,4 +262,35 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
+}
+
+function seedUsageStatsHourly(
+  systemAccountId: string,
+  scopeType: string,
+  scopeId: string,
+  statHour: string,
+  requestCount: number
+): void {
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO usage_stats_hourly (
+        system_account_id, scope_type, scope_id, stat_hour,
+        request_count, success_count, input_tokens, output_tokens,
+        duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max,
+        last_used_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1200, ?, 300, 600, ?, 180, ?, ?)
+    `)
+    .run(
+      systemAccountId,
+      scopeType,
+      scopeId,
+      statHour,
+      requestCount,
+      requestCount,
+      requestCount,
+      requestCount,
+      `${statHour}:30:00.000Z`,
+      '2026-01-01T00:30:00.000Z'
+    )
 }

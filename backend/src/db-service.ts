@@ -11,6 +11,7 @@ import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance 
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
 const systemApiPrefix = '/__aisys__/api'
+const publicApiPrefix = '/__aipublic__'
 
 void startDbService().catch((error) => {
   logger.fatal(errorLogFields(error, {
@@ -126,7 +127,7 @@ function isDbServiceParentMessage(message: unknown): message is DbServiceRequest
 }
 
 async function startDbServiceHttpServer(): Promise<DbServiceHttpEndpoint> {
-  const app = createSystemApiApp({ systemApiPrefix })
+  const app = createSystemApiApp({ systemApiPrefix, publicApiPrefix })
   const host = runtimeConfig.dbServiceHttpHost
   const configuredPort = runtimeConfig.dbServiceHttpPort
   const server = app.listen(configuredPort, host)

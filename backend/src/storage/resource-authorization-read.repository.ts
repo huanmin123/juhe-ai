@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { AccountUsageStatsRange, AccountUsageSummary, ResourceAuthorizationListResult, ResourceAuthorizationSummary } from '../domain/types.js'
 import { loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase } from './database.js'
+import { getDatabase, getStatsDatabase } from './database.js'
 import { loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
 import {
   authorizationDirectionFilter,
@@ -19,7 +19,7 @@ import { loadAccountLookupMap, loadGroupNameMap, loadSystemAccountPrincipalMapBy
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
 const RUNTIME_AUTHORIZATION_BATCH_SIZE = 200
@@ -329,14 +329,20 @@ function loadAuthorizationInstanceAccountNameMap(resourceIds: string[]): Map<str
 function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
   const accountScopes = rows
     .filter((row) => row.resource_type === 'account')
-    .map((row) => usageScope(row.id, row.resource_owner_system_account_id, row.id))
+    .map((row) => usageScope(row.id, authorizationUsageSystemAccountId(row), row.id))
   const groupScopes = rows
     .filter((row) => row.resource_type === 'group')
-    .map((row) => usageScope(row.id, row.resource_owner_system_account_id, row.id))
+    .map((row) => usageScope(row.id, authorizationUsageSystemAccountId(row), row.id))
   return new Map([
     ...loadAccountAuthorizationUsageSummaries(accountScopes, statDateOrRange),
     ...loadGroupAuthorizationUsageSummaries(groupScopes, statDateOrRange)
   ])
+}
+
+function authorizationUsageSystemAccountId(row: ResourceAuthorizationRow): string {
+  return row.resource_type === 'account'
+    ? row.grantee_system_account_id ?? row.resource_owner_system_account_id
+    : row.resource_owner_system_account_id
 }
 
 function loadResourceAuthorizationGrantUsageSummaries(rows: ResourceAuthorizationGrantRow[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
@@ -361,10 +367,70 @@ function loadResourceAuthorizationGrantUsageSummaries(rows: ResourceAuthorizatio
     ...loadAccountAuthorizationUsageSummaries(accountTeamScopes, statDateOrRange, 'account_authorization_team'),
     ...loadGroupAuthorizationUsageSummaries(groupTeamScopes, statDateOrRange, 'group_authorization_team')
   ])
+  const reportTeamUsage = statDateOrRange
+    ? loadResourceAuthorizationGrantTeamReportUsageSummaries(teamGrantRows, statDateOrRange)
+    : new Map<string, AccountUsageSummary>()
   for (const row of teamGrantRows) {
-    result.set(row.id, teamUsage.get(row.id) ?? emptyAccountUsageSummary())
+    result.set(row.id, reportTeamUsage.get(row.id) ?? teamUsage.get(row.id) ?? emptyAccountUsageSummary())
   }
 
+  return result
+}
+
+function loadResourceAuthorizationGrantTeamReportUsageSummaries(
+  rows: ResourceAuthorizationGrantRow[],
+  statDateOrRange: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
+): Map<string, AccountUsageSummary> {
+  const result = new Map<string, AccountUsageSummary>()
+  if (!rows.length) return result
+  const database = getStatsDatabase()
+  const isRange = typeof statDateOrRange !== 'string'
+  const statement = isRange
+    ? database.prepare(`
+      SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
+        cache_read_cost_usd AS cache_read_cost, total_cost_usd AS total_cost, last_used_at
+      FROM authorization_team_usage_range_windows
+      WHERE system_account_id = ?
+        AND start_date = ?
+        AND end_date = ?
+        AND team_filter_id = ?
+        AND resource_filter_type = ?
+        AND resource_filter_id = ?
+      LIMIT 1
+    `)
+    : database.prepare(`
+      SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
+        cache_read_cost_usd AS cache_read_cost, total_cost_usd AS total_cost, last_used_at
+      FROM authorization_team_usage_summary_daily
+      WHERE system_account_id = ?
+        AND stat_date = ?
+        AND team_filter_id = ?
+        AND resource_filter_type = ?
+        AND resource_filter_id = ?
+      LIMIT 1
+    `)
+  for (const row of rows) {
+    if (!row.grantee_team_id) continue
+    const usageRow = isRange
+      ? statement.get(
+        row.resource_owner_system_account_id,
+        statDateOrRange.startDate,
+        statDateOrRange.endDate,
+        row.grantee_team_id,
+        row.resource_type,
+        row.resource_id
+      )
+      : statement.get(
+        row.resource_owner_system_account_id,
+        statDateOrRange,
+        row.grantee_team_id,
+        row.resource_type,
+        row.resource_id
+      )
+    if (usageRow) {
+      result.set(row.id, usageSummaryFromAggregate(usageRow as Parameters<typeof usageSummaryFromAggregate>[0]))
+    }
+  }
   return result
 }
 

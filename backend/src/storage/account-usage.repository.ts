@@ -363,29 +363,15 @@ function accountUsageFilterPredicate(
 
   const clauses: string[] = []
   const params: string[] = []
+  if (!normalizedType) {
+    return { sql: '', params }
+  }
   const accountsTable = `${accountUsageBusinessDatabaseAlias}.accounts`
-  const authorizationsTable = `${accountUsageBusinessDatabaseAlias}.resource_authorizations`
   ensureAccountUsageBusinessDatabaseAttached(database)
   clauses.push('accounts.id = usage_window.scope_id')
   if (normalizedType) {
     clauses.push('accounts.type = ?')
     params.push(normalizedType)
-  }
-  if (scopeType === 'caller_account') {
-    const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
-    clauses.push(`(
-      accounts.system_account_id = ?
-      OR EXISTS (
-        SELECT 1
-        FROM ${authorizationsTable} visible_authorization
-        WHERE visible_authorization.resource_type = 'account'
-          AND visible_authorization.resource_id = accounts.id
-          AND visible_authorization.grantee_system_account_id = ?
-          AND visible_authorization.status = 'active'
-          AND (visible_authorization.expires_at IS NULL OR visible_authorization.expires_at > ?)
-      )
-    )`)
-    params.push(viewerSystemAccountId, viewerSystemAccountId, nowIso())
   }
   return {
     sql: `AND EXISTS (SELECT 1 FROM ${accountsTable} accounts WHERE ${clauses.join(' AND ')})`,
@@ -401,6 +387,8 @@ function loadAccountUsageKeywordAccountIds(input: {
 }): string[] {
   const keyword = input.keyword.trim()
   if (!keyword) return []
+  const database = getDatabase()
+  const ids: string[] = []
   const clauses: string[] = []
   const params: string[] = []
   const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
@@ -449,10 +437,22 @@ function loadAccountUsageKeywordAccountIds(input: {
           AND visible_authorization.status = 'active'
           AND (visible_authorization.expires_at IS NULL OR visible_authorization.expires_at > ?)
       )
+      OR EXISTS (
+        SELECT 1
+        FROM group_accounts visible_group_account
+        INNER JOIN resource_authorizations visible_group_authorization
+          ON visible_group_authorization.resource_type = 'group'
+          AND visible_group_authorization.resource_id = visible_group_account.group_id
+          AND visible_group_authorization.grantee_system_account_id = ?
+          AND visible_group_authorization.status = 'active'
+          AND (visible_group_authorization.expires_at IS NULL OR visible_group_authorization.expires_at > ?)
+        WHERE visible_group_account.account_id = accounts.id
+          AND visible_group_account.enabled = 1
+      )
     )`)
-    params.push(viewerSystemAccountId, viewerSystemAccountId, nowIso())
+    params.push(viewerSystemAccountId, viewerSystemAccountId, nowIso(), viewerSystemAccountId, nowIso())
   }
-  const rows = getDatabase()
+  appendAccountUsageAccountIds(ids, database
     .prepare(`
       SELECT accounts.id
       FROM accounts
@@ -460,8 +460,100 @@ function loadAccountUsageKeywordAccountIds(input: {
       ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
       LIMIT ?
     `)
+    .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>)
+  appendAccountUsageAccountIds(ids, loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(database, {
+    keyword,
+    prefixKeyword,
+    scopeType: input.scopeType,
+    type: input.type,
+    viewerSystemAccountId
+  }))
+  if (input.scopeType === 'caller_account') {
+    appendAccountUsageAccountIds(ids, loadAccountUsageGroupAuthorizedAccountIdsForKeyword(database, {
+      keyword,
+      prefixKeyword,
+      type: input.type,
+      viewerSystemAccountId
+    }))
+  }
+  return ids
+}
+
+function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
+  database: ReturnType<typeof getDatabase>,
+  input: {
+    keyword: string
+    prefixKeyword: string
+    scopeType: AccountUsageScopeType
+    type?: string
+    viewerSystemAccountId: string
+  }
+): Array<{ id?: string }> {
+  const clauses = ["source_accounts.name COLLATE NOCASE = ? OR source_accounts.name LIKE ? ESCAPE '\\'"]
+  const params: string[] = [input.keyword, input.prefixKeyword]
+  if (input.scopeType === 'caller_account') {
+    clauses.push('instance_accounts.system_account_id = ?')
+    params.push(input.viewerSystemAccountId)
+  }
+  if (input.type) {
+    clauses.push('instance_accounts.type = ?')
+    params.push(input.type)
+  }
+  return database
+    .prepare(`
+      SELECT instance_accounts.id
+      FROM accounts source_accounts
+      INNER JOIN accounts instance_accounts
+        ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
+      WHERE ${clauses.map((clause) => `(${clause})`).join(' AND ')}
+      ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
+      LIMIT ?
+    `)
     .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>
-  return [...new Set(rows.map((row) => row.id).filter((id): id is string => Boolean(id)))]
+}
+
+function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
+  database: ReturnType<typeof getDatabase>,
+  input: {
+    keyword: string
+    prefixKeyword: string
+    type?: string
+    viewerSystemAccountId: string
+  }
+): Array<{ id?: string }> {
+  const clauses = ["accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\'"]
+  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keyword, input.prefixKeyword]
+  if (input.type) {
+    clauses.push('accounts.type = ?')
+    params.push(input.type)
+  }
+  return database
+    .prepare(`
+      SELECT accounts.id
+      FROM accounts
+      INNER JOIN group_accounts
+        ON group_accounts.account_id = accounts.id
+        AND group_accounts.enabled = 1
+      INNER JOIN resource_authorizations group_authorization
+        ON group_authorization.resource_type = 'group'
+        AND group_authorization.resource_id = group_accounts.group_id
+        AND group_authorization.grantee_system_account_id = ?
+        AND group_authorization.status = 'active'
+        AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+      WHERE ${clauses.map((clause) => `(${clause})`).join(' AND ')}
+      ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+      LIMIT ?
+    `)
+    .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>
+}
+
+function appendAccountUsageAccountIds(target: string[], rows: Array<{ id?: string }>): void {
+  const seen = new Set(target)
+  for (const row of rows) {
+    if (!row.id || seen.has(row.id) || target.length >= accountUsageSelectedAccountLimit) continue
+    target.push(row.id)
+    seen.add(row.id)
+  }
 }
 
 function escapeLikePrefix(value: string): string {

@@ -306,7 +306,9 @@ function authorizationQuotaCostChecksForTeamRow(row: TeamAuthorizationQuotaRow, 
   const limits = parseRequestQuotaLimitsJson(row.limits_json)
   if (!hasEnabledRequestQuotaLimit(limits)) return []
   const systemAccountId = teamAuthorizationQuotaStatsSystemAccountId(row, scopeType)
-  const scopeId = `${teamAuthorizationResourceId(row, scopeType)}:${teamId}`
+  const resourceId = teamAuthorizationResourceId(row, scopeType)
+  if (!resourceId) return []
+  const scopeId = `${resourceId}:${teamId}`
   return [{
     cacheKey: `team_authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${teamId}\u0000${row.id}\u0000${row.limits_json ?? ''}`,
     limits,
@@ -362,7 +364,10 @@ function loadAuthorizationQuotaRows(authorizationIds: string[]): Map<string, Aut
         ra.effective_source_team_id, ra.limits_json
       FROM resource_authorizations ra
       LEFT JOIN accounts instance_accounts
-        ON instance_accounts.authorization_instance_authorization_id = ra.id
+        ON ra.resource_type = 'account'
+        AND instance_accounts.authorization_instance_authorization_id = ra.id
+        AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
       WHERE ra.status = 'active'
         AND ra.id IN (${sqlPlaceholders(chunk.length)})
     `).all(...chunk) as unknown as AuthorizationQuotaRow[])
@@ -389,7 +394,10 @@ function loadTeamAuthorizationQuotaRowsByAuthorizationId(rows: AuthorizationQuot
         AND grant_rows.grantee_team_id = ra.effective_source_team_id
         AND grant_rows.status = 'active'
       LEFT JOIN accounts instance_accounts
-        ON instance_accounts.authorization_instance_authorization_id = ra.id
+        ON ra.resource_type = 'account'
+        AND instance_accounts.authorization_instance_authorization_id = ra.id
+        AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
       WHERE ra.status = 'active'
         AND ra.effective_source_team_id IS NOT NULL
         AND ra.id IN (${sqlPlaceholders(chunk.length)})
@@ -473,9 +481,9 @@ function teamAuthorizationQuotaStatsSystemAccountId(row: TeamAuthorizationQuotaR
     : row.resource_owner_system_account_id
 }
 
-function teamAuthorizationResourceId(row: TeamAuthorizationQuotaRow, scopeType: AuthorizationQuotaScopeType): string {
-  if (scopeType === 'account_authorization' && row.authorization_instance_account_id) {
-    return row.authorization_instance_account_id
+function teamAuthorizationResourceId(row: TeamAuthorizationQuotaRow, scopeType: AuthorizationQuotaScopeType): string | undefined {
+  if (scopeType === 'account_authorization') {
+    return row.authorization_instance_account_id ?? undefined
   }
   return row.resource_id
 }

@@ -129,7 +129,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/ai-performance/AiPerformanceView.vue'),
     meta: {
       title: 'AI性能监控',
-      description: '追踪自有 AI 账户的小时级性能趋势，按账户整体统计，含授权出去后的使用。',
+      description: '追踪你可使用 AI 账户的小时级性能趋势，包含授权给你的账户实例。',
       viewScope: 'self',
       heavy: true
     }
@@ -195,6 +195,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'AI 账户管理',
       description: '按系统账户管理 OpenAI OAuth / API Key 账户，统一查看状态、并发、代理和错误策略。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
+      viewScope: 'admin',
+      roles: ['admin'],
+      heavy: true
+    }
+  },
+  {
+    path: '/stream-intercept-policies',
+    component: () => import('@/views/stream-intercept-policies/StreamInterceptPoliciesView.vue'),
+    meta: {
+      title: '流式拦截策略',
+      description: '管理 200 + SSE 内部事件、广告污染和协议内失败的拦截策略。',
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
@@ -309,7 +322,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/ai-performance/AiPerformanceView.vue'),
     meta: {
       title: 'AI性能监控',
-      description: '按系统账户查看自有 AI 账户的小时级性能趋势，含授权出去后的使用。',
+      description: '按系统账户查看其可使用 AI 账户的小时级性能趋势，包含授权实例。',
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
@@ -388,6 +401,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'IP管理',
       description: '查看来源 IP 的请求、Token、成本、失败率、活跃天数和封禁状态。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: ['admin'],
+      heavy: true
+    }
+  },
+  {
+    path: '/external-integration-sources',
+    component: () => import('@/views/external-integration-sources/ExternalIntegrationSourcesView.vue'),
+    meta: {
+      title: '公开接口授权',
+      description: '管理允许调用公开接口的来源系统、Token、到期时间、启停状态和限频规则。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

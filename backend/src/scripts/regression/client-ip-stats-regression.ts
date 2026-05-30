@@ -77,10 +77,10 @@ try {
       createdAt: new Date(createdAtBase + 1).toISOString()
     },
     {
-      id: 'client_ip_stats_ipv6_a',
-      traceId: 'trace-client-ip-stats-ipv6-a',
+      id: 'client_ip_stats_ipv4_secondary_a',
+      traceId: 'trace-client-ip-stats-ipv4-secondary-a',
       systemAccountId: 'sys_admin',
-      clientIp: '2001:db8:abcd:12::1',
+      clientIp: '198.51.100.25',
       endpoint: '/v1/responses',
       providerCode: 'openai',
       model: 'gpt-5.1',
@@ -92,10 +92,10 @@ try {
       createdAt: new Date(createdAtBase + 2).toISOString()
     },
     {
-      id: 'client_ip_stats_ipv6_b',
-      traceId: 'trace-client-ip-stats-ipv6-b',
+      id: 'client_ip_stats_ipv4_secondary_b',
+      traceId: 'trace-client-ip-stats-ipv4-secondary-b',
       systemAccountId: 'sys_admin',
-      clientIp: '2001:db8:abcd:12::ffff',
+      clientIp: '198.51.100.25',
       endpoint: '/v1/responses',
       providerCode: 'openai',
       model: 'gpt-5.1',
@@ -105,6 +105,21 @@ try {
       outputTokens: 10,
       costUsd: 0.0003,
       createdAt: new Date(createdAtBase + 3).toISOString()
+    },
+    {
+      id: 'client_ip_stats_non_ipv4_ignored',
+      traceId: 'trace-client-ip-stats-non-ipv4-ignored',
+      systemAccountId: 'sys_admin',
+      clientIp: 'localhost',
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.1',
+      statusCode: 200,
+      success: true,
+      inputTokens: 99,
+      outputTokens: 99,
+      costUsd: 0.99,
+      createdAt: new Date(createdAtBase + 4).toISOString()
     },
     {
       id: 'client_ip_stats_cooldown_ignored',
@@ -120,7 +135,7 @@ try {
       inputTokens: 999,
       outputTokens: 999,
       costUsd: 9,
-      createdAt: new Date(createdAtBase + 4).toISOString()
+      createdAt: new Date(createdAtBase + 5).toISOString()
     },
     {
       id: 'client_ip_stats_missing_ip_cursor',
@@ -134,17 +149,17 @@ try {
       inputTokens: 500,
       outputTokens: 500,
       costUsd: 1,
-      createdAt: new Date(createdAtBase + 5).toISOString()
+      createdAt: new Date(createdAtBase + 6).toISOString()
     }
   ])
 
-  assert.equal(clientIpStats.aggregateClientIpStatsBatch(100), 5, 'IP 统计应扫描非 cooldown 使用记录并跳过无 IP 行')
+  assert.equal(clientIpStats.aggregateClientIpStatsBatch(100), 6, 'IP 统计应扫描非 cooldown 使用记录并跳过无 IP 和非 IPv4 行')
 
   const ipv4Identity = clientIpStats.normalizeClientIpForStats('203.0.113.10')
-  const ipv6Identity = clientIpStats.normalizeClientIpForStats('2001:db8:abcd:12::abcd')
+  const secondaryIpv4Identity = clientIpStats.normalizeClientIpForStats('198.51.100.25')
   assert(ipv4Identity, 'IPv4 应可规范化')
-  assert(ipv6Identity, 'IPv6 应可规范化')
-  assert.equal(ipv6Identity.aggregateIpKey, '2001:db8:abcd:12::/64', 'IPv6 默认应按 /64 聚合')
+  assert(secondaryIpv4Identity, '第二个 IPv4 来源应可规范化')
+  assert.equal(clientIpStats.normalizeClientIpForStats('not-an-ip'), undefined, '非 IPv4 来源不参与 IP 管理')
   assert.equal(clientIpStats.pendingClientIpRangeWindowDirtyCountForTest(), 2, 'IP 聚合后应只标记变更 IP 等待增量刷新窗口')
   clientIpStats.clearClientIpRangeWindowDirtyMemoryForTest()
 
@@ -180,10 +195,10 @@ try {
   assert.equal(ipv4Row.rangeUsage.averageDurationMs, 160, 'IPv4 平均总耗时应来自预聚合窗口')
   assert.equal(ipv4Row.rangeUsage.maxDurationMs, 200, 'IPv4 最大总耗时应来自预聚合窗口')
 
-  const ipv6Row = list.items.find((item) => item.ipHash === ipv6Identity.ipHash)
-  assert(ipv6Row, 'IPv6 /64 聚合行应存在')
-  assert.equal(ipv6Row.aggregateIpKey, '2001:db8:abcd:12::/64', 'IPv6 列表应展示聚合 key')
-  assert.equal(ipv6Row.rangeUsage.requestCount, 2, '同一 IPv6 /64 下地址应合并')
+  const secondaryIpv4Row = list.items.find((item) => item.ipHash === secondaryIpv4Identity.ipHash)
+  assert(secondaryIpv4Row, '第二个 IPv4 聚合行应存在')
+  assert.equal(secondaryIpv4Row.aggregateIpKey, '198.51.100.25', 'IPv4 列表应展示规范化 IP')
+  assert.equal(secondaryIpv4Row.rangeUsage.requestCount, 2, '同一 IPv4 来源在当前范围内应合并')
 
   repositories.createUsageRecordsBatch([
     {
@@ -243,7 +258,7 @@ try {
     .get() as { total?: number } | undefined
   assert(Number(cursorCount?.total ?? 0) > 0, 'IP 统计应维护独立 usage shard 游标')
 
-  console.log('IP 统计回归通过：IP 注册、IPv6 /64 聚合、预聚合窗口、封禁策略和命中计数均符合预期')
+  console.log('IP 统计回归通过：IPv4 注册、非 IPv4 忽略、预聚合窗口、封禁策略和命中计数均符合预期')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

@@ -2,6 +2,7 @@ import type { AccountSummary } from '../../domain/types.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OperationLogInput } from '../../storage/repositories.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
+import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
@@ -147,6 +148,7 @@ export interface DbServiceGatewayRuntime {
   groupAccess?: GroupUsageAccessMetadata
   accounts: OpenAIAccountSecret[]
   clientIpPolicies?: ActiveClientIpPolicy[]
+  streamInterceptPolicies?: StreamInterceptPolicySummary[]
 }
 
 export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId' | 'lastErrorCode'> & {
@@ -255,6 +257,9 @@ export type DbServiceOperation =
     type: 'list_active_client_ip_policies'
   }
   | {
+    type: 'list_active_stream_intercept_policies'
+  }
+  | {
     type: 'record_client_ip_policy_hits'
     hits: ClientIpPolicyHitInput[]
   }
@@ -292,6 +297,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :
+  T extends { type: 'list_active_stream_intercept_policies' } ? StreamInterceptPolicySummary[] :
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :
   T extends { type: 'get_runtime_log_detail' } ? RuntimeLogDetail | undefined :

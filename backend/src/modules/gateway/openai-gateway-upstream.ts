@@ -291,7 +291,7 @@ export function buildUpstreamHeaders(inputHeaders: Record<string, string | strin
     applyOpenAICodexHeaders(headers, account)
   }
   if (!account.passthroughEnabled) {
-    headers.set('content-type', headers.get('content-type') ?? 'application/json')
+    headers.set('content-type', 'application/json')
   }
   return headers
 }

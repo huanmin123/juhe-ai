@@ -10,18 +10,22 @@ export type { SelectOption } from './selectLabelCache'
 export interface AccountSelection {
   id: string
   name: string
+  accessType?: 'owner' | 'authorized'
+  ownerSystemAccountName?: string
 }
 
 export interface AccountOptionLike {
   id: string
   name: string
+  accessType?: 'owner' | 'authorized'
+  ownerSystemAccountName?: string
 }
 
 const defaultAccountCacheKey = 'accounts'
 
 export function rememberAccountLabels(accounts: AccountOptionLike[], cacheKey = defaultAccountCacheKey): void {
   for (const account of accounts) {
-    rememberAccountLabel(account.id, account.name, cacheKey)
+    rememberAccountLabel(account.id, accountSelectOptionLabel(account), cacheKey)
   }
 }
 
@@ -52,7 +56,14 @@ export function accountSelectionForId(
   const normalizedId = id?.trim()
   if (!normalizedId) return undefined
   const account = accounts.find((item) => item.id === normalizedId)
-  if (account?.name?.trim()) return { id: normalizedId, name: account.name.trim() }
+  if (account?.name?.trim()) {
+    return {
+      id: normalizedId,
+      name: accountSelectOptionLabel(account),
+      accessType: account.accessType,
+      ownerSystemAccountName: account.ownerSystemAccountName
+    }
+  }
   const option = options.find((item) => item.value === normalizedId)
   if (option?.label?.trim()) return { id: normalizedId, name: option.label.trim() }
   const cached = accountLabelForId(normalizedId, cacheKey)
@@ -60,7 +71,11 @@ export function accountSelectionForId(
 }
 
 export function accountSelectOptionLabel(account: AccountOptionLike): string {
-  return account.name
+  if (account.accessType !== 'authorized') {
+    return account.name
+  }
+  const ownerName = account.ownerSystemAccountName?.trim()
+  return ownerName ? `${account.name}（来自：${ownerName}）` : `${account.name}（来自授权）`
 }
 
 export function mergeSelectedAccountOptions(

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
+import { isIP } from 'node:net'
 import type { NextFunction, Request, Response } from 'express'
 import type { Logger } from 'pino'
 
@@ -185,7 +186,7 @@ function normalizeClientIp(value?: string): string | undefined {
   if (ip.startsWith('::ffff:')) {
     ip = ip.slice('::ffff:'.length)
   }
-  return ip === '::1' ? '127.0.0.1' : ip
+  return isIP(ip) === 4 ? ip : undefined
 }
 
 function isHealthPath(path: string): boolean {

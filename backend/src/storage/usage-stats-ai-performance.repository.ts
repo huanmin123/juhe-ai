@@ -7,7 +7,7 @@ import type {
   AccountUsageStatsRange
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, getStatsDatabase } from './database.js'
+import { getDatabase, getStatsDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
@@ -24,29 +24,36 @@ const AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT = 20
 const AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT = 50
 const AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT = 50
 
+type AiPerformanceScopeType = 'account' | 'caller_account'
+
+interface AiPerformanceScope {
+  systemAccountId: string
+  scopeType: AiPerformanceScopeType
+}
+
 export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange(), accountIds: string[] = []): AiPerformanceOverview {
   const database = getStatsDatabase()
   const timezone = usageStatsTimezone()
-  const systemAccountId = aiPerformanceSystemAccountId(access)
+  const scope = aiPerformanceScope(access)
   const hourBuckets = hourBucketsForRange(range)
   const windowSinceHour = hourBuckets[0] ?? `${range.startDate}T00`
   const windowEndHour = hourBuckets[hourBuckets.length - 1] ?? `${range.endDate}T23`
   const activeSinceHour = hourKey(new Date(Date.now() - 6 * DAY_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
 
-  const defaultRows = loadDefaultAiPerformanceAccounts(database, systemAccountId)
+  const defaultRows = loadDefaultAiPerformanceAccounts(database, scope)
   const selectedRows = selectedAccountIds.length
-    ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, selectedAccountIds)
+    ? loadSelectedAiPerformanceAccounts(database, scope, activeSinceHour, selectedAccountIds)
     : []
   const defaultIds = new Set(defaultRows.map((row) => row.id))
   const selectedIds = new Set(selectedRows.map((row) => row.id))
   const orderedRows = dedupeAiPerformanceAccountRows([...defaultRows, ...selectedRows])
   const accounts = orderedRows.map((row) => mapAiPerformanceAccount(row, defaultIds, selectedIds))
   const hourlyRows = accounts.length
-    ? loadAiPerformanceHourlyRows(database, systemAccountId, accounts.map((account) => account.id), windowSinceHour, windowEndHour)
+    ? loadAiPerformanceHourlyRows(database, scope, accounts.map((account) => account.id), windowSinceHour, windowEndHour)
     : []
   const hourlyRowsByAccountHour = new Map(hourlyRows.map((row) => [`${row.scope_id}\n${row.stat_hour}`, row]))
-  const summaryRow = loadAiPerformanceSummaryRow(database, systemAccountId, range)
+  const summaryRow = loadAiPerformanceSummaryRow(database, scope.systemAccountId, range)
 
   const hourlySeries = accounts.map((account) => ({
     accountId: account.id,
@@ -95,16 +102,16 @@ export function listAiPerformanceAccountOptions(
 ): AiPerformanceAccountOption[] {
   const database = getStatsDatabase()
   const timezone = usageStatsTimezone()
-  const systemAccountId = aiPerformanceSystemAccountId(access)
+  const scope = aiPerformanceScope(access)
   const activeSinceHour = hourKey(new Date(Date.now() - 6 * DAY_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(options.accountIds ?? []).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
   const searchLimit = boundedAccountOptionLimit(options.limit)
-  const searchRows = loadAiPerformanceAccountOptionRows(database, systemAccountId, activeSinceHour, {
+  const searchRows = loadAiPerformanceAccountOptionRows(database, scope, activeSinceHour, {
     keyword: options.keyword?.trim(),
     limit: searchLimit
   })
   const selectedRows = selectedAccountIds.length
-    ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, selectedAccountIds)
+    ? loadSelectedAiPerformanceAccounts(database, scope, activeSinceHour, selectedAccountIds)
     : []
   const rows = dedupeAiPerformanceAccountRows([...searchRows, ...selectedRows])
   return rows.map((row) => ({
@@ -114,6 +121,9 @@ export function listAiPerformanceAccountOptions(
     providerCode: row.provider_code,
     systemAccountId: row.system_account_id,
     systemAccountName: row.system_account_name ?? undefined,
+    ownerSystemAccountId: row.owner_system_account_id,
+    ownerSystemAccountName: row.owner_system_account_name ?? undefined,
+    accessType: row.access_type,
     requestCountLast7d: Number(row.request_count_last_7d ?? 0)
   }))
 }
@@ -142,11 +152,15 @@ function loadAiPerformanceSummaryRow(database: DatabaseSync, systemAccountId: st
   } | undefined
 }
 
-function aiPerformanceSystemAccountId(access?: AccessScope): string {
+function aiPerformanceScope(access?: AccessScope): AiPerformanceScope {
   const scopedId = scopedSystemAccountId(access)
-  if (scopedId) return scopedId
-  if (canAccessAll(access)) return GLOBAL_STATS_SYSTEM_ACCOUNT_ID
-  return currentSystemAccountId(access)
+  if (scopedId) {
+    return { systemAccountId: scopedId, scopeType: 'caller_account' }
+  }
+  if (canAccessAll(access)) {
+    return { systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'account' }
+  }
+  return { systemAccountId: currentSystemAccountId(access), scopeType: 'caller_account' }
 }
 
 interface AiPerformanceAccountRow {
@@ -156,6 +170,9 @@ interface AiPerformanceAccountRow {
   provider_code: string
   system_account_id: string
   system_account_name: string | null
+  owner_system_account_id: string
+  owner_system_account_name: string | null
+  access_type: 'owner' | 'authorized'
   request_count_last_7d: number
   last_stat_hour: string | null
 }
@@ -172,40 +189,40 @@ interface AiPerformanceHourlyRow {
   first_token_ms_max: number
 }
 
-function loadDefaultAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, limit = 10): AiPerformanceAccountRow[] {
-  return loadDefaultAiPerformanceAccountsFromRankSnapshot(database, systemAccountId, limit)
+function loadDefaultAiPerformanceAccounts(database: DatabaseSync, scope: AiPerformanceScope, limit = 10): AiPerformanceAccountRow[] {
+  return loadDefaultAiPerformanceAccountsFromRankSnapshot(database, scope, limit)
 }
 
-function loadDefaultAiPerformanceAccountsFromRankSnapshot(database: DatabaseSync, systemAccountId: string, limit: number): AiPerformanceAccountRow[] {
+function loadDefaultAiPerformanceAccountsFromRankSnapshot(database: DatabaseSync, scope: AiPerformanceScope, limit: number): AiPerformanceAccountRow[] {
   const rows = database.prepare(`
     SELECT scope_id, metric_value AS request_count_last_7d, snapshot_at AS last_stat_hour, rank
     FROM usage_rank_snapshots
     WHERE system_account_id = ?
-      AND scope_type = 'account'
+      AND scope_type = ?
       AND window_key = 'last7d'
       AND metric = 'request_count'
       AND snapshot_at = (
         SELECT MAX(snapshot_at)
         FROM usage_rank_snapshots
         WHERE system_account_id = ?
-          AND scope_type = 'account'
+          AND scope_type = ?
           AND window_key = 'last7d'
           AND metric = 'request_count'
       )
     ORDER BY rank ASC
     LIMIT ?
-  `).all(systemAccountId, systemAccountId, limit) as unknown as Array<{ scope_id: string; request_count_last_7d: number; last_stat_hour: string | null; rank: number }>
+  `).all(scope.systemAccountId, scope.scopeType, scope.systemAccountId, scope.scopeType, limit) as unknown as Array<{ scope_id: string; request_count_last_7d: number; last_stat_hour: string | null; rank: number }>
   return mergeAiPerformanceStatsWithAccounts(rows.map((row) => ({
     id: row.scope_id,
     requestCountLast7d: Number(row.request_count_last_7d ?? 0),
     lastStatHour: row.last_stat_hour ?? null,
     rank: Number(row.rank ?? 0)
-  })), systemAccountId)
+  })), scope)
 }
 
-function loadSelectedAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, activeSinceHour: string, accountIds: string[]): AiPerformanceAccountRow[] {
+function loadSelectedAiPerformanceAccounts(database: DatabaseSync, scope: AiPerformanceScope, activeSinceHour: string, accountIds: string[]): AiPerformanceAccountRow[] {
   void activeSinceHour
-  const rows = loadUsageRankMetricsByScopeIds(database, systemAccountId, 'account', 'last7d', 'request_count', accountIds)
+  const rows = loadUsageRankMetricsByScopeIds(database, scope.systemAccountId, scope.scopeType, 'last7d', 'request_count', accountIds)
   const merged = mergeAiPerformanceStatsWithAccounts(accountIds.map((id) => {
     const row = rows.get(id)
     return {
@@ -213,7 +230,7 @@ function loadSelectedAiPerformanceAccounts(database: DatabaseSync, systemAccount
       requestCountLast7d: Number(row?.metricValue ?? 0),
       lastStatHour: row?.snapshotAt ?? null
     }
-  }), systemAccountId)
+  }), scope)
   const order = new Map(accountIds.map((id, index) => [id, index]))
   return merged.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
 }
@@ -257,7 +274,7 @@ function loadUsageRankMetricsByScopeIds(
   return result
 }
 
-function loadAiPerformanceHourlyRows(database: DatabaseSync, systemAccountId: string, accountIds: string[], sinceHour: string, endHour: string): AiPerformanceHourlyRow[] {
+function loadAiPerformanceHourlyRows(database: DatabaseSync, scope: AiPerformanceScope, accountIds: string[], sinceHour: string, endHour: string): AiPerformanceHourlyRow[] {
   const placeholders = sqlPlaceholders(accountIds.length)
   return database.prepare(`
     SELECT
@@ -272,39 +289,52 @@ function loadAiPerformanceHourlyRows(database: DatabaseSync, systemAccountId: st
       first_token_ms_max
     FROM usage_stats_hourly
     WHERE system_account_id = ?
-      AND scope_type = 'account'
+      AND scope_type = ?
       AND scope_id IN (${placeholders})
       AND stat_hour >= ?
       AND stat_hour <= ?
     ORDER BY stat_hour ASC
-  `).all(systemAccountId, ...accountIds, sinceHour, endHour) as unknown as AiPerformanceHourlyRow[]
+  `).all(scope.systemAccountId, scope.scopeType, ...accountIds, sinceHour, endHour) as unknown as AiPerformanceHourlyRow[]
 }
 
 function loadAiPerformanceAccountOptionRows(
   database: DatabaseSync,
-  systemAccountId: string,
+  scope: AiPerformanceScope,
   activeSinceHour: string,
   options: { keyword?: string; limit: number }
 ): AiPerformanceAccountRow[] {
   const keyword = options.keyword?.trim()
   if (!keyword) {
-    return loadDefaultAiPerformanceAccounts(database, systemAccountId, options.limit)
+    return loadDefaultAiPerformanceAccounts(database, scope, options.limit)
   }
 
   const keywordPrefix = `${escapeLikePrefix(keyword)}%`
-  const systemAccountWhere = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND accounts.system_account_id = ?'
-  const systemAccountParams = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [systemAccountId]
+  const visibleFilter = aiPerformanceVisibleAccountFilter(scope)
   const accountRows = getDatabase().prepare(`
     SELECT accounts.id
     FROM accounts
     WHERE (accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\')
-      ${systemAccountWhere}
+      ${visibleFilter.sql}
     ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
     LIMIT ?
-  `).all(keyword, keywordPrefix, ...systemAccountParams, options.limit) as unknown as Array<{ id: string }>
-  const accountIds = accountRows.map((row) => row.id)
+  `).all(keyword, keywordPrefix, ...visibleFilter.params, options.limit) as unknown as Array<{ id: string }>
+  const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
+  const sourceInstanceRows = getDatabase().prepare(`
+    SELECT instance_accounts.id
+    FROM accounts source_accounts
+    INNER JOIN accounts instance_accounts
+      ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
+    WHERE (source_accounts.name COLLATE NOCASE = ? OR source_accounts.name LIKE ? ESCAPE '\\')
+      ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
+    ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
+    LIMIT ?
+  `).all(keyword, keywordPrefix, ...sourceInstanceParams, options.limit) as unknown as Array<{ id: string }>
+  const accountIds = uniqueNonEmpty([
+    ...accountRows.map((row) => row.id),
+    ...sourceInstanceRows.map((row) => row.id)
+  ]).slice(0, options.limit)
   return accountIds.length
-    ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, accountIds)
+    ? loadSelectedAiPerformanceAccounts(database, scope, activeSinceHour, accountIds)
     : []
 }
 
@@ -314,13 +344,25 @@ function escapeLikePrefix(value: string): string {
 
 function mergeAiPerformanceStatsWithAccounts(
   statsRows: Array<{ id: string; requestCountLast7d: number; lastStatHour: string | null; rank?: number }>,
-  systemAccountId: string
+  scope: AiPerformanceScope
 ): AiPerformanceAccountRow[] {
   const ids = [...new Set(statsRows.map((row) => row.id).filter(Boolean))]
   if (!ids.length) return []
   const placeholders = sqlPlaceholders(ids.length)
-  const systemAccountWhere = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND accounts.system_account_id = ?'
-  const systemAccountParams = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [systemAccountId]
+  const visibleFilter = aiPerformanceVisibleAccountFilter(scope)
+  const ownerSystemAccountExpression = `CASE
+      WHEN accounts.authorization_instance_authorization_id IS NOT NULL
+      THEN COALESCE(accounts.authorization_instance_owner_system_account_id, instance_authorizations.resource_owner_system_account_id, accounts.system_account_id)
+      ELSE accounts.system_account_id
+    END`
+  const accessTypeExpression = scope.scopeType === 'caller_account' && scope.systemAccountId !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID
+    ? `CASE
+      WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized'
+      WHEN accounts.system_account_id = ? THEN 'owner'
+      ELSE 'authorized'
+    END`
+    : "'owner'"
+  const accessTypeParams = scope.scopeType === 'caller_account' && scope.systemAccountId !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [scope.systemAccountId] : []
   const accounts = getDatabase().prepare(`
     SELECT
       accounts.id,
@@ -328,18 +370,28 @@ function mergeAiPerformanceStatsWithAccounts(
       accounts.status,
       accounts.provider_code,
       accounts.system_account_id,
-      system_accounts.display_name AS system_account_name
+      system_accounts.display_name AS system_account_name,
+      ${ownerSystemAccountExpression} AS owner_system_account_id,
+      owner_system_accounts.display_name AS owner_system_account_name,
+      ${accessTypeExpression} AS access_type
     FROM accounts
     LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
+    LEFT JOIN resource_authorizations instance_authorizations
+      ON instance_authorizations.id = accounts.authorization_instance_authorization_id
+    LEFT JOIN system_accounts owner_system_accounts
+      ON owner_system_accounts.id = ${ownerSystemAccountExpression}
     WHERE accounts.id IN (${placeholders})
-      ${systemAccountWhere}
-  `).all(...ids, ...systemAccountParams) as unknown as Array<{
+      ${visibleFilter.sql}
+  `).all(...accessTypeParams, ...ids, ...visibleFilter.params) as unknown as Array<{
     id: string
     name: string
     status: AiPerformanceAccount['status']
     provider_code: string
     system_account_id: string
     system_account_name: string | null
+    owner_system_account_id: string
+    owner_system_account_name: string | null
+    access_type: 'owner' | 'authorized'
   }>
   const statsById = new Map(statsRows.map((row, index) => [row.id, { ...row, index }]))
   return accounts.map((account) => {
@@ -377,9 +429,37 @@ function mapAiPerformanceAccount(row: AiPerformanceAccountRow, defaultIds: Set<s
     providerCode: row.provider_code,
     systemAccountId: row.system_account_id,
     systemAccountName: row.system_account_name ?? undefined,
+    ownerSystemAccountId: row.owner_system_account_id,
+    ownerSystemAccountName: row.owner_system_account_name ?? undefined,
+    accessType: row.access_type,
     requestCountLast7d: Number(row.request_count_last_7d ?? 0),
     selected: selectedIds.has(row.id),
     defaultVisible: defaultIds.has(row.id)
+  }
+}
+
+function aiPerformanceVisibleAccountFilter(scope: AiPerformanceScope): { sql: string; params: string[] } {
+  if (scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID) {
+    return { sql: '', params: [] }
+  }
+  const now = nowIso()
+  return {
+    sql: `AND (
+      accounts.system_account_id = ?
+      OR EXISTS (
+        SELECT 1
+        FROM group_accounts visible_group_accounts
+        INNER JOIN resource_authorizations visible_group_authorizations
+          ON visible_group_authorizations.resource_type = 'group'
+          AND visible_group_authorizations.resource_id = visible_group_accounts.group_id
+          AND visible_group_authorizations.grantee_system_account_id = ?
+          AND visible_group_authorizations.status = 'active'
+          AND (visible_group_authorizations.expires_at IS NULL OR visible_group_authorizations.expires_at > ?)
+        WHERE visible_group_accounts.account_id = accounts.id
+          AND visible_group_accounts.enabled = 1
+      )
+    )`,
+    params: [scope.systemAccountId, scope.systemAccountId, now]
   }
 }
 

@@ -254,6 +254,52 @@ export function recordGatewayUpstreamBucketFailure(
   }
 }
 
+export function suppressGatewayUpstreamBucketLocallyForSeconds(
+  account: UpstreamAccount,
+  ttlSeconds: number,
+  reason: string,
+  options: { bucketScope?: 'all' | 'proxy' | 'upstream' } = {}
+): GatewayProxyFailureDecision {
+  const bucketKeys = gatewayUpstreamBucketKeys(account, options.bucketScope)
+  if (bucketKeys.length === 0) {
+    return { recorded: false, suspected: false }
+  }
+  const now = gatewayUpstreamBucketHealthNow()
+  const ttlMs = Math.max(1, Math.trunc(ttlSeconds)) * 1000
+  const avoidUntilMs = now + ttlMs
+  for (const key of bucketKeys) {
+    const current = upstreamBucketFailureCache.get(key)
+    const accountSamples = pruneAccountSamples([...(current?.accountSamples ?? []), [account.id, now]], now)
+    upstreamBucketFailureCache.set(key, {
+      key,
+      reason,
+      accountSamples,
+      failureCount: (current?.failureCount ?? 0) + 1,
+      firstFailedAtMs: current?.firstFailedAtMs ?? now,
+      lastFailedAtMs: now,
+      avoidUntilMs
+    }, { ttlMs: ttlMs + upstreamBucketFailureWindowMs })
+  }
+  const proxyKey = bucketKeys.find(isProxyBucketKey)
+  getRequestLogger().warn({
+    event: 'gateway_upstream_bucket_locally_suppressed',
+    bucketKeys,
+    proxyKey,
+    accountId: account.id,
+    ttlSeconds: Math.max(1, Math.trunc(ttlSeconds)),
+    avoidUntil: new Date(avoidUntilMs).toISOString(),
+    reason
+  }, '网关按策略短期避让上游桶')
+  return {
+    recorded: true,
+    proxyKey,
+    bucketKeys,
+    suspectedBucketKeys: bucketKeys,
+    suspected: true,
+    distinctAccountCount: 1
+  }
+}
+
 export function recordGatewayProxyFailure(
   account: UpstreamAccount,
   reason: string,

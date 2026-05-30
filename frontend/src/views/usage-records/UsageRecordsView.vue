@@ -369,7 +369,7 @@ const rawColumns = computed(() => {
     { title: '类型', key: 'stream', width: 90 },
     { title: '状态', key: 'success', width: 90 },
     { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 110 },
-    { title: '来源', key: 'trafficSource', width: 110 },
+    { title: '请求来源', key: 'trafficSource', width: 110 },
     { title: 'Tokens', key: 'tokens', width: 150 },
     { title: '成本', key: 'cost', width: 110, sorter: true, sortOrder: columnSortOrder('costUsd') },
     { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100, sorter: true, sortOrder: columnSortOrder('firstTokenMs') },

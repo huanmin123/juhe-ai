@@ -279,6 +279,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import {
   accountLabelForId,
   accountSelectionForId,
+  accountSelectOptionLabel,
   rememberAccountLabel,
   type AccountSelection
 } from '@/shared/accountLabelCache'
@@ -721,8 +722,8 @@ function scrollTerminalToBottom() {
 
 function handleModelCheckProgress(event: ModelCheckProgressEvent) {
   if (event.type === 'run_started') {
-    rememberAccountLabel(event.targetId, event.targetName)
-    rememberAccountLabel(event.trustedComparisonAccountId, event.trustedComparisonAccountName)
+    rememberAccountLabelIfUnknown(event.targetId, event.targetName)
+    rememberAccountLabelIfUnknown(event.trustedComparisonAccountId, event.trustedComparisonAccountName)
     const targetLabel = event.targetName?.trim() || targetOptionText(event.targetId)
     const comparisonText = event.trustedComparison
       ? `，可信对比 ${event.trustedComparisonAccountName?.trim() || (event.trustedComparisonAccountId ? comparisonOptionText(event.trustedComparisonAccountId) : '未记录账户名称')}`
@@ -755,8 +756,9 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
 }
 
 function accountTargetOption(account: AccountOptionSummary) {
-  rememberAccountLabel(account.id, account.name)
-  return { label: account.name, value: account.id }
+  const label = accountSelectOptionLabel(account)
+  rememberAccountLabel(account.id, label)
+  return { label, value: account.id }
 }
 
 function targetOptionText(id: string) {
@@ -790,12 +792,18 @@ function accountNameForId(id: string, options: AccountSelectOption[]): string | 
 
 function rememberRunAccountLabels(items: Array<Pick<ModelCheckRunSummary, 'targetId' | 'targetName'>>) {
   for (const item of items) {
-    rememberAccountLabel(item.targetId, item.targetName)
+    rememberAccountLabelIfUnknown(item.targetId, item.targetName)
+  }
+}
+
+function rememberAccountLabelIfUnknown(id: string | undefined, name: string | undefined) {
+  if (!accountLabelForId(id)) {
+    rememberAccountLabel(id, name)
   }
 }
 
 function targetDisplayName(run: Pick<ModelCheckRunSummary, 'targetName' | 'targetId'>) {
-  const name = run.targetName?.trim() || knownTargetName(run.targetId) || accountLabelForId(run.targetId)
+  const name = accountLabelForId(run.targetId) || run.targetName?.trim() || knownTargetName(run.targetId)
   return name || '未记录账户名称'
 }
 

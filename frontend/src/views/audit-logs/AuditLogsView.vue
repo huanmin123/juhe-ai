@@ -58,19 +58,19 @@
         </a-form>
       </template>
       <template #actions>
-        <a-tooltip :title="fullBodyCaptureTooltip">
-          <div class="audit-full-capture-control">
-            <a-tag :color="fullBodyCaptureEnabled ? 'orange' : 'default'">{{ fullBodyCaptureStatusText }}</a-tag>
-            <a-button size="small" :disabled="!runtime" :loading="fullBodyCaptureUpdating" @click="openFullBodyCaptureModal">
-              <template #icon><SettingOutlined /></template>
-              配置
-            </a-button>
-            <a-button v-if="fullBodyCaptureEnabled" size="small" danger :loading="fullBodyCaptureUpdating" @click="disableFullBodyCapture">
-              <template #icon><PoweroffOutlined /></template>
-              关闭
-            </a-button>
-          </div>
-        </a-tooltip>
+        <a-button
+          v-if="!fullBodyCaptureEnabled"
+          :disabled="!runtime"
+          :loading="fullBodyCaptureUpdating"
+          @click="openFullBodyCaptureModal"
+        >
+          <template #icon><SettingOutlined /></template>
+          开启临时捕获
+        </a-button>
+        <a-button v-else danger :loading="fullBodyCaptureUpdating" @click="disableFullBodyCapture">
+          <template #icon><PoweroffOutlined /></template>
+          关闭
+        </a-button>
         <TableColumnManager
           :columns="auditLogColumns"
           :settings="columnSettings"
@@ -622,27 +622,6 @@ const auditRuntimeAlertDescription = computed(() => {
   return `${reasons.join('；') || '运行态状态未知'}。${workerText}。`
 })
 const fullBodyCaptureEnabled = computed(() => runtime.value?.settings.fullBodyCaptureEnabled ?? false)
-const fullBodyCaptureConfig = computed(() => runtime.value?.settings.fullBodyCapture)
-const fullBodyCaptureStatusText = computed(() => {
-  const config = fullBodyCaptureConfig.value
-  if (!config?.enabled) return '捕获关闭'
-  const scopeText = config.scope === 'account'
-    ? `账户：${accountOptionText(config.accountId) ?? config.accountId ?? '未指定'}`
-    : '全局'
-  const successText = config.includeSuccess ? '含 200' : '按采样'
-  const expiresText = config.expiresAt ? `，至 ${formatDateTime(config.expiresAt)}` : ''
-  return `${scopeText} / ${successText}${expiresText}`
-})
-const fullBodyCaptureTooltip = computed(() => {
-  if (!runtime.value) return '正在读取运行期配置'
-  const config = fullBodyCaptureConfig.value
-  if (!config?.enabled) {
-    return '已关闭：成功样本超过 512KB、问题链路超过 2MB 会转为摘要'
-  }
-  const scopeText = config.scope === 'account' ? '指定账户' : '全局'
-  const successText = config.includeSuccess ? '，普通 200 成功请求也会进入审计' : '，普通成功请求仍按 10% 采样'
-  return `已开启：${scopeText}命中后 body 跳过摘要化${successText}`
-})
 let skipNextRouteTraceRestore = false
 
 const selectedPayloadCurrentText = computed(() => {
@@ -1050,14 +1029,6 @@ function remainingDurationMinutes(expiresAt?: string): number | undefined {
   return Math.min(Math.max(Math.ceil(remainingMs / 60_000), 1), 1440)
 }
 
-function accountOptionText(accountId?: string): string | undefined {
-  if (!accountId) return undefined
-  const account = accountOptions.value.find((item) => item.id === accountId)
-  if (!account) return accountSelectionForId(accountId)?.name
-  const ownerText = account.systemAccountName || account.ownerSystemAccountName
-  return ownerText ? `${account.name}（${ownerText}）` : account.name
-}
-
 function snapshotPageState(): AuditLogsPageState {
   return {
     accountIdFilter: accountIdFilter.value,
@@ -1127,28 +1098,6 @@ onDeactivated(() => {
 
 .audit-user-filter {
   width: 190px;
-}
-
-.audit-full-capture-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  max-width: min(56vw, 560px);
-  padding: 0 8px;
-  color: #475569;
-  font-size: 13px;
-  white-space: nowrap;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.audit-full-capture-control :deep(.ant-tag) {
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .full-capture-form {

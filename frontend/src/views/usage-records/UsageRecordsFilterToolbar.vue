@@ -78,7 +78,7 @@
         <a-form-item label="IP">
           <a-input :value="clientIp" allow-clear placeholder="客户端 IP 前缀" @update:value="handleClientIpUpdate" @press-enter="emit('search')" />
         </a-form-item>
-        <a-form-item label="来源">
+        <a-form-item label="请求来源">
           <a-select :value="trafficSource" :options="trafficSourceOptions" @update:value="handleTrafficSourceUpdate" />
         </a-form-item>
       </a-form>
@@ -100,7 +100,7 @@
         <a-select :value="result" :options="resultOptions" @update:value="handleResultUpdate" />
       </label>
       <label class="mobile-filter-field">
-        <span>来源</span>
+        <span>请求来源</span>
         <a-select :value="trafficSource" :options="trafficSourceOptions" @update:value="handleTrafficSourceUpdate" />
       </label>
       <label class="mobile-filter-field">

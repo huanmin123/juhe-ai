@@ -14,6 +14,7 @@ import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-servi
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
 import { primeClientIpPolicyCacheLocal } from './client-ip-policy-cache.service.js'
+import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 
 const gatewayRuntimeTtlMs = 60_000
 const fallbackGatewayRuntimeTtlMs = 10_000
@@ -211,7 +212,9 @@ function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceG
     apiKey: runtime.apiKey ? { ...runtime.apiKey } : undefined,
     settings: { ...runtime.settings },
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
-    accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret)
+    accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret),
+    clientIpPolicies: runtime.clientIpPolicies ? runtime.clientIpPolicies.map((policy) => ({ ...policy })) : undefined,
+    streamInterceptPolicies: runtime.streamInterceptPolicies ? runtime.streamInterceptPolicies.map(cloneStreamInterceptPolicy) : undefined
   }
 }
 
@@ -226,6 +229,13 @@ function cloneGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime): DbSer
   return {
     ...cloneStaticGatewayRuntime(runtime),
     accounts: cloneOpenAIAccountsWithCurrentConcurrency(runtime.accounts)
+  }
+}
+
+function cloneStreamInterceptPolicy(policy: StreamInterceptPolicySummary): StreamInterceptPolicySummary {
+  return {
+    ...policy,
+    match: { ...policy.match }
   }
 }
 

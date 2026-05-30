@@ -37,6 +37,15 @@ import type {
   CurrentUserSummary,
   DatabaseStorageSnapshotSummary,
   ErrorPolicySummary,
+  ExternalIntegrationScopeOption,
+  ExternalPublicApiCatalog,
+  ExternalIntegrationSourceListResult,
+  ExternalIntegrationSourcePayload,
+  ExternalIntegrationSourceStatus,
+  ExternalIntegrationSourceSummary,
+  ExternalIntegrationSourceTokenPayload,
+  ExternalIntegrationSourceTokenSummary,
+  CreatedExternalIntegrationSourceToken,
   GlobalSettings,
   GroupListResult,
   GroupOptionSummary,
@@ -61,6 +70,8 @@ import type {
   RuntimeLogSummary,
   RuntimeLogSearchResult,
   ResourceAuthorizationListResult,
+  StreamInterceptPolicyListResult,
+  StreamInterceptPolicySummary,
   SystemTeamMemberSummary,
   SystemTeamListResult,
   SystemTeamPrincipalSummary,
@@ -327,6 +338,15 @@ export interface ClientIpPolicyPayload {
   durationDays?: number
 }
 
+export interface ExternalIntegrationSourceListParams {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  status?: ExternalIntegrationSourceStatus | 'all'
+}
+
+export type StreamInterceptPolicyPayload = Omit<StreamInterceptPolicySummary, 'id' | 'builtIn' | 'editable' | 'createdAt' | 'updatedAt'>
+
 export type ModelCheckListParams = ModelCheckRunListParams
 
 export interface ModelCheckStreamOptions extends RequestControlOptions {
@@ -565,6 +585,12 @@ export const api = {
   errorPolicies: {
     list: () => unwrap<ErrorPolicySummary[]>(http.get('/error-policies'))
   },
+  streamInterceptPolicies: {
+    list: () => unwrap<StreamInterceptPolicyListResult>(http.get('/stream-intercept-policies')),
+    create: (payload: StreamInterceptPolicyPayload) => unwrap<StreamInterceptPolicySummary>(http.post('/stream-intercept-policies', payload)),
+    update: (id: string, payload: StreamInterceptPolicyPayload) => unwrap<StreamInterceptPolicySummary>(http.patch(`/stream-intercept-policies/${id}`, payload)),
+    delete: (id: string) => http.delete(`/stream-intercept-policies/${id}`)
+  },
   accounts: {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
     options: (params?: AccountListParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
@@ -745,6 +771,15 @@ export const api = {
     list: (params?: ClientIpStatsListParams) => unwrap<ClientIpStatsListResult>(http.get('/ip-stats', { params })),
     blacklist: (ipHash: string, payload: ClientIpPolicyPayload) => unwrap<ClientIpPolicySummary>(http.post(`/ip-stats/${ipHash}/blacklist`, payload)),
     unblock: (ipHash: string, payload: Pick<ClientIpPolicyPayload, 'reason'>) => unwrap<{ disabledCount: number }>(http.post(`/ip-stats/${ipHash}/unblock`, payload))
+  },
+  externalIntegrationSources: {
+    scopes: () => unwrap<ExternalIntegrationScopeOption[]>(http.get('/external-integration-sources/scopes')),
+    apiDocs: () => unwrap<ExternalPublicApiCatalog>(http.get('/external-integration-sources/api-docs')),
+    list: (params?: ExternalIntegrationSourceListParams) => unwrap<ExternalIntegrationSourceListResult>(http.get('/external-integration-sources', { params })),
+    create: (payload: ExternalIntegrationSourcePayload) => unwrap<ExternalIntegrationSourceSummary>(http.post('/external-integration-sources', payload)),
+    update: (id: string, payload: Partial<ExternalIntegrationSourcePayload>) => unwrap<ExternalIntegrationSourceSummary>(http.patch(`/external-integration-sources/${id}`, payload)),
+    createToken: (id: string, payload: ExternalIntegrationSourceTokenPayload) => unwrap<{ token: CreatedExternalIntegrationSourceToken; source?: ExternalIntegrationSourceSummary }>(http.post(`/external-integration-sources/${id}/tokens`, payload)),
+    updateToken: (id: string, tokenId: string, payload: Partial<ExternalIntegrationSourceTokenPayload>) => unwrap<ExternalIntegrationSourceTokenSummary>(http.patch(`/external-integration-sources/${id}/tokens/${tokenId}`, payload))
   },
   modelChecks: {
     options: () => unwrap<ModelCheckOptions>(http.get('/model-checks/options')),

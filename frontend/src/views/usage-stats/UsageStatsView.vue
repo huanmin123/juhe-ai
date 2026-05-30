@@ -137,7 +137,7 @@
             <div class="usage-account-cell">
               <span class="usage-account-name-row">
                 <span class="usage-account-name">{{ record.name }}</span>
-                <a-tag v-if="record.accessType === 'authorized'" color="blue">来自授权</a-tag>
+                <a-tag v-if="record.accessType === 'authorized'" color="blue">{{ authorizationAccountTagText(record) }}</a-tag>
               </span>
               <span class="usage-account-meta">{{ statusText(record.status) }}</span>
             </div>
@@ -185,7 +185,7 @@
                   <a-tag color="processing">{{ accountTypeText(record.type) }}</a-tag>
                   <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
                   <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
-                  <a-tag v-if="record.accessType === 'authorized'" color="blue">来自授权</a-tag>
+                  <a-tag v-if="record.accessType === 'authorized'" color="blue">{{ authorizationAccountTagText(record) }}</a-tag>
                 </div>
               </div>
             </div>
@@ -237,7 +237,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { accountSelectionForId, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
+import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
@@ -738,12 +738,20 @@ function providerName(providerCode?: string) {
 }
 
 function trendAccountLabel(account: AccountUsageStatsRow) {
+  if (account.accessType === 'authorized') {
+    return accountSelectOptionLabel(account)
+  }
   const sameNameCount = rows.value.filter((row) => row.name === account.name).length
   if (sameNameCount <= 1) return account.name
   const suffix = isManagementView.value && account.systemAccountName
     ? account.systemAccountName
     : providerName(account.providerCode)
   return `${account.name}（${suffix}）`
+}
+
+function authorizationAccountTagText(account: Pick<AccountUsageStatsRow, 'ownerSystemAccountName'>) {
+  const ownerName = account.ownerSystemAccountName?.trim()
+  return ownerName ? `来自：${ownerName}` : '来自授权'
 }
 
 function renderUsageTrendChart() {
@@ -834,12 +842,12 @@ function placeholderTrendRow(id: string): AccountUsageStatsRow | undefined {
     systemAccountId: option?.systemAccountId,
     systemAccountName: option?.systemAccountName,
     ownerSystemAccountId: option?.ownerSystemAccountId ?? option?.systemAccountId ?? '',
-    ownerSystemAccountName: option?.ownerSystemAccountName,
+    ownerSystemAccountName: option?.ownerSystemAccountName ?? selection?.ownerSystemAccountName,
     providerCode: option?.providerCode ?? 'openai',
     name,
     type: option?.type ?? 'api_key',
     status: option?.status ?? 'active',
-    accessType: option?.accessType,
+    accessType: option?.accessType ?? selection?.accessType,
     rangeUsage: zeroUsageSummary(),
     dailyUsage: trendDateKeys().map((statDate) => ({ ...zeroUsageSummary(), statDate })),
     authorizationUsageAvailable: false,

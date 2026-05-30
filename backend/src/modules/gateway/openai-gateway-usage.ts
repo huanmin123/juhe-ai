@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from 'node:http'
+import { isIP } from 'node:net'
 import type { Request } from 'express'
 
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
@@ -310,7 +311,7 @@ function normalizeClientIp(value?: string): string | undefined {
   if (ip.startsWith('::ffff:')) {
     ip = ip.slice('::ffff:'.length)
   }
-  return ip === '::1' ? '127.0.0.1' : ip
+  return isIP(ip) === 4 ? ip : undefined
 }
 
 export function extractUsage(value: unknown): ParsedUsage {

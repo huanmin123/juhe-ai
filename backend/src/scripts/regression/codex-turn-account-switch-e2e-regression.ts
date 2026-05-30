@@ -102,7 +102,7 @@ async function main(): Promise<void> {
     const baseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
     await assertCodexFourthRequestSwitchesAccount(baseUrl, codexSwitch, upstreamState)
-    await assertNonCodexDoesNotSwitchAccount(baseUrl, nonCodex, upstreamState)
+    await assertGenericClientStreamInterceptDoesNotSwitchAccount(baseUrl, nonCodex, upstreamState)
     await assertCodexContextWindowSwitchesAccount(baseUrl, contextWindow, upstreamState)
     await assertCodexCyberPolicySwitchesAccount(baseUrl, cyberPolicy, upstreamState)
     await assertClientAbortClearsSessionAffinity(baseUrl, clientAbortAffinity, upstreamState)
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     assertUsageRecords(codexSwitch)
     assertAccountsStillActive([codexSwitch, nonCodex, contextWindow, cyberPolicy, clientAbortAffinity])
 
-    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、3 次失败后第 4 次避让、非 Codex 不切号、context_length_exceeded 和 cyber_policy 均可重试并切号，client_aborted 会释放会话亲和，符合预期')
+    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、3 次失败后第 4 次避让、普通客户端统一流式拦截但不触发 Codex turn 切号、context_length_exceeded 和 cyber_policy 均可重试并切号，client_aborted 会释放会话亲和，符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -159,7 +159,7 @@ async function assertCodexFourthRequestSwitchesAccount(
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, '第 4 次应命中备用账号')
 }
 
-async function assertNonCodexDoesNotSwitchAccount(
+async function assertGenericClientStreamInterceptDoesNotSwitchAccount(
   baseUrl: string,
   seeded: SeededGateway,
   upstreamState: MockUpstreamState
@@ -173,12 +173,12 @@ async function assertNonCodexDoesNotSwitchAccount(
       turnId: `non-codex-${index}`,
       codex: false
     })
-    assert(streamText.includes('internal_server_error'), `非 Codex 第 ${index} 次应保留原始错误码：${streamText}`)
+    assert(streamText.includes('stream_intercepted'), `普通客户端第 ${index} 次应按统一流式拦截返回普通失败码：${streamText}`)
     assert(!streamText.includes('upstream_retryable_error'), `非 Codex 第 ${index} 次不应伪造可重试错误：${streamText}`)
   }
 
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 4, '非 Codex 不应触发 turn 级避让')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, '非 Codex 不应命中备用账号')
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 4, '普通客户端不应触发 Codex turn 级避让')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, '普通客户端不应命中 Codex 备用账号')
 }
 
 async function assertCodexContextWindowSwitchesAccount(
@@ -228,7 +228,7 @@ async function assertCodexCyberPolicySwitchesAccount(
       codex: true
     })
     assert(streamText.includes('upstream_retryable_error'), `第 ${index} 次 cyber_policy 失败应改写为可重试错误：${streamText}`)
-    assert(streamText.includes('partial output'), `第 ${index} 次 cyber_policy 失败应保留已输出内容：${streamText}`)
+    assert(!streamText.includes('partial output'), `第 ${index} 次同批次 cyber_policy 失败不应泄露尚未写入下游的输出：${streamText}`)
     assert(!streamText.includes('cyber_policy'), `第 ${index} 次 cyber_policy 失败不应透出原始错误码：${streamText}`)
   }
 

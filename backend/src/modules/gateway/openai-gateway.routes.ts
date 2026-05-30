@@ -35,12 +35,15 @@ import { sendGatewayFailureResponse } from './openai-gateway-failure-response.js
 import { handleGatewayRequestKnownErrorResponse } from './openai-gateway-request-error-response.js'
 import {
   prepareOpenAIGatewayDispatchContext,
+  prepareApiKeyGroupFallbackDispatchContext,
+  type OpenAIGatewayDispatchContext,
   type OpenAIGatewayRequestIdentity
 } from './openai-gateway-request-preflight.js'
 import {
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
 } from './openai-gateway-upstream-dispatch.js'
+import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import { recordClientIpErrorCircuitSample } from './openai-gateway-client-ip-error-circuit.service.js'
@@ -144,100 +147,184 @@ export async function handleOpenAIGatewayRequest(
   if (!preflight) {
     return
   }
-  const {
-    activeGatewaySettings,
-    usageContext: gatewayUsageContext,
-    accounts,
-    sessionAffinityKey,
-    clientStrategy,
-    clientIpAccountAvoidanceTracker,
-    releaseClientIpConcurrency
-  } = preflight
-  const releaseClientIpSlot = once(releaseClientIpConcurrency)
-  res.once('finish', releaseClientIpSlot)
-  res.once('close', releaseClientIpSlot)
+  let currentPreflight = preflight
+  let releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
+  let streamServerRetryExcludedAccountIds = new Set<string>()
+  let streamServerRetryCount = 0
+  let maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
 
   try {
-    const upstreamResult = await fetchFirstAvailableUpstream(
-      req,
-      accounts,
-      activeGatewaySettings,
-      gatewayUsageContext,
-      auditCapture,
-      sessionAffinityKey,
-      abortController.signal,
-      clientIpAccountAvoidanceTracker,
-      requestLane,
-      preflight.groupSchedulingPolicy,
-      options.disableAccountStateMutation !== true
-    )
-    const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
-
-    try {
-      const contentType = upstreamResponse.headers.get('content-type') ?? ''
-      const shouldHandleAsStream = isOpenAIStreamContentType(contentType) || isEffectiveOpenAIStreamRequest(req, account)
-      prepareUpstreamResponseForDownstream(res, upstreamResponse, shouldHandleAsStream)
-      persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
-
-      const handledResponse = shouldHandleAsStream
-        ? await handleStreamUpstreamResponse({
-          req,
-          res,
-          account,
-          upstreamResponse,
-          upstreamUrl,
-          auditAttemptId,
-          auditCapture,
-          settings: activeGatewaySettings,
-          usageContext: gatewayUsageContext,
-          startedAt,
-          signal: abortController.signal,
-          sessionAffinityKey,
-          clientStrategy,
-          markFirstOutput,
-          clientIpAccountAvoidanceTracker,
-          accountStateMutationEnabled: options.disableAccountStateMutation !== true
-        })
-        : await handleNonStreamUpstreamResponse({
-          req,
-          res,
-          account,
-          upstreamResponse,
-          upstreamUrl,
-          auditAttemptId,
-          auditCapture,
-          settings: activeGatewaySettings,
-          usageContext: gatewayUsageContext,
-          startedAt,
-          signal: abortController.signal,
-          sessionAffinityKey,
-          markFirstOutput,
-          clientIpAccountAvoidanceTracker,
-          accountStateMutationEnabled: options.disableAccountStateMutation !== true
-        })
-      if (handledResponse.alreadyFinalized) {
-        return
-      }
-      finalizeHandledUpstreamResponse({
-        req,
-        res,
-        account,
-        upstreamResponse,
-        upstreamUrl,
-        auditAttemptId,
-        auditCapture,
-        settings: activeGatewaySettings,
+    while (true) {
+      const {
+        activeGatewaySettings,
         usageContext: gatewayUsageContext,
-        startedAt,
-        signal: abortController.signal,
-        result: handledResponse,
+        accounts,
+        sessionAffinityKey,
+        clientStrategy,
         clientIpAccountAvoidanceTracker,
-        accountStateMutationEnabled: options.disableAccountStateMutation !== true
-      })
-    } finally {
-      releaseConcurrency()
+        streamInterceptPolicies
+      } = currentPreflight
+      const dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
+      if (dispatchAccounts.length === 0) {
+        throw new UpstreamAttemptError('没有可用的上游账户')
+      }
+      const upstreamResult = await fetchFirstAvailableUpstream(
+        req,
+        dispatchAccounts,
+        activeGatewaySettings,
+        gatewayUsageContext,
+        auditCapture,
+        sessionAffinityKey,
+        abortController.signal,
+        clientIpAccountAvoidanceTracker,
+        currentPreflight.requestLane,
+        currentPreflight.groupSchedulingPolicy,
+        options.disableAccountStateMutation !== true
+      )
+      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
+
+      try {
+        const contentType = upstreamResponse.headers.get('content-type') ?? ''
+        const shouldHandleAsStream = isOpenAIStreamContentType(contentType) || isEffectiveOpenAIStreamRequest(req, account)
+        if (!shouldHandleAsStream) {
+          prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
+        }
+        persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
+
+        const handledResponse = shouldHandleAsStream
+          ? await handleStreamUpstreamResponse({
+            req,
+            res,
+            account,
+            upstreamResponse,
+            upstreamUrl,
+            auditAttemptId,
+            auditCapture,
+            settings: activeGatewaySettings,
+            usageContext: gatewayUsageContext,
+            startedAt,
+            signal: abortController.signal,
+            sessionAffinityKey,
+            clientStrategy,
+            streamInterceptPolicies,
+            markFirstOutput,
+            clientIpAccountAvoidanceTracker,
+            accountStateMutationEnabled: options.disableAccountStateMutation !== true
+          })
+          : await handleNonStreamUpstreamResponse({
+            req,
+            res,
+            account,
+            upstreamResponse,
+            upstreamUrl,
+            auditAttemptId,
+            auditCapture,
+            settings: activeGatewaySettings,
+            usageContext: gatewayUsageContext,
+            startedAt,
+            signal: abortController.signal,
+            sessionAffinityKey,
+            markFirstOutput,
+            clientIpAccountAvoidanceTracker,
+            accountStateMutationEnabled: options.disableAccountStateMutation !== true
+          })
+        if (handledResponse.alreadyFinalized) {
+          return
+        }
+        if (handledResponse.retryUpstream) {
+          streamServerRetryCount += 1
+          if (shouldExcludeCurrentAccountForStreamRetry(handledResponse.streamIntercept)) {
+            streamServerRetryExcludedAccountIds.add(account.id)
+          }
+          auditCapture.addGatewayMetadata({
+            label: 'stream_intercept_server_retry_dispatch',
+            metadata: {
+              retryCount: streamServerRetryCount,
+              maxRetryCount: maxStreamServerRetryCount,
+              accountId: account.id,
+              excludedAccountIds: [...streamServerRetryExcludedAccountIds],
+              policyId: handledResponse.streamIntercept.policyId,
+              policyName: handledResponse.streamIntercept.policyName,
+              accountSwitch: handledResponse.streamIntercept.accountSwitch
+            }
+          })
+          if (
+            streamServerRetryCount > maxStreamServerRetryCount
+            || streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length === 0
+          ) {
+            const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+              req,
+              res,
+              auditCapture,
+              options: {
+                ...options,
+                trafficSource,
+                requestLane: currentPreflight.requestLane,
+                streamInterceptPolicies
+              },
+              startedAt,
+              traceId,
+              clientIp,
+              endpoint,
+              requestSnapshot,
+              signal: abortController.signal,
+              reason: 'stream_intercept_server_retry_exhausted',
+              apiKeyRecord: currentPreflight.apiKeyRecord,
+              systemAccountId: gatewayUsageContext.systemAccountId,
+              apiKeyId: gatewayUsageContext.apiKeyId,
+              groupId: gatewayUsageContext.groupId,
+              trafficSource: gatewayUsageContext.trafficSource,
+              requestLane: currentPreflight.requestLane,
+              streamInterceptPolicies
+            })
+            if (fallback.attempted) {
+              if (!fallback.context) {
+                return
+              }
+              releaseClientIpSlot()
+              currentPreflight = fallback.context
+              releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
+              streamServerRetryExcludedAccountIds = new Set<string>()
+              streamServerRetryCount = 0
+              maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
+              continue
+            }
+            sendStreamServerRetryExhaustedResponse({
+              req,
+              res,
+              auditCapture,
+              usageContext: gatewayUsageContext,
+              startedAt,
+              decision: handledResponse.streamIntercept,
+              message: handledResponse.message
+            })
+            return
+          }
+          continue
+        }
+        finalizeHandledUpstreamResponse({
+          req,
+          res,
+          account,
+          upstreamResponse,
+          upstreamUrl,
+          auditAttemptId,
+          auditCapture,
+          settings: activeGatewaySettings,
+          usageContext: gatewayUsageContext,
+          startedAt,
+          signal: abortController.signal,
+          result: handledResponse,
+          clientIpAccountAvoidanceTracker,
+          accountStateMutationEnabled: options.disableAccountStateMutation !== true
+        })
+        return
+      } finally {
+        releaseConcurrency()
+      }
     }
   } catch (error) {
+    const gatewayUsageContext = currentPreflight.usageContext
     recordKnownClientIpRequestError(error, gatewayUsageContext, auditCapture)
     if (handleGatewayRequestKnownErrorResponse({
       res,
@@ -283,6 +370,72 @@ function once(callback: () => void): () => void {
     called = true
     callback()
   }
+}
+
+function attachClientIpSlotRelease(res: Response, preflight: OpenAIGatewayDispatchContext): () => void {
+  const releaseClientIpSlot = once(preflight.releaseClientIpConcurrency)
+  res.once('finish', releaseClientIpSlot)
+  res.once('close', releaseClientIpSlot)
+  return releaseClientIpSlot
+}
+
+function streamServerRetryLimit(accounts: UpstreamAccount[]): number {
+  return Math.max(1, Math.min(3, accounts.length))
+}
+
+function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccountIds: Set<string>): UpstreamAccount[] {
+  if (excludedAccountIds.size === 0) {
+    return accounts
+  }
+  return accounts.filter((account) => !excludedAccountIds.has(account.id))
+}
+
+function shouldExcludeCurrentAccountForStreamRetry(decision: StreamInterceptDecision): boolean {
+  return decision.accountSwitch === 'request_next_account'
+    || decision.accountSwitch === 'avoid_account_ttl'
+    || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
+    || decision.accountState === 'runtime_avoidance'
+}
+
+function sendStreamServerRetryExhaustedResponse(input: {
+  req: Request
+  res: Response
+  auditCapture: ReturnType<typeof createAuditCapture>
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  decision: StreamInterceptDecision
+  message: string
+}): void {
+  const message = input.message || '流式响应命中拦截策略，服务端重试未找到可用账号'
+  const responsePayload = gatewayErrorPayload(message, 'service_unavailable', 'stream_intercept_retry_exhausted')
+  input.auditCapture.addGatewayMetadata({
+    label: 'stream_intercept_server_retry_exhausted',
+    metadata: {
+      policyId: input.decision.policyId,
+      policyName: input.decision.policyName,
+      accountSwitch: input.decision.accountSwitch,
+      retryEnabled: input.decision.retryEnabled,
+      matchedField: input.decision.matchedField,
+      matchedValue: input.decision.matchedValue
+    }
+  })
+  sendGatewayFailureResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    usageContext: input.usageContext,
+    startedAt: input.startedAt,
+    statusCode: 503,
+    responsePayload,
+    audit: {
+      outcome: 'upstream_failed',
+      errorPhase: 'dispatch',
+      errorCode: 'stream_intercept_retry_exhausted',
+      errorMessage: message
+    },
+    recordUsage: false,
+    usageErrorMessage: message
+  })
 }
 
 function recordKnownClientIpRequestError(

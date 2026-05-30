@@ -80,7 +80,7 @@ import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { GROUP_ACCOUNT_STATS_DIRTY_ALL, markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
-import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
@@ -4753,7 +4753,7 @@ function loadResourceAuthorizationUsageDetail(
   }
   const scopeType = authorization.resourceType === 'account' ? 'account_authorization' : 'group_authorization'
   const rangeUsage = loadUsageRangeSummaryForScope({
-    systemAccountId: authorization.resourceOwnerSystemAccountId,
+    systemAccountId: authorizationUsageStatsSystemAccountId(authorization.resourceType, authorization.resourceOwnerSystemAccountId, granteeSystemAccountId),
     scopeType,
     scopeId: runtime.id,
     range
@@ -4824,12 +4824,13 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
   const pageRows = takePageRows(rows, pageOptions.pageSize)
   const usageBySystemAccount = buildRuntimeAuthorizationUsageDetails(authorization, pageRows.rows, range)
   const scopeType = authorization.resourceType === 'account' ? 'account_authorization_team' : 'group_authorization_team'
-  const rangeUsage = loadUsageRangeSummaryForScope({
-    systemAccountId: authorization.resourceOwnerSystemAccountId,
-    scopeType,
-    scopeId: `${authorization.resourceId}:${teamId}`,
-    range
-  })
+  const rangeUsage = loadAuthorizationTeamUsageRangeSummary(authorization, teamId, range)
+    ?? loadUsageRangeSummaryForScope({
+      systemAccountId: authorization.resourceOwnerSystemAccountId,
+      scopeType,
+      scopeId: `${authorization.resourceId}:${teamId}`,
+      range
+    })
   return {
     usage: rangeUsage,
     usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
@@ -4853,7 +4854,11 @@ function buildRuntimeAuthorizationUsageDetails(
   range: AccountUsageStatsRange
 ): ResourceAuthorizationUsageDetail[] {
   if (!rows.length) return []
-  const scopes = rows.map((row) => usageScope(row.id, authorization.resourceOwnerSystemAccountId, row.id))
+  const scopes = rows.map((row) => usageScope(
+    row.id,
+    authorizationUsageStatsSystemAccountId(row.resource_type, row.resource_owner_system_account_id, row.grantee_system_account_id ?? undefined),
+    row.id
+  ))
   const usageByAuthorization = authorization.resourceType === 'account'
     ? loadAccountAuthorizationUsageSummaries(scopes, range)
     : loadGroupAuthorizationUsageSummaries(scopes, range)
@@ -4871,6 +4876,43 @@ function buildRuntimeAuthorizationUsageDetails(
       rangeUsage
     }]
   })
+}
+
+function authorizationUsageStatsSystemAccountId(
+  resourceType: ResourceAuthorizationResourceType,
+  resourceOwnerSystemAccountId: string,
+  granteeSystemAccountId?: string
+): string {
+  return resourceType === 'account'
+    ? granteeSystemAccountId ?? resourceOwnerSystemAccountId
+    : resourceOwnerSystemAccountId
+}
+
+function loadAuthorizationTeamUsageRangeSummary(
+  authorization: ResourceAuthorizationSummary,
+  teamId: string,
+  range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
+): AccountUsageSummary | undefined {
+  const row = getStatsDatabase().prepare(`
+    SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
+      cache_read_cost_usd AS cache_read_cost, total_cost_usd AS total_cost, last_used_at
+    FROM authorization_team_usage_range_windows
+    WHERE system_account_id = ?
+      AND start_date = ?
+      AND end_date = ?
+      AND team_filter_id = ?
+      AND resource_filter_type = ?
+      AND resource_filter_id = ?
+    LIMIT 1
+  `).get(
+    authorization.resourceOwnerSystemAccountId,
+    range.startDate,
+    range.endDate,
+    teamId,
+    authorization.resourceType,
+    authorization.resourceId
+  ) as unknown as Parameters<typeof usageSummaryFromAggregate>[0] | undefined
+  return row ? usageSummaryFromAggregate(row) : undefined
 }
 
 function normalizeResourceAuthorizationUsagePageOptions(options: ResourceAuthorizationUsageOptions): { page: number; pageSize: number } {

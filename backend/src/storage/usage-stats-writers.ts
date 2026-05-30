@@ -719,7 +719,7 @@ function upsertAccountQualityMinuteStats(database: DatabaseSync, row: UsageStats
       updated_at = excluded.updated_at
   `).run(
     row.account_id,
-    row.account_owner_system_account_id ?? row.system_account_id,
+    row.account_access_type === 'account_authorized' ? row.system_account_id : row.account_owner_system_account_id ?? row.system_account_id,
     row.provider_code ?? 'unknown',
     statMinute,
     success ? 1 : 0,

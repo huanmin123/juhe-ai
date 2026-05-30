@@ -1,7 +1,7 @@
 # IP 统计与封禁设计
 
 > 面向 `juhe-ai` 后端、前端系统运维页面和后续 AI 维护者。
-> 当前实现已经落地持久 IP 注册表、IP 统计聚合表、IP 策略表、`/__aisys__/api/ip-stats` 管理接口、系统运维 / IP管理页面和网关封禁缓存。外部公益站读取接口仍是后续阶段，不属于当前已挂载接口。
+> 当前实现已经落地持久 IP 注册表、IP 统计聚合表、IP 策略表、`/__aisys__/api/ip-stats` 管理接口、系统运维 / IP管理页面、网关封禁缓存，以及受保护的 `/__aipublic__/juhe-ai/ip-usage` IP 聚合读取接口。
 
 ## 当前状态
 
@@ -10,7 +10,7 @@
 - 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、封禁和解封接口。
 - 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用和策略操作。
 - 已实现：网关请求入口只读取 server 进程内 IP 封禁缓存，命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`，封禁命中异步批量写入 `client_ip_policy_hits`；策略缓存由运行态快照和管理端封禁 / 解封变更刷新，认证前缺少 Bearer 或无效 Key 不会为了 IP 策略放大 DB service 读取。
-- 未实现：受保护外部来源 IP 聚合接口。后续给 `juhe-ai-public-welfare` 接入时，只应暴露 IP 聚合事实，不暴露封禁策略、内部账号、API Key、模型或公益站业务关系。
+- 已实现：受保护外部来源 IP 聚合接口和 IP 消耗排行便利视图，只暴露 IP 聚合事实，不暴露封禁策略、内部账号、API Key、模型或公益站业务关系。
 
 ## 设计目标
 
@@ -18,7 +18,7 @@
 - 后台 job 按 `usage_records` 分片游标增量处理新记录，不能在页面、接口或普通请求路径按 IP 全量 `GROUP BY usage_records`。
 - 通过 IP 注册表和本进程懒加载分桶 Set 识别当前进程已见过的 IP，避免启动时全量预热造成 worker 长时间阻塞；最终正确性仍由 SQLite 唯一约束兜底。
 - 提供管理员可控的 IP 封禁、临时封禁和解封能力，作为 `juhe-ai` 自身网关运维能力。
-- 后续给 `juhe-ai-public-welfare` 等允许来源系统读取 IP 聚合数据时，只暴露受保护的 IP 聚合事实，不暴露后台封禁策略、用户映射或公益榜快照。
+- 给 `juhe-ai-public-welfare` 等允许来源系统读取 IP 聚合数据时，只暴露受保护的 IP 聚合事实，不暴露后台封禁策略、用户映射或公益榜快照。
 
 ## 范围边界
 
@@ -45,16 +45,16 @@
 - IP 注册 Set 是懒加载性能优化，不是事实源；启动时不全量读取注册表，最终正确性依赖 SQLite 唯一约束和 `INSERT OR IGNORE`。
 - 首期只为 IP 写 `daily` 和范围窗口，避免把 IP 维度直接接入全套 `minute / hourly / weekly / monthly / totals` 造成写放大。
 - 统计 scope 使用 `ip_hash`，列表接口再关联 IP 注册表返回可展示 IP。
-- IPv6 默认按 `/64` 聚合作为统计 key，避免隐私 IPv6 地址导致 IP 基数爆炸；原始规范化 IP 可保留最近样本。
+- 当前 IP 管理只识别 IPv4；非 IPv4 来源不进入 IP 注册、统计和封禁策略。
 - IP 封禁是网关运行前置判断，必须读运行态缓存，不允许每次请求查库。
 
 ## 数据流
 
 ```text
 网关请求
-  -> usage_records 写入 client_ip
+  -> usage_records 只写入规范化 IPv4 client_ip，非 IPv4 来源写空
   -> 后台 IP 统计 job 按 usage shard cursor 增量读取新记录
-  -> 规范化 IP，生成 aggregate_ip_key / ip_hash / bucket_no
+  -> 再次规范化 IPv4，生成 aggregate_ip_key / ip_hash / bucket_no
   -> 查询本进程懒加载 bucket Set 判断是否已注册
   -> 未命中则 INSERT OR IGNORE 到 client_ip_registry
   -> 写入 client_ip_stats_daily
@@ -77,11 +77,10 @@
 
 IP 写入前必须先规范化：
 
-- IPv4 去除端口、去除 `::ffff:` 前缀后保存标准点分十进制。
-- IPv6 保存压缩后的标准形式。
-- IPv6 统计默认使用 `/64` 聚合 key，例如同一 `/64` 下的隐私地址归为同一个 `aggregate_ip_key`。
-- 如果请求无法识别 IP，统计为 `unknown` 不进入封禁策略。
-- `client_ip` 表示最近一次原始规范化 IP，`aggregate_ip_key` 表示统计和策略匹配使用的 key。
+- IPv4 去除端口后保存标准点分十进制；如果上游传入 IPv4 映射形式，先还原成 IPv4。
+- 非 IPv4 来源在请求明细里写空，不注册、不统计、不封禁。
+- 如果请求无法识别 IPv4，统计为 `unknown` 不进入封禁策略。
+- 当前 `client_ip` 和 `aggregate_ip_key` 均为规范化 IPv4；`aggregate_ip_key` 保留为后续扩展字段。
 
 当前 hash：
 
@@ -329,7 +328,7 @@ else:
 
 | 字段 | 说明 |
 | --- | --- |
-| IP | `aggregate_ip_key` 或规范化 IP |
+| IP | 规范化 IPv4 |
 | 状态 | 正常 / 已封禁 |
 | 请求次数 | 范围内请求数 |
 | 成功次数 | 范围内成功请求数 |
@@ -366,7 +365,7 @@ else:
 - 失败率降序
 - 最近使用时间降序
 
-列表默认按成本降序，其次请求次数降序，再按 IP hash 稳定排序。
+列表默认按请求次数降序，再按 IP hash 稳定排序；状态是否正常通过状态筛选解决，不参与默认排序。
 
 ## 管理 API 草案
 
@@ -451,25 +450,35 @@ interface ClientIpBlacklistRequest {
 - 不传时表示永久封禁；旧版 `expiresAt` 继续兼容。
 - `durationMinutes`、`durationDays` 和 `expiresAt` 只能传一种。
 - 到期策略不再被列表和网关视为 active 封禁；网关缓存不会跨过最近的策略过期时间。
-- 网关返回 `403 client_ip_blacklisted` 时，错误消息和 `error.client_ip` 包含当前来源 IP；IPv6 聚合封禁会同时提示封禁范围并返回 `error.aggregate_ip_key`，便于调用方反馈给管理员。
+- 网关返回 `403 client_ip_blacklisted` 时，错误消息和 `error.client_ip` 包含当前来源 IPv4，便于调用方反馈给管理员。
 
 ## 外部来源接口边界
 
 后续 `juhe-ai-public-welfare` 只读取 IP 聚合事实：
 
 ```http
-GET /__aisys__/api/external-integrations/juhe-ai/ip-usage
+GET /__aipublic__/juhe-ai/ip-usage
 Authorization: Bearer <source_token>
-X-Juhe-AI-Source: juhe-ai-public-welfare
 ```
+
+来源系统鉴权复用 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)，IP 用量接口使用独立 scope `juhe_ai_ip_usage:read`。正式 token 读取真实 IP 窗口表；内置测试 token 只返回 mock 数据。
 
 该接口：
 
 - 只校验来源系统是否允许调用。
-- 不做公益站 IP 拦截、限频或用户权限判断。
+- 可复用来源系统级公开接口限频；不做公益站公网 IP 拦截或用户权限判断。
 - 不返回后台封禁策略和操作历史。
 - 不返回 API Key、系统账户、AI 账户、分组、供应商或模型业务关系。
 - 只读 `client_ip_usage_range_windows` 和 `client_ip_registry`。
+
+同一 scope 还提供：
+
+```http
+GET /__aipublic__/juhe-ai/consumption-ranking
+GET /__aipublic__/juhe-ai/access-info
+```
+
+`consumption-ranking` 只是 IP 聚合的 TopN 排序视图，不是公益站用户消耗榜；公益站仍需自行完成 IP 到用户归属和用户维度快照。
 
 ## 性能影响与约束
 
@@ -553,7 +562,7 @@ X-Juhe-AI-Source: juhe-ai-public-welfare
 - 后台 IP 统计 job 只按 shard cursor 增量读取，不出现请求路径 `GROUP BY usage_records`。
 - 新 IP 首次出现会写入注册表，重复 IP 不会重复注册。
 - Set 为空或冷 IP 未命中时，数据库唯一约束仍能保证注册正确。
-- IPv6 默认按 `/64` 聚合。
+- 非 IPv4 来源不会进入 IP 注册、统计或封禁策略。
 - IP 列表可以按成本、Token、请求数、失败率和最近使用排序。
 - 封禁后网关请求被本地拒绝，解封后恢复。
 - IP 管理策略只表达封禁和解封。

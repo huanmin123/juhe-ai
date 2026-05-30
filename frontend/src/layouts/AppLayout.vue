@@ -55,6 +55,7 @@ import {
   ExperimentOutlined,
   FundOutlined,
   HistoryOutlined,
+  LinkOutlined,
   SearchOutlined,
   FileSearchOutlined,
   NodeIndexOutlined,
@@ -190,6 +191,7 @@ const menuIconMap = {
   '/runtime-logs': SearchOutlined,
   '/table-monitor': DatabaseOutlined,
   '/ip-stats': GlobalOutlined,
+  '/external-integration-sources': LinkOutlined,
   '/announcements': BellOutlined,
   '/settings': SettingOutlined,
   '/system-accounts': TeamOutlined

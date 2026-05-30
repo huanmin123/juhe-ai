@@ -2,6 +2,8 @@ import type { AccountSummary } from '@/types/domain'
 import { formatServerDateTimeInput } from './accountFormatters'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicy'
 import { validateAccountErrorPolicyRules } from './accountErrorPolicy'
+import { validateAccountStreamInterceptRules } from './accountStreamInterceptPolicyPayload'
+import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { buildAccountCredentials, currentAccountCredentials } from './accountCredentials'
 import type { AccountFormModel } from './accountFormTypes'
 
@@ -27,7 +29,7 @@ export type AccountOAuthCreateCommonPayload = {
   supportedModels: string[]
   proxyProfileId?: string
   accountExpiresAt: string | null
-  credentialsPatch?: { error_handling_rules?: unknown }
+  credentialsPatch?: { error_handling_rules?: unknown; stream_intercept_rules?: unknown }
   notes?: string
 }
 
@@ -36,6 +38,7 @@ export function validateAccountSaveForm(input: {
   form: AccountFormModel
   hasAuthSession: boolean
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  streamInterceptRules: AccountStreamInterceptRuleForm[]
 }): string | undefined {
   const { editingId, form } = input
   if (!form.providerCode) return '请先选择供应商'
@@ -50,7 +53,11 @@ export function validateAccountSaveForm(input: {
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
   const errorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
-  return errorPolicyValidation.valid ? undefined : errorPolicyValidation.message || '错误处理策略配置不完整'
+  if (!errorPolicyValidation.valid) {
+    return errorPolicyValidation.message || '错误处理策略配置不完整'
+  }
+  const streamPolicyValidation = validateAccountStreamInterceptRules(input.streamInterceptRules)
+  return streamPolicyValidation.valid ? undefined : streamPolicyValidation.message || '账户流式拦截规则配置不完整'
 }
 
 export function buildAccountSavePayload(input: {
@@ -59,6 +66,7 @@ export function buildAccountSavePayload(input: {
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  streamInterceptRules: AccountStreamInterceptRuleForm[]
 }): AccountSavePayload {
   return {
     providerCode: input.form.providerCode,
@@ -80,6 +88,7 @@ export function buildOAuthCreateCommonPayload(input: {
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  streamInterceptRules: AccountStreamInterceptRuleForm[]
 }): AccountOAuthCreateCommonPayload {
   const credentials = accountCredentials(input)
   const payload: AccountOAuthCreateCommonPayload = {
@@ -93,7 +102,10 @@ export function buildOAuthCreateCommonPayload(input: {
     notes: input.form.notes || undefined
   }
   if (Object.prototype.hasOwnProperty.call(credentials, 'error_handling_rules')) {
-    payload.credentialsPatch = { error_handling_rules: credentials.error_handling_rules }
+    payload.credentialsPatch = { ...(payload.credentialsPatch ?? {}), error_handling_rules: credentials.error_handling_rules }
+  }
+  if (Object.prototype.hasOwnProperty.call(credentials, 'stream_intercept_rules')) {
+    payload.credentialsPatch = { ...(payload.credentialsPatch ?? {}), stream_intercept_rules: credentials.stream_intercept_rules }
   }
   return payload
 }
@@ -109,10 +121,12 @@ function accountCredentials(input: {
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  streamInterceptRules: AccountStreamInterceptRuleForm[]
 }): Record<string, unknown> {
   return buildAccountCredentials({
     currentCredentials: input.accountDetail?.credentials ?? currentAccountCredentials(input.accounts, input.editingId),
     errorPolicyRules: input.errorPolicyRules,
+    streamInterceptRules: input.streamInterceptRules,
     form: input.form
   })
 }

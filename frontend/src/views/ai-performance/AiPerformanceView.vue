@@ -112,7 +112,7 @@ import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
-import { accountSelectionForId, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
+import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
@@ -266,12 +266,7 @@ const accountFilterItems = computed(() => {
   const activeIds = activeAccountIdSet.value
   return orderedAiPerformanceSeries(currentOverview).map((series, index) => {
     const account = accountById.get(series.accountId)
-    const accountName = account?.name ?? series.accountName
-    const label = isManagementView.value && account?.systemAccountName
-      ? `${accountName}（${account.systemAccountName}）`
-      : (nameCounts.get(accountName) ?? 0) > 1 && account?.providerCode
-      ? `${accountName}（${account.providerCode}）`
-      : accountName
+    const label = performanceAccountLabel(account, series, nameCounts)
     return {
       account: account ?? {
         id: series.accountId,
@@ -660,10 +655,31 @@ function placeholderPerformanceAccount(id: string): AiPerformanceAccountRow | un
     providerCode: option?.providerCode ?? 'openai',
     systemAccountId: option?.systemAccountId ?? selectedPerformanceSystemAccountId() ?? '',
     systemAccountName: option?.systemAccountName,
+    ownerSystemAccountId: option?.ownerSystemAccountId,
+    ownerSystemAccountName: option?.ownerSystemAccountName ?? selection?.ownerSystemAccountName,
+    accessType: option?.accessType ?? selection?.accessType,
     requestCountLast7d: option?.requestCountLast7d ?? 0,
     selected: true,
     defaultVisible: false
   }
+}
+
+function performanceAccountLabel(
+  account: AiPerformanceAccountRow | undefined,
+  series: AiPerformanceSeriesRow,
+  nameCounts: Map<string, number>
+): string {
+  const accountName = account?.name ?? series.accountName
+  if (account?.accessType === 'authorized') {
+    return accountSelectOptionLabel(account)
+  }
+  if (isManagementView.value && account?.systemAccountName) {
+    return `${accountName}（${account.systemAccountName}）`
+  }
+  if ((nameCounts.get(accountName) ?? 0) > 1 && account?.providerCode) {
+    return `${accountName}（${account.providerCode}）`
+  }
+  return accountName
 }
 
 function placeholderPerformanceSeries(id: string): AiPerformanceSeriesRow | undefined {

@@ -79,10 +79,76 @@ try {
     notes: 'keywordnote 备注前缀',
     groupId: group.id
   }, access)
+  const owner = repositories.createSystemAccount({
+    username: 'account_usage_auth_owner',
+    displayName: '账号用量授权方',
+    password: 'Password-123456',
+    mustChangePassword: false
+  })
+  const grantee = repositories.createSystemAccount({
+    username: 'account_usage_auth_grantee',
+    displayName: '账号用量被授权方',
+    password: 'Password-123456',
+    mustChangePassword: false
+  })
+  const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const granteeTargetGroup = repositories.createGroup({
+    name: '账号用量授权目标分组',
+    providerCode: 'openai',
+    enabled: true
+  }, granteeAccess)
+  const authorizedSourceAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权用量来源旧名',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-authorized-source',
+      base_url: 'https://api.openai.com/v1'
+    }
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: authorizedSourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeTargetGroup.id,
+    remark: '账号用量来源名查询回归'
+  }, ownerAccess)
+  const authorizedInstance = repositories.listAccounts(granteeAccess)
+    .find((account) => account.authorizationInstanceSourceAccountId === authorizedSourceAccount.id)
+  assert(authorizedInstance?.id, '账号用量回归需要被授权实例账户')
+  repositories.updateAccount(authorizedSourceAccount.id, {
+    name: '授权用量来源当前名'
+  }, ownerAccess)
+  const authorizedGroup = repositories.createGroup({
+    name: '账号用量授权来源分组',
+    providerCode: 'openai',
+    enabled: true
+  }, ownerAccess)
+  const groupAuthorizedAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权用量分组账户A',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-group-authorized-source',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: authorizedGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: authorizedGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '账号用量分组来源名查询回归'
+  }, ownerAccess)
 
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', matchedAccount.id, 7)
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', otherAccount.id, 3)
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', selectedAccount.id, 1)
+  seedUsageScopeRangeWindow(grantee.id, 'caller_account', authorizedInstance.id, 11)
+  seedUsageScopeRangeWindow(grantee.id, 'caller_account', groupAuthorizedAccount.id, 13)
 
   const businessDatabase = databaseModule.getDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
@@ -180,6 +246,33 @@ try {
       range
     })
     assert.deepEqual(typeIgnoredResult.rows.map((row) => row.id), [matchedAccount.id, otherAccount.id, selectedAccount.id], '账号用量统计不应按 OAuth/API Key 账号类型缩窄明细')
+
+    const authorizedSourceKeywordResult = repositories.getAccountUsageStatsOverviewPage(granteeAccess, {
+      keyword: '授权用量来源当前名',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(authorizedSourceKeywordResult.rows.map((row) => row.id), [authorizedInstance.id], '被授权用户应能通过来源账户当前名称查询自己的授权实例用量')
+    assert.equal(authorizedSourceKeywordResult.rows[0]?.accessType, 'authorized', '来源账户名命中的账号用量应保留授权实例口径')
+    assert.equal(authorizedSourceKeywordResult.rows[0]?.rangeUsage.requestCount, 11, '来源账户名命中的授权实例用量应读取当前用户 caller_account 窗口')
+
+    const groupAuthorizedKeywordResult = repositories.getAccountUsageStatsOverviewPage(granteeAccess, {
+      keyword: '授权用量分组账户A',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(groupAuthorizedKeywordResult.rows.map((row) => row.id), [groupAuthorizedAccount.id], '被授权用户应能通过来源账户名称查询分组授权产生的账号用量')
+    assert.equal(groupAuthorizedKeywordResult.rows[0]?.accessType, 'authorized', '分组授权命中的账号用量应标记为授权来源')
+    assert.equal(groupAuthorizedKeywordResult.rows[0]?.rangeUsage.requestCount, 13, '分组授权账号用量应读取当前用户 caller_account 窗口')
+
+    const granteeDefaultResult = repositories.getAccountUsageStatsOverviewPage(granteeAccess, {
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(granteeDefaultResult.rows.map((row) => row.id), [groupAuthorizedAccount.id, authorizedInstance.id], '被授权用户默认账号用量列表应直接读取自己的 caller_account 窗口')
   } finally {
     recordDatabase.prepare = originalPrepare
     businessDatabase.prepare = originalBusinessPrepare

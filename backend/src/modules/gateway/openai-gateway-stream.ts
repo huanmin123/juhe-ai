@@ -29,6 +29,7 @@ import {
   OpenAIStreamInterceptBuffer,
   type StreamInterceptDecision
 } from './openai-gateway-stream-intercept.js'
+import type { RuntimeStreamInterceptPolicy } from './openai-gateway-stream-policy.js'
 
 export interface StreamPipeResult {
   completed: boolean
@@ -43,6 +44,8 @@ export interface StreamPipeResult {
   auditResponseBody?: Buffer
   auditUpstreamBody?: Buffer
   streamIntercept?: StreamInterceptDecision
+  streamInterceptObservations?: StreamInterceptDecision[]
+  streamInterceptObservationOmittedCount?: number
   bodyOmission?: StreamBodyOmissionSummary
 }
 
@@ -69,6 +72,8 @@ export interface StreamPipeOptions {
   clientRetryEnabled?: boolean
   onFirstOutput?: () => void
   captureSuccessPayloads?: boolean
+  streamInterceptPolicies?: RuntimeStreamInterceptPolicy[]
+  prepareDownstream?: () => void
 }
 
 const streamDiagnosticCaptureBytes = 256 * 1024
@@ -76,6 +81,7 @@ const streamAuditCaptureBytes = 1024 * 1024
 const streamTerminalKeepAliveDrainMs = 50
 const streamProgressLogIntervalMs = 60_000
 const streamBackpressureLogIntervalMs = 30_000
+const maxStreamInterceptObservationCount = 20
 
 export async function pipeUpstreamStream(
   upstreamBody: AsyncIterable<Uint8Array>,
@@ -89,7 +95,8 @@ export async function pipeUpstreamStream(
   const iterator = upstreamBody[Symbol.asyncIterator]()
   const inspector = new OpenAIStreamInspector()
   const interceptor = new OpenAIStreamInterceptBuffer({
-    clientRetryEnabled: options.clientRetryEnabled === true
+    clientRetryEnabled: options.clientRetryEnabled === true,
+    policies: options.streamInterceptPolicies
   })
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
   const responseCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
@@ -113,6 +120,24 @@ export async function pipeUpstreamStream(
   let clientClosed = false
   let terminalEventWritten = false
   let bodyCaptureOmitted = false
+  let downstreamPrepared = false
+  const streamInterceptObservations: StreamInterceptDecision[] = []
+  let streamInterceptObservationOmittedCount = 0
+  const prepareDownstreamForWrite = () => {
+    if (downstreamPrepared) return
+    downstreamPrepared = true
+    options.prepareDownstream?.()
+  }
+  const recordStreamInterceptObservations = (observations: StreamInterceptDecision[] | undefined) => {
+    if (!observations?.length) return
+    for (const observation of observations) {
+      if (streamInterceptObservations.length < maxStreamInterceptObservationCount) {
+        streamInterceptObservations.push(observation)
+      } else {
+        streamInterceptObservationOmittedCount += 1
+      }
+    }
+  }
   const closeIterator = () => {
     clientClosed = true
     void closeAsyncIterator(iterator)
@@ -144,6 +169,39 @@ export async function pipeUpstreamStream(
   const bodyOmissionFor = (inspection: OpenAIStreamInspection) => bodyCaptureOmitted
     ? streamBodyOmissionSummary(inspection, totalUpstreamBytes, totalResponseBytes)
     : undefined
+  const finishStreamResult = (
+    completed: boolean,
+    message: string,
+    errorCode: string | undefined,
+    firstTokenMs: number | undefined,
+    usage: ParsedUsage,
+    responseCapture: LimitedBufferCapture,
+    upstreamCapture: LimitedBufferCapture,
+    diagnosticCapture: LimitedBufferCapture,
+    streamIntercept?: StreamInterceptDecision,
+    outputReceived = false,
+    estimatedOutputTokens?: number,
+    imageOutputReceived = false,
+    captureSuccessPayloads = true,
+    bodyOmission?: StreamBodyOmissionSummary
+  ): StreamPipeResult => streamResult(
+    completed,
+    message,
+    errorCode,
+    firstTokenMs,
+    usage,
+    responseCapture,
+    upstreamCapture,
+    diagnosticCapture,
+    streamIntercept,
+    outputReceived,
+    estimatedOutputTokens,
+    imageOutputReceived,
+    captureSuccessPayloads,
+    bodyOmission,
+    streamInterceptObservations,
+    streamInterceptObservationOmittedCount
+  )
   const finishTerminalSuccess = (
     inspection: OpenAIStreamInspection,
     input: { drainForKeepAlive?: boolean; eofPendingFlush?: boolean } = {}
@@ -171,7 +229,7 @@ export async function pipeUpstreamStream(
       upstreamDrainScheduledForKeepAlive: input.drainForKeepAlive === true || undefined,
       eofPendingFlush: input.eofPendingFlush === true || undefined
     }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
-    return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
   res.once('close', closeIterator)
 
@@ -222,7 +280,27 @@ export async function pipeUpstreamStream(
           event: 'gateway_stream_intercept_parser_skipped'
         }, '网关流式事件过大，兜底拦截停止解析并继续原样转发')
       }
+      recordStreamInterceptObservations(interceptResult.observations)
       let latestInspection = inspector.snapshot()
+      if (shouldReturnInterceptBeforeDownstreamWrite(interceptResult.intercepted, res, totalResponseBytes)) {
+        await closeAsyncIterator(iterator)
+        const decision = interceptResult.intercepted!
+        const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `流式响应命中拦截策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
+        const errorCode = decision.upstreamErrorCode ?? decision.rewriteErrorCode ?? 'stream_intercepted'
+        streamLogger.warn({
+          event: 'gateway_stream_intercepted_before_downstream_write',
+          elapsedMs: Date.now() - startedAt,
+          chunkCount: chunkIndex,
+          totalUpstreamBytes,
+          action: decision.action,
+          reason: decision.reason,
+          policyId: decision.policyId,
+          policyName: decision.policyName,
+          accountSwitch: decision.accountSwitch,
+          retryEnabled: decision.retryEnabled
+        }, '网关在写入下游前命中可服务端重试的流式拦截策略')
+        return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
+      }
       let chunkSseEventCount = 0
       let chunkWriteMs = 0
       let chunkCanEndAfterTerminal = false
@@ -253,9 +331,11 @@ export async function pipeUpstreamStream(
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
         const writeStartedAt = Date.now()
+        prepareDownstreamForWrite()
         const writeResult = await writeResponseChunk(res, outbound)
         const writeMs = Date.now() - writeStartedAt
         chunkWriteMs += writeMs
+        interceptor.markDownstreamWrite()
         totalResponseBytes += outbound.length
         if (latestInspection.terminalReceived && !latestInspection.failedReceived && chunkCanEndAfterTerminal) {
           terminalEventWritten = true
@@ -314,8 +394,8 @@ export async function pipeUpstreamStream(
         await closeAsyncIterator(iterator)
         endResponse(res)
         const decision = interceptResult.intercepted
-        const message = decision.upstreamErrorMessage ?? decision.rewriteMessage
-        const errorCode = decision.upstreamErrorCode ?? decision.rewriteErrorCode
+        const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `流式响应命中拦截策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
+        const errorCode = decision.upstreamErrorCode ?? decision.rewriteErrorCode ?? 'stream_intercepted'
         streamLogger.warn({
           event: 'gateway_stream_intercepted',
           elapsedMs: Date.now() - startedAt,
@@ -327,9 +407,9 @@ export async function pipeUpstreamStream(
           upstreamEventType: decision.upstreamEventType,
           upstreamErrorCode: decision.upstreamErrorCode,
           rewriteErrorCode: decision.rewriteErrorCode,
-          outputSeen: decision.outputSeen
-        }, '网关已拦截上游流式错误并改写为客户端可重试事件')
-        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
+          downstreamWritten: decision.downstreamWritten
+        }, '网关已命中流式拦截策略并结束当前流')
+        return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
     }
 
@@ -340,8 +420,28 @@ export async function pipeUpstreamStream(
         event: 'gateway_stream_intercept_parser_skipped'
       }, '网关流式事件过大，兜底拦截停止解析并继续原样转发')
     }
+    recordStreamInterceptObservations(eofInterceptResult.observations)
     if (eofInterceptResult.chunks.length > 0 || eofInterceptResult.intercepted) {
       let latestInspection = inspector.snapshot()
+      if (shouldReturnInterceptBeforeDownstreamWrite(eofInterceptResult.intercepted, res, totalResponseBytes)) {
+        const decision = eofInterceptResult.intercepted!
+        const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `流式响应命中拦截策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
+        const errorCode = decision.upstreamErrorCode ?? decision.rewriteErrorCode ?? 'stream_intercepted'
+        streamLogger.warn({
+          event: 'gateway_stream_intercepted_before_downstream_write',
+          elapsedMs: Date.now() - startedAt,
+          chunkCount: chunkIndex,
+          totalUpstreamBytes,
+          action: decision.action,
+          reason: decision.reason,
+          policyId: decision.policyId,
+          policyName: decision.policyName,
+          accountSwitch: decision.accountSwitch,
+          retryEnabled: decision.retryEnabled,
+          eofPendingFlush: true
+        }, '网关在 EOF pending 事件写入下游前命中可服务端重试的流式拦截策略')
+        return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
+      }
       let eofCanEndAfterTerminal = false
       for (const outbound of eofInterceptResult.chunks) {
         if (!bodyCaptureOmitted) {
@@ -368,7 +468,9 @@ export async function pipeUpstreamStream(
         } else if (lastSseEventActivityAt === undefined || outboundSseEventCount > 0) {
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
+        prepareDownstreamForWrite()
         const writeResult = await writeResponseChunk(res, outbound)
+        interceptor.markDownstreamWrite()
         totalResponseBytes += outbound.length
         if (latestInspection.terminalReceived && !latestInspection.failedReceived && eofCanEndAfterTerminal) {
           terminalEventWritten = true
@@ -395,8 +497,8 @@ export async function pipeUpstreamStream(
       if (eofInterceptResult.intercepted) {
         endResponse(res)
         const decision = eofInterceptResult.intercepted
-        const message = decision.upstreamErrorMessage ?? decision.rewriteMessage
-        const errorCode = decision.upstreamErrorCode ?? decision.rewriteErrorCode
+        const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `流式响应命中拦截策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
+        const errorCode = decision.upstreamErrorCode ?? decision.rewriteErrorCode ?? 'stream_intercepted'
         streamLogger.warn({
           event: 'gateway_stream_intercepted',
           elapsedMs: Date.now() - startedAt,
@@ -408,10 +510,10 @@ export async function pipeUpstreamStream(
           upstreamEventType: decision.upstreamEventType,
           upstreamErrorCode: decision.upstreamErrorCode,
           rewriteErrorCode: decision.rewriteErrorCode,
-          outputSeen: decision.outputSeen,
+          downstreamWritten: decision.downstreamWritten,
           eofPendingFlush: true
-        }, '网关已在上游 EOF 时拦截未收尾流式错误并改写为客户端可重试事件')
-        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
+        }, '网关已在上游 EOF 时命中流式拦截策略并结束当前流')
+        return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
     }
   } catch (error) {
@@ -438,7 +540,7 @@ export async function pipeUpstreamStream(
           skipReason: inspection.skipReason,
           errorMessage: error instanceof Error ? error.message : String(error)
         }, '客户端在 OpenAI 终止事件后关闭连接，按成功流式响应收尾')
-        return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+        return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
       }
       streamLogger.warn({
         event: 'gateway_stream_aborted',
@@ -488,7 +590,7 @@ export async function pipeUpstreamStream(
         elapsedMs: Date.now() - startedAt,
         rawMessage
       }, '网关已收到终止事件，忽略终止后的流式异常')
-      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+      return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
     const message = inspection.errorMessage ?? rawMessage
     const errorCode = streamClientFailureCode(
@@ -502,6 +604,7 @@ export async function pipeUpstreamStream(
         event: 'gateway_stream_failure_event_writing',
         message
       }, '网关准备补发 response.failed')
+      prepareDownstreamForWrite()
       const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode)
       if (failureEvent) {
         if (!bodyCaptureOmitted) {
@@ -523,7 +626,7 @@ export async function pipeUpstreamStream(
       }
     }
     endResponse(res)
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   } finally {
     res.off('close', closeIterator)
   }
@@ -554,7 +657,7 @@ export async function pipeUpstreamStream(
       failedReceived: inspection.failedReceived,
       skipReason: inspection.skipReason
     }, '网关流式解析已跳过，按原始转发结果结束')
-    return streamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    return finishStreamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
   if (!inspection.terminalReceived) {
     const message = '上游流在 OpenAI 终止事件前结束'
@@ -574,6 +677,7 @@ export async function pipeUpstreamStream(
       sseEventTypeCounts: inspection.eventTypeCounts,
       recentSseEventTypes: inspection.recentEventTypes
     }, '上游 EOF 前未收到 OpenAI 终止事件')
+    prepareDownstreamForWrite()
     const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode)
     if (failureEvent) {
       if (!bodyCaptureOmitted) {
@@ -592,7 +696,7 @@ export async function pipeUpstreamStream(
       }, '网关因缺少终止事件补发 response.failed 失败或响应已结束')
     }
     endResponse(res)
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
   endResponse(res)
@@ -619,7 +723,7 @@ export async function pipeUpstreamStream(
       sseEventTypeCounts: inspection.eventTypeCounts,
       recentSseEventTypes: inspection.recentEventTypes
     }, '网关流式响应以失败结束')
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
   streamLogger.info({
@@ -635,7 +739,7 @@ export async function pipeUpstreamStream(
     outputReceived: inspection.outputReceived,
     outputEventCount: inspection.outputEventCount
   }, '网关流式响应已成功结束')
-  return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+  return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
 }
 
 function readNextStreamChunk(
@@ -785,6 +889,20 @@ function streamClientFailureCode(errorCode: string, outputReceived: boolean, cli
     : errorCode
 }
 
+function shouldReturnInterceptBeforeDownstreamWrite(
+  decision: StreamInterceptDecision | undefined,
+  res: Response,
+  totalResponseBytes: number
+): boolean {
+  return decision?.reason === 'configured_stream_policy'
+    && decision.retryEnabled === true
+    && decision.policySource !== 'builtin'
+    && totalResponseBytes === 0
+    && !res.headersSent
+    && !res.writableEnded
+    && !res.destroyed
+}
+
 function streamResult(
   completed: boolean,
   message: string,
@@ -799,7 +917,9 @@ function streamResult(
   estimatedOutputTokens?: number,
   imageOutputReceived = false,
   captureSuccessPayloads = true,
-  bodyOmission?: StreamBodyOmissionSummary
+  bodyOmission?: StreamBodyOmissionSummary,
+  streamInterceptObservations: StreamInterceptDecision[] = [],
+  streamInterceptObservationOmittedCount = 0
 ): StreamPipeResult {
   const responseBodyText = bodyOmission || (completed && !captureSuccessPayloads)
     ? undefined
@@ -822,6 +942,8 @@ function streamResult(
     auditResponseBody,
     auditUpstreamBody: bodyOmission || !captureSuccessPayloads ? undefined : upstreamCapture.completeBuffer(),
     streamIntercept,
+    streamInterceptObservations: streamInterceptObservations.length ? [...streamInterceptObservations] : undefined,
+    streamInterceptObservationOmittedCount: streamInterceptObservationOmittedCount > 0 ? streamInterceptObservationOmittedCount : undefined,
     bodyOmission
   }
 }

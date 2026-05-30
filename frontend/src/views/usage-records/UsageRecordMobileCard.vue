@@ -20,7 +20,7 @@
         <strong class="mono-cell">{{ formatEndpoint(record.endpoint) }}</strong>
       </div>
       <div class="mobile-list-meta-item">
-        <span>来源</span>
+        <span>请求来源</span>
         <strong>{{ trafficSourceText(record) }}</strong>
       </div>
       <div class="mobile-list-meta-item">

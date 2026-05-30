@@ -252,6 +252,21 @@ try {
       createdAt: '2026-01-02T00:00:05.000Z'
     },
     {
+      id: 'usage_list_query_guard_authorized_instance_inferred_metadata',
+      traceId: 'trace-usage-list-query-guard-authorized-instance-inferred-metadata',
+      systemAccountId: grantee.id,
+      groupId: granteeGroup.id,
+      accountId: authorizedInstance.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.5-authorized-inferred',
+      clientIp: '127.0.2.7',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:07.000Z'
+    },
+    {
       id: 'usage_list_query_guard_group_authorized_source_name',
       traceId: 'trace-usage-list-query-guard-group-authorized-source-name',
       systemAccountId: grantee.id,
@@ -272,6 +287,19 @@ try {
       createdAt: '2026-01-02T00:00:06.000Z'
     }
   ])
+  const inferredAuthorizedRecord = usageRecordShards.queryUsageRecordShardById<{
+    account_owner_system_account_id?: string | null
+    account_access_type?: string | null
+    account_authorization_id?: string | null
+  }>(
+    'usage_list_query_guard_authorized_instance_inferred_metadata',
+    'SELECT account_owner_system_account_id, account_access_type, account_authorization_id FROM usage_records WHERE id = ?',
+    ['usage_list_query_guard_authorized_instance_inferred_metadata'],
+    '2026-01-02T00:00:07.000Z'
+  )
+  assert.equal(inferredAuthorizedRecord?.account_owner_system_account_id, owner.id, '只传授权实例 accountId 时应自动补齐来源账户归属人')
+  assert.equal(inferredAuthorizedRecord?.account_access_type, 'account_authorized', '只传授权实例 accountId 时应自动识别账号授权口径')
+  assert.equal(inferredAuthorizedRecord?.account_authorization_id, runtimeAccountAuthorization.id, '只传授权实例 accountId 时应自动补齐运行时授权 ID')
 
   const businessDatabase = databaseModule.getDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
@@ -333,11 +361,11 @@ try {
     assert.equal(accountPrefix.items.length, 0, '账号名称关键字不应支持账号 ID 前缀定位使用记录')
 
     const authorizedInstanceBySourceName = repositories.listUsageRecords(granteeAccess, { accountKeyword: '授权使用记录账户A', page: 1, pageSize: 10 })
-    assert.deepEqual(authorizedInstanceBySourceName.items.map((item) => item.id), ['usage_list_query_guard_authorized_instance_source_name'], '被授权用户应能通过来源账户当前名称查询自己的授权实例使用记录，且不应混入授权方原账户记录')
+    assert.deepEqual(authorizedInstanceBySourceName.items.map((item) => item.id), ['usage_list_query_guard_authorized_instance_inferred_metadata', 'usage_list_query_guard_authorized_instance_source_name'], '被授权用户应能通过来源账户当前名称查询自己的授权实例使用记录，且不应混入授权方原账户记录')
     assert.equal(authorizedInstanceBySourceName.items[0]?.accountId, authorizedInstance.id, '来源账户名筛选应返回被授权实例自己的使用记录账户 ID')
 
     const adminAuthorizedInstanceBySourceName = repositories.listUsageRecords(adminGranteeAccess, { accountKeyword: '授权使用记录账户A', page: 1, pageSize: 10 })
-    assert.deepEqual(adminAuthorizedInstanceBySourceName.items.map((item) => item.id), ['usage_list_query_guard_authorized_instance_source_name'], '管理员按被授权人筛选时也应能通过来源账户当前名称查询授权实例使用记录')
+    assert.deepEqual(adminAuthorizedInstanceBySourceName.items.map((item) => item.id), ['usage_list_query_guard_authorized_instance_inferred_metadata', 'usage_list_query_guard_authorized_instance_source_name'], '管理员按被授权人筛选时也应能通过来源账户当前名称查询授权实例使用记录')
     assert(adminAuthorizedInstanceBySourceName.items.every((item) => item.systemAccountId === grantee.id), '管理员按被授权人来源账户名筛选不应返回授权方原账户使用记录')
 
     const groupAuthorizedBySourceName = repositories.listUsageRecords(granteeAccess, { accountKeyword: '分组授权使用记录账户A', page: 1, pageSize: 10 })

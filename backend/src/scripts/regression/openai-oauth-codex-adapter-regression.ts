@@ -309,7 +309,8 @@ async function testLargeBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
   assert.equal(req.body, undefined)
   assert.equal(getGatewayRequestBodyState(req)?.jsonParseStatus, 'deferred_large_json')
   assert.equal(getGatewayRequestBodyState(req)?.model, 'gpt-5.3-codex')
-  assert.equal(getGatewayRequestBodyState(req)?.stream, undefined)
+  assert.equal(getGatewayRequestBodyState(req)?.stream, false)
+  assert.equal(getGatewayRequestBodyState(req)?.imageGeneration, false)
 
   const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   const body = parseBody(parts.body)

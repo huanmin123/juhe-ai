@@ -26,6 +26,7 @@ const frontendIndexPath = resolve(frontendDistPath, 'index.html')
 const frontendAssetsPath = resolve(frontendDistPath, 'assets')
 const systemPrefix = '/__aisys__'
 const systemApiPrefix = `${systemPrefix}/api`
+const publicApiPrefix = '/__aipublic__'
 const gatewayRawBodyLimit = '64mb'
 const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
@@ -93,6 +94,7 @@ app.get(`${systemPrefix}/health`, (_req, res) => {
 })
 
 app.use(systemApiPrefix, dbServiceHttpProxy)
+app.use(publicApiPrefix, dbServiceHttpProxy)
 
 if (existsSync(frontendIndexPath)) {
   app.get(systemPrefix, (req, res, next) => {

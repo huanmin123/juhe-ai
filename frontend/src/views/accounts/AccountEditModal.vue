@@ -62,6 +62,11 @@
         :base-url="form.baseUrl"
         :provider-code="form.providerCode"
       />
+
+      <AccountStreamInterceptPolicyCard
+        v-if="hasAccountType"
+        v-model:rules="streamInterceptRules"
+      />
     </a-form>
   </a-modal>
 </template>
@@ -76,8 +81,10 @@ import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
+import AccountStreamInterceptPolicyCard from './AccountStreamInterceptPolicyCard.vue'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicy'
 import type { AccountFormModel } from './accountFormTypes'
+import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 
 interface AccountTypeChoice {
   value: AccountType
@@ -93,6 +100,7 @@ interface SelectOption<T = string> {
 
 const open = defineModel<boolean>('open', { required: true })
 const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
+const streamInterceptRules = defineModel<AccountStreamInterceptRuleForm[]>('streamInterceptRules', { required: true })
 
 const props = defineProps<{
   accountTypeChoices: AccountTypeChoice[]

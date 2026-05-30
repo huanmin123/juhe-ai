@@ -177,7 +177,7 @@ function testOpenAIClientPathCompatibility(): void {
 }
 
 function testJsonBodyFallbackWhenPassthroughDisabled(): void {
-  const req = createRequest({ model: 'gpt-5.4', input: 'hello' }, { accept: 'application/json' })
+  const req = createRequest({ model: 'gpt-5.4', input: 'hello' }, { accept: 'application/json', 'content-type': 'text/plain' })
   const body = buildUpstreamRequestBody(req, false)
   const headers = buildUpstreamHeaders(req.headers, {
     ...apiKeyAccount,
@@ -232,6 +232,7 @@ async function testLargeJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
   assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'deferred_large_json')
   assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
   assert.equal(req.gatewayRequestBody?.stream, true)
+  assert.equal(req.gatewayRequestBody?.imageGeneration, false)
   assert.equal(requestModel(req), 'gpt-5.4')
   assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
 

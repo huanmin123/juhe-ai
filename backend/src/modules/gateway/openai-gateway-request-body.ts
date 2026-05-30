@@ -17,11 +17,14 @@ export interface GatewayRequestBodyState {
   jsonParseWarningBytes: number
   model?: string
   stream?: boolean
+  imageGeneration?: boolean
 }
 
 export type GatewayRawBodyRequest = Request & {
   rawBody?: Buffer
   gatewayRequestBody?: GatewayRequestBodyState
+  gatewayParsedJsonBodyAvailable?: boolean
+  gatewayParsedJsonBody?: unknown
   gatewayUpstreamBodyCache?: Partial<Record<'normalized' | 'passthrough', { body: Buffer | string | undefined }>>
 }
 
@@ -36,6 +39,7 @@ export function createGatewayRequestBodyState(input: {
   parsedBody?: unknown
   model?: string
   stream?: boolean
+  imageGeneration?: boolean
 }): GatewayRequestBodyState {
   const contentType = String(input.contentType ?? '')
   const parsedBody = typeof input.parsedBody === 'object' && input.parsedBody !== null
@@ -48,7 +52,8 @@ export function createGatewayRequestBodyState(input: {
     jsonParseStatus: input.jsonParseStatus,
     jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
     model: input.model ?? (typeof parsedBody?.model === 'string' ? parsedBody.model : undefined),
-    stream: input.stream ?? (typeof parsedBody?.stream === 'boolean' ? parsedBody.stream : undefined)
+    stream: input.stream ?? (typeof parsedBody?.stream === 'boolean' ? parsedBody.stream : undefined),
+    imageGeneration: input.imageGeneration ?? requestBodyHasImageGenerationHint(parsedBody)
   }
 }
 
@@ -68,9 +73,46 @@ export function buildGatewayRequestBodySummary(req: Request): Record<string, unk
       jsonParseStatus: state.jsonParseStatus,
       jsonParseWarningBytes: state.jsonParseWarningBytes,
       model: state.model ?? (typeof req.body?.model === 'string' ? req.body.model : undefined),
-      stream: state.stream ?? (typeof req.body?.stream === 'boolean' ? req.body.stream : undefined)
+      stream: state.stream ?? (typeof req.body?.stream === 'boolean' ? req.body.stream : undefined),
+      imageGeneration: state.imageGeneration
     }
   }
+}
+
+export function requestBodyHasImageGenerationHint(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+  const body = value as Record<string, unknown>
+  if (body.type === 'image_generation' || valueContainsImageGenerationType(body.tool_choice)) {
+    return true
+  }
+  return valueContainsImageGenerationType(body.tools)
+    || valueContainsImageGenerationType(body.input)
+    || valueContainsImageGenerationType(body.output)
+}
+
+function valueContainsImageGenerationType(value: unknown, depth = 0): boolean {
+  if (depth > 4 || value === null || value === undefined) {
+    return false
+  }
+  if (typeof value === 'string') {
+    return value === 'image_generation' || value === 'image_generation_call'
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => valueContainsImageGenerationType(item, depth + 1))
+  }
+  if (typeof value !== 'object') {
+    return false
+  }
+  const object = value as Record<string, unknown>
+  const type = object.type
+  if (type === 'image_generation' || type === 'image_generation_call') {
+    return true
+  }
+  return valueContainsImageGenerationType(object.tool, depth + 1)
+    || valueContainsImageGenerationType(object.tools, depth + 1)
+    || valueContainsImageGenerationType(object.content, depth + 1)
 }
 
 export function extractGatewayJsonBodyMetadata(rawBody: Buffer): { model?: string; stream?: boolean } {

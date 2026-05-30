@@ -16,6 +16,7 @@ import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwne
 import { executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { submitAccountRelatedCleanup } from './account-cleanup.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
+import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from './account-stream-intercept-policy-validation.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 export const accountsRouter = Router()
@@ -304,6 +305,11 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(errorPolicyValidationMessage))
     return
   }
+  const streamPolicyValidationMessage = accountStreamInterceptValidationMessage(validateAccountStreamInterceptRules(parsed.data.credentials?.stream_intercept_rules))
+  if (streamPolicyValidationMessage) {
+    res.status(400).json(badRequest(streamPolicyValidationMessage))
+    return
+  }
 
   const providerCode = parsed.data.providerCode?.trim() || 'openai'
   const provider = listProviders().find((item) => item.code === providerCode)
@@ -399,7 +405,8 @@ accountsRouter.post('/:id/group', (req, res) => {
       if (!account) {
         throw new Error('账户不存在、授权已失效或分组不可用')
       }
-      const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+      const ownerSystemAccountId = authorizedLocalOperationOwner(account, requestAccess)
+        ?? resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {
         result: account,
         log: {
@@ -612,6 +619,11 @@ accountsRouter.patch('/:id', async (req, res) => {
   const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(body.credentials))
   if (errorPolicyValidationMessage) {
     res.status(400).json(badRequest(errorPolicyValidationMessage))
+    return
+  }
+  const streamPolicyValidationMessage = accountStreamInterceptValidationMessage(validateAccountStreamInterceptRules(credentialsRecordValue(body.credentials)?.stream_intercept_rules))
+  if (streamPolicyValidationMessage) {
+    res.status(400).json(badRequest(streamPolicyValidationMessage))
     return
   }
   try {
@@ -909,4 +921,10 @@ function accountCredentialFingerprint(credentials: unknown): string {
       ?? record.account_id
       ?? ''
   )
+}
+
+function credentialsRecordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
 }

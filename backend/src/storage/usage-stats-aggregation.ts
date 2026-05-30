@@ -17,15 +17,20 @@ export function usageStatsEntries(row: UsageStatsRecordRow, lookup?: UsageStatsA
   const accountStatsSystemAccountId = row.account_access_type === 'account_authorized'
     ? callerSystemAccountId
     : accountOwnerSystemAccountId
+  const skipOwnerAccountStats = row.account_access_type !== 'account_authorized'
+    && row.group_access_type === 'authorized'
+    && accountOwnerSystemAccountId !== callerSystemAccountId
   const groupOwnerSystemAccountId = row.group_owner_system_account_id ?? callerSystemAccountId
+  const skipOwnerGroupStats = row.group_access_type === 'authorized'
+    && groupOwnerSystemAccountId !== callerSystemAccountId
   const entries = [
     { systemAccountId: callerSystemAccountId, scopeType: 'system_account', scopeId: callerSystemAccountId, accumulator },
     { systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'system_account', scopeId: GLOBAL_STATS_SCOPE_ID, accumulator }
   ]
   if (row.provider_code) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'provider', scopeId: row.provider_code, accumulator })
-  if (row.group_id) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
+  if (row.group_id && !skipOwnerGroupStats) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'caller_account', scopeId: row.account_id, accumulator })
-  if (row.account_id) entries.push({ systemAccountId: accountStatsSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
+  if (row.account_id && !skipOwnerAccountStats) entries.push({ systemAccountId: accountStatsSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'account', scopeId: row.account_id, accumulator })
   if (row.account_authorization_id && accountOwnerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'account_authorization', scopeId: row.account_authorization_id, accumulator })
   if (row.account_id && row.account_authorization_source_team_id && accountOwnerSystemAccountId !== callerSystemAccountId) {

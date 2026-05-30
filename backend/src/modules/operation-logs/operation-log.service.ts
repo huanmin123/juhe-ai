@@ -108,6 +108,14 @@ export function operationMode(access?: Pick<AccessScope, 'role'>): 'admin' | 'se
 }
 
 export function resolveOperationOwner(resource?: Record<string, unknown>, access?: AccessScope): string | undefined {
+  if (resource?.accessType === 'authorized') {
+    return firstString(
+      resource.bindingSystemAccountId,
+      resource.systemAccountId,
+      access?.systemAccountFilterId,
+      access?.systemAccountId
+    )
+  }
   const ownerFromResource = firstString(
     resource?.systemAccountId,
     resource?.ownerSystemAccountId,

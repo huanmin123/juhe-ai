@@ -25,6 +25,7 @@ import {
   listActiveClientIpPolicies,
   recordClientIpPolicyHits
 } from '../../storage/client-ip-stats.repository.js'
+import { listActiveStreamInterceptPoliciesForGateway } from '../../storage/stream-intercept-policy.repository.js'
 import {
   clearGatewayRuntimeCacheLocal,
   readCachedGatewaySettings,
@@ -183,6 +184,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return { cleared: true }
     case 'list_active_client_ip_policies':
       return listActiveClientIpPolicies()
+    case 'list_active_stream_intercept_policies':
+      return listActiveStreamInterceptPoliciesForGateway()
     case 'record_client_ip_policy_hits':
       return recordClientIpPolicyHits(operation.hits)
     case 'list_runtime_logs':
@@ -264,12 +267,14 @@ function findOpenAIOAuthAccountForRefresh(accountId: string): unknown {
 function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read_gateway_runtime' }>): DbServiceGatewayRuntime {
   const settings = readCachedGatewaySettings()
   const clientIpPolicies = listActiveClientIpPolicies()
+  const streamInterceptPolicies = listActiveStreamInterceptPoliciesForGateway()
   const apiKey = validateGatewayApiKey(operation.key)
   if (!apiKey) {
     return {
       settings,
       accounts: [],
-      clientIpPolicies
+      clientIpPolicies,
+      streamInterceptPolicies
     }
   }
 
@@ -295,7 +300,8 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       settings,
       groupAccess,
       accounts,
-      clientIpPolicies
+      clientIpPolicies,
+      streamInterceptPolicies
     }
   }
 
@@ -303,7 +309,8 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     apiKey,
     settings,
     accounts: [],
-    clientIpPolicies
+    clientIpPolicies,
+    streamInterceptPolicies
   }
 }
 

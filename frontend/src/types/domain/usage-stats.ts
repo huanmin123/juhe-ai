@@ -1,4 +1,4 @@
-import type { AccountStatus, ProcessRole, ProviderCode } from './base'
+import type { AccountStatus, ProcessRole, ProviderCode, ResourceAccessType } from './base'
 
 export interface AccountUsageSummary {
   requestCount: number
@@ -29,6 +29,9 @@ export interface AiPerformanceAccount {
   providerCode: ProviderCode
   systemAccountId: string
   systemAccountName?: string
+  ownerSystemAccountId?: string
+  ownerSystemAccountName?: string
+  accessType?: ResourceAccessType
   requestCountLast7d: number
   selected: boolean
   defaultVisible: boolean
@@ -41,6 +44,9 @@ export interface AiPerformanceAccountOption {
   providerCode: ProviderCode
   systemAccountId: string
   systemAccountName?: string
+  ownerSystemAccountId?: string
+  ownerSystemAccountName?: string
+  accessType?: ResourceAccessType
   requestCountLast7d: number
 }
 

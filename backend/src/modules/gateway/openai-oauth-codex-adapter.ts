@@ -102,6 +102,10 @@ async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortS
   if (req.body !== undefined) {
     return req.body
   }
+  const requestWithBody = req as GatewayRawBodyRequest
+  if (requestWithBody.gatewayParsedJsonBodyAvailable) {
+    return requestWithBody.gatewayParsedJsonBody
+  }
 
   const bodyState = getGatewayRequestBodyState(req)
   if (bodyState?.jsonParseStatus === 'invalid_json') {

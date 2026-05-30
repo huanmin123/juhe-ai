@@ -38,6 +38,7 @@ export interface UsageAccessLookupContext {
   apiKeySystemAccountIds: Map<string, string>
   groupSystemAccountIds: Map<string, string>
   accountSystemAccountIds: Map<string, string>
+  accountMetadataById: Map<string, UsageAccountMetadata>
 }
 
 type UsageAccessLookupInput = {
@@ -46,11 +47,20 @@ type UsageAccessLookupInput = {
   accountId?: string
 }
 
+export interface UsageAccountMetadata {
+  systemAccountId: string
+  authorizationInstanceSourceAccountId?: string
+  authorizationInstanceAuthorizationId?: string
+  authorizationInstanceOwnerSystemAccountId?: string
+}
+
 export function buildUsageAccessLookupContext(inputs: UsageAccessLookupInput[]): UsageAccessLookupContext {
+  const accountMetadataById = loadUsageAccountMetadata(uniqueIds(inputs.map((input) => input.accountId)))
   return {
     apiKeySystemAccountIds: loadOwnerSystemAccountIds('api_keys', uniqueIds(inputs.map((input) => input.apiKeyId))),
     groupSystemAccountIds: loadOwnerSystemAccountIds('groups', uniqueIds(inputs.map((input) => input.groupId))),
-    accountSystemAccountIds: loadOwnerSystemAccountIds('accounts', uniqueIds(inputs.map((input) => input.accountId)))
+    accountSystemAccountIds: new Map([...accountMetadataById].map(([id, row]) => [id, row.systemAccountId])),
+    accountMetadataById
   }
 }
 
@@ -79,7 +89,8 @@ export function systemAccountIdForUsage(input: UsageAccessLookupInput, context?:
   if (input.accountId) {
     const cachedSystemAccountId = context?.accountSystemAccountIds.get(input.accountId)
     if (cachedSystemAccountId) return cachedSystemAccountId
-    const systemAccountId = accountSystemAccountId(input.accountId)
+    const systemAccountId = loadUsageAccountMetadata([input.accountId]).get(input.accountId)?.systemAccountId
+      ?? accountSystemAccountId(input.accountId)
     if (systemAccountId) return systemAccountId
   }
   return currentSystemAccountId()
@@ -106,30 +117,45 @@ export function usageAccessMetadata(input: UsageAccessMetadataInput, context?: U
           ? 'authorized'
           : undefined
       : undefined)
-  const accountOwnerSystemAccountId = input.accountOwnerSystemAccountId ?? (input.accountId ? context?.accountSystemAccountIds.get(input.accountId) ?? accountSystemAccountId(input.accountId) : undefined)
-  const accountAuthorization = input.accountAuthorizationId
+  const accountMetadata = input.accountId
+    ? context?.accountMetadataById.get(input.accountId) ?? loadUsageAccountMetadata([input.accountId]).get(input.accountId)
+    : undefined
+  const instanceAuthorizationId = accountMetadata?.authorizationInstanceAuthorizationId
+  const isAuthorizationInstance = Boolean(instanceAuthorizationId)
+  const accountOwnerSystemAccountId = input.accountOwnerSystemAccountId
+    ?? (isAuthorizationInstance
+      ? accountMetadata?.authorizationInstanceOwnerSystemAccountId
+      : accountMetadata?.systemAccountId ?? (input.accountId ? accountSystemAccountId(input.accountId) : undefined))
+  const accountAuthorization = input.accountAuthorizationId || instanceAuthorizationId
     ? undefined
     : input.accountId && accountOwnerSystemAccountId !== input.systemAccountId && groupAccessType !== 'authorized'
       ? activeResourceAuthorization('account', input.accountId, input.systemAccountId)
       : undefined
-  const accountAuthorizationId = accountAccessTypeCandidate(input, accountOwnerSystemAccountId, groupAccessType, groupOwnerSystemAccountId, accountAuthorization)
+  const accountAccessType = input.accountAccessType
+    ?? (isAuthorizationInstance
+      ? 'account_authorized'
+      : accountOwnerSystemAccountId
+        ? accountOwnerSystemAccountId === input.systemAccountId
+          ? 'owner'
+          : groupAccessType === 'authorized' && groupOwnerSystemAccountId === accountOwnerSystemAccountId
+            ? 'group_authorized'
+            : accountAuthorization
+              ? 'account_authorized'
+              : undefined
+        : undefined)
+  const accountAuthorizationId = accountAccessType === 'account_authorized'
+    ? input.accountAuthorizationId ?? instanceAuthorizationId ?? accountAuthorization?.id
+    : undefined
   const accountAuthorizationSnapshot = accountAuthorizationId
     ? input.accountAuthorizationId === accountAuthorization?.id
       ? accountAuthorization
       : resourceAuthorizationSnapshot(accountAuthorizationId)
     : undefined
-  const accountAccessType = input.accountAccessType
-    ?? (accountOwnerSystemAccountId
-      ? accountOwnerSystemAccountId === input.systemAccountId
-        ? 'owner'
-        : groupAccessType === 'authorized' && groupOwnerSystemAccountId === accountOwnerSystemAccountId
-          ? 'group_authorized'
-          : accountAuthorization
-            ? 'account_authorized'
-            : undefined
-      : undefined)
+  const effectiveAccountOwnerSystemAccountId = accountAccessType === 'account_authorized'
+    ? accountOwnerSystemAccountId ?? accountAuthorizationSnapshot?.resource_owner_system_account_id
+    : accountOwnerSystemAccountId
   return {
-    accountOwnerSystemAccountId,
+    accountOwnerSystemAccountId: effectiveAccountOwnerSystemAccountId,
     groupOwnerSystemAccountId,
     accountAccessType,
     groupAccessType,
@@ -150,6 +176,37 @@ export function usageAccessMetadata(input: UsageAccessMetadataInput, context?: U
   }
 }
 
+function loadUsageAccountMetadata(ids: string[]): Map<string, UsageAccountMetadata> {
+  const output = new Map<string, UsageAccountMetadata>()
+  if (!ids.length) return output
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = getDatabase()
+      .prepare(`
+        SELECT id, system_account_id, authorization_instance_source_account_id,
+          authorization_instance_authorization_id, authorization_instance_owner_system_account_id
+        FROM accounts
+        WHERE id IN (${sqlPlaceholders(chunk.length)})
+      `)
+      .all(...chunk) as unknown as Array<{
+        id?: string
+        system_account_id?: string
+        authorization_instance_source_account_id?: string | null
+        authorization_instance_authorization_id?: string | null
+        authorization_instance_owner_system_account_id?: string | null
+      }>
+    for (const row of rows) {
+      if (!row.id || !row.system_account_id) continue
+      output.set(row.id, {
+        systemAccountId: row.system_account_id,
+        authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
+        authorizationInstanceAuthorizationId: row.authorization_instance_authorization_id ?? undefined,
+        authorizationInstanceOwnerSystemAccountId: row.authorization_instance_owner_system_account_id ?? undefined
+      })
+    }
+  }
+  return output
+}
+
 function loadOwnerSystemAccountIds(tableName: 'api_keys' | 'groups' | 'accounts', ids: string[]): Map<string, string> {
   const output = new Map<string, string>()
   if (!ids.length) return output
@@ -168,30 +225,6 @@ function loadOwnerSystemAccountIds(tableName: 'api_keys' | 'groups' | 'accounts'
 
 function uniqueIds(values: Array<string | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value?.trim())))]
-}
-
-function accountAccessTypeCandidate(
-  input: {
-    systemAccountId: string
-    accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
-    accountAuthorizationId?: string
-  },
-  accountOwnerSystemAccountId: string | undefined,
-  groupAccessType: 'owner' | 'authorized' | undefined,
-  groupOwnerSystemAccountId: string | undefined,
-  accountAuthorization: ResourceAuthorizationRow | undefined
-): string | undefined {
-  const accountAccessType = input.accountAccessType
-    ?? (accountOwnerSystemAccountId
-      ? accountOwnerSystemAccountId === input.systemAccountId
-        ? 'owner'
-        : groupAccessType === 'authorized' && groupOwnerSystemAccountId === accountOwnerSystemAccountId
-          ? 'group_authorized'
-          : accountAuthorization
-            ? 'account_authorized'
-            : undefined
-      : undefined)
-  return accountAccessType === 'account_authorized' ? input.accountAuthorizationId ?? accountAuthorization?.id : undefined
 }
 
 function resourceAuthorizationSnapshot(authorizationId: string): ResourceAuthorizationRow | undefined {

@@ -207,7 +207,7 @@
         <a-form-item label="IP">
           <a-input :value="policyTarget?.aggregateIpKey" disabled />
         </a-form-item>
-        <a-form-item label="原因">
+        <a-form-item v-if="policyAction !== 'unblock'" label="封禁原因">
           <a-textarea v-model:value="policyForm.reason" :rows="3" :maxlength="500" show-count />
         </a-form-item>
         <a-form-item v-if="policyAction !== 'unblock'" label="封禁时长">
@@ -303,7 +303,7 @@ const rows = ref<ClientIpStatsRow[]>([])
 const paginationUpperBound = ref(0)
 const rangeReady = ref(true)
 const pagination = reactive({ current: 1, pageSize: 20 })
-const sortState = ref<{ field: ClientIpStatsSortField; order: TableSortOrder }>({ field: 'totalCost', order: 'descend' })
+const sortState = ref<{ field: ClientIpStatsSortField; order: TableSortOrder }>({ field: 'requestCount', order: 'descend' })
 const policyModalOpen = ref(false)
 const policySubmitting = ref(false)
 const policyTarget = ref<ClientIpStatsRow>()
@@ -376,7 +376,7 @@ function resetFilters(): void {
   statusFilter.value = 'all'
   dateRange.value = [dayjs().subtract(6, 'day'), dayjs()]
   pagination.current = 1
-  sortState.value = { field: 'totalCost', order: 'descend' }
+  sortState.value = { field: 'requestCount', order: 'descend' }
   void loadData()
 }
 
@@ -396,7 +396,7 @@ function handleRowAction(key: string, record: ClientIpStatsRow): void {
 
 async function handleTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
   updatePaginationFromTable(paginationInfo)
-  sortState.value = normalizeTableSorter(sorter) ?? { field: 'totalCost', order: 'descend' }
+  sortState.value = normalizeTableSorter(sorter) ?? { field: 'requestCount', order: 'descend' }
   await loadData()
 }
 
@@ -419,7 +419,7 @@ async function submitPolicy(): Promise<void> {
       await api.ipStats.blacklist(policyTarget.value.ipHash, payload)
       message.success('已封禁 IP')
     } else {
-      await api.ipStats.unblock(policyTarget.value.ipHash, { reason: policyForm.reason?.trim() || undefined })
+      await api.ipStats.unblock(policyTarget.value.ipHash, {})
       message.success('已解除封禁')
     }
     policyModalOpen.value = false

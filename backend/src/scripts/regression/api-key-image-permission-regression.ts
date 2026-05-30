@@ -29,7 +29,9 @@ const [
   gatewayCache,
   usageRecordQueue,
   auditLogQueue,
-  upstreamModule
+  upstreamModule,
+  requestBodyModule,
+  jsonParserModule
 ] = await Promise.all([
   import('../../modules/gateway/openai-gateway.routes.js'),
   import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
@@ -39,7 +41,9 @@ const [
   import('../../modules/gateway/gateway-runtime-cache.service.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
-  import('../../modules/gateway/openai-gateway-upstream.js')
+  import('../../modules/gateway/openai-gateway-upstream.js'),
+  import('../../modules/gateway/openai-gateway-request-body.js'),
+  import('../../modules/gateway/openai-gateway-json-parser.js')
 ])
 
 interface SeededGateway {
@@ -72,20 +76,33 @@ try {
   await listen(gatewayServer)
   const baseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
+  console.error('debug: before denied')
   const denied = await requestImageGeneration(baseUrl, seeded.apiKey, 'disabled-image')
+  console.error('debug: after denied', denied.status)
   assert.equal(denied.status, 403, `禁用图像生成时应返回 403，实际 ${denied.status}: ${denied.text}`)
   assert.match(denied.text, /当前用户图像生成被禁用了，请联系管理员开启/, '禁用图像生成错误文案应提示联系管理员开启')
   assert.match(denied.text, /image_generation_disabled/, '禁用图像生成应返回稳定错误码')
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/images/generations'), 0, '禁用图像生成时不应请求上游图片接口')
 
+  console.error('debug: before large')
+  const deniedLargeTool = await requestLargeResponsesImageTool(baseUrl, seeded.apiKey)
+  console.error('debug: after large', deniedLargeTool.status)
+  assert.equal(deniedLargeTool.status, 403, `大 JSON 后段 image_generation 工具也应被图像权限拦截，实际 ${deniedLargeTool.status}: ${deniedLargeTool.text}`)
+  assert.match(deniedLargeTool.text, /image_generation_disabled/, '大 JSON 后段 image_generation 工具应返回稳定错误码')
+  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), 0, '禁用图像生成时大 JSON 后段工具请求不应进入上游')
+
+  console.error('debug: before text')
   const text = await requestChatCompletion(baseUrl, seeded.apiKey)
+  console.error('debug: after text', text.status)
   assert.equal(text.status, 200, `图像权限禁用不应影响文本请求，实际 ${text.status}: ${text.text}`)
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/chat/completions'), 1, '文本请求应正常命中上游')
 
   const updated = repositories.updateSystemAccount(seeded.ownerSystemAccountId, { imageGenerationEnabled: true })
   assert.equal(updated?.imageGenerationEnabled, true, '开启系统账户图像生成权限后应返回 true')
 
+  console.error('debug: before allowed')
   const allowed = await requestImageGeneration(baseUrl, seeded.apiKey, 'enabled-image')
+  console.error('debug: after allowed', allowed.status)
   assert.equal(allowed.status, 200, `开启图像生成后同一个 API Key 应通过，实际 ${allowed.status}: ${allowed.text}`)
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/images/generations'), 1, '开启图像生成后应命中上游图片接口')
 
@@ -94,6 +111,7 @@ try {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
   upstreamModule.closeGatewayUpstreamAgentsForTest()
+  await jsonParserModule.stopGatewayJsonParseWorker()
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)
   try {
@@ -164,6 +182,7 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         model: typeof body.model === 'string' ? body.model : undefined
       }
       state.requests.push(requestRecord)
+      console.error('debug upstream hit', requestRecord.path, requestRecord.model)
 
       if (requestRecord.path.endsWith('/images/generations')) {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -219,6 +238,25 @@ async function requestChatCompletion(baseUrl: string, apiKey: string): Promise<{
     body: JSON.stringify({
       model: 'gpt-5.4',
       messages: [{ role: 'user', content: 'text should still work' }]
+    })
+  })
+  return {
+    status: response.status,
+    text: await response.text()
+  }
+}
+
+async function requestLargeResponsesImageTool(baseUrl: string, apiKey: string): Promise<{ status: number; text: string }> {
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'x'.repeat(requestBodyModule.gatewayJsonBodyLargeWarningBytes),
+      tools: [{ type: 'image_generation' }]
     })
   })
   return {

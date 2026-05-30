@@ -59,6 +59,7 @@ try {
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const adminOwnerAccess = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: owner.id }
+  const granteeAAccess = { systemAccountId: granteeA.id, role: 'user' as const }
 
   const teamA = repositories.createSystemTeam({ name: '授权分页团队A' }, adminAccess)
   const teamB = repositories.createSystemTeam({ name: '授权分页团队B' }, adminAccess)
@@ -184,6 +185,35 @@ try {
   assert.equal(userPageTwo.total, 2, '用户消耗第二页分页上界 total 应保持已知总量')
   assert.equal(userPageTwo.hasMore, false, '用户消耗第二页应标记没有更多')
 
+  const accountGrant = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: account.id,
+    granteeType: 'system_account',
+    granteeId: granteeA.id
+  }, ownerAccess)
+  const runtimeAuthorizationId = runtimeAuthorizationIdFor(account.id, granteeA.id)
+  seedUsageScopeRangeWindow(owner.id, 'account_authorization', runtimeAuthorizationId, 9)
+  seedUsageScopeRangeWindow(granteeA.id, 'account_authorization', runtimeAuthorizationId, 44)
+  const ownerAccountGrant = repositories.findResourceAuthorization(accountGrant.id, ownerAccess, { usageRange: range })
+  assert.equal(ownerAccountGrant?.usage.requestCount, 44, '账号授权列表应读取被授权人侧 account_authorization 统计，而不是资源归属人统计')
+  const inboundAccountGrant = repositories.listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAAccess, { usageRange: range })
+    .find((authorization) => authorization.id === accountGrant.id)
+  assert.equal(inboundAccountGrant?.usage.requestCount, 44, '授权给我的账号授权列表应展示我自己产生的授权用量')
+  const accountGrantUsageDetail = repositories.getResourceAuthorizationUsage(accountGrant.id, granteeAAccess, { range })
+  assert.equal(accountGrantUsageDetail?.usage.requestCount, 44, '授权给我的账号授权详情应展示我自己产生的授权用量')
+
+  repositories.addSystemTeamMembers(teamA.id, { systemAccountIds: [granteeB.id] }, adminAccess)
+  const accountTeamGrant = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: account.id,
+    granteeType: 'team',
+    granteeId: teamA.id
+  }, ownerAccess)
+  const ownerTeamGrant = repositories.findResourceAuthorization(accountTeamGrant.id, ownerAccess, { usageRange: range })
+  assert.equal(ownerTeamGrant?.usage.requestCount, 30, '账号团队授权列表应读取授权团队报表窗口，而不是旧的来源账号 scope')
+  const accountTeamGrantUsageDetail = repositories.getResourceAuthorizationUsage(accountTeamGrant.id, ownerAccess, { range })
+  assert.equal(accountTeamGrantUsageDetail?.usage.requestCount, 30, '账号团队授权详情应读取授权团队报表窗口')
+
   console.log('授权消耗分页回归通过：团队/用户明细按窗口分页返回，前端无需全量渲染')
 } finally {
   try {
@@ -264,4 +294,37 @@ function seedUserWindow(input: {
       input.lastUsedAt ?? null,
       '2026-01-01T00:10:00.000Z'
     )
+}
+
+function runtimeAuthorizationIdFor(accountId: string, granteeSystemAccountId: string): string {
+  const row = databaseModule.getDatabase()
+    .prepare(`
+      SELECT id
+      FROM resource_authorizations
+      WHERE resource_type = 'account'
+        AND resource_id = ?
+        AND grantee_system_account_id = ?
+      LIMIT 1
+    `)
+    .get(accountId, granteeSystemAccountId) as unknown as { id?: string } | undefined
+  assert(row?.id, '账号授权应创建被授权人的运行时授权记录')
+  return row.id
+}
+
+function seedUsageScopeRangeWindow(
+  systemAccountId: string,
+  scopeType: string,
+  scopeId: string,
+  requestCount: number
+): void {
+  const lastUsedAt = '2026-01-01T00:44:00.000Z'
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO usage_scope_range_windows (
+        system_account_id, scope_type, scope_id, start_date, end_date,
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+        total_cost_usd, last_used_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?)
+    `)
+    .run(systemAccountId, scopeType, scopeId, range.startDate, range.endDate, requestCount, requestCount * 0.01, lastUsedAt, '2026-01-01T00:45:00.000Z')
 }

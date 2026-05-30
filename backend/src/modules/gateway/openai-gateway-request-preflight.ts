@@ -75,6 +75,7 @@ import {
 } from './openai-gateway-usage-records.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 import type { GroupSchedulingPolicy } from '../../domain/types.js'
+import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 
 const defaultLocalAccountSuppressionWaitMs = 60_000
 export interface OpenAIGatewayRequestIdentity {
@@ -87,6 +88,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   identity?: OpenAIGatewayRequestIdentity
   apiKeyRecord?: GatewayApiKeyRow
   candidateAccounts?: UpstreamAccount[]
+  streamInterceptPolicies?: StreamInterceptPolicySummary[]
   disableSessionAffinity?: boolean
   trafficSource?: OpenAIGatewayTrafficSource
   settingsOverride?: Partial<GatewaySettings>
@@ -115,6 +117,8 @@ export interface OpenAIGatewayDispatchContext {
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
+  streamInterceptPolicies: StreamInterceptPolicySummary[]
+  apiKeyRecord?: GatewayApiKeyRow
   releaseClientIpConcurrency: () => void
 }
 
@@ -126,6 +130,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let apiKeyRecord: GatewayApiKeyRow | undefined = options.apiKeyRecord
   let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
   let runtimeAccounts: UpstreamAccount[] | undefined
+  let runtimeStreamInterceptPolicies: StreamInterceptPolicySummary[] | undefined = options.streamInterceptPolicies
 
   const identity = options.identity ?? await (async () => {
     const runtime = await resolveGatewayRuntimeAsync(req, res)
@@ -137,6 +142,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyRecord = runtime.apiKey
     runtimeGroupAccess = runtime.groupAccess
     runtimeAccounts = runtime.accounts
+    runtimeStreamInterceptPolicies = runtime.streamInterceptPolicies
+    options.streamInterceptPolicies = runtime.streamInterceptPolicies
     return {
       systemAccountId: runtime.apiKey.system_account_id,
       apiKeyId: runtime.apiKey.id,
@@ -248,6 +255,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   if (isImageGenerationDisabledForApiKey(apiKeyRecord, requestLane)) {
+    console.error('debug preflight image disabled', requestLane)
     const statusCode = 403
     const responsePayload = gatewayErrorPayload(imageGenerationDisabledMessage, 'forbidden', imageGenerationDisabledCode)
     auditCapture.addGatewayMetadata({
@@ -482,6 +490,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         errorMessage: message
       }
     })
+    console.error('debug preflight image disabled sent')
     return undefined
   }
   const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestModel(req))
@@ -937,6 +946,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientIpAccountAvoidanceTracker,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
+    streamInterceptPolicies: runtimeStreamInterceptPolicies ?? [],
+    apiKeyRecord,
     releaseClientIpConcurrency
   }
 }
@@ -959,6 +970,7 @@ interface ApiKeyGroupFallbackDispatchInput {
   groupId: string
   trafficSource: OpenAIGatewayTrafficSource
   requestLane: OpenAIGatewayRequestLane
+  streamInterceptPolicies?: StreamInterceptPolicySummary[]
 }
 
 interface ApiKeyGroupFallbackDispatchResult {
@@ -966,7 +978,7 @@ interface ApiKeyGroupFallbackDispatchResult {
   context?: OpenAIGatewayDispatchContext
 }
 
-async function prepareApiKeyGroupFallbackDispatchContext(
+export async function prepareApiKeyGroupFallbackDispatchContext(
   input: ApiKeyGroupFallbackDispatchInput
 ): Promise<ApiKeyGroupFallbackDispatchResult> {
   if (!canAttemptApiKeyGroupFallback(input.apiKeyRecord, input.groupId)) {
@@ -997,6 +1009,7 @@ async function prepareApiKeyGroupFallbackDispatchContext(
       },
       apiKeyRecord: input.apiKeyRecord,
       candidateAccounts: candidate.accounts,
+      streamInterceptPolicies: input.streamInterceptPolicies ?? input.options.streamInterceptPolicies,
       trafficSource: input.trafficSource,
       requestLane: input.requestLane
     },

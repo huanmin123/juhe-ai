@@ -16,6 +16,7 @@ import {
   confirmClientIpAccountAvoidanceAfterSuccess,
   type ClientIpAccountAvoidanceTracker
 } from './openai-gateway-client-ip-account-avoidance.service.js'
+import { suppressGatewayAccountLocallyForSeconds } from './gateway-account-side-effects.service.js'
 import { recordClientIpErrorCircuitSuccess } from './openai-gateway-client-ip-error-circuit.service.js'
 import {
   pipeNonStreamUpstreamResponse,
@@ -35,7 +36,7 @@ import {
   pipeUpstreamStream,
   type StreamBodyOmissionSummary
 } from './openai-gateway-stream.js'
-import { isCodexRetryableAfterOutputStreamFailureCode } from './openai-gateway-stream-intercept.js'
+import { isCodexRetryableAfterOutputStreamFailureCode, type StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
 import {
   copyResponseHeaders,
   isEffectiveOpenAIStreamRequest,
@@ -53,7 +54,12 @@ import {
   type UsageRequestSnapshot
 } from './openai-gateway-usage.js'
 import { applyOpenAIStreamUsageFallback } from './openai-gateway-stream-inspection.js'
-import { recordGatewayUpstreamBucketSuccess } from './openai-gateway-proxy-health.service.js'
+import {
+  recordGatewayUpstreamBucketSuccess,
+  suppressGatewayUpstreamBucketLocallyForSeconds
+} from './openai-gateway-proxy-health.service.js'
+import { resolveRuntimeStreamInterceptPolicies } from './openai-gateway-stream-policy.js'
+import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 import {
   recordClientAbortedUpstreamAttempt,
   recordCompletedUpstreamAttempt,
@@ -64,6 +70,14 @@ export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true }
   | {
     alreadyFinalized: false
+    retryUpstream: true
+    streamIntercept: StreamInterceptDecision
+    message: string
+    errorCode?: string
+  }
+  | {
+    alreadyFinalized: false
+    retryUpstream?: false
     usage: ParsedUsage
     firstTokenMs?: number
     responseBodyText?: string
@@ -85,13 +99,14 @@ interface HandleUpstreamResponseInput {
   signal: AbortSignal
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
+  streamInterceptPolicies?: StreamInterceptPolicySummary[]
   markFirstOutput?: () => void
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
 }
 
 interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
-  result: Exclude<UpstreamResponseHandlingResult, { alreadyFinalized: true }>
+  result: Exclude<UpstreamResponseHandlingResult, { alreadyFinalized: true } | { retryUpstream: true }>
 }
 
 export function prepareUpstreamResponseForDownstream(
@@ -183,7 +198,12 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       {
         clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
         onFirstOutput: markFirstOutput,
-        captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads()
+        captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
+        streamInterceptPolicies: resolveRuntimeStreamInterceptPolicies({
+          account,
+          managementPolicies: input.streamInterceptPolicies
+        }),
+        prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
       }
     )
   } catch (error) {
@@ -230,7 +250,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       estimatedOutputTokens: streamUsageFallback.estimatedOutputTokens
     }, '上游流式响应缺少 usage，网关已按可见输出估算 token 成本')
   }
+  applyStreamInterceptObservationHandling(streamResult, account, settings, auditCapture, accountStateMutationEnabled !== false)
   if (streamResult.streamIntercept) {
+    applyStreamInterceptPolicyRuntimeSideEffects(streamResult.streamIntercept, account, settings, accountStateMutationEnabled !== false)
     auditCapture.addGatewayMetadata({
       label: 'stream_intercept',
       metadata: streamInterceptAuditMetadata(streamResult.streamIntercept)
@@ -292,6 +314,19 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }),
       errorMessage: streamResult.message
     })
+    if (shouldRetryStreamInterceptOnServer(streamResult, res)) {
+      auditCapture.addGatewayMetadata({
+        label: 'stream_intercept_server_retry',
+        metadata: streamInterceptAuditMetadata(streamResult.streamIntercept)
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        streamIntercept: streamResult.streamIntercept,
+        message: streamResult.message,
+        errorCode: streamResult.streamIntercept.upstreamErrorCode ?? streamResult.errorCode
+      }
+    }
     auditCapture.finalize({
       outcome: 'stream_failed',
       success: false,
@@ -318,7 +353,63 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   }
 }
 
+function applyStreamInterceptPolicyRuntimeSideEffects(
+  decision: NonNullable<GatewayStreamPipeResult['streamIntercept']>,
+  account: UpstreamAccount,
+  settings: GatewaySettings,
+  accountStateMutationEnabled: boolean
+): void {
+  if (!accountStateMutationEnabled || decision.reason !== 'configured_stream_policy' || decision.action === 'dry_run') {
+    return
+  }
+  const reason = `流式拦截策略命中：${decision.policyName ?? decision.policyId ?? decision.matchedValue ?? '未命名策略'}`
+  const ttlSeconds = decision.avoidanceTtlSeconds ?? settings.defaultTemporaryUnschedulableMinutes * 60
+  if (decision.accountState === 'runtime_avoidance' || decision.accountSwitch === 'avoid_account_ttl') {
+    suppressGatewayAccountLocallyForSeconds(account, ttlSeconds, reason)
+  }
+  if (decision.accountSwitch === 'avoid_upstream_bucket_ttl') {
+    suppressGatewayUpstreamBucketLocallyForSeconds(account, ttlSeconds, reason)
+  }
+}
+
 type GatewayStreamPipeResult = Awaited<ReturnType<typeof pipeUpstreamStream>>
+
+function applyStreamInterceptObservationHandling(
+  streamResult: GatewayStreamPipeResult,
+  account: UpstreamAccount,
+  settings: GatewaySettings,
+  auditCapture: AuditCaptureContext,
+  accountStateMutationEnabled: boolean
+): void {
+  const observations = streamResult.streamInterceptObservations ?? []
+  if (observations.length === 0) {
+    return
+  }
+  for (const observation of observations) {
+    applyStreamInterceptPolicyRuntimeSideEffects(observation, account, settings, accountStateMutationEnabled)
+  }
+  auditCapture.addGatewayMetadata({
+    label: 'stream_intercept_observations',
+    metadata: {
+      count: observations.length,
+      omittedCount: streamResult.streamInterceptObservationOmittedCount,
+      observations: observations.map(streamInterceptAuditMetadata)
+    }
+  })
+}
+
+function shouldRetryStreamInterceptOnServer(
+  streamResult: GatewayStreamPipeResult,
+  res: Response
+): streamResult is GatewayStreamPipeResult & { streamIntercept: StreamInterceptDecision } {
+  const decision = streamResult.streamIntercept
+  return decision?.reason === 'configured_stream_policy'
+    && decision.retryEnabled === true
+    && decision.policySource !== 'builtin'
+    && !res.headersSent
+    && !res.writableEnded
+    && !res.destroyed
+}
 
 function shouldRememberCodexTurnStreamFailure(
   streamResult: GatewayStreamPipeResult,

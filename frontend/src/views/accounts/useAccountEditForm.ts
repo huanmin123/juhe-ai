@@ -25,6 +25,10 @@ import {
   loadAccountErrorPolicyRules,
   type AccountErrorPolicyRuleForm
 } from './accountErrorPolicy'
+import {
+  loadAccountStreamInterceptRules
+} from './accountStreamInterceptPolicyPayload'
+import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { defaultAccountForm } from './accountFormDefaults'
 import {
   accountTypeDescription,
@@ -76,6 +80,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const creatingAccountScopeParams = ref<AccountScopeParams>()
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
+  const accountStreamInterceptRules = ref<AccountStreamInterceptRuleForm[]>(loadAccountStreamInterceptRules())
   const providerModelOptions = ref<SelectOption[]>([])
   const providerModelsLoading = ref(false)
   const providerModelOptionsCache = new Map<string, SelectOption[]>()
@@ -126,6 +131,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerModelsLoading.value = false
     ensureDefaultGroupSelected(providerCode)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
+    accountStreamInterceptRules.value = loadAccountStreamInterceptRules()
     authResult.value = undefined
   }
 
@@ -244,6 +250,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       notes: account.notes ?? ''
     })
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
+    accountStreamInterceptRules.value = loadAccountStreamInterceptRules(account.credentials)
     authResult.value = undefined
     modalOpen.value = true
     void options.loadGroupOptions('', true, {
@@ -330,6 +337,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         setFormGroup(groupSelectionForId(detail.boundGroupId, detail.boundGroupName))
       }
       accountErrorPolicyRules.value = loadAccountErrorPolicyRules(detail.credentials)
+      accountStreamInterceptRules.value = loadAccountStreamInterceptRules(detail.credentials)
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '加载账户详情失败'))
@@ -359,7 +367,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       editingId: editingId.value,
       form,
       hasAuthSession: Boolean(authResult.value?.sessionId),
-      errorPolicyRules: accountErrorPolicyRules.value
+      errorPolicyRules: accountErrorPolicyRules.value,
+      streamInterceptRules: accountStreamInterceptRules.value
     })
     if (validationMessage) {
       message.warning(validationMessage)
@@ -371,7 +380,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountDetail: editingAccountDetail.value,
       editingId: editingId.value,
       form,
-      errorPolicyRules: accountErrorPolicyRules.value
+      errorPolicyRules: accountErrorPolicyRules.value,
+      streamInterceptRules: accountStreamInterceptRules.value
     })
 
     try {
@@ -425,7 +435,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accounts: options.accounts.value,
       editingId: editingId.value,
       form,
-      errorPolicyRules: accountErrorPolicyRules.value
+      errorPolicyRules: accountErrorPolicyRules.value,
+      streamInterceptRules: accountStreamInterceptRules.value
     })
 
     const payload = buildOAuthCreatePayload({
@@ -452,6 +463,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   return {
     accountErrorPolicyRules,
+    accountStreamInterceptRules,
     accountTypeChoices,
     authLoading,
     authResult,
@@ -522,6 +534,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       notes: account.notes ?? ''
     })
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)
+    accountStreamInterceptRules.value = loadAccountStreamInterceptRules(credentials)
     authResult.value = undefined
   }
 
@@ -536,6 +549,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     if (accountErrorPolicyRules.value.length === 0) {
       accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)
+    }
+    if (accountStreamInterceptRules.value.length === 0) {
+      accountStreamInterceptRules.value = loadAccountStreamInterceptRules(credentials)
     }
   }
 
