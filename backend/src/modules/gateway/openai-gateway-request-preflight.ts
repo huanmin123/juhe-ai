@@ -255,7 +255,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   if (isImageGenerationDisabledForApiKey(apiKeyRecord, requestLane)) {
-    console.error('debug preflight image disabled', requestLane)
     const statusCode = 403
     const responsePayload = gatewayErrorPayload(imageGenerationDisabledMessage, 'forbidden', imageGenerationDisabledCode)
     auditCapture.addGatewayMetadata({
@@ -490,7 +489,6 @@ export async function prepareOpenAIGatewayDispatchContext(
         errorMessage: message
       }
     })
-    console.error('debug preflight image disabled sent')
     return undefined
   }
   const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestModel(req))

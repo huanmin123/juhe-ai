@@ -30,7 +30,6 @@ export async function captureGatewayRawBody(
     } else {
       if (rawBody.length > gatewayJsonBodyLargeWarningBytes) {
         const metadata = extractGatewayJsonBodyMetadata(rawBody)
-        console.error('debug middleware large before worker', rawBody.length)
         getRequestLogger().warn({
           event: 'gateway_large_json_body_deferred',
           method: req.method,
@@ -42,7 +41,6 @@ export async function captureGatewayRawBody(
           stream: metadata.stream
         }, '网关大 JSON 请求体延迟到账号适配阶段按需解析')
         const parsedBody = await parseLargeJsonBodyForGatewayMetadata(req, res, rawBody)
-        console.error('debug middleware large after worker', parsedBody.parsed)
         if (parsedBody.parsed) {
           req.gatewayParsedJsonBodyAvailable = true
           req.gatewayParsedJsonBody = parsedBody.value
@@ -86,7 +84,7 @@ export async function captureGatewayRawBody(
       }
     }
 
-    if (req.destroyed || req.aborted || res.destroyed) {
+    if (req.aborted || res.destroyed) {
       return
     }
     next()
@@ -108,7 +106,7 @@ async function parseLargeJsonBodyForGatewayMetadata(
     const value = await parseGatewayJsonBodyInWorker(rawBody, undefined, abortController.signal)
     return { parsed: true, value }
   } catch (error) {
-    if (req.destroyed || req.aborted || res.destroyed || abortController.signal.aborted) {
+    if (req.aborted || res.destroyed || abortController.signal.aborted) {
       return { parsed: false }
     }
     getRequestLogger().warn({
