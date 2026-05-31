@@ -33,6 +33,7 @@ export interface AccountRow {
   fallback_enabled: number
   supported_models?: string[]
   schedulable: number
+  availability_schedule_json: string | null
   account_expires_at: string | null
   last_used_at: string | null
   cooldown_until: string | null

@@ -105,7 +105,7 @@ export function usageAccessMetadata(input: UsageAccessMetadataInput, context?: U
       : undefined
   const groupAuthorizationId = input.groupAuthorizationId ?? groupAuthorization?.id
   const groupAuthorizationSnapshot = groupAuthorizationId
-    ? input.groupAuthorizationId === groupAuthorization?.id
+    ? input.groupAuthorizationId && input.groupAuthorizationId === groupAuthorization?.id
       ? groupAuthorization
       : resourceAuthorizationSnapshot(groupAuthorizationId)
     : undefined
@@ -147,7 +147,7 @@ export function usageAccessMetadata(input: UsageAccessMetadataInput, context?: U
     ? input.accountAuthorizationId ?? instanceAuthorizationId ?? accountAuthorization?.id
     : undefined
   const accountAuthorizationSnapshot = accountAuthorizationId
-    ? input.accountAuthorizationId === accountAuthorization?.id
+    ? input.accountAuthorizationId && input.accountAuthorizationId === accountAuthorization?.id
       ? accountAuthorization
       : resourceAuthorizationSnapshot(accountAuthorizationId)
     : undefined

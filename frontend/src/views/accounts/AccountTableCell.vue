@@ -40,6 +40,13 @@
   <span v-else-if="columnKey === 'accountExpiresAt'" :class="isAccountDisplayExpired(account) ? 'expired-cell' : 'muted-cell'">
     {{ formatDateTime(accountDisplayExpiresAt(account)) }}
   </span>
+  <template v-else-if="columnKey === 'availabilitySchedule'">
+    <a-tooltip :title="accountScheduleSummary(account.availabilitySchedule)">
+      <a-tag class="schedule-tag" :color="accountScheduleTagColor(account.availabilitySchedule)">
+        {{ accountScheduleSummary(account.availabilitySchedule) }}
+      </a-tag>
+    </a-tooltip>
+  </template>
   <AccountRowActions
     v-else-if="columnKey === 'actions'"
     :account="account"
@@ -74,6 +81,7 @@ import {
   isAccountDisplayExpired,
   isAuthorizedAccount
 } from './accountFormatters'
+import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
 import { authorizedAccountSourceToneClass } from './accountRules'
 
 defineEmits<{
@@ -144,6 +152,14 @@ const concurrencyTooltip = computed(() => concurrencyAvailable.value
 
 .expired-cell {
   color: #dc2626;
+}
+
+.schedule-tag {
+  max-width: 100%;
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .resource-name-cell {

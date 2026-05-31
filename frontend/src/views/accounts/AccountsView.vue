@@ -283,6 +283,12 @@ const {
   errorMessage: '加载筛选分组选项失败',
   isManagementView: () => isManagementView.value,
   limit: 50,
+  onMissingSelectedIds: (ids) => {
+    if (!filters.groupId || !ids.includes(filters.groupId)) return
+    filters.groupId = ''
+    filters.group = undefined
+    applyFilters()
+  },
   scope: () => ({
     providerCode: filters.providerCode !== 'all' ? filters.providerCode : undefined,
     systemAccountId: isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined,

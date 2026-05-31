@@ -39,7 +39,8 @@ const [
   usageStatsRepository,
   usageRecordShards,
   streamInterceptPolicyRepository,
-  upstreamModule
+  upstreamModule,
+  clientIpAccountAvoidance
 ] = await Promise.all([
   import('../../modules/gateway/openai-gateway.routes.js'),
   import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
@@ -56,7 +57,8 @@ const [
   import('../../storage/usage-stats.repository.js'),
   import('../../storage/usage-record-shards.js'),
   import('../../storage/stream-intercept-policy.repository.js'),
-  import('../../modules/gateway/openai-gateway-upstream.js')
+  import('../../modules/gateway/openai-gateway-upstream.js'),
+  import('../../modules/gateway/openai-gateway-client-ip-account-avoidance.service.js')
 ])
 
 interface MockUpstreamRequest {
@@ -65,13 +67,20 @@ interface MockUpstreamRequest {
   model?: string
 }
 
+type SimulatedGroupRouteStrategy = 'priority_failover' | 'round_robin' | 'weighted_round_robin'
+
 const upstreamRequests: MockUpstreamRequest[] = []
+const failingUpstreamKeys = new Set<string>()
+const releaseLocalSuppressionsBeforeRespondingKeys = new Set<string>()
 let gatewayServer: http.Server | undefined
 let upstreamServer: http.Server | undefined
 
 try {
   clearAccountConcurrency()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  clientIpAccountAvoidance.clearClientIpAccountAvoidanceForTest()
+  failingUpstreamKeys.clear()
+  releaseLocalSuppressionsBeforeRespondingKeys.clear()
   settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
   upstreamServer = createMockOpenAIUpstream()
   await listen(upstreamServer)
@@ -89,12 +98,17 @@ try {
   await assertLocalSuppressionFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertAuthorizationQuotaFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl, upstreamBaseUrl)
-  await assertNoCrossGroupReplayAfterUpstreamFailure(gatewayBaseUrl, upstreamBaseUrl)
+  await assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl, upstreamBaseUrl)
+  await assertAllRouteStrategiesFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl, upstreamBaseUrl)
+  await assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBaseUrl, upstreamBaseUrl)
 
-  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；配置化流式拦截未写下游且当前号池耗尽时可切后备分组；普通真实上游失败后不会跨分组重放')
+  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；配置化流式拦截未写下游且当前号池耗尽时可切后备分组；真实上游失败耗尽当前号池账号且未写下游时，会回到 API Key 分组候选序列继续尝试；主备、轮询、权重三种策略下账号耗尽 fallback 均按候选顺序工作；A -> B -> C 后 A 出现未失败可用账号时可回到 A 承接')
 } finally {
   clearAccountConcurrency()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  clientIpAccountAvoidance.clearClientIpAccountAvoidanceForTest()
+  failingUpstreamKeys.clear()
+  releaseLocalSuppressionsBeforeRespondingKeys.clear()
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
   upstreamModule.closeGatewayUpstreamAgentsForTest()
@@ -200,10 +214,10 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
     && metadata.metadata?.toGroupId === fallbackGroup.id), '审计 metadata 应记录流式拦截耗尽当前分组后的跨分组后备切换')
 }
 
-async function assertNoCrossGroupReplayAfterUpstreamFailure(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const owner = repositories.createSystemAccount({
-    username: 'route_no_replay_owner',
-    displayName: '上游失败不跨组重放用户',
+    username: 'route_exhausted_fallback_owner',
+    displayName: '上游账号耗尽切后备用户',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -211,19 +225,20 @@ async function assertNoCrossGroupReplayAfterUpstreamFailure(gatewayBaseUrl: stri
   })
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
-    name: '上游失败不跨组主号池',
+    name: '上游账号耗尽主号池',
     providerCode: 'openai',
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
-    name: '上游失败不跨组后备号池',
+    name: '上游账号耗尽后备号池',
     providerCode: 'openai',
     groupType: 'personal'
   }, access)
-  const primaryUpstreamKey = 'sk-route-upstream-failure-primary'
-  repositories.createAccount({
+  const primaryUpstreamKey = 'sk-route-upstream-exhausted-primary'
+  failingUpstreamKeys.add(primaryUpstreamKey)
+  const primaryAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '上游失败不跨组主号池账号',
+    name: '上游账号耗尽主号池账号',
     type: 'api_key',
     credentials: {
       api_key: primaryUpstreamKey,
@@ -234,10 +249,10 @@ async function assertNoCrossGroupReplayAfterUpstreamFailure(gatewayBaseUrl: stri
     schedulable: true,
     passthroughEnabled: true
   }, access)
-  const fallbackUpstreamKey = 'sk-route-upstream-failure-fallback'
+  const fallbackUpstreamKey = 'sk-route-upstream-exhausted-fallback'
   repositories.createAccount({
     providerCode: 'openai',
-    name: '上游失败不跨组后备账号',
+    name: '上游账号耗尽后备账号',
     type: 'api_key',
     credentials: {
       api_key: fallbackUpstreamKey,
@@ -249,7 +264,7 @@ async function assertNoCrossGroupReplayAfterUpstreamFailure(gatewayBaseUrl: stri
     passthroughEnabled: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
-    name: '上游失败不跨组 API Key',
+    name: '上游账号耗尽切后备 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
       { groupId: fallbackGroup.id, priority: 2, status: 'active' }
@@ -261,30 +276,293 @@ async function assertNoCrossGroupReplayAfterUpstreamFailure(gatewayBaseUrl: stri
   assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中可承接的主号池')
 
   const beforeCount = upstreamRequests.length
-  const traceId = 'trace-route-no-cross-group-replay'
-  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
+  const traceId = 'trace-route-upstream-exhausted-fallback'
+  const clientIp = '203.0.113.10'
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId, clientIp)
   const responseText = response.text
-  assert.equal(response.status, 503, `主号池真实上游失败后不应切后备重放，实际 ${response.status}: ${responseText}`)
-  assert.match(responseText, /没有可用的上游账户/, `主号池失败应返回统一网关错误：${responseText}`)
+  assert.equal(response.status, 200, `主号池真实上游失败且账号耗尽后应切后备并成功，实际 ${response.status}: ${responseText}`)
   const newRequests = upstreamRequests.slice(beforeCount)
-  assert(newRequests.length >= 1, '主号池真实上游失败场景应至少命中一次主号池上游')
-  assert(newRequests.every((request) => request.accountKey === primaryUpstreamKey), '真实上游失败后所有尝试都必须留在已选主号池')
-  assert(!newRequests.some((request) => request.accountKey === fallbackUpstreamKey), '真实上游失败后不应命中后备号池账号')
+  assert.equal(newRequests.length, 2, '账号耗尽切后备应先命中主号池，再命中后备号池')
+  assert.equal(newRequests[0]?.accountKey, primaryUpstreamKey, '账号耗尽切后备应先尝试主号池账号')
+  assert.equal(newRequests[1]?.accountKey, fallbackUpstreamKey, '主号池账号耗尽后应命中后备号池账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
   const usageRecords = usageRecordsByTraceId(traceId)
-  assert(usageRecords.length >= 1, '真实上游失败后应记录已派发的主号池尝试')
-  assert(usageRecords.every((record) => record.groupId === primaryGroup.id), '真实上游失败后的使用记录必须归属已派发主号池')
-  assert(!usageRecords.some((record) => record.groupId === fallbackGroup.id), '真实上游失败后的使用记录不应归属后备号池')
+  assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === false), '主号池真实上游失败应记录失败尝试并归属主分组')
+  assert(usageRecords.some((record) => record.groupId === fallbackGroup.id && record.success === true), '后备分组成功应记录成功尝试并归属后备分组')
   const auditLogs = repositories.listAuditLogs({ traceId, pageSize: 10 })
-  assert.equal(auditLogs.total, 1, '真实上游失败应写入一条失败审计事件')
+  assert.equal(auditLogs.total, 1, '账号耗尽切后备应写入一条完整审计事件')
   const auditLog = auditLogs.items[0]
-  assert.equal(auditLog?.groupId, primaryGroup.id, '真实上游失败审计主记录必须归属已派发主号池')
+  assert.equal(auditLog?.groupId, fallbackGroup.id, '账号耗尽切后备成功后审计主记录必须归属实际命中的后备分组')
   const auditDetail = repositories.getAuditLogDetail(auditLog?.id ?? '')
-  assert(auditDetail, '真实上游失败审计详情应可读取')
-  assert(auditDetail.attempts.length >= 1, '真实上游失败审计应记录主号池上游尝试')
-  assert(auditDetail.attempts.every((attempt) => attempt.groupId === primaryGroup.id), '真实上游失败审计 attempts 必须归属已派发主号池')
+  assert(auditDetail, '账号耗尽切后备审计详情应可读取')
+  assert(auditDetail.attempts.some((attempt) => attempt.groupId === primaryGroup.id && attempt.success === false), '账号耗尽切后备审计应保留主号池失败尝试')
+  assert(auditDetail.attempts.some((attempt) => attempt.groupId === fallbackGroup.id && attempt.success === true), '账号耗尽切后备审计应记录后备分组成功尝试')
+  const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
+  assert(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'
+    && metadata.metadata?.reason === 'upstream_accounts_exhausted'
+    && metadata.metadata?.fromGroupId === primaryGroup.id
+    && metadata.metadata?.toGroupId === fallbackGroup.id), '审计 metadata 应记录真实上游失败耗尽当前分组后的跨分组后备切换')
+  const clientIpAvoidanceSnapshot = clientIpAccountAvoidance.getClientIpAccountAvoidanceSnapshotForTest()
+  assert(clientIpAvoidanceSnapshot.some((entry) => entry.accountId === primaryAccount.id
+    && entry.apiKeyId === apiKey.id
+    && entry.clientIp === clientIp), '账号耗尽切后备成功后应保留主号池失败账号的客户端 IP 级回避记录')
+}
+
+async function assertAllRouteStrategiesFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const cases: Array<{
+    strategy: SimulatedGroupRouteStrategy
+    suffix: string
+    displayName: string
+    weights?: [number, number, number]
+  }> = [
+    { strategy: 'priority_failover', suffix: 'priority', displayName: '主备优先' },
+    { strategy: 'round_robin', suffix: 'round-robin', displayName: '轮询分配' },
+    { strategy: 'weighted_round_robin', suffix: 'weighted', displayName: '权重分配', weights: [5, 1, 1] }
+  ]
+
+  for (const item of cases) {
+    await assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl, upstreamBaseUrl, item)
+  }
+}
+
+async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
+  gatewayBaseUrl: string,
+  upstreamBaseUrl: string,
+  item: {
+    strategy: SimulatedGroupRouteStrategy
+    suffix: string
+    displayName: string
+    weights?: [number, number, number]
+  }
+): Promise<void> {
+  const owner = repositories.createSystemAccount({
+    username: `route_strategy_exhausted_${item.suffix.replace(/-/g, '_')}_owner`,
+    displayName: `策略仿真 ${item.displayName} 用户`,
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const primaryGroup = repositories.createGroup({
+    name: `策略仿真 ${item.displayName} A 号池`,
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, access)
+  const fallbackGroup = repositories.createGroup({
+    name: `策略仿真 ${item.displayName} B 号池`,
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, access)
+  const thirdGroup = repositories.createGroup({
+    name: `策略仿真 ${item.displayName} C 号池`,
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, access)
+  const primaryUpstreamKey = `sk-route-strategy-${item.suffix}-primary-fail`
+  const fallbackUpstreamKey = `sk-route-strategy-${item.suffix}-fallback-b`
+  const thirdUpstreamKey = `sk-route-strategy-${item.suffix}-fallback-c`
+  failingUpstreamKeys.add(primaryUpstreamKey)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: `策略仿真 ${item.displayName} A 账号`,
+    type: 'api_key',
+    credentials: {
+      api_key: primaryUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: primaryGroup.id,
+    status: 'active',
+    schedulable: true,
+    passthroughEnabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: `策略仿真 ${item.displayName} B 账号`,
+    type: 'api_key',
+    credentials: {
+      api_key: fallbackUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: fallbackGroup.id,
+    status: 'active',
+    schedulable: true,
+    passthroughEnabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: `策略仿真 ${item.displayName} C 账号`,
+    type: 'api_key',
+    credentials: {
+      api_key: thirdUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: thirdGroup.id,
+    status: 'active',
+    schedulable: true,
+    passthroughEnabled: true
+  }, access)
+  const weights = item.weights ?? [1, 1, 1]
+  const apiKey = repositories.createApiKeyRecord({
+    name: `策略仿真 ${item.displayName} API Key`,
+    groupRouteStrategy: item.strategy,
+    groupBindings: [
+      { groupId: primaryGroup.id, priority: 1, weight: weights[0], status: 'active' },
+      { groupId: fallbackGroup.id, priority: 2, weight: weights[1], status: 'active' },
+      { groupId: thirdGroup.id, priority: 3, weight: weights[2], status: 'active' }
+    ]
+  }, access)
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const beforeCount = upstreamRequests.length
+  const traceId = `trace-route-strategy-${item.suffix}-exhausted-fallback`
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
+  assert.equal(response.status, 200, `${item.displayName} 下 A 号池真实失败耗尽后应切 B 并成功，实际 ${response.status}: ${response.text}`)
+  const newRequests = upstreamRequests.slice(beforeCount)
+  assert.deepEqual(
+    newRequests.map((request) => request.accountKey),
+    [primaryUpstreamKey, fallbackUpstreamKey],
+    `${item.displayName} 下账号耗尽 fallback 应按本次候选顺序从 A 切到 B，不应跳到 C`
+  )
+  assert(!newRequests.some((request) => request.accountKey === thirdUpstreamKey), `${item.displayName} 下 B 可承接时不应继续尝试 C`)
+
+  usageRecordQueue.flushAllUsageRecordQueue()
+  auditLogQueue.flushAllAuditLogQueue()
+  const usageRecords = usageRecordsByTraceId(traceId)
+  assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === false), `${item.displayName} 下 A 失败尝试应归属 A 分组`)
+  assert(usageRecords.some((record) => record.groupId === fallbackGroup.id && record.success === true), `${item.displayName} 下 B 成功尝试应归属 B 分组`)
+  const auditLog = repositories.listAuditLogs({ traceId, pageSize: 10 }).items[0]
+  assert.equal(auditLog?.groupId, fallbackGroup.id, `${item.displayName} 下最终审计主记录应归属实际命中的 B 分组`)
+  const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
+  assert(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'
+    && metadata.metadata?.reason === 'upstream_accounts_exhausted'
+    && metadata.metadata?.fromGroupId === primaryGroup.id
+    && metadata.metadata?.toGroupId === fallbackGroup.id), `${item.displayName} 下审计 metadata 应记录 A 到 B 的账号耗尽切换`)
+}
+
+async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const owner = repositories.createSystemAccount({
+    username: 'route_wrap_recovered_owner',
+    displayName: '回绕重分配恢复用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const primaryGroup = repositories.createGroup({
+    name: '回绕重分配 A 号池',
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, access)
+  const secondGroup = repositories.createGroup({
+    name: '回绕重分配 B 号池',
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, access)
+  const thirdGroup = repositories.createGroup({
+    name: '回绕重分配 C 号池',
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, access)
+  const primaryFailKey = 'sk-route-wrap-a-fail'
+  const primaryRecoveredKey = 'sk-route-wrap-a-recovered'
+  const secondFailKey = 'sk-route-wrap-b-fail'
+  const thirdFailKey = 'sk-route-wrap-c-fail'
+  failingUpstreamKeys.add(primaryFailKey)
+  failingUpstreamKeys.add(secondFailKey)
+  failingUpstreamKeys.add(thirdFailKey)
+  releaseLocalSuppressionsBeforeRespondingKeys.add(thirdFailKey)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '回绕重分配 A 失败账号',
+    type: 'api_key',
+    credentials: {
+      api_key: primaryFailKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: primaryGroup.id,
+    status: 'active',
+    schedulable: true,
+    passthroughEnabled: true
+  }, access)
+  const recoveredAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '回绕重分配 A 恢复账号',
+    type: 'api_key',
+    credentials: {
+      api_key: primaryRecoveredKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: primaryGroup.id,
+    status: 'active',
+    schedulable: true,
+    passthroughEnabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '回绕重分配 B 失败账号',
+    type: 'api_key',
+    credentials: {
+      api_key: secondFailKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: secondGroup.id,
+    status: 'active',
+    schedulable: true,
+    passthroughEnabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '回绕重分配 C 失败账号',
+    type: 'api_key',
+    credentials: {
+      api_key: thirdFailKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: thirdGroup.id,
+    status: 'active',
+    schedulable: true,
+    passthroughEnabled: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '回绕重分配 API Key',
+    groupBindings: [
+      { groupId: primaryGroup.id, priority: 1, status: 'active' },
+      { groupId: secondGroup.id, priority: 2, status: 'active' },
+      { groupId: thirdGroup.id, priority: 3, status: 'active' }
+    ]
+  }, access)
+  accountSideEffects.suppressGatewayAccountLocallyForTest(recoveredAccount.id, 60_000, '模拟 A 号池恢复前暂不可用')
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const beforeCount = upstreamRequests.length
+  const traceId = 'trace-route-wrap-recovered-primary'
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
+  assert.equal(response.status, 200, `A/B/C 都尝试失败后，如果 A 有恢复账号，应回到 A 继续承接，实际 ${response.status}: ${response.text}`)
+  const newRequests = upstreamRequests.slice(beforeCount)
+  assert.deepEqual(
+    newRequests.map((request) => request.accountKey),
+    [primaryFailKey, secondFailKey, thirdFailKey, primaryRecoveredKey],
+    '回到 Key 层重新分配时，应跳过本请求已失败账号，并在 A 号池恢复账号可用后继续使用 A'
+  )
+
+  usageRecordQueue.flushAllUsageRecordQueue()
+  auditLogQueue.flushAllAuditLogQueue()
+  const usageRecords = usageRecordsByTraceId(traceId)
+  assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === false), '回绕重分配应记录 A 初始失败尝试')
+  assert(usageRecords.some((record) => record.groupId === secondGroup.id && record.success === false), '回绕重分配应记录 B 失败尝试')
+  assert(usageRecords.some((record) => record.groupId === thirdGroup.id && record.success === false), '回绕重分配应记录 C 失败尝试')
+  assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === true), '回绕重分配最终成功应归属恢复后的 A 分组')
+  const auditLog = repositories.listAuditLogs({ traceId, pageSize: 10 }).items[0]
+  assert.equal(auditLog?.groupId, primaryGroup.id, '回绕重分配成功后审计主记录应归属最终恢复承接的 A 分组')
+  const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
+  assert(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'
+    && metadata.metadata?.reason === 'upstream_accounts_exhausted'
+    && metadata.metadata?.fromGroupId === thirdGroup.id
+    && metadata.metadata?.toGroupId === primaryGroup.id), '审计 metadata 应记录从 C 回到恢复后的 A 分组')
 }
 
 async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -960,12 +1238,17 @@ function createMockOpenAIUpstream(): http.Server {
     req.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
     req.on('end', () => {
       const body = parseJsonObject(Buffer.concat(chunks).toString('utf8'))
+      const token = bearerToken(req.headers.authorization)
       upstreamRequests.push({
         path: String(req.url ?? '').split('?')[0] || '/',
-        accountKey: bearerToken(req.headers.authorization),
+        accountKey: token,
         model: typeof body.model === 'string' ? body.model : undefined
       })
-      if (bearerToken(req.headers.authorization) === 'sk-route-upstream-failure-primary') {
+      if (releaseLocalSuppressionsBeforeRespondingKeys.has(token)) {
+        accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+        releaseLocalSuppressionsBeforeRespondingKeys.delete(token)
+      }
+      if (failingUpstreamKeys.has(token)) {
         res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({
           error: {
@@ -976,7 +1259,7 @@ function createMockOpenAIUpstream(): http.Server {
         }))
         return
       }
-      if (bearerToken(req.headers.authorization) === 'sk-route-stream-intercept-primary') {
+      if (token === 'sk-route-stream-intercept-primary') {
         res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
         res.end([
           'event: response.created',
@@ -986,7 +1269,7 @@ function createMockOpenAIUpstream(): http.Server {
         ].join('\n'))
         return
       }
-      if (bearerToken(req.headers.authorization) === 'sk-route-stream-intercept-fallback') {
+      if (token === 'sk-route-stream-intercept-fallback') {
         res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
         res.end([
           'event: response.created',
@@ -1039,13 +1322,14 @@ async function requestResponseStream(baseUrl: string, apiKey: string, traceId?: 
   }
 }
 
-async function requestChatCompletion(baseUrl: string, apiKey: string, model: string, traceId?: string): Promise<{ status: number; text: string }> {
+async function requestChatCompletion(baseUrl: string, apiKey: string, model: string, traceId?: string, clientIp?: string): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
-      ...(traceId ? { 'x-trace-id': traceId } : {})
+      ...(traceId ? { 'x-trace-id': traceId } : {}),
+      ...(clientIp ? { 'x-forwarded-for': clientIp } : {})
     },
     body: JSON.stringify({
       model,

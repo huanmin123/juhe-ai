@@ -152,6 +152,58 @@ export async function handleOpenAIGatewayRequest(
   let streamServerRetryExcludedAccountIds = new Set<string>()
   let streamServerRetryCount = 0
   let maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
+  const exhaustedAccountIds = new Set<string>()
+  const switchToFallbackGroup = async (
+    reason: string,
+    streamInterceptPolicies?: OpenAIGatewayDispatchContext['streamInterceptPolicies'],
+    input: { allowCandidateWrap?: boolean } = {}
+  ): Promise<'none' | 'switched' | 'completed'> => {
+    const gatewayUsageContext = currentPreflight.usageContext
+    const pendingClientIpAccountFailures = [...currentPreflight.clientIpAccountAvoidanceTracker.pendingFailures]
+    const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options: {
+        ...options,
+        trafficSource,
+        requestLane: currentPreflight.requestLane,
+        streamInterceptPolicies
+      },
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal: abortController.signal,
+      reason,
+      apiKeyRecord: currentPreflight.apiKeyRecord,
+      systemAccountId: gatewayUsageContext.systemAccountId,
+      apiKeyId: gatewayUsageContext.apiKeyId,
+      groupId: gatewayUsageContext.groupId,
+      trafficSource: gatewayUsageContext.trafficSource,
+      requestLane: currentPreflight.requestLane,
+      streamInterceptPolicies,
+      excludedAccountIds: exhaustedAccountIds,
+      allowCandidateWrap: input.allowCandidateWrap
+    })
+    if (!fallback.attempted) {
+      return 'none'
+    }
+    if (!fallback.context) {
+      return 'completed'
+    }
+    if (pendingClientIpAccountFailures.length > 0) {
+      fallback.context.clientIpAccountAvoidanceTracker.pendingFailures.unshift(...pendingClientIpAccountFailures)
+    }
+    releaseClientIpSlot()
+    currentPreflight = fallback.context
+    releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
+    streamServerRetryExcludedAccountIds = new Set<string>()
+    streamServerRetryCount = 0
+    maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
+    return 'switched'
+  }
 
   try {
     while (true) {
@@ -166,21 +218,48 @@ export async function handleOpenAIGatewayRequest(
       } = currentPreflight
       const dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
       if (dispatchAccounts.length === 0) {
+        for (const accountId of streamServerRetryExcludedAccountIds) {
+          exhaustedAccountIds.add(accountId)
+        }
+        const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', streamInterceptPolicies, { allowCandidateWrap: true })
+        if (fallbackSwitch === 'completed') {
+          return
+        }
+        if (fallbackSwitch === 'switched') {
+          continue
+        }
         throw new UpstreamAttemptError('没有可用的上游账户')
       }
-      const upstreamResult = await fetchFirstAvailableUpstream(
-        req,
-        dispatchAccounts,
-        activeGatewaySettings,
-        gatewayUsageContext,
-        auditCapture,
-        sessionAffinityKey,
-        abortController.signal,
-        clientIpAccountAvoidanceTracker,
-        currentPreflight.requestLane,
-        currentPreflight.groupSchedulingPolicy,
-        options.disableAccountStateMutation !== true
-      )
+      let upstreamResult: Awaited<ReturnType<typeof fetchFirstAvailableUpstream>>
+      try {
+        upstreamResult = await fetchFirstAvailableUpstream(
+          req,
+          dispatchAccounts,
+          activeGatewaySettings,
+          gatewayUsageContext,
+          auditCapture,
+          sessionAffinityKey,
+          abortController.signal,
+          clientIpAccountAvoidanceTracker,
+          currentPreflight.requestLane,
+          currentPreflight.groupSchedulingPolicy,
+          options.disableAccountStateMutation !== true
+        )
+      } catch (error) {
+        if (error instanceof UpstreamAttemptError) {
+          for (const accountId of error.failedAccountIds) {
+            exhaustedAccountIds.add(accountId)
+          }
+          const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', streamInterceptPolicies, { allowCandidateWrap: true })
+          if (fallbackSwitch === 'completed') {
+            return
+          }
+          if (fallbackSwitch === 'switched') {
+            continue
+          }
+        }
+        throw error
+      }
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
 
       try {
@@ -253,41 +332,14 @@ export async function handleOpenAIGatewayRequest(
             streamServerRetryCount > maxStreamServerRetryCount
             || streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length === 0
           ) {
-            const fallback = await prepareApiKeyGroupFallbackDispatchContext({
-              req,
-              res,
-              auditCapture,
-              options: {
-                ...options,
-                trafficSource,
-                requestLane: currentPreflight.requestLane,
-                streamInterceptPolicies
-              },
-              startedAt,
-              traceId,
-              clientIp,
-              endpoint,
-              requestSnapshot,
-              signal: abortController.signal,
-              reason: 'stream_intercept_server_retry_exhausted',
-              apiKeyRecord: currentPreflight.apiKeyRecord,
-              systemAccountId: gatewayUsageContext.systemAccountId,
-              apiKeyId: gatewayUsageContext.apiKeyId,
-              groupId: gatewayUsageContext.groupId,
-              trafficSource: gatewayUsageContext.trafficSource,
-              requestLane: currentPreflight.requestLane,
-              streamInterceptPolicies
-            })
-            if (fallback.attempted) {
-              if (!fallback.context) {
+            for (const accountId of streamServerRetryExcludedAccountIds) {
+              exhaustedAccountIds.add(accountId)
+            }
+            const fallbackSwitch = await switchToFallbackGroup('stream_intercept_server_retry_exhausted', streamInterceptPolicies, { allowCandidateWrap: true })
+            if (fallbackSwitch !== 'none') {
+              if (fallbackSwitch === 'completed') {
                 return
               }
-              releaseClientIpSlot()
-              currentPreflight = fallback.context
-              releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
-              streamServerRetryExcludedAccountIds = new Set<string>()
-              streamServerRetryCount = 0
-              maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
               continue
             }
             sendStreamServerRetryExhaustedResponse({

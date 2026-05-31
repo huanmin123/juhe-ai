@@ -332,6 +332,7 @@ export interface AccountSummary {
   passthroughEnabled: boolean
   errorPolicyId?: string
   schedulable: boolean
+  availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   cooldownUntil?: string
   lastErrorCode?: string
@@ -814,6 +815,8 @@ export interface ApiKeyAvailabilitySchedule {
   }
   exceptions?: ApiKeyAvailabilityScheduleException[]
 }
+
+export type AccountAvailabilitySchedule = ApiKeyAvailabilitySchedule
 
 export interface ApiKeySummary {
   id: string

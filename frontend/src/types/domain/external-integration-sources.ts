@@ -104,7 +104,6 @@ export interface ExternalPublicApiDocItem {
   status: ExternalPublicApiStatus
   method: ExternalPublicApiMethod
   path: string
-  scope: string
   headers: ExternalPublicApiHeader[]
   query: ExternalPublicApiField[]
   requestBody?: ExternalPublicApiBody

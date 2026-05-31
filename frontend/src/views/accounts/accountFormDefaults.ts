@@ -1,4 +1,5 @@
 import type { AccountType, ProviderDefinition } from '@/types/domain'
+import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import type { AccountFormModel } from './accountFormTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDER } from './accountOptions'
 
@@ -26,6 +27,7 @@ export function defaultAccountForm(
     priority: 0,
     supportedModels: [],
     proxyProfileId: undefined,
+    availabilitySchedule: createAccountAvailabilityScheduleForm(),
     notes: ''
   }
 }

@@ -990,6 +990,8 @@ interface ApiKeyGroupFallbackDispatchInput {
   trafficSource: OpenAIGatewayTrafficSource
   requestLane: OpenAIGatewayRequestLane
   streamInterceptPolicies?: StreamInterceptPolicySummary[]
+  excludedAccountIds?: Iterable<string>
+  allowCandidateWrap?: boolean
 }
 
 interface ApiKeyGroupFallbackDispatchResult {
@@ -1000,7 +1002,7 @@ interface ApiKeyGroupFallbackDispatchResult {
 export async function prepareApiKeyGroupFallbackDispatchContext(
   input: ApiKeyGroupFallbackDispatchInput
 ): Promise<ApiKeyGroupFallbackDispatchResult> {
-  if (!canAttemptApiKeyGroupFallback(input.apiKeyRecord, input.groupId)) {
+  if (!canAttemptApiKeyGroupFallback(input.apiKeyRecord, input.groupId, input.allowCandidateWrap === true)) {
     return { attempted: false }
   }
   const candidate = await resolveNextApiKeyGroupFallbackCandidate(input)
@@ -1042,13 +1044,13 @@ export async function prepareApiKeyGroupFallbackDispatchContext(
   return { attempted: true, context }
 }
 
-function canAttemptApiKeyGroupFallback(apiKeyRecord: GatewayApiKeyRow | undefined, groupId: string): boolean {
+function canAttemptApiKeyGroupFallback(apiKeyRecord: GatewayApiKeyRow | undefined, groupId: string, allowCandidateWrap: boolean): boolean {
   const bindings = apiKeyRecord?.group_bindings ?? []
   if (bindings.length <= 1) {
     return false
   }
   const currentIndex = bindings.findIndex((binding) => binding.group_id === groupId)
-  return currentIndex >= 0 && currentIndex < bindings.length - 1
+  return currentIndex >= 0 && (allowCandidateWrap || currentIndex < bindings.length - 1)
 }
 
 async function resolveNextApiKeyGroupFallbackCandidate(input: ApiKeyGroupFallbackDispatchInput): Promise<{
@@ -1058,10 +1060,13 @@ async function resolveNextApiKeyGroupFallbackCandidate(input: ApiKeyGroupFallbac
   const bindings = input.apiKeyRecord?.group_bindings ?? []
   const currentIndex = bindings.findIndex((binding) => binding.group_id === input.groupId)
   const candidateBindings = currentIndex >= 0
-    ? bindings.slice(currentIndex + 1)
+    ? input.allowCandidateWrap
+      ? [...bindings.slice(currentIndex + 1), ...bindings.slice(0, currentIndex + 1)]
+      : bindings.slice(currentIndex + 1)
     : bindings.filter((binding) => binding.group_id !== input.groupId)
   const requestedModel = requestModel(input.req)
-  const seenGroupIds = new Set<string>([input.groupId])
+  const excludedAccountIds = new Set(input.excludedAccountIds ?? [])
+  const seenGroupIds = new Set<string>()
   for (const binding of candidateBindings) {
     if (!binding.group_id || seenGroupIds.has(binding.group_id)) {
       continue
@@ -1071,7 +1076,8 @@ async function resolveNextApiKeyGroupFallbackCandidate(input: ApiKeyGroupFallbac
     if (!groupAccess) {
       continue
     }
-    const accounts = await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.systemAccountId)
+    const accounts = (await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.systemAccountId))
+      .filter((account) => !excludedAccountIds.has(account.id))
     if (!accounts.length) {
       continue
     }
@@ -1095,7 +1101,7 @@ async function resolveNextApiKeyGroupFallbackCandidate(input: ApiKeyGroupFallbac
       && areGatewayAccountsCapacityBusyForLane(quotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
       continue
     }
-    if (input.reason === 'local_account_suppressed'
+    if ((input.reason === 'local_account_suppressed' || input.reason === 'upstream_accounts_exhausted' || input.reason === 'stream_intercept_server_retry_exhausted')
       && filterLocallySuppressedGatewayAccounts(quotaAllowedAccounts).allSuppressed) {
       continue
     }

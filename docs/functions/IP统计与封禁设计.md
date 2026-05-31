@@ -1,7 +1,7 @@
 # IP 统计与封禁设计
 
 > 面向 `juhe-ai` 后端、前端系统运维页面和后续 AI 维护者。
-> 当前实现已经落地持久 IP 注册表、IP 统计聚合表、IP 策略表、`/__aisys__/api/ip-stats` 管理接口、系统运维 / IP管理页面、网关封禁缓存，以及受保护的 `/__aipublic__/juhe-ai/ip-usage` IP 聚合读取接口。
+> 当前实现已经落地持久 IP 注册表、IP 统计聚合表、IP 策略表、`/__aisys__/api/ip-stats` 管理接口、系统运维 / IP管理页面、网关封禁缓存，以及受保护的 `/__aipublic__/ip/usage` IP 聚合读取接口。
 
 ## 当前状态
 
@@ -457,7 +457,7 @@ interface ClientIpBlacklistRequest {
 后续 `juhe-ai-public-welfare` 只读取 IP 聚合事实：
 
 ```http
-GET /__aipublic__/juhe-ai/ip-usage
+GET /__aipublic__/ip/usage
 Authorization: Bearer <source_token>
 ```
 
@@ -474,8 +474,8 @@ Authorization: Bearer <source_token>
 同一 scope 还提供：
 
 ```http
-GET /__aipublic__/juhe-ai/consumption-ranking
-GET /__aipublic__/juhe-ai/access-info
+GET /__aipublic__/consumption/ranking
+GET /__aipublic__/access/info
 ```
 
 `consumption-ranking` 只是 IP 聚合的 TopN 排序视图，不是公益站用户消耗榜；公益站仍需自行完成 IP 到用户归属和用户维度快照。

@@ -15,6 +15,9 @@
         <div class="account-mobile-tags">
           <a-tag color="processing">{{ accountTypeText(account.type) }}</a-tag>
           <a-tag color="geekblue">{{ providerName }}</a-tag>
+          <a-tooltip :title="accountScheduleSummary(account.availabilitySchedule)">
+            <a-tag :color="accountScheduleTagColor(account.availabilitySchedule)">{{ accountScheduleSummary(account.availabilitySchedule) }}</a-tag>
+          </a-tooltip>
           <AccountStatusTag :account="account" />
         </div>
       </div>
@@ -93,6 +96,7 @@ import {
   isAccountDisplayExpired,
   isAuthorizedAccount
 } from './accountFormatters'
+import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
 import { accountMenuItemsWithClone, authorizedAccountSourceToneClass } from './accountRules'
 
 const props = defineProps<{

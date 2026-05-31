@@ -6,6 +6,11 @@ import { validateAccountStreamInterceptRules } from './accountStreamInterceptPol
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { buildAccountCredentials, currentAccountCredentials } from './accountCredentials'
 import type { AccountFormModel } from './accountFormTypes'
+import {
+  buildAccountAvailabilitySchedulePayload,
+  validateAccountAvailabilityScheduleForm,
+  type AccountAvailabilitySchedulePayload
+} from './accountAvailabilitySchedule'
 
 export type AccountSavePayload = {
   providerCode: AccountFormModel['providerCode']
@@ -17,6 +22,7 @@ export type AccountSavePayload = {
   supportedModels: string[]
   proxyProfileId?: string | null
   accountExpiresAt: string | null
+  availabilitySchedule?: AccountAvailabilitySchedulePayload | null
   groupId?: string
   notes: string
 }
@@ -29,6 +35,7 @@ export type AccountOAuthCreateCommonPayload = {
   supportedModels: string[]
   proxyProfileId?: string
   accountExpiresAt: string | null
+  availabilitySchedule?: AccountAvailabilitySchedulePayload | null
   credentialsPatch?: { error_handling_rules?: unknown; stream_intercept_rules?: unknown }
   notes?: string
 }
@@ -52,6 +59,8 @@ export function validateAccountSaveForm(input: {
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
+  const scheduleValidation = validateAccountAvailabilityScheduleForm(form.availabilitySchedule)
+  if (scheduleValidation) return scheduleValidation
   const errorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
   if (!errorPolicyValidation.valid) {
     return errorPolicyValidation.message || '错误处理策略配置不完整'
@@ -78,6 +87,7 @@ export function buildAccountSavePayload(input: {
     supportedModels: [...(input.form.supportedModels ?? [])],
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
+    availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
     groupId: input.form.groupId,
     notes: input.form.notes
   }
@@ -99,6 +109,7 @@ export function buildOAuthCreateCommonPayload(input: {
     supportedModels: [...(input.form.supportedModels ?? [])],
     proxyProfileId: input.form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
+    availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
     notes: input.form.notes || undefined
   }
   if (Object.prototype.hasOwnProperty.call(credentials, 'error_handling_rules')) {

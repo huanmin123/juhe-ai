@@ -47,7 +47,11 @@ export interface OpenAIUpstreamDispatchResult {
 }
 
 export class UpstreamAttemptError extends Error {
-  constructor(message: string, readonly lastAttempt?: UpstreamAttempt) {
+  constructor(
+    message: string,
+    readonly lastAttempt?: UpstreamAttempt,
+    readonly failedAccountIds: string[] = []
+  ) {
     super(message)
   }
 }
@@ -81,6 +85,7 @@ export async function fetchFirstAvailableUpstream(
   let auditAttemptIndex = 0
   let concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
   const failedProxyDispatchKeys = new Map<string, string>()
+  const failedAccountIds = new Set<string>()
   let dispatchAccounts = orderAccountsForRequestLane(accounts, requestLane, groupSchedulingPolicy)
   const localSuppressionWaitBudgetMs = localAccountSuppressionMaxWaitMs(groupSchedulingPolicy)
   let localSuppressionWaitStartedAtMs: number | undefined
@@ -114,11 +119,13 @@ export async function fetchFirstAvailableUpstream(
       const skippedProxyAttempt = skipAccountForFailedProxyDispatch(failedProxyDispatchKeys, originalAccount)
       if (skippedProxyAttempt) {
         lastAttempt = skippedProxyAttempt
+        failedAccountIds.add(originalAccount.id)
         continue
       }
       const unavailableProxyAttempt = handleUnavailableProxyProfile(req, usageContext, originalAccount, settings, failedProxyDispatchKeys)
       if (unavailableProxyAttempt) {
         lastAttempt = unavailableProxyAttempt
+        failedAccountIds.add(originalAccount.id)
         continue
       }
       const concurrencyAcquire = await acquireAccountConcurrencyWithShortRetry(
@@ -199,6 +206,7 @@ export async function fetchFirstAvailableUpstream(
             clientIpAccountAvoidanceTracker
           })
           lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
+          failedAccountIds.add(originalAccount.id)
           continue
         }
         for (const upstreamUrl of upstreamUrls) {
@@ -263,6 +271,7 @@ export async function fetchFirstAvailableUpstream(
                 accountStateMutationEnabled
               })
               lastAttempt = failedResponseResult.lastAttempt
+              failedAccountIds.add(account.id)
               if (failedResponseResult.action === 'retry') {
                 continue
               }
@@ -289,6 +298,7 @@ export async function fetchFirstAvailableUpstream(
             accountStateMutationEnabled
           })
               lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
+              failedAccountIds.add(account.id)
               if (requestErrorResult.action === 'retry') {
                 continue
               }
@@ -346,7 +356,7 @@ export async function fetchFirstAvailableUpstream(
     }
   }
 
-  throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt)
+  throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt, [...failedAccountIds])
 }
 
 function buildUpstreamAttemptFailureMessage(accountCount: number, lastAttempt?: UpstreamAttempt): string {

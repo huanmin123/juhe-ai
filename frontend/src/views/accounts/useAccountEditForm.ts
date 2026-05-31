@@ -30,6 +30,7 @@ import {
 } from './accountStreamInterceptPolicyPayload'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { defaultAccountForm } from './accountFormDefaults'
+import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import {
   accountTypeDescription,
   accountTypeText,
@@ -217,7 +218,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       supportedModels: form.supportedModels,
       concurrencyLimit: form.concurrencyLimit,
       priority: form.priority,
-      accountExpiresAt: form.accountExpiresAt
+      accountExpiresAt: form.accountExpiresAt,
+      availabilitySchedule: form.availabilitySchedule
     })
     void loadProviderGroupOptions(providerCode)
     void loadProviderModelOptions(providerCode)
@@ -250,6 +252,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accessToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.access_token),
       refreshToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.refresh_token),
       supportedModels: [...(account.supportedModels ?? [])],
+      availabilitySchedule: createAccountAvailabilityScheduleForm(account.availabilitySchedule),
       notes: account.notes ?? ''
     })
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
@@ -336,7 +339,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         baseUrl: asString(detail.credentials.base_url) || form.baseUrl || 'https://api.openai.com/v1',
         accessToken: asString(detail.credentials.access_token),
         refreshToken: asString(detail.credentials.refresh_token),
-        supportedModels: [...(detail.supportedModels ?? [])]
+        supportedModels: [...(detail.supportedModels ?? [])],
+        availabilitySchedule: createAccountAvailabilityScheduleForm(detail.availabilitySchedule)
       })
       if (detail.boundGroupId || detail.boundGroupName) {
         setFormGroup(groupSelectionForId(detail.boundGroupId, detail.boundGroupName))
@@ -583,6 +587,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       callbackUrl: '',
       oauthMode: 'manual',
       supportedModels: [...(account.supportedModels ?? [])],
+      availabilitySchedule: createAccountAvailabilityScheduleForm(account.availabilitySchedule),
       notes: account.notes ?? ''
     })
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)

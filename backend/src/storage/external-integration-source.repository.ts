@@ -13,7 +13,7 @@ export const externalIntegrationTestTokenPrefix = externalIntegrationTestToken.s
 export const externalIntegrationScopeOptions = [
   { value: externalIntegrationSourceAuthDemoScope, label: '来源鉴权 demo' },
   { value: externalIntegrationIpUsageReadScope, label: 'IP 聚合读取' },
-  { value: externalIntegrationAccountPushScope, label: '公益账号推送' }
+  { value: externalIntegrationAccountPushScope, label: '公开资源写入' }
 ] as const
 
 export type ExternalIntegrationSourceStatus = 'active' | 'disabled'

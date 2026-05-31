@@ -281,24 +281,20 @@
         <a-form-item label="状态">
           <a-select v-model:value="form.status" :options="statusOptions" />
         </a-form-item>
-        <a-form-item label="自动启停计划">
+        <a-form-item class="api-key-schedule-form-item">
           <div class="api-key-schedule-field">
             <div class="schedule-toggle-row">
+              <span class="schedule-toggle-label">自动启停计划</span>
               <a-switch v-model:checked="form.availabilitySchedule.enabled" />
-              <span>按时间计划限制调用</span>
             </div>
             <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
-              <label class="schedule-timezone-field">
-                <span>时区</span>
-                <a-input v-model:value="form.availabilitySchedule.timezone" placeholder="Asia/Shanghai" />
-              </label>
               <div class="schedule-window-list">
                 <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
                   <a-select
                     v-model:value="window.daysOfWeek"
                     mode="multiple"
                     class="schedule-days-select"
-                    :max-tag-count="1"
+                    max-tag-count="responsive"
                     :options="weekdayOptions"
                     placeholder="重复日期"
                   />
@@ -371,6 +367,13 @@ import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDat
 import { displayGroupName, rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
+import {
+  localSelectStorageKey,
+  readLocalSelectOptionWindow,
+  removeLocalSelectOptionWindowValues,
+  removeLocalSelectPreferenceValues,
+  writeLocalSelectOptionWindow
+} from '@/shared/selectLocalPreferenceCache'
 import type { AccountUsageSummary, ApiKeyAvailabilitySchedule, ApiKeyGroupBindingSummary, ApiKeyGroupRouteStrategy, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
@@ -410,9 +413,9 @@ interface ApiKeyScheduleWindowFormRow {
 }
 interface ApiKeyAvailabilityScheduleForm {
   enabled: boolean
-  timezone: string
   windows: ApiKeyScheduleWindowFormRow[]
 }
+type ApiKeyAvailabilitySchedulePayload = Pick<ApiKeyAvailabilitySchedule, 'enabled' | 'mode' | 'windows'>
 const defaultApiKeysPageState = (): ApiKeysPageState => ({
   groupFilter: undefined,
   keywordFilter: '',
@@ -461,6 +464,16 @@ const {
   systemAccounts
 } = useRemoteSystemAccountOptions({
   enabled: () => isManagementView.value,
+  onMissingSelectedIds: (ids) => {
+    if (!ids.includes(systemAccountFilter.value)) return
+    systemAccountFilter.value = allSystemAccountsValue
+    systemAccountFilterSelection.value = undefined
+    groupFilterSelection.value = undefined
+    resetSystemAccountOptionsSearch()
+    resetGroupOptionsSearch()
+    resetPagination()
+    void loadData({ forceOptions: true })
+  },
   selectedIds: () => [systemAccountFilter.value]
 })
 let groupOptionsRequestId = 0
@@ -822,6 +835,14 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
     return groupOptionsLoadingPromise
   }
   const requestId = ++groupOptionsRequestId
+  const optionWindowKey = groupOptionWindowKey(systemAccountId, requestKeyword)
+  const localWindowGroups = !force ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
+  if (localWindowGroups?.length) {
+    groupOptionsLoading.value = false
+    rememberGroupLabels(localWindowGroups)
+    syncSelectedGroupSelections(localWindowGroups)
+    groups.value = localWindowGroups
+  }
   if (!force) {
     const cachedGroups = groupOptionsCache.get(requestKey)
     if (cachedGroups) {
@@ -830,19 +851,21 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
       groupOptionsLoading.value = false
       rememberGroupLabels(cachedGroups)
       syncSelectedGroupSelections(cachedGroups)
+      writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
       groups.value = cachedGroups
       return
     }
   }
-  groupOptionsLoading.value = true
+  groupOptionsLoading.value = !localWindowGroups?.length
   groupOptionsLoadingKey = requestKey
   groupOptionsLoadingPromise = (async () => {
     try {
       let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50, manageableOnly: true, preferDefault: true })
-      nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
+      nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId, optionWindowKey)
       rememberGroupLabels(nextGroups)
       syncSelectedGroupSelections(nextGroups)
       groupOptionsCache.set(requestKey, nextGroups)
+      writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
       if (requestId !== groupOptionsRequestId) return
       groups.value = nextGroups
     } catch (error) {
@@ -889,7 +912,7 @@ function clearGroupOptionsSearchTimer(): void {
   }
 }
 
-async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined): Promise<GroupOptionSummary[]> {
+async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined, optionWindowKey: string): Promise<GroupOptionSummary[]> {
   const selectedIds = [groupFilter.value, ...formGroupBindingIds.value].filter((id): id is string => Boolean(id))
   const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
   if (!missingIds.length) return nextGroups
@@ -900,7 +923,41 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], syst
       return []
     }
   }))
+  const foundIds = new Set(selectedGroups.flat().map((group) => group.id))
+  handleMissingGroupOptions(missingIds.filter((id) => !foundIds.has(id)), optionWindowKey)
   return mergeOptionsById(selectedGroups.flat(), nextGroups)
+}
+
+function handleMissingGroupOptions(ids: string[], optionWindowKey: string): void {
+  const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+  if (!missingIds.length) return
+  removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
+  removeLocalSelectPreferenceValues('groups', missingIds)
+  let clearedFilter = false
+  if (groupFilter.value && missingIds.includes(groupFilter.value)) {
+    groupFilterSelection.value = undefined
+    clearedFilter = true
+  }
+  for (const binding of form.groupBindings) {
+    if (!missingIds.includes(binding.groupId)) continue
+    binding.groupId = ''
+    binding.group = undefined
+  }
+  message.warning('已移除不存在或无权访问的分组，请重新选择')
+  if (clearedFilter) {
+    resetPagination()
+    void loadData({ forceOptions: true })
+  }
+}
+
+function groupOptionWindowKey(systemAccountId: string | undefined, requestKeyword: string | undefined): string {
+  return localSelectStorageKey([
+    'group-options',
+    isManagementView.value ? 'management' : 'self',
+    systemAccountId ?? 'all',
+    'api-keys',
+    requestKeyword ?? ''
+  ])
 }
 
 function syncSelectedGroupSelections(nextGroups = groups.value): void {
@@ -1095,7 +1152,6 @@ function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBi
 function createAvailabilityScheduleForm(schedule?: ApiKeyAvailabilitySchedule): ApiKeyAvailabilityScheduleForm {
   return {
     enabled: schedule?.enabled === true,
-    timezone: schedule?.timezone || defaultScheduleTimezone(),
     windows: schedule?.windows?.length
       ? schedule.windows.map((window) => createScheduleWindowFormRow(window.daysOfWeek, window.start, window.end))
       : [createScheduleWindowFormRow()]
@@ -1334,14 +1390,9 @@ function quotaLimitsPayload(): ApiKeyQuotaLimits {
   return buildQuotaLimitsPayload(form.quotaLimits)
 }
 
-function availabilitySchedulePayload(): ApiKeyAvailabilitySchedule | null | false {
+function availabilitySchedulePayload(): ApiKeyAvailabilitySchedulePayload | null | false {
   if (!form.availabilitySchedule.enabled) {
     return null
-  }
-  const timezone = form.availabilitySchedule.timezone.trim()
-  if (!timezone) {
-    message.warning('请填写自动启停计划时区')
-    return false
   }
   const windows = form.availabilitySchedule.windows.map((window) => ({
     daysOfWeek: [...new Set(window.daysOfWeek.map((day) => Number(day)))].filter((day) => Number.isInteger(day) && day >= 1 && day <= 7).sort((left, right) => left - right),
@@ -1355,7 +1406,6 @@ function availabilitySchedulePayload(): ApiKeyAvailabilitySchedule | null | fals
   }
   return {
     enabled: true,
-    timezone,
     mode: 'allow_windows',
     windows: windows.map((window) => ({
       daysOfWeek: window.daysOfWeek,
@@ -1612,20 +1662,15 @@ onMounted(loadData)
 }
 
 .schedule-toggle-row {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 10px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
 }
 
-.schedule-timezone-field {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-  color: #475569;
+.schedule-toggle-label {
+  color: #334155;
   font-size: 13px;
   font-weight: 600;
 }

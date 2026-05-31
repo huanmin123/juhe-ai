@@ -1,5 +1,5 @@
 import type { AccountGroupBindStatus, AccountStatus, AccountTrafficMigrationSourceStatus, AccountType, AuthorizationStatus, GroupType, ProviderCode, ResourceAccessType } from './base'
-import type { RequestQuotaLimits } from './access'
+import type { ApiKeyAvailabilitySchedule, RequestQuotaLimits } from './access'
 import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
@@ -101,6 +101,7 @@ export interface AccountSummary {
   passthroughEnabled: boolean
   errorPolicyId?: string
   schedulable: boolean
+  availabilitySchedule?: ApiKeyAvailabilitySchedule
   accountExpiresAt?: string
   cooldownUntil?: string
   lastErrorCode?: string

@@ -1,5 +1,6 @@
 <template>
   <AccountSelect
+    class="account-append-select"
     :value="value"
     :accounts="accounts"
     :selected-accounts="selectedAccounts"
@@ -25,6 +26,8 @@ import { message } from '@/lib/antd'
 import AccountSelect from '@/components/AccountSelect.vue'
 import type { AccountOptionLike, AccountSelection } from '@/shared/accountLabelCache'
 
+type SelectMaxTagCount = number | 'responsive'
+
 defineOptions({
   inheritAttrs: false
 })
@@ -35,7 +38,7 @@ const props = withDefaults(defineProps<{
   selectedAccounts?: Array<AccountSelection | undefined>
   hiddenAccountIds?: Array<string | undefined>
   max?: number
-  maxTagCount?: number
+  maxTagCount?: SelectMaxTagCount
   disabled?: boolean
   loading?: boolean
   placeholder?: string
@@ -76,3 +79,24 @@ function normalizedIds(value: string | string[] | undefined): string[] {
     .filter(Boolean))]
 }
 </script>
+
+<style scoped>
+.account-append-select:deep(.ant-select-selection-overflow) {
+  width: 100%;
+  min-width: 0;
+}
+
+.account-append-select:deep(.ant-select-selection-overflow-item-suffix) {
+  flex: 1 1 auto;
+  min-width: 80px;
+}
+
+.account-append-select:deep(.ant-select-selection-search) {
+  width: 100% !important;
+  max-width: none;
+}
+
+.account-append-select:deep(.ant-select-selection-search-input) {
+  width: 100% !important;
+}
+</style>

@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
@@ -81,6 +81,17 @@ interface ApiKeyUsageShardBatch {
   rows: ApiKeyUsageShardRow[]
   hasMoreCoveredRows: boolean
   hasUncoveredRows: boolean
+}
+
+interface ApiKeyUsageCleanupStepResult {
+  deletedRows: number
+  usageBatch: ApiKeyUsageShardBatch
+  blockedReason?: string
+}
+
+interface ApiKeyDatasetCleanupStepResult {
+  deletedRows: number
+  hasAuditMore: boolean
 }
 
 const apiKeyScopeStatsTables = [
@@ -214,66 +225,150 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
   const statsDatabase = getStatsDatabase()
   const updatedAt = nowIso()
   upsertDeletedApiKeyRecordCleanupTarget(database, input, updatedAt)
-  let shouldRefreshDerivedWindows = false
   const batchLimit = deletedApiKeyRecordCleanupBatchLimit
-  let deletedRows = 0
-  let transactionStarted = false
-  let statsTransactionStarted = false
   try {
-    transactionStarted = beginDatabaseTransaction(database)
-    const usageBatch = selectApiKeyUsageRowsCoveredByShardCursors(statsDatabase, input, batchLimit)
+    const usageCleanup = cleanupDeletedApiKeyUsageData(statsDatabase, input, updatedAt, batchLimit)
+    const datasetCleanup = cleanupDeletedApiKeyDatasetRecordData(database, input, batchLimit)
+    let blockedReason = usageCleanup.blockedReason
+    let hasUsageMore = true
+    if (blockedReason) {
+      hasUsageMore = true
+    } else {
+      try {
+        hasUsageMore = hasApiKeyUsageRecords(input)
+      } catch (error) {
+        if (!isSqliteDatabaseLocked(error)) {
+          throw error
+        }
+        blockedReason = apiKeyCleanupSqliteBusyBlockedReason()
+        hasUsageMore = true
+      }
+    }
+    const hasAuditMore = datasetCleanup.hasAuditMore
+    let hasMore = hasUsageMore || hasAuditMore
+    if (!blockedReason && !hasMore) {
+      blockedReason = cleanupDeletedApiKeyFinalStats(statsDatabase, input)
+      hasMore = Boolean(blockedReason)
+    }
+    if (!blockedReason && !hasMore) {
+      blockedReason = refreshDeletedApiKeyDerivedWindowsIfNeeded(input, true)
+      hasMore = Boolean(blockedReason)
+    }
+    const result: DeletedApiKeyRecordCleanupResult = {
+      ...input,
+      deletedRows: usageCleanup.deletedRows + datasetCleanup.deletedRows,
+      hasMore,
+      blockedReason: blockedReason ?? (hasMore
+        ? apiKeyCleanupPendingReason({
+          hasAuditMore,
+          hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
+          hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
+        })
+        : undefined)
+    }
+    if (result.hasMore || result.blockedReason) {
+      markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
+    } else {
+      clearDeletedApiKeyRecordCleanupTarget(database, input)
+    }
+    cleanupAuditPayloadBlobsBestEffort(batchLimit)
+    return result
+  } catch (error) {
+    markDeletedApiKeyRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
+    throw error
+  }
+}
+
+function cleanupDeletedApiKeyUsageData(
+  statsDatabase: DatabaseSync,
+  input: DeletedApiKeyRecordCleanupTarget,
+  updatedAt: string,
+  batchLimit: number
+): ApiKeyUsageCleanupStepResult {
+  let usageBatch = emptyApiKeyUsageShardBatch()
+  let deletedRows = 0
+  try {
+    usageBatch = selectApiKeyUsageRowsCoveredByShardCursors(statsDatabase, input, batchLimit)
     const rowsToDelete = usageBatch.rows.slice(0, batchLimit)
-    const hasMoreCoveredRows = usageBatch.hasMoreCoveredRows
     if (rowsToDelete.length > 0) {
       subtractApiKeyUsageRowsOnce(statsDatabase, rowsToDelete, input, updatedAt)
     }
     deletedRows += deleteApiKeyUsageRows(rowsToDelete, input)
     markApiKeyUsageCleanupRowsDeleted(statsDatabase, rowsToDelete, input, updatedAt)
-    deletedRows += deleteApiKeyAuditDataBatch(database, input, batchLimit)
-
-    const hasUsageMore = hasApiKeyUsageRecords(input)
-    const hasAuditMore = hasApiKeyAuditLogs(database, input)
-    const hasMore = hasUsageMore || hasAuditMore
-    if (!hasMore) {
-      if (!statsTransactionStarted) {
-        statsTransactionStarted = beginDatabaseTransaction(statsDatabase)
-      }
-      deleteApiKeyScopeStatsRows(statsDatabase, input)
-      deleteApiKeyUsageCleanupDeductions(statsDatabase, input)
-    }
-    const result: DeletedApiKeyRecordCleanupResult = {
-      ...input,
-      deletedRows,
-      hasMore,
-      blockedReason: hasMore
-        ? (hasAuditMore
-          ? '仍有已删除 API Key 的原始审计记录待后续批次清理，已保留待后台重试'
-          : hasMoreCoveredRows
-          ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
-          : usageBatch.hasUncoveredRows
-          ? '仍有使用记录尚未被对应分片统计安全游标覆盖，已保留待后台重试清理'
-          : '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理')
-        : undefined
-    }
-    if (hasMore) {
-      markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
-    } else {
-      clearDeletedApiKeyRecordCleanupTarget(database, input)
-      shouldRefreshDerivedWindows = true
-    }
-    commitDatabaseTransaction(statsDatabase, statsTransactionStarted)
-    statsTransactionStarted = false
-    commitDatabaseTransaction(database, transactionStarted)
-    transactionStarted = false
-    refreshDeletedApiKeyDerivedWindowsIfNeeded(input, shouldRefreshDerivedWindows)
-    cleanupAuditPayloadBlobsBestEffort(batchLimit)
-    return result
+    return { deletedRows, usageBatch }
   } catch (error) {
-    rollbackDatabaseTransaction(statsDatabase, statsTransactionStarted)
+    if (!isSqliteDatabaseLocked(error)) {
+      throw error
+    }
+    return {
+      deletedRows,
+      usageBatch,
+      blockedReason: apiKeyCleanupSqliteBusyBlockedReason()
+    }
+  }
+}
+
+function cleanupDeletedApiKeyDatasetRecordData(
+  database: DatabaseSync,
+  input: DeletedApiKeyRecordCleanupTarget,
+  batchLimit: number
+): ApiKeyDatasetCleanupStepResult {
+  let deletedRows = 0
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    deletedRows += deleteApiKeyAuditDataBatch(database, input, batchLimit)
+    const hasAuditMore = hasApiKeyAuditLogs(database, input)
+    commitDatabaseTransaction(database, transactionStarted)
+    return {
+      deletedRows,
+      hasAuditMore
+    }
+  } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
-    markDeletedApiKeyRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
     throw error
   }
+}
+
+function cleanupDeletedApiKeyFinalStats(statsDatabase: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): string | undefined {
+  const transactionStarted = beginDatabaseTransaction(statsDatabase)
+  try {
+    deleteApiKeyScopeStatsRows(statsDatabase, input)
+    deleteApiKeyUsageCleanupDeductions(statsDatabase, input)
+    commitDatabaseTransaction(statsDatabase, transactionStarted)
+    return undefined
+  } catch (error) {
+    rollbackDatabaseTransaction(statsDatabase, transactionStarted)
+    if (isSqliteDatabaseLocked(error)) {
+      return apiKeyCleanupSqliteBusyBlockedReason()
+    }
+    throw error
+  }
+}
+
+function emptyApiKeyUsageShardBatch(): ApiKeyUsageShardBatch {
+  return {
+    rows: [],
+    hasMoreCoveredRows: false,
+    hasUncoveredRows: false
+  }
+}
+
+function apiKeyCleanupPendingReason(input: {
+  hasAuditMore: boolean
+  hasMoreCoveredRows: boolean
+  hasUncoveredRows: boolean
+}): string {
+  return input.hasAuditMore
+    ? '仍有已删除 API Key 的原始审计记录待后续批次清理，已保留待后台重试'
+    : input.hasMoreCoveredRows
+    ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
+    : input.hasUncoveredRows
+    ? '仍有使用记录尚未被对应分片统计安全游标覆盖，已保留待后台重试清理'
+    : '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理'
+}
+
+function apiKeyCleanupSqliteBusyBlockedReason(): string {
+  return 'SQLite 正在执行其他写入，已保留已删除 API Key 关联数据清理目标，等待后台重试'
 }
 
 function upsertDeletedApiKeyRecordCleanupTarget(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget, updatedAt: string): void {
@@ -563,12 +658,16 @@ function deleteApiKeyUsageCleanupDeductions(database: DatabaseSync, input: Delet
     .run(input.apiKeyId, input.systemAccountId)
 }
 
-function refreshDeletedApiKeyDerivedWindowsIfNeeded(input: DeletedApiKeyRecordCleanupTarget, shouldRefresh: boolean): void {
-  if (!shouldRefresh) return
+function refreshDeletedApiKeyDerivedWindowsIfNeeded(input: DeletedApiKeyRecordCleanupTarget, shouldRefresh: boolean): string | undefined {
+  if (!shouldRefresh) return undefined
   try {
     refreshUsageQuotaHourlyWindowsCache()
     refreshUsageRankSnapshots()
+    return undefined
   } catch (error) {
+    if (isSqliteDatabaseLocked(error)) {
+      return apiKeyCleanupSqliteBusyBlockedReason()
+    }
     const database = getDatasetDatabase()
     const updatedAt = nowIso()
     upsertDeletedApiKeyRecordCleanupTarget(database, input, updatedAt)

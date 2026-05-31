@@ -16,7 +16,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { mergeSelectedSelectOptions, rememberSelectOptions, type SelectOption } from '@/shared/selectLabelCache'
 import { recordLocalSelectChoices, sortSelectOptionsByLocalPreference } from '@/shared/selectLocalPreferenceCache'
@@ -66,6 +66,7 @@ const emit = defineEmits<{
   (event: 'change', value: SelectValue, option: unknown): void
 }>()
 
+const lastCommittedValues = ref<Array<string | undefined>>(selectedValues(props.value))
 const normalizedSelectedIds = computed(() => [
   ...selectedValues(props.value),
   ...props.selectedIds
@@ -108,13 +109,21 @@ watch(
   (options) => rememberSelectOptions(props.cacheKey, options.filter((option): option is SelectOption => Boolean(option))),
   { immediate: true }
 )
+watch(
+  () => props.value,
+  (value) => {
+    lastCommittedValues.value = selectedValues(value)
+  },
+  { immediate: true }
+)
 
 function handleUpdateValue(value: SelectValue) {
+  rememberLocalPreference(value, lastCommittedValues.value)
+  lastCommittedValues.value = selectedValues(value)
   emit('update:value', value)
 }
 
 function handleChange(value: SelectValue, option: unknown) {
-  rememberLocalPreference(value)
   emit('change', value, option)
 }
 
@@ -122,8 +131,17 @@ function selectedValues(value: SelectValue): Array<string | undefined> {
   return Array.isArray(value) ? value : [value]
 }
 
-function rememberLocalPreference(value: SelectValue): void {
+function rememberLocalPreference(value: SelectValue, previousValues: Array<string | undefined>): void {
   if (!props.recordPreference) return
-  recordLocalSelectChoices(localPreferenceKey.value, selectedValues(value), mergedOptions.value, props.ignoredPreferenceValues)
+  const nextValues = selectedValues(value)
+  const previousValueSet = new Set(previousValues.map(normalizeValue).filter(Boolean))
+  const valuesToRecord = Array.isArray(value)
+    ? nextValues.filter((item) => !previousValueSet.has(normalizeValue(item)))
+    : nextValues
+  recordLocalSelectChoices(localPreferenceKey.value, valuesToRecord, mergedOptions.value, props.ignoredPreferenceValues)
+}
+
+function normalizeValue(value: string | undefined): string {
+  return value?.trim() ?? ''
 }
 </script>

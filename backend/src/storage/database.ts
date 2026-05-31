@@ -170,6 +170,17 @@ export function nowIso(): string {
   return new Date().toISOString()
 }
 
+export function isSqliteDatabaseLocked(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  const sqliteError = error as Error & { code?: unknown; errcode?: unknown; errstr?: unknown }
+  return sqliteError.errcode === 5
+    || sqliteError.errstr === 'database is locked'
+    || error.message.includes('database is locked')
+    || error.message.includes('SQLITE_BUSY')
+}
+
 export function newId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
 }

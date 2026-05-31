@@ -28,7 +28,7 @@
             <span class="inline-radio-required" aria-hidden="true">*</span>
             授权资源类型
           </span>
-          <a-radio-group v-model:value="form.resourceType" aria-label="授权资源类型">
+          <a-radio-group v-model:value="form.resourceType" aria-label="授权资源类型" class="compact-radio-group" size="small">
             <a-radio-button v-for="option in resourceTypeOptions" :key="option.value" :value="option.value">
               {{ option.label }}
             </a-radio-button>
@@ -68,7 +68,7 @@
             <span class="inline-radio-required" aria-hidden="true">*</span>
             授权对象类型
           </span>
-          <a-radio-group v-model:value="form.granteeType" aria-label="授权对象类型">
+          <a-radio-group v-model:value="form.granteeType" aria-label="授权对象类型" class="compact-radio-group" size="small">
             <a-radio-button value="system_account">个人</a-radio-button>
             <a-radio-button value="team">团队</a-radio-button>
           </a-radio-group>
@@ -197,12 +197,19 @@ defineEmits<{
 
 .inline-radio-label {
   color: var(--ant-color-text, rgba(0, 0, 0, 0.88));
-  line-height: 32px;
+  line-height: 24px;
 }
 
 .inline-radio-required {
   color: var(--ant-color-error, #ff4d4f);
   margin-inline-end: 4px;
+}
+
+.compact-radio-group :deep(.ant-radio-button-wrapper) {
+  font-size: 13px;
+  height: 26px;
+  line-height: 24px;
+  padding-inline: 12px;
 }
 
 @media (max-width: 575px) {

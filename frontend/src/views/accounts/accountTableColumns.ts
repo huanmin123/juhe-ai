@@ -22,6 +22,7 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
     { title: '加入分组', key: 'group', width: 240, className: 'account-group-column' },
     sortableColumn({ title: '最近使用时间', key: 'lastUsedAt', width: 180 }, 'lastUsedAt', sortOrder),
     sortableColumn({ title: '账户到期时间', key: 'accountExpiresAt', width: 180 }, 'accountExpiresAt', sortOrder),
+    { title: '时间计划', key: 'availabilitySchedule', width: 220 },
     { title: '说明', dataIndex: 'notes', key: 'notes', width: 200 },
     { title: '操作', key: 'actions', fixed: 'right' }
   )
@@ -92,7 +93,7 @@ export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): 
 }
 
 export function accountTableScrollX(isManagementView: boolean): number {
-  return (isManagementView ? 2370 : 2190) + accountSelectionColumnWidth
+  return (isManagementView ? 2590 : 2410) + accountSelectionColumnWidth
 }
 
 export function accountTableScrollY(): string {

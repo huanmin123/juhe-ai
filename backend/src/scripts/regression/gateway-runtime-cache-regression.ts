@@ -162,7 +162,19 @@ try {
   assert.equal(scheduledAfterBoundary.accounts.length, 0, '计划停用后不应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, 8, '即使缓存被高频命中，计划边界后也应重新请求 DB service')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，并在计划边界后重新计算运行态')
+  const accountScheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountScheduledKey))
+  assert.equal(accountScheduledFirst.apiKey?.availability_schedule_json, null, '账户计划用例不应依赖 API Key 自身计划')
+  assert.equal(accountScheduledFirst.hasAccountAvailabilitySchedule, true, '运行配置应标记分组内存在账户自动启停计划')
+  assert.equal(accountScheduledFirst.accounts.length, 1, '账户计划允许时段内应返回候选账号')
+  assert.equal(fakeChild.sentOperationCount, 9, '首次读取账户计划 API Key 应请求 DB service')
+  const accountScheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountScheduledKey))
+  assert.equal(accountScheduledSecond.accounts.length, 1, '账户计划边界前应继续命中可用缓存')
+  assert.equal(fakeChild.sentOperationCount, 9, '账户计划边界前重复读取应命中缓存')
+  const accountScheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountScheduledKey))
+  assert.equal(accountScheduledAfterBoundary.accounts.length, 0, '账户计划停用后不应返回候选账号')
+  assert.equal(fakeChild.sentOperationCount, 10, '只有账户计划存在时，计划边界后也应重新请求 DB service')
+
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，并在 API Key 与账户计划边界后重新计算运行态')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -172,7 +184,7 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string; id: string; key: string; scheduledKey: string } {
+function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string; id: string; key: string; scheduledKey: string; accountScheduledKey: string } {
   const group = repositories.createGroup({
     name: '运行配置缓存混合账号分组',
     providerCode: 'openai',
@@ -222,12 +234,43 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
       ]
     }
   }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const accountScheduledGroup = repositories.createGroup({
+    name: '运行配置缓存账户计划分组',
+    providerCode: 'openai',
+    enabled: true
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '运行配置缓存账户计划账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-runtime-cache-account-scheduled',
+      base_url: 'http://127.0.0.1:9/v1'
+    },
+    groupId: accountScheduledGroup.id,
+    status: 'active',
+    concurrencyLimit: 20,
+    schedulable: true,
+    availabilitySchedule: {
+      enabled: true,
+      timezone: 'UTC',
+      mode: 'allow_windows',
+      windows: [
+        { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '00:01' }
+      ]
+    }
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const accountScheduledApiKey = repositories.createApiKeyRecord({
+    name: '运行配置缓存账户计划 API Key',
+    groupId: accountScheduledGroup.id
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
   return {
     apiKeyAccountId: apiKeyAccount.id,
     oauthAccountId: oauthAccount.id,
     id: apiKey.id,
     key: apiKey.key,
-    scheduledKey: scheduledApiKey.key
+    scheduledKey: scheduledApiKey.key,
+    accountScheduledKey: accountScheduledApiKey.key
   }
 }
 
@@ -281,17 +324,36 @@ async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceCh
 }
 
 async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T): Promise<T> {
-  const originalNow = Date.now
-  Object.defineProperty(Date, 'now', {
+  const OriginalDate = Date
+  const MockedDate = class extends OriginalDate {
+    constructor(value?: string | number | Date, month?: number, date?: number, hours?: number, minutes?: number, seconds?: number, ms?: number) {
+      if (arguments.length === 0) {
+        super(nowMs)
+        return
+      }
+      if (arguments.length === 1) {
+        super(value as string | number | Date)
+        return
+      }
+      super(value as number, month as number, date, hours, minutes, seconds, ms)
+    }
+
+    static now(): number {
+      return nowMs
+    }
+  }
+  Object.defineProperty(globalThis, 'Date', {
     configurable: true,
-    value: () => nowMs
+    writable: true,
+    value: MockedDate
   })
   try {
     return await operation()
   } finally {
-    Object.defineProperty(Date, 'now', {
+    Object.defineProperty(globalThis, 'Date', {
       configurable: true,
-      value: originalNow
+      writable: true,
+      value: OriginalDate
     })
   }
 }

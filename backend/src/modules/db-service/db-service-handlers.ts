@@ -4,6 +4,7 @@ import {
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
   getAccountPrecheckMutationState,
+  hasOpenAIAccountAvailabilityScheduleForGroup,
   isGatewayApiKeyScheduleInactive,
   listOpenAIAccountsForGroup,
   listPublicGlobalSettings,
@@ -306,6 +307,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       continue
     }
     const accounts = listOpenAIAccountsForGroup(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
+    const hasAccountAvailabilitySchedule = hasOpenAIAccountAvailabilityScheduleForGroup(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
@@ -318,6 +320,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       settings,
       groupAccess,
       accounts,
+      hasAccountAvailabilitySchedule,
       clientIpPolicies,
       streamInterceptPolicies
     }

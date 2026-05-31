@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
@@ -51,6 +51,18 @@ interface AccountUsageShardBatch {
   rows: AccountUsageShardRow[]
   hasMoreCoveredRows: boolean
   hasUncoveredRows: boolean
+}
+
+interface AccountUsageCleanupStepResult {
+  deletedRows: number
+  usageBatch: AccountUsageShardBatch
+  blockedReason?: string
+}
+
+interface AccountDatasetCleanupStepResult {
+  deletedRows: number
+  hasAuditMore: boolean
+  hasModelCheckMore: boolean
 }
 
 const accountScopeStatsTables = [
@@ -133,7 +145,10 @@ export function cleanupDeletedAccountDetachedStats(input: DeletedAccountDetached
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
-  refreshDeletedAccountDerivedWindowsIfNeeded(input, true)
+  const refreshBlockedReason = refreshDeletedAccountDerivedWindowsIfNeeded(input, true)
+  if (refreshBlockedReason) {
+    throw new Error(refreshBlockedReason)
+  }
 }
 
 export function cleanupDeletedAccountRelatedRecordData(input: DeletedAccountRecordCleanupTarget): DeletedAccountRecordCleanupResult {
@@ -141,70 +156,158 @@ export function cleanupDeletedAccountRelatedRecordData(input: DeletedAccountReco
   const statsDatabase = getStatsDatabase()
   const updatedAt = nowIso()
   upsertDeletedAccountRecordCleanupTarget(database, input, updatedAt)
-  let shouldRefreshDerivedWindows = false
   const batchLimit = deletedAccountRecordCleanupBatchLimit
-  let deletedRows = 0
-  let transactionStarted = false
-  let statsTransactionStarted = false
   try {
-    transactionStarted = beginDatabaseTransaction(database)
-    const usageBatch = selectAccountUsageRowsCoveredByShardCursors(statsDatabase, input, batchLimit)
+    const usageCleanup = cleanupDeletedAccountUsageData(statsDatabase, input, updatedAt, batchLimit)
+    const datasetCleanup = cleanupDeletedAccountDatasetRecordData(database, input, batchLimit)
+    let blockedReason = usageCleanup.blockedReason
+    let hasUsageMore = true
+    if (blockedReason) {
+      hasUsageMore = true
+    } else {
+      try {
+        hasUsageMore = hasAccountUsageRecords(input)
+      } catch (error) {
+        if (!isSqliteDatabaseLocked(error)) {
+          throw error
+        }
+        blockedReason = accountCleanupSqliteBusyBlockedReason()
+        hasUsageMore = true
+      }
+    }
+    const hasAuditMore = datasetCleanup.hasAuditMore
+    const hasModelCheckMore = datasetCleanup.hasModelCheckMore
+    let hasMore = hasUsageMore || hasAuditMore || hasModelCheckMore
+    if (!blockedReason && !hasMore) {
+      blockedReason = cleanupDeletedAccountFinalStats(statsDatabase, input)
+      hasMore = Boolean(blockedReason)
+    }
+    if (!blockedReason && !hasMore) {
+      blockedReason = refreshDeletedAccountDerivedWindowsIfNeeded(input, true)
+      hasMore = Boolean(blockedReason)
+    }
+    const result: DeletedAccountRecordCleanupResult = {
+      ...input,
+      deletedRows: usageCleanup.deletedRows + datasetCleanup.deletedRows,
+      hasMore,
+      blockedReason: blockedReason ?? (hasMore
+        ? accountCleanupPendingReason({
+          hasAuditMore,
+          hasModelCheckMore,
+          hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
+          hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
+        })
+        : undefined)
+    }
+    if (result.hasMore || result.blockedReason) {
+      markDeletedAccountRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
+    } else {
+      clearDeletedAccountRecordCleanupTarget(database, input)
+    }
+    cleanupAuditPayloadBlobsBestEffort(batchLimit)
+    return result
+  } catch (error) {
+    markDeletedAccountRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
+    throw error
+  }
+}
+
+function cleanupDeletedAccountUsageData(
+  statsDatabase: DatabaseSync,
+  input: DeletedAccountRecordCleanupTarget,
+  updatedAt: string,
+  batchLimit: number
+): AccountUsageCleanupStepResult {
+  let usageBatch = emptyAccountUsageShardBatch()
+  let deletedRows = 0
+  try {
+    usageBatch = selectAccountUsageRowsCoveredByShardCursors(statsDatabase, input, batchLimit)
     const rowsToDelete = usageBatch.rows.slice(0, batchLimit)
-    const hasMoreCoveredRows = usageBatch.hasMoreCoveredRows
     if (rowsToDelete.length > 0) {
       subtractAccountUsageRowsOnce(statsDatabase, rowsToDelete, input, updatedAt)
     }
     deletedRows += deleteAccountUsageRows(rowsToDelete, input)
     markAccountUsageCleanupRowsDeleted(statsDatabase, rowsToDelete, updatedAt)
+    return { deletedRows, usageBatch }
+  } catch (error) {
+    if (!isSqliteDatabaseLocked(error)) {
+      throw error
+    }
+    return {
+      deletedRows,
+      usageBatch,
+      blockedReason: accountCleanupSqliteBusyBlockedReason()
+    }
+  }
+}
+
+function cleanupDeletedAccountDatasetRecordData(
+  database: DatabaseSync,
+  input: DeletedAccountRecordCleanupTarget,
+  batchLimit: number
+): AccountDatasetCleanupStepResult {
+  let deletedRows = 0
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
     deletedRows += deleteAccountAuditDataBatch(database, input, batchLimit)
     deletedRows += deleteAccountModelCheckRunsBatch(database, input, batchLimit)
-
-    const hasUsageMore = hasAccountUsageRecords(input)
     const hasAuditMore = hasAccountAuditData(database, input)
     const hasModelCheckMore = hasAccountModelCheckRuns(database, input)
-    const hasMore = hasUsageMore || hasAuditMore || hasModelCheckMore
-    if (!hasMore) {
-      if (!statsTransactionStarted) {
-        statsTransactionStarted = beginDatabaseTransaction(statsDatabase)
-      }
-      deleteAccountScopeStatsRows(statsDatabase, input, input.authorizationIds ?? [], input.teamScopeIds ?? [])
-      deleteAccountUsageCleanupDeductions(statsDatabase, input)
-    }
-    const result: DeletedAccountRecordCleanupResult = {
-      ...input,
-      deletedRows,
-      hasMore,
-      blockedReason: hasMore
-        ? (hasAuditMore
-          ? '仍有已删除 AI 账户的原始审计记录待后续批次清理，已保留待后台重试'
-          : hasModelCheckMore
-          ? '仍有已删除 AI 账户的模型检测记录待后续批次清理，已保留待后台重试'
-          : hasMoreCoveredRows
-          ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
-          : usageBatch.hasUncoveredRows
-          ? '仍有使用记录尚未被对应分片统计安全游标覆盖，已保留待后台重试清理'
-          : '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理')
-        : undefined
-    }
-    if (hasMore) {
-      markDeletedAccountRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
-    } else {
-      clearDeletedAccountRecordCleanupTarget(database, input)
-      shouldRefreshDerivedWindows = true
-    }
-    commitDatabaseTransaction(statsDatabase, statsTransactionStarted)
-    statsTransactionStarted = false
     commitDatabaseTransaction(database, transactionStarted)
-    transactionStarted = false
-    refreshDeletedAccountDerivedWindowsIfNeeded(input, shouldRefreshDerivedWindows)
-    cleanupAuditPayloadBlobsBestEffort(batchLimit)
-    return result
+    return {
+      deletedRows,
+      hasAuditMore,
+      hasModelCheckMore
+    }
   } catch (error) {
-    rollbackDatabaseTransaction(statsDatabase, statsTransactionStarted)
     rollbackDatabaseTransaction(database, transactionStarted)
-    markDeletedAccountRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
     throw error
   }
+}
+
+function cleanupDeletedAccountFinalStats(statsDatabase: DatabaseSync, input: DeletedAccountRecordCleanupTarget): string | undefined {
+  const transactionStarted = beginDatabaseTransaction(statsDatabase)
+  try {
+    deleteAccountScopeStatsRows(statsDatabase, input, input.authorizationIds ?? [], input.teamScopeIds ?? [])
+    deleteAccountUsageCleanupDeductions(statsDatabase, input)
+    commitDatabaseTransaction(statsDatabase, transactionStarted)
+    return undefined
+  } catch (error) {
+    rollbackDatabaseTransaction(statsDatabase, transactionStarted)
+    if (isSqliteDatabaseLocked(error)) {
+      return accountCleanupSqliteBusyBlockedReason()
+    }
+    throw error
+  }
+}
+
+function emptyAccountUsageShardBatch(): AccountUsageShardBatch {
+  return {
+    rows: [],
+    hasMoreCoveredRows: false,
+    hasUncoveredRows: false
+  }
+}
+
+function accountCleanupPendingReason(input: {
+  hasAuditMore: boolean
+  hasModelCheckMore: boolean
+  hasMoreCoveredRows: boolean
+  hasUncoveredRows: boolean
+}): string {
+  return input.hasAuditMore
+    ? '仍有已删除 AI 账户的原始审计记录待后续批次清理，已保留待后台重试'
+    : input.hasModelCheckMore
+    ? '仍有已删除 AI 账户的模型检测记录待后续批次清理，已保留待后台重试'
+    : input.hasMoreCoveredRows
+    ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
+    : input.hasUncoveredRows
+    ? '仍有使用记录尚未被对应分片统计安全游标覆盖，已保留待后台重试清理'
+    : '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理'
+}
+
+function accountCleanupSqliteBusyBlockedReason(): string {
+  return 'SQLite 正在执行其他写入，已保留已删除 AI 账户关联数据清理目标，等待后台重试'
 }
 
 function upsertDeletedAccountRecordCleanupTarget(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget, updatedAt: string): void {
@@ -580,12 +683,16 @@ function deleteAccountUsageCleanupDeductions(database: DatabaseSync, input: Dele
     .run(input.accountId)
 }
 
-function refreshDeletedAccountDerivedWindowsIfNeeded(input: DeletedAccountRecordCleanupTarget, shouldRefresh: boolean): void {
-  if (!shouldRefresh) return
+function refreshDeletedAccountDerivedWindowsIfNeeded(input: DeletedAccountRecordCleanupTarget, shouldRefresh: boolean): string | undefined {
+  if (!shouldRefresh) return undefined
   try {
     refreshUsageQuotaHourlyWindowsCache()
     refreshUsageRankSnapshots()
+    return undefined
   } catch (error) {
+    if (isSqliteDatabaseLocked(error)) {
+      return accountCleanupSqliteBusyBlockedReason()
+    }
     const database = getDatasetDatabase()
     const updatedAt = nowIso()
     upsertDeletedAccountRecordCleanupTarget(database, input, updatedAt)

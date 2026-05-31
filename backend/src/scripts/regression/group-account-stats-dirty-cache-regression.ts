@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import type { SQLInputValue } from 'node:sqlite'
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -92,6 +92,63 @@ try {
   assert.deepEqual(dirtyRows(), [], '脏分组刷新完成后应清空对应队列')
   assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, 'worker 刷新后应写入分组账户统计')
 
+  const statusLockGroup = repositories.createGroup({
+    name: '脏缓存状态写入锁库分组',
+    providerCode: 'openai'
+  }, ownerAccess)
+  const statusLockAccount = repositories.createAccount({
+    providerCode: 'openai',
+    groupId: statusLockGroup.id,
+    name: '锁库状态写入账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-group-account-stats-dirty-cache-status-lock', base_url: 'https://api.openai.com/v1' },
+    status: 'active'
+  }, ownerAccess)
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '状态写入锁库回归准备账户应先刷新一次统计缓存')
+  withStatsWriteLock(() => {
+    assert.doesNotThrow(
+      () => repositories.markAccountCooldown(statusLockAccount.id, new Date(Date.now() + 60_000).toISOString(), '统计库锁定时账户冷却', 'rate_limited'),
+      '统计结果库写锁占用时，账户状态写入不应因分组统计脏标记失败'
+    )
+    assert.equal(accountRow(statusLockAccount.id)?.status, 'rate_limited', '锁库期间账户状态仍应写入业务库')
+    assert.deepEqual(dirtyRows(), [{ group_id: statusLockGroup.id, reason: 'account_cooldown' }], '锁库期间账户状态写入应只标记业务库脏队列')
+  })
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '统计锁释放后 worker 应消费账户状态写入脏标记')
+  assert.deepEqual(dirtyRows(), [], '账户状态写入脏标记刷新完成后应被清空')
+
+  const lockGroup = repositories.createGroup({
+    name: '脏缓存锁库回归分组',
+    providerCode: 'openai'
+  }, ownerAccess)
+  const lockExpiredAccount = repositories.createAccount({
+    providerCode: 'openai',
+    groupId: lockGroup.id,
+    name: '锁库过期账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-group-account-stats-dirty-cache-lock-expired', base_url: 'https://api.openai.com/v1' },
+    status: 'active'
+  }, ownerAccess)
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '锁库回归准备账户应先刷新一次统计缓存')
+  const expiredAt = new Date(Date.now() - 60_000).toISOString()
+  databaseModule.getDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET status = 'temporary_unavailable',
+          schedulable = 1,
+          cooldown_until = ?,
+          account_expires_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `)
+    .run(expiredAt, expiredAt, expiredAt, lockExpiredAccount.id)
+  withStatsWriteLock(() => {
+    assert.doesNotThrow(() => repositories.listAccountsDueForCooldownRetest(20), '统计结果库写锁占用时，冷却复测候选扫描不应因分组统计脏标记写入失败')
+    assert.equal(accountRow(lockExpiredAccount.id)?.status, 'disabled', '锁库期间过期账户仍应被业务库清理为停用')
+    assert.deepEqual(dirtyRows(), [{ group_id: '__all__', reason: 'account_expired' }], '锁库期间分组统计脏标记应落在业务库队列')
+  })
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '统计锁释放后 worker 应消费业务库脏标记并刷新统计缓存')
+  assert.deepEqual(dirtyRows(), [], '业务库脏标记刷新完成后应被清空')
+
   repositories.createAccount({
     providerCode: 'openai',
     groupId: primaryGroup.id,
@@ -134,6 +191,30 @@ try {
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应能消费全量哨兵刷新统计缓存')
   assert.deepEqual(dirtyRows(), [], '全量哨兵刷新后应被清理')
 
+  const expireLockGroup = repositories.createGroup({
+    name: '脏缓存授权过期锁库分组',
+    providerCode: 'openai'
+  }, ownerAccess)
+  const expireLockAuthorization = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: expireLockGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    expiresAt: new Date(Date.now() + 60_000).toISOString()
+  }, ownerAccess)
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '授权过期锁库回归准备授权应先刷新一次统计缓存')
+  const authorizationExpiredAt = new Date(Date.now() - 60_000).toISOString()
+  databaseModule.getDatabase()
+    .prepare('UPDATE resource_authorization_grants SET expires_at = ?, updated_at = ? WHERE id = ?')
+    .run(authorizationExpiredAt, authorizationExpiredAt, expireLockAuthorization.id)
+  withStatsWriteLock(() => {
+    assert.equal(repositories.expireDueResourceAuthorizations(), 1, '统计结果库写锁占用时，授权过期扫描仍应完成业务库状态更新')
+    assert.equal(grantStatus(expireLockAuthorization.id), 'expired', '锁库期间授权 grant 仍应过期')
+    assert.deepEqual(dirtyRows(), [{ group_id: '__all__', reason: 'authorization_expired' }], '锁库期间授权过期应只标记业务库全量脏队列')
+  })
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '统计锁释放后 worker 应消费授权过期脏标记')
+  assert.deepEqual(dirtyRows(), [], '授权过期脏标记刷新完成后应被清空')
+
   repositories.createResourceAuthorization({
     resourceType: 'group',
     resourceId: primaryGroup.id,
@@ -164,7 +245,13 @@ try {
   assert.equal(authorizedGroup?.description, '用于验证授权分组摘要展示', '授权分组列表应展示原分组说明')
   assert.deepEqual(authorizedGroup?.accountIds, [], '授权分组列表不应暴露具体账户 ID')
 
-  console.log('分组账户统计脏缓存回归通过：请求路径只打脏标记，全量影响只写哨兵，统计由 worker 异步刷新，缓存缺失或已标脏时列表兜底展示账户数')
+  databaseModule.getStatsDatabase()
+    .prepare('INSERT INTO group_account_stats_dirty (group_id, reason, updated_at) VALUES (?, ?, ?)')
+    .run(usageStatsRepository.GROUP_ACCOUNT_STATS_DIRTY_ALL, 'legacy_stats_dirty_marker', new Date().toISOString())
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应兼容消费旧统计结果库中的脏标记')
+  assert.deepEqual(legacyStatsDirtyRows(), [], '旧统计结果库脏标记被消费后应清空')
+
+  console.log('分组账户统计脏缓存回归通过：请求路径只打业务库脏标记，全量影响只写哨兵，统计由 worker 异步刷新，统计库写锁期间业务写入不受影响，缓存缺失或已标脏时列表兜底展示账户数，并兼容旧统计库脏标记')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -175,10 +262,30 @@ try {
 }
 
 function dirtyRows(): DirtyRow[] {
+  const rows = databaseModule.getDatabase()
+    .prepare('SELECT group_id, reason FROM group_account_stats_dirty ORDER BY group_id')
+    .all() as unknown as DirtyRow[]
+  return rows.map((row) => ({ group_id: row.group_id, reason: row.reason }))
+}
+
+function legacyStatsDirtyRows(): DirtyRow[] {
   const rows = databaseModule.getStatsDatabase()
     .prepare('SELECT group_id, reason FROM group_account_stats_dirty ORDER BY group_id')
     .all() as unknown as DirtyRow[]
   return rows.map((row) => ({ group_id: row.group_id, reason: row.reason }))
+}
+
+function accountRow(accountId: string): { status: string } | undefined {
+  return databaseModule.getDatabase()
+    .prepare('SELECT status FROM accounts WHERE id = ?')
+    .get(accountId) as unknown as { status: string } | undefined
+}
+
+function grantStatus(authorizationGrantId: string): string | undefined {
+  const row = databaseModule.getDatabase()
+    .prepare('SELECT status FROM resource_authorization_grants WHERE id = ?')
+    .get(authorizationGrantId) as unknown as { status?: string } | undefined
+  return row?.status
 }
 
 function groupStatsRow(groupId: string): { total: number } | undefined {
@@ -230,4 +337,15 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
+}
+
+function withStatsWriteLock(action: () => void): void {
+  const statsLock = new DatabaseSync(runtimeConfig.statsDatabasePath)
+  statsLock.exec('PRAGMA busy_timeout = 1; BEGIN IMMEDIATE')
+  try {
+    action()
+  } finally {
+    statsLock.exec('ROLLBACK')
+    statsLock.close()
+  }
 }

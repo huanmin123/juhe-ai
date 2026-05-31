@@ -28,6 +28,11 @@
         @group-options-search="$emit('group-options-search', $event)"
       />
 
+      <AccountAvailabilityScheduleSection
+        v-if="hasAccountType && !authorizedEditing"
+        :form="form"
+      />
+
       <AccountApiKeySection
         v-if="isApiKeyForm && !authorizedEditing"
         :base-url-placeholder="baseUrlPlaceholder"
@@ -78,6 +83,7 @@
 import { computed } from 'vue'
 
 import type { AccountType, OpenAIAuthURLResult, ProviderDefinition } from '@/types/domain'
+import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'

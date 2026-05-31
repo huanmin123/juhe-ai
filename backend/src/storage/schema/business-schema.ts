@@ -141,6 +141,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       fallback_enabled INTEGER NOT NULL DEFAULT 0,
       schedulable INTEGER NOT NULL DEFAULT 1,
+      availability_schedule_json TEXT,
       notes TEXT,
       account_expires_at TEXT,
       last_used_at TEXT,
@@ -308,6 +309,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (account_authorization_id) REFERENCES resource_authorizations(id)
     );
 
+    CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
+      group_id TEXT PRIMARY KEY,
+      reason TEXT,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS external_integration_account_push_records (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -445,6 +452,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_group_accounts_group_enabled ON group_accounts(group_id, enabled, account_id);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_account_scope_enabled ON group_accounts(account_id, system_account_id, enabled);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_scope_enabled_updated ON group_accounts(system_account_id, account_id, enabled, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at);
     CREATE INDEX IF NOT EXISTS idx_external_account_push_records_account ON external_integration_account_push_records(account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_group ON api_keys(group_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
@@ -498,6 +506,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   ensureColumn(database, 'accounts', 'authorization_instance_source_account_id', 'TEXT')
   ensureColumn(database, 'accounts', 'authorization_instance_authorization_id', 'TEXT')
   ensureColumn(database, 'accounts', 'authorization_instance_owner_system_account_id', 'TEXT')
+  ensureColumn(database, 'accounts', 'availability_schedule_json', 'TEXT')
   ensureColumn(database, 'api_keys', 'group_route_strategy', "TEXT NOT NULL DEFAULT 'priority_failover'")
   ensureColumn(database, 'api_key_group_bindings', 'weight', 'INTEGER NOT NULL DEFAULT 1')
   ensureColumn(database, 'api_keys', 'availability_schedule_json', 'TEXT')

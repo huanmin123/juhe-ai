@@ -10,6 +10,13 @@ import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, in
 import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions } from './account-list-options.js'
 import { cleanupDeletedAccountDetachedStats, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
 import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
+import {
+  accountAvailabilityScheduleFromRequest,
+  accountAvailabilityScheduleJson,
+  isAccountAvailabilityScheduleAllowed,
+  isAccountAvailabilityScheduleInputPresent,
+  parseAccountAvailabilityScheduleJson
+} from './account-availability-schedule.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import {
   getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
@@ -362,6 +369,7 @@ export {
 } from './data-retention.repository.js'
 export {
   findOpenAIAccountForGroup,
+  hasOpenAIAccountAvailabilityScheduleForGroup,
   listOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
   selectOpenAIAccountForGroup,
@@ -1293,6 +1301,7 @@ function accountSummariesFromRows(
     const dispatchPriority = isAuthorizedView ? Number(row.bound_group_local_priority ?? row.priority ?? 0) : row.priority
     const dispatchSuperPriorityEnabled = isAuthorizedView ? row.bound_group_local_super_priority_enabled === 1 : row.super_priority_enabled === 1
     const dispatchFallbackEnabled = isAuthorizedView ? row.bound_group_local_fallback_enabled === 1 : row.fallback_enabled === 1
+    const availabilitySchedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
     return {
       id: row.id,
       systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -1322,6 +1331,7 @@ function accountSummariesFromRows(
       passthroughEnabled: accountResourcePassthroughEnabled(row) === 1,
       errorPolicyId: isAuthorizedView ? undefined : accountResourceErrorPolicyId(row) ?? undefined,
       schedulable: effectiveAuthorizedSchedulable,
+      availabilitySchedule,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: isAuthorizedView ? authorizedCooldownUntil : row.cooldown_until ?? undefined,
       lastErrorCode: isAuthorizedView ? undefined : row.last_error_code ?? undefined,
@@ -1569,7 +1579,8 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       LIMIT ?
     `)
     .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
-  const hydratedRows = hydrateAccountRowsFromRecordDatabase(rows, { includeCredentials: true })
+  const scheduledRows = rows.filter((row) => isAccountAvailabilityScheduleAllowed(row.availability_schedule_json))
+  const hydratedRows = hydrateAccountRowsFromRecordDatabase(scheduledRows, { includeCredentials: true })
   const accountNames = loadSystemAccountNameMapByIds(hydratedRows.map((row) => row.system_account_id))
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(hydratedRows.map((row) => row.id))
   const supportedModelsByAccountId = loadSupportedModelsByAccountIds(hydratedRows.map((row) => accountResourceFactAccountId(row)))
@@ -1597,6 +1608,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       passthroughEnabled: accountResourcePassthroughEnabled(row) === 1,
       errorPolicyId: accountResourceErrorPolicyId(row) ?? undefined,
       schedulable: row.schedulable === 1,
+      availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: row.last_error_code ?? undefined,
@@ -1639,6 +1651,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
     : null
   const accountExpiresAt = optionalNullableServerDateTimeIso(input.accountExpiresAt ?? input.account_expires_at)
+  const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels ?? input.supported_models, providerCode) ?? []
   const initialStatus = normalizeAccountStatus(input.status, 'active')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
@@ -1682,6 +1695,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
     schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : input.schedulable !== false,
+    availabilitySchedule,
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorCode: expiredByPackage ? 'account_expired' : undefined,
@@ -1707,9 +1721,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
-          priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          priority, super_priority_enabled, fallback_enabled, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1729,6 +1743,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.superPriorityEnabled ? 1 : 0,
         account.fallbackEnabled ? 1 : 0,
         account.schedulable ? 1 : 0,
+        accountAvailabilityScheduleJson(account.availabilitySchedule),
         optionalString(input.notes) ?? null,
         account.accountExpiresAt ?? null,
         account.cooldownUntil ?? null,
@@ -1813,6 +1828,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const nextSupportedModels = hasSupportedModelsInput
     ? normalizeAccountSupportedModelsForProvider(input.supportedModels ?? input.supported_models, current.providerCode) ?? []
     : current.supportedModels ?? []
+  const hasAvailabilityScheduleInput = isAccountAvailabilityScheduleInputPresent(input)
+  const nextAvailabilitySchedule = hasAvailabilityScheduleInput
+    ? accountAvailabilityScheduleFromRequest(input)
+    : current.availabilitySchedule
   const hasPriorityInput = Object.prototype.hasOwnProperty.call(input, 'priority')
     || Object.prototype.hasOwnProperty.call(input, 'priority_level')
   const hasNotesInput = Object.prototype.hasOwnProperty.call(input, 'notes')
@@ -1920,6 +1939,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         : typeof input.schedulable === 'boolean'
           ? input.schedulable
           : current.schedulable,
+    availabilitySchedule: nextAvailabilitySchedule,
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
     lastErrorCode: nextLastErrorCode,
@@ -1941,7 +1961,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       UPDATE accounts
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
-            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
@@ -1960,6 +1980,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.superPriorityEnabled ? 1 : 0,
         next.fallbackEnabled ? 1 : 0,
         next.schedulable ? 1 : 0,
+        accountAvailabilityScheduleJson(next.availabilitySchedule),
         next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
         next.lastErrorCode ?? null,
@@ -3550,14 +3571,16 @@ function loadDirtyGroupAccountStatsGroupIds(groupIds: string[]): Set<string> {
   const ids = [...new Set(groupIds.filter(Boolean))]
   const result = new Set<string>()
   if (!ids.length) return result
-  const rows = getStatsDatabase()
-    .prepare(`
-      SELECT group_id
-      FROM group_account_stats_dirty
-      WHERE group_id = ?
-        OR group_id IN (${sqlPlaceholders(ids.length)})
-    `)
-    .all(GROUP_ACCOUNT_STATS_DIRTY_ALL, ...ids) as unknown as Array<{ group_id: string }>
+  const sql = `
+    SELECT group_id
+    FROM group_account_stats_dirty
+    WHERE group_id = ?
+      OR group_id IN (${sqlPlaceholders(ids.length)})
+  `
+  const rows = [
+    ...getDatabase().prepare(sql).all(GROUP_ACCOUNT_STATS_DIRTY_ALL, ...ids) as unknown as Array<{ group_id: string }>,
+    ...getStatsDatabase().prepare(sql).all(GROUP_ACCOUNT_STATS_DIRTY_ALL, ...ids) as unknown as Array<{ group_id: string }>
+  ]
   if (rows.some((row) => row.group_id === GROUP_ACCOUNT_STATS_DIRTY_ALL)) {
     return new Set(ids)
   }

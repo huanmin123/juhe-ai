@@ -147,6 +147,7 @@ export interface DbServiceGatewayRuntime {
   settings: GatewaySettings
   groupAccess?: GroupUsageAccessMetadata
   accounts: OpenAIAccountSecret[]
+  hasAccountAvailabilitySchedule?: boolean
   clientIpPolicies?: ActiveClientIpPolicy[]
   streamInterceptPolicies?: StreamInterceptPolicySummary[]
 }

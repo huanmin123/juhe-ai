@@ -44,6 +44,8 @@ const createFromCodeSchema = z.object({
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   account_expires_at: z.string().nullable().optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  availability_schedule: z.record(z.string(), z.unknown()).nullable().optional(),
   credentialsPatch: oauthCredentialsPatchSchema.optional(),
   notes: z.string().optional()
 })
@@ -60,6 +62,8 @@ const createFromRefreshTokenSchema = z.object({
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   account_expires_at: z.string().nullable().optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  availability_schedule: z.record(z.string(), z.unknown()).nullable().optional(),
   credentialsPatch: oauthCredentialsPatchSchema.optional(),
   notes: z.string().optional()
 })
@@ -138,6 +142,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
+        availabilitySchedule: parsed.data.availabilitySchedule ?? parsed.data.availability_schedule,
         passthroughEnabled: true,
         schedulable: true,
         groupId: parsed.data.groupId,
@@ -210,6 +215,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
+        availabilitySchedule: parsed.data.availabilitySchedule ?? parsed.data.availability_schedule,
         passthroughEnabled: true,
         schedulable: true,
         groupId: parsed.data.groupId,
@@ -469,7 +475,8 @@ function buildOAuthCreateLog(
       safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
       safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
       safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
-      safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt)
+      safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
+      safeChange('availabilitySchedule', '自动启停计划', undefined, account.availabilitySchedule)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
   }

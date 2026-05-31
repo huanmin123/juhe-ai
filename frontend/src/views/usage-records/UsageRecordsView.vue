@@ -183,6 +183,13 @@ import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/d
 import { rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
+import {
+  localSelectStorageKey,
+  readLocalSelectOptionWindow,
+  removeLocalSelectOptionWindowValues,
+  removeLocalSelectPreferenceValues,
+  writeLocalSelectOptionWindow
+} from '@/shared/selectLocalPreferenceCache'
 import type { GroupOptionSummary, ProviderModelOption, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
@@ -274,6 +281,16 @@ const {
   systemAccounts
 } = useRemoteSystemAccountOptions({
   enabled: () => isManagementView.value,
+  onMissingSelectedIds: (ids) => {
+    if (!ids.includes(systemAccountFilter.value)) return
+    systemAccountFilter.value = allSystemAccountsValue
+    systemAccountFilterSelection.value = undefined
+    groupFilterSelection.value = undefined
+    resetSystemAccountOptionsSearch()
+    resetGroupOptionsSearch()
+    resetPagination()
+    void loadData({ forceOptions: true })
+  },
   selectedIds: () => [systemAccountFilter.value]
 })
 let groupOptionsRequestId = 0
@@ -422,6 +439,14 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
     return groupOptionsLoadingPromise
   }
   const requestId = ++groupOptionsRequestId
+  const optionWindowKey = groupOptionWindowKey(systemAccountId, requestKeyword)
+  const localWindowGroups = !force ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
+  if (localWindowGroups?.length) {
+    groupOptionsLoading.value = false
+    rememberGroupLabels(localWindowGroups)
+    syncSelectedGroupSelection(localWindowGroups)
+    groups.value = localWindowGroups
+  }
   if (!force) {
     const cachedGroups = groupOptionsCache.get(requestKey)
     if (cachedGroups) {
@@ -430,19 +455,21 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
       groupOptionsLoading.value = false
       rememberGroupLabels(cachedGroups)
       syncSelectedGroupSelection(cachedGroups)
+      writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
       groups.value = cachedGroups
       return
     }
   }
-  groupOptionsLoading.value = true
+  groupOptionsLoading.value = !localWindowGroups?.length
   groupOptionsLoadingKey = requestKey
   groupOptionsLoadingPromise = (async () => {
     try {
       let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-      nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
+      nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId, optionWindowKey)
       rememberGroupLabels(nextGroups)
       syncSelectedGroupSelection(nextGroups)
       groupOptionsCache.set(requestKey, nextGroups)
+      writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
       if (requestId !== groupOptionsRequestId) return
       groups.value = nextGroups
     } catch (error) {
@@ -510,7 +537,7 @@ function clearGroupOptionsSearchTimer(): void {
   }
 }
 
-async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined): Promise<GroupOptionSummary[]> {
+async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined, optionWindowKey: string): Promise<GroupOptionSummary[]> {
   const selectedIds = [groupFilter.value].filter((id): id is string => Boolean(id))
   const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
   if (!missingIds.length) return nextGroups
@@ -521,7 +548,32 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], syst
       return []
     }
   }))
+  const foundIds = new Set(selectedGroups.flat().map((group) => group.id))
+  handleMissingGroupOptions(missingIds.filter((id) => !foundIds.has(id)), optionWindowKey)
   return mergeOptionsById(selectedGroups.flat(), nextGroups)
+}
+
+function handleMissingGroupOptions(ids: string[], optionWindowKey: string): void {
+  const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+  if (!missingIds.length) return
+  removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
+  removeLocalSelectPreferenceValues('groups', missingIds)
+  if (groupFilter.value && missingIds.includes(groupFilter.value)) {
+    groupFilterSelection.value = undefined
+    resetPagination()
+    void loadData({ forceOptions: true })
+  }
+  message.warning('已移除不存在或无权访问的分组，请重新选择')
+}
+
+function groupOptionWindowKey(systemAccountId: string | undefined, requestKeyword: string | undefined): string {
+  return localSelectStorageKey([
+    'group-options',
+    isManagementView.value ? 'management' : 'self',
+    systemAccountId ?? 'all',
+    'usage-records',
+    requestKeyword ?? ''
+  ])
 }
 
 function syncSelectedGroupSelection(nextGroups = groups.value): void {

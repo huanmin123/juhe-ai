@@ -41,6 +41,7 @@
             :hidden-account-ids="accountPickerHiddenValues"
             :loading="accountOptionsLoading"
             :max="maxAddedTrendAccounts"
+            max-tag-count="responsive"
             placeholder="输入账户名称添加账户"
             @change="handleAddedTrendAccountsChange"
             @dropdown-visible-change="handleAccountOptionsDropdown"
@@ -941,10 +942,10 @@ watch(addedTrendAccountSelections, (selections) => rememberAccountSelections(sel
 }
 
 .usage-stats-account-select {
-  flex: 0 1 300px;
-  width: 300px;
-  min-width: 260px;
-  max-width: 320px;
+  flex: 1 1 320px;
+  width: auto;
+  min-width: 280px;
+  max-width: none;
 }
 
 .usage-stats-account-list {

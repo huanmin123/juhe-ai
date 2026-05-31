@@ -50,6 +50,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 代理
 - 并发上限
 - 账户到期时间（可选，套餐/账号购买到期时间）
+- 自动启停计划（可选，按系统时区在指定星期和时间段内参与调度）
 - 错误策略
 - 备注
 
@@ -62,6 +63,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
 - `expires_at` 由后端根据 OpenAI 返回的 `expires_in` 自动计算和刷新
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
+- 自动启停计划不改写账户 `status`；计划停用时只退出网关账号候选，计划进入允许时段后自动重新参与调度。时区跟随系统默认值，用户表单不提供时区配置。
 - 可手动启用 / 停用
 - `refresh_token` 只对 OAuth 账户需要，账户列表不展示
 
@@ -181,6 +183,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求或账户测试返回的 Codex rate-limit 响应头被动更新。access token 即将过期时，真实网关请求仍会按正常规则做请求前懒刷新。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
+- 账户自动启停计划只作为网关候选过滤条件，不改变手动启用/停用、异常、冷却和到期状态。账号池运行缓存按分钟边界刷新，避免计划切换时间点继续使用旧候选。
 - 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期由请求前懒刷新和后台 Access Token 预刷新维护，额度快照由真实请求响应头被动维护。
 - OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；API Key 账户测试会优先复用最近真实请求形态，模型按显式传入、最近真实请求、账户支持模型、默认模型顺序选择，避免固定测试模型和真实可用模型不一致。API Key 账户的 Responses 测试不发送 `max_output_tokens`，兼容不支持该参数的 OpenAI 兼容上游；管理后台测试弹窗只选择模型，测试输入由后端使用默认探活输入生成。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常，失败只继续退避复测，不把系统自动冷却升级为永久异常。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
 

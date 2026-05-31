@@ -1,7 +1,4 @@
 import {
-  externalIntegrationAccountPushScope,
-  externalIntegrationIpUsageReadScope,
-  externalIntegrationSourceAuthDemoScope,
   externalIntegrationTestToken
 } from '../../storage/external-integration-source.repository.js'
 
@@ -36,7 +33,6 @@ export interface ExternalPublicApiDocItem {
   status: ExternalPublicApiStatus
   method: ExternalPublicApiMethod
   path: string
-  scope: string
   headers: ExternalPublicApiHeader[]
   query: ExternalPublicApiField[]
   requestBody?: ExternalPublicApiBody
@@ -68,11 +64,10 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'source-auth-demo',
         name: '来源鉴权 Demo',
-        summary: '验证来源系统 token、scope、状态和公开接口限频是否生效。',
+        summary: '验证来源系统 token、状态和公开接口限频是否生效。',
         status: 'available',
         method: 'GET',
         path: '/__aipublic__/demo/source-auth',
-        scope: externalIntegrationSourceAuthDemoScope,
         headers: [authHeader],
         query: [],
         responseExample: {
@@ -81,7 +76,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             sourceName: '内置测试来源',
             tokenName: '内置测试 token',
             tokenPrefix: 'juis_test_mo',
-            scopes: [externalIntegrationSourceAuthDemoScope],
             authenticatedAt: '2026-05-30T00:00:00.000Z',
             mock: true
           }
@@ -94,7 +88,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         status: 'mock',
         method: 'GET',
         path: '/__aipublic__/demo/mock-ranking',
-        scope: externalIntegrationSourceAuthDemoScope,
         headers: [authHeader],
         query: [
           {
@@ -131,13 +124,12 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         }
       },
       {
-        id: 'juhe-ai-ip-usage',
+        id: 'ip-usage',
         name: 'IP 维度消费聚合',
         summary: '读取 sub2api-lite 已预聚合的 IP 维度用量事实，供公益站后端自行映射用户和生成排行榜快照。',
         status: 'available',
         method: 'GET',
-        path: '/__aipublic__/juhe-ai/ip-usage',
-        scope: externalIntegrationIpUsageReadScope,
+        path: '/__aipublic__/ip/usage',
         headers: [authHeader],
         query: [
           {
@@ -221,13 +213,12 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         }
       },
       {
-        id: 'juhe-ai-consumption-ranking',
+        id: 'consumption-ranking',
         name: 'IP 维度消耗排行',
         summary: '按 Token、成本或请求数返回 IP 维度 TopN。它不是公益站用户排行榜，公益站需要自行把 IP 聚合事实映射到用户。',
         status: 'available',
         method: 'GET',
-        path: '/__aipublic__/juhe-ai/consumption-ranking',
-        scope: externalIntegrationIpUsageReadScope,
+        path: '/__aipublic__/consumption/ranking',
         headers: [authHeader],
         query: [
           {
@@ -288,13 +279,12 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         }
       },
       {
-        id: 'juhe-ai-access-info',
+        id: 'access-info',
         name: '公益接入信息',
         summary: '返回公开接口可用范围和边界说明，不返回普通 API Key、上游账号凭据或公益站业务配置。',
         status: 'available',
         method: 'GET',
-        path: '/__aipublic__/juhe-ai/access-info',
-        scope: externalIntegrationIpUsageReadScope,
+        path: '/__aipublic__/access/info',
         headers: [authHeader],
         query: [],
         responseExample: {
@@ -314,13 +304,214 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         }
       },
       {
-        id: 'juhe-ai-account-push',
-        name: '公益账号推送',
-        summary: '由公益站后端把审核后的公益 AI 登记推送到指定系统用户和分组；目标用户或分组不存在时自动创建，externalId 使用结构化映射精确幂等更新。',
+        id: 'group-add',
+        name: '分组新增',
+        summary: '在指定系统用户下新增账号分组。',
         status: 'available',
         method: 'POST',
-        path: '/__aipublic__/juhe-ai/accounts',
-        scope: externalIntegrationAccountPushScope,
+        path: '/__aipublic__/group/add',
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'name', type: 'string', required: true, description: '分组名称。', example: '福利' },
+            { name: 'providerCode', type: 'string', required: false, description: '供应商编码，默认 openai。', example: 'openai' },
+            { name: 'description', type: 'string', required: false, description: '分组说明。' },
+            { name: 'enabled', type: 'boolean', required: false, description: '是否启用，默认 true。', example: true }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            name: '福利',
+            providerCode: 'openai',
+            description: '公益站账号分组',
+            enabled: true
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'created',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            group: { id: 'grp_xxx', name: '福利', providerCode: 'openai', enabled: true, groupType: 'personal', isDefault: false }
+          }
+        }
+      },
+      {
+        id: 'group-update',
+        name: '分组修改',
+        summary: '修改指定系统用户下的分组名称、说明或启用状态。',
+        status: 'available',
+        method: 'POST',
+        path: '/__aipublic__/group/update',
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'groupId', type: 'string', required: true, description: '分组 ID。', example: 'grp_xxx' },
+            { name: 'name', type: 'string', required: false, description: '新的分组名称。', example: '福利-主池' },
+            { name: 'description', type: 'string', required: false, description: '新的分组说明。' },
+            { name: 'enabled', type: 'boolean', required: false, description: '是否启用。', example: true }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            groupId: 'grp_xxx',
+            name: '福利-主池',
+            enabled: true
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'updated',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            group: { id: 'grp_xxx', name: '福利-主池', providerCode: 'openai', enabled: true, groupType: 'personal', isDefault: false }
+          }
+        }
+      },
+      {
+        id: 'group-delete',
+        name: '分组删除',
+        summary: '删除指定系统用户下的分组。默认分组或仍被约束保护的分组会被拒绝删除。',
+        status: 'available',
+        method: 'POST',
+        path: '/__aipublic__/group/del',
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'groupId', type: 'string', required: false, description: '分组 ID；与 name 至少提供一个。', example: 'grp_xxx' },
+            { name: 'name', type: 'string', required: false, description: '分组名称；与 groupId 至少提供一个。', example: '福利' }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            groupId: 'grp_xxx'
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'deleted',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            group: { id: 'grp_xxx', name: '福利', providerCode: 'openai', enabled: true, groupType: 'personal', isDefault: false }
+          }
+        }
+      },
+      {
+        id: 'api-key-add',
+        name: 'API Key 新增',
+        summary: '为指定系统用户新增 API Key，并绑定一个或多个分组。',
+        status: 'available',
+        method: 'POST',
+        path: '/__aipublic__/api-key/add',
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'name', type: 'string', required: true, description: 'API Key 名称。', example: '公益站访问密钥' },
+            { name: 'groupId', type: 'string', required: false, description: '绑定分组 ID；与 groupName、groupBindings 至少提供一个。', example: 'grp_xxx' },
+            { name: 'groupName', type: 'string', required: false, description: '绑定分组名称；与 groupId、groupBindings 至少提供一个。', example: '福利' },
+            { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled，默认 active。', example: 'active' }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            name: '公益站访问密钥',
+            groupId: 'grp_xxx',
+            status: 'active'
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'created',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            apiKey: { id: 'key_xxx', name: '公益站访问密钥', keyPrefix: 'juis_xxx', key: 'juis_xxx_plain_once', status: 'active', groupId: 'grp_xxx', groupName: '福利' }
+          }
+        }
+      },
+      {
+        id: 'api-key-update',
+        name: 'API Key 修改',
+        summary: '修改指定 API Key 的名称、状态、分组绑定、额度或可用计划。',
+        status: 'available',
+        method: 'POST',
+        path: '/__aipublic__/api-key/update',
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'apiKeyId', type: 'string', required: true, description: 'API Key ID。', example: 'key_xxx' },
+            { name: 'name', type: 'string', required: false, description: '新的 API Key 名称。' },
+            { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled。', example: 'disabled' },
+            { name: 'groupId', type: 'string', required: false, description: '新的主绑定分组 ID。', example: 'grp_xxx' }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            apiKeyId: 'key_xxx',
+            status: 'disabled'
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'updated',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            apiKey: { id: 'key_xxx', name: '公益站访问密钥', keyPrefix: 'juis_xxx', status: 'disabled', groupId: 'grp_xxx', groupName: '福利' }
+          }
+        }
+      },
+      {
+        id: 'api-key-delete',
+        name: 'API Key 删除',
+        summary: '删除指定系统用户下的 API Key。',
+        status: 'available',
+        method: 'POST',
+        path: '/__aipublic__/api-key/del',
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'apiKeyId', type: 'string', required: false, description: 'API Key ID；与 name 至少提供一个。', example: 'key_xxx' },
+            { name: 'name', type: 'string', required: false, description: 'API Key 名称；与 apiKeyId 至少提供一个。' }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            apiKeyId: 'key_xxx'
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'deleted',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            apiKey: { id: 'key_xxx', name: '公益站访问密钥', keyPrefix: 'juis_xxx', status: 'active', groupId: 'grp_xxx', groupName: '福利' }
+          }
+        }
+      },
+      {
+        id: 'account-add',
+        name: '账号新增',
+        summary: '新增 API Key 类型账号到指定系统用户和分组；目标用户或分组不存在时自动创建，重复账号会返回冲突。',
+        status: 'available',
+        method: 'POST',
+        path: '/__aipublic__/account/add',
         headers: [authHeader],
         query: [],
         requestBody: {
@@ -351,14 +542,14 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               name: 'name',
               type: 'string',
               required: true,
-              description: '推送后的账号名称。',
+              description: '新增后的账号名称。',
               example: '公益站-青芽主通道'
             },
             {
               name: 'type',
               type: 'string',
               required: false,
-              description: '账号类型；当前公开推送只支持 api_key。',
+              description: '账号类型；当前公开新增只支持 api_key。',
               example: 'api_key'
             },
             {
@@ -399,8 +590,8 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               name: 'externalId',
               type: 'string',
               required: false,
-              description: '公益站登记 ID；同一目标用户、分组和供应商内按该值精确更新原账号。',
-              example: 'juhe-ai-public-welfare:ai-registration:12'
+              description: '公益站登记 ID；用于后续修改或删除时精确定位原账号。',
+              example: 'account-registration:12'
             }
           ],
           example: {
@@ -414,7 +605,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             supportedModels: ['gpt-5.5', 'gpt-5.4'],
             concurrencyLimit: 20,
             status: 'active',
-            externalId: 'juhe-ai-public-welfare:ai-registration:12'
+            externalId: 'account-registration:12'
           }
         },
         responseExample: {
@@ -442,18 +633,75 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               boundGroupName: '福利',
               schedulable: true
             },
-            externalId: 'juhe-ai-public-welfare:ai-registration:12'
+            externalId: 'account-registration:12'
           }
         }
       },
       {
-        id: 'juhe-ai-account-delete',
-        name: '公益账号删除',
-        summary: '由公益站后端在删除本地登记前删除已推送到指定目标用户和分组的 sub2api-lite 账号；接口按 externalId、账号 ID 或名称定位，找不到时幂等返回 not_found。',
+        id: 'account-update',
+        name: '账号修改',
+        summary: '按同一 externalId 或账号名称修改指定系统用户和分组内的既有账号；找不到时返回 404，响应不回显上游凭据。',
         status: 'available',
-        method: 'DELETE',
-        path: '/__aipublic__/juhe-ai/accounts',
-        scope: externalIntegrationAccountPushScope,
+        method: 'POST',
+        path: '/__aipublic__/account/update',
+        headers: [authHeader],
+        query: [],
+        requestBody: {
+          contentType: 'application/json',
+          fields: [
+            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'targetGroupName', type: 'string', required: true, description: '目标账号分组名称。', example: '福利' },
+            { name: 'name', type: 'string', required: true, description: '账号名称。', example: '公益站-青芽主通道' },
+            { name: 'baseUrl', type: 'string', required: true, description: 'OpenAI 兼容 Base URL。', example: 'https://api.openai.com/v1' },
+            { name: 'apiKey', type: 'string', required: true, description: '上游 API Key；响应不会回显。', example: 'sk-...' },
+            { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled。', example: 'disabled' },
+            { name: 'externalId', type: 'string', required: false, description: '外部登记 ID；建议持续传同一个值。', example: 'account-registration:12' }
+          ],
+          example: {
+            targetUsername: 'huanmin',
+            targetGroupName: '福利',
+            name: '公益站-青芽主通道',
+            baseUrl: 'https://api.openai.com/v1',
+            apiKey: 'sk-...',
+            status: 'disabled',
+            externalId: 'account-registration:12'
+          }
+        },
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            action: 'updated',
+            target: {
+              username: 'huanmin',
+              displayName: 'huanmin',
+              systemAccountId: 'sysacc_xxx',
+              created: false,
+              groupId: 'grp_xxx',
+              groupName: '福利',
+              groupCreated: false
+            },
+            account: {
+              id: 'acc_xxx',
+              name: '公益站-青芽主通道',
+              providerCode: 'openai',
+              type: 'api_key',
+              status: 'disabled',
+              boundGroupId: 'grp_xxx',
+              boundGroupName: '福利',
+              schedulable: false
+            },
+            externalId: 'account-registration:12'
+          }
+        }
+      },
+      {
+        id: 'account-delete',
+        name: '账号删除',
+        summary: '删除指定目标用户和分组内的账号；接口按 externalId、账号 ID 或名称定位，找不到时幂等返回 not_found。',
+        status: 'available',
+        method: 'POST',
+        path: '/__aipublic__/account/del',
         headers: [authHeader],
         query: [],
         requestBody: {
@@ -484,14 +732,14 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               name: 'accountId',
               type: 'string',
               required: false,
-              description: '上次推送响应返回的 sub2api-lite 账号 ID；与 externalId、name 至少提供一个。',
+              description: '账号新增响应返回的账号 ID；与 externalId、name 至少提供一个。',
               example: 'acc_xxx'
             },
             {
               name: 'name',
               type: 'string',
               required: false,
-              description: '推送后的账号名称；与 accountId、externalId 至少提供一个。',
+              description: '账号名称；与 accountId、externalId 至少提供一个。',
               example: '公益站-青芽主通道'
             },
             {
@@ -499,7 +747,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               type: 'string',
               required: false,
               description: '公益站登记 ID；优先按该结构化映射定位原账号。',
-              example: 'juhe-ai-public-welfare:ai-registration:12'
+              example: 'account-registration:12'
             }
           ],
           example: {
@@ -508,7 +756,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             providerCode: 'openai',
             accountId: 'acc_xxx',
             name: '公益站-青芽主通道',
-            externalId: 'juhe-ai-public-welfare:ai-registration:12'
+            externalId: 'account-registration:12'
           }
         },
         responseExample: {
@@ -535,7 +783,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               boundGroupName: '福利',
               schedulable: true
             },
-            externalId: 'juhe-ai-public-welfare:ai-registration:12'
+            externalId: 'account-registration:12'
           }
         }
       }

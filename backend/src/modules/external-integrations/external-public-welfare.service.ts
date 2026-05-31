@@ -266,23 +266,63 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
     endpoints: [
       {
         method: 'GET',
-        path: '/__aipublic__/juhe-ai/ip-usage',
+        path: '/__aipublic__/ip/usage',
         description: '读取 IP 维度用量聚合列表。'
       },
       {
         method: 'GET',
-        path: '/__aipublic__/juhe-ai/consumption-ranking',
+        path: '/__aipublic__/consumption/ranking',
         description: '读取基于 IP 维度聚合的消耗排行。'
       },
       {
         method: 'GET',
-        path: '/__aipublic__/juhe-ai/access-info',
+        path: '/__aipublic__/access/info',
         description: '读取公开接口接入边界和可用指标。'
       },
       {
         method: 'POST',
-        path: '/__aipublic__/juhe-ai/accounts',
-        description: '把公益站登记账号推送到指定系统用户和分组。'
+        path: '/__aipublic__/account/add',
+        description: '新增账号到指定系统用户和分组。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/account/update',
+        description: '修改指定系统用户和分组内的账号。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/account/del',
+        description: '删除指定系统用户和分组内的账号。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/group/add',
+        description: '新增指定系统用户下的分组。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/group/update',
+        description: '修改指定系统用户下的分组。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/group/del',
+        description: '删除指定系统用户下的分组。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/api-key/add',
+        description: '新增指定系统用户下的 API Key。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/api-key/update',
+        description: '修改指定系统用户下的 API Key。'
+      },
+      {
+        method: 'POST',
+        path: '/__aipublic__/api-key/del',
+        description: '删除指定系统用户下的 API Key。'
       }
     ],
     boundary: {
@@ -290,7 +330,7 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
         '来源系统 Bearer token 鉴权',
         'IP 维度请求数、Token、缓存、成本、活跃天数和速度指标聚合',
         '基于 IP 聚合表的消耗排行便利视图',
-        '公益站登记账号向指定系统用户和分组的写入入口'
+        '分组、API Key 和账号的受控新增、修改与删除入口'
       ],
       notProvided: [
         '公益站用户维度排行榜快照',

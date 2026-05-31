@@ -55,6 +55,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     systemAccounts
   } = useRemoteSystemAccountOptions({
     enabled: () => options.isManagementView.value,
+    onMissingSelectedIds: (ids) => {
+      if (!ids.includes(filters.systemAccountId)) return
+      filters.systemAccountId = allSystemAccountsValue
+      filters.systemAccount = undefined
+      resetAccountPagination()
+      void loadData({ forceOptions: true })
+    },
     selectedIds: () => [filters.systemAccountId]
   })
 

@@ -38,6 +38,8 @@ const accountCreateSchema = z.object({
   groupId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   account_expires_at: z.string().nullable().optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  availability_schedule: z.record(z.string(), z.unknown()).nullable().optional(),
   notes: z.string().optional()
 })
 
@@ -364,6 +366,7 @@ accountsRouter.post('/', mutationGuard({
             safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
             safeChange('errorPolicyId', '错误策略', undefined, account.errorPolicyId),
             safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
+            safeChange('availabilitySchedule', '自动启停计划', undefined, account.availabilitySchedule),
             safeChange('notes', '备注', undefined, account.notes)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -673,6 +676,7 @@ accountsRouter.patch('/:id', async (req, res) => {
               errorPolicyId: '错误策略',
               schedulable: '参与调度',
               accountExpiresAt: '过期时间',
+              availabilitySchedule: '自动启停计划',
               boundGroupId: '绑定分组',
               cooldownUntil: '冷却结束时间',
               lastErrorCode: '异常类型',

@@ -165,11 +165,8 @@
             </div>
 
             <a-descriptions bordered size="small" :column="1">
-              <a-descriptions-item label="协议路径">
-                <code>{{ selectedApiDoc.method }} {{ selectedApiDoc.path }}</code>
-              </a-descriptions-item>
-              <a-descriptions-item label="授权能力">
-                <code>{{ selectedApiDoc.scope }}</code>
+              <a-descriptions-item label="调用地址">
+                <code>{{ buildApiDocUrl(selectedApiDoc) }}</code>
               </a-descriptions-item>
               <a-descriptions-item label="认证方式">
                 <code>Authorization: Bearer &lt;source_token&gt;</code>
@@ -221,18 +218,7 @@
 
             <div class="api-doc-section">
               <h4>响应示例</h4>
-              <pre class="api-doc-code">{{ formatJson(selectedApiDoc.responseExample) }}</pre>
-            </div>
-
-            <div class="api-doc-section">
-              <div class="api-doc-section-head">
-                <h4>curl</h4>
-                <a-button size="small" @click="copyCurl(selectedApiDoc)">
-                  <template #icon><copy-outlined /></template>
-                  复制
-                </a-button>
-              </div>
-              <pre class="api-doc-code">{{ buildCurl(selectedApiDoc) }}</pre>
+              <pre class="api-doc-code">{{ formatResponseExample(selectedApiDoc) }}</pre>
             </div>
           </section>
         </div>
@@ -395,6 +381,13 @@ const apiDocsLoading = ref(false)
 const apiDocKeyword = ref('')
 const apiCatalog = ref<ExternalPublicApiCatalog>()
 const selectedApiDocId = ref<string>()
+const publicApiBaseUrl = computed(() => normalizePublicApiBaseUrl(
+  (import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined)
+    || (import.meta.env.DEV ? import.meta.env.VITE_JUHE_AI_BACKEND_TARGET as string | undefined : undefined)
+))
+const curlCommandPlatform = computed<CurlCommandPlatform>(() => detectCurlCommandPlatform())
+
+type CurlCommandPlatform = 'windows' | 'posix'
 
 const sourceModalOpen = ref(false)
 const sourceSaving = ref(false)
@@ -492,8 +485,7 @@ const filteredApiDocs = computed(() => {
   return items.filter((item) => [
     item.name,
     item.path,
-    item.summary,
-    item.scope
+    item.summary
   ].some((value) => value.toLowerCase().includes(keyword)))
 })
 
@@ -515,7 +507,7 @@ async function loadScopes(): Promise<void> {
     scopeOptions.value = [
       { value: 'external_integrations:source_auth_demo:read', label: '来源鉴权 demo' },
       { value: 'juhe_ai_ip_usage:read', label: 'IP 聚合读取' },
-      { value: 'juhe_ai_account_push:write', label: '公益账号推送' }
+      { value: 'juhe_ai_account_push:write', label: '公开资源写入' }
     ]
   }
 }
@@ -552,23 +544,24 @@ function copyCurl(item: ExternalPublicApiDocItem | undefined): void {
 function buildCurl(item: ExternalPublicApiDocItem | undefined): string {
   if (!item) return ''
   const url = buildApiDocUrl(item)
+  const platform = curlCommandPlatform.value
   const parts = [
-    'curl',
+    platform === 'windows' ? 'curl.exe' : 'curl',
     '-X',
     item.method,
-    quoteShell(url),
+    quoteShell(url, platform),
     '-H',
-    quoteShell(`Authorization: Bearer ${apiCatalog.value?.testToken ?? '<source_token>'}`)
+    quoteShell(`Authorization: Bearer ${apiCatalog.value?.testToken ?? '<source_token>'}`, platform)
   ]
   if (item.requestBody) {
-    parts.push('-H', quoteShell(`Content-Type: ${item.requestBody.contentType}`))
-    parts.push('--data', quoteShell(JSON.stringify(item.requestBody.example)))
+    parts.push('-H', quoteShell(`Content-Type: ${item.requestBody.contentType}`, platform))
+    parts.push('--data', quoteShell(JSON.stringify(item.requestBody.example), platform))
   }
   return parts.join(' ')
 }
 
 function buildApiDocUrl(item: ExternalPublicApiDocItem): string {
-  const url = new URL(item.path, window.location.origin)
+  const url = new URL(item.path, `${publicApiBaseUrl.value}/`)
   for (const field of item.query) {
     if (field.example !== undefined) {
       url.searchParams.set(field.name, String(field.example))
@@ -577,12 +570,57 @@ function buildApiDocUrl(item: ExternalPublicApiDocItem): string {
   return url.toString()
 }
 
-function quoteShell(value: string): string {
+function quoteShell(value: string, platform: CurlCommandPlatform): string {
+  if (platform === 'windows') {
+    return `"${value.replace(/"/g, '""')}"`
+  }
   return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function detectCurlCommandPlatform(): CurlCommandPlatform {
+  if (typeof navigator === 'undefined') return 'posix'
+  const userAgentData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
+  const platform = [
+    userAgentData?.platform,
+    navigator.platform,
+    navigator.userAgent
+  ].filter(Boolean).join(' ').toLowerCase()
+  return platform.includes('win') ? 'windows' : 'posix'
+}
+
+function normalizePublicApiBaseUrl(value?: string): string {
+  const text = value?.trim().replace(/\/+$/, '')
+  if (text && /^https?:\/\//i.test(text)) return text
+  return inferPublicApiBaseUrl()
+}
+
+function inferPublicApiBaseUrl(): string {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:3000'
+  if (import.meta.env.DEV) {
+    return `${window.location.protocol}//${window.location.hostname}:3000`
+  }
+  return window.location.origin
 }
 
 function formatJson(value: unknown): string {
   return JSON.stringify(value, null, 2)
+}
+
+function formatResponseExample(item: ExternalPublicApiDocItem | undefined): string {
+  return formatJson(publicResponseExample(item))
+}
+
+function publicResponseExample(item: ExternalPublicApiDocItem | undefined): unknown {
+  if (!item) return {}
+  if (item.id !== 'source-auth-demo') return item.responseExample
+  const response = item.responseExample
+  if (!isRecord(response) || !isRecord(response.data)) return response
+  const { scopes: _scopes, ...publicData } = response.data
+  return { ...response, data: publicData }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function apiStatusText(status: ExternalPublicApiStatus): string {
@@ -1038,7 +1076,6 @@ function scopeLabel(scope: string): string {
 }
 
 .api-doc-detail-head,
-.api-doc-section-head,
 .api-doc-title-line {
   display: flex;
   align-items: center;
@@ -1067,10 +1104,6 @@ function scopeLabel(scope: string): string {
 
 .api-doc-section h4 {
   margin: 0 0 8px;
-}
-
-.api-doc-section-head {
-  justify-content: space-between;
 }
 
 .api-doc-field-table {

@@ -12,10 +12,23 @@ import {
 import { createOperationLog } from '../../storage/repositories.js'
 import { getExternalIntegrationSourceContext, requireExternalIntegrationSource } from './external-source-auth.middleware.js'
 import {
+  addPublicWelfareAccount,
   deletePublicWelfareAccount,
+  addPublicApiKey,
+  addPublicGroup,
+  deletePublicApiKey,
+  deletePublicGroup,
+  mockPublicApiKeyAdd,
+  mockPublicApiKeyDelete,
+  mockPublicApiKeyUpdate,
+  mockPublicGroupAdd,
+  mockPublicGroupDelete,
+  mockPublicGroupUpdate,
   mockPublicWelfareAccountDelete,
   mockPublicWelfareAccountPush,
-  pushPublicWelfareAccount,
+  updatePublicWelfareAccount,
+  updatePublicApiKey,
+  updatePublicGroup,
   type PublicAccountDeleteResponse,
   type PublicAccountPushResponse
 } from './external-public-account-push.service.js'
@@ -55,7 +68,7 @@ const accountPushSchema = z.object({
   targetGroupName: z.string().trim().min(1).max(80),
   providerCode: z.string().trim().min(1).max(60).optional(),
   name: z.string().trim().min(1).max(120),
-  type: z.string().trim().optional().refine((value) => value === undefined || value === 'api_key', '公益账号推送仅支持 API Key 账户'),
+  type: z.string().trim().optional().refine((value) => value === undefined || value === 'api_key', '账号新增仅支持 API Key 账户'),
   baseUrl: z.string().trim().min(1).max(500),
   apiKey: z.string().trim().min(1).max(1000),
   supportedModels: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
@@ -76,7 +89,90 @@ const accountDeleteSchema = z.object({
   if (!value.accountId && !value.name && !value.externalId) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      message: '删除公益账号时必须提供 accountId、name 或 externalId'
+      message: '删除账号时必须提供 accountId、name 或 externalId'
+    })
+  }
+})
+const groupAddSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  targetDisplayName: z.string().trim().min(1).max(80).optional(),
+  name: z.string().trim().min(1).max(80),
+  providerCode: z.string().trim().min(1).max(60).optional(),
+  description: z.string().trim().max(500).optional(),
+  enabled: z.boolean().optional(),
+  groupType: z.enum(['personal', 'high_concurrency']).optional()
+})
+const groupUpdateSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  groupId: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(80).optional(),
+  providerCode: z.string().trim().min(1).max(60).optional(),
+  description: z.string().trim().max(500).nullable().optional(),
+  enabled: z.boolean().optional(),
+  groupType: z.enum(['personal', 'high_concurrency']).optional()
+})
+const groupDeleteSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  groupId: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(80).optional(),
+  providerCode: z.string().trim().min(1).max(60).optional()
+}).superRefine((value, context) => {
+  if (!value.groupId && !value.name) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '删除分组时必须提供 groupId 或 name'
+    })
+  }
+})
+const apiKeyGroupBindingSchema = z.object({
+  groupId: z.string().trim().min(1).max(120),
+  priority: z.coerce.number().int().positive().optional(),
+  weight: z.coerce.number().int().min(1).max(100).optional(),
+  status: z.enum(['active', 'disabled']).optional()
+})
+const apiKeyAddSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(200).nullable().optional(),
+  groupId: z.string().trim().min(1).max(120).optional(),
+  groupName: z.string().trim().min(1).max(80).optional(),
+  groupBindings: z.array(apiKeyGroupBindingSchema).min(1).max(20).optional(),
+  groupRouteStrategy: z.enum(['priority_failover', 'round_robin', 'weighted_round_robin']).optional(),
+  status: z.enum(['active', 'disabled']).optional(),
+  expiresAt: z.string().trim().optional(),
+  quotaLimits: z.record(z.string(), z.unknown()).nullable().optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional()
+}).superRefine((value, context) => {
+  if (!value.groupId && !value.groupName && !value.groupBindings?.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '新增 API Key 时必须提供 groupId、groupName 或 groupBindings'
+    })
+  }
+})
+const apiKeyUpdateSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  apiKeyId: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(200).nullable().optional(),
+  groupId: z.string().trim().min(1).max(120).optional(),
+  groupName: z.string().trim().min(1).max(80).optional(),
+  groupBindings: z.array(apiKeyGroupBindingSchema).min(1).max(20).optional(),
+  groupRouteStrategy: z.enum(['priority_failover', 'round_robin', 'weighted_round_robin']).optional(),
+  status: z.enum(['active', 'disabled']).optional(),
+  expiresAt: z.string().trim().nullable().optional(),
+  quotaLimits: z.record(z.string(), z.unknown()).nullable().optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional()
+})
+const apiKeyDeleteSchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  apiKeyId: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120).optional()
+}).superRefine((value, context) => {
+  if (!value.apiKeyId && !value.name) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '删除 API Key 时必须提供 apiKeyId 或 name'
     })
   }
 })
@@ -91,7 +187,6 @@ externalIntegrationsRouter.get(
       sourceName: context.sourceName,
       tokenName: context.tokenName,
       tokenPrefix: context.tokenPrefix,
-      scopes: context.scopes,
       authenticatedAt: context.authenticatedAt,
       mock: context.isTestToken
     }))
@@ -117,7 +212,7 @@ externalIntegrationsRouter.get(
 )
 
 externalIntegrationsRouter.get(
-  '/juhe-ai/ip-usage',
+  '/ip/usage',
   requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
   (req, res) => {
     const parsed = ipUsageQuerySchema.safeParse(req.query)
@@ -131,7 +226,7 @@ externalIntegrationsRouter.get(
 )
 
 externalIntegrationsRouter.get(
-  '/juhe-ai/consumption-ranking',
+  '/consumption/ranking',
   requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
   (req, res) => {
     const parsed = consumptionRankingQuerySchema.safeParse(req.query)
@@ -145,7 +240,7 @@ externalIntegrationsRouter.get(
 )
 
 externalIntegrationsRouter.get(
-  '/juhe-ai/access-info',
+  '/access/info',
   requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
   (_req, res) => {
     const context = getExternalIntegrationSourceContext(res)
@@ -154,12 +249,152 @@ externalIntegrationsRouter.get(
 )
 
 externalIntegrationsRouter.post(
-  '/juhe-ai/accounts',
+  '/group/add',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = groupAddSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '分组新增参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.status(201).json(ok(mockPublicGroupAdd(parsed.data)))
+      return
+    }
+    try {
+      res.status(201).json(ok(addPublicGroup(parsed.data)))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '分组新增失败'
+      res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/group/update',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = groupUpdateSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '分组修改参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicGroupUpdate(parsed.data)))
+      return
+    }
+    try {
+      const result = updatePublicGroup(parsed.data)
+      res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: '分组不存在' } : ok(result))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '分组修改失败'
+      res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/group/del',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = groupDeleteSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '分组删除参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicGroupDelete(parsed.data)))
+      return
+    }
+    try {
+      const result = deletePublicGroup(parsed.data)
+      res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: '分组不存在' } : ok(result))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '分组删除失败'))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/api-key/add',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = apiKeyAddSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 新增参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.status(201).json(ok(mockPublicApiKeyAdd(parsed.data)))
+      return
+    }
+    try {
+      res.status(201).json(ok(addPublicApiKey(parsed.data)))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'API Key 新增失败'
+      res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/api-key/update',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = apiKeyUpdateSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 修改参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicApiKeyUpdate(parsed.data)))
+      return
+    }
+    try {
+      const result = updatePublicApiKey(parsed.data)
+      res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: 'API Key 不存在' } : ok(result))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'API Key 修改失败'
+      res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/api-key/del',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = apiKeyDeleteSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 删除参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicApiKeyDelete(parsed.data)))
+      return
+    }
+    try {
+      const result = deletePublicApiKey(parsed.data)
+      res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: 'API Key 不存在' } : ok(result))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : 'API Key 删除失败'))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/account/add',
   requireExternalIntegrationSource(externalIntegrationAccountPushScope),
   (req, res) => {
     const parsed = accountPushSchema.safeParse(req.body)
     if (!parsed.success) {
-      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '公益账号推送参数无效')))
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号新增参数无效')))
       return
     }
     const context = getExternalIntegrationSourceContext(res)
@@ -169,24 +404,49 @@ externalIntegrationsRouter.post(
     }
 
     try {
-      const result = pushPublicWelfareAccount(parsed.data)
-      const statusCode = result.action === 'created' ? 201 : 200
-      recordPublicWelfareAccountPushOperation(context, result, req, statusCode)
-      res.status(statusCode).json(ok(result))
+      const result = addPublicWelfareAccount(parsed.data)
+      recordPublicWelfareAccountWriteOperation(context, result, req, 201)
+      res.status(201).json(ok(result))
     } catch (error) {
-      const message = error instanceof Error ? error.message : '公益账号推送失败'
+      const message = error instanceof Error ? error.message : '账号新增失败'
       res.status(message.includes('已存在') || message.includes('重复') ? 409 : 400).json(badRequest(message))
     }
   }
 )
 
-externalIntegrationsRouter.delete(
-  '/juhe-ai/accounts',
+externalIntegrationsRouter.post(
+  '/account/update',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = accountPushSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号修改参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicWelfareAccountPush(parsed.data)))
+      return
+    }
+
+    try {
+      const result = updatePublicWelfareAccount(parsed.data)
+      recordPublicWelfareAccountWriteOperation(context, result, req, 200)
+      res.json(ok(result))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '账号修改失败'
+      res.status(message.includes('不存在') ? 404 : message.includes('已存在') || message.includes('重复') ? 409 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.post(
+  '/account/del',
   requireExternalIntegrationSource(externalIntegrationAccountPushScope),
   (req, res) => {
     const parsed = accountDeleteSchema.safeParse(req.body)
     if (!parsed.success) {
-      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '公益账号删除参数无效')))
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号删除参数无效')))
       return
     }
     const context = getExternalIntegrationSourceContext(res)
@@ -200,18 +460,19 @@ externalIntegrationsRouter.delete(
       recordPublicWelfareAccountDeleteOperation(context, result, req, 200)
       res.json(ok(result))
     } catch (error) {
-      const message = error instanceof Error ? error.message : '公益账号删除失败'
+      const message = error instanceof Error ? error.message : '账号删除失败'
       res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
     }
   }
 )
 
-function recordPublicWelfareAccountPushOperation(
+function recordPublicWelfareAccountWriteOperation(
   context: ExternalIntegrationSourceAuthContext,
   result: PublicAccountPushResponse,
   req: Request,
   statusCode: number
 ): void {
+  const created = result.action === 'created'
   try {
     createOperationLog({
       actorSystemAccountId: `external:${context.sourceRefId}`,
@@ -221,12 +482,12 @@ function recordPublicWelfareAccountPushOperation(
       operationScopeSystemAccountId: result.target.systemAccountId,
       mode: 'self',
       module: 'external_integrations',
-      action: 'account_push',
-      operationKey: 'external_integrations.public_account_push',
+      action: created ? 'account_add' : 'account_update',
+      operationKey: created ? 'external_integrations.public_account_add' : 'external_integrations.public_account_update',
       resourceType: 'account',
       resourceId: result.account.id,
       resourceName: result.account.name,
-      summary: `${context.sourceName} 推送公益账号：${result.account.name}`,
+      summary: `${context.sourceName} ${created ? '新增' : '修改'}账号：${result.account.name}`,
       detailLevel: 'full',
       visibilityScope: 'admin_only',
       changes: [
@@ -261,15 +522,15 @@ function recordPublicWelfareAccountPushOperation(
         { targetType: 'external_integration_source', targetId: context.sourceRefId, targetName: context.sourceName, relation: 'affected' },
         { targetType: 'system_account', targetId: result.target.systemAccountId, targetName: result.target.username, relation: result.target.created ? 'created' : 'affected' },
         { targetType: 'group', targetId: result.target.groupId, targetName: result.target.groupName, targetOwnerSystemAccountId: result.target.systemAccountId, relation: result.target.groupCreated ? 'created' : 'affected' },
-        { targetType: 'account', targetId: result.account.id, targetName: result.account.name, targetOwnerSystemAccountId: result.target.systemAccountId, relation: result.action === 'created' ? 'created' : 'affected' }
+        { targetType: 'account', targetId: result.account.id, targetName: result.account.name, targetOwnerSystemAccountId: result.target.systemAccountId, relation: created ? 'created' : 'affected' }
       ]
     })
   } catch (error) {
     logger.warn(errorLogFields(error, {
-      event: 'external_account_push_operation_log_failed',
+      event: 'external_account_write_operation_log_failed',
       sourceRefId: context.sourceRefId,
       accountId: result.account.id
-    }), '公益账号推送操作日志写入失败')
+    }), '账号写入操作日志写入失败')
   }
 }
 
@@ -297,7 +558,7 @@ function recordPublicWelfareAccountDeleteOperation(
       resourceType: 'account',
       resourceId: result.account.id,
       resourceName: result.account.name,
-      summary: `${context.sourceName} 删除公益账号：${result.account.name}`,
+      summary: `${context.sourceName} 删除账号：${result.account.name}`,
       detailLevel: 'full',
       visibilityScope: 'admin_only',
       changes: [
@@ -334,7 +595,7 @@ function recordPublicWelfareAccountDeleteOperation(
       event: 'external_account_delete_operation_log_failed',
       sourceRefId: context.sourceRefId,
       accountId: result.account.id
-    }), '公益账号删除操作日志写入失败')
+    }), '账号删除操作日志写入失败')
   }
 }
 

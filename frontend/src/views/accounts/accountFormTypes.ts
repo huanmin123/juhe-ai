@@ -3,6 +3,7 @@ import type { Dayjs } from 'dayjs'
 import type { AccountStatus, AccountType } from '@/types/domain'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
+import type { AccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 
 export interface AccountFormModel {
   providerCode: string
@@ -21,6 +22,7 @@ export interface AccountFormModel {
   priority: number
   supportedModels: string[]
   proxyProfileId?: string
+  availabilitySchedule: AccountAvailabilityScheduleForm
   notes: string
 }
 
