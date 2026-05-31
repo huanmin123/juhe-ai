@@ -3,14 +3,21 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import {
+  applyAuditPayloadBlobPersistencePlan,
   auditPayloadBodyDetail,
   cleanupCreatedAuditBlobFiles,
+  cleanupCreatedAuditBlobFilesAsync,
   cleanupUnreferencedAuditPayloadBlobs,
   persistAuditPayloadBlob,
+  persistAuditPayloadBlobAsync,
   prepareAuditPayloadBlobStatements,
   prepareAuditPayloadBlob,
+  prepareAuditPayloadBlobAsync,
+  planAuditPayloadBlobPersistence,
   readAuditHeadersBlob,
   readAuditPayloadBlobWindow,
+  writeAuditPayloadBlobFileForPlan,
+  type AuditPayloadBlobPersistencePlan,
   type PreparedAuditPayloadBlob
 } from './audit-log-payload-blobs.js'
 import {
@@ -204,7 +211,6 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
 export interface AuditLogListOptions {
   page?: number
   pageSize?: number
-  limit?: number
   traceId?: string
   outcome?: AuditOutcome | 'all'
   statusCode?: number
@@ -266,7 +272,6 @@ export interface AuditErrorGroupSummary {
 export interface AuditErrorGroupListOptions {
   page?: number
   pageSize?: number
-  limit?: number
   path?: string
   model?: string
   statusCode?: number
@@ -295,6 +300,8 @@ interface PreparedAuditPayload {
   contentEncoding?: string
   headersBlob?: PreparedAuditPayloadBlob
   bodyBlob?: PreparedAuditPayloadBlob
+  headersBlobPlan?: AuditPayloadBlobPersistencePlan
+  bodyBlobPlan?: AuditPayloadBlobPersistencePlan
   headersSha256?: string
   bodySha256?: string
   rawSizeBytes: number
@@ -315,6 +322,7 @@ const auditLogDefaultPageSize = 100
 const auditLogMaxPageSize = 100
 const errorGroupDefaultPageSize = 100
 const errorGroupMaxPageSize = 100
+const auditLogMaxListWindowRows = 1001
 const auditErrorGroupWindowMs = 5 * 60 * 1000
 const auditHeadersContentType = 'application/json; audit=headers'
 
@@ -474,6 +482,215 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   }
 }
 
+export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promise<void> {
+  if (inputs.length === 0) return
+
+  const database = getDatasetDatabase()
+  const existingLogIds = loadExistingAuditLogIds(database, inputs)
+  const seenLogIds = new Set<string>()
+  const preparedLogs: Array<{
+    input: AuditLogInput
+    id: string
+    createdAt: string
+    attemptIds: Map<string, string>
+    preparedAttempts: Array<AuditLogAttemptInput & { id: string }>
+    payloads: PreparedAuditPayload[]
+    rawPayloadBytes: number
+    compressedPayloadBytes: number
+    compressionSavedBytes: number
+  }> = []
+
+  for (const input of inputs) {
+    const id = input.id ?? newId('audit')
+    if (existingLogIds.has(id) || seenLogIds.has(id)) {
+      continue
+    }
+    seenLogIds.add(id)
+    const createdAt = input.createdAt ?? nowIso()
+    const attemptIds = new Map<string, string>()
+    const preparedAttempts = input.attempts.map((attempt) => {
+      const attemptId = attempt.id ?? newId('audatt')
+      if (attempt.tempId) {
+        attemptIds.set(attempt.tempId, attemptId)
+      }
+      return { ...attempt, id: attemptId }
+    })
+    const payloads = await Promise.all(input.payloads.map((payload, index) => preparePayloadInputAsync(payload, index, createdAt)))
+    const rawPayloadBytes = payloads.reduce((sum, payload) => sum + payload.rawSizeBytes, 0)
+    const compressedPayloadBytes = payloads.reduce((sum, payload) => sum + payload.compressedSizeBytes, 0)
+    preparedLogs.push({
+      input,
+      id,
+      createdAt,
+      attemptIds,
+      preparedAttempts,
+      payloads,
+      rawPayloadBytes,
+      compressedPayloadBytes,
+      compressionSavedBytes: Math.max(0, rawPayloadBytes - compressedPayloadBytes)
+    })
+  }
+  if (preparedLogs.length === 0) return
+  const payloadBlobStatements = prepareAuditPayloadBlobStatements(database)
+  const batchBlobPlans = new Map<string, AuditPayloadBlobPersistencePlan>()
+  for (const prepared of preparedLogs) {
+    for (const payload of prepared.payloads) {
+      payload.headersBlobPlan = planAuditPayloadBlobPersistenceForBatch(database, payload.headersBlob, payloadBlobStatements, batchBlobPlans)
+      payload.bodyBlobPlan = planAuditPayloadBlobPersistenceForBatch(database, payload.bodyBlob, payloadBlobStatements, batchBlobPlans)
+    }
+  }
+
+  const plannedStorageKeys = new Set<string>()
+  try {
+    for (const prepared of preparedLogs) {
+      for (const payload of prepared.payloads) {
+        await writeAuditPayloadBlobFileForPlan(payload.headersBlob, payload.headersBlobPlan)
+        if (payload.headersBlobPlan?.shouldWriteFile && payload.headersBlobPlan.storageKey) {
+          plannedStorageKeys.add(payload.headersBlobPlan.storageKey)
+        }
+        await writeAuditPayloadBlobFileForPlan(payload.bodyBlob, payload.bodyBlobPlan)
+        if (payload.bodyBlobPlan?.shouldWriteFile && payload.bodyBlobPlan.storageKey) {
+          plannedStorageKeys.add(payload.bodyBlobPlan.storageKey)
+        }
+      }
+    }
+  } catch (error) {
+    await cleanupCreatedAuditBlobFilesAsync([...plannedStorageKeys])
+    throw error
+  }
+
+  const insertLog = database.prepare(`
+    INSERT INTO audit_logs (
+      id, trace_id, traffic_source, system_account_id, api_key_id, group_id, account_id, provider_code, method, path, query_string,
+      model, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
+      error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
+      compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
+      duration_ms, first_token_ms, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+  `)
+  const insertAttempt = database.prepare(`
+    INSERT INTO audit_log_attempts (
+      id, audit_log_id, attempt_index, account_id, account_owner_system_account_id, group_id, proxy_url, provider_code,
+      upstream_method, upstream_url, upstream_status_code, success, error_phase, error_code, error_message,
+      started_at, ended_at, duration_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+  `)
+  const insertPayloadRef = database.prepare(`
+    INSERT INTO audit_payload_refs (
+      id, audit_log_id, attempt_id, part_type, sequence_index, content_type, content_encoding, headers_blob_id,
+      body_blob_id, headers_sha256, body_sha256, raw_size_bytes, compressed_size_bytes, capture_status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+  `)
+
+  const createdStorageKeys: string[] = []
+  const errorGroupStatements = prepareAuditErrorGroupStatements(database)
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const prepared of preparedLogs) {
+      const { input, id, createdAt, attemptIds, preparedAttempts, payloads, rawPayloadBytes, compressedPayloadBytes, compressionSavedBytes } = prepared
+      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, errorGroupStatements)
+
+      const insertLogResult = insertLog.run(
+        id,
+        input.traceId,
+        normalizeAuditTrafficSource(input.trafficSource),
+        input.systemAccountId ?? null,
+        input.apiKeyId ?? null,
+        input.groupId ?? null,
+        input.accountId ?? null,
+        input.providerCode ?? null,
+        input.method,
+        input.path,
+        input.queryString ?? null,
+        input.model ?? null,
+        input.stream ? 1 : 0,
+        input.clientIp ?? null,
+        input.userAgent ?? null,
+        input.auditOutcome,
+        input.success ? 1 : 0,
+        input.finalStatusCode ?? null,
+        input.errorPhase ?? null,
+        input.errorCode ?? null,
+        input.errorMessage ?? null,
+        input.sampleBucket,
+        input.sampleReason,
+        preparedAttempts.length,
+        payloads.length,
+        rawPayloadBytes,
+        compressedPayloadBytes,
+        compressionSavedBytes,
+        errorGroupId,
+        input.captureStatus ?? 'complete',
+        input.startedAt,
+        input.endedAt,
+        input.durationMs ?? null,
+        input.firstTokenMs ?? null,
+        createdAt
+      )
+      if (Number(insertLogResult.changes ?? 0) === 0) {
+        continue
+      }
+
+      for (const attempt of preparedAttempts) {
+        insertAttempt.run(
+          attempt.id,
+          id,
+          attempt.attemptIndex,
+          attempt.accountId ?? null,
+          attempt.accountOwnerSystemAccountId ?? null,
+          attempt.groupId ?? null,
+          attempt.proxyUrl ?? null,
+          attempt.providerCode ?? null,
+          attempt.upstreamMethod,
+          attempt.upstreamUrl,
+          attempt.upstreamStatusCode ?? null,
+          attempt.success ? 1 : 0,
+          attempt.errorPhase ?? null,
+          attempt.errorCode ?? null,
+          attempt.errorMessage ?? null,
+          attempt.startedAt,
+          attempt.endedAt ?? null,
+          attempt.durationMs ?? null
+        )
+      }
+
+      for (const payload of payloads) {
+        const headersBlobId = applyAuditPayloadBlobPersistencePlan(payload.headersBlob, payload.headersBlobPlan, createdAt, createdStorageKeys, payloadBlobStatements)
+        const bodyBlobId = applyAuditPayloadBlobPersistencePlan(payload.bodyBlob, payload.bodyBlobPlan, createdAt, createdStorageKeys, payloadBlobStatements)
+        insertPayloadRef.run(
+          payload.id,
+          id,
+          payload.attemptTempId ? attemptIds.get(payload.attemptTempId) ?? null : null,
+          payload.partType,
+          payload.sequenceIndex,
+          payload.contentType ?? null,
+          payload.contentEncoding ?? null,
+          headersBlobId,
+          bodyBlobId,
+          payload.headersSha256 ?? null,
+          payload.bodySha256 ?? null,
+          payload.rawSizeBytes,
+          payload.compressedSizeBytes,
+          payload.captureStatus,
+          payload.createdAt
+        )
+      }
+    }
+
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    try {
+      rollbackDatabaseTransaction(database, transactionStarted)
+    } catch {
+    }
+    await cleanupCreatedAuditBlobFilesAsync(createdStorageKeys)
+    throw error
+  }
+}
+
 function loadExistingAuditLogIds(database: ReturnType<typeof getDatasetDatabase>, inputs: AuditLogInput[]): Set<string> {
   const ids = [...new Set(inputs.map((input) => input.id).filter((id): id is string => Boolean(id?.trim())))]
   const existingIds = new Set<string>()
@@ -492,8 +709,8 @@ function loadExistingAuditLogIds(database: ReturnType<typeof getDatasetDatabase>
 
 export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListResult {
   const filters = buildAuditLogFilters(options)
-  const pageSize = normalizePageSize(options.pageSize ?? options.limit, auditLogDefaultPageSize, auditLogMaxPageSize)
-  const page = normalizePage(options.page)
+  const pageSize = normalizePageSize(options.pageSize, auditLogDefaultPageSize, auditLogMaxPageSize)
+  const page = normalizePage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const database = getDatasetDatabase()
   const rows = database
@@ -521,8 +738,8 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
 
 export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): AuditErrorGroupListResult {
   const filters = buildAuditErrorGroupFilters(options)
-  const pageSize = normalizePageSize(options.pageSize ?? options.limit, errorGroupDefaultPageSize, errorGroupMaxPageSize)
-  const page = normalizePage(options.page)
+  const pageSize = normalizePageSize(options.pageSize, errorGroupDefaultPageSize, errorGroupMaxPageSize)
+  const page = normalizePage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const database = getDatasetDatabase()
   const rows = database
@@ -705,6 +922,61 @@ function preparePayloadInput(payload: AuditLogPayloadInput, fallbackIndex: numbe
     captureStatus: payload.captureStatus ?? 'complete',
     createdAt: payload.createdAt ?? fallbackCreatedAt
   }
+}
+
+async function preparePayloadInputAsync(payload: AuditLogPayloadInput, fallbackIndex: number, fallbackCreatedAt: string): Promise<PreparedAuditPayload> {
+  const headersBlob = payload.headers
+    ? await prepareAuditPayloadBlobAsync(Buffer.from(stableJsonStringify(payload.headers), 'utf8'), auditHeadersContentType)
+    : undefined
+  const bodyBuffer = bodyToBuffer(payload.body)
+  const bodyBlob = await prepareAuditPayloadBlobAsync(bodyBuffer, payload.contentType, payload.contentEncoding)
+  const rawBodySizeBytes = normalizePayloadSizeBytes(payload.rawBodySizeBytes, bodyBlob?.rawSizeBytes ?? 0)
+  const rawSizeBytes = (headersBlob?.rawSizeBytes ?? 0) + rawBodySizeBytes
+  const compressedSizeBytes = (headersBlob?.compressedSizeBytes ?? 0) + (bodyBlob?.compressedSizeBytes ?? 0)
+  const bodySha256 = payload.bodySha256 ?? bodyBlob?.sha256
+  return {
+    id: payload.id ?? newId('audpay'),
+    attemptTempId: payload.attemptTempId,
+    partType: payload.partType,
+    sequenceIndex: payload.sequenceIndex ?? fallbackIndex,
+    contentType: payload.contentType,
+    contentEncoding: payload.contentEncoding,
+    headersBlob,
+    bodyBlob,
+    headersSha256: headersBlob?.sha256,
+    bodySha256,
+    rawSizeBytes,
+    compressedSizeBytes,
+    captureStatus: payload.captureStatus ?? 'complete',
+    createdAt: payload.createdAt ?? fallbackCreatedAt
+  }
+}
+
+function planAuditPayloadBlobPersistenceForBatch(
+  database: ReturnType<typeof getDatasetDatabase>,
+  blob: PreparedAuditPayloadBlob | undefined,
+  statements: ReturnType<typeof prepareAuditPayloadBlobStatements>,
+  batchPlans: Map<string, AuditPayloadBlobPersistencePlan>
+): AuditPayloadBlobPersistencePlan | undefined {
+  if (!blob) return undefined
+  const key = auditPayloadBlobBatchKey(blob)
+  const existingPlan = batchPlans.get(key)
+  if (existingPlan) {
+    return {
+      ...existingPlan,
+      existing: true,
+      shouldWriteFile: false
+    }
+  }
+  const plan = planAuditPayloadBlobPersistence(database, blob, statements)
+  if (plan) {
+    batchPlans.set(key, plan)
+  }
+  return plan
+}
+
+function auditPayloadBlobBatchKey(blob: PreparedAuditPayloadBlob): string {
+  return `${blob.sha256}\u0000${blob.rawSizeBytes}\u0000${blob.contentType}`
 }
 
 function prepareAuditErrorGroupStatements(database: ReturnType<typeof getDatasetDatabase>): AuditErrorGroupStatements {
@@ -950,9 +1222,10 @@ function auditErrorGroupListSelectColumns(alias: string): string {
   ].map((column) => `${alias}.${column}`).join(', ')
 }
 
-function normalizePage(value: unknown): number {
+function normalizePage(value: unknown, pageSize: number): number {
+  const maxPage = Math.max(1, Math.floor((auditLogMaxListWindowRows - 1) / Math.max(1, Math.trunc(pageSize))))
   return typeof value === 'number' && Number.isInteger(value)
-    ? Math.max(1, value)
+    ? Math.min(maxPage, Math.max(1, value))
     : 1
 }
 

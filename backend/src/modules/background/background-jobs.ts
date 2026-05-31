@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync } from 'node:fs'
 import { execFile } from 'node:child_process'
+import { readFile, stat as statFile } from 'node:fs/promises'
 import { cpus, freemem, platform, totalmem } from 'node:os'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -244,7 +244,7 @@ async function runSystemMetricsSample(): Promise<void> {
       processHeapTotalBytes: memoryUsage.heapTotal,
       eventLoopLagMs: workerEventLoopSample.eventLoopLagMs,
       ...networkMetrics,
-      dbFileBytes: databaseFileBytes(),
+      dbFileBytes: await databaseFileBytes(),
       statsLagSeconds: latestUsageStatsLagSeconds()
     })
     for (const sample of [workerEventLoopSample, ...processEventLoopSamples]) {
@@ -439,16 +439,24 @@ function settingsString(key: string, fallback: string): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
-function databaseFileBytes(): number | undefined {
+async function databaseFileBytes(): Promise<number | undefined> {
   try {
     const databasePaths = new Set([runtimeConfig.databasePath, datasetDatabasePath(), statsDatabasePath()])
     let totalBytes = 0
     for (const databasePath of databasePaths) {
-      totalBytes += existsSync(databasePath) ? statSync(databasePath).size : 0
+      totalBytes += await fileSize(databasePath)
     }
     return totalBytes || undefined
   } catch {
     return undefined
+  }
+}
+
+async function fileSize(path: string): Promise<number> {
+  try {
+    return (await statFile(path)).size
+  } catch (error) {
+    return isMissingFileError(error) ? 0 : 0
   }
 }
 
@@ -536,7 +544,7 @@ async function readNetworkCounterSnapshot(): Promise<NetworkCounterSnapshot | un
     ? await readWindowsNetworkCounters()
     : currentPlatform === 'darwin'
       ? await readDarwinNetworkCounters()
-      : readProcNetworkCounters()
+      : await readProcNetworkCounters()
   if (!counters) return undefined
   return { ...counters, sampledAtMs: Date.now() }
 }
@@ -614,11 +622,10 @@ async function runUsageStatsConsistencyCheck(): Promise<void> {
   }
 }
 
-function readProcNetworkCounters(): { rxBytes: number; txBytes: number } | undefined {
+async function readProcNetworkCounters(): Promise<{ rxBytes: number; txBytes: number } | undefined> {
   const path = '/proc/net/dev'
-  if (!existsSync(path)) return undefined
   try {
-    const lines = readFileSync(path, 'utf8').split('\n').slice(2)
+    const lines = (await readFile(path, 'utf8')).split('\n').slice(2)
     let rxBytes = 0
     let txBytes = 0
     for (const line of lines) {
@@ -634,6 +641,10 @@ function readProcNetworkCounters(): { rxBytes: number; txBytes: number } | undef
   } catch {
     return undefined
   }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'ENOENT'
 }
 
 async function readWindowsNetworkCounters(): Promise<{ rxBytes: number; txBytes: number } | undefined> {

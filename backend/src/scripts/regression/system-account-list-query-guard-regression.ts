@@ -75,7 +75,7 @@ try {
     mustChangePassword: false
   })
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -94,7 +94,7 @@ try {
     const firstPage = repositories.listSystemAccountsPage({ page: 1, pageSize: 1 })
     assert.equal(firstPage.items.length, 1, '系统账户列表第一页应只返回 pageSize 条')
     assert.equal(firstPage.hasMore, true, '系统账户列表应通过 pageSize + 1 判断是否还有更多')
-    assert(firstPage.total >= 2, '系统账户列表 total 应提供兼容上界')
+    assert(firstPage.total >= 2, '系统账户列表 total 应提供分页上界')
 
     const searchResult = repositories.listSystemAccountsPage({ keyword: '系统账户列表用户', page: 1, pageSize: 20 })
     const searchIds = searchResult.items.map((account) => account.id)
@@ -133,7 +133,7 @@ try {
   console.log('系统账户列表查询防护回归通过：列表分页读取，关键词仅按用户名称精确/前缀匹配且不读取密码哈希')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -141,7 +141,7 @@ try {
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)

@@ -193,7 +193,7 @@ try {
   console.log('授权账户调度标记回归通过')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -215,7 +215,7 @@ function authorizedInstanceForSource(sourceAccountId: string, access: { systemAc
 }
 
 function bindingRow(accountId: string, groupId: string) {
-  return databaseModule.getDatabase()
+  return databaseModule.getBusinessDatabase()
     .prepare(`
       SELECT local_priority, local_super_priority_enabled, local_fallback_enabled
       FROM group_accounts
@@ -226,7 +226,7 @@ function bindingRow(accountId: string, groupId: string) {
 }
 
 function accountDispatchRow(accountId: string) {
-  return databaseModule.getDatabase()
+  return databaseModule.getBusinessDatabase()
     .prepare('SELECT priority, super_priority_enabled, fallback_enabled FROM accounts WHERE id = ? LIMIT 1')
     .get(accountId) as { priority?: number; super_priority_enabled?: number; fallback_enabled?: number } | undefined
 }

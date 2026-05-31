@@ -3,8 +3,9 @@ import type { NextFunction, Response } from 'express'
 import { getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
 import {
   createGatewayRequestBodyState,
-  extractGatewayJsonBodyMetadata,
+  gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
+  gatewayRawBodyHardLimitBytes,
   isGatewayJsonContentType,
   type GatewayJsonBodyMetadata,
   type GatewayRawBodyRequest
@@ -18,10 +19,39 @@ export async function captureGatewayRawBody(
 ): Promise<void> {
   try {
     const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-    req.rawBody = rawBody
-
     const contentType = req.headers['content-type'] ?? ''
     const isJson = isGatewayJsonContentType(contentType)
+    if (rawBody.length > gatewayRawBodyHardLimitBytes) {
+      getRequestLogger().warn({
+        event: 'gateway_raw_body_hard_limit_rejected',
+        method: req.method,
+        path: req.path,
+        originalUrl: sanitizeUrlForLog(req.originalUrl),
+        rawBodyBytes: rawBody.length,
+        rawBodyHardLimitBytes: gatewayRawBodyHardLimitBytes
+      }, '网关请求体超过硬上限，已拒绝以保护主进程')
+      req.rawBody = undefined
+      req.body = undefined
+      req.gatewayRequestBody = {
+        rawBodyBytes: rawBody.length,
+        contentType: String(contentType ?? ''),
+        isJson,
+        jsonParseStatus: isJson ? 'deferred_large_json' : 'not_json',
+        jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
+      }
+      if (!res.headersSent) {
+        res.status(413).json({
+          error: {
+            message: '请求体过大',
+            type: 'request_too_large'
+          }
+        })
+      }
+      return
+    }
+
+    req.rawBody = rawBody
+
     if (rawBody.length === 0) {
       req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'empty' })
       req.body = undefined
@@ -29,24 +59,30 @@ export async function captureGatewayRawBody(
       req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'not_json' })
       req.body = undefined
     } else {
-      if (rawBody.length > gatewayJsonBodyLargeWarningBytes) {
+      if (rawBody.length > gatewayJsonBodyInlineParseMaxBytes) {
         const metadata = await extractLargeJsonBodyMetadata(req, res, rawBody)
         if (!metadata) {
           return
         }
-        getRequestLogger().warn({
+        const logPayload = {
           event: 'gateway_large_json_body_deferred',
           method: req.method,
           path: req.path,
           originalUrl: sanitizeUrlForLog(req.originalUrl),
           rawBodyBytes: rawBody.length,
+          jsonInlineParseMaxBytes: gatewayJsonBodyInlineParseMaxBytes,
           jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
           model: metadata.model,
           stream: metadata.stream,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced,
           invalidJson: metadata.invalidJson
-        }, '网关大 JSON 请求体已完成顶层元数据扫描，完整解析延迟到账号适配或请求改写阶段')
+        }
+        if (rawBody.length > gatewayJsonBodyLargeWarningBytes) {
+          getRequestLogger().warn(logPayload, '网关大 JSON 请求体已完成顶层元数据扫描，完整解析延迟到账号适配或请求改写阶段')
+        } else {
+          getRequestLogger().debug(logPayload, '网关 JSON 请求体超过主进程内联解析阈值，已转入 worker 元数据扫描')
+        }
         req.gatewayRequestBody = createGatewayRequestBodyState({
           rawBody,
           contentType,
@@ -118,8 +154,16 @@ async function extractLargeJsonBodyMetadata(
       originalUrl: sanitizeUrlForLog(req.originalUrl),
       rawBodyBytes: rawBody.length,
       errorMessage: error instanceof Error ? error.message : String(error)
-    }, '网关大 JSON 请求体元数据 worker 扫描失败，将退回同步扫描')
-    return extractGatewayJsonBodyMetadata(rawBody)
+    }, '网关大 JSON 请求体元数据 worker 扫描失败，拒绝本次请求以保护主进程')
+    if (!res.headersSent) {
+      res.status(503).json({
+        error: {
+          message: '网关请求解析繁忙，请稍后重试',
+          type: 'server_overloaded'
+        }
+      })
+    }
+    return undefined
   } finally {
     removeListener(req, 'aborted', abort)
     removeListener(res, 'close', abort)

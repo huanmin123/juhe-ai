@@ -1009,7 +1009,7 @@ function evaluateUsageShapeProbe(results: GatewayProbeResult[], prefix: string):
   const valid = Boolean(usage && (numberValue(usage.input_tokens) !== undefined || numberValue(usage.output_tokens) !== undefined || numberValue(usage.total_tokens) !== undefined))
   const base = results.find((result) => result.usage) ?? results[0]
   return item(`${prefix}.usage_shape`, 'usage_shape', valid ? 'passed' : 'warning', valid ? 10 : 4, 10, base, {
-    message: valid ? 'usage 字段结构可用' : '未观察到完整 usage 字段；可能由上游兼容层省略',
+    message: valid ? 'usage 字段结构可用' : '未观察到完整 usage 字段；可能由上游实现省略',
     usage
   })
 }

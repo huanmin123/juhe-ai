@@ -19,7 +19,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'api-key-group-route-capability-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -115,7 +115,7 @@ try {
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -154,7 +154,6 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
     groupId: primaryGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const fallbackUpstreamKey = 'sk-route-stream-intercept-fallback'
   repositories.createAccount({
@@ -168,7 +167,6 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
     groupId: fallbackGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   streamInterceptPolicyRepository.createStreamInterceptPolicy({
     name: '回归：未写下游污染流切后备',
@@ -247,7 +245,6 @@ async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBas
     groupId: primaryGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const fallbackUpstreamKey = 'sk-route-upstream-exhausted-fallback'
   repositories.createAccount({
@@ -261,7 +258,6 @@ async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBas
     groupId: fallbackGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '上游账号耗尽切后备 API Key',
@@ -273,7 +269,7 @@ async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBas
   gatewayCache.clearGatewayRuntimeCache()
 
   const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
-  assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中可承接的主号池')
+  assert.equal(runtime.apiKey?.selected_group_id, primaryGroup.id, '基础运行时应先选中可承接的主号池')
 
   const beforeCount = upstreamRequests.length
   const traceId = 'trace-route-upstream-exhausted-fallback'
@@ -376,7 +372,6 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
     groupId: primaryGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   repositories.createAccount({
     providerCode: 'openai',
@@ -389,7 +384,6 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
     groupId: fallbackGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   repositories.createAccount({
     providerCode: 'openai',
@@ -402,7 +396,6 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
     groupId: thirdGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const weights = item.weights ?? [1, 1, 1]
   const apiKey = repositories.createApiKeyRecord({
@@ -486,7 +479,6 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
     groupId: primaryGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const recoveredAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -499,7 +491,6 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
     groupId: primaryGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   repositories.createAccount({
     providerCode: 'openai',
@@ -512,7 +503,6 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
     groupId: secondGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   repositories.createAccount({
     providerCode: 'openai',
@@ -525,7 +515,6 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
     groupId: thirdGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '回绕重分配 API Key',
@@ -609,7 +598,6 @@ async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl:
     groupId: fallbackGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '请求能力路由 API Key',
@@ -621,11 +609,11 @@ async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl:
   gatewayCache.clearGatewayRuntimeCache()
 
   const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
-  assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中有 OAuth 账号的主号池，回归才能覆盖请求级切换')
+  assert.equal(runtime.apiKey?.selected_group_id, primaryGroup.id, '基础运行时应先选中有 OAuth 账号的主号池，回归才能覆盖请求级切换')
 
   const beforeCount = upstreamRequests.length
   const traceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-route-capability-fallback')
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   let apiKeyIdSelects = 0
   database.prepare = ((sql: string) => {
@@ -728,7 +716,6 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
     status: 'active',
     schedulable: true,
     concurrencyLimit: 1,
-    passthroughEnabled: true
   }, access)
   const finalUpstreamKey = 'sk-route-multi-hop-final'
   repositories.createAccount({
@@ -742,7 +729,6 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
     groupId: finalGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '多跳分组路由 API Key',
@@ -755,7 +741,7 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
   gatewayCache.clearGatewayRuntimeCache()
 
   const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
-  assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中能力不匹配主号池，回归才能覆盖多跳切换')
+  assert.equal(runtime.apiKey?.selected_group_id, primaryGroup.id, '基础运行时应先选中能力不匹配主号池，回归才能覆盖多跳切换')
 
   const heldSlot = tryAcquireAccountConcurrency(busyAccount.id, 1)
   assert.equal(heldSlot.acquired, true, '多跳回归前应占用中间号池账号并发')
@@ -822,7 +808,6 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
     groupId: primaryGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true,
     supportedModels: ['gpt-5.4']
   }, access)
   const fallbackUpstreamKey = 'sk-route-model-fallback'
@@ -837,7 +822,6 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
     groupId: fallbackGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true,
     supportedModels: ['gpt-5.5']
   }, access)
   const apiKey = repositories.createApiKeyRecord({
@@ -850,7 +834,7 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
   gatewayCache.clearGatewayRuntimeCache()
 
   const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
-  assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中模型不匹配的主号池，回归才能覆盖请求级切换')
+  assert.equal(runtime.apiKey?.selected_group_id, primaryGroup.id, '基础运行时应先选中模型不匹配的主号池，回归才能覆盖请求级切换')
 
   const beforeCount = upstreamRequests.length
   const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5')
@@ -900,7 +884,6 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
     status: 'active',
     schedulable: true,
     concurrencyLimit: 1,
-    passthroughEnabled: true
   }, access)
   const fallbackUpstreamKey = 'sk-route-busy-fallback'
   repositories.createAccount({
@@ -915,7 +898,6 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
     status: 'active',
     schedulable: true,
     concurrencyLimit: 1,
-    passthroughEnabled: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '高并发繁忙路由 API Key',
@@ -927,7 +909,7 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
   gatewayCache.clearGatewayRuntimeCache()
 
   const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
-  assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中有账号的高并发主号池')
+  assert.equal(runtime.apiKey?.selected_group_id, primaryGroup.id, '基础运行时应先选中有账号的高并发主号池')
 
   const heldSlot = tryAcquireAccountConcurrency(primaryAccount.id, 1)
   assert.equal(heldSlot.acquired, true, '高并发繁忙回归前应占用主号池账号并发')
@@ -982,7 +964,6 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
     status: 'active',
     schedulable: true,
     concurrencyLimit: 1,
-    passthroughEnabled: true
   }, access)
   const fallbackUpstreamKey = 'sk-route-personal-busy-fallback'
   repositories.createAccount({
@@ -997,7 +978,6 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
     status: 'active',
     schedulable: true,
     concurrencyLimit: 1,
-    passthroughEnabled: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '个人繁忙路由 API Key',
@@ -1009,7 +989,7 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
   gatewayCache.clearGatewayRuntimeCache()
 
   const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
-  assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中有账号的个人主号池')
+  assert.equal(runtime.apiKey?.selected_group_id, primaryGroup.id, '基础运行时应先选中有账号的个人主号池')
 
   const heldSlot = tryAcquireAccountConcurrency(primaryAccount.id, 1)
   assert.equal(heldSlot.acquired, true, '个人繁忙回归前应占用主号池账号并发')
@@ -1072,7 +1052,6 @@ async function assertLocalSuppressionFallback(gatewayBaseUrl: string, upstreamBa
     groupId: primaryGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const fallbackUpstreamKey = 'sk-route-local-suppression-fallback'
   repositories.createAccount({
@@ -1086,7 +1065,6 @@ async function assertLocalSuppressionFallback(gatewayBaseUrl: string, upstreamBa
     groupId: fallbackGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '本地屏蔽路由 API Key',
@@ -1098,7 +1076,7 @@ async function assertLocalSuppressionFallback(gatewayBaseUrl: string, upstreamBa
   gatewayCache.clearGatewayRuntimeCache()
 
   const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
-  assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中本地屏蔽主号池')
+  assert.equal(runtime.apiKey?.selected_group_id, primaryGroup.id, '基础运行时应先选中本地屏蔽主号池')
 
   accountSideEffects.suppressGatewayAccountLocallyForTest(primaryAccount.id, 60_000, '本地屏蔽切后备回归')
   try {
@@ -1154,7 +1132,6 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
     },
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -1167,7 +1144,7 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
       total: { enabled: true, limit: 1 }
     }
   }, ownerAccess)
-  const runtimeAuthorization = databaseModule.getDatabase()
+  const runtimeAuthorization = databaseModule.getBusinessDatabase()
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(ownerAccount.id, grantee.id) as unknown as { id?: string } | undefined
   assert(runtimeAuthorization?.id, '授权额度切后备回归需要运行时授权记录')
@@ -1186,7 +1163,6 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
     groupId: fallbackGroup.id,
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, granteeAccess)
   const apiKey = repositories.createApiKeyRecord({
     name: '授权额度路由 API Key',
@@ -1198,7 +1174,7 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
   gatewayCache.clearGatewayRuntimeCache()
 
   const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
-  assert.equal(runtime.apiKey?.group_id, primaryGroup.id, '基础运行时应先选中只有授权账号的主号池，回归才能覆盖授权额度切换')
+  assert.equal(runtime.apiKey?.selected_group_id, primaryGroup.id, '基础运行时应先选中只有授权账号的主号池，回归才能覆盖授权额度切换')
 
   const beforeCount = upstreamRequests.length
   const traceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-route-authorization-quota-fallback')

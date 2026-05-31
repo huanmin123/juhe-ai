@@ -54,17 +54,11 @@ export function accountErrorPolicyValidationMessage(result: AccountErrorPolicyVa
 }
 
 function accountErrorPolicyStatusSpec(rule: Record<string, unknown>): unknown {
-  const match = typeof rule.match === 'object' && rule.match !== null && !Array.isArray(rule.match)
-    ? rule.match as Record<string, unknown>
-    : {}
-  return rule.statusCode ?? rule.status_code ?? rule.statusCodes ?? rule.status_codes ?? match.statusCode ?? match.status_code ?? match.statusCodes ?? match.status_codes
+  return rule.status_codes
 }
 
 function accountErrorPolicyErrorCodeSpec(rule: Record<string, unknown>): unknown {
-  const match = typeof rule.match === 'object' && rule.match !== null && !Array.isArray(rule.match)
-    ? rule.match as Record<string, unknown>
-    : {}
-  return rule.errorCode ?? rule.error_code ?? rule.errorCodes ?? rule.error_codes ?? match.errorCode ?? match.error_code ?? match.errorCodes ?? match.error_codes
+  return rule.error_codes
 }
 
 function explicitSuccessStatusSpec(spec: unknown): string | undefined {

@@ -6,8 +6,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     PRAGMA journal_mode = WAL;
 
-    DROP TABLE IF EXISTS client_ip_usage_range_summaries;
-
     CREATE TABLE IF NOT EXISTS account_quality_minute_stats (
           account_id TEXT NOT NULL,
           system_account_id TEXT NOT NULL,
@@ -39,12 +37,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
           concurrency_limit INTEGER NOT NULL DEFAULT 0,
           updated_at TEXT NOT NULL,
           PRIMARY KEY (system_account_id, group_id)
-        );
-
-    CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
-          group_id TEXT PRIMARY KEY,
-          reason TEXT,
-          updated_at TEXT NOT NULL
         );
 
     CREATE TABLE IF NOT EXISTS account_quality_scores (
@@ -940,8 +932,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_quality_minute_stats_minute ON account_quality_minute_stats(stat_minute, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_group ON group_account_stats(group_id);
-
-    CREATE INDEX IF NOT EXISTS idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at);
 
     CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);
 

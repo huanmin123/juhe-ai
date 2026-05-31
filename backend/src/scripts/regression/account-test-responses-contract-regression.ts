@@ -7,14 +7,14 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
-const tempRoot = resolve(tmpdir(), `juhe-ai-account-test-responses-compatibility-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const tempRoot = resolve(tmpdir(), `juhe-ai-account-test-responses-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
-runtimeConfig.secret = 'account-test-responses-compatibility-secret'
+runtimeConfig.secret = 'account-test-responses-contract-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -42,7 +42,7 @@ try {
   await onceListening(mockOpenAIServer)
   const mockAddress = mockOpenAIServer.address()
   if (!mockAddress || typeof mockAddress === 'string') {
-    throw new Error('账户测试 Responses 兼容性 mock 上游地址不可用')
+    throw new Error('账户测试 Responses 当前契约 mock 上游地址不可用')
   }
   const mockBaseUrl = `http://127.0.0.1:${mockAddress.port}`
 
@@ -50,16 +50,16 @@ try {
   assert(admin, '默认管理员不存在')
   const account = repositories.createAccount({
     providerCode: 'openai',
-    name: '测试 Responses 兼容性账户',
+    name: '测试 Responses 当前契约账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-account-test-responses-compatibility', base_url: mockBaseUrl }
+    credentials: { api_key: 'sk-account-test-responses-contract', base_url: mockBaseUrl }
   }, { systemAccountId: admin.id, role: 'admin' })
 
   const tested = await testOpenAIAccount(account, { model: 'gpt-5.5' })
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
 
-  assert.equal(tested.success, true, `API Key 账户 Responses 测试应兼容不支持 max_output_tokens 的上游：${tested.message}`)
+  assert.equal(tested.success, true, `API Key 账户 Responses 测试不应发送 max_output_tokens：${tested.message}`)
   assert.equal(seenResponsesPayloads.length, 1, 'mock 上游应收到一次 Responses 测试请求')
   assert.equal(
     Object.prototype.hasOwnProperty.call(seenResponsesPayloads[0], 'max_output_tokens'),
@@ -68,7 +68,7 @@ try {
   )
   assert.equal(seenResponsesPayloads[0]?.model, 'gpt-5.5', '测试请求应保留显式模型')
 
-  console.log('账户测试 Responses 兼容性回归通过：API Key 测试不发送 max_output_tokens')
+  console.log('账户测试 Responses 当前契约回归通过：API Key 测试不发送 max_output_tokens')
 } finally {
   await closeServer(mockOpenAIServer)
   try {
@@ -106,7 +106,7 @@ function createMockOpenAIServer(): http.Server {
       const completedEvent = {
         type: 'response.completed',
         response: {
-          id: 'resp_compatibility',
+          id: 'resp_contract',
           object: 'response',
           status: 'completed',
           output: [

@@ -50,7 +50,6 @@ const ipUsageQuerySchema = z.object({
   endDate: unsupportedDateRangeSchema,
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional(),
   keyword: z.string().trim().optional(),
   sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
   sortOrder: z.enum(['asc', 'desc']).optional()
@@ -241,7 +240,7 @@ externalIntegrationsRouter.get(
 externalIntegrationsRouter.post(
   '/group/add',
   requireExternalIntegrationSource(externalIntegrationAccountPushScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = groupAddSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '分组新增参数无效')))
@@ -253,7 +252,7 @@ externalIntegrationsRouter.post(
       return
     }
     try {
-      res.status(201).json(ok(addPublicGroup(parsed.data)))
+      res.status(201).json(ok(await addPublicGroup(parsed.data)))
     } catch (error) {
       const message = error instanceof Error ? error.message : '分组新增失败'
       res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
@@ -381,7 +380,7 @@ externalIntegrationsRouter.post(
 externalIntegrationsRouter.post(
   '/account/add',
   requireExternalIntegrationSource(externalIntegrationAccountPushScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = accountPushSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号新增参数无效')))
@@ -394,7 +393,7 @@ externalIntegrationsRouter.post(
     }
 
     try {
-      const result = addPublicWelfareAccount(parsed.data)
+      const result = await addPublicWelfareAccount(parsed.data)
       recordPublicWelfareAccountWriteOperation(context, result, req, 201)
       res.status(201).json(ok(result))
     } catch (error) {

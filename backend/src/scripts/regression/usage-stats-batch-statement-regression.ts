@@ -138,50 +138,50 @@ try {
     }
   ])
 
-  const recordDatabase = databaseModule.getStatsDatabase()
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const statsDatabase = databaseModule.getStatsDatabase()
+  const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
   const prepareCounts = new Map<string, number>()
-  recordDatabase.prepare = ((sql: string) => {
+  statsDatabase.prepare = ((sql: string) => {
     const tableName = usageStatsUpsertTableName(sql)
     if (tableName) {
       prepareCounts.set(tableName, (prepareCounts.get(tableName) ?? 0) + 1)
     }
     return originalPrepare(sql)
-  }) as typeof recordDatabase.prepare
+  }) as typeof statsDatabase.prepare
 
   try {
     const processed = usageStatsRepository.aggregateUsageStatsBatch(100)
     assert.equal(processed, 10, '统计聚合应处理本批业务使用记录')
   } finally {
-    recordDatabase.prepare = originalPrepare
+    statsDatabase.prepare = originalPrepare
   }
 
   for (const tableName of ['usage_stats_totals', 'usage_stats_minute', 'usage_stats_hourly', 'usage_stats_daily', 'usage_stats_weekly', 'usage_stats_monthly']) {
     assert.equal(prepareCounts.get(tableName), 1, `${tableName} upsert statement 应在批量聚合中复用`)
   }
 
-  const total = recordDatabase
+  const total = statsDatabase
     .prepare("SELECT request_count, input_tokens, output_tokens FROM usage_stats_totals WHERE system_account_id = 'sys_admin' AND scope_type = 'api_key' AND scope_id = ?")
     .get(apiKey.id) as { request_count?: number; input_tokens?: number; output_tokens?: number } | undefined
   assert.equal(total?.request_count, 8, 'API Key 总量聚合应累计请求数')
   assert.equal(total?.input_tokens, 828, 'API Key 总量聚合应累计输入 token')
   assert.equal(total?.output_tokens, 188, 'API Key 总量聚合应累计输出 token')
-  const jobState = recordDatabase
+  const jobState = statsDatabase
     .prepare("SELECT cursor_id, lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
     .get() as { cursor_id?: string; lag_seconds?: number } | undefined
   assert.notEqual(jobState?.cursor_id, 'usage_stats_cooldown_retest_ignored', '存在业务记录时恢复探活不应占用统计聚合批次')
 
-  const mixedApiKeyTotal = usageStatsTotal(recordDatabase, 'api_key', mixedApiKey.id)
+  const mixedApiKeyTotal = usageStatsTotal(statsDatabase, 'api_key', mixedApiKey.id)
   assert.equal(mixedApiKeyTotal?.request_count, 2, '同一本地 API Key 下 OAuth/API Key 账号命中应合并统计请求数')
   assert.equal(mixedApiKeyTotal?.input_tokens, 500, '同一本地 API Key 下 OAuth/API Key 账号命中应合并统计输入 token')
   assert.equal(mixedApiKeyTotal?.output_tokens, 70, '同一本地 API Key 下 OAuth/API Key 账号命中应合并统计输出 token')
-  const mixedGroupTotal = usageStatsTotal(recordDatabase, 'group', mixedGroup.id)
+  const mixedGroupTotal = usageStatsTotal(statsDatabase, 'group', mixedGroup.id)
   assert.equal(mixedGroupTotal?.request_count, 2, '同一分组下 OAuth/API Key 账号命中应合并统计请求数')
   assert.equal(mixedGroupTotal?.input_tokens, 500, '同一分组下 OAuth/API Key 账号命中应合并统计输入 token')
   assert.equal(mixedGroupTotal?.output_tokens, 70, '同一分组下 OAuth/API Key 账号命中应合并统计输出 token')
-  assert.equal(usageStatsTotal(recordDatabase, 'account', oauthAccount.id)?.request_count, 1, 'OAuth 账户自身维度仍应保留账号质量统计')
-  assert.equal(usageStatsTotal(recordDatabase, 'account', apiKeyAccount.id)?.request_count, 1, 'API Key 账户自身维度仍应保留账号质量统计')
-  const accountTypeScopeCount = recordDatabase
+  assert.equal(usageStatsTotal(statsDatabase, 'account', oauthAccount.id)?.request_count, 1, 'OAuth 账户自身维度仍应保留账号质量统计')
+  assert.equal(usageStatsTotal(statsDatabase, 'account', apiKeyAccount.id)?.request_count, 1, 'API Key 账户自身维度仍应保留账号质量统计')
+  const accountTypeScopeCount = statsDatabase
     .prepare("SELECT COUNT(*) AS total FROM usage_stats_totals WHERE scope_type IN ('oauth', 'account_type')")
     .get() as { total?: number } | undefined
   assert.equal(accountTypeScopeCount?.total, 0, '统计聚合不应新增 OAuth/API Key 账户类型分片')
@@ -205,7 +205,7 @@ try {
     createdAt: new Date(createdAtBase + 40).toISOString()
   }])
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100), 0, '仅剩恢复探活时不应写入业务统计')
-  const ignoredOnlyJobState = recordDatabase
+  const ignoredOnlyJobState = statsDatabase
     .prepare("SELECT cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
     .get() as { cursor_id?: string } | undefined
   assert.equal(ignoredOnlyJobState?.cursor_id, 'usage_stats_cooldown_retest_tail', '仅剩恢复探活时应推进统计安全游标，避免阻塞明细清理')
@@ -213,7 +213,7 @@ try {
   console.log('用量统计批量 statement 回归通过：基础统计 upsert statement 在 batch 内复用，OAuth/API Key 账号命中按本地 API Key 和分组合并')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -226,11 +226,11 @@ function usageStatsUpsertTableName(sql: string): string | undefined {
 }
 
 function usageStatsTotal(
-  recordDatabase: ReturnType<typeof databaseModule.getStatsDatabase>,
+  statsDatabase: ReturnType<typeof databaseModule.getStatsDatabase>,
   scopeType: string,
   scopeId: string
 ): { request_count?: number; input_tokens?: number; output_tokens?: number } | undefined {
-  return recordDatabase
+  return statsDatabase
     .prepare("SELECT request_count, input_tokens, output_tokens FROM usage_stats_totals WHERE system_account_id = 'sys_admin' AND scope_type = ? AND scope_id = ?")
     .get(scopeType, scopeId) as { request_count?: number; input_tokens?: number; output_tokens?: number } | undefined
 }

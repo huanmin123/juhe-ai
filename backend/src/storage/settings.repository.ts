@@ -1,4 +1,4 @@
-import { getDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createAppCache } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
@@ -72,7 +72,7 @@ export function listGlobalSettings(): Record<string, unknown> {
   if (cached) {
     return { ...cached }
   }
-  const rows = getDatabase().prepare("SELECT key, value_json, updated_at FROM global_settings WHERE key IN ('appName', 'appIcon') ORDER BY key ASC").all() as unknown as Array<GlobalSettingRow>
+  const rows = getBusinessDatabase().prepare("SELECT key, value_json, updated_at FROM global_settings WHERE key IN ('appName', 'appIcon') ORDER BY key ASC").all() as unknown as Array<GlobalSettingRow>
   const settings = Object.fromEntries(rows.map((row) => {
     const value = JSON.parse(row.value_json) as unknown
     return [row.key, value]
@@ -86,7 +86,7 @@ export function listPublicGlobalSettings(): Record<string, unknown> {
 }
 
 export function updateGlobalSettings(input: Record<string, unknown>): Record<string, unknown> {
-  const statement = getDatabase().prepare('INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+  const statement = getBusinessDatabase().prepare('INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
   const now = nowIso()
   for (const [key, value] of Object.entries(pickGlobalSettings(input))) {
     statement.run(key, JSON.stringify(value), now)
@@ -106,7 +106,7 @@ export function getSettings(): Record<string, unknown> {
     return { ...cached }
   }
   const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
-  const rows = getDatabase().prepare('SELECT key, value_json FROM system_settings WHERE system_account_id = ? ORDER BY key ASC').all(systemAccountId) as Array<{ key: string; value_json: string }>
+  const rows = getBusinessDatabase().prepare('SELECT key, value_json FROM system_settings WHERE system_account_id = ? ORDER BY key ASC').all(systemAccountId) as Array<{ key: string; value_json: string }>
   const settings = Object.fromEntries(rows.filter((row) => isSystemSettingKey(row.key)).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
   systemSettingsCache.set('current', settings)
   return { ...settings }
@@ -115,7 +115,7 @@ export function getSettings(): Record<string, unknown> {
 export function updateSettings(input: Record<string, unknown>): Record<string, unknown> {
   const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
   assertUsageStatsTimezoneUpdateAllowed(input)
-  const statement = getDatabase().prepare(`
+  const statement = getBusinessDatabase().prepare(`
     INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(system_account_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at

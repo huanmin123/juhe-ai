@@ -57,7 +57,7 @@ export function persistOpenAICodexUsageHeaders(accountId: string, headers?: Head
   const snapshot = parseOpenAICodexUsageHeaders(headers)
   if (!snapshot) return false
   const payload = buildOpenAICodexUsageSnapshotPayload(snapshot, new Date(), source)
-  if (!Object.keys(payload).length) return false
+  if (!hasOwnEnumerableKey(payload)) return false
   enqueueRecordMaintenanceJob({
     type: 'account_usage_snapshot_upsert',
     accountId,
@@ -67,6 +67,13 @@ export function persistOpenAICodexUsageHeaders(accountId: string, headers?: Head
     updatedAt: String(payload.codex_usage_updated_at ?? snapshot.updatedAt)
   })
   return true
+}
+
+function hasOwnEnumerableKey(value: Record<string, unknown>): boolean {
+  for (const key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return true
+  }
+  return false
 }
 
 export function calculateOpenAICodexRateLimitResetAt(headers?: HeaderInput, bodyText?: string, now = new Date()): string | undefined {

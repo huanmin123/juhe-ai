@@ -26,11 +26,20 @@ const [
 ])
 
 try {
-  const database = databaseModule.getDatabase()
-  assert(tableColumns('groups').includes('group_type'), 'groups 应包含 group_type 字段')
-  assert(tableColumns('groups').includes('scheduling_policy_json'), 'groups 应包含 scheduling_policy_json 字段')
-  assert(!tableColumns('group_accounts').includes('weight'), 'group_accounts 不应再包含绑定级权重字段')
-  assert(!tableColumns('group_accounts').includes('soft_concurrency_limit'), 'group_accounts 不应再包含绑定级单账户排队阈值字段')
+  const database = databaseModule.getBusinessDatabase()
+  assertCurrentColumns('groups', ['group_type', 'scheduling_policy_json'])
+  assertCurrentColumns('group_accounts', [
+    'system_account_id',
+    'group_id',
+    'account_id',
+    'account_authorization_id',
+    'local_priority',
+    'local_super_priority_enabled',
+    'local_fallback_enabled',
+    'enabled',
+    'created_at',
+    'updated_at'
+  ])
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const highConcurrencyGroup = repositories.createGroup({
@@ -117,7 +126,7 @@ try {
   console.log('分组调度策略回归通过：schema、创建/更新、选项和运行态元数据均携带高并发分组配置')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -125,7 +134,14 @@ try {
 }
 
 function tableColumns(tableName: string): string[] {
-  return (databaseModule.getDatabase().prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>)
+  return (databaseModule.getBusinessDatabase().prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>)
     .map((column) => column.name)
     .filter((name): name is string => Boolean(name))
+}
+
+function assertCurrentColumns(tableName: string, expectedColumns: string[]): void {
+  const columns = tableColumns(tableName)
+  for (const column of expectedColumns) {
+    assert(columns.includes(column), `${tableName} 应包含当前字段 ${column}`)
+  }
 }

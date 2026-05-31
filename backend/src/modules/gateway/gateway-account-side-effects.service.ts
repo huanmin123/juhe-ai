@@ -398,9 +398,7 @@ export async function waitForLocalAccountSuppressionRelease<T extends Suppressib
 
 export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectState {
   cleanupExpiredLocalSuppressions()
-  const nextAttemptAtMs = sideEffectQueue.reduce<number | undefined>((next, item) => {
-    return next === undefined ? item.nextAttemptAtMs : Math.min(next, item.nextAttemptAtMs)
-  }, undefined)
+  const nextAttemptAtMs = peekSideEffect()?.nextAttemptAtMs
   return {
     queueLength: sideEffectQueue.length,
     processing: processingSideEffects,
@@ -498,7 +496,7 @@ function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
     nextAttemptAtMs: now,
     expiresAtMs: now + sideEffectRetentionMs
   })
-  sortSideEffectQueue()
+  heapifySideEffectUp(sideEffectQueue.length - 1)
   enqueuedCount += 1
   scheduleSideEffectDrain(0)
 }
@@ -556,8 +554,7 @@ async function drainSideEffectQueue(): Promise<void> {
     while (sideEffectQueue.length > 0) {
       const now = Date.now()
       dropExpiredSideEffects(now)
-      sortSideEffectQueue()
-      const item = sideEffectQueue[0]
+      const item = peekSideEffect()
       if (!item) {
         break
       }
@@ -565,7 +562,7 @@ async function drainSideEffectQueue(): Promise<void> {
         scheduleSideEffectDrain(item.nextAttemptAtMs - now)
         break
       }
-      sideEffectQueue.shift()
+      popSideEffect()
       try {
         await executeAccountSideEffect(item.operation)
         completedCount += 1
@@ -583,8 +580,7 @@ async function drainSideEffectQueue(): Promise<void> {
         }
         item.attempts += 1
         item.nextAttemptAtMs = retryDueAtMs(sideEffectRetryPolicy, item.attempts)
-        sideEffectQueue.unshift(item)
-        sortSideEffectQueue()
+        pushSideEffect(item)
         logger.warn(errorLogFields(error, {
           event: 'gateway_account_side_effect_retry_scheduled',
           operationType: item.operation.type,
@@ -624,21 +620,104 @@ function scheduleNextDrainIfNeeded(): void {
   if (processingSideEffects || drainTimer || sideEffectQueue.length === 0) {
     return
   }
-  const nextAttemptAtMs = sideEffectQueue.reduce((next, item) => Math.min(next, item.nextAttemptAtMs), Number.MAX_SAFE_INTEGER)
-  scheduleSideEffectDrain(Math.max(0, nextAttemptAtMs - Date.now()))
-}
-
-function dropExpiredSideEffects(now: number): void {
-  for (let index = sideEffectQueue.length - 1; index >= 0; index -= 1) {
-    if (sideEffectQueue[index].expiresAtMs <= now) {
-      sideEffectQueue.splice(index, 1)
-      expiredCount += 1
-    }
+  const nextAttemptAtMs = peekSideEffect()?.nextAttemptAtMs
+  if (nextAttemptAtMs !== undefined) {
+    scheduleSideEffectDrain(Math.max(0, nextAttemptAtMs - Date.now()))
   }
 }
 
-function sortSideEffectQueue(): void {
-  sideEffectQueue.sort((left, right) => left.nextAttemptAtMs - right.nextAttemptAtMs || left.enqueuedAtMs - right.enqueuedAtMs)
+function dropExpiredSideEffects(now: number): void {
+  let writeIndex = 0
+  let removed = 0
+  for (let index = 0; index < sideEffectQueue.length; index += 1) {
+    const item = sideEffectQueue[index]
+    if (item.expiresAtMs <= now) {
+      removed += 1
+      continue
+    }
+    sideEffectQueue[writeIndex] = item
+    writeIndex += 1
+  }
+  if (removed === 0) {
+    return
+  }
+  sideEffectQueue.length = writeIndex
+  expiredCount += removed
+  heapifySideEffectQueue()
+}
+
+function pushSideEffect(item: QueuedAccountSideEffect): void {
+  sideEffectQueue.push(item)
+  heapifySideEffectUp(sideEffectQueue.length - 1)
+}
+
+function peekSideEffect(): QueuedAccountSideEffect | undefined {
+  return sideEffectQueue[0]
+}
+
+function popSideEffect(): QueuedAccountSideEffect | undefined {
+  if (sideEffectQueue.length === 0) return undefined
+  const first = sideEffectQueue[0]
+  const last = sideEffectQueue.pop()
+  if (last && sideEffectQueue.length > 0) {
+    sideEffectQueue[0] = last
+    heapifySideEffectDown(0)
+  }
+  return first
+}
+
+function heapifySideEffectQueue(): void {
+  for (let index = Math.floor(sideEffectQueue.length / 2) - 1; index >= 0; index -= 1) {
+    heapifySideEffectDown(index)
+  }
+}
+
+function heapifySideEffectUp(startIndex: number): void {
+  let index = startIndex
+  while (index > 0) {
+    const parentIndex = Math.floor((index - 1) / 2)
+    if (compareSideEffectQueueItems(sideEffectQueue[parentIndex], sideEffectQueue[index]) <= 0) {
+      return
+    }
+    swapSideEffects(index, parentIndex)
+    index = parentIndex
+  }
+}
+
+function heapifySideEffectDown(startIndex: number): void {
+  let index = startIndex
+  while (true) {
+    const leftIndex = index * 2 + 1
+    const rightIndex = leftIndex + 1
+    let smallestIndex = index
+    if (
+      leftIndex < sideEffectQueue.length
+      && compareSideEffectQueueItems(sideEffectQueue[leftIndex], sideEffectQueue[smallestIndex]) < 0
+    ) {
+      smallestIndex = leftIndex
+    }
+    if (
+      rightIndex < sideEffectQueue.length
+      && compareSideEffectQueueItems(sideEffectQueue[rightIndex], sideEffectQueue[smallestIndex]) < 0
+    ) {
+      smallestIndex = rightIndex
+    }
+    if (smallestIndex === index) {
+      return
+    }
+    swapSideEffects(index, smallestIndex)
+    index = smallestIndex
+  }
+}
+
+function compareSideEffectQueueItems(left: QueuedAccountSideEffect, right: QueuedAccountSideEffect): number {
+  return left.nextAttemptAtMs - right.nextAttemptAtMs || left.enqueuedAtMs - right.enqueuedAtMs
+}
+
+function swapSideEffects(leftIndex: number, rightIndex: number): void {
+  const left = sideEffectQueue[leftIndex]
+  sideEffectQueue[leftIndex] = sideEffectQueue[rightIndex]
+  sideEffectQueue[rightIndex] = left
 }
 
 function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string): string {
@@ -902,7 +981,6 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
     fallbackEnabled: account.fallbackEnabled,
     supportedModels: account.supportedModels,
     proxyProfileId: account.proxyProfileId,
-    passthroughEnabled: account.passthroughEnabled,
     errorPolicyId: account.errorPolicyId,
     schedulable: true,
     cooldownUntil: account.cooldownUntil,

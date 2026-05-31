@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert'
 import { buildSafeOpenAIOAuthCredentials } from '../../modules/openai-oauth/openai-oauth.routes.js'
 
 const maliciousPatch = {
-  error_handling_rules: [{ match: { statusCode: 429 }, action: 'rate_limited' }],
+  error_handling_rules: [{ status_codes: [429], action: 'rate_limited' }],
   access_token: 'attacker-access',
   refresh_token: 'attacker-refresh',
   expires_at: '2099-01-01T00:00:00.000Z',
@@ -25,7 +25,7 @@ assert.equal(tokenCredentials.refresh_token, 'server-refresh', 'credentialsPatch
 assert.equal(tokenCredentials.expires_at, '2026-01-01T00:00:00.000Z', 'credentialsPatch 不能覆盖服务端 token 过期时间')
 assert.equal(tokenCredentials.client_id, 'server-client', 'credentialsPatch 不能覆盖 OAuth client_id')
 assert.equal(tokenCredentials.base_url, 'https://api.openai.com/v1', 'credentialsPatch 不能覆盖 OpenAI base_url')
-assert.deepEqual(tokenCredentials.error_handling_rules, [{ match: { statusCode: 429 }, action: 'rate_limited' }], '允许保留账号内嵌错误处理规则')
+assert.deepEqual(tokenCredentials.error_handling_rules, [{ status_codes: [429], action: 'rate_limited' }], '允许保留账号内嵌错误处理规则')
 
 const fallbackCredentials = buildSafeOpenAIOAuthCredentials({
   accessToken: 'server-access-with-fallback',

@@ -1,4 +1,3 @@
-import { existsSync, statSync } from 'node:fs'
 import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -339,9 +338,7 @@ function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabas
   const pageSize = pragmaNumber(target.database, 'page_size')
   const pageCount = pragmaNumber(target.database, 'page_count')
   const freelistCount = pragmaNumber(target.database, 'freelist_count')
-  const fileBytes = fileSize(target.path)
-  const walBytes = fileSize(`${target.path}-wal`)
-  const shmBytes = fileSize(`${target.path}-shm`)
+  const fileBytes = estimateDatabaseMainFileBytes(pageSize, pageCount)
   const freeBytes = pageSize !== undefined && freelistCount !== undefined ? pageSize * freelistCount : undefined
   const usedBytes = pageSize !== undefined && pageCount !== undefined && freelistCount !== undefined ? pageSize * Math.max(0, pageCount - freelistCount) : undefined
   database.prepare(`
@@ -355,8 +352,8 @@ function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabas
     target.path,
     sampledAt,
     fileBytes ?? null,
-    walBytes ?? null,
-    shmBytes ?? null,
+    null,
+    null,
     pageSize ?? null,
     pageCount ?? null,
     freelistCount ?? null,
@@ -606,12 +603,11 @@ function pragmaNumber(database: DatabaseSync, pragmaName: 'page_size' | 'page_co
   return Number.isFinite(value) ? Number(value) : undefined
 }
 
-function fileSize(path: string): number | undefined {
-  try {
-    return existsSync(path) ? statSync(path).size : 0
-  } catch {
+function estimateDatabaseMainFileBytes(pageSize: number | undefined, pageCount: number | undefined): number | undefined {
+  if (pageSize === undefined || pageCount === undefined) {
     return undefined
   }
+  return pageSize * pageCount
 }
 
 function normalizeLimit(value: number): number {

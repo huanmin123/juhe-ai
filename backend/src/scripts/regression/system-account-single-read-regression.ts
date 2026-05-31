@@ -51,7 +51,7 @@ try {
   console.log('系统账号单条读取回归通过：更新日志 before 不再依赖全量系统账号列表')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

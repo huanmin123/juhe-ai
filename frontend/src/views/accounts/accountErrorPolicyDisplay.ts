@@ -2,7 +2,7 @@ import {
   accountErrorActionOptions,
   type AccountErrorAction,
   type AccountErrorPolicyRuleForm
-} from './accountErrorPolicy'
+} from './accountErrorPolicyTypes'
 
 export const accountErrorActionSelectOptions = accountErrorActionOptions.map((item) => ({
   label: item.label,

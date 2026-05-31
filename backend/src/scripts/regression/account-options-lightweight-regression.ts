@@ -125,7 +125,7 @@ try {
   assert.equal(repositorySortedOptions[0]?.ownerSystemAccountId, seed.userId, 'repository 层账户选项不应因重型排序请求混入其他账户')
   assertLightweightAccountOption(repositorySortedOptions[0])
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -195,7 +195,7 @@ try {
 } finally {
   await closeServer(server)
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -213,15 +213,15 @@ function seedData(): SeedState {
     mustChangePassword: false
   })
   const now = new Date().toISOString()
-  const insertAccount = databaseModule.getDatabase()
+  const insertAccount = databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO accounts (
         id, system_account_id, provider_code, name, notes, type, status, credential_mask, credentials_encrypted,
-        proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id, priority, super_priority_enabled,
+        proxy_profile_id, concurrency_limit, error_policy_id, priority, super_priority_enabled,
         fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
         last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
       ) VALUES (?, ?, 'openai', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
-        NULL, 20, 1, NULL, 10, 0,
+        NULL, 20, NULL, 10, 0,
         0, 1, NULL, NULL, NULL, NULL,
         NULL, 0, NULL, ?, ?)
     `)
@@ -246,7 +246,7 @@ function seedData(): SeedState {
   insertAccount.run(wildcardAccountId, user.id, 'percent%literal 账户选项', keywordCreatedAt, keywordCreatedAt)
   insertAccount.run(wildcardNeighborAccountId, user.id, 'percentXliteral 账户选项', keywordCreatedAt, keywordCreatedAt)
   insertAccount.run(groupMatchedAccountId, user.id, '分组搜索账户选项', keywordCreatedAt, keywordCreatedAt)
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   database
     .prepare('UPDATE accounts SET notes = ? WHERE id = ?')
     .run('账户选项备注前缀', notesAccountId)
@@ -291,7 +291,7 @@ function sessionCookie(systemAccountId: string): string {
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)

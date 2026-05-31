@@ -506,9 +506,9 @@ assert.match(repositoriesSource, /cooldownRetestObservationElapsedSeconds/)
 assert.doesNotMatch(repositoriesSource, /SET status = 'error'[\s\S]+account_cooldown_retest_exhausted/)
 
 const accountQualityRepositorySource = readSource('storage/account-quality.repository.ts')
-assert.doesNotMatch(accountQualityRepositorySource, /recordAccountQualityProbe/)
-assert.doesNotMatch(accountQualityRepositorySource, /AccountQualityScoreInput/)
-assert.doesNotMatch(accountQualityRepositorySource, /last_probe_at/)
+assert.match(accountQualityRepositorySource, /refreshAccountQualityFromUsage/)
+assert.match(accountQualityRepositorySource, /account_quality_minute_stats/)
+assert.match(accountQualityRepositorySource, /ewma_first_token_ms/)
 
 const schemaSource = [
   readSource('storage/schema.ts'),
@@ -517,7 +517,10 @@ const schemaSource = [
   readSource('storage/schema/stats-schema.ts'),
   readSource('storage/schema/seed-defaults.ts')
 ].join('\n')
-assert.doesNotMatch(schemaSource, /last_probe_at/)
+assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS account_quality_scores/)
+assert.match(schemaSource, /recent_request_count/)
+assert.match(schemaSource, /ewma_first_token_ms/)
+assert.match(schemaSource, /last_sample_at/)
 assert.match(schemaSource, /cooldown_retest_observation_started_at/)
 
 console.log('usage-pricing-regression passed')

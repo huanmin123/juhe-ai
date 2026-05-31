@@ -289,17 +289,17 @@ function openAIOAuthCodexResetAt(account: AccountErrorPolicyAccount, statusCode:
 function resolveAccountErrorRuleCooldownUntil(rule: Record<string, unknown>): string | undefined {
   if (policyCooldownStatus(rule.action) !== 'rate_limited') return undefined
   const now = new Date()
-  const strategy = String(rule.reset_strategy ?? rule.recovery_strategy ?? 'daily')
+  const strategy = String(rule.reset_strategy ?? 'daily')
   if (strategy === 'duration') {
-    const hours = Math.max(1, numericRuleValue(rule.duration_hours ?? rule.durationHours, 5))
+    const hours = Math.max(1, numericRuleValue(rule.duration_hours, 5))
     return new Date(now.getTime() + hours * 60 * 60_000).toISOString()
   }
   if (strategy === 'weekly') {
-    const weekday = Math.min(Math.max(numericRuleValue(rule.weekly_reset_day ?? rule.weeklyResetDay, 1), 0), 6)
-    const hour = Math.min(Math.max(numericRuleValue(rule.weekly_reset_hour ?? rule.weeklyResetHour, 0), 0), 23)
+    const weekday = Math.min(Math.max(numericRuleValue(rule.weekly_reset_day, 1), 0), 6)
+    const hour = Math.min(Math.max(numericRuleValue(rule.weekly_reset_hour, 0), 0), 23)
     return nextWeeklyReset(now, weekday, hour).toISOString()
   }
-  const hour = Math.min(Math.max(numericRuleValue(rule.daily_reset_hour ?? rule.dailyResetHour, 0), 0), 23)
+  const hour = Math.min(Math.max(numericRuleValue(rule.daily_reset_hour, 0), 0), 23)
   return nextDailyReset(now, hour).toISOString()
 }
 
@@ -325,14 +325,11 @@ function errorPolicyRuleSpecs(rule: Record<string, unknown>): {
   codeSpec: unknown
   typeSpec: unknown
 } {
-  const match = typeof rule.match === 'object' && rule.match !== null && !Array.isArray(rule.match)
-    ? rule.match as Record<string, unknown>
-    : {}
   return {
-    statusSpec: rule.statusCode ?? rule.status_code ?? rule.statusCodes ?? rule.status_codes ?? match.statusCode ?? match.status_code ?? match.statusCodes ?? match.status_codes,
-    keywordSpec: rule.keywords ?? rule.bodyKeywords ?? rule.body_keywords ?? match.keywords ?? match.bodyKeywords ?? match.body_keywords,
-    codeSpec: rule.errorCode ?? rule.error_code ?? rule.errorCodes ?? rule.error_codes ?? match.errorCode ?? match.error_code ?? match.errorCodes ?? match.error_codes,
-    typeSpec: rule.errorType ?? rule.error_type ?? rule.errorTypes ?? rule.error_types ?? match.errorType ?? match.error_type ?? match.errorTypes ?? match.error_types
+    statusSpec: rule.status_codes,
+    keywordSpec: rule.keywords,
+    codeSpec: rule.error_codes,
+    typeSpec: rule.error_types
   }
 }
 
@@ -399,15 +396,14 @@ function listRuleValues(spec: unknown): string[] {
 }
 
 function normalizePolicyAction(value: unknown): AccountErrorPolicyDecision['action'] {
-  if (value === 'retry_next' || value === 'switch_account' || value === 'next') return 'retry_next'
-  if (value === 'temp_unschedulable' || value === 'temporary_unavailable' || value === 'overloaded' || value === 'rate_limited') return 'cooldown'
-  if (value === 'error_disabled' || value === 'disable') return 'disable'
+  if (value === 'retry_next') return 'retry_next'
+  if (value === 'temp_unschedulable' || value === 'rate_limited') return 'cooldown'
+  if (value === 'error_disabled') return 'disable'
   return 'cooldown'
 }
 
 function policyCooldownStatus(value: unknown): CooldownAccountStatus {
-  const token = String(value ?? '').toLowerCase()
-  return token.includes('rate') ? 'rate_limited' : 'temporary_unavailable'
+  return value === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
 }
 
 function normalizeHeadersInput(headers?: Headers | Record<string, string | string[]>): Headers {

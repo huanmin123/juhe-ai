@@ -1,6 +1,9 @@
 import type { Request } from 'express'
 
 export const gatewayJsonBodyLargeWarningBytes = 2 * 1024 * 1024
+export const gatewayJsonBodyInlineParseMaxBytes = 256 * 1024
+export const gatewayRawBodyHardLimitBytes = gatewayJsonBodyLargeWarningBytes
+export const gatewayRawBodyHardLimit = '2mb'
 
 export type GatewayJsonBodyParseStatus =
   | 'empty'
@@ -26,7 +29,9 @@ export type GatewayRawBodyRequest = Request & {
   gatewayRequestBody?: GatewayRequestBodyState
   gatewayParsedJsonBodyAvailable?: boolean
   gatewayParsedJsonBody?: unknown
-  gatewayUpstreamBodyCache?: Partial<Record<'normalized' | 'passthrough', { body: Buffer | string | undefined }>>
+  gatewayUpstreamBodyCache?: {
+    passthrough?: { body: Buffer | undefined }
+  }
 }
 
 export interface GatewayImageGenerationToolDowngradeResult {

@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { access, mkdir as mkdirAsync, unlink as unlinkAsync, writeFile as writeFileAsync } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { createGunzip, gzipSync } from 'node:zlib'
+import { promisify } from 'node:util'
+import { createGunzip, gzip, gzipSync } from 'node:zlib'
 
 import { backendRoot } from '../config/runtime.js'
 import { getDatasetDatabase, newId } from './database.js'
@@ -45,11 +47,19 @@ export interface AuditPayloadBlobStatements {
   insertBlob: AuditPayloadBlobStatement
 }
 
+export interface AuditPayloadBlobPersistencePlan {
+  blobId: string
+  storageKey: string
+  existing: boolean
+  shouldWriteFile: boolean
+}
+
 const auditBlobRoot = resolve(backendRoot, 'data', 'audit', 'blobs')
 const auditBlobCompressionThresholdBytes = 4 * 1024
 const auditPayloadDefaultReadLimitBytes = 256 * 1024
 const auditPayloadMaxReadLimitBytes = 1024 * 1024
 const auditBlobCompressionMaxBytes = auditPayloadMaxReadLimitBytes
+const gzipAsync = promisify(gzip)
 
 export function prepareAuditPayloadBlob(
   input: Buffer | undefined,
@@ -61,6 +71,27 @@ export function prepareAuditPayloadBlob(
   const sha256 = createHash('sha256').update(input).digest('hex')
   const normalizedContentType = normalizeBlobContentType(contentType)
   const compressed = compressPayloadBytes(input, normalizedContentType, contentEncoding)
+  return {
+    sha256,
+    rawSizeBytes,
+    compressedSizeBytes: compressed.bytes.byteLength,
+    contentType: normalizedContentType,
+    contentEncoding,
+    compression: compressed.compression,
+    bytes: compressed.bytes
+  }
+}
+
+export async function prepareAuditPayloadBlobAsync(
+  input: Buffer | undefined,
+  contentType?: string,
+  contentEncoding?: string
+): Promise<PreparedAuditPayloadBlob | undefined> {
+  if (!input) return undefined
+  const rawSizeBytes = input.byteLength
+  const sha256 = createHash('sha256').update(input).digest('hex')
+  const normalizedContentType = normalizeBlobContentType(contentType)
+  const compressed = await compressPayloadBytesAsync(input, normalizedContentType, contentEncoding)
   return {
     sha256,
     rawSizeBytes,
@@ -110,6 +141,107 @@ export function persistAuditPayloadBlob(
   return id
 }
 
+export async function persistAuditPayloadBlobAsync(
+  database: DatabaseSync,
+  blob: PreparedAuditPayloadBlob | undefined,
+  timestamp: string,
+  createdStorageKeys: string[],
+  statements = prepareAuditPayloadBlobStatements(database)
+): Promise<string | null> {
+  if (!blob) return null
+
+  const existing = statements.selectExisting
+    .get(blob.sha256, blob.rawSizeBytes, blob.contentType) as AuditPayloadBlobRow | undefined
+  const existingId = optionalString(existing?.id)
+  if (existingId) {
+    statements.updateExisting.run(timestamp, existingId)
+    await writeBlobFileIfMissingAsync(optionalString(existing?.storage_key), blob.bytes)
+    return existingId
+  }
+
+  const id = newId('audblob')
+  const storageKey = storageKeyForBlob(id, blob.compression)
+  await writeBlobFileAsync(storageKey, blob.bytes)
+  createdStorageKeys.push(storageKey)
+  statements.insertBlob.run(
+    id,
+    blob.sha256,
+    blob.rawSizeBytes,
+    blob.compressedSizeBytes,
+    blob.contentType,
+    blob.contentEncoding ?? null,
+    blob.compression,
+    storageKey,
+    timestamp,
+    timestamp,
+    timestamp
+  )
+  return id
+}
+
+export function planAuditPayloadBlobPersistence(
+  database: DatabaseSync,
+  blob: PreparedAuditPayloadBlob | undefined,
+  statements = prepareAuditPayloadBlobStatements(database)
+): AuditPayloadBlobPersistencePlan | undefined {
+  if (!blob) return undefined
+  const existing = statements.selectExisting
+    .get(blob.sha256, blob.rawSizeBytes, blob.contentType) as AuditPayloadBlobRow | undefined
+  const existingId = optionalString(existing?.id)
+  if (existingId) {
+    return {
+      blobId: existingId,
+      storageKey: optionalString(existing?.storage_key) ?? '',
+      existing: true,
+      shouldWriteFile: false
+    }
+  }
+  const blobId = newId('audblob')
+  return {
+    blobId,
+    storageKey: storageKeyForBlob(blobId, blob.compression),
+    existing: false,
+    shouldWriteFile: true
+  }
+}
+
+export async function writeAuditPayloadBlobFileForPlan(
+  blob: PreparedAuditPayloadBlob | undefined,
+  plan: AuditPayloadBlobPersistencePlan | undefined
+): Promise<void> {
+  if (!blob || !plan?.storageKey || !plan.shouldWriteFile) return
+  await writeBlobFileAsync(plan.storageKey, blob.bytes)
+}
+
+export function applyAuditPayloadBlobPersistencePlan(
+  blob: PreparedAuditPayloadBlob | undefined,
+  plan: AuditPayloadBlobPersistencePlan | undefined,
+  timestamp: string,
+  createdStorageKeys: string[],
+  statements: AuditPayloadBlobStatements
+): string | null {
+  if (!blob || !plan) return null
+  if (plan.existing) {
+    statements.updateExisting.run(timestamp, plan.blobId)
+    return plan.blobId
+  }
+  statements.insertBlob.run(
+    plan.blobId,
+    blob.sha256,
+    blob.rawSizeBytes,
+    blob.compressedSizeBytes,
+    blob.contentType,
+    blob.contentEncoding ?? null,
+    blob.compression,
+    plan.storageKey,
+    timestamp,
+    timestamp,
+    timestamp
+  )
+  createdStorageKeys.push(plan.storageKey)
+  return plan.blobId
+}
+
 export function prepareAuditPayloadBlobStatements(database: DatabaseSync): AuditPayloadBlobStatements {
   return {
     selectExisting: database.prepare('SELECT id, storage_key FROM audit_payload_blobs WHERE sha256 = ? AND raw_size_bytes = ? AND content_type = ?'),
@@ -155,6 +287,10 @@ export function cleanupCreatedAuditBlobFiles(storageKeys: string[]): void {
   }
 }
 
+export async function cleanupCreatedAuditBlobFilesAsync(storageKeys: string[]): Promise<void> {
+  await Promise.all(storageKeys.map((storageKey) => deleteBlobFileAsync(storageKey)))
+}
+
 export async function readAuditPayloadBlobWindow(
   blobId: string | undefined,
   options: { offset?: number; limit?: number }
@@ -169,7 +305,7 @@ export async function readAuditPayloadBlobWindow(
     return emptyPayloadBlobWindow(offset, limit)
   }
   const filePath = blobFilePath(meta.storageKey)
-  if (!existsSync(filePath)) {
+  if (!await fileExists(filePath)) {
     return emptyPayloadBlobWindow(offset, limit, meta.rawSizeBytes)
   }
   const bytes = meta.compression === 'gzip'
@@ -220,6 +356,27 @@ function compressPayloadBytes(
   }
   try {
     const compressed = gzipSync(input)
+    return compressed.byteLength < input.byteLength
+      ? { bytes: compressed, compression: 'gzip' }
+      : { bytes: input, compression: 'none' }
+  } catch {
+    return { bytes: input, compression: 'none' }
+  }
+}
+
+async function compressPayloadBytesAsync(
+  input: Buffer,
+  contentType: string,
+  contentEncoding?: string
+): Promise<{ bytes: Buffer; compression: StoredAuditPayloadCompression }> {
+  if (input.byteLength < auditBlobCompressionThresholdBytes || !isCompressiblePayload(contentType, contentEncoding)) {
+    return { bytes: input, compression: 'none' }
+  }
+  if (input.byteLength > auditBlobCompressionMaxBytes) {
+    return { bytes: input, compression: 'none' }
+  }
+  try {
+    const compressed = await gzipAsync(input)
     return compressed.byteLength < input.byteLength
       ? { bytes: compressed, compression: 'gzip' }
       : { bytes: input, compression: 'none' }
@@ -281,12 +438,26 @@ function writeBlobFile(storageKey: string, bytes: Buffer): void {
   writeFileSync(filePath, bytes)
 }
 
+async function writeBlobFileAsync(storageKey: string, bytes: Buffer): Promise<void> {
+  const filePath = blobFilePath(storageKey)
+  await mkdirAsync(dirname(filePath), { recursive: true })
+  await writeFileAsync(filePath, bytes)
+}
+
 function writeBlobFileIfMissing(storageKey: string | undefined, bytes: Buffer): void {
   if (!storageKey) return
   const filePath = blobFilePath(storageKey)
   if (existsSync(filePath)) return
   mkdirSync(dirname(filePath), { recursive: true })
   writeFileSync(filePath, bytes)
+}
+
+async function writeBlobFileIfMissingAsync(storageKey: string | undefined, bytes: Buffer): Promise<void> {
+  if (!storageKey) return
+  const filePath = blobFilePath(storageKey)
+  if (await fileExists(filePath)) return
+  await mkdirAsync(dirname(filePath), { recursive: true })
+  await writeFileAsync(filePath, bytes)
 }
 
 function deleteBlobFile(storageKey: string | undefined): void {
@@ -297,6 +468,24 @@ function deleteBlobFile(storageKey: string | undefined): void {
       unlinkSync(filePath)
     }
   } catch {
+  }
+}
+
+async function deleteBlobFileAsync(storageKey: string | undefined): Promise<void> {
+  if (!storageKey) return
+  try {
+    const filePath = blobFilePath(storageKey)
+    await unlinkAsync(filePath)
+  } catch {
+  }
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath)
+    return true
+  } catch {
+    return false
   }
 }
 

@@ -167,10 +167,10 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
   }
   gatewaySettingsCache.set('current', runtime.settings)
   if (runtime.groupAccess) {
-    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), cloneGroupUsageAccessMetadata(runtime.groupAccess))
+    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), cloneGroupUsageAccessMetadata(runtime.groupAccess))
   }
   if (runtime.groupAccess && !isRuntimeApiKeyScheduleInactive(runtime)) {
-    openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), runtime.accounts.map(cloneStaticOpenAIAccountSecret), {
+    openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), runtime.accounts.map(cloneStaticOpenAIAccountSecret), {
       ttlMs: openAIAccountsCacheTtlMs(runtime.hasAccountAvailabilitySchedule === true)
     })
   }

@@ -4,7 +4,8 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { createSystemAccount, findSystemAccountById, listSystemAccountOptions, listSystemAccounts, listSystemAccountsPage, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
+import { hashPasswordAsync } from '../../storage/crypto.js'
+import { createSystemAccountWithPasswordHash, findSystemAccountById, listSystemAccountOptions, listSystemAccountsPage, revokeAllSessionsForAccount, updateSystemAccountWithPasswordHash } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
@@ -32,11 +33,7 @@ const updateSchema = z.object({
 })
 
 systemAccountsRouter.get('/', requireAdmin, (req, res) => {
-  if (hasSystemAccountPageQuery(req.query)) {
-    res.json(ok(listSystemAccountsPage(parseSystemAccountListOptions(req.query))))
-    return
-  }
-  res.json(ok(listSystemAccounts()))
+  res.json(ok(listSystemAccountsPage(parseSystemAccountListOptions(req.query))))
 })
 
 systemAccountsRouter.get('/options', requireAdmin, (req, res) => {
@@ -63,25 +60,22 @@ function parseSystemAccountListOptions(query: Record<string, unknown>) {
   }
 }
 
-function hasSystemAccountPageQuery(query: Record<string, unknown>): boolean {
-  return query.page !== undefined || query.pageSize !== undefined || query.limit !== undefined
-}
-
 systemAccountsRouter.post('/', requireAdmin, mutationGuard({
   operationKey: 'system_accounts.create',
   fingerprint: (req) => ({
     username: normalizedText(bodyField(req, 'username')),
     displayName: normalizedText(bodyField(req, 'displayName'))
   })
-}), (req, res) => {
-  const parsed = createSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('系统账户参数无效'))
-    return
-  }
+}), async (req, res) => {
   try {
+    const parsed = createSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('系统账户参数无效'))
+      return
+    }
+    const passwordHash = await hashPasswordAsync(parsed.data.password)
     const account = runLoggedOperation(() => {
-      const account = createSystemAccount(parsed.data)
+      const account = createSystemAccountWithPasswordHash(parsed.data, passwordHash)
       return {
         result: account,
         log: {
@@ -112,20 +106,21 @@ systemAccountsRouter.post('/', requireAdmin, mutationGuard({
   }
 })
 
-systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
-  if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'username')) {
-    res.status(400).json(badRequest('用户账户创建后不能修改'))
-    return
-  }
-  const parsed = updateSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('系统账户参数无效'))
-    return
-  }
+systemAccountsRouter.patch('/:id', requireAdmin, async (req, res, next) => {
   try {
+    if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'username')) {
+      res.status(400).json(badRequest('用户账户创建后不能修改'))
+      return
+    }
+    const parsed = updateSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('系统账户参数无效'))
+      return
+    }
+    const passwordHash = parsed.data.password ? await hashPasswordAsync(parsed.data.password) : undefined
     const before = findSystemAccountById(req.params.id)
     const account = runLoggedOperation(() => {
-      const account = updateSystemAccount(req.params.id, parsed.data)
+      const account = updateSystemAccountWithPasswordHash(req.params.id, parsed.data, passwordHash)
       if (!account) {
         throw new Error('系统账户不存在')
       }

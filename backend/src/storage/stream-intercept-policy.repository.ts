@@ -1,5 +1,5 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { getBusinessDatabase, newId, nowIso } from './database.js'
 
 export type StreamInterceptPolicyExecutionMode = 'intercept' | 'dry_run'
 export type StreamInterceptPolicyDataHandling = 'discard_event' | 'discard_stream' | 'replace_with_failure'
@@ -165,7 +165,7 @@ export function listStreamInterceptPolicies(): StreamInterceptPolicyListResult {
 }
 
 export function listActiveStreamInterceptPoliciesForGateway(): StreamInterceptPolicySummary[] {
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT *
       FROM stream_intercept_policies
@@ -186,7 +186,7 @@ export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): 
     createdAt: now,
     updatedAt: now
   })
-  getDatabase()
+  getBusinessDatabase()
     .prepare(`
       INSERT INTO stream_intercept_policies (
         id, name, enabled, priority, provider_code, match_json,
@@ -220,7 +220,7 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
     updatedAt: now,
     fallback: policyFromRow(current)
   })
-  const result = getDatabase()
+  const result = getBusinessDatabase()
     .prepare(`
       UPDATE stream_intercept_policies
       SET name = ?,
@@ -253,7 +253,7 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
 }
 
 export function deleteStreamInterceptPolicy(id: string): boolean {
-  const result = getDatabase().prepare('DELETE FROM stream_intercept_policies WHERE id = ?').run(id)
+  const result = getBusinessDatabase().prepare('DELETE FROM stream_intercept_policies WHERE id = ?').run(id)
   const deleted = Number(result.changes ?? 0) > 0
   if (deleted) {
     notifyGatewayRuntimeCacheInvalidation('stream_intercept_policy_deleted')
@@ -262,7 +262,7 @@ export function deleteStreamInterceptPolicy(id: string): boolean {
 }
 
 function listStreamInterceptPolicyRows(): StreamInterceptPolicyRow[] {
-  return getDatabase()
+  return getBusinessDatabase()
     .prepare(`
       SELECT *
       FROM stream_intercept_policies
@@ -272,7 +272,7 @@ function listStreamInterceptPolicyRows(): StreamInterceptPolicyRow[] {
 }
 
 function findStreamInterceptPolicyRow(id: string): StreamInterceptPolicyRow | undefined {
-  return getDatabase()
+  return getBusinessDatabase()
     .prepare('SELECT * FROM stream_intercept_policies WHERE id = ?')
     .get(id) as unknown as StreamInterceptPolicyRow | undefined
 }

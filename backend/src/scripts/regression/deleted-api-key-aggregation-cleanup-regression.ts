@@ -41,7 +41,7 @@ try {
   seedAuditErrorGroup('audit_group_deleted_key_before_aggregation', apiKeyId, createdAt)
 
   const processed = usageStatsRepository.aggregateUsageStatsBatch(10)
-  assert.equal(processed, 1, '删除后的 API Key 历史使用记录仍应作为事实参与聚合')
+  assert.equal(processed, 1, '删除后的 API Key 既有使用记录仍应作为事实参与聚合')
   usageStatsRepository.refreshUsageQuotaHourlyWindowsCache()
   usageStatsRepository.refreshUsageRankSnapshots()
   assert.equal(
@@ -55,11 +55,12 @@ try {
     'API Key 维度统计可临时存在，后续删除清理会负责扣减'
   )
   seedAuthorizationUsageRangeWindow('owner_deleted_key')
-  assert.equal(usageOverviewSummaryRequestCount('sys_admin'), 1, '删除前概览窗口应包含这把 Key 的历史消耗')
+  seedUsageRankSnapshot('sys_admin', 'api_key', apiKeyId, 0.12)
+  assert.equal(usageOverviewSummaryRequestCount('sys_admin'), 1, '删除前概览窗口应包含这把 Key 的既有消耗')
   assert.equal(usageScopeRangeWindowRequestCount('sys_admin', 'api_key', apiKeyId), 1, '删除前账户用量范围窗口应包含 API Key 维度消耗')
   assert.equal(usageQuotaHourlyWindowCost('sys_admin', 'api_key', apiKeyId), 0.12, '删除前额度小时窗口应包含 API Key 成本')
   assert.equal(usageRankSnapshotMetric('sys_admin', 'api_key', apiKeyId), 0.12, '删除前 API Key 排行快照应包含 API Key 成本')
-  assert.equal(authorizationUserUsageRangeWindowRequestCount('owner_deleted_key'), 1, '删除前授权用户范围窗口应可见历史消耗')
+  assert.equal(authorizationUserUsageRangeWindowRequestCount('owner_deleted_key'), 1, '删除前授权用户范围窗口应可见既有消耗')
 
   apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
     apiKeyId,
@@ -71,13 +72,13 @@ try {
   assert.equal(auditErrorGroupExists('audit_group_deleted_key_before_aggregation'), false, 'API Key 删除清理应删除关联审计错误组')
   assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 0, '清理已聚合使用记录时应反向扣减系统账户统计')
   assert.equal(usageStatsTotal('sys_admin', 'api_key', apiKeyId), 0, '清理后不应残留 API Key 维度统计')
-  assert.equal(usageOverviewSummaryRequestCount('sys_admin'), 0, '清理完成后概览窗口不应残留这把 Key 的历史消耗')
+  assert.equal(usageOverviewSummaryRequestCount('sys_admin'), 0, '清理完成后概览窗口不应残留这把 Key 的既有消耗')
   assert.equal(usageScopeRangeWindowRequestCount('sys_admin', 'api_key', apiKeyId), 0, '清理完成后账户用量范围窗口不应残留 API Key 维度消耗')
   assert.equal(usageQuotaHourlyWindowCost('sys_admin', 'api_key', apiKeyId), 0, '清理完成后额度小时窗口不应残留 API Key 成本')
   assert.equal(usageRankSnapshotMetric('sys_admin', 'api_key', apiKeyId), 0, '清理完成后 API Key 排行快照不应残留 API Key 成本')
-  assert.equal(authorizationUserUsageRangeWindowRequestCount('owner_deleted_key'), 0, '清理完成后授权用户范围窗口不应残留旧授权消耗')
+  assert.equal(authorizationUserUsageRangeWindowRequestCount('owner_deleted_key'), 0, '清理完成后授权用户范围窗口不应残留关联授权消耗')
 
-  seedUsageRecord('usage_deleted_key_after_old_queue_limit', 'key_deleted_after_old_queue_limit', fallbackCreatedAt)
+  seedUsageRecord('usage_deleted_key_after_queue_saturation', 'key_deleted_after_queue_saturation', fallbackCreatedAt)
   usageStatsRepository.aggregateUsageStatsBatch(10)
   runtimeConfig.processRole = 'server'
   const recordMaintenanceQueue = await import('../../modules/record-maintenance/record-maintenance-queue.service.js')
@@ -93,21 +94,22 @@ try {
     assert.equal(queued.queued, true, `背景队列填充任务 ${index} 应保持可入队`)
   }
 
-  const fallbackResult = apiKeyCleanupService.submitApiKeyRelatedCleanup({
-    apiKeyId: 'key_deleted_after_old_queue_limit',
+  const deferredResult = apiKeyCleanupService.submitApiKeyRelatedCleanup({
+    apiKeyId: 'key_deleted_after_queue_saturation',
     systemAccountId: 'sys_admin'
   })
-  assert.equal(fallbackResult.queued, true, '超过旧队列上限后 API Key 关联清理仍应投递 worker 排队')
-  assert.equal(usageRecordExists('usage_deleted_key_after_old_queue_limit'), true, '超过旧队列上限时应保留关联使用记录等待后台维护任务')
-  assert.equal(cleanupTargetExists('key_deleted_after_old_queue_limit'), true, '超过旧队列上限时应持久登记清理目标，等待后台重试')
-  assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 1, '超过旧队列上限时不应在请求链路同步扣减统计聚合')
-  assert.equal(usageStatsTotal('sys_admin', 'api_key', 'key_deleted_after_old_queue_limit'), 1, '超过旧队列上限时 API Key 维度统计应等待后台清理扣减')
+  assert.equal(deferredResult.queued, false, '队列饱和后 API Key 关联清理应快速返回未入队')
+  assert.equal(deferredResult.droppedReason, 'worker_dispatch_failed', '队列饱和后应返回 worker 投递失败原因')
+  assert.equal(usageRecordExists('usage_deleted_key_after_queue_saturation'), true, '队列饱和时应保留关联使用记录等待后台维护任务')
+  assert.equal(cleanupTargetExists('key_deleted_after_queue_saturation'), true, '队列饱和时应持久登记清理目标，等待后台重试')
+  assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 1, '队列饱和时不应在请求链路同步扣减统计聚合')
+  assert.equal(usageStatsTotal('sys_admin', 'api_key', 'key_deleted_after_queue_saturation'), 1, '队列饱和时 API Key 维度统计应等待后台清理扣减')
   apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
-    apiKeyId: 'key_deleted_after_old_queue_limit',
+    apiKeyId: 'key_deleted_after_queue_saturation',
     systemAccountId: 'sys_admin'
   })
-  assert.equal(usageRecordExists('usage_deleted_key_after_old_queue_limit'), false, '后台重试清理应删除关联使用记录')
-  assert.equal(cleanupTargetExists('key_deleted_after_old_queue_limit'), false, '后台重试清理完成后应移除清理目标')
+  assert.equal(usageRecordExists('usage_deleted_key_after_queue_saturation'), false, '后台重试清理应删除关联使用记录')
+  assert.equal(cleanupTargetExists('key_deleted_after_queue_saturation'), false, '后台重试清理完成后应移除清理目标')
 
   const pendingApiKeyId = 'key_deleted_cleanup_pending_cursor'
   const pendingUsageRecordId = 'usage_deleted_key_pending_cursor'
@@ -186,7 +188,7 @@ try {
   assert.equal(
     usageStatsTotal('sys_admin', 'api_key', largeApiKeyId),
     1200,
-    '大批量 API Key 维度统计应先累积完整历史记录'
+    '大批量 API Key 维度统计应先累积完整既有记录'
   )
 
   const firstLargeCleanup = apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
@@ -213,10 +215,10 @@ try {
   assert.equal(cleanupTargetExists(largeApiKeyId), false, '清理完成后应移除大批量清理目标')
   assert.equal(usageStatsTotal('sys_admin', 'api_key', largeApiKeyId), 0, '大批量清理完成后 API Key 维度统计应归零')
 
-  console.log('已删除 API Key 聚合清理回归通过：历史事实先聚合，删除清理再按游标扣减')
+  console.log('已删除 API Key 聚合清理回归通过：既有事实先聚合，删除清理再按游标扣减')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -245,6 +247,17 @@ function seedAuthorizationUsageRangeWindow(systemAccountId: string): void {
       ) VALUES (?, ?, ?, '', 'grantee_deleted_key', 'account', 'account_deleted_key', 1, 10, 20, 0, 0, 0.12, ?, ?)
     `)
     .run(systemAccountId, createdDate, createdDate, createdAt, createdAt)
+}
+
+function seedUsageRankSnapshot(systemAccountId: string, scopeType: string, scopeId: string, metricValue: number): void {
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO usage_rank_snapshots (
+        system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value, updated_at
+      )
+      VALUES (?, ?, 'current_month', 'total_cost_usd', '2000-01-01T00:00:00.000Z', 1, ?, ?, '2000-01-01T00:00:00.000Z')
+    `)
+    .run(systemAccountId, scopeType, scopeId, metricValue)
 }
 
 function seedAuditLog(id: string, apiKeyIdInput: string, createdAtInput: string): void {

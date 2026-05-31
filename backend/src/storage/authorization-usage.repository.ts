@@ -9,7 +9,7 @@ import type {
   SystemTeamStatus
 } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, getStatsDatabase } from './database.js'
+import { getBusinessDatabase, getStatsDatabase } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadAccountLookupMap, loadActiveSystemAccountTeamNameMapByIds, loadGroupLookupMap, loadSystemAccountNameMapByIds, loadSystemAccountPrincipalMapByIds, loadSystemTeamLookupMap } from './repository-lookups.js'
@@ -219,10 +219,11 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
 }
 
 function normalizeAuthorizationUsagePageOptions(options: AuthorizationUsagePageOptions): Required<AuthorizationUsagePageOptions> {
-  const page = typeof options.page === 'number' && Number.isInteger(options.page) && options.page > 0 ? options.page : 1
   const pageSize = typeof options.pageSize === 'number' && Number.isInteger(options.pageSize)
     ? Math.max(1, Math.min(options.pageSize, authorizationUsageMaxPageSize))
     : authorizationUsageDefaultPageSize
+  const maxPage = Math.max(1, Math.floor((authorizationUsageMaxListWindowRows - 1) / pageSize))
+  const page = typeof options.page === 'number' && Number.isInteger(options.page) && options.page > 0 ? Math.min(options.page, maxPage) : 1
   return { page, pageSize }
 }
 
@@ -397,3 +398,4 @@ function resourceOwnerFields(resource: AuthorizationResourceInfo | undefined, ow
 
 const authorizationUsageDefaultPageSize = 20
 const authorizationUsageMaxPageSize = 200
+const authorizationUsageMaxListWindowRows = 1001

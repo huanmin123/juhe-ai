@@ -5,7 +5,7 @@ import type {
   AccountUsageStatsRange,
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { averageFromSum, dateKey, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
@@ -200,7 +200,7 @@ function orderedUsageStatsShardLocations(locations: UsageRecordShardLocation[]):
 export function markGroupAccountStatsDirty(groupIds: Array<string | null | undefined> | string | null | undefined, reason = 'write'): void {
   const ids = uniqueGroupAccountStatsIds(Array.isArray(groupIds) ? groupIds : [groupIds])
   if (!ids.length) return
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const updatedAt = nowIso()
   const insert = database.prepare(`
     INSERT INTO group_account_stats_dirty (group_id, reason, updated_at)
@@ -222,7 +222,7 @@ export function markGroupAccountStatsDirtyByAccountIds(accountIds: Array<string 
   const ids = uniqueGroupAccountStatsIds(accountIds)
   if (!ids.length) return
   const groupIds: string[] = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     groupIds.push(...(database.prepare(`
       SELECT DISTINCT group_id
@@ -234,7 +234,7 @@ export function markGroupAccountStatsDirtyByAccountIds(accountIds: Array<string 
 }
 
 export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
-  const businessDatabase = getDatabase()
+  const businessDatabase = getBusinessDatabase()
   const statsDatabase = getStatsDatabase()
   const allDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase)
   if (allDirtyRows.length > 0) {
@@ -297,7 +297,7 @@ function deleteGroupAccountStatsDirtyRows(
 
 export function refreshGroupAccountStatsCache(groupIds?: Array<string | null | undefined>): void {
   const database = getStatsDatabase()
-  const businessDatabase = getDatabase()
+  const businessDatabase = getBusinessDatabase()
   const updatedAt = nowIso()
   const targetGroupIds = groupIds === undefined ? undefined : uniqueGroupAccountStatsIds(groupIds)
   if (targetGroupIds && !targetGroupIds.length) return
@@ -427,13 +427,13 @@ function loadGroupAccountStatsRows(
         accounts.schedulable,
         accounts.cooldown_until,
         accounts.concurrency_limit,
-        account_authorizations.status AS authorization_status,
-        account_authorizations.expires_at AS authorization_expires_at
+        resource_authorization_rows.status AS authorization_status,
+        resource_authorization_rows.expires_at AS authorization_expires_at
       FROM group_accounts
       INNER JOIN groups ON groups.id = group_accounts.group_id
       LEFT JOIN accounts ON accounts.id = group_accounts.account_id
-      LEFT JOIN resource_authorizations account_authorizations
-        ON account_authorizations.id = group_accounts.account_authorization_id
+      LEFT JOIN resource_authorizations resource_authorization_rows
+        ON resource_authorization_rows.id = group_accounts.account_authorization_id
       WHERE group_accounts.enabled = 1
         ${where}
     `).all(...(chunk ?? [])) as unknown as typeof rows)

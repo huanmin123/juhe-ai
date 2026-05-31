@@ -97,8 +97,8 @@ try {
     process.exit(result.status ?? 1)
   }
 
-  assert.equal(apiKeyStatsTotal(apiKey.id), records.length, '重建脚本应清理旧 per-shard 游标并从 shard 重新聚合统计')
-  console.log('用量统计重建分片游标回归通过：旧 per-shard 游标不会阻止重建全量扫描')
+  assert.equal(apiKeyStatsTotal(apiKey.id), records.length, '重建脚本应清理已有 per-shard 游标并从 shard 重新聚合统计')
+  console.log('用量统计重建分片游标回归通过：已有 per-shard 游标不会阻止重建全量扫描')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

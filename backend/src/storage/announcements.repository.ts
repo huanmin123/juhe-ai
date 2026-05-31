@@ -1,12 +1,14 @@
 import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '../domain/types.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountPrincipalMapByIds } from './repository-lookups.js'
 import type { AnnouncementRow } from './repository-row-types.js'
 
 const announcementLevels: readonly AnnouncementLevel[] = ['critical', 'warning', 'info', 'normal']
 const announcementStatuses: readonly AnnouncementStatus[] = ['draft', 'published', 'archived']
 const publicAnnouncementLimit = 30
+const defaultAnnouncementPageSize = 50
+const maxAnnouncementPageSize = 100
 
 export interface AnnouncementInput {
   title: string
@@ -22,9 +24,22 @@ export interface AnnouncementReadResult {
   count: number
 }
 
+export interface AnnouncementListOptions {
+  page?: number
+  pageSize?: number
+}
+
+export interface AnnouncementListResult {
+  items: AnnouncementSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 export function listPublicAnnouncements(systemAccountId: string, limit = publicAnnouncementLimit): AnnouncementSummary[] {
   const safeLimit = normalizePublicLimit(limit)
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT
         announcements.*,
@@ -47,7 +62,7 @@ export function markPublicAnnouncementsRead(systemAccountId: string, announcemen
   const readAt = nowIso()
   if (!ids.length) return { readAt, count: 0 }
 
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const publishedRows = database
     .prepare(`
       SELECT id
@@ -84,7 +99,7 @@ export function markPublicAnnouncementsRead(systemAccountId: string, announcemen
 }
 
 export function listAnnouncements(): AnnouncementSummary[] {
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT ${announcementListSelectColumns()}
       FROM announcements
@@ -92,6 +107,27 @@ export function listAnnouncements(): AnnouncementSummary[] {
     `)
     .all() as unknown as AnnouncementRow[]
   return announcementSummaries(rows, true)
+}
+
+export function listAnnouncementsPage(options: AnnouncementListOptions = {}): AnnouncementListResult {
+  const normalized = normalizeAnnouncementListOptions(options)
+  const rows = getBusinessDatabase()
+    .prepare(`
+      SELECT ${announcementListSelectColumns()}
+      FROM announcements
+      ORDER BY updated_at DESC, created_at DESC, id DESC
+      LIMIT ? OFFSET ?
+    `)
+    .all(normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as AnnouncementRow[]
+  const pageRows = takePageRows(rows, normalized.pageSize)
+  const items = announcementSummaries(pageRows.rows, true)
+  return {
+    items,
+    total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
 }
 
 export function findAnnouncement(id: string): AnnouncementSummary | undefined {
@@ -103,7 +139,7 @@ export function createAnnouncement(input: AnnouncementInput, actorSystemAccountI
   const now = nowIso()
   const status = normalizeStatus(input.status, 'draft')
   const id = newId('ann')
-  getDatabase()
+  getBusinessDatabase()
     .prepare(`
       INSERT INTO announcements (
         id, title, content, level, status, created_by, updated_by, published_at, created_at, updated_at
@@ -133,7 +169,7 @@ export function updateAnnouncement(id: string, input: Partial<AnnouncementInput>
   const shouldResetReadState = nextStatus === 'published' && current.status !== 'published'
   const nextPublishedAt = shouldResetReadState ? now : current.published_at
 
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   database
     .prepare(`
       UPDATE announcements
@@ -166,7 +202,7 @@ export function publishAnnouncement(id: string, actorSystemAccountId: string): A
   const current = getAnnouncementRow(id)
   if (!current) return undefined
   const now = nowIso()
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   database
     .prepare(`
       UPDATE announcements
@@ -185,7 +221,7 @@ export function unpublishAnnouncement(id: string, actorSystemAccountId: string):
   const current = getAnnouncementRow(id)
   if (!current) return undefined
   const now = nowIso()
-  getDatabase()
+  getBusinessDatabase()
     .prepare(`
       UPDATE announcements
       SET status = 'archived',
@@ -198,7 +234,7 @@ export function unpublishAnnouncement(id: string, actorSystemAccountId: string):
 }
 
 export function deleteAnnouncement(id: string): boolean {
-  const result = getDatabase().prepare('DELETE FROM announcements WHERE id = ?').run(id)
+  const result = getBusinessDatabase().prepare('DELETE FROM announcements WHERE id = ?').run(id)
   return Number(result.changes ?? 0) > 0
 }
 
@@ -224,8 +260,16 @@ function normalizeStatus(value: unknown, fallback: AnnouncementStatus): Announce
     : fallback
 }
 
+function normalizeAnnouncementListOptions(options: AnnouncementListOptions): Required<AnnouncementListOptions> {
+  const pageSize = typeof options.pageSize === 'number' && Number.isInteger(options.pageSize)
+    ? Math.min(maxAnnouncementPageSize, Math.max(1, options.pageSize))
+    : defaultAnnouncementPageSize
+  const page = normalizeListPage(options.page, pageSize)
+  return { page, pageSize }
+}
+
 function getAnnouncementRow(id: string): AnnouncementRow | undefined {
-  return getDatabase().prepare('SELECT * FROM announcements WHERE id = ?').get(id) as unknown as AnnouncementRow | undefined
+  return getBusinessDatabase().prepare('SELECT * FROM announcements WHERE id = ?').get(id) as unknown as AnnouncementRow | undefined
 }
 
 function announcementListSelectColumns(): string {

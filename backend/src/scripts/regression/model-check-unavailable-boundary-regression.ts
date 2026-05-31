@@ -23,7 +23,7 @@ try {
   await listen(upstream)
   const [
     repositories,
-    { getDatabase },
+    { getBusinessDatabase },
     { createMockGatewayFixture },
     { ModelCheckRequestError, runModelCheck },
     gatewayJsonParser
@@ -67,7 +67,7 @@ try {
     status: 'active',
     schedulable: true
   }, access)
-  getDatabase().prepare('DELETE FROM group_accounts WHERE account_id = ?').run(unboundAccount.id)
+  getBusinessDatabase().prepare('DELETE FROM group_accounts WHERE account_id = ?').run(unboundAccount.id)
   const beforeUnboundRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
 
   await assert.rejects(

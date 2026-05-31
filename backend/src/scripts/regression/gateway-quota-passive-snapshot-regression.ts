@@ -58,9 +58,11 @@ try {
   const apiKeyDecision = await checkGatewayApiKeyQuotaAsync({
     id: 'key_passive_quota',
     system_account_id: 'sys_passive_quota',
+    selected_group_id: 'group_passive_quota',
     status: 'active',
-    group_id: 'group_passive_quota',
     expires_at: null,
+    group_route_strategy: 'priority_failover',
+    system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({
       hourly: { enabled: true, hours: 3, limit: 10 },
       daily: { enabled: true, limit: 10 },
@@ -89,9 +91,11 @@ try {
   const noSnapshotDecision = await checkGatewayApiKeyQuotaAsync({
     id: 'key_passive_no_snapshot',
     system_account_id: 'sys_passive_quota',
+    selected_group_id: 'group_passive_quota',
     status: 'active',
-    group_id: 'group_passive_quota',
     expires_at: null,
+    group_route_strategy: 'priority_failover',
+    system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
   } as GatewayApiKeyRow)
   assert.equal(noSnapshotDecision.allowed, true, 'server 角色额度快照缺失时不应主动请求 DB service，应短时放行')
@@ -121,7 +125,6 @@ function passiveAccount(id: string, accountAuthorizationId?: string): OpenAIAcco
     fallbackEnabled: false,
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-passive-quota',
-    passthroughEnabled: false,
     streamFailureCount: 0,
     credentials: {
       api_key: 'sk-passive-quota',

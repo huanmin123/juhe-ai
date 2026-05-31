@@ -12,7 +12,7 @@ import type {
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { refreshAccountQualityFromUsage } from '../../storage/account-quality.repository.js'
-import { datasetDatabasePath, getDatabase, getDatasetDatabase, getStatsDatabase, nowIso, statsDatabasePath } from '../../storage/database.js'
+import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, nowIso, statsDatabasePath } from '../../storage/database.js'
 import * as repositories from '../../storage/repositories.js'
 import { createRuntimeLogsBatch } from '../../storage/runtime-logs.repository.js'
 import type { AuditLogInput } from '../../storage/audit-logs.repository.js'
@@ -28,7 +28,7 @@ import {
 } from '../../storage/usage-stats.repository.js'
 import { hourKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 
-type Database = ReturnType<typeof getDatabase>
+type Database = ReturnType<typeof getBusinessDatabase>
 type SqlValue = string | number | null
 type MockModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 type MockModelCheckRunStatus = 'running' | 'completed' | 'failed' | 'canceled'
@@ -179,7 +179,7 @@ function main(): void {
   }
 
   const startedAt = Date.now()
-  const businessDatabase = getDatabase()
+  const businessDatabase = getBusinessDatabase()
   const datasetDatabase = getDatasetDatabase()
   const statsDatabase = getStatsDatabase()
   const admin = findAdminAccount()
@@ -417,7 +417,7 @@ function createErrorPolicies(adminId: string): { quota: string; strict: string; 
       ]
     }
   ]
-  const statement = getDatabase().prepare(`
+  const statement = getBusinessDatabase().prepare(`
     INSERT INTO error_policies (id, system_account_id, name, enabled, rules_json, created_at, updated_at)
     VALUES (?, ?, ?, 1, ?, ?, ?)
   `)
@@ -850,7 +850,7 @@ function createAuthorizations(
     remark: `${namePrefix}运维团队已回收普通账户授权`,
     limits: quotaLimits(5, 30, 100)
   }, adminAccess)
-  repositories.revokeResourceAuthorization(revokedTeam.id, { reason: 'Mockdata 团队授权回收演示' }, adminAccess)
+  repositories.revokeResourceAuthorization(revokedTeam.id, adminAccess)
   result.push(refreshAuthorization(revokedTeam.id, adminAccess))
 
   const returned = repositories.createResourceAuthorization({
@@ -901,7 +901,7 @@ function createAuthorizations(
     remark: `${namePrefix}观察用户已回收账户授权`,
     limits: quotaLimits(2, 12, 40)
   }, adminAccess)
-  repositories.revokeResourceAuthorization(revoked.id, { reason: 'Mockdata 回收演示' }, adminAccess)
+  repositories.revokeResourceAuthorization(revoked.id, adminAccess)
   result.push(refreshAuthorization(revoked.id, adminAccess))
   return result
 }
@@ -1043,7 +1043,7 @@ function createAnnouncements(adminId: string, users: MockSystemAccounts): void {
       status: 'archived'
     }, adminId)
   ]
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   announcements.forEach((announcement, index) => {
     const createdAt = new Date(Date.now() - (20 - index * 3) * dayMs).toISOString()
     database.prepare(`
@@ -1093,7 +1093,7 @@ function seedOauthUsageSnapshots(accounts: MockAccounts): void {
 
 function tuneGroupAccountBindings(groups: MockGroups, accounts: MockAccounts): void {
   const now = nowIso()
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const updates: Array<[number, number, GroupSummary, AccountSummary]> = [
     [1, 0, groups.main, accounts.primary],
     [0, 0, groups.main, accounts.proxied],
@@ -2351,7 +2351,7 @@ function updateApiKeyLastUsedAt(records: UsageRecordSeed[]): void {
       lastUsedByKey.set(record.apiKeyId, record.createdAt)
     }
   }
-  const statement = getDatabase().prepare('UPDATE api_keys SET last_used_at = ?, updated_at = ? WHERE id = ?')
+  const statement = getBusinessDatabase().prepare('UPDATE api_keys SET last_used_at = ?, updated_at = ? WHERE id = ?')
   for (const [apiKeyId, lastUsedAt] of lastUsedByKey) {
     statement.run(lastUsedAt, lastUsedAt, apiKeyId)
   }
@@ -2419,7 +2419,7 @@ function findAdminAccount(): SystemAccountSummary {
 }
 
 function defaultOpenAIGroup(systemAccountId: string): GroupSummary {
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare("SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'openai' AND is_default = 1 LIMIT 1")
     .get(systemAccountId) as unknown as { id?: string } | undefined
   if (!row?.id) throw new Error(`未找到默认 OpenAI 分组：${systemAccountId}`)
@@ -2435,7 +2435,7 @@ function refreshAccount(id: string): AccountSummary {
 }
 
 function authorizationInstanceAccount(sourceAccount: AccountSummary, grantee: SystemAccountSummary): AccountSummary {
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare(`
       SELECT id
       FROM accounts

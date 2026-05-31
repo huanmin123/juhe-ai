@@ -166,10 +166,10 @@ repositories.finishModelCheckRun(otherRun.id, {
   resultSummary: {}
 })
 
-const recordDatabase = databaseModule.getDatasetDatabase()
-const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+const datasetDatabase = databaseModule.getDatasetDatabase()
+const originalPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
 const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
-recordDatabase.prepare = ((sql: string) => {
+datasetDatabase.prepare = ((sql: string) => {
   const statement = originalPrepare(sql)
   if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+model_check_runs\s+mcr\b/i.test(sql)) {
     const originalAll = statement.all.bind(statement) as typeof statement.all
@@ -179,7 +179,7 @@ recordDatabase.prepare = ((sql: string) => {
     }) as typeof statement.all
   }
   return statement
-}) as typeof recordDatabase.prepare
+}) as typeof datasetDatabase.prepare
 
 try {
   const scopedList = repositories.listModelCheckRuns({ systemAccountId: 'sys_admin', role: 'user' }, {
@@ -192,7 +192,7 @@ try {
   assert(scopedList.items.some((item) => item.id === run.id), '模型检测历史列表应包含当前系统账户的记录')
   assert(!scopedList.items.some((item) => item.id === otherRun.id), '模型检测历史列表不应混入其他系统账户记录')
 } finally {
-  recordDatabase.prepare = originalPrepare
+  datasetDatabase.prepare = originalPrepare
 }
 
 assert(capturedCalls.length >= 1, '应捕获模型检测历史列表 SQL')
@@ -223,5 +223,5 @@ function assertRecordIndexExists(indexName: string): void {
   const row = databaseModule.getDatasetDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
-  assert.equal(row?.name, indexName, `统计数据集库应创建索引 ${indexName}`)
+  assert.equal(row?.name, indexName, `数据集目录库应创建索引 ${indexName}`)
 }

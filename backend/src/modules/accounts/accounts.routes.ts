@@ -4,7 +4,7 @@ import { z } from 'zod'
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, clearAuthorizedAccountBindingFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, clearAuthorizedAccountBindingFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -143,11 +143,10 @@ accountsRouter.get('/:id', async (req, res, next) => {
   }
 })
 
-function parseAccountOptionsQuery(query: Record<string, unknown>): AccountListOptions {
+function parseAccountOptionsQuery(query: Record<string, unknown>): AccountOptionListOptions {
   return {
     ids: queryTextList(query.ids, 50),
     page: integerQueryValue(query.page),
-    pageSize: integerQueryValue(query.pageSize),
     limit: optionLimitValue(integerQueryValue(query.limit)),
     keyword: optionalQueryText(query.keyword),
     providerCode: optionalQueryText(query.providerCode),
@@ -163,8 +162,7 @@ function optionLimitValue(value: number | undefined): number {
 }
 
 function parseAccountListOptions(query: Record<string, unknown>): AccountListOptions {
-  const rawSorts = query.sorts ?? query.sort
-  const sorts = stringValues(rawSorts)
+  const sorts = stringValues(query.sorts)
     .flatMap((value) => value.split(','))
     .map((value) => value.trim())
     .filter(Boolean)
@@ -174,7 +172,6 @@ function parseAccountListOptions(query: Record<string, unknown>): AccountListOpt
     sorts,
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize),
-    limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
     providerCode: optionalQueryText(query.providerCode),
     groupId: optionalQueryText(query.groupId),
@@ -914,12 +911,10 @@ function accountCredentialFingerprint(credentials: unknown): string {
   }
   const record = credentials as Record<string, unknown>
   return sensitiveFingerprint(
-    record.apiKey
-      ?? record.api_key
-      ?? record.refreshToken
+    record.api_key
       ?? record.refresh_token
+      ?? record.access_token
       ?? record.email
-      ?? record.accountId
       ?? record.account_id
       ?? ''
   )

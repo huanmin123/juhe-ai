@@ -1,4 +1,5 @@
-import { createReadStream, existsSync, statSync, type Stats } from 'node:fs'
+import { createReadStream, type Stats } from 'node:fs'
+import { stat as statFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -72,12 +73,8 @@ function activeRuntimeLogFiles(): ActiveRuntimeLogFile[] {
 }
 
 async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<void> {
-  if (!existsSync(file.path)) {
-    return
-  }
-
   try {
-    const stats = statSync(file.path)
+    const stats = await statFile(file.path)
     if (!stats.isFile()) {
       return
     }
@@ -167,6 +164,9 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
       lastErrorMessage: undefined
     })
   } catch (error) {
+    if (isMissingFileError(error)) {
+      return
+    }
     const cursor = getRuntimeLogFileCursor(file.path)
     saveRuntimeLogFileCursor({
       logFile: file.path,
@@ -180,6 +180,10 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
     })
     process.stderr.write(`[runtime-log-index] 增量读取当前日志文件失败 ${file.path}：${error instanceof Error ? error.message : String(error)}\n`)
   }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'ENOENT'
 }
 
 function resolveRuntimeLogFileCursor(file: ActiveRuntimeLogFile, stats: Stats): RuntimeLogFileCursor {

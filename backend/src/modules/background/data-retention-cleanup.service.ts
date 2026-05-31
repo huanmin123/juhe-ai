@@ -13,7 +13,7 @@ import { getSettings } from '../../storage/settings.repository.js'
 import { cleanupRuntimeLogFileCursorsBefore, cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
 import { cleanupTableStorageSnapshotsBefore, tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
-import { getDatabase } from '../../storage/database.js'
+import { getBusinessDatabase } from '../../storage/database.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 
 const dayMs = 24 * 60 * 60 * 1000

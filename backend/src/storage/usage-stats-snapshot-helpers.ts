@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { dateKey, hourKey, monthKey } from './usage-stats-helpers.js'
 import { DAY_MS, HOUR_MS } from './usage-stats-window-helpers.js'
@@ -103,7 +103,7 @@ function usageQuotaHourlyWindows(): number[] {
 }
 
 function quotaLimitRows(): Array<{ limits_json: string | null }> {
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   return [
     ...database.prepare('SELECT quota_limits_json AS limits_json FROM api_keys WHERE quota_limits_json IS NOT NULL').all(),
     ...database.prepare('SELECT limits_json FROM resource_authorizations WHERE limits_json IS NOT NULL').all(),

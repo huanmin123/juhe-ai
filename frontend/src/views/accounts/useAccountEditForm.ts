@@ -22,9 +22,9 @@ import {
   targetSystemAccountLabel as buildTargetSystemAccountLabel
 } from './accountDerivedState'
 import {
-  loadAccountErrorPolicyRules,
-  type AccountErrorPolicyRuleForm
-} from './accountErrorPolicy'
+  loadAccountErrorPolicyRules
+} from './accountErrorPolicyPayload'
+import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import {
   loadAccountStreamInterceptRules
 } from './accountStreamInterceptPolicyPayload'

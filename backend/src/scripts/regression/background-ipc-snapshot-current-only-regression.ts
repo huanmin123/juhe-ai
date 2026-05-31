@@ -69,33 +69,39 @@ assert.equal(backgroundIpc.getBackgroundWorkerState().lastSnapshot?.pid, firstWo
 firstWorker.exit()
 const missingWorkerSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(50)
 assert.equal(missingWorkerSnapshot, undefined, 'worker 不存在时不能把 lastSnapshot 当作当前 snapshot 返回')
-assert.equal(backgroundIpc.getBackgroundWorkerState().lastSnapshot?.pid, firstWorker.pid, 'lastSnapshot 可作为状态留存，但不能作为请求兜底结果')
+assert.equal(backgroundIpc.getBackgroundWorkerState().lastSnapshot?.pid, firstWorker.pid, 'lastSnapshot 可作为状态留存，但不能作为当前请求结果')
 
 const timeoutWorker = attachReadyWorker(41002)
 timeoutWorker.respondToStatus = false
 const timedOutSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(10)
-assert.equal(timedOutSnapshot, undefined, 'worker snapshot 请求超时时不能返回 stale lastSnapshot')
+assert.equal(timedOutSnapshot, undefined, 'worker snapshot 请求超时时不能返回留存 lastSnapshot')
 assert.equal(backgroundIpc.getBackgroundWorkerState().timedOutSnapshotRequestCount, 1, '超时应计入 snapshot 请求超时指标')
 timeoutWorker.exit()
 
 const brokenWorker = attachReadyWorker(41003)
 brokenWorker.failSend = true
 const brokenSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(50)
-assert.equal(brokenSnapshot, undefined, 'worker IPC 发送失败断开时不能返回 stale lastSnapshot')
+assert.equal(brokenSnapshot, undefined, 'worker IPC 发送失败断开时不能返回留存 lastSnapshot')
 brokenWorker.exit()
 
 const saturatedWorker = new FakeWorkerProcess(41004)
 backgroundIpc.attachBackgroundWorkerProcess(saturatedWorker as unknown as ChildProcess)
-for (let index = 0; index < 5000; index += 1) {
-  assert.equal(backgroundIpc.sendOperationLogsToWorker([operationLog(index)]), true, `旧队列上限预填充 ${index} 应成功`)
+let acceptedFillCount = 0
+for (let index = 0; index < 6000; index += 1) {
+  if (!backgroundIpc.sendOperationLogsToWorker([operationLog(index)])) {
+    break
+  }
+  acceptedFillCount += 1
 }
+assert(acceptedFillCount > 0, '队列饱和前应至少接受一条操作日志')
+assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, 'regular IPC 队列应填充到当前保护上限')
+const rejectedSnapshotRequestCountBeforeSaturation = backgroundIpc.getBackgroundWorkerState().rejectedSnapshotRequestCount
 const queuedSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(10)
-assert.equal(queuedSnapshot, undefined, 'worker 未就绪导致 snapshot 请求排队超时时不能返回 stale lastSnapshot')
-assert.equal(backgroundIpc.getBackgroundWorkerState().timedOutSnapshotRequestCount, 2, '排队超时应计入 snapshot 请求超时指标')
-assert.equal(backgroundIpc.getBackgroundWorkerState().rejectedSnapshotRequestCount, 0, '超过旧队列上限不应计入 snapshot 请求拒绝指标')
+assert.equal(queuedSnapshot, undefined, 'regular IPC 队列饱和时 snapshot 请求不能返回留存 lastSnapshot')
+assert.equal(backgroundIpc.getBackgroundWorkerState().rejectedSnapshotRequestCount, rejectedSnapshotRequestCountBeforeSaturation + 1, '队列饱和应计入 snapshot 请求拒绝指标')
 saturatedWorker.exit()
 
-console.log('后台 worker snapshot stale fallback 回归通过：不可观测时返回 undefined，不复用旧快照')
+console.log('后台 worker snapshot current-only 回归通过：不可观测时返回 undefined，不复用留存快照')
 
 function attachReadyWorker(pid: number): FakeWorkerProcess {
   const worker = new FakeWorkerProcess(pid)
@@ -124,9 +130,9 @@ function operationLog(index: number): OperationLogInput {
     actorSystemAccountId: 'sys_admin',
     actorRole: 'admin',
     module: 'regression',
-    action: 'snapshot_stale_fallback',
-    operationKey: 'regression.background_ipc_snapshot_stale_fallback',
+    action: 'snapshot_current_only',
+    operationKey: 'regression.background_ipc_snapshot_current_only',
     resourceType: 'background_worker',
-    summary: `后台 worker snapshot stale fallback 队列填充 ${index}`
+    summary: `后台 worker snapshot current-only 队列填充 ${index}`
   }
 }

@@ -236,44 +236,72 @@ function hasMeaningfulDelta(value: unknown): boolean {
   if (hasNonEmptyString(value)) return true
   if (Array.isArray(value)) return value.some(hasMeaningfulDelta)
   if (typeof value !== 'object' || value === null) return false
-  return Object.entries(value as Record<string, unknown>)
-    .some(([key, child]) => key !== 'index' && key !== 'type' && key !== 'id' && hasMeaningfulDelta(child))
+  const record = value as Record<string, unknown>
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue
+    if (key !== 'index' && key !== 'type' && key !== 'id' && hasMeaningfulDelta(record[key])) {
+      return true
+    }
+  }
+  return false
 }
 
 function estimateTokensFromRequestValue(value: unknown, key = ''): number {
-  if (typeof value === 'string') {
-    return shouldSkipEstimatedString(value, key) ? 0 : estimateTokenCountFromText(value)
-  }
-  if (Array.isArray(value)) {
-    return value.reduce((total, item) => total + estimateTokensFromRequestValue(item, key), 0)
-  }
-  if (typeof value !== 'object' || value === null) {
-    return 0
-  }
-
-  let total = 0
-  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
-    if (requestTokenEstimateSkippedKeys.has(childKey)) continue
-    total += estimateTokensFromRequestValue(childValue, childKey)
-  }
-  return total
+  return estimateTokensFromValue(value, key, requestTokenEstimateSkippedKeys)
 }
 
 function estimateTokensFromOutputValue(value: unknown, key = ''): number {
+  return estimateTokensFromValue(value, key, outputTokenEstimateSkippedKeys)
+}
+
+function estimateTokensFromValue(value: unknown, key: string, skippedKeys: Set<string>): number {
+  return estimateTokensFromValueWithContext(value, key, skippedKeys, {
+    seen: new WeakSet<object>(),
+    nodes: 0
+  }, 0)
+}
+
+function estimateTokensFromValueWithContext(
+  value: unknown,
+  key: string,
+  skippedKeys: Set<string>,
+  context: TokenEstimateContext,
+  depth: number
+): number {
+  if (context.nodes >= tokenEstimateMaxNodes || depth > tokenEstimateMaxDepth) {
+    return 0
+  }
+  context.nodes += 1
   if (typeof value === 'string') {
     return shouldSkipEstimatedString(value, key) ? 0 : estimateTokenCountFromText(value)
   }
   if (Array.isArray(value)) {
-    return value.reduce((total, item) => total + estimateTokensFromOutputValue(item, key), 0)
+    let total = 0
+    const length = Math.min(value.length, tokenEstimateMaxArrayItems)
+    for (let index = 0; index < length; index += 1) {
+      total += estimateTokensFromValueWithContext(value[index], key, skippedKeys, context, depth + 1)
+      if (context.nodes >= tokenEstimateMaxNodes) break
+    }
+    return total
   }
   if (typeof value !== 'object' || value === null) {
     return 0
   }
+  if (context.seen.has(value)) {
+    return 0
+  }
+  context.seen.add(value)
 
   let total = 0
-  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
-    if (outputTokenEstimateSkippedKeys.has(childKey)) continue
-    total += estimateTokensFromOutputValue(childValue, childKey)
+  let visitedKeys = 0
+  const record = value as Record<string, unknown>
+  for (const childKey in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, childKey)) continue
+    if (visitedKeys >= tokenEstimateMaxObjectKeys) break
+    visitedKeys += 1
+    if (skippedKeys.has(childKey)) continue
+    total += estimateTokensFromValueWithContext(record[childKey], childKey, skippedKeys, context, depth + 1)
+    if (context.nodes >= tokenEstimateMaxNodes) break
   }
   return total
 }
@@ -357,6 +385,16 @@ const outputTokenEstimateSkippedKeys = new Set([
   'usage',
   'error'
 ])
+
+interface TokenEstimateContext {
+  seen: WeakSet<object>
+  nodes: number
+}
+
+const tokenEstimateMaxDepth = 8
+const tokenEstimateMaxNodes = 5000
+const tokenEstimateMaxArrayItems = 200
+const tokenEstimateMaxObjectKeys = 120
 
 function extractEventUsage(event: Record<string, unknown>): ParsedUsage {
   const response = objectValue(event.response)

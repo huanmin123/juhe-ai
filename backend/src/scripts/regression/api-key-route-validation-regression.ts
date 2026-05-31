@@ -165,7 +165,7 @@ async function main(): Promise<void> {
     operationLogQueue.flushAllOperationLogQueue()
     await closeServer(appServer)
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }

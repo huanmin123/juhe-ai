@@ -22,7 +22,6 @@ export interface RuntimeLogIndexInput {
 export interface RuntimeLogListOptions {
   page?: number
   pageSize?: number
-  limit?: number
   traceId?: string
   level?: RuntimeLogLevel | 'all'
   event?: string
@@ -92,6 +91,7 @@ type RuntimeLogFacetInput = { time: string; level: string; event?: string }
 
 const runtimeLogDefaultPageSize = 100
 const runtimeLogMaxPageSize = 100
+const runtimeLogMaxListWindowRows = 1001
 export const runtimeLogIndexRetentionDays = 3
 const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
@@ -147,8 +147,8 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
 
 export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLogListResult {
   const filters = buildRuntimeLogFilters(options)
-  const pageSize = normalizeRuntimeLogPageSize(options.pageSize ?? options.limit)
-  const page = normalizeRuntimeLogPage(options.page)
+  const pageSize = normalizeRuntimeLogPageSize(options.pageSize)
+  const page = normalizeRuntimeLogPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const database = getDatasetDatabase()
 
@@ -398,9 +398,10 @@ function runtimeLogDetailSelectColumns(alias: string): string {
   return `${runtimeLogListSelectColumns(alias)}, ${alias}.raw_json`
 }
 
-function normalizeRuntimeLogPage(value: unknown): number {
+function normalizeRuntimeLogPage(value: unknown, pageSize: number): number {
+  const maxPage = Math.max(1, Math.floor((runtimeLogMaxListWindowRows - 1) / Math.max(1, Math.trunc(pageSize))))
   return typeof value === 'number' && Number.isInteger(value)
-    ? Math.max(1, value)
+    ? Math.min(maxPage, Math.max(1, value))
     : 1
 }
 

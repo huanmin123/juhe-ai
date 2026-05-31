@@ -2,7 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createSession, findSessionByToken, revokeSession, touchSession, updateSystemAccount, updateSystemAccountLastLogin, verifySystemAccountCredentials } from '../../storage/repositories.js'
+import { createSession, findSessionByToken, revokeSession, touchSession, updateSystemAccountAsync, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
 import { createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
 import { checkLoginAllowed, getLoginClientIp, recordFailedLogin, recordSuccessfulLogin } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
@@ -28,54 +28,58 @@ authRouter.get('/captcha', (_req, res) => {
   res.json(ok(createCaptchaChallenge()))
 })
 
-authRouter.post('/login', (req, res) => {
-  const parsed = loginSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('登录参数无效'))
-    return
-  }
-
-  const clientIp = getLoginClientIp(req)
-
-  if (!verifyCaptchaChallenge(parsed.data.captchaId, parsed.data.captchaCode)) {
-    res.status(400).json({ message: '验证码错误或已过期' })
-    return
-  }
-
-  const loginAllowed = checkLoginAllowed(clientIp, parsed.data.username)
-  if (loginAllowed.blocked) {
-    if (loginAllowed.retryAfterSeconds) {
-      res.setHeader('Retry-After', String(loginAllowed.retryAfterSeconds))
-    }
-    res.status(429).json({ message: loginAllowed.message ?? '尝试过于频繁，请稍后再试' })
-    return
-  }
-
-  const account = verifySystemAccountCredentials(parsed.data.username, parsed.data.password)
-  if (!account) {
-    const loginBlock = recordFailedLogin(clientIp, parsed.data.username)
-    if (loginBlock.blocked) {
-      if (loginBlock.retryAfterSeconds) {
-        res.setHeader('Retry-After', String(loginBlock.retryAfterSeconds))
-      }
-      res.status(429).json({ message: loginBlock.message ?? '尝试过于频繁，请稍后再试' })
+authRouter.post('/login', async (req, res, next) => {
+  try {
+    const parsed = loginSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('登录参数无效'))
       return
     }
-    res.status(401).json({ message: '账号或密码错误' })
-    return
-  }
 
-  recordSuccessfulLogin(clientIp, account.username)
-  const session = createSession(account.id)
-  updateSystemAccountLastLogin(account.id)
-  res.cookie(sessionCookieName, session.token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: false,
-    path: '/',
-    maxAge: sessionMaxAgeMs
-  })
-  res.json(ok({ ...account, lastLoginAt: new Date().toISOString() }))
+    const clientIp = getLoginClientIp(req)
+
+    if (!verifyCaptchaChallenge(parsed.data.captchaId, parsed.data.captchaCode)) {
+      res.status(400).json({ message: '验证码错误或已过期' })
+      return
+    }
+
+    const loginAllowed = checkLoginAllowed(clientIp, parsed.data.username)
+    if (loginAllowed.blocked) {
+      if (loginAllowed.retryAfterSeconds) {
+        res.setHeader('Retry-After', String(loginAllowed.retryAfterSeconds))
+      }
+      res.status(429).json({ message: loginAllowed.message ?? '尝试过于频繁，请稍后再试' })
+      return
+    }
+
+    const account = await verifySystemAccountCredentialsAsync(parsed.data.username, parsed.data.password)
+    if (!account) {
+      const loginBlock = recordFailedLogin(clientIp, parsed.data.username)
+      if (loginBlock.blocked) {
+        if (loginBlock.retryAfterSeconds) {
+          res.setHeader('Retry-After', String(loginBlock.retryAfterSeconds))
+        }
+        res.status(429).json({ message: loginBlock.message ?? '尝试过于频繁，请稍后再试' })
+        return
+      }
+      res.status(401).json({ message: '账号或密码错误' })
+      return
+    }
+
+    recordSuccessfulLogin(clientIp, account.username)
+    const session = createSession(account.id)
+    updateSystemAccountLastLogin(account.id)
+    res.cookie(sessionCookieName, session.token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: false,
+      path: '/',
+      maxAge: sessionMaxAgeMs
+    })
+    res.json(ok({ ...account, lastLoginAt: new Date().toISOString() }))
+  } catch (error) {
+    next(error)
+  }
 })
 
 authRouter.post('/logout', (req, res) => {
@@ -102,27 +106,31 @@ authRouter.get('/me', requireSessionContext, (_req, res) => {
   }))
 })
 
-authRouter.post('/change-password', requireSessionContext, (req, res) => {
-  const context = getRequestAuthContext()
-  if (!context) {
-    res.status(401).json({ message: '请先登录' })
-    return
-  }
-  const parsed = passwordSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('密码参数无效'))
-    return
-  }
+authRouter.post('/change-password', requireSessionContext, async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    if (!context) {
+      res.status(401).json({ message: '请先登录' })
+      return
+    }
+    const parsed = passwordSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('密码参数无效'))
+      return
+    }
 
-  const account = updateSystemAccount(context.systemAccountId, {
-    password: parsed.data.newPassword,
-    mustChangePassword: false
-  })
-  if (!account) {
-    res.status(404).json({ message: '系统账户不存在' })
-    return
+    const account = await updateSystemAccountAsync(context.systemAccountId, {
+      password: parsed.data.newPassword,
+      mustChangePassword: false
+    })
+    if (!account) {
+      res.status(404).json({ message: '系统账户不存在' })
+      return
+    }
+    res.json(ok(account))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(account))
 })
 
 export function parseCookie(cookieHeader: string): Record<string, string> {

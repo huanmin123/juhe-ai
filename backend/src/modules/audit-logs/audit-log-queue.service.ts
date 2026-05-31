@@ -2,13 +2,16 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
-import { createAuditLogsBatch, type AuditLogInput } from '../../storage/repositories.js'
+import { createAuditLogsBatch, createAuditLogsBatchAsync, type AuditLogInput } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
 
 const auditLogRetryPolicy = fixedRetryPolicy('audit_log_queue_flush', 5000)
+const auditLogFlushBatchMaxBytes = 8 * 1024 * 1024
+const auditLogEstimateMaxBytes = 64 * 1024 * 1024 + 1
+const auditLogEstimateMaxStringChars = 16 * 1024
 
 let pendingAuditLogs: QueuedAuditLog[] = []
 let flushTimer: NodeJS.Timeout | undefined
@@ -153,9 +156,8 @@ export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
   try {
     const settings = readAuditLogSettings()
     do {
-      const batch = pendingAuditLogs.splice(0, settings.batchSize)
+      const batch = takeAuditLogFlushBatch(settings.batchSize, auditLogFlushBatchMaxBytes)
       if (batch.length === 0) break
-      pendingBytes -= sumQueuedBytes(batch)
 
       try {
         createAuditLogsBatch(batch.map((item) => item.input))
@@ -164,7 +166,56 @@ export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
       } catch (error) {
         failed = true
         pendingAuditLogs = [...batch, ...pendingAuditLogs]
-        pendingBytes = sumQueuedBytes(pendingAuditLogs)
+        pendingBytes += sumQueuedBytes(batch)
+        enforceAuditQueueLimits(settings)
+        lastFlushError = error instanceof Error ? error.message : String(error)
+        logger.error(errorLogFields(error, {
+          event: 'audit_log_queue_flush_failed',
+          batchSize: batch.length,
+          pendingCount: pendingAuditLogs.length,
+          pendingBytes
+        }), '审计日志队列写入失败')
+        shouldRetry = options.retryOnFailure !== false
+        break
+      }
+    } while (options.drain && pendingAuditLogs.length > 0)
+  } finally {
+    flushing = false
+  }
+
+  if (pendingAuditLogs.length > 0 && (!failed || shouldRetry)) {
+    scheduleAuditLogFlush(shouldRetry ? retryDelayMs(auditLogRetryPolicy) : 0)
+  }
+}
+
+export async function flushAuditLogQueueAsync(options: AuditLogFlushOptions = {}): Promise<void> {
+  if (runtimeConfig.processRole === 'server') {
+    return
+  }
+  if (flushing || pendingAuditLogs.length === 0) return
+
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+
+  flushing = true
+  let shouldRetry = false
+  let failed = false
+  try {
+    const settings = readAuditLogSettings()
+    do {
+      const batch = takeAuditLogFlushBatch(settings.batchSize, auditLogFlushBatchMaxBytes)
+      if (batch.length === 0) break
+
+      try {
+        await createAuditLogsBatchAsync(batch.map((item) => item.input))
+        lastFlushSuccessAt = nowIso()
+        lastFlushError = undefined
+      } catch (error) {
+        failed = true
+        pendingAuditLogs = [...batch, ...pendingAuditLogs]
+        pendingBytes += sumQueuedBytes(batch)
         enforceAuditQueueLimits(settings)
         lastFlushError = error instanceof Error ? error.message : String(error)
         logger.error(errorLogFields(error, {
@@ -234,6 +285,25 @@ function enforceAuditQueueLimits(settings = readAuditLogSettings()): void {
   }
 }
 
+function takeAuditLogFlushBatch(maxItems: number, maxBytes: number): QueuedAuditLog[] {
+  const itemLimit = Math.max(1, Math.trunc(maxItems))
+  const byteLimit = Math.max(1, Math.trunc(maxBytes))
+  let count = 0
+  let bytes = 0
+  while (count < itemLimit && count < pendingAuditLogs.length) {
+    const next = pendingAuditLogs[count]
+    if (!next) break
+    if (count > 0 && bytes + next.bytes > byteLimit) {
+      break
+    }
+    bytes += next.bytes
+    count += 1
+  }
+  const batch = pendingAuditLogs.splice(0, count)
+  pendingBytes = Math.max(0, pendingBytes - bytes)
+  return batch
+}
+
 function recordDrop(item: QueuedAuditLog, reason: 'overflow' | 'oversize'): void {
   if (item.success) {
     droppedSuccessCount += 1
@@ -272,34 +342,59 @@ function scheduleAuditLogFlush(delayMs: number): void {
   if (flushTimer || flushing) return
   flushTimer = setTimeout(() => {
     flushTimer = undefined
-    flushAuditLogQueue()
+    void flushAuditLogQueueAsync().catch((error) => {
+      lastFlushError = error instanceof Error ? error.message : String(error)
+      logger.error(errorLogFields(error, {
+        event: 'audit_log_queue_async_flush_unhandled_error',
+        pendingCount: pendingAuditLogs.length,
+        pendingBytes
+      }), '审计日志异步 flush 未处理异常')
+      if (pendingAuditLogs.length > 0) {
+        scheduleAuditLogFlush(retryDelayMs(auditLogRetryPolicy))
+      }
+    })
   }, delayMs)
   flushTimer.unref()
 }
 
 function estimateAuditLogBytes(input: AuditLogInput): number {
-  return input.payloads.reduce((sum, payload) => {
+  let bytes = 1024 + input.attempts.length * 512
+  for (const payload of input.payloads) {
     const body = payload.body
-    const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0
+    const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? boundedStringBytes(body, auditLogEstimateMaxBytes - bytes) : 0
     const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
-    return sum + bodyBytes + headerBytes + 512
-  }, 1024 + input.attempts.length * 512)
+    bytes = Math.min(auditLogEstimateMaxBytes, bytes + bodyBytes + headerBytes + 512)
+    if (bytes >= auditLogEstimateMaxBytes) break
+  }
+  return bytes
 }
 
 function estimateHeadersBytes(headers: Record<string, string | string[]>): number {
   let bytes = 2
-  for (const [name, value] of Object.entries(headers)) {
-    bytes += Buffer.byteLength(name, 'utf8') + 4
+  for (const name in headers) {
+    if (!Object.prototype.hasOwnProperty.call(headers, name)) continue
+    const value = headers[name]
+    bytes += boundedStringBytes(name, auditLogEstimateMaxBytes - bytes) + 4
     if (Array.isArray(value)) {
       bytes += 2
       for (const item of value) {
-        bytes += Buffer.byteLength(item, 'utf8') + 3
+        bytes += boundedStringBytes(item, auditLogEstimateMaxBytes - bytes) + 3
+        if (bytes >= auditLogEstimateMaxBytes) return bytes
       }
     } else {
-      bytes += Buffer.byteLength(value, 'utf8') + 2
+      bytes += boundedStringBytes(value, auditLogEstimateMaxBytes - bytes) + 2
     }
+    if (bytes >= auditLogEstimateMaxBytes) return bytes
   }
   return bytes
+}
+
+function boundedStringBytes(value: string, maxBytes: number): number {
+  if (maxBytes <= 0) return 0
+  if (value.length <= auditLogEstimateMaxStringChars) {
+    return Math.min(maxBytes, Buffer.byteLength(value, 'utf8'))
+  }
+  return Math.min(maxBytes, value.length * 4)
 }
 
 function sumQueuedBytes(items: QueuedAuditLog[]): number {

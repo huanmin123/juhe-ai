@@ -62,7 +62,7 @@ try {
 } finally {
   process.send = originalSend
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

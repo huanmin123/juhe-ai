@@ -1,5 +1,5 @@
 import { createAppCache } from '../shared/cache.js'
-import { getDatabase, getStatsDatabase } from './database.js'
+import { getBusinessDatabase, getStatsDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export type GroupAccountStatsRow = {
@@ -42,7 +42,7 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
   if (!missingIds.length) return result
 
   const rows: Array<{ group_id: string; account_id: string }> = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(missingIds, 900)) {
     rows.push(...database
       .prepare(`
@@ -50,14 +50,14 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
         FROM group_accounts
         INNER JOIN groups ON groups.id = group_accounts.group_id
         INNER JOIN accounts ON accounts.id = group_accounts.account_id
-        LEFT JOIN resource_authorizations account_authorizations
-          ON account_authorizations.id = group_accounts.account_authorization_id
+        LEFT JOIN resource_authorizations resource_authorization_rows
+          ON resource_authorization_rows.id = group_accounts.account_authorization_id
         WHERE group_accounts.enabled = 1
           AND group_accounts.group_id IN (${sqlPlaceholders(chunk.length)})
           AND (
             accounts.system_account_id = groups.system_account_id
             OR (
-              account_authorizations.status IN ('active', 'paused', 'expired')
+              resource_authorization_rows.status IN ('active', 'paused', 'expired')
             )
           )
         ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC

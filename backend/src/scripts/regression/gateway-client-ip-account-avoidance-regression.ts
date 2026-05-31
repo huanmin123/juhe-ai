@@ -16,7 +16,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'client-ip-account-avoidance-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -105,7 +105,7 @@ async function main(): Promise<void> {
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
@@ -370,7 +370,6 @@ function createTestAccount(id: string): Parameters<typeof clientIpAvoidance.orde
     baseUrl: 'http://127.0.0.1/v1',
     proxyProfileId: undefined,
     concurrencyLimit: 1,
-    passthroughEnabled: true,
     errorPolicyId: undefined,
     cooldownUntil: undefined,
     lastErrorMessage: undefined,

@@ -240,9 +240,9 @@ async function main(): Promise<void> {
     }, access)
     const errorRaceBound = repositories.setAccountGroup(errorRaceAccount.id, group.id, access)
     assert(errorRaceBound?.boundGroupId === group.id, '异常竞态测试账户未绑定分组')
-    repositories.markAccountCooldown(errorRaceAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟旧冷却状态')
+    repositories.markAccountCooldown(errorRaceAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟过期冷却状态')
     const staleCooldownGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, errorRaceAccount.id, 'sys_admin', { ignoreAvailability: true })
-    assert(staleCooldownGatewayAccount?.status === 'temporary_unavailable', '异常竞态前应能读取到旧冷却网关账号对象')
+    assert(staleCooldownGatewayAccount?.status === 'temporary_unavailable', '异常竞态前应能读取到过期冷却网关账号对象')
     repositories.markAccountException(errorRaceAccount.id, 'oauth_token_refresh_failed', '模拟复测期间进入异常')
     const staleSuccessAfterErrorResult = await handleDbServiceOperation({
       type: 'apply_account_error_handling',
@@ -252,9 +252,9 @@ async function main(): Promise<void> {
         bodyText: ''
       }
     })
-    assert(staleSuccessAfterErrorResult.changed === false, '旧成功回写不应把复测期间进入异常的账户恢复正常')
-    assertAccountStatus(errorRaceAccount.id, 'error', false, '旧成功回写不应改变复测期间进入异常的账户状态')
-    assertAccountErrorCode(errorRaceAccount.id, 'oauth_token_refresh_failed', '旧成功回写不应清理复测期间进入异常的账户异常类型')
+    assert(staleSuccessAfterErrorResult.changed === false, '过期成功回写不应把复测期间进入异常的账户恢复正常')
+    assertAccountStatus(errorRaceAccount.id, 'error', false, '过期成功回写不应改变复测期间进入异常的账户状态')
+    assertAccountErrorCode(errorRaceAccount.id, 'oauth_token_refresh_failed', '过期成功回写不应清理复测期间进入异常的账户异常类型')
 
     const staleFailureOnErrorResult = await handleDbServiceOperation({
       type: 'apply_account_error_handling',
@@ -265,9 +265,9 @@ async function main(): Promise<void> {
         bodyText: 'late upstream failure'
       }
     })
-    assert(staleFailureOnErrorResult.changed === false, '旧网关失败回写不应把异常账户降级成临时不可调用')
-    assertAccountStatus(errorAccount.id, 'error', false, '旧失败回写不应改变异常账户状态')
-    assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '旧失败回写不应覆盖异常类型')
+    assert(staleFailureOnErrorResult.changed === false, '过期网关失败回写不应把异常账户降级成临时不可调用')
+    assertAccountStatus(errorAccount.id, 'error', false, '过期失败回写不应改变异常账户状态')
+    assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '过期失败回写不应覆盖异常类型')
 
     const errorCooldownResult = repositories.markAccountCooldown(errorAccount.id, new Date(Date.now() + 60_000).toISOString(), '异常后模拟冷却')
     assert(errorCooldownResult === undefined, '异常账户不应被标记为冷却')
@@ -321,7 +321,7 @@ async function main(): Promise<void> {
   } finally {
     await closeServer(appServer)
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }

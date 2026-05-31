@@ -22,11 +22,12 @@ runtimeConfig.audit.fullBodyCaptureEnabled = false
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, backgroundIpc, usageRecordQueue] = await Promise.all([
+const [databaseModule, repositories, backgroundIpc, usageRecordQueue, usageRecordShards] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/background/background-ipc.js'),
-  import('../../modules/gateway/usage-record-queue.service.js')
+  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../storage/usage-record-shards.js')
 ])
 const auditCapture = await import('../../modules/gateway/audit-capture.service.js')
 const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
@@ -80,8 +81,9 @@ try {
   assert.equal(sensitiveHeaderSerialized.includes('sk-account-secret'), false, '账号 API Key 不应进入审计 payload')
   assert(sensitiveHeaderSerialized.includes('[redacted]'), '审计 payload 中的敏感 header 应保留脱敏占位')
 
+  const sensitiveUsageRecordId = usageRecordShards.generateUsageRecordId(now, 'usage_sensitive_headers')
   usageRecordQueue.enqueueUsageRecord({
-    id: 'usage_sensitive_headers',
+    id: sensitiveUsageRecordId,
     traceId: 'trace-usage-sensitive-headers',
     systemAccountId: 'sys_admin',
     groupId: 'group_default',
@@ -123,7 +125,8 @@ try {
     }
   })
   usageRecordQueue.flushAllUsageRecordQueue()
-  const sensitiveUsageRecord = repositories.getUsageRecordDetail('usage_sensitive_headers')
+  const sensitiveUsageRecord = repositories.getUsageRecordDetail(sensitiveUsageRecordId)
+  assert(sensitiveUsageRecord, '使用记录敏感信息脱敏样本应能按分片 ID 读取')
   const sensitiveUsageSerialized = JSON.stringify({
     requestSnapshot: sensitiveUsageRecord?.requestSnapshot,
     responseSnapshot: sensitiveUsageRecord?.responseSnapshot
@@ -184,12 +187,12 @@ try {
   const largeFailedClientPayload = largeFailedDetail?.payloads.find((payload) => payload.partType === 'client_request')
   assert(largeFailedClientPayload, '失败大请求应保留客户端请求 payload 摘要')
   assert.equal(largeFailedClientPayload.captureStatus, 'summary_only', '超过 2MB 的失败请求 body 应转为摘要保全')
-  assert.equal(largeFailedClientPayload.bodySha256, sha256Buffer(largeFailedRequestBody), '摘要 payload 的 bodySha256 应指向原始 body')
+  assert.notEqual(largeFailedClientPayload.bodySha256, sha256Buffer(largeFailedRequestBody), '超过 1MB 的失败大请求摘要不应在网关主进程同步计算原始 bodySha256')
   assert(largeFailedClientPayload.sizeBytes > largeFailedRequestBody.byteLength, 'payload 原始大小应按原始 body 加 headers 计入')
   const largeFailedPayloadDetail = await repositories.getAuditLogPayload(largeFailedEvent.id, largeFailedClientPayload.id, { limit: 1024 * 1024 })
   const largeFailedSummary = JSON.parse(largeFailedPayloadDetail?.bodyText ?? '{}') as Record<string, unknown>
   assert.equal(largeFailedSummary.type, 'audit_payload_summary', '失败大请求读取正文应返回摘要 JSON')
-  assert.equal(largeFailedSummary.originalSha256, sha256Buffer(largeFailedRequestBody), '摘要 JSON 应记录原始 body hash')
+  assert.equal(largeFailedSummary.originalSha256, undefined, '超过 1MB 的失败大请求摘要 JSON 不应记录同步计算的完整 body hash')
   assert.equal(largeFailedSummary.originalSizeBytes, largeFailedRequestBody.byteLength, '摘要 JSON 应记录原始 body 大小')
   assert(typeof largeFailedSummary.headBase64 === 'string' && largeFailedSummary.headBase64.length > 0, '摘要 JSON 应保留头部窗口')
   assert(typeof largeFailedSummary.tailBase64 === 'string' && largeFailedSummary.tailBase64.length > 0, '摘要 JSON 应保留尾部窗口')
@@ -316,8 +319,9 @@ try {
   assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, localUsageQueueLengthBefore, 'server 无可用 worker 时使用记录不能进入本地待写队列')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, pendingUsageWorkerMessagesBefore + 1, 'server 无可用 worker 时使用记录应进入 IPC 待投递队列')
 
+  const truncatedUsageRecordId = usageRecordShards.generateUsageRecordId(now, 'usage_snapshot_truncated')
   usageRecordQueue.enqueueUsageRecord({
-    id: 'usage_snapshot_truncated',
+    id: truncatedUsageRecordId,
     traceId: 'trace-usage-snapshot-truncated',
     systemAccountId: 'sys_admin',
     groupId: 'group_default',
@@ -334,7 +338,7 @@ try {
     }
   })
   usageRecordQueue.flushAllUsageRecordQueue()
-  const truncatedUsageRecord = repositories.getUsageRecordDetail('usage_snapshot_truncated')
+  const truncatedUsageRecord = repositories.getUsageRecordDetail(truncatedUsageRecordId)
   const truncatedBodyText = truncatedUsageRecord?.responseSnapshot?.bodyText
   assert.equal(typeof truncatedBodyText, 'string', '使用记录响应快照应保留可读 bodyText')
   assert((truncatedBodyText as string).length < 40 * 1024, '使用记录响应快照 bodyText 应在入队前截断')
@@ -386,8 +390,8 @@ try {
     auditLog('audit_retention_2', 'trace-retention-2', repeatedBody)
   ])
 
-  const recordDatabase = databaseModule.getDatasetDatabase()
-  const blobRows = recordDatabase
+  const datasetDatabase = databaseModule.getDatasetDatabase()
+  const blobRows = datasetDatabase
     .prepare('SELECT id, sha256, raw_size_bytes, compressed_size_bytes, compression, storage_key, ref_count FROM audit_payload_blobs ORDER BY created_at ASC')
     .all() as Array<{
       id: string
@@ -422,7 +426,7 @@ try {
   assert.equal(events.total, 2, '错误聚合组应可反查每次 occurrence')
 
   const retainedErrorGroupId = groups.items[0].id
-  recordDatabase.prepare('UPDATE audit_error_groups SET updated_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', retainedErrorGroupId)
+  datasetDatabase.prepare('UPDATE audit_error_groups SET updated_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', retainedErrorGroupId)
   repositories.cleanupAuditLogsByRetention({
     successCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
     failureCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
@@ -449,7 +453,7 @@ try {
   assert(deleted >= 1, '清理应删除过期事件、错误组和无引用 blob')
   assert.equal(repositories.listAuditLogs({ pageSize: 10 }).total, 0, '过期审计事件应被清理')
   assert.equal(repositories.listAuditErrorGroups({ pageSize: 10 }).total, 0, '过期错误聚合组应被清理')
-  const remainingBlobRow = recordDatabase.prepare('SELECT COUNT(*) AS total FROM audit_payload_blobs').get() as { total: number }
+  const remainingBlobRow = datasetDatabase.prepare('SELECT COUNT(*) AS total FROM audit_payload_blobs').get() as { total: number }
   assert.equal(remainingBlobRow.total, 0, '无引用 blob 元数据应被清理')
   assert(!existsSync(blobPath), '无引用 blob 文件应被删除')
 
@@ -457,7 +461,7 @@ try {
 } finally {
   try {
     cleanupTemporaryAuditBlobs()
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

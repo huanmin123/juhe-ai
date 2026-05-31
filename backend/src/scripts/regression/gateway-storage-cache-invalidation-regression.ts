@@ -13,7 +13,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'gateway-storage-cache-invalidation-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -89,9 +89,9 @@ try {
     })
     repositories.updateAccount(account.id, { proxyProfileId: transactionalProxy.id }, ownerAccess)
     assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(ownerGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18180', '事务提交前不应提前清理分组账号缓存')
-    databaseModule.commitDatabaseTransaction(databaseModule.getDatabase(), transactionStarted)
+    databaseModule.commitDatabaseTransaction(databaseModule.getBusinessDatabase(), transactionStarted)
   } catch (error) {
-    databaseModule.rollbackDatabaseTransaction(databaseModule.getDatabase(), transactionStarted)
+    databaseModule.rollbackDatabaseTransaction(databaseModule.getBusinessDatabase(), transactionStarted)
     throw error
   }
   assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(ownerGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18183', '事务提交后应统一清理分组账号缓存')
@@ -137,7 +137,7 @@ try {
 
   repositories.updateApiKey(apiKey.id, { status: 'disabled' }, ownerAccess)
   const afterApiKeyDisabled = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
-  assert.equal(afterApiKeyDisabled.apiKey, undefined, '直接停用 API Key 后运行配置缓存不应继续接受旧 key')
+  assert.equal(afterApiKeyDisabled.apiKey, undefined, '直接停用 API Key 后运行配置缓存不应继续接受已停用 key')
 
   const granteeGroup = repositories.createGroup({
     name: '缓存失效被授权分组',
@@ -185,7 +185,7 @@ try {
   assert.deepEqual(sharedRuntimeAccount?.supportedModels, ['gpt-5.5'], '父账户模型更新后授权实例运行配置缓存应立即刷新')
   const sharedGroupCacheAccount = gatewayCache.listCachedOpenAIAccountsForGroup(granteeGroup.id, grantee.id).find((item) => item.id === sharedAuthorizedInstance.id)
   assert.equal(sharedGroupCacheAccount?.apiKey, 'sk-cache-invalidation-shared-updated', '父账户凭据更新后授权实例分组账号缓存应立即刷新')
-  assert(repositories.revokeResourceAuthorization(accountAuthorization.id, {}, ownerAccess), '回收账号授权失败')
+  assert(repositories.revokeResourceAuthorization(accountAuthorization.id, ownerAccess), '回收账号授权失败')
   assert.deepEqual(await runtimeAccountIds(granteeApiKey.key), [], '直接回收账号授权后候选账号缓存应立即移除该账号')
 
   const team = repositories.createSystemTeam({
@@ -238,7 +238,7 @@ try {
   console.log('网关仓储直写缓存失效回归通过')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

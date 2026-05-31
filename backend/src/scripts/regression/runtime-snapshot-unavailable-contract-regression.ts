@@ -7,11 +7,11 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
-const tempRoot = resolve(tmpdir(), `juhe-ai-runtime-snapshot-fallback-${Date.now()}-${Math.random().toString(16).slice(2)}`)
-runtimeConfig.databasePath = join(tempRoot, 'runtime-snapshot-fallback.sqlite3')
+const tempRoot = resolve(tmpdir(), `juhe-ai-runtime-snapshot-unavailable-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'runtime-snapshot-unavailable.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
-runtimeConfig.secret = 'runtime-snapshot-fallback-secret'
+runtimeConfig.secret = 'runtime-snapshot-unavailable-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
@@ -205,7 +205,7 @@ try {
 } finally {
   await closeServer(server)
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -225,7 +225,7 @@ function seedData(): { accountId: string; adminCookie: string; groupId: string }
     name: '运行态快照不可用账号',
     type: 'api_key',
     credentials: {
-      api_key: 'sk-runtime-snapshot-fallback',
+      api_key: 'sk-runtime-snapshot-unavailable',
       base_url: 'http://127.0.0.1:9/v1'
     },
     status: 'active',

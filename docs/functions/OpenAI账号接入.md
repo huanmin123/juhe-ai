@@ -54,7 +54,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 错误策略
 - 备注
 
-`expires_at`、`account_id` / `chatgpt_account_id` 属于 OpenAI OAuth token 响应或 token 解析出的系统元数据，不作为用户表单输入项。`account_expires_at` 是本系统的账户套餐到期时间，可选填写，和 OAuth token 的 `expires_at` 不是同一个字段。
+`expires_at`、`account_id` 属于 OpenAI OAuth token 响应或 token 解析出的系统元数据，不作为用户表单输入项。`account_expires_at` 是本系统的账户套餐到期时间，可选填写，和 OAuth token 的 `expires_at` 不是同一个字段。
 
 保存要求：
 
@@ -110,7 +110,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 一个账户在同一个使用方作用域内同一时间只保留一个有效分组绑定；自有账户在所有者作用域内创建 / 编辑时选择分组，被授权账户在授权创建时必须绑定被授权用户自己的本地分组，后续通过账户编辑弹窗调整分组和分组内优先级。
 - 被授权用户把授权实例加入自己的同供应商分组后，自己的 API Key 才能通过该分组调度该授权实例；这只是本地调度绑定，不改变授权方原账户的分组绑定。
 - 授权实例账户自己的状态、冷却、错误和流失败窗口与授权方原账户运行态隔离；当前分组内优先级、超级优先和降级备用来自 `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled`，只影响当前使用方当前分组绑定。
-- 授权实例运行时的 OpenAI 凭据、`base_url`、账号类型、支持模型、代理、并发、透传和错误策略从来源账户补齐；父账户 API Key、OAuth token、模型或代理更新后，被授权实例列表、测试和网关缓存都应读取最新来源资源事实。
+- 授权实例运行时的 OpenAI 凭据、`base_url`、账号类型、支持模型、代理、并发和错误策略从来源账户补齐；父账户 API Key、OAuth token、模型或代理更新后，被授权实例列表、测试和网关缓存都应读取最新来源资源事实。
 - 被授权用户不能编辑、删除、查看敏感凭据、修改来源账户代理 / 并发 / 错误策略 / 模型 / 凭据，也不能继续转授权；被授权用户可以在自己的分组内绑定 / 调整授权实例、执行账户测试、停用或恢复自己的授权实例，并调整当前分组内优先级、超级优先和降级备用。
 - 统一授权管理支持分组授权；分组所有者可以把整个分组授权给系统账户或系统团队使用，授权共享该分组内当前全部可共享账户，但授权方分组不再作为被授权方新建 API Key 的直接调度池
 - 被授权用户不能把自己的 API Key 直接绑定到授权方分组；授权账户会进入被授权用户自己的同供应商本地分组，再由该用户自己的 API Key 通过该本地分组调度
@@ -174,11 +174,11 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 - API Key 账户使用 `credentials.api_key` 作为上游 Bearer token。
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
-- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接客户端网关 `/*` 和 `/v1/*` 兼容请求；OpenAI API Key 上游仍归一到 `/v1/*`。
+- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接客户端网关 `/*` 和 `/v1/*` 请求；OpenAI API Key 上游仍归一到 `/v1/*`。
 - OAuth 账户不把 `access_token` 当作官方 OpenAI API Key 打到 `api.openai.com/v1`；真实转发走 ChatGPT / Codex backend 专用链路 `https://chatgpt.com/backend-api/codex`。
 - OAuth Codex 网关当前支持 Codex 原生 `POST /responses` 和 `POST /responses/compact`，暂不做 `/chat/completions` 到 Responses 的重型协议翻译。
 - `GET /v1/models` 由本地 OpenAI 模型价格目录返回，不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。
-- OAuth Codex 转发会补齐必要 Codex CLI 协议头，并在账号凭据包含 `chatgpt_account_id` / `account_id` 时写入 `chatgpt-account-id`；客户端传入的同名头不会透传，避免跨账号伪造。
+- OAuth Codex 转发会补齐必要 Codex CLI 协议头，并在账号凭据包含 `account_id` 时写入 `chatgpt-account-id`；客户端传入的同名头不会透传，避免跨账号伪造。
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户，作为请求前懒刷新兜底。
 - OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。刷新成功后 server 进程会短 TTL 记住最近新凭据，同一波临期请求复用该结果，不再逐个重复读写 DB service。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
 - 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 OpenAI OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做 token 保活，成功时不恢复普通冷却状态、不清理无关错误；失败时按退避等待并累计连续失败次数，连续 3 次失败后把非停用账户写入 `status = error`，`last_error_code = oauth_token_refresh_failed`，`last_error_message` 记录最近失败摘要，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
@@ -187,7 +187,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
 - 账户自动启停计划只作为网关候选过滤条件，不改变手动启用/停用、异常、冷却和到期状态。账号池运行缓存按分钟边界刷新，避免计划切换时间点继续使用旧候选。
 - 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期由请求前懒刷新和后台 Access Token 预刷新维护，额度快照由真实请求响应头被动维护。
-- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；API Key 账户测试会优先复用最近真实请求形态，模型按显式传入、最近真实请求、账户支持模型、默认模型顺序选择，避免固定测试模型和真实可用模型不一致。API Key 账户的 Responses 测试不发送 `max_output_tokens`，兼容不支持该参数的 OpenAI 兼容上游；管理后台测试弹窗只选择模型，测试输入由后端使用默认探活输入生成。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常，失败只继续退避复测，不把系统自动冷却升级为永久异常。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
+- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户创建、导入和离线修复都不得自动绑定本机固定端口代理，代理必须由用户显式配置。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；API Key 账户测试会优先复用最近真实请求形态，模型按显式传入、最近真实请求、账户支持模型、默认模型顺序选择，避免固定测试模型和真实可用模型不一致。API Key 账户的 Responses 测试按当前契约不发送 `max_output_tokens`；管理后台测试弹窗只选择模型，测试输入由后端使用默认探活输入生成。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常，失败只继续退避复测，不把系统自动冷却升级为永久异常。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。
 
 ## 会话亲和调度
 

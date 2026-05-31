@@ -210,7 +210,7 @@
           <span class="gateway-step-title">3. 填到客户端</span>
           <pre class="gateway-code">{{ gatewayClientExample }}</pre>
         </div>
-        <a-alert class="gateway-help-note" type="info" show-icon message="Responses 是连续会话入口；/chat/completions 需要兼容上游。统计、会话亲和和缓存不按 OAuth / API Key 类型拆分。" />
+        <a-alert class="gateway-help-note" type="info" show-icon message="Responses 是连续会话入口；/chat/completions 按上游公开接口能力处理。统计、会话亲和和缓存不按 OAuth / API Key 类型拆分。" />
       </div>
     </a-modal>
 
@@ -1082,9 +1082,9 @@ async function openCreate() {
   resetGroupOptionsSearch()
   await loadGroupOptions()
   editingId.value = undefined
-  const defaultGroup = groups.value.find((group) => group.enabled)
+  const defaultGroup = groups.value.find((group) => group.enabled && group.isDefault)
   if (!defaultGroup) {
-    message.warning('请先创建并启用一个分组，再创建 API Key')
+    message.warning('请先创建并启用默认分组，再创建 API Key')
     return
   }
   Object.assign(form, {

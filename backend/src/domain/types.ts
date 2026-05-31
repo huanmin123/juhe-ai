@@ -329,7 +329,6 @@ export interface AccountSummary {
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
-  passthroughEnabled: boolean
   errorPolicyId?: string
   schedulable: boolean
   availabilitySchedule?: AccountAvailabilitySchedule
@@ -675,8 +674,7 @@ export interface ResourceAuthorizationSummary {
   effectiveSourceTeamName?: string
   activatedAt?: string
   lastSourceChangedAt?: string
-  sources: ResourceAuthorizationSourceSummary[]
-  authorizationSources?: ResourceAuthorizationSourceSummary[]
+  authorizationSources: ResourceAuthorizationSourceSummary[]
   usage: AccountUsageSummary
   lastUsedAt?: string
   usageBySystemAccount?: ResourceAuthorizationUsageDetail[]

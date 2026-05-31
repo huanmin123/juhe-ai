@@ -100,7 +100,7 @@ try {
   }, granteeAccess)
   const authorizedSourceAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '授权用量来源旧名',
+    name: '授权用量来源初始名',
     type: 'api_key',
     credentials: {
       api_key: 'sk-account-usage-authorized-source',
@@ -150,7 +150,7 @@ try {
   seedUsageScopeRangeWindow(grantee.id, 'caller_account', authorizedInstance.id, 11)
   seedUsageScopeRangeWindow(grantee.id, 'caller_account', groupAuthorizedAccount.id, 13)
 
-  const businessDatabase = databaseModule.getDatabase()
+  const businessDatabase = databaseModule.getBusinessDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
   const businessCalls: Array<{ sql: string; params: unknown[] }> = []
   businessDatabase.prepare = ((sql: string) => {
@@ -165,10 +165,10 @@ try {
     return statement
   }) as typeof businessDatabase.prepare
 
-  const recordDatabase = databaseModule.getStatsDatabase()
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const statsDatabase = databaseModule.getStatsDatabase()
+  const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
-  recordDatabase.prepare = ((sql: string) => {
+  statsDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     if (/\bFROM\s+usage_scope_range_windows\s+usage_window\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
@@ -183,7 +183,7 @@ try {
       }) as typeof statement.get
     }
     return statement
-  }) as typeof recordDatabase.prepare
+  }) as typeof statsDatabase.prepare
 
   try {
     const keywordResult = repositories.getAccountUsageStatsOverviewPage(access, {
@@ -274,7 +274,7 @@ try {
     })
     assert.deepEqual(granteeDefaultResult.rows.map((row) => row.id), [groupAuthorizedAccount.id, authorizedInstance.id], '被授权用户默认账号用量列表应直接读取自己的 caller_account 窗口')
   } finally {
-    recordDatabase.prepare = originalPrepare
+    statsDatabase.prepare = originalPrepare
     businessDatabase.prepare = originalBusinessPrepare
   }
 
@@ -318,7 +318,7 @@ try {
   console.log('账号用量查询防护回归通过：关键词先解析账号 ID，手动选中账户按窗口 scope_id 补入，窗口查询不再接收前导通配符，并使用日期范围索引')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

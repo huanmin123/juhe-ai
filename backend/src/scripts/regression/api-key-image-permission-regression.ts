@@ -212,7 +212,7 @@ try {
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -242,7 +242,6 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     },
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, access)
   assert(account.boundGroupId, '新建账户应绑定默认分组')
   const boundGroupId = account.boundGroupId

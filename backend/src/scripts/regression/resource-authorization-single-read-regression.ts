@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import type { SQLInputValue } from 'node:sqlite'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -62,9 +63,10 @@ try {
     }
   }
 
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare("UPDATE resource_authorization_grants SET created_at = '2000-01-01T00:00:00.000Z', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
     .run(targetId)
+  assertAuthorizationListQueryPlan(owner.id)
 
   const firstPageLikeList = repositories.listResourceAuthorizations({ status: 'all' }, ownerAccess).slice(0, 200)
   assert.equal(firstPageLikeList.some((authorization) => authorization.id === targetId), false, '最早创建的第 250 条外授权不应出现在前 200 条列表窗口里')
@@ -78,7 +80,7 @@ try {
   assert.equal(updated?.id, targetId, '更新授权应通过单条读取返回目标授权摘要')
   assert.equal(updated?.expiresAt, '2099-01-01T00:00:00.000Z', '更新授权应保留新的过期时间')
 
-  const revoked = repositories.revokeResourceAuthorization(targetId, { revokeAll: true }, ownerAccess)
+  const revoked = repositories.revokeResourceAuthorization(targetId, ownerAccess)
   assert.equal(revoked?.id, targetId, '回收授权应通过单条读取返回目标授权摘要')
   assert.equal(revoked?.status, 'revoked', '回收授权应返回已回收状态')
   const defaultListAfterRevoke = repositories.listResourceAuthorizations({}, ownerAccess)
@@ -89,9 +91,30 @@ try {
   console.log('资源授权单条读取回归通过：操作日志 before 和写路径不再依赖全量授权列表装配')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertAuthorizationListQueryPlan(ownerSystemAccountId: string): void {
+  const details = explainBusinessQuery(`
+    SELECT id
+    FROM resource_authorization_grants
+    WHERE resource_owner_system_account_id = ?
+      AND status = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `, [ownerSystemAccountId, 'active', 51, 0])
+  assert(details.includes('idx_resource_authorization_grants_owner_created'), `授权列表应通过 owner + status + created_at 组合索引读取当前页，实际计划：${details}`)
+  assert(!details.includes('USE TEMP B-TREE FOR ORDER BY'), `授权列表不应为默认排序创建临时 B-TREE，实际计划：${details}`)
+}
+
+function explainBusinessQuery(sql: string, params: SQLInputValue[]): string {
+  return databaseModule.getBusinessDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
 }

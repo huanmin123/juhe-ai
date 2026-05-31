@@ -17,7 +17,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'upstream-request-failure-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -255,7 +255,7 @@ async function main(): Promise<void> {
       body: sameSignatureRequestBody
     })
     const repeatedSignatureResponseText = await repeatedSignatureResponse.text()
-    assert.equal(repeatedSignatureResponse.status, 503, `重复相同上游错误请求不应命中旧短路缓存，实际 HTTP ${repeatedSignatureResponse.status}: ${repeatedSignatureResponseText}`)
+    assert.equal(repeatedSignatureResponse.status, 503, `重复相同上游错误请求必须重新探测上游，实际 HTTP ${repeatedSignatureResponse.status}: ${repeatedSignatureResponseText}`)
     assert.equal(sameSignatureUpstreamHitCount, 6, `重复相同上游错误请求清理本地屏蔽后应重新探测上游，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
@@ -388,7 +388,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝；未命中账号错误策略的上游响应失败只记录并切号，不默认本地屏蔽；全部失败返回统一网关错误；重复请求不再命中旧请求级短路缓存；单账号屏蔽时会等待释放并支持续期等待')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝；未命中账号错误策略的上游响应失败只记录并切号，不默认本地屏蔽；全部失败返回统一网关错误；重复请求会重新探测上游；单账号屏蔽时会等待释放并支持续期等待')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -396,7 +396,7 @@ async function main(): Promise<void> {
     await closeServer(upstreamServer)
     await closeServer(closedTransportServer)
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }

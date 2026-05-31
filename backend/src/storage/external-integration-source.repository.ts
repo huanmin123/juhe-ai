@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 
 import { hashSecret } from './crypto.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { getBusinessDatabase, newId, nowIso } from './database.js'
+import { normalizeListPage } from './query-utils.js'
 
 export const externalIntegrationSourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
 export const externalIntegrationIpUsageReadScope = 'juhe_ai_ip_usage:read'
@@ -182,8 +183,8 @@ const defaultPageSize = 20
 const maxPageSize = 100
 
 export function listExternalIntegrationSources(options: ExternalIntegrationSourceListOptions = {}): ExternalIntegrationSourceListResult {
-  const page = Math.max(1, Math.trunc(options.page ?? 1))
   const pageSize = Math.max(1, Math.min(Math.trunc(options.pageSize ?? defaultPageSize), maxPageSize))
+  const page = normalizeListPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const where: string[] = []
   const params: SQLInputValue[] = []
@@ -197,7 +198,7 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
     params.push(keyword, `${keyword}%`)
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
-  const rows = getDatabase().prepare(`
+  const rows = getBusinessDatabase().prepare(`
     SELECT
       sources.*,
       COUNT(tokens.id) AS token_count,
@@ -222,7 +223,7 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
 }
 
 export function findExternalIntegrationSource(id: string): ExternalIntegrationSourceSummary | undefined {
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare('SELECT *, 0 AS token_count, 0 AS active_token_count FROM external_integration_sources WHERE id = ?')
     .get(id) as ExternalIntegrationSourceListRow | undefined
   if (!row) {
@@ -242,7 +243,7 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
   const id = newId('extsrc')
   ensureSourceNameAvailable(name)
   try {
-    getDatabase().prepare(`
+    getBusinessDatabase().prepare(`
       INSERT INTO external_integration_sources (
         id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -268,7 +269,7 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
 
 export function upsertExternalIntegrationSource(input: ExternalIntegrationSourceInput): { id: string; name: string } {
   const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const existing = database
     .prepare('SELECT id, name FROM external_integration_sources WHERE lower(name) = lower(?)')
     .get(name) as Pick<ExternalIntegrationSourceRow, 'id' | 'name'> | undefined
@@ -323,7 +324,7 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
   const nextRateLimits = input.rateLimits === undefined ? existing.rate_limits_json : encodeRateLimits(input.rateLimits)
   const nextExpiresAt = input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt)
   const nextNotes = input.notes === undefined ? existing.notes : normalizeNullableText(input.notes)
-  getDatabase().prepare(`
+  getBusinessDatabase().prepare(`
     UPDATE external_integration_sources
     SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
     WHERE id = ?
@@ -340,7 +341,7 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
   const id = newId('exttok')
   const tokenPrefix = token.slice(0, 12)
   try {
-    getDatabase().prepare(`
+    getBusinessDatabase().prepare(`
       INSERT INTO external_integration_source_tokens (
         id, source_ref_id, name, token_hash, token_prefix, status, scopes_json, expires_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -374,7 +375,7 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
 }
 
 export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenId: string, input: ExternalIntegrationSourceTokenUpdateInput): ExternalIntegrationSourceTokenSummary | undefined {
-  const existing = getDatabase().prepare(`
+  const existing = getBusinessDatabase().prepare(`
     SELECT tokens.*
     FROM external_integration_source_tokens AS tokens
     JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
@@ -389,7 +390,7 @@ export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenI
     : nextStatus === 'revoked'
       ? existing.revoked_at
       : null
-  getDatabase().prepare(`
+  getBusinessDatabase().prepare(`
     UPDATE external_integration_source_tokens
     SET name = ?, status = ?, scopes_json = ?, expires_at = ?, revoked_at = ?, updated_at = ?
     WHERE id = ?
@@ -424,7 +425,7 @@ export function validateExternalIntegrationSourceToken(input: {
     return testTokenResult
   }
 
-  const row = getDatabase().prepare(`
+  const row = getBusinessDatabase().prepare(`
     SELECT
       sources.id AS source_row_id,
       sources.name AS source_name,
@@ -548,14 +549,14 @@ function requiredSource(id: string): ExternalIntegrationSourceSummary {
 }
 
 function findSourceRow(id: string): ExternalIntegrationSourceRow | undefined {
-  return getDatabase()
+  return getBusinessDatabase()
     .prepare('SELECT * FROM external_integration_sources WHERE id = ?')
     .get(id) as ExternalIntegrationSourceRow | undefined
 }
 
 function resolveSourceForToken(input: ExternalIntegrationSourceTokenInput): Pick<ExternalIntegrationSourceRow, 'id'> {
   if (input.sourceRefId) {
-    const source = getDatabase()
+    const source = getBusinessDatabase()
       .prepare('SELECT id FROM external_integration_sources WHERE id = ?')
       .get(input.sourceRefId) as Pick<ExternalIntegrationSourceRow, 'id'> | undefined
     if (!source) {
@@ -572,7 +573,7 @@ function loadTokensBySourceIds(sourceIds: string[]): Map<string, ExternalIntegra
     return result
   }
   const placeholders = sourceIds.map(() => '?').join(',')
-  const rows = getDatabase().prepare(`
+  const rows = getBusinessDatabase().prepare(`
     SELECT *
     FROM external_integration_source_tokens
     WHERE source_ref_id IN (${placeholders})
@@ -632,7 +633,7 @@ function normalizeNameOrThrow(value: string, message: string): string {
 }
 
 function ensureSourceNameAvailable(name: string, currentId?: string): void {
-  const existing = getDatabase()
+  const existing = getBusinessDatabase()
     .prepare('SELECT id FROM external_integration_sources WHERE lower(name) = lower(?) LIMIT 1')
     .get(name) as Pick<ExternalIntegrationSourceRow, 'id'> | undefined
   if (existing && existing.id !== currentId) {
@@ -740,7 +741,7 @@ function normalizeNullableText(value: string | null | undefined): string | null 
 }
 
 function touchExternalIntegrationSourceLastUsed(row: ExternalIntegrationSourceTokenRow, now: string): void {
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   if (shouldTouchLastUsed(row.token_last_used_at, now)) {
     database
       .prepare('UPDATE external_integration_source_tokens SET last_used_at = ?, updated_at = ? WHERE id = ?')

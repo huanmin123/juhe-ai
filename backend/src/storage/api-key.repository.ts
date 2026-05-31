@@ -16,7 +16,7 @@ import {
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
 import { apiKeySummariesFromRows, type ApiKeyRow } from './api-key-mappers.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -31,7 +31,6 @@ const MAX_API_KEY_GROUP_BINDINGS = 20
 export interface ApiKeyListOptions {
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
   status?: 'active' | 'disabled' | 'all'
   groupId?: string
@@ -83,7 +82,7 @@ export function listApiKeysPage(access?: AccessScope, options?: ApiKeyListOption
 
 export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySummary | undefined {
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id WHERE api_keys.id = ?${scope.clause}`)
     .get(id, ...scope.params) as unknown as ApiKeyRow | undefined
   return row ? apiKeySummariesFromRows([row], access, { includeSecret: false })[0] : undefined
@@ -95,7 +94,7 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
   const filters = buildApiKeyFilters(scope, normalized)
   const limitClause = paged ? 'LIMIT ? OFFSET ?' : ''
   const limitParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id ${filters.clause} ORDER BY api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC ${limitClause}`)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
@@ -163,15 +162,49 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     key
   }
   assertApiKeyNameAvailable(systemAccountId, record.name)
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const insertColumns = [
+      'id',
+      'system_account_id',
+      'name',
+      'description',
+      'key_hash',
+      'key_prefix',
+      'key_secret_encrypted',
+      'status',
+      'group_route_strategy',
+      'expires_at',
+      'quota_limits_json',
+      'availability_schedule_json',
+      'scopes_json',
+      'created_at',
+      'updated_at'
+    ]
+    const insertValues = [
+      record.id,
+      systemAccountId,
+      record.name,
+      record.description ?? null,
+      hashSecret(key),
+      record.keyPrefix,
+      encryptJson({ key }),
+      record.status,
+      record.groupRouteStrategy,
+      record.expiresAt ?? null,
+      requestQuotaLimitsJson(record.quotaLimits),
+      apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
+      JSON.stringify(input.scopes ?? []),
+      now,
+      now
+    ]
     database
       .prepare(`
-        INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_route_strategy, expires_at, quota_limits_json, availability_schedule_json, scopes_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO api_keys (${insertColumns.join(', ')})
+        VALUES (${insertColumns.map(() => '?').join(', ')})
       `)
-      .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupRouteStrategy, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), apiKeyAvailabilityScheduleJson(record.availabilitySchedule), JSON.stringify(input.scopes ?? []), now, now)
+      .run(...insertValues)
     replaceApiKeyGroupBindings(database, record.id, systemAccountId, bindings, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -198,7 +231,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
     return undefined
   }
-  const currentRow = getDatabase()
+  const currentRow = getBusinessDatabase()
     .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id WHERE api_keys.id = ? AND api_keys.system_account_id = ?`)
     .get(id, systemAccountId) as unknown as ApiKeyRow | undefined
   const current = currentRow ? apiKeySummariesFromRows([currentRow], { systemAccountId, role: 'user' }, { includeSecret: false })[0] : undefined
@@ -234,13 +267,34 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     availabilitySchedule: nextAvailabilitySchedule
   }
   assertApiKeyNameAvailable(systemAccountId, next.name, id)
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const now = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const updates = [
+      'name = ?',
+      'description = ?',
+      'status = ?',
+      'group_route_strategy = ?',
+      'expires_at = ?',
+      'quota_limits_json = ?',
+      'availability_schedule_json = ?',
+      'updated_at = ?'
+    ]
+    const updateValues = [
+      next.name,
+      next.description ?? null,
+      next.status,
+      next.groupRouteStrategy,
+      next.expiresAt ?? null,
+      requestQuotaLimitsJson(next.quotaLimits),
+      apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
+      now
+    ]
+    updateValues.push(id, systemAccountId)
     database
-      .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_route_strategy = ?, expires_at = ?, quota_limits_json = ?, availability_schedule_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-      .run(next.name, next.description ?? null, next.status, next.groupRouteStrategy, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), apiKeyAvailabilityScheduleJson(next.availabilitySchedule), now, id, systemAccountId)
+      .prepare(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ? AND system_account_id = ?`)
+      .run(...updateValues)
     if (nextBindings) {
       replaceApiKeyGroupBindings(database, id, systemAccountId, nextBindings, now)
     }
@@ -278,7 +332,7 @@ export function deleteApiKey(id: string, access?: AccessScope): boolean {
 
 export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope): ApiKeyDeleteResult {
   const scope = buildSystemAccountScopeClause(access)
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const row = database.prepare(`SELECT id, system_account_id FROM api_keys WHERE id = ?${scope.clause}`).get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
   if (!row) {
     return { deleted: false }
@@ -410,7 +464,7 @@ function loadApiKeyBindableGroups(groupIds: string[]): Map<string, ApiKeyBindabl
   const ids = [...new Set(groupIds.filter(Boolean))]
   const result = new Map<string, ApiKeyBindableGroupRow>()
   if (!ids.length) return result
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 500)) {
     const rows = database
       .prepare(`SELECT id, system_account_id, provider_code, name, enabled FROM groups WHERE id IN (${sqlPlaceholders(chunk.length)})`)
@@ -466,7 +520,7 @@ function assertApiKeyNameAvailable(systemAccountId: string, name: string, exclud
   if (excludeId) {
     params.push(excludeId)
   }
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare(`SELECT id FROM api_keys WHERE system_account_id = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
     .get(...params) as { id?: string } | undefined
   if (row?.id) {

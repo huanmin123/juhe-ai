@@ -3,7 +3,7 @@ import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, ty
 import { accountStatusFilterValues, buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
 import { loadSupportedModelsByAccountIds } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
-import { getDatabase, getStatsDatabase, statsDatabasePath } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, statsDatabasePath } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
@@ -142,7 +142,7 @@ function queryAccountRowsForAccess(
   pagination?: { limit: number; offset: number },
   settings: AccountRowQuerySettings | boolean = true
 ): AccountRowsPage {
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const normalizedSettings = typeof settings === 'boolean' ? { includeTotal: settings } : settings
   const includeTotal = normalizedSettings.includeTotal ?? true
   const accountSelectColumns = accountRowSelectColumns(normalizedSettings.includeCredentials ?? true)
@@ -251,7 +251,7 @@ function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 
   return options.sorts.some((sort) => sort.field === 'qualityScore')
 }
 
-function ensureAccountQualityDatabaseAttached(database: ReturnType<typeof getDatabase>): void {
+function ensureAccountQualityDatabaseAttached(database: ReturnType<typeof getBusinessDatabase>): void {
   getStatsDatabase()
   const rows = database.prepare('PRAGMA database_list').all() as unknown as Array<{ name?: string }>
   if (rows.some((row) => row.name === accountQualityDatabaseAlias)) return
@@ -296,7 +296,6 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     includeCredentials ? 'accounts.credentials_encrypted' : "'' AS credentials_encrypted",
     'accounts.proxy_profile_id',
     'accounts.concurrency_limit',
-    'accounts.passthrough_enabled',
     'accounts.error_policy_id',
     'accounts.priority',
     'accounts.super_priority_enabled',
@@ -336,7 +335,6 @@ function accountListOuterSelectColumns(): string {
     'credentials_encrypted',
     'proxy_profile_id',
     'concurrency_limit',
-    'passthrough_enabled',
     'error_policy_id',
     'priority',
     'super_priority_enabled',
@@ -371,7 +369,7 @@ function accountListOuterSelectColumns(): string {
   ].map((column) => `account_rows.${column}`).join(', ')
 }
 
-export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[], options: { includeCredentials?: boolean } = {}): AccountListRow[] {
+export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], options: { includeCredentials?: boolean } = {}): AccountListRow[] {
   if (rows.length === 0) return rows
   const includeCredentials = options.includeCredentials ?? true
   const rowsWithSources = hydrateAuthorizedAccountSourceFacts(rows, includeCredentials)
@@ -442,16 +440,15 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     credentials_encrypted: string | null
     proxy_profile_id: string | null
     concurrency_limit: number | null
-    passthrough_enabled: number | null
     error_policy_id: string | null
   }> = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(sourceIds, 900)) {
     sourceRows.push(...database
       .prepare(`
         SELECT id, provider_code, type, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
-          proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id
+          proxy_profile_id, concurrency_limit, error_policy_id
         FROM accounts
         WHERE id IN (${sqlPlaceholders(chunk.length)})
       `)
@@ -471,7 +468,6 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
       source_credentials_encrypted: source.credentials_encrypted,
       source_proxy_profile_id: source.proxy_profile_id,
       source_concurrency_limit: source.concurrency_limit,
-      source_passthrough_enabled: source.passthrough_enabled,
       source_error_policy_id: source.error_policy_id
     }
   })

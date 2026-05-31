@@ -119,7 +119,7 @@ try {
   }, ownerAccess)
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '锁库回归准备账户应先刷新一次统计缓存')
   const expiredAt = new Date(Date.now() - 60_000).toISOString()
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       UPDATE accounts
       SET status = 'temporary_unavailable',
@@ -147,14 +147,14 @@ try {
     status: 'active'
   }, ownerAccess)
   assert.deepEqual(dirtyRows().map((row) => row.group_id), [primaryGroup.id], '已有统计行的分组新增账户后应标记为脏')
-  assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, 'worker 刷新前统计缓存仍保留旧值')
+  assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, 'worker 刷新前统计缓存仍保留上次聚合值')
   const ownerDirtyGroupBeforeStatsRefresh = repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items.find((group) => group.id === primaryGroup.id)
   assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, '已标脏分组的列表读取不应同步改写统计缓存')
   assert.equal(ownerDirtyGroupBeforeStatsRefresh?.accountStats.total, 1, '统计行已标脏时分组列表仍展示 worker 上次聚合结果')
   assert.equal(ownerDirtyGroupBeforeStatsRefresh?.accountStats.available, 1, '统计行已标脏时分组列表仍展示 worker 上次聚合可用数')
-  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应刷新已标脏分组的旧统计行')
-  assert.deepEqual(dirtyRows(), [], '旧统计行刷新后应清空脏标记')
-  assert.equal(groupStatsRow(primaryGroup.id)?.total, 2, 'worker 刷新后旧统计行应更新为最新账户数')
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应刷新已标脏分组的统计行')
+  assert.deepEqual(dirtyRows(), [], '统计行刷新后应清空脏标记')
+  assert.equal(groupStatsRow(primaryGroup.id)?.total, 2, 'worker 刷新后统计行应更新为最新账户数')
 
   for (let index = 0; index < 25; index += 1) {
     repositories.createGroup({
@@ -188,7 +188,7 @@ try {
   }, ownerAccess)
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '授权过期锁库回归准备授权应先刷新一次统计缓存')
   const authorizationExpiredAt = new Date(Date.now() - 60_000).toISOString()
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare('UPDATE resource_authorization_grants SET expires_at = ?, updated_at = ? WHERE id = ?')
     .run(authorizationExpiredAt, authorizationExpiredAt, expireLockAuthorization.id)
   withStatsWriteLock(() => {
@@ -227,7 +227,7 @@ try {
   console.log('分组账户统计脏缓存回归通过：请求路径只打业务库脏标记，全量影响只写哨兵，统计由 worker 异步刷新，统计库写锁期间业务写入不受影响，缓存缺失或已标脏时列表只读预聚合结果')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -235,20 +235,20 @@ try {
 }
 
 function dirtyRows(): DirtyRow[] {
-  const rows = databaseModule.getDatabase()
+  const rows = databaseModule.getBusinessDatabase()
     .prepare('SELECT group_id, reason FROM group_account_stats_dirty ORDER BY group_id')
     .all() as unknown as DirtyRow[]
   return rows.map((row) => ({ group_id: row.group_id, reason: row.reason }))
 }
 
 function accountRow(accountId: string): { status: string } | undefined {
-  return databaseModule.getDatabase()
+  return databaseModule.getBusinessDatabase()
     .prepare('SELECT status FROM accounts WHERE id = ?')
     .get(accountId) as unknown as { status: string } | undefined
 }
 
 function grantStatus(authorizationGrantId: string): string | undefined {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT status FROM resource_authorization_grants WHERE id = ?')
     .get(authorizationGrantId) as unknown as { status?: string } | undefined
   return row?.status
@@ -261,7 +261,7 @@ function groupStatsRow(groupId: string): { total: number } | undefined {
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)

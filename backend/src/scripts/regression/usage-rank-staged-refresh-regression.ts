@@ -39,12 +39,12 @@ try {
   const today = usageStatsRepository.normalizeDefaultUsageStatsRange().endDate
   const fixedDates = usageStatsWindowHelpers.fixedUsageStatsDateKeys(usageStatsHelpers.usageStatsTimezone(), today)
   const fixedRangeCount = fixedDates.length * (fixedDates.length + 1) / 2
-  seedOldRangeWindows(today)
+  seedPublishedRangeWindows(today)
   seedNewRangeSources(today)
 
-  assert.equal(usageScopeRequestCount(today), 1, '测试前应读到旧 usage scope 范围窗口')
-  assert.equal(authorizationTeamRequestCount(today), 1, '测试前应读到旧授权团队范围窗口')
-  assert.equal(authorizationUserRequestCount(today), 1, '测试前应读到旧授权用户范围窗口')
+  assert.equal(usageScopeRequestCount(today), 1, '测试前应读到已发布 usage scope 范围窗口')
+  assert.equal(authorizationTeamRequestCount(today), 1, '测试前应读到已发布授权团队范围窗口')
+  assert.equal(authorizationUserRequestCount(today), 1, '测试前应读到已发布授权用户范围窗口')
 
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   database.prepare = ((sql: string) => {
@@ -85,14 +85,14 @@ try {
   console.log('用量排行 staged 刷新回归通过：范围窗口分段 yield，临时表失败不会半发布')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedOldRangeWindows(statDate: string): void {
+function seedPublishedRangeWindows(statDate: string): void {
   const database = databaseModule.getStatsDatabase()
   const updatedAt = '2000-01-01T00:00:00.000Z'
   database.prepare(`

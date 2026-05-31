@@ -1,5 +1,5 @@
 import { errorLogFields, logger } from './logger.js'
-import { getDatabase, runAfterDatabaseCommit } from '../storage/database.js'
+import { getBusinessDatabase, runAfterDatabaseCommit } from '../storage/database.js'
 
 type CacheInvalidationHandler = () => void
 type ApiKeyQuotaInvalidationHandler = (apiKeyId?: string) => void
@@ -48,7 +48,7 @@ export function notifyApiKeyQuotaCacheInvalidation(apiKeyId: string | undefined,
 }
 
 export function runGatewayCacheInvalidatorsAfterCommit(effect: () => void): void {
-  runAfterDatabaseCommit(effect, getDatabase())
+  runAfterDatabaseCommit(effect, getBusinessDatabase())
 }
 
 function runCacheInvalidators<THandler>(

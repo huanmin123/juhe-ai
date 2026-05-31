@@ -139,7 +139,6 @@ function account(id: string, proxyProfileId: string, baseUrl = 'https://example.
     superPriorityEnabled: false,
     fallbackEnabled: false,
     schedulable: true,
-    passthroughEnabled: false,
     proxyProfileId,
     accountOwnerSystemAccountId: 'sys_admin',
     groupOwnerSystemAccountId: 'sys_admin',

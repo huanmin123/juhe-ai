@@ -40,7 +40,6 @@ function parseApiKeyListOptions(query: Record<string, unknown>): ApiKeyListOptio
   return {
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize),
-    limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
     status: apiKeyStatusQueryValue(query.status),
     groupId: optionalQueryText(query.groupId)

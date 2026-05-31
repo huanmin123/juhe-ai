@@ -8,7 +8,7 @@ import type {
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { latestUsageStatsLagSeconds } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
@@ -16,6 +16,7 @@ import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-s
 import { loadUsageDailySeriesForScopeRequests, type UsageStatsDailySeries } from './usage-window-loaders.js'
 
 const accountUsageBusinessDatabaseAlias = 'account_usage_business'
+const accountUsageMaxListWindowRows = 1001
 
 export function getAccountUsageStatsOverview(input: {
   access?: AccessScope
@@ -102,8 +103,9 @@ interface AccountUsageMetadataRow {
 const accountUsageSelectedAccountLimit = 50
 
 export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageStatsPageOptions): AccountUsageStatsOverview {
-  const page = Math.max(1, Math.trunc(input.page))
   const pageSize = Math.max(1, Math.min(Math.trunc(input.pageSize), 200))
+  const maxPage = Math.max(1, Math.floor((accountUsageMaxListWindowRows - 1) / pageSize))
+  const page = Math.min(maxPage, Math.max(1, Math.trunc(input.page)))
   const usageScope = accountUsageListScope(input.access)
   const database = getStatsDatabase()
   const filter = accountUsageFilterPredicate(input, usageScope.scopeType, database)
@@ -387,7 +389,7 @@ function loadAccountUsageKeywordAccountIds(input: {
 }): string[] {
   const keyword = input.keyword.trim()
   if (!keyword) return []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const ids: string[] = []
   const clauses: string[] = []
   const params: string[] = []
@@ -480,7 +482,7 @@ function loadAccountUsageKeywordAccountIds(input: {
 }
 
 function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
-  database: ReturnType<typeof getDatabase>,
+  database: ReturnType<typeof getBusinessDatabase>,
   input: {
     keyword: string
     prefixKeyword: string
@@ -513,7 +515,7 @@ function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
 }
 
 function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
-  database: ReturnType<typeof getDatabase>,
+  database: ReturnType<typeof getBusinessDatabase>,
   input: {
     keyword: string
     prefixKeyword: string
@@ -600,7 +602,7 @@ function loadAccountUsageMetadataRows(access: AccessScope | undefined, accountId
         )`
     : ''
   const rows: AccountUsageMetadataRow[] = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     const queryParams = scopeType === 'caller_account'
       ? [viewerSystemAccountId, viewerSystemAccountId, nowIso(), ...chunk]

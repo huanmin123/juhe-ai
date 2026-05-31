@@ -6,11 +6,11 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
-const tempRoot = resolve(tmpdir(), `juhe-ai-db-service-worker-local-${Date.now()}-${Math.random().toString(16).slice(2)}`)
-runtimeConfig.databasePath = join(tempRoot, 'worker-local.sqlite3')
+const tempRoot = resolve(tmpdir(), `juhe-ai-db-service-role-boundary-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'role-boundary.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
-runtimeConfig.secret = 'db-service-worker-local-secret'
+runtimeConfig.secret = 'db-service-role-boundary-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
@@ -29,11 +29,18 @@ const [
 
 async function main(): Promise<void> {
   try {
+    await assert.rejects(
+      requestDbService({ type: 'status' }),
+      /worker 角色不能本地执行 DB service 操作/,
+      'worker 角色不能绕过 DB service IPC 本地执行 requestDbService'
+    )
+
+    runtimeConfig.processRole = 'db-service'
     const status = await requestDbService({ type: 'status' })
-    assert(status.ready === true, 'worker 角色下 DB service 本地状态读取应成功')
+    assert(status.ready === true, 'db-service 角色下 DB service 本地状态读取应成功')
 
     const settings = await requestDbService({ type: 'read_gateway_settings' })
-    assert(typeof settings.streamRequestTimeoutSeconds === 'number', 'worker 角色下 DB service 本地读取网关设置应成功')
+    assert(typeof settings.streamRequestTimeoutSeconds === 'number', 'db-service 角色下 DB service 本地读取网关设置应成功')
     assert.equal(repositories.listPublicGlobalSettings().appName, '聚合 AI', '断言前置数据库本身可读，失败路径不是因为库未初始化')
 
     const previousProcessRole = runtimeConfig.processRole
@@ -48,10 +55,10 @@ async function main(): Promise<void> {
       runtimeConfig.processRole = previousProcessRole
     }
 
-    console.log('DB service 本地执行边界回归通过：worker 可本地执行，server 无 IPC 子进程时拒绝本地执行')
+    console.log('DB service 角色边界回归通过：只有 db-service 可本地执行，worker 和无 IPC 子进程的 server 均拒绝本地执行')
   } finally {
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
@@ -60,7 +67,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error('\nDB service worker 本地执行回归失败')
+  console.error('\nDB service 角色边界回归失败')
   console.error(error instanceof Error ? error.message : error)
   process.exitCode = 1
 })

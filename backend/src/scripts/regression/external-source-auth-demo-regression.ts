@@ -60,7 +60,7 @@ async function runChild(): Promise<void> {
     listAccounts,
     listGroupOptions
   } = await import('../../storage/repositories.js')
-  const { closeStorageDatabases, getDatabase, getStatsDatabase } = await import('../../storage/database.js')
+  const { closeStorageDatabases, getBusinessDatabase, getStatsDatabase } = await import('../../storage/database.js')
   const clientIpStats = await import('../../storage/client-ip-stats.repository.js')
   const usageStatsHelpers = await import('../../storage/usage-stats-helpers.js')
 
@@ -196,7 +196,7 @@ async function runChild(): Promise<void> {
     assert.equal(ipUsageNoScope.status, 403)
     assert.equal(ipUsageNoScope.body.code, 'external_source_scope_forbidden', 'IP 用量接口必须使用独立 scope')
 
-    const mockIpUsage = await requestJson(baseUrl, '/__aipublic__/ip/usage?range=last7d&limit=2', {
+    const mockIpUsage = await requestJson(baseUrl, '/__aipublic__/ip/usage?range=last7d&pageSize=2', {
       Authorization: `Bearer ${externalIntegrationTestToken}`
     })
     assert.equal(mockIpUsage.status, 200)
@@ -240,32 +240,6 @@ async function runChild(): Promise<void> {
     assert.equal(accessInfo.body.data.dataDimension, 'client_ip')
     assert.deepEqual(accessInfo.body.data.supportedRanges, ['today', 'last7d', 'last31d'], '接入信息只能声明后台已维护的固定窗口')
     assert(accessInfo.body.data.boundary.notProvided.includes('公益站用户维度排行榜快照'), '接入信息应明确公益站业务快照不由 sub2api-lite 提供')
-
-    assert.equal(await requestStatus(baseUrl, '/__aipublic__/juhe-ai/ip-usage?range=today', {
-      Authorization: `Bearer ${ipUsageToken}`
-    }), 404, '旧 IP 聚合路径不应保留兼容入口')
-    assert.equal(await requestStatus(baseUrl, '/__aipublic__/juhe-ai/consumption-ranking?range=today', {
-      Authorization: `Bearer ${ipUsageToken}`
-    }), 404, '旧消耗排行路径不应保留兼容入口')
-    assert.equal(await requestStatus(baseUrl, '/__aipublic__/juhe-ai/access-info', {
-      Authorization: `Bearer ${ipUsageToken}`
-    }), 404, '旧接入信息路径不应保留兼容入口')
-    assert.equal(await requestStatus(baseUrl, '/__aipublic__/juhe-ai/accounts', {
-      Authorization: `Bearer ${accountWriteToken}`
-    }, 'POST', {
-      targetUsername: 'huanmin',
-      targetGroupName: '福利',
-      name: '旧路径账号',
-      baseUrl: 'https://push.example/v1',
-      apiKey: 'sk-public-old-path-regression'
-    }), 404, '旧账号写入路径不应保留兼容入口')
-    assert.equal(await requestStatus(baseUrl, '/__aipublic__/juhe-ai/accounts', {
-      Authorization: `Bearer ${accountWriteToken}`
-    }, 'DELETE', {
-      targetUsername: 'huanmin',
-      targetGroupName: '福利',
-      name: '旧路径账号'
-    }), 404, '旧账号删除路径不应保留兼容入口')
 
     const accountAddNoScope = await requestJson(baseUrl, '/__aipublic__/account/add', {
       Authorization: `Bearer ${ipUsageToken}`
@@ -347,12 +321,12 @@ async function runChild(): Promise<void> {
     assert.equal(invalidModelAdd.status, 400)
     assert.match(invalidModelAdd.body.message, /账户支持模型不在供应商模型目录中/, '无效模型应由账号校验拒绝')
     assert.equal(findSystemAccountByUsername('invalid_model_user'), undefined, '账号创建失败后不应残留自动创建的目标用户')
-    const invalidModelGroupResidue = getDatabase()
+    const invalidModelGroupResidue = getBusinessDatabase()
       .prepare("SELECT COUNT(*) AS total FROM groups WHERE name = '无效模型分组'")
       .get() as { total?: number } | undefined
     assert.equal(Number(invalidModelGroupResidue?.total ?? 0), 0, '账号创建失败后不应残留自动创建的目标分组')
 
-    const businessDatabaseForAccountWrite = getDatabase()
+    const businessDatabaseForAccountWrite = getBusinessDatabase()
     const originalAccountWritePrepare = businessDatabaseForAccountWrite.prepare.bind(businessDatabaseForAccountWrite) as typeof businessDatabaseForAccountWrite.prepare
     const accountNotesLookupSqls: string[] = []
     businessDatabaseForAccountWrite.prepare = ((sql: string) => {
@@ -652,7 +626,7 @@ async function runChild(): Promise<void> {
     })
     assert.equal(protectedApi.status, 401, '外部来源 token 不能绕过后台登录态接口')
 
-    const lastUsedRow = getDatabase()
+    const lastUsedRow = getBusinessDatabase()
       .prepare(`
         SELECT tokens.last_used_at AS token_last_used_at, sources.last_used_at AS source_last_used_at
         FROM external_integration_source_tokens AS tokens

@@ -31,7 +31,6 @@ function account(id: string, supportedModels?: string[]): UpstreamAccount {
     priority: 0,
     superPriorityEnabled: false,
     fallbackEnabled: false,
-    passthroughEnabled: true,
     streamFailureCount: 0
   } as UpstreamAccount
 }
@@ -94,7 +93,7 @@ async function assertStorageRoundTrip(): Promise<void> {
       supportedModels: ['gpt-5.5', 'gpt-5.4']
     }, access)
     assert.deepEqual(sorted(account.supportedModels), ['gpt-5.4', 'gpt-5.5'], '创建账户应返回模型限制')
-    assert.deepEqual(loadStoredModels(databaseModule.getDatabase(), account.id), ['gpt-5.4', 'gpt-5.5'], '创建账户应写入模型限制关系表')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4', 'gpt-5.5'], '创建账户应写入模型限制关系表')
 
     const runtimeAccount = repositories.listOpenAIAccountsForGroup(account.boundGroupId ?? '', access.systemAccountId)
       .find((item) => item.id === account.id)
@@ -102,15 +101,15 @@ async function assertStorageRoundTrip(): Promise<void> {
 
     const updated = repositories.updateAccount(account.id, { supportedModels: ['gpt-5.4'] }, access)
     assert.deepEqual(sorted(updated?.supportedModels), ['gpt-5.4'], '更新账户应返回新的模型限制')
-    assert.deepEqual(loadStoredModels(databaseModule.getDatabase(), account.id), ['gpt-5.4'], '更新账户应替换模型限制关系表')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4'], '更新账户应替换模型限制关系表')
 
     const renamed = repositories.updateAccount(account.id, { name: '账户模型限制回归-仅改名' }, access)
     assert.deepEqual(sorted(renamed?.supportedModels), ['gpt-5.4'], '未提交 supportedModels 时不应清空已有模型限制')
-    assert.deepEqual(loadStoredModels(databaseModule.getDatabase(), account.id), ['gpt-5.4'], '未提交 supportedModels 时关系表应保持不变')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4'], '未提交 supportedModels 时关系表应保持不变')
 
     const cleared = repositories.updateAccount(account.id, { supportedModels: [] }, access)
     assert.deepEqual(cleared?.supportedModels, [], '提交空数组应清空模型限制')
-    assert.deepEqual(loadStoredModels(databaseModule.getDatabase(), account.id), [], '提交空数组应清空关系表')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), [], '提交空数组应清空关系表')
 
     assert.throws(() => {
       repositories.createAccount({
@@ -126,7 +125,7 @@ async function assertStorageRoundTrip(): Promise<void> {
     }, /供应商模型目录/, '账户模型限制必须来自供应商模型目录')
   } finally {
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }

@@ -39,7 +39,7 @@ try {
 } finally {
   await closeServer(server)
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

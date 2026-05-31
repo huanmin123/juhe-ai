@@ -44,8 +44,8 @@ try {
   assert.ok(cooled?.cooldownRetestObservationStartedAt, '进入临时不可调用时应记录自动恢复观察起点')
   assert.ok(Date.parse(cooled.cooldownUntil ?? '') - Date.now() <= 10_000, '临时不可调用首次暂停应走秒级快速恢复')
 
-  const oldObservationStartedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
-  databaseModule.getDatabase()
+  const expiredObservationStartedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       UPDATE accounts
       SET cooldown_retest_failure_count = 4,
@@ -53,7 +53,7 @@ try {
           cooldown_until = ?
       WHERE id = ?
     `)
-    .run(oldObservationStartedAt, new Date(Date.now() - 1000).toISOString(), account.id)
+    .run(expiredObservationStartedAt, new Date(Date.now() - 1000).toISOString(), account.id)
 
   const longRecovering = repositories.recordCooldownAccountRetestFailure(account.id, {
     statusCode: 401,
@@ -80,7 +80,7 @@ try {
   }, access)
   assert(repositories.setAccountGroup(freshAccount.id, group.id, access), '冷却复测未超观察窗口账号应能绑定分组')
   repositories.markAccountCooldown(freshAccount.id, new Date(Date.now() + 60_000).toISOString(), '模拟临时不可调用')
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       UPDATE accounts
       SET cooldown_retest_failure_count = 4,
@@ -109,19 +109,19 @@ try {
 
   const disabledCleanupAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '停用清理旧失败原因回归',
+    name: '停用清理过期失败原因回归',
     type: 'api_key',
     credentials: {
-      api_key: 'sk-cooldown-disable-clear-stale-error'
+      api_key: 'sk-cooldown-disable-clear-expired-error'
     },
     status: 'active'
   }, access)
-  repositories.markAccountCooldown(disabledCleanupAccount.id, new Date(Date.now() + 60_000).toISOString(), '旧冷却错误')
+  repositories.markAccountCooldown(disabledCleanupAccount.id, new Date(Date.now() + 60_000).toISOString(), '过期冷却错误')
   const disabledCleanup = repositories.updateAccount(disabledCleanupAccount.id, { status: 'disabled' }, access)
   assert.equal(disabledCleanup?.status, 'disabled', '冷却账号应允许手动停用')
-  assert.equal(disabledCleanup?.lastErrorCode, undefined, '手动停用应清理旧错误码')
-  assert.equal(disabledCleanup?.lastErrorMessage, undefined, '手动停用应清理旧失败原因，避免停用状态展示过期冷却错误')
-  assert.equal(disabledCleanup?.cooldownUntil, undefined, '手动停用应清理旧冷却结束时间')
+  assert.equal(disabledCleanup?.lastErrorCode, undefined, '手动停用应清理既有错误码')
+  assert.equal(disabledCleanup?.lastErrorMessage, undefined, '手动停用应清理既有失败原因，避免停用状态展示过期冷却错误')
+  assert.equal(disabledCleanup?.cooldownUntil, undefined, '手动停用应清理既有冷却结束时间')
 
   const rateLimitedAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -136,7 +136,7 @@ try {
   const limited = repositories.markAccountCooldown(rateLimitedAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟限流', 'rate_limited')
   assert.equal(limited?.status, 'rate_limited', '限流状态应进入同一自动恢复通道')
   assert.ok(limited?.cooldownRetestObservationStartedAt, '进入限流时应记录自动恢复观察起点')
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
     .run(new Date(Date.now() - 1000).toISOString(), rateLimitedAccount.id)
   const dueIds = repositories.listAccountsDueForCooldownRetest(20).map((item) => item.id)

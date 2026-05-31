@@ -5,18 +5,14 @@ import { DatabaseSync } from 'node:sqlite'
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { applyBusinessSchema, applyDatasetSchema, applyStatsSchema, seedDefaults } from './schema.js'
+import { sqliteBusyTimeoutMs } from './sqlite-config.js'
 import { closeUsageRecordShardDatabases } from './usage-record-shards.js'
 
 let businessDatabase: DatabaseSync | undefined
 let datasetDatabase: DatabaseSync | undefined
 let statsDatabase: DatabaseSync | undefined
-const sqliteBusyTimeoutMs = 5000
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
-
-export function getDatabase(): DatabaseSync {
-  return getBusinessDatabase()
-}
 
 export function getBusinessDatabase(): DatabaseSync {
   assertDistinctStoragePaths()
@@ -88,7 +84,7 @@ function openStatsDatabase(databasePath: string): DatabaseSync {
   return database
 }
 
-export function beginDatabaseTransaction(target = getDatabase()): boolean {
+export function beginDatabaseTransaction(target = getBusinessDatabase()): boolean {
   if (target.isTransaction) {
     return false
   }
@@ -96,7 +92,7 @@ export function beginDatabaseTransaction(target = getDatabase()): boolean {
   return true
 }
 
-export function beginImmediateDatabaseTransaction(target = getDatabase()): boolean {
+export function beginImmediateDatabaseTransaction(target = getBusinessDatabase()): boolean {
   if (target.isTransaction) {
     return false
   }
@@ -121,7 +117,7 @@ export function rollbackDatabaseTransaction(target: DatabaseSync, started: boole
   }
 }
 
-export function runInDatabaseTransaction<T>(operation: () => T, target = getDatabase()): T {
+export function runInDatabaseTransaction<T>(operation: () => T, target = getBusinessDatabase()): T {
   const transactionStarted = beginDatabaseTransaction(target)
   try {
     const result = operation()
@@ -152,7 +148,7 @@ function closeDatabaseHandle(database: DatabaseSync | undefined): void {
 function assertDistinctStoragePaths(): void {
   const targets = [
     { role: '业务库', path: runtimeConfig.databasePath },
-    { role: '统计数据集库', path: datasetDatabasePath() },
+    { role: '数据集目录库', path: datasetDatabasePath() },
     { role: '统计结果库', path: statsDatabasePath() }
   ]
   const seen = new Map<string, string>()
@@ -185,7 +181,7 @@ export function newId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
 }
 
-export function runAfterDatabaseCommit(effect: AfterCommitEffect, target = getDatabase()): void {
+export function runAfterDatabaseCommit(effect: AfterCommitEffect, target = getBusinessDatabase()): void {
   if (!target.isTransaction) {
     effect()
     return

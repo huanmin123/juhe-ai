@@ -167,7 +167,7 @@ try {
   try {
     usageRecordQueue.flushAllUsageRecordQueue()
     await gatewayJsonParser.stopGatewayJsonParseWorker?.()
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

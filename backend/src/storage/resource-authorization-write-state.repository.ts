@@ -8,14 +8,16 @@ import type {
 } from '../domain/types.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { encryptJson } from './crypto.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
 import { isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
 import { loadRuntimeAuthorizationForUserGrant } from './resource-authorization-read.repository.js'
+import { maxAuthorizationExpirySweepBatchSize } from './authorization-sweep-limits.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
+import { maxSystemTeamActiveGrantCount, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
 import type {
   AccountRow,
   ResourceAuthorizationGrantRow,
@@ -32,39 +34,49 @@ interface RefreshEffectiveSourceOptions {
   terminalStatus?: 'revoked' | 'returned'
 }
 
-export function expireDueResourceAuthorizations(): number {
+export function expireDueResourceAuthorizations(limit = maxAuthorizationExpirySweepBatchSize): number {
   const now = nowIso()
-  const database = getDatabase()
+  const database = getBusinessDatabase()
+  const batchSize = Math.max(1, Math.trunc(limit))
   const dueGrants = database
-    .prepare("SELECT * FROM resource_authorization_grants WHERE status IN ('active', 'paused') AND expires_at IS NOT NULL AND expires_at <= ?")
-    .all(now) as unknown as ResourceAuthorizationGrantRow[]
-  const grantResult = database
     .prepare(`
-      UPDATE resource_authorization_grants
-      SET status = 'expired',
-          revoked_at = COALESCE(revoked_at, ?),
-          updated_at = ?
+      SELECT *
+      FROM resource_authorization_grants
       WHERE status IN ('active', 'paused')
         AND expires_at IS NOT NULL
         AND expires_at <= ?
+      ORDER BY expires_at ASC, updated_at ASC, id ASC
+      LIMIT ?
     `)
-    .run(now, now, now)
-  for (const grant of dueGrants) {
-    syncResourceAuthorizationGrantRuntime({ ...grant, status: 'expired', revoked_at: grant.revoked_at ?? now, updated_at: now }, grant.revoked_by ?? grant.created_by, database, now)
+    .all(now, batchSize) as unknown as ResourceAuthorizationGrantRow[]
+  if (!dueGrants.length) return 0
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const grant of dueGrants) {
+      database.prepare(`
+        UPDATE resource_authorization_grants
+        SET status = 'expired',
+            revoked_at = COALESCE(revoked_at, ?),
+            updated_at = ?
+        WHERE id = ?
+      `).run(now, now, grant.id)
+      syncResourceAuthorizationGrantRuntime({ ...grant, status: 'expired', revoked_at: grant.revoked_at ?? now, updated_at: now }, grant.revoked_by ?? grant.created_by, database, now)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
   }
-  const changed = Number(grantResult.changes ?? 0)
-  if (changed > 0) {
-    cleanupInactiveAuthorizationBindings(database)
-    invalidateAuthorizationLookupCaches()
-    markAllGroupAccountStatsDirty('authorization_expired')
-    notifyGatewayRuntimeCacheInvalidation('authorization_expired')
-    notifyAuthorizationQuotaCacheInvalidation('authorization_expired')
-  }
-  return changed
+  cleanupInactiveAuthorizationBindings(database)
+  invalidateAuthorizationLookupCaches()
+  markAllGroupAccountStatsDirty('authorization_expired')
+  notifyGatewayRuntimeCacheInvalidation('authorization_expired')
+  notifyAuthorizationQuotaCacheInvalidation('authorization_expired')
+  return dueGrants.length
 }
 
-export function activeTeamMemberRows(teamId: string, database = getDatabase()): SystemTeamMemberRow[] {
-  return database.prepare(`
+export function activeTeamMemberRows(teamId: string, database = getBusinessDatabase()): SystemTeamMemberRow[] {
+  const rows = database.prepare(`
     SELECT system_team_members.*
     FROM system_team_members
     INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id
@@ -72,7 +84,32 @@ export function activeTeamMemberRows(teamId: string, database = getDatabase()): 
       AND system_team_members.status = 'active'
       AND system_accounts.status = 'active'
     ORDER BY system_team_members.joined_at ASC, system_team_members.id ASC
-  `).all(teamId) as unknown as SystemTeamMemberRow[]
+    LIMIT ?
+  `).all(teamId, maxSystemTeamMembersPerTeam + 1) as unknown as SystemTeamMemberRow[]
+  if (rows.length > maxSystemTeamMembersPerTeam) {
+    throw new Error(`授权团队最多支持 ${maxSystemTeamMembersPerTeam} 个成员，请先移除部分成员后再继续`)
+  }
+  return rows
+}
+
+export function assertActiveTeamGrantFanoutWithinLimit(teamId: string, database = getBusinessDatabase()): void {
+  void activeTeamGrantRows(teamId, database)
+}
+
+function activeTeamGrantRows(teamId: string, database = getBusinessDatabase()): ResourceAuthorizationGrantRow[] {
+  const rows = database.prepare(`
+    SELECT *
+    FROM resource_authorization_grants
+    WHERE grantee_type = 'team'
+      AND grantee_team_id = ?
+      AND status = 'active'
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `).all(teamId, maxSystemTeamActiveGrantCount + 1) as unknown as ResourceAuthorizationGrantRow[]
+  if (rows.length > maxSystemTeamActiveGrantCount) {
+    throw new Error(`单个授权团队最多支持 ${maxSystemTeamActiveGrantCount} 条有效授权，请先回收或停用部分授权`)
+  }
+  return rows
 }
 
 export function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; targetGroupId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
@@ -181,7 +218,7 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
   invalidateGroupAccountIdsCache(bindGroupId)
 }
 
-export function ensureAccountAuthorizationInstancesForGrantee(granteeSystemAccountId: string, database = getDatabase(), now = nowIso()): number {
+export function ensureAccountAuthorizationInstancesForGrantee(granteeSystemAccountId: string, database = getBusinessDatabase(), now = nowIso()): number {
   const granteeId = granteeSystemAccountId.trim()
   if (!granteeId) return 0
   const rows = database
@@ -281,12 +318,12 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
     .prepare(`
       INSERT INTO accounts (
         id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
-        proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
+        proxy_profile_id, concurrency_limit, error_policy_id,
         priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
         cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
         authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
     `)
     .run(
       id,
@@ -298,7 +335,6 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
       '',
       null,
       source.concurrency_limit,
-      source.passthrough_enabled,
       null,
       0,
       0,
@@ -358,7 +394,7 @@ function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: st
 
 function defaultGroupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, now: string): string | undefined {
   const existing = database
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? ORDER BY is_default DESC, updated_at DESC, id ASC LIMIT 1')
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
     .get(systemAccountId, providerCode) as unknown as { id?: string } | undefined
   if (existing?.id) return existing.id
   if (providerCode !== 'openai') return undefined
@@ -442,7 +478,7 @@ function refreshResourceAuthorizationEffectiveSource(
   authorizationId: string,
   actor: string,
   now: string,
-  database = getDatabase(),
+  database = getBusinessDatabase(),
   options: RefreshEffectiveSourceOptions = {}
 ): void {
   invalidateAuthorizationLookupCaches()
@@ -588,7 +624,7 @@ function refreshResourceAuthorizationEffectiveSource(
   cleanupInactiveAuthorizationBindings(database, [authorizationId])
 }
 
-export function cleanupInactiveAuthorizationBindings(database = getDatabase(), authorizationIds?: string[]): void {
+export function cleanupInactiveAuthorizationBindings(database = getBusinessDatabase(), authorizationIds?: string[]): void {
   void authorizationIds
   void database
   clearGatewayApiKeyValidationCache()
@@ -773,7 +809,12 @@ function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow,
         AND ras.source_type = 'team'
         AND ras.source_team_id = ?
         AND ras.status = 'active'
-    `).all(grant.resource_type, grant.resource_id, teamId) as unknown as Array<{ authorization_id?: string }>
+      ORDER BY ras.authorization_id ASC
+      LIMIT ?
+    `).all(grant.resource_type, grant.resource_id, teamId, maxSystemTeamMembersPerTeam + 1) as unknown as Array<{ authorization_id?: string }>
+    if (sourceRows.length > maxSystemTeamMembersPerTeam) {
+      throw new Error(`授权团队最多支持 ${maxSystemTeamMembersPerTeam} 个成员，请先移除部分成员后再继续`)
+    }
     for (const sourceRow of sourceRows) {
       if (!sourceRow.authorization_id) continue
       database.prepare(`
@@ -805,7 +846,12 @@ function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow,
       AND ras.source_type = 'team'
       AND ras.source_team_id = ?
       AND ras.status = 'active'
-  `).all(grant.resource_type, grant.resource_id, teamId) as unknown as Array<{ id?: string }>
+    ORDER BY ra.id ASC
+    LIMIT ?
+  `).all(grant.resource_type, grant.resource_id, teamId, maxSystemTeamMembersPerTeam + 1) as unknown as Array<{ id?: string }>
+  if (rows.length > maxSystemTeamMembersPerTeam) {
+    throw new Error(`授权团队最多支持 ${maxSystemTeamMembersPerTeam} 个成员，请先移除部分成员后再继续`)
+  }
   for (const row of rows) {
     if (!row.id) continue
     const otherActiveTeam = database.prepare(`
@@ -842,7 +888,7 @@ function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow,
 }
 
 export function applyActiveTeamGrantsToMember(teamId: string, systemAccountId: string, access: AccessScope | undefined, database: DatabaseSync, now: string): void {
-  const grants = database.prepare("SELECT * FROM resource_authorization_grants WHERE grantee_type = 'team' AND grantee_team_id = ? AND status = 'active'").all(teamId) as unknown as ResourceAuthorizationGrantRow[]
+  const grants = activeTeamGrantRows(teamId, database)
   const actor = currentSystemAccountId(access)
   for (const grant of grants) {
     if (grant.resource_owner_system_account_id === systemAccountId) continue
@@ -851,7 +897,20 @@ export function applyActiveTeamGrantsToMember(teamId: string, systemAccountId: s
 }
 
 export function revokeTeamSourcesForMember(teamId: string, systemAccountId: string, actor: string, database: DatabaseSync, now: string): void {
-  const rows = database.prepare("SELECT ras.authorization_id FROM resource_authorization_sources ras INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id WHERE ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active' AND ra.grantee_system_account_id = ?").all(teamId, systemAccountId) as unknown as Array<{ authorization_id: string }>
+  const rows = database.prepare(`
+    SELECT ras.authorization_id
+    FROM resource_authorization_sources ras
+    INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+    WHERE ras.source_type = 'team'
+      AND ras.source_team_id = ?
+      AND ras.status = 'active'
+      AND ra.grantee_system_account_id = ?
+    ORDER BY ras.authorization_id ASC
+    LIMIT ?
+  `).all(teamId, systemAccountId, maxSystemTeamActiveGrantCount + 1) as unknown as Array<{ authorization_id: string }>
+  if (rows.length > maxSystemTeamActiveGrantCount) {
+    throw new Error(`单个授权团队最多支持 ${maxSystemTeamActiveGrantCount} 条有效授权，请先回收或停用部分授权`)
+  }
   for (const row of rows) {
     database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'member_removed'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'").run(now, actor, now, now, row.authorization_id, teamId)
     refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database)
@@ -859,7 +918,21 @@ export function revokeTeamSourcesForMember(teamId: string, systemAccountId: stri
 }
 
 function revokeTeamGrantSources(resourceType: ResourceAuthorizationResourceType, resourceId: string, teamId: string, actor: string, database: DatabaseSync, now: string): void {
-  const rows = database.prepare("SELECT ras.authorization_id FROM resource_authorization_sources ras INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id WHERE ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active' AND ra.resource_type = ? AND ra.resource_id = ?").all(teamId, resourceType, resourceId) as unknown as Array<{ authorization_id: string }>
+  const rows = database.prepare(`
+    SELECT ras.authorization_id
+    FROM resource_authorization_sources ras
+    INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+    WHERE ras.source_type = 'team'
+      AND ras.source_team_id = ?
+      AND ras.status = 'active'
+      AND ra.resource_type = ?
+      AND ra.resource_id = ?
+    ORDER BY ras.authorization_id ASC
+    LIMIT ?
+  `).all(teamId, resourceType, resourceId, maxSystemTeamMembersPerTeam + 1) as unknown as Array<{ authorization_id: string }>
+  if (rows.length > maxSystemTeamMembersPerTeam) {
+    throw new Error(`授权团队最多支持 ${maxSystemTeamMembersPerTeam} 个成员，请先移除部分成员后再继续`)
+  }
   for (const row of rows) {
     database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'team_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'").run(now, actor, now, now, row.authorization_id, teamId)
     refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database, {
@@ -870,7 +943,18 @@ function revokeTeamGrantSources(resourceType: ResourceAuthorizationResourceType,
 }
 
 export function revokeAllTeamSources(teamId: string, actor: string, database: DatabaseSync, now: string, reason: string): void {
-  const rows = database.prepare("SELECT DISTINCT authorization_id FROM resource_authorization_sources WHERE source_type = 'team' AND source_team_id = ? AND status = 'active'").all(teamId) as unknown as Array<{ authorization_id: string }>
+  const rows = database.prepare(`
+    SELECT DISTINCT authorization_id
+    FROM resource_authorization_sources
+    WHERE source_type = 'team'
+      AND source_team_id = ?
+      AND status = 'active'
+    ORDER BY authorization_id ASC
+    LIMIT ?
+  `).all(teamId, maxSystemTeamMembersPerTeam * maxSystemTeamActiveGrantCount + 1) as unknown as Array<{ authorization_id: string }>
+  if (rows.length > maxSystemTeamMembersPerTeam * maxSystemTeamActiveGrantCount) {
+    throw new Error(`授权团队来源展开超过当前系统上限，请先拆分团队或回收部分授权`)
+  }
   for (const row of rows) {
     database.prepare(`
       UPDATE resource_authorization_sources
@@ -893,7 +977,7 @@ export function reactivateTeamGrantSources(teamId: string, access: AccessScope |
   }
 }
 
-export function deactivateAuthorizationIfNoActiveSources(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
+export function deactivateAuthorizationIfNoActiveSources(authorizationId: string, actor: string, now: string, database = getBusinessDatabase()): void {
   refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
 }
 

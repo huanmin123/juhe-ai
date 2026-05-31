@@ -45,7 +45,7 @@ try {
   console.log('系统指标事件循环平均值回归通过：缺失 lag 不会压低新数据平均值')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

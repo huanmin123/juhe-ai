@@ -37,7 +37,7 @@ try {
     }
   }
 
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare("UPDATE proxy_profiles SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
     .run(targetId)
 
@@ -65,7 +65,7 @@ try {
   console.log('代理单条读取回归通过：更新、检测状态和删除日志 before 不再依赖全量代理列表')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

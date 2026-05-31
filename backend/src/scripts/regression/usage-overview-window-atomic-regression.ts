@@ -27,25 +27,25 @@ const [databaseModule, usageStatsRepository] = await Promise.all([
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
-  const recordDatabase = databaseModule.getStatsDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   const range = usageStatsRepository.normalizeDefaultUsageStatsRange()
   const windowKey = rangeWindowKey(range)
-  seedOldOverviewWindows(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, windowKey, range.startDate, range.endDate)
+  seedPublishedOverviewWindows(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, windowKey, range.startDate, range.endDate)
   seedNewUsageSources(range.endDate)
 
   const before = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
-  assert.equal(before.summary.requestCount, 1, '测试前应读到旧 summary 窗口')
-  assert.equal(before.hourlyTrend[0]?.requestCount, 1, '测试前应读到旧 trend 窗口')
-  assert.equal(before.modelDistribution[0]?.requestCount, 1, '测试前应读到旧 model 窗口')
-  assert.equal(before.errors[0]?.errorCount, 1, '测试前应读到旧 error 窗口')
+  assert.equal(before.summary.requestCount, 1, '测试前应读到已发布 summary 窗口')
+  assert.equal(before.hourlyTrend[0]?.requestCount, 1, '测试前应读到已发布 trend 窗口')
+  assert.equal(before.modelDistribution[0]?.requestCount, 1, '测试前应读到已发布 model 窗口')
+  assert.equal(before.errors[0]?.errorCount, 1, '测试前应读到已发布 error 窗口')
 
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
-  recordDatabase.prepare = ((sql: string) => {
+  const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
+  statsDatabase.prepare = ((sql: string) => {
     if (/^\s*DELETE\s+FROM\s+usage_overview_trend_windows\b/i.test(sql)) {
       throw new Error('模拟概览趋势窗口刷新失败')
     }
     return originalPrepare(sql)
-  }) as typeof recordDatabase.prepare
+  }) as typeof statsDatabase.prepare
   try {
     await assert.rejects(
       () => usageStatsRepository.refreshUsageRankSnapshotsInStages({ yieldToEventLoop: async () => {} }),
@@ -53,7 +53,7 @@ try {
       '概览窗口刷新失败应向上抛出'
     )
   } finally {
-    recordDatabase.prepare = originalPrepare
+    statsDatabase.prepare = originalPrepare
   }
 
   const afterFailure = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
@@ -92,14 +92,14 @@ try {
   console.log('用量概览窗口原子发布回归通过：概览四类窗口同一 stage 内失败不会半发布')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedOldOverviewWindows(systemAccountId: string, windowKey: string, startDate: string, endDate: string): void {
+function seedPublishedOverviewWindows(systemAccountId: string, windowKey: string, startDate: string, endDate: string): void {
   const database = databaseModule.getStatsDatabase()
   const updatedAt = '2000-01-01T00:00:00.000Z'
   database.prepare(`
@@ -120,13 +120,13 @@ function seedOldOverviewWindows(systemAccountId: string, windowKey: string, star
     INSERT INTO usage_model_rank_windows (
       system_account_id, window_key, start_date, end_date, rank, provider_code, model,
       request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at
-    ) VALUES (?, ?, ?, ?, 1, 'openai', 'old-model', 1, 10, 2, 0, 0, 0.01, ?)
+    ) VALUES (?, ?, ?, ?, 1, 'openai', 'published-model', 1, 10, 2, 0, 0, 0.01, ?)
   `).run(systemAccountId, windowKey, startDate, endDate, updatedAt)
   database.prepare(`
     INSERT INTO usage_error_rank_windows (
       system_account_id, window_key, start_date, end_date, rank, provider_code, error_code,
       status_code, error_message, error_count, updated_at
-    ) VALUES (?, ?, ?, ?, 1, 'openai', 'old_error', 500, 'old error', 1, ?)
+    ) VALUES (?, ?, ?, ?, 1, 'openai', 'published_error', 500, 'published error', 1, ?)
   `).run(systemAccountId, windowKey, startDate, endDate, updatedAt)
 }
 

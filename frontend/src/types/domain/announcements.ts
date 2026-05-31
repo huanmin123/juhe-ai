@@ -16,3 +16,11 @@ export interface AnnouncementSummary {
   createdAt: string
   updatedAt: string
 }
+
+export interface AnnouncementListResult {
+  items: AnnouncementSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}

@@ -58,7 +58,7 @@ try {
   console.log('账户优先级字段契约回归通过：拼错字段 prioritiy 不再影响创建/更新')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

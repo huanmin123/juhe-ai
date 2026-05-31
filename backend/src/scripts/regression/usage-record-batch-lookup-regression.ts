@@ -48,7 +48,7 @@ try {
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const selectCounts = {
     apiKeys: 0,
@@ -87,19 +87,19 @@ try {
 
   const retryRecord = buildUsageRecord(101, apiKey.id, group.id, account.id)
   const retryShardLocation = usageRecordShards.usageRecordShardLocationForRecord(retryRecord.id ?? '', retryRecord.createdAt)
-  const recordDatabase = usageRecordShards.getUsageRecordShardDatabase(retryShardLocation)
-  const originalRecordPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const shardDatabase = usageRecordShards.getUsageRecordShardDatabase(retryShardLocation)
+  const originalShardPrepare = shardDatabase.prepare.bind(shardDatabase) as typeof shardDatabase.prepare
   let failedInsertPrepares = 0
   const failuresBefore = usageRecordQueue.getUsageRecordQueueRuntime().flushFailureCount
-  recordDatabase.prepare = ((sql: string) => {
+  shardDatabase.prepare = ((sql: string) => {
     if (/^\s*INSERT\s+INTO\s+usage_records\b/i.test(sql)) {
       failedInsertPrepares += 1
       if (failedInsertPrepares === 1) {
         throw new Error('模拟使用记录批量写入失败')
       }
     }
-    return originalRecordPrepare(sql)
-  }) as typeof recordDatabase.prepare
+    return originalShardPrepare(sql)
+  }) as typeof shardDatabase.prepare
   try {
     usageRecordQueue.enqueueUsageRecordsLocal([retryRecord])
     usageRecordQueue.flushUsageRecordQueue({ retryOnFailure: false })
@@ -111,7 +111,7 @@ try {
     assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 1, 'retryOnFailure=false 不应在默认重试延迟后异步重试使用记录')
     assert.equal(usageRecordExists(retryRecord.id ?? ''), 0, '失败后使用记录不应被后台定时器偷偷写入')
   } finally {
-    recordDatabase.prepare = originalRecordPrepare
+    shardDatabase.prepare = originalShardPrepare
   }
   usageRecordQueue.flushAllUsageRecordQueue()
   assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 0, '恢复后保留的使用记录应可继续 flush 完成')
@@ -120,7 +120,7 @@ try {
   console.log('使用记录批量查询回归通过：批量写入预加载归属，避免逐条查询 API Key/分组/账户')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

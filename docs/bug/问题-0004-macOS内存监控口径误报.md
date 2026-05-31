@@ -41,8 +41,8 @@
 ## 修复方案
 
 - 修改点：`backend/src/modules/background/background-jobs.ts` 新增 macOS 内存采样分支，优先读取 `vm_stat`，按 `Anonymous pages + Pages wired down + Pages occupied by compressor` 计算实际已用内存；解析失败时回退原 Node 口径。
-- 兼容影响：Linux / Windows 保持原有算法；macOS 新样本会低于历史旧样本，小时聚合会在新采样进入后逐步回归正常。
-- 回滚方式：恢复为 `os.totalmem()` / `os.freemem()` 计算即可，但 macOS 会重新出现缓存误报。
+- 行为影响：Linux / Windows 保持现有算法；macOS 新样本会低于早期误报样本，小时聚合会在新采样进入后逐步回归正常。
+- 发布异常处理：如 macOS 内存采样异常，修正当前平台分支并验证系统指标窗口；必要时停服务恢复到同一数据契约下的已验证构建。
 
 ## 验证记录
 

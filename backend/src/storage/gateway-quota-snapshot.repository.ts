@@ -6,7 +6,7 @@ import type {
   GatewayQuotaSnapshot
 } from '../modules/gateway/gateway-quota-snapshot-cache.service.js'
 import type { RequestQuotaLimits } from '../domain/types.js'
-import { getDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
 
@@ -45,7 +45,7 @@ interface QuotaCostCheck {
 }
 
 export function buildGatewayQuotaSnapshot(now = new Date()): GatewayQuotaSnapshot {
-  const businessDatabase = getDatabase()
+  const businessDatabase = getBusinessDatabase()
   const statsDatabase = getStatsDatabase()
   const apiKeys = loadApiKeyQuotaSnapshotRows(businessDatabase)
   const authorizations = loadAuthorizationQuotaSnapshotRows(businessDatabase)

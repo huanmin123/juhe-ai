@@ -124,7 +124,7 @@ try {
   assert.equal(peakStatusByRole.get('server')?.sampledAt, serverPeakAt, 'server 峰值状态应返回最大值对应采样时间')
   assert.equal(peakStatusByRole.get('worker')?.eventLoopLagMs, 42, 'worker 峰值应独立按进程角色计算')
   assert.equal(peakStatusByRole.get('worker')?.sampledAt, workerPeakAt, 'worker 峰值状态应返回对应采样时间')
-  assert.equal(peakStatusByRole.get('db-service')?.sampleAvailable, false, 'db-service 无最近 24 小时采样时不应使用旧样本伪装峰值')
+  assert.equal(peakStatusByRole.get('db-service')?.sampleAvailable, false, 'db-service 无最近 24 小时采样时不应使用过期样本伪装峰值')
   const serverMinuteBucket = minuteOverview.processEventLoopTrend.find((row) => row.processRole === 'server' && row.sampleCount === 2)
   assert(serverMinuteBucket, '进程事件循环趋势应读取后台窗口缓存')
   assert.match(serverMinuteBucket.statMinute, /^\d{4}-\d{2}-\d{2}T\d{2}$/, '单日窗口内事件循环趋势桶应精确到小时')
@@ -134,7 +134,7 @@ try {
   console.log('系统指标进程事件循环回归通过：最新样本和 24 小时峰值按进程角色独立计算')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

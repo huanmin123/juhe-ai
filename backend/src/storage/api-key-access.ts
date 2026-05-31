@@ -1,5 +1,5 @@
 import { manageableSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 import { canManageResourceOwner, groupOwnerAndProvider } from './resource-authorization-helpers.js'
 
 export function canBindApiKeyGroup(groupId: string, systemAccountId: string): boolean {
@@ -12,7 +12,7 @@ export function apiKeyGroupOwnerAndProvider(groupId: string): ReturnType<typeof 
 }
 
 export function apiKeySystemAccountId(apiKeyId: string): string | undefined {
-  const row = getDatabase().prepare('SELECT system_account_id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { system_account_id?: string } | undefined
+  const row = getBusinessDatabase().prepare('SELECT system_account_id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { system_account_id?: string } | undefined
   return row?.system_account_id
 }
 

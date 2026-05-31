@@ -28,7 +28,7 @@ const [databaseModule, repositories, accountQualityRepository] = await Promise.a
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
-  const recordDatabase = databaseModule.getStatsDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '质量刷新回归账户',
@@ -63,7 +63,7 @@ try {
   const now = nowDate.toISOString()
   const statMinute = minuteKey(nowDate, usageStatsTimezone())
   const inactiveAccountId = 'acct_quality_inactive_batch_cleanup'
-  recordDatabase
+  statsDatabase
     .prepare(`
       INSERT INTO account_quality_minute_stats (
         account_id, system_account_id, provider_code, stat_minute,
@@ -73,7 +73,7 @@ try {
     `)
     .run(account.id, 'sys_admin', 'openai', statMinute, now, now, '质量刷新模拟错误', now)
   for (const [index, batchAccount] of batchAccounts.entries()) {
-    recordDatabase
+    statsDatabase
       .prepare(`
         INSERT INTO account_quality_minute_stats (
           account_id, system_account_id, provider_code, stat_minute,
@@ -85,7 +85,7 @@ try {
   }
   for (let index = 0; index < 1205; index += 1) {
     const inactiveMinute = minuteKey(new Date(nowDate.getTime() - (60 + index) * 60 * 1000), usageStatsTimezone())
-    recordDatabase
+    statsDatabase
       .prepare(`
         INSERT INTO account_quality_minute_stats (
           account_id, system_account_id, provider_code, stat_minute,
@@ -95,7 +95,7 @@ try {
       `)
       .run(inactiveAccountId, inactiveMinute, now, now, now)
   }
-  recordDatabase
+  statsDatabase
     .prepare(`
       INSERT INTO account_quality_scores (
         account_id, system_account_id, provider_code, quality_score, quality_state,
@@ -106,38 +106,38 @@ try {
     `)
     .run(staleAccount.id, now, now, now, now)
 
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
   let qualityScoreUpsertPrepares = 0
-  recordDatabase.prepare = ((sql: string) => {
+  statsDatabase.prepare = ((sql: string) => {
     if (/^\s*INSERT\s+INTO\s+account_quality_scores\b/i.test(sql)) {
       qualityScoreUpsertPrepares += 1
     }
     return originalPrepare(sql)
-  }) as typeof recordDatabase.prepare
+  }) as typeof statsDatabase.prepare
 
   let result: AccountQualityRealtimeRefreshResult
   try {
     result = accountQualityRepository.refreshAccountQualityFromUsage(10)
   } finally {
-    recordDatabase.prepare = originalPrepare
+    statsDatabase.prepare = originalPrepare
   }
   assert.equal(result.refreshed, 1 + batchAccounts.length, '账号质量刷新应处理分钟桶样本')
   assert.equal(qualityScoreUpsertPrepares, 1, '账号质量刷新应复用 account_quality_scores upsert statement')
   assert.equal(inactiveQualityMinuteCount(inactiveAccountId), 205, '账号质量刷新应小批清理已失效账户分钟桶，剩余等待后续轮次')
-  const row = recordDatabase
+  const row = statsDatabase
     .prepare('SELECT quality_score, quality_state, recent_error_count, last_error_message FROM account_quality_scores WHERE account_id = ?')
     .get(account.id) as { quality_score?: number; quality_state?: string; recent_error_count?: number; last_error_message?: string } | undefined
   assert.equal(row?.quality_state, 'unknown', '只有失败样本时不能把账号质量标记为失败，避免请求形态错误污染调度')
   assert.equal(row?.recent_error_count, 1)
   assert.equal(row?.last_error_message, '质量刷新模拟错误')
   assert(row?.quality_score && row.quality_score >= 1_000_000, '没有成功首段样本时质量分应保持未知保守值')
-  const staleRow = recordDatabase
+  const staleRow = statsDatabase
     .prepare('SELECT quality_state, recent_request_count FROM account_quality_scores WHERE account_id = ?')
     .get(staleAccount.id) as { quality_state?: string; recent_request_count?: number } | undefined
   assert.equal(staleRow?.quality_state, 'stale', '活跃账户没有新质量样本时应标记为 stale')
   assert.equal(staleRow?.recent_request_count, 0)
   for (const batchAccount of batchAccounts) {
-    const batchRow = recordDatabase
+    const batchRow = statsDatabase
       .prepare('SELECT quality_state, recent_success_count FROM account_quality_scores WHERE account_id = ?')
       .get(batchAccount.id) as { quality_state?: string; recent_success_count?: number } | undefined
     assert.equal(batchRow?.quality_state, 'fresh', '批量质量样本账号应标记为 fresh')
@@ -147,7 +147,7 @@ try {
   console.log('账号质量刷新回归通过')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

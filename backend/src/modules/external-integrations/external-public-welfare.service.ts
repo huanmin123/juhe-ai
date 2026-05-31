@@ -19,7 +19,6 @@ export interface PublicClientIpUsageQuery {
   range?: PublicWelfareRangePreset
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
   sortField?: PublicClientIpUsageSortField
   sortOrder?: 'asc' | 'desc'
@@ -180,7 +179,7 @@ const mockRows: Array<{ ip: string; usage: ClientIpUsageSummary }> = [
 export function getPublicClientIpUsage(input: PublicClientIpUsageQuery = {}, options: { mock?: boolean } = {}): PublicClientIpUsageResponse {
   const range = resolvePublicRange(input)
   const page = boundedInteger(input.page, 1, 1000, 1)
-  const pageSize = boundedInteger(input.pageSize ?? input.limit, 1, 100, 20)
+  const pageSize = boundedInteger(input.pageSize, 1, 100, 20)
   if (options.mock) {
     const offset = (page - 1) * pageSize
     const items = mockRows.slice(offset, offset + pageSize).map((row, index) => mapPublicClientIpUsageItem(row.ip, row.usage, offset + index + 1))

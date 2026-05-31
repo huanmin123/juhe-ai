@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import type { SQLInputValue } from 'node:sqlite'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -45,14 +46,14 @@ try {
     status: 'draft'
   }, actor)
 
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare("UPDATE announcements SET created_at = '2000-01-01T00:00:00.000Z', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
     .run(targetId)
 
-  const announcementList = repositories.listAnnouncements()
-  const firstPageLikeList = announcementList.slice(0, 200)
+  assertAnnouncementListQueryPlan()
+  const firstPageLikeList = repositories.listAnnouncementsPage({ page: 1, pageSize: 200 }).items
   assert.equal(firstPageLikeList.some((announcement) => announcement.id === targetId), false, '最早创建的第 250 条外公告不应出现在前 200 条列表窗口里')
-  const largeListItem = announcementList.find((announcement) => announcement.id === largeAnnouncement.id)
+  const largeListItem = firstPageLikeList.find((announcement) => announcement.id === largeAnnouncement.id)
   assert(largeListItem, '列表应返回公告摘要')
   assert(largeListItem.content.endsWith('...') && largeListItem.content.length < largeContent.length, '公告列表应只返回内容预览')
 
@@ -77,9 +78,28 @@ try {
   console.log('公告单条读取回归通过：更新、发布、下线和删除日志 before 不再依赖全量公告列表')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertAnnouncementListQueryPlan(): void {
+  const details = explainBusinessQuery(`
+    SELECT id
+    FROM announcements
+    ORDER BY updated_at DESC, created_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `, [51, 0])
+  assert(details.includes('idx_announcements_admin_page'), `公告管理列表应使用最近更新分页索引，实际计划：${details}`)
+  assert(!details.includes('USE TEMP B-TREE FOR ORDER BY'), `公告管理列表不应为默认排序创建临时 B-TREE，实际计划：${details}`)
+}
+
+function explainBusinessQuery(sql: string, params: SQLInputValue[]): string {
+  return databaseModule.getBusinessDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
 }

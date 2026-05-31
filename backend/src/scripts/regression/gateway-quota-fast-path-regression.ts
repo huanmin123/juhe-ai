@@ -51,10 +51,12 @@ function apiKeyWithoutQuota(): GatewayApiKeyRow {
   return {
     id: 'key_fast_path',
     system_account_id: 'sys_fast_path',
+    selected_group_id: 'grp_fast_path',
     status: 'active',
-    group_id: 'grp_fast_path',
     expires_at: null,
-    quota_limits_json: null
+    quota_limits_json: null,
+    group_route_strategy: 'priority_failover',
+    system_account_image_generation_enabled: 0
   } as GatewayApiKeyRow
 }
 
@@ -83,7 +85,6 @@ function upstreamAccountWithoutAuthorizationQuota(id: string): OpenAIAccountSecr
     fallbackEnabled: false,
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-fast-path',
-    passthroughEnabled: false,
     streamFailureCount: 0,
     credentials: {
       api_key: 'sk-fast-path',

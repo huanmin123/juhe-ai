@@ -102,7 +102,6 @@ export interface ResourceAuthorizationSummary {
   revokedReason?: string
   createdBy?: string
   revokedBy?: string
-  sources?: AuthorizationSourceSummary[]
   authorizationSources: AuthorizationSourceSummary[]
   usage: AccountUsageSummary
   lastUsedAt?: string

@@ -49,7 +49,7 @@ try {
   console.log('系统团队单条读取回归通过：写路径不再依赖全量团队列表装配')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

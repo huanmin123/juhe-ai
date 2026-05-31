@@ -216,14 +216,14 @@ try {
     granteeId: teamA.id
   }, ownerAccess)
   const ownerTeamGrant = repositories.findResourceAuthorization(accountTeamGrant.id, ownerAccess, { usageRange: range })
-  assert.equal(ownerTeamGrant?.usage.requestCount, 30, '账号团队授权列表应读取授权团队报表窗口，而不是旧的来源账号 scope')
+  assert.equal(ownerTeamGrant?.usage.requestCount, 30, '账号团队授权列表应读取授权团队报表窗口，而不是来源账号 scope')
   const accountTeamGrantUsageDetail = repositories.getResourceAuthorizationUsage(accountTeamGrant.id, ownerAccess, { range })
   assert.equal(accountTeamGrantUsageDetail?.usage.requestCount, 30, '账号团队授权详情应读取授权团队报表窗口')
 
   console.log('授权消耗分页回归通过：团队/用户明细按窗口分页返回，前端无需全量渲染')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -303,7 +303,7 @@ function seedUserWindow(input: {
 }
 
 function runtimeAuthorizationIdFor(accountId: string, granteeSystemAccountId: string): string {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare(`
       SELECT id
       FROM resource_authorizations

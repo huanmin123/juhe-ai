@@ -1,5 +1,5 @@
 import { currentSystemAccountId } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export interface AccountUsageSnapshotUpsertInput {
@@ -100,7 +100,7 @@ export function updateAccountUsageSnapshotRefreshState(input: {
 }
 
 function accountSystemAccountId(accountId: string): string | undefined {
-  const row = getDatabase().prepare('SELECT system_account_id FROM accounts WHERE id = ?').get(accountId) as unknown as { system_account_id?: string } | undefined
+  const row = getBusinessDatabase().prepare('SELECT system_account_id FROM accounts WHERE id = ?').get(accountId) as unknown as { system_account_id?: string } | undefined
   return row?.system_account_id
 }
 
@@ -108,7 +108,7 @@ function loadAccountSystemAccountIds(accountIds: string[]): Map<string, string> 
   const ids = [...new Set(accountIds.filter(Boolean))]
   const output = new Map<string, string>()
   for (const chunk of chunkValues(ids, 900)) {
-    const rows = getDatabase()
+    const rows = getBusinessDatabase()
       .prepare(`SELECT id, system_account_id FROM accounts WHERE id IN (${sqlPlaceholders(chunk.length)})`)
       .all(...chunk) as unknown as Array<{ id?: string; system_account_id?: string }>
     for (const row of rows) {

@@ -41,7 +41,7 @@ try {
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '超过 IPC 上限后 pending 数不应继续增长')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount, 1, 'server IPC runtime 应记录维护任务拒绝次数')
 
-  const runtimeLogAccepted = backgroundIpc.sendRuntimeLogLineToWorker('{"level":"info","event":"runtime_log_after_old_limit"}')
+  const runtimeLogAccepted = backgroundIpc.sendRuntimeLogLineToWorker('{"level":"info","event":"runtime_log_after_queue_limit"}')
   assert.equal(runtimeLogAccepted, false, '超过 regular IPC 队列上限后低优先级运行日志应快速拒绝')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '低优先级消息不应挤掉维护任务')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.runtimeLogLines.rejectedCount, 1, 'server IPC runtime 应记录运行日志拒绝次数')
@@ -51,7 +51,7 @@ try {
     actorSystemAccountId: 'sys_admin',
     actorRole: 'admin',
     module: 'regression',
-    action: 'server_ipc_old_limit',
+    action: 'server_ipc_queue_limit',
     operationKey: 'regression.background_ipc_protected_queue',
     resourceType: 'operation_log',
     summary: 'server IPC 队列满时操作日志投递失败回归'
@@ -69,8 +69,8 @@ try {
     success: false,
     finalStatusCode: 503,
     errorPhase: 'gateway',
-    errorCode: 'worker_ipc_old_limit',
-    errorMessage: '后台 worker IPC 超过旧上限',
+    errorCode: 'worker_ipc_queue_limit',
+    errorMessage: '后台 worker IPC 超过队列上限',
     sampleBucket: 0,
     sampleReason: 'regression',
     captureStatus: 'complete',
@@ -94,7 +94,7 @@ try {
   console.log('后台 IPC 队列回归通过：server 到 worker 的 regular/usage IPC 队列达到上限后会快速拒绝并记录指标，避免请求侧副作用无限堆积')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

@@ -1,6 +1,6 @@
 import type { SystemAccountSummary, SystemTeamStatus } from '../domain/types.js'
 import { createAppCache, type AppCache } from '../shared/cache.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { systemAccountSummaryFromRow, type SystemAccountSummaryRow } from './system-account-mappers.js'
 
@@ -79,7 +79,7 @@ function uniqueIds(values: Array<string | null | undefined>): string[] {
 
 function loadRowsByIds<T>(ids: string[], sql: (chunk: string[]) => string): T[] {
   const rows: T[] = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database.prepare(sql(chunk)).all(...chunk) as unknown as T[])
   }
@@ -124,7 +124,7 @@ function invalidateLookupCache<T extends { id: string }>(cache: AppCache<string,
 }
 
 export function loadSystemAccountNameMap(): Map<string, string> {
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare('SELECT id, username, display_name FROM system_accounts ORDER BY created_at ASC, id ASC')
     .all() as unknown as Array<{ id: string; username: string; display_name: string }>
   for (const row of rows) {
@@ -227,7 +227,7 @@ export function loadSystemTeamNameMap(teamIds: Array<string | undefined>): Map<s
 export function loadActiveSystemAccountTeamNameMapByIds(systemAccountIds: Array<string | undefined>): Map<string, string[]> {
   const teams = loadCachedRowsByIds(systemAccountIds, systemAccountTeamNamesCache, (ids) => {
     const rows: Array<{ system_account_id: string; name: string }> = []
-    const database = getDatabase()
+    const database = getBusinessDatabase()
     for (const chunk of chunkValues(ids, 900)) {
       rows.push(...database
         .prepare(`

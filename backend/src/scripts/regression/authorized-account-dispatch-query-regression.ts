@@ -124,12 +124,12 @@ try {
   }, ownerAccess)
   const staleAuthorizedInstance = authorizedInstanceForSource(staleAuthorizedAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(staleAuthorizedInstance.id, granteeGroup.id, granteeAccess), '失效授权实例账户绑定分组失败')
-  assert(repositories.revokeResourceAuthorization(staleAuthorization.id, {}, ownerAccess), '失效授权回收失败')
-  databaseModule.getDatabase()
+  assert(repositories.revokeResourceAuthorization(staleAuthorization.id, ownerAccess), '失效授权回收失败')
+  databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET credentials_encrypted = ? WHERE id = ?')
     .run('not-a-valid-encrypted-payload', staleAuthorizedInstance.id)
   if (staleAuthorizedInstance.proxyProfileId) {
-    databaseModule.getDatabase()
+    databaseModule.getBusinessDatabase()
       .prepare('UPDATE proxy_profiles SET password_encrypted = ? WHERE id = ?')
       .run('not-a-valid-encrypted-proxy-payload', staleAuthorizedInstance.proxyProfileId)
   }
@@ -160,7 +160,7 @@ try {
   }, ownerAccess), '父账户停用后仍应允许所有者更新资源凭据和模型')
   repositories.updateProxy(disabledProxy.id, { enabled: false })
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   let resourceAuthorizationSelects = 0
   let singleResourceAuthorizationSelects = 0
@@ -202,7 +202,7 @@ try {
     assert(enabledProxyAccounts.every((account) => account.proxyUrl === 'http://dispatch_proxy_user:dispatch_proxy_password@127.0.0.1:18080'), '共用代理账户应解析出代理 URL')
     const disabledProxyAccount = dispatchAccounts.find((account) => account.id === disabledProxyAccountId)
     assert.equal(disabledProxyAccount?.proxyProfileUnavailable, true, '父账户代理停用应同步到授权实例运行时')
-    assert.equal(disabledProxyAccount?.proxyUrl, undefined, '授权实例不应继续使用旧克隆代理配置')
+    assert.equal(disabledProxyAccount?.proxyUrl, undefined, '父账户代理停用后授权实例运行时不应解析代理 URL')
     const ownerDisabledDispatchAccount = dispatchAccounts.find((account) => account.id === ownerDisabledAuthorizedInstance.id)
     assert.equal(ownerDisabledDispatchAccount?.apiKey, 'sk-authorized-dispatch-disabled-source-updated', '父账户 API Key 更新后授权实例运行时应读取父账户最新凭据')
     assert.equal(ownerDisabledDispatchAccount?.baseUrl, 'https://updated-owner.example/v1', '父账户 base_url 更新后授权实例运行时应同步')
@@ -221,7 +221,7 @@ try {
   console.log('授权账户调度授权批量查询回归通过')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

@@ -1,3 +1,5 @@
+import { normalizeListPage } from './query-utils.js'
+
 export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
 export type AccountListSortDirection = 'asc' | 'desc'
 
@@ -13,13 +15,16 @@ export interface AccountListOptions {
   ids?: string[]
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
   providerCode?: string
   groupId?: string
   type?: string
   status?: string
   schedulable?: AccountListSchedulableFilter
+}
+
+export interface AccountOptionListOptions extends Omit<AccountListOptions, 'pageSize'> {
+  limit?: number
 }
 
 export interface NormalizedAccountListOptions {
@@ -80,14 +85,14 @@ export function normalizeAccountListOptions(options?: AccountListOptions, normal
       if (seenFields.has(sort.field)) return false
       seenFields.add(sort.field)
       return true
-    })
+  })
   const rawPage = options?.page
-  const rawPageSize = options?.pageSize ?? options?.limit
+  const rawPageSize = options?.pageSize
   const maxPageSize = normalizationOptions.maxPageSize ?? maxAccountListPageSize
-  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(maxPageSize, Math.max(1, rawPageSize))
     : defaultAccountListPageSize
+  const page = normalizeListPage(rawPage, pageSize)
   return {
     sorts: sorts.length ? sorts : defaultAccountListSorts,
     ids: normalizeTextList(options?.ids),
@@ -102,8 +107,8 @@ export function normalizeAccountListOptions(options?: AccountListOptions, normal
   }
 }
 
-export function normalizeAccountOptionListOptions(options?: AccountListOptions): NormalizedAccountListOptions {
-  return normalizeAccountListOptions({ ...options, sorts: [] }, { maxPageSize: maxAccountOptionPageSize })
+export function normalizeAccountOptionListOptions(options?: AccountOptionListOptions): NormalizedAccountListOptions {
+  return normalizeAccountListOptions({ ...options, pageSize: options?.limit, sorts: [] }, { maxPageSize: maxAccountOptionPageSize })
 }
 
 export function accountStatusFilterValues(status?: string): string[] {

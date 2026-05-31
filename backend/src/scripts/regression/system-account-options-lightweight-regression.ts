@@ -84,7 +84,7 @@ try {
   }
   const baseUrl = `http://127.0.0.1:${address.port}`
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const systemAccountOptionSqls: string[] = []
   database.prepare = ((sql: string) => {
@@ -143,7 +143,7 @@ try {
 } finally {
   await closeServer(server)
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

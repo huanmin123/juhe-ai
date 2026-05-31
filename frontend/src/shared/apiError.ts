@@ -16,10 +16,6 @@ export function extractResponseErrorMessage(data: unknown): string | undefined {
   if (isRecord(error)) {
     return stringValue(error.message)
   }
-  const nestedData = data.data
-  if (isRecord(nestedData)) {
-    return stringValue(nestedData.message)
-  }
   return undefined
 }
 

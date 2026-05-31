@@ -3,7 +3,7 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, listGroups, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, findGroupSummary, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -139,7 +139,6 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        passthroughEnabled: true,
         schedulable: true,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
@@ -212,7 +211,6 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        passthroughEnabled: true,
         schedulable: true,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
@@ -364,7 +362,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
 })
 
 function isOpenAIGroup(groupId: string, access?: AccessScope): boolean {
-  return listGroups(access).some((group) => group.id === groupId && group.providerCode === 'openai')
+  return findGroupSummary(groupId, access)?.providerCode === 'openai'
 }
 
 function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchSchema>): Record<string, unknown> {

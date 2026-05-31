@@ -63,7 +63,7 @@ try {
   console.log('运行日志索引超长行回归通过：超长日志不再同步完整解析，rawJson 只进详情不参与 keyword')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

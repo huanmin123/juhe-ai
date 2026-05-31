@@ -57,10 +57,10 @@ const settings: GatewaySettings = {
 }
 
 {
-  const oldCombinationValidation = validateAccountStreamInterceptRules([
+  const invalidCombinationValidation = validateAccountStreamInterceptRules([
     {
       enabled: true,
-      name: '旧开关组合账户规则',
+      name: '非法执行参数组合账户规则',
       match: {
         textIncludes: ['广告污染']
       },
@@ -69,7 +69,7 @@ const settings: GatewaySettings = {
       accountSwitch: 'request_next_account'
     }
   ])
-  assert.equal(oldCombinationValidation.valid, false, '账户级流式规则不再接受底层开关组合')
+  assert.equal(invalidCombinationValidation.valid, false, '账户级流式规则只接受 action 模板，不接受执行参数组合')
   const actionValidation = validateAccountStreamInterceptRules([
     {
       enabled: true,

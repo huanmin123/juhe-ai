@@ -404,7 +404,7 @@ function planProxy(value: unknown, index: number, context: ImportContext): Proxy
   source.username = text(value.username)
   source.password = text(value.password)
   source.description = text(value.description)
-  source.enabled = normalizeProxyEnabled(value.enabled ?? value.status)
+  source.enabled = normalizeProxyEnabled(value.enabled)
   item.ref = source.ref
   item.name = source.name
 

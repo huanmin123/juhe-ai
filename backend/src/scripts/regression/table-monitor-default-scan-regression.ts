@@ -44,7 +44,7 @@ try {
   })()
   assert.equal(result.tableScanMode, 'cursor', '表监控默认采样应使用 cursor，避免误触发全库表扫描')
   assert(result.tableSnapshots > 0, '表监控默认采样应写入本轮 cursor 表快照')
-  assert(result.tableSnapshots < 16, `默认 cursor 采样不应一次采完业务库、统计数据集库和统计结果库所有表，实际 ${result.tableSnapshots}`)
+  assert(result.tableSnapshots < 16, `默认 cursor 采样不应一次采完业务库、数据集目录库、usage shard 和统计结果库所有表，实际 ${result.tableSnapshots}`)
   assert(capturedSamplingSql.every((sql) => !/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+AS\s+count\s+FROM/i.test(sql)), '表监控行数采样不应回退为精确 COUNT(*) 扫表')
 
   const sampledRows = databaseModule.getStatsDatabase()
@@ -52,18 +52,31 @@ try {
     .all() as Array<{ row_count?: number | null }>
   assert(sampledRows.length === result.tableSnapshots, '采样结果数量应与表快照记录数一致')
   assert(sampledRows.some((row) => typeof row.row_count === 'number'), '默认采样应能为 dbstat 可观测表写入滚动行数')
+  const databaseSnapshot = databaseModule.getStatsDatabase()
+    .prepare(`
+      SELECT file_bytes, wal_bytes, shm_bytes, page_size, page_count
+      FROM database_storage_snapshots
+      WHERE database_role = 'business'
+      ORDER BY sampled_at DESC
+      LIMIT 1
+    `)
+    .get() as { file_bytes?: number | null; wal_bytes?: number | null; shm_bytes?: number | null; page_size?: number | null; page_count?: number | null } | undefined
+  assert(databaseSnapshot, '表监控应写入业务库文件级快照')
+  assert.equal(databaseSnapshot?.file_bytes, Number(databaseSnapshot?.page_size ?? 0) * Number(databaseSnapshot?.page_count ?? 0), '主库大小应来自 SQLite 页数估算，避免同步 stat 文件')
+  assert.equal(databaseSnapshot?.wal_bytes, null, 'WAL 大小不应在表监控采样中同步 stat 文件')
+  assert.equal(databaseSnapshot?.shm_bytes, null, 'SHM 大小不应在表监控采样中同步 stat 文件')
   const jobState = databaseModule.getStatsDatabase()
     .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'table_monitor' AND scope_id = 'business' AND job_name = 'table_storage_snapshots'")
     .get() as { lag_seconds?: number | null } | undefined
   assert.equal(jobState?.lag_seconds, null, '表监控游标状态不应伪装成 0')
 
-  const recordDatabase = databaseModule.getStatsDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   const capturedSql: string[] = []
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase)
-  recordDatabase.prepare = ((sql: string) => {
+  const originalPrepare = statsDatabase.prepare.bind(statsDatabase)
+  statsDatabase.prepare = ((sql: string) => {
     capturedSql.push(sql)
     return originalPrepare(sql)
-  }) as typeof recordDatabase.prepare
+  }) as typeof statsDatabase.prepare
   try {
     tableMonitorRepository.getTableStorageOverview({
       startAt: '2026-01-01T00:00:00.000Z',
@@ -71,7 +84,7 @@ try {
       limit: 200
     })
   } finally {
-    recordDatabase.prepare = originalPrepare as typeof recordDatabase.prepare
+    statsDatabase.prepare = originalPrepare as typeof statsDatabase.prepare
   }
   assert(capturedSql.length > 0, '表监控概览应查询统计结果库采样表')
   assert(capturedSql.every((sql) => !/\bJOIN\b/i.test(sql)), '表监控概览不应使用关联查询拼接采样结果')
@@ -90,7 +103,7 @@ try {
   console.log('表监控默认采样回归通过：默认 cursor，滚动写入行数且不做全表扫描和精确 COUNT(*)')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

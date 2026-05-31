@@ -26,3 +26,15 @@ export function pagedTotalUpperBound(page: number, pageSize: number, itemCount: 
   const safeItemCount = Math.max(0, Math.trunc(itemCount))
   return (safePage - 1) * safePageSize + safeItemCount + (hasMore ? 1 : 0)
 }
+
+export const defaultListWindowRows = 1001
+
+export function pageUpperBoundForWindow(pageSize: number, windowRows = defaultListWindowRows): number {
+  return Math.max(1, Math.floor((Math.max(1, Math.trunc(windowRows)) - 1) / Math.max(1, Math.trunc(pageSize))))
+}
+
+export function normalizeListPage(value: unknown, pageSize: number, windowRows = defaultListWindowRows): number {
+  return typeof value === 'number' && Number.isInteger(value)
+    ? Math.min(pageUpperBoundForWindow(pageSize, windowRows), Math.max(1, value))
+    : 1
+}

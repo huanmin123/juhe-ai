@@ -30,7 +30,7 @@
 - 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`，且内置 `node:sqlite` 必须可用。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
-- 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、统计数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行，不再保留旧记录库回退路径。新写入的 `usage_records` 已通过 `JUHE_AI_USAGE_SHARD_ROOT` / `JUHE_AI_USAGE_SHARD_COUNT` 拆到多个本地 SQLite shard 文件；数据集目录库继续保存审计、操作日志、运行日志索引、模型检测和 shard 元数据。
+- 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、统计数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行。新写入的 `usage_records` 已通过 `JUHE_AI_USAGE_SHARD_ROOT` / `JUHE_AI_USAGE_SHARD_COUNT` 拆到多个本地 SQLite shard 文件；数据集目录库继续保存审计、操作日志、运行日志索引、模型检测和 shard 元数据。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口，当前只启用 OpenAI 供应商适配。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
@@ -146,13 +146,13 @@ flowchart LR
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
 - 日志、审计 payload、导入导出文件和所有可能频繁读取的大文件都必须按 offset / cursor / stream / 分块窗口读取；禁止在运行路径中把完整文件读入内存后再切割、搜索、分页或追增量。
 - 持续追新增内容的文件读取必须持久化游标和文件标识，worker 重启后从游标继续；按行处理时只在完整行落地后推进 offset，轮转、截断或文件标识变化时显式重置。
-- 启动时通过 `applyBusinessSchema()`、`applyDatasetSchema()` 和 `applyStatsSchema()` 创建当前版本需要的表和索引；旧 `applyRecordSchema()` 已删除。
+- 启动时通过 `applyBusinessSchema()`、`applyDatasetSchema()` 和 `applyStatsSchema()` 创建当前版本需要的表和索引。
 - 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
 - 当前项目以最新完整模型为准，本地 SQLite 可以备份后直接清洗或重建；源码只保留当前完整 schema、repository 和 API 逻辑。
-- 禁止在后端启动、repository、routes 或前端页面里长期保留一次性迁移、旧数据兼容、临时同步修复、临时表改名或迁移标记代码。
-- 需要处理本地旧库时，使用直接 SQL 或临时离线脚本完成；脚本不得接入正常请求路径或启动路径，完成后不作为长期源码保留。
-- 即使正式上线后，也默认不把历史数据库兼容写进主代码；确需处理用户旧库时，优先生成一次性离线修复方案，处理完即丢弃。
+- 禁止在后端启动、repository、routes 或前端页面里挂载一次性数据处理、临时同步修复、临时表改名或迁移标记代码。
+- 需要处理当前 schema 之外的本地数据时，使用直接 SQL 或临时离线脚本完成；脚本不得接入正常请求路径或启动路径，完成后不作为长期源码保留。
+- 确需处理用户既有数据时，优先生成一次性离线修复方案，处理完即丢弃，不写进主代码。
 
 ### 6.2 表分区
 
@@ -162,7 +162,7 @@ flowchart LR
 | 设置 | `global_settings`、`system_settings` | 平台公开设置和系统账户级运行偏好 |
 | 供应商与资源 | `providers`、`accounts`、`proxy_profiles`、`error_policies` | 上游供应商、AI 账户、代理和账号错误策略 |
 | 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_accounts` | 系统团队、团队成员、授权操作、最终用户授权、授权来源、分组和分组账号绑定 |
-| 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和配额占位 |
+| 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和额度配置 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
 | 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs`、`audit_error_groups` | 审计事件、上游尝试、payload 引用、压缩 blob 元数据和重复错误聚合 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
@@ -223,11 +223,11 @@ erDiagram
 ### 6.6 Schema 演进
 
 - 预上线阶段的 `backend/src/storage/schema.ts` 作为 schema 入口，`backend/src/storage/schema/` 下的拆分文件只描述当前完整结构：表、索引、默认约束和外键。
-- 新表和索引可以使用 `CREATE ... IF NOT EXISTS` 保持重复启动安全；schema 文件只描述当前完整结构，不在启动路径里补历史列、删历史列或模拟旧库升级。
-- 不写版本化迁移标记、旧模型适配、临时表改名、一次性业务数据同步或长期旧库兼容分支到运行时代码；需要清洗历史数据时，使用直接 SQL、临时离线脚本或重建库处理。
-- 本地库结构变化时，先备份业务库 `backend/data/juhe-ai.sqlite3` 和 `backend/.env`，再按当前 schema 通过直接 SQL、临时离线脚本或重建库处理数据；统计数据集库和统计结果库默认不纳入业务备份，真实灾备快照才需要停机一并备份。
-- 需要保留少量本地数据时，按当前模型导出、清洗、导入，不在源码里模拟多个历史版本。
-- 即使正式上线后，也默认不把历史数据库兼容写进主代码；确需处理用户旧库时，优先生成一次性离线修复方案，处理完即丢弃。
+- 新表和索引可以使用 `CREATE ... IF NOT EXISTS` 保持重复启动安全；schema 文件只描述当前完整结构，启动路径不做字段探测、列补丁或结构升级模拟。
+- 不把升级标记、临时表改名、一次性业务数据同步或长期数据分支写入运行时代码；需要清洗既有数据时，使用直接 SQL、临时离线脚本或重建库处理。
+- 本地库结构变化时，先备份业务库 `backend/data/juhe-ai.sqlite3` 和 `backend/.env`，再按当前 schema 通过直接 SQL、临时离线脚本或重建库处理数据；数据集目录库、usage shard 和统计结果库默认不纳入业务备份，真实灾备快照才需要停机一并备份。
+- 需要保留少量本地数据时，按当前模型导出、清洗、导入，不在源码里模拟多个数据版本。
+- 确需处理用户既有数据时，优先生成一次性离线修复方案，处理完即丢弃，不写进主代码。
 
 ## 7. 配置设计
 
@@ -238,7 +238,7 @@ erDiagram
 - `JUHE_AI_STATS_DATABASE_PATH`：统计结果库路径，默认 `./data/juhe-ai-stats.sqlite3`。
 - `JUHE_AI_USAGE_SHARD_ROOT`：usage shard 根目录，未配置或留空时默认跟随数据集目录库位置生成 `usage-shards`；也可显式配置为 `./data/usage-shards` 或其他独立目录。
 - `JUHE_AI_USAGE_SHARD_COUNT`：usage shard 数量，默认 `16`；生产使用后不能直接改小，扩容需要单独设计 rebalance。
-- `JUHE_AI_SECRET`：本地敏感数据加密和签名相关密钥，复用当前业务库时必须保持稳定；旧库解密或结构问题按离线修复处理。
+- `JUHE_AI_SECRET`：本地敏感数据加密和签名相关密钥，复用当前业务库时必须保持稳定；当前 schema 之外的解密或结构问题按离线修复处理。
 - `JUHE_AI_OAUTH_PROXY_URL`：OpenAI OAuth 相关请求可选代理。
 - `JUHE_AI_BACKEND_URL`、`JUHE_AI_SMOKE_ACCOUNT_NAME`、`JUHE_AI_SMOKE_MODEL`、`JUHE_AI_SMOKE_PROMPT`：烟测配置。
 

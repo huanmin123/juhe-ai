@@ -289,7 +289,7 @@ try {
   clearAccountConcurrency()
   holdAndReleaseServer?.close()
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -391,7 +391,6 @@ function buildAccount(input: {
     priority: 0,
     superPriorityEnabled: false,
     fallbackEnabled: false,
-    passthroughEnabled: false,
     streamFailureCount: 0,
     accountOwnerSystemAccountId: 'sys_admin',
     groupOwnerSystemAccountId: 'sys_admin',

@@ -514,14 +514,16 @@ async function main(): Promise<void> {
     const userAGranteeGroups = await getEnvelope<GroupSummary[]>(baseUrl, `/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=${seed.userAId}&providerCode=openai&preferDefault=true`, seed.userBCookie)
     assert(userAGranteeGroups.some((group) => group.id === seed.userATargetGroupId), '授权目标分组选项应返回被授权用户自己的同供应商分组')
     assert(userAGranteeGroups.every((group) => group.ownerSystemAccountId === seed.userAId), '授权目标分组选项不应混入其他用户分组')
-    const selectedBinding = databaseModule.getDatabase()
+    const selectedBinding = databaseModule.getBusinessDatabase()
       .prepare('SELECT group_id, account_authorization_id FROM group_accounts WHERE account_id = ? AND system_account_id = ? AND enabled = 1 LIMIT 1')
       .get(seed.userAAuthorizedUserBAccountId, seed.userAId) as unknown as { group_id?: string; account_authorization_id?: string | null } | undefined
     assert(selectedBinding?.group_id === seed.userATargetGroupId, '新增授权指定目标分组后应直接绑定到该分组')
     assert(selectedBinding.account_authorization_id === seed.inboundRuntimeAuthorizationId, '授权实例分组绑定应记录对应的用户级授权 ID')
     summary.push('授权候选用户、团队和目标分组选项检查通过')
 
-    const userAAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, `/__aisys__/api/my-authorizations?status=all&systemAccountId=${seed.userBId}`, seed.userACookie)
+    const userAAuthorizationsPage = await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/my-authorizations?status=all&systemAccountId=${seed.userBId}`, seed.userACookie)
+    assert(userAAuthorizationsPage.page === 1 && userAAuthorizationsPage.pageSize > 0, '用户 A 我的授权默认入口应返回分页结果')
+    const userAAuthorizations = userAAuthorizationsPage.items
     const inboundAuthorization = userAAuthorizations.find((authorization) => authorization.id === seed.inboundAuthorizationId)
     const teamInboundAuthorization = userAAuthorizations.find((authorization) => authorization.id === seed.teamInboundAuthorizationId)
     assert(inboundAuthorization?.resourceOwnerSystemAccountId === seed.userBId && inboundAuthorization.granteeSystemAccountId === seed.userAId, '用户 A 我的授权没有返回入站授权')
@@ -531,17 +533,17 @@ async function main(): Promise<void> {
     const userAAuthorizationPage1 = await getEnvelope<ResourceAuthorizationListResult>(baseUrl, '/__aisys__/api/my-authorizations?status=all&page=1&pageSize=1', seed.userACookie)
     assert(userAAuthorizationPage1.items.length === 1 && userAAuthorizationPage1.page === 1 && userAAuthorizationPage1.pageSize === 1, '用户 A 我的授权分页第一页异常')
     assert(userAAuthorizationPage1.hasMore === true && userAAuthorizationPage1.total >= 2, '用户 A 我的授权分页应提示还有更多')
-    const userAInboundAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=inbound', seed.userACookie)
+    const userAInboundAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=inbound', seed.userACookie)).items
     assert(userAInboundAuthorizations.some((authorization) => authorization.id === seed.inboundAuthorizationId), '用户 A 我的授权入站筛选没有返回授权给我的记录')
     assert(userAInboundAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权入站筛选没有返回团队授权记录')
     assert(userAInboundAuthorizations.every((authorization) => authorization.granteeSystemAccountId === seed.userAId || authorization.granteeTeamId === seed.teamSharedId), '用户 A 我的授权入站筛选返回了非当前用户被授权记录')
-    const userAOutboundAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=outbound', seed.userACookie)
+    const userAOutboundAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=outbound', seed.userACookie)).items
     assert(!userAOutboundAuthorizations.some((authorization) => authorization.id === seed.inboundAuthorizationId), '用户 A 我的授权出站筛选不应返回授权给我的记录')
     assert(userAOutboundAuthorizations.every((authorization) => authorization.resourceOwnerSystemAccountId === seed.userAId), '用户 A 我的授权出站筛选返回了非当前用户资源授权')
-    const userAManualAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&sourceType=manual', seed.userACookie)
+    const userAManualAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, '/__aisys__/api/my-authorizations?status=all&sourceType=manual', seed.userACookie)).items
     assert(userAManualAuthorizations.some((authorization) => authorization.id === seed.inboundAuthorizationId), '用户 A 我的授权手动来源筛选没有返回个人授权记录')
     assert(!userAManualAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权手动来源筛选不应返回团队授权记录')
-    const userATeamAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&sourceType=team', seed.userACookie)
+    const userATeamAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, '/__aisys__/api/my-authorizations?status=all&sourceType=team', seed.userACookie)).items
     assert(userATeamAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权团队来源筛选没有返回团队授权记录')
     assert(userATeamAuthorizations.every((authorization) => authorization.granteeTeamId === seed.teamSharedId), '用户 A 我的授权团队来源筛选返回了非目标团队授权')
     await getEnvelope<ResourceAuthorizationSummary>(baseUrl, `/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}/usage?systemAccountId=${seed.userBId}`, seed.userACookie)
@@ -549,7 +551,7 @@ async function main(): Promise<void> {
     await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}`, seed.userACookie, 'DELETE', { sourceType: 'manual' }, '入站授权不应允许普通用户回收')
     const adminAuthorization = await getEnvelope<ResourceAuthorizationSummary>(baseUrl, `/__aisys__/api/authorizations/${seed.inboundAuthorizationId}/usage`, seed.adminCookie)
     assert(adminAuthorization.permissions?.canEdit === true, '管理员统一授权管理应保留管理能力')
-    const adminTeamAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&sourceType=team`, seed.adminCookie)
+    const adminTeamAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&sourceType=team`, seed.adminCookie)).items
     assert(adminTeamAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '管理员统一授权团队来源筛选没有返回团队授权记录')
     const adminAuthorizationPage1 = await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
     assert(adminAuthorizationPage1.items.length === 1 && adminAuthorizationPage1.hasMore === true && adminAuthorizationPage1.total >= 2, '管理员统一授权分页异常')
@@ -559,7 +561,7 @@ async function main(): Promise<void> {
   } finally {
     await closeServer(server)
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
@@ -680,7 +682,7 @@ function seedData(): SeedState {
     rejectedAuthorizedGroupApiKey = error instanceof Error && /API Key 只能绑定自己的分组/.test(error.message)
   }
   assert(rejectedAuthorizedGroupApiKey, 'API Key 不应允许绑定授权方的分组，调度范围必须停留在创建者自己的分组内')
-  const runtimeGroupAuthorization = databaseModule.getDatabase()
+  const runtimeGroupAuthorization = databaseModule.getBusinessDatabase()
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
     .get(userBGroup.id, userA.id) as unknown as { id?: string } | undefined
   assert(runtimeGroupAuthorization?.id, '共享团队分组授权应生成用户 A 的运行时授权')
@@ -743,7 +745,7 @@ function addDays(date: Date, days: number): Date {
 }
 
 function usageStatsTimezoneSetting(): string {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'")
     .get() as unknown as { value_json?: string } | undefined
   if (!row?.value_json) return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -756,7 +758,7 @@ function usageStatsTimezoneSetting(): string {
 }
 
 function setUsageStatsTimezoneSetting(timezone: string): void {
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
       VALUES ('sys_admin', 'usageStatsTimezone', ?, ?)

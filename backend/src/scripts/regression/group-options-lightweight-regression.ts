@@ -113,7 +113,7 @@ try {
   assert.deepEqual(accountTargetOption.accountIds, [seed.userAccountId], '账户页分组选项应返回账号到分组映射所需 accountIds')
   assert.equal(Object.prototype.hasOwnProperty.call(accountTargetOption, 'accountStats'), false, '账户页分组选项不应返回 accountStats')
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -174,7 +174,7 @@ try {
 } finally {
   await closeServer(server)
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -201,7 +201,7 @@ function seedData(): SeedState {
     providerCode: 'openai',
     enabled: true
   }, { systemAccountId: user.id, role: 'user' as const })
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare('UPDATE groups SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE system_account_id = ? AND provider_code = ?')
     .run(userDefaultGroup.id, user.id, 'openai')
   const matchedGroup = repositories.createGroup({
@@ -243,20 +243,20 @@ function seedData(): SeedState {
   seedActiveGroupAuthorization(adminAuthorizedGroup.id, admin.id, user.id)
   const userAccountId = 'acc_group_options_lightweight'
   const now = new Date().toISOString()
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO accounts (
         id, system_account_id, provider_code, name, notes, type, status, credential_mask, credentials_encrypted,
-        proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id, priority, super_priority_enabled,
+        proxy_profile_id, concurrency_limit, error_policy_id, priority, super_priority_enabled,
         fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
         last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
       ) VALUES (?, ?, 'openai', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
-        NULL, 20, 1, NULL, 10, 0,
+        NULL, 20, NULL, 10, 0,
         0, 1, NULL, NULL, NULL, NULL,
         NULL, 0, NULL, ?, ?)
     `)
     .run(userAccountId, user.id, '分组选项账户种子', now, now)
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
       VALUES (?, ?, ?, NULL, 1, ?, ?)
@@ -281,7 +281,7 @@ function seedData(): SeedState {
 
 function seedActiveGroupAuthorization(resourceId: string, ownerSystemAccountId: string, granteeSystemAccountId: string): void {
   const now = new Date().toISOString()
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO resource_authorizations (
         id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
@@ -295,7 +295,7 @@ function seedActiveGroupAuthorization(resourceId: string, ownerSystemAccountId: 
 
 function seedProvider(code: string): void {
   const now = new Date().toISOString()
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT OR IGNORE INTO providers (
         id, code, name, description, enabled, base_url, account_types_json, capabilities_json, created_at, updated_at
@@ -355,7 +355,7 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)

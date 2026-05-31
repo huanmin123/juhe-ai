@@ -46,7 +46,7 @@ OpenAI 官方 OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`
 
 | 项目 | OAuth / Codex 做法 | 可吸收经验 | 当前 juhe-ai 对齐情况 |
 | --- | --- | --- | --- |
-| `new-api` | 独立 `codex` channel，只支持 `/v1/responses` 和 `/v1/responses/compact`；OAuth key 是 JSON，提取 `access_token` 和 `account_id`；强制 `Content-Type: application/json` | OAuth 必须和 API Key 分 channel；Codex backend 对 content-type 严格 | 已对齐：专用 adapter、endpoint 限制、content-type 强制、auth/chatgpt-account-id 重写 |
+| `new-api` | 独立 `codex` channel，只支持 `/v1/responses` 和 `/v1/responses/compact`；OAuth key 是 JSON，提取 `access_token` 和账号标识；强制 `Content-Type: application/json` | OAuth 必须和 API Key 分 channel；Codex backend 对 content-type 严格 | 已对齐：专用 adapter、endpoint 限制、content-type 强制、auth/chatgpt-account-id 重写 |
 | `CLIProxyAPI` | Codex Responses 转换器设置 `stream=true`、`store=false`、`parallel_tool_calls=true`、`include=["reasoning.encrypted_content"]`，删除 token/采样字段，system role 转 developer | body 不是裸透传，要按 Codex backend 收敛 | 已部分对齐：已设置 `stream/store`、删除高风险字段、转换 system role、归一化 web search；暂未默认加入 `include` 和 `parallel_tool_calls` |
 | `sub2api_source` | OAuth passthrough 有 body normalize、session isolation、compact 处理、Codex-only 检测和后台请求控制思路 | 多租户中转必须隔离上游 session/cache；后台主动流量也要看 | 已对齐 session/body/compact；Codex 专属客户端行为由网关 client profile / downstream protocol 分层处理，不放进 OAuth adapter |
 | `one-api` | 传统 OpenAI-compatible relay，无 Codex OAuth 专用链路；默认 Header 很克制 | 常规 OpenAI relay 不能直接照搬到 OAuth Codex | 只作为 API Key Header 边界参考 |
@@ -74,7 +74,7 @@ OpenAI 官方 OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`
 | --- | --- | --- | --- |
 | `juhe-ai` 当前 OAuth | JSON 对象校验；`model` 非空；`input` 必须是字符串或数组；string input 转 message array；`store=false`；`stream=true` | `model` 非空；删除 `store`、`stream`、tools、reasoning 等 compact 不需要字段 | 删除 `metadata`、`user`、`temperature`、`top_p`、token limit、`stream_options`、`context_management` 等 |
 | `new-api` Codex | 补 `instructions`，非 compact 强制 `store=false`，删除 `max_output_tokens`、`temperature` | compact 单独 request DTO | 更保守，主要删除已知拒绝字段 |
-| `CLIProxyAPI` | 设置 `stream=true`、`store=false`、`parallel_tool_calls=true`、`include`，删除采样/token/context 字段 | 有 compact compatibility | 对 Codex 执行器更激进 |
+| `CLIProxyAPI` | 设置 `stream=true`、`store=false`、`parallel_tool_calls=true`、`include`，删除采样/token/context 字段 | 有 compact 适配 | 对 Codex 执行器更激进 |
 | `sub2api_source` | normalize OAuth passthrough，缺失特定 Codex instructions 时可本地拒绝 | compact 删除 `store/stream` | 更偏账号保护和 Codex-only 策略 |
 
 `juhe-ai` 当前非 compact 删除字段：
@@ -134,7 +134,7 @@ compact 会额外删除：
 
 | 优先级 | 剩余风险 | 当前表现 | 建议 |
 | --- | --- | --- | --- |
-| P1 | 主动请求恢复边界 | OAuth usage refresh 已移除；质量探测代码已删除；冷却复测仍会产生恢复性请求 | 继续把主动请求收敛到单一恢复用途：只保留冷却到期后的复测；如未来想恢复其它主动请求，必须重新立项，不复用旧实现 |
+| P1 | 主动请求恢复边界 | OAuth usage refresh 已移除；质量探测代码已删除；冷却复测仍会产生恢复性请求 | 继续把主动请求收敛到单一恢复用途：只保留冷却到期后的复测；如未来想恢复其它主动请求，必须重新立项并重新定义边界 |
 | P1 | `previous_response_id` 续链语义 | 当前不改写，避免破坏语义，但没有连接态缓存设计 | 后续研究 WebSocket/HTTP 上下文缓存；无法解析时要求客户端传完整上下文 |
 | P2 | 非流式客户端体验 | OAuth 非 compact 强制上游 `stream=true`，非流式客户端可能收到 SSE | 如需兼容非流式客户端，增加 SSE 聚合成 JSON 的本地转换 |
 | P2 | Codex 默认版本漂移 | 默认 `codex_cli_rs/0.125.0` 会随真实客户端变化 | 默认值集中配置并定期复查；优先保留真实 Codex 客户端低风险头 |
@@ -157,7 +157,7 @@ compact 会额外删除：
 - 上游 `session_id`、`conversation_id`、`prompt_cache_key` 已做多租户隔离。
 - API Key 账号仍保留 raw body 真透传，并且不暴露 OpenAI 组织/项目/Beta 表单字段。
 - OAuth 额度快照已改为纯被动更新：真实网关响应头写入 `account_usage_snapshots`，后台和建号流程不再主动发模型请求拿额度。
-- Codex 请求形态识别本轮不做；OAuth adapter 继续以兼容体验为先，只保留协议必要校验。
+- Codex 请求形态识别本轮不做；OAuth adapter 继续以客户端体验为先，只保留协议必要校验。
 
 ## 验证建议
 

@@ -294,6 +294,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
 
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
   const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
+  apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id
   const candidateGroupIds = operation.groupId
     ? orderedBindings.some((binding) => binding.group_id === operation.groupId)
       ? [operation.groupId]
@@ -316,7 +317,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     return {
       apiKey: {
         ...apiKey,
-        group_id: groupId,
+        selected_group_id: groupId,
         group_bindings: orderedBindings.length ? orderedBindings : apiKey.group_bindings
       },
       settings,

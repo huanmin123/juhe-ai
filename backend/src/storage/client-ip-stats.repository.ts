@@ -125,7 +125,7 @@ const clientIpRegistryBucketCount = 4096
 const cursorSafetyDelaySeconds = 5
 const clientIpRangeWindowDirtyLimit = 1000
 const clientIpRangeWindowChunkSize = 200
-const clientIpStatsMaxPage = 1000
+const clientIpStatsMaxListWindowRows = 1001
 let clientIpStatsShardScanOffset = 0
 const ipRegistryBuckets = new Map<number, Set<string>>()
 const clientIpRangeWindowDirtyIpHashes = new Set<string>()
@@ -352,8 +352,8 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
   const database = getStatsDatabase()
   const range = normalizeAccountUsageStatsRange(options, usageStatsTimezone())
   const rangeReady = clientIpUsageRangeWindowReady(database, range.startDate, range.endDate)
-  const page = boundedPage(options.page)
   const pageSize = boundedPageSize(options.pageSize)
+  const page = boundedPage(options.page, pageSize)
   if (!rangeReady) {
     return {
       items: [],
@@ -366,7 +366,8 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
     }
   }
   const offset = (page - 1) * pageSize
-  const where = buildClientIpRangeWhere(options, range)
+  const policyNow = nowIso()
+  const where = buildClientIpRangeWhere(options, range, policyNow)
   const orderBy = clientIpStatsOrderBy(options.sortField, options.sortOrder)
   const rows = database.prepare(`
     SELECT
@@ -379,14 +380,13 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
       range_stats.first_token_ms_sum, range_stats.first_token_ms_count,
       range_stats.average_first_token_ms,
       range_stats.active_days, range_stats.last_used_at, range_stats.last_error_at,
-      COALESCE(policy_status.blacklisted, 0) AS blacklisted
+      CASE WHEN ${activePolicyExistsSql('registry.ip_hash')} THEN 1 ELSE 0 END AS blacklisted
     FROM client_ip_usage_range_windows range_stats
     INNER JOIN client_ip_registry registry ON registry.ip_hash = range_stats.ip_hash
-    LEFT JOIN (${activePolicyStatusSql()}) policy_status ON policy_status.ip_hash = registry.ip_hash
     ${where.clause}
     ORDER BY ${orderBy}, registry.ip_hash ASC
     LIMIT ? OFFSET ?
-  `).all(...where.params, pageSize + 1, offset) as unknown as ClientIpStatsRangeRow[]
+  `).all(policyNow, ...where.params, pageSize + 1, offset) as unknown as ClientIpStatsRangeRow[]
   const pageRows = rows.slice(0, pageSize)
   const hasMore = rows.length > pageSize
   return {
@@ -960,7 +960,7 @@ function addAccumulatorToClientIpAggregate(target: ClientIpAggregate, accumulato
   }
 }
 
-function buildClientIpRangeWhere(options: ClientIpStatsListOptions, range: AccountUsageStatsRange): ClientIpRangeWhere {
+function buildClientIpRangeWhere(options: ClientIpStatsListOptions, range: AccountUsageStatsRange, policyNow: string): ClientIpRangeWhere {
   const clauses = ['range_stats.start_date = ?', 'range_stats.end_date = ?']
   const params: SQLInputValue[] = [range.startDate, range.endDate]
   const keyword = options.keyword?.trim()
@@ -971,9 +971,11 @@ function buildClientIpRangeWhere(options: ClientIpStatsListOptions, range: Accou
   }
   const status = options.status ?? 'all'
   if (status === 'blacklisted') {
-    clauses.push('COALESCE(policy_status.blacklisted, 0) = 1')
+    clauses.push(activePolicyExistsSql('registry.ip_hash'))
+    params.push(policyNow)
   } else if (status === 'normal') {
-    clauses.push('COALESCE(policy_status.blacklisted, 0) = 0')
+    clauses.push(`NOT ${activePolicyExistsSql('registry.ip_hash')}`)
+    params.push(policyNow)
   }
   return {
     clause: `WHERE ${clauses.join(' AND ')}`,
@@ -981,16 +983,15 @@ function buildClientIpRangeWhere(options: ClientIpStatsListOptions, range: Accou
   }
 }
 
-function activePolicyStatusSql(): string {
-  return `
-    SELECT
-      ip_hash,
-      1 AS blacklisted
-    FROM client_ip_policies
-    WHERE status = 'active'
-      AND (expires_at IS NULL OR expires_at > '${nowIso()}')
-    GROUP BY ip_hash
-  `
+function activePolicyExistsSql(ipHashExpression: string): string {
+  return `EXISTS (
+    SELECT 1
+    FROM client_ip_policies active_policies
+    WHERE active_policies.status = 'active'
+      AND active_policies.ip_hash = ${ipHashExpression}
+      AND (active_policies.expires_at IS NULL OR active_policies.expires_at > ?)
+    LIMIT 1
+  )`
 }
 
 function clientIpStatsOrderBy(field: ClientIpStatsSortField | undefined, order: 'asc' | 'desc' | undefined): string {
@@ -1212,9 +1213,10 @@ function cursorLagSecondsFromCreatedAt(cursorCreatedAt: string): number {
   return Number.isFinite(cursorTime) ? Math.max(0, Math.floor((Date.now() - cursorTime) / 1000)) : 0
 }
 
-function boundedPage(value: unknown): number {
+function boundedPage(value: unknown, pageSize: number): number {
   const number = Number(value)
-  return Number.isFinite(number) ? Math.min(Math.max(1, Math.trunc(number)), clientIpStatsMaxPage) : 1
+  const maxPage = Math.max(1, Math.floor((clientIpStatsMaxListWindowRows - 1) / Math.max(1, Math.trunc(pageSize))))
+  return Number.isFinite(number) ? Math.min(Math.max(1, Math.trunc(number)), maxPage) : 1
 }
 
 function boundedPageSize(value: unknown): number {

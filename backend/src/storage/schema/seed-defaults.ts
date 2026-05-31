@@ -3,8 +3,6 @@ import type { DatabaseSync } from 'node:sqlite'
 import { hashPassword } from '../crypto.js'
 import { DEFAULT_GLOBAL_SETTINGS, DEFAULT_OPENAI_GROUP, DEFAULT_SYSTEM_SETTINGS, OPENAI_PROVIDER_SEED } from '../schema-defaults.js'
 
-const LEGACY_DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
-
 export function seedDefaults(database: DatabaseSync): void {
   const now = new Date().toISOString()
 
@@ -86,8 +84,4 @@ function seedAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string):
   database
     .prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
     .run(DEFAULT_OPENAI_GROUP.id, DEFAULT_OPENAI_GROUP.systemAccountId)
-
-  database
-    .prepare('UPDATE groups SET description = ? WHERE provider_code = ? AND is_default = 1 AND description = ?')
-    .run(DEFAULT_OPENAI_GROUP.description, DEFAULT_OPENAI_GROUP.providerCode, LEGACY_DEFAULT_OPENAI_GROUP_DESCRIPTION)
 }

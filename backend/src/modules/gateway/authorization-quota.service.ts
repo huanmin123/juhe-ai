@@ -2,7 +2,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { RequestQuotaLimits } from '../../domain/types.js'
-import { getDatabase, getStatsDatabase } from '../../storage/database.js'
+import { getBusinessDatabase, getStatsDatabase } from '../../storage/database.js'
 import { chunkValues, sqlPlaceholders } from '../../storage/query-utils.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
@@ -356,7 +356,7 @@ function loadAuthorizationQuotaRows(authorizationIds: string[]): Map<string, Aut
   const ids = [...new Set(authorizationIds.filter(Boolean))]
   if (!ids.length) return new Map()
   const rows: AuthorizationQuotaRow[] = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database.prepare(`
       SELECT ra.id, ra.resource_owner_system_account_id, ra.grantee_system_account_id, ra.resource_type, ra.resource_id,
@@ -379,7 +379,7 @@ function loadTeamAuthorizationQuotaRowsByAuthorizationId(rows: AuthorizationQuot
   const ids = rows.filter((row) => row.effective_source_team_id).map((row) => row.id)
   if (!ids.length) return new Map()
   const teamRows: TeamAuthorizationQuotaBatchRow[] = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     teamRows.push(...database.prepare(`
       SELECT ra.id AS authorization_id, grant_rows.id, grant_rows.resource_owner_system_account_id,

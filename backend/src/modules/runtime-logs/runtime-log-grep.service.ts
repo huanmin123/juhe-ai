@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { access, opendir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setImmediate as yieldImmediate } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
 
@@ -95,13 +96,14 @@ const maxRgCommandChars = 24_000
 const dayMs = 24 * 60 * 60 * 1000
 const defaultGrepRangeDays = 3
 const maxGrepRangeDays = 7
+const logFileScanYieldEvery = 100
 
 export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promise<RuntimeLogGrepResult> {
   const startedAt = performance.now()
   const keywordInput = normalizeGrepKeywords(options.keywords)
   const keywords = keywordInput.keywords
   const limit = normalizeLimit(options.limit)
-  const files = runtimeConfig.log.fileEnabled ? listLogFiles() : []
+  const files = runtimeConfig.log.fileEnabled ? await listLogFiles() : []
   const timeRange = normalizeGrepTimeRange(options, files)
   const baseResult = (): Omit<RuntimeLogGrepResult, 'available' | 'items' | 'truncated' | 'elapsedMs' | 'scannedFileCount'> => ({
     keywords,
@@ -188,8 +190,8 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
   }
 }
 
-export function getRuntimeLogGrepRuntime(): RuntimeLogGrepRuntime {
-  const files = runtimeConfig.log.fileEnabled ? listLogFiles() : []
+export async function getRuntimeLogGrepRuntime(): Promise<RuntimeLogGrepRuntime> {
+  const files = runtimeConfig.log.fileEnabled ? await listLogFiles() : []
   const range = normalizeGrepTimeRange({}, files)
   const earliestFileMs = earliestLogFileMs(files)
   return {
@@ -280,31 +282,54 @@ function parseTimeMs(value: string | undefined): number | undefined {
   return Number.isFinite(time) ? time : undefined
 }
 
-function listLogFiles(): LogFile[] {
-  if (!existsSync(runtimeConfig.log.directory)) {
-    return []
-  }
-
+async function listLogFiles(): Promise<LogFile[]> {
+  const maxFiles = Math.max(1, Math.trunc(runtimeConfig.log.maxFiles))
+  const retainedFiles: Array<{ path: string; fileName: string; stats: Awaited<ReturnType<typeof stat>> }> = []
+  let scannedFileCount = 0
   try {
-    return readdirSync(runtimeConfig.log.directory)
-      .filter((fileName) => fileName.endsWith('.log'))
-      .map((fileName) => {
-        const path = join(runtimeConfig.log.directory, fileName)
-        const stats = statSync(path)
-        return { path, fileName, stats }
-      })
-      .filter((file) => file.stats.isFile())
-      .sort((left, right) => right.stats.mtimeMs - left.stats.mtimeMs)
-      .map((file, order) => ({
-        path: file.path,
-        fileName: file.fileName,
-        size: file.stats.size,
-        birthtimeMs: file.stats.birthtimeMs,
-        mtimeMs: file.stats.mtimeMs,
-        order
-      }))
+    const directory = await opendir(runtimeConfig.log.directory)
+    for await (const entry of directory) {
+      scannedFileCount += 1
+      if (scannedFileCount % logFileScanYieldEvery === 0) {
+        await yieldImmediate()
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.log')) continue
+      const path = join(runtimeConfig.log.directory, entry.name)
+      try {
+        const stats = await stat(path)
+        if (stats.isFile()) {
+          retainNewestLogFile(retainedFiles, { path, fileName: entry.name, stats }, maxFiles)
+        }
+      } catch {
+      }
+    }
   } catch {
     return []
+  }
+  return retainedFiles.map((file, order) => ({
+    path: file.path,
+    fileName: file.fileName,
+    size: Number(file.stats.size),
+    birthtimeMs: Number(file.stats.birthtimeMs),
+    mtimeMs: Number(file.stats.mtimeMs),
+    order
+  }))
+}
+
+function retainNewestLogFile<T extends { stats: Awaited<ReturnType<typeof stat>> }>(files: T[], file: T, maxFiles: number): void {
+  let insertIndex = files.length
+  for (let index = 0; index < files.length; index += 1) {
+    if (Number(file.stats.mtimeMs) > Number(files[index].stats.mtimeMs)) {
+      insertIndex = index
+      break
+    }
+  }
+  if (insertIndex >= maxFiles) {
+    return
+  }
+  files.splice(insertIndex, 0, file)
+  if (files.length > maxFiles) {
+    files.pop()
   }
 }
 
@@ -328,7 +353,8 @@ function filterLogFilesByTimeRange(files: LogFile[], timeRange: RuntimeLogGrepTi
 async function resolveRgExecutable(): Promise<string | undefined> {
   try {
     const ripgrep = await import('@vscode/ripgrep')
-    return existsSync(ripgrep.rgPath) ? ripgrep.rgPath : undefined
+    await access(ripgrep.rgPath)
+    return ripgrep.rgPath
   } catch {
     return undefined
   }

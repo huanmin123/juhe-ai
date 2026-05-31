@@ -494,7 +494,7 @@ GET /__aipublic__/access/info
 - IP 管理不展示范围总统计卡片，也不在后端维护范围总聚合。
 - IP 速度指标只读窗口表中已经落表的 `average_first_token_ms`、`average_duration_ms` 和 `duration_ms_max`；`sum/count` 只作为后台刷新单个 IP 窗口行派生字段的输入，不回扫 `usage_records`。
 - 列表请求不触发窗口重建；未命中窗口或窗口已被新 daily 标记为 stale 时返回空列表和 `rangeReady=false`，等待后台 worker 生成。
-- `pageUpperBound` 只作为分页器兼容上界，不能作为数量或范围总统计展示，不能为了精确总数额外执行大范围 `COUNT(*)` 或维护范围总聚合。
+- `pageUpperBound` 只作为分页器上界，不能作为数量或范围总统计展示，不能为了精确总数额外执行大范围 `COUNT(*)` 或维护范围总聚合。
 - 服务端限制 IP 列表最大页码，避免恶意或误操作的超大 `OFFSET` 在高基数窗口上长时间跳行。
 - IP keyword 只按明文 IP / 聚合 IP 做精确或右侧前缀匹配，不支持 hash 搜索，也不支持任意前导通配符全表扫描。
 - 高失败率筛选需要有最小请求样本，例如 `request_count >= 10`，避免小样本误导。

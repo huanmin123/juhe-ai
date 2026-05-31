@@ -14,6 +14,7 @@ import type {
   AiPerformanceAccountOption,
   AiPerformanceOverview,
   AnnouncementLevel,
+  AnnouncementListResult,
   AnnouncementStatus,
   AnnouncementSummary,
   AuditLogDetail,
@@ -110,7 +111,6 @@ interface ListParams {
 interface GroupListParams extends ListParams {
   page?: number
   pageSize?: number
-  limit?: number
 }
 
 interface GroupOptionParams extends ListParams {
@@ -125,15 +125,18 @@ interface GroupOptionParams extends ListParams {
 interface TeamListParams extends ListParams {
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
 }
 
 interface ProxyListParams extends ListParams {
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
+}
+
+interface ProxyOptionParams {
+  keyword?: string
+  limit?: number
 }
 
 interface SystemAccountOptionsParams {
@@ -145,7 +148,6 @@ interface SystemAccountOptionsParams {
 interface SystemAccountListParams {
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
 }
 
@@ -166,7 +168,6 @@ interface AccountUsageStatsParams extends ListParams {
   endDate?: string
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
   accountIds?: string[]
-  limit?: number
 }
 
 interface AiPerformanceParams extends ListParams {
@@ -191,7 +192,6 @@ export interface AccountListSortParam {
 
 export interface AccountListParams extends ListParams {
   sorts?: AccountListSortParam[]
-  ids?: string[]
   page?: number
   pageSize?: number
   keyword?: string
@@ -200,7 +200,18 @@ export interface AccountListParams extends ListParams {
   type?: string
   status?: string | string[]
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+}
+
+export interface AccountOptionParams extends ListParams {
+  ids?: string[]
+  page?: number
   limit?: number
+  keyword?: string
+  providerCode?: string
+  groupId?: string
+  type?: string
+  status?: string | string[]
+  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
 }
 
 export interface ApiKeyListParams extends ListParams {
@@ -209,7 +220,6 @@ export interface ApiKeyListParams extends ListParams {
   keyword?: string
   status?: 'active' | 'disabled' | 'all'
   groupId?: string
-  limit?: number
 }
 
 export interface UsageRecordListParams extends ListParams {
@@ -226,7 +236,6 @@ export interface UsageRecordListParams extends ListParams {
   endDate?: string
   sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
   sortOrder?: SortDirection
-  limit?: number
 }
 
 export interface AuditLogListParams extends ListParams {
@@ -241,7 +250,6 @@ export interface AuditLogListParams extends ListParams {
   accountId?: string
   errorGroupId?: string
   trafficSource?: AuditTrafficSource
-  limit?: number
 }
 
 export interface AuditLogPayloadParams {
@@ -274,7 +282,6 @@ export interface RuntimeLogListParams {
   keyword?: string
   startAt?: string
   endAt?: string
-  limit?: number
 }
 
 export interface OperationLogListParams {
@@ -291,7 +298,6 @@ export interface OperationLogListParams {
   actorSystemAccountId?: string
   affectedSystemAccountId?: string
   operationScopeSystemAccountId?: string
-  limit?: number
 }
 
 interface TableMonitorHistoryParams {
@@ -549,7 +555,7 @@ export const api = {
     changePassword: (payload: { oldPassword?: string; newPassword: string }) => unwrap<CurrentUserSummary>(http.post('/auth/change-password', payload))
   },
   systemAccounts: {
-    list: () => unwrap<SystemAccountSummary[]>(http.get('/system-accounts')),
+    list: async () => (await unwrap<SystemAccountListResult>(http.get('/system-accounts', { params: systemAccountListParams({ page: 1, pageSize: 100 }) }))).items,
     listPage: (params?: SystemAccountListParams) => unwrap<SystemAccountListResult>(http.get('/system-accounts', { params: systemAccountListParams(params) })),
     options: (params?: SystemAccountOptionsParams) => unwrap<SystemAccountPrincipalSummary[]>(http.get('/system-accounts/options', { params: systemAccountOptionsParams(params) })),
     create: (payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.post('/system-accounts', payload)),
@@ -563,7 +569,8 @@ export const api = {
   announcements: {
     publicList: (params?: AnnouncementListParams) => unwrap<AnnouncementSummary[]>(http.get('/announcements/public', { params })),
     markRead: (payload: { announcementIds: string[] }) => unwrap<AnnouncementReadResult>(http.post('/announcements/public/read', payload)),
-    list: () => unwrap<AnnouncementSummary[]>(http.get('/announcements')),
+    list: async () => (await unwrap<AnnouncementListResult>(http.get('/announcements', { params: { page: 1, pageSize: 100 } }))).items,
+    listPage: (params?: { page?: number; pageSize?: number }) => unwrap<AnnouncementListResult>(http.get('/announcements', { params })),
     detail: (id: string) => unwrap<AnnouncementSummary>(http.get(`/announcements/${id}`)),
     create: (payload: AnnouncementPayload) => unwrap<AnnouncementSummary>(http.post('/announcements', payload)),
     update: (id: string, payload: Partial<AnnouncementPayload>) => unwrap<AnnouncementSummary>(http.patch(`/announcements/${id}`, payload)),
@@ -592,7 +599,7 @@ export const api = {
   },
   accounts: {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
-    options: (params?: AccountListParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
+    options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
     detail: (id: string, params?: ListParams) => unwrap<AccountSummary>(http.get(`/accounts/${id}`, { params })),
     importPreview: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/preview', payload, { params })),
     importConfirm: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
@@ -606,7 +613,7 @@ export const api = {
   },
   myAccounts: {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListParams(params, false) })),
-    options: (params?: AccountListParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),
+    options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),
     detail: (id: string) => unwrap<AccountSummary>(http.get(`/my-accounts/${id}`)),
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
@@ -617,7 +624,7 @@ export const api = {
     delete: (id: string) => http.delete(`/my-accounts/${id}`)
   },
   groups: {
-    list: (params?: ListParams) => unwrap<GroupSummary[]>(http.get('/groups', { params })),
+    list: async (params?: GroupListParams) => (await unwrap<GroupListResult>(http.get('/groups', { params: groupListParams({ page: 1, pageSize: 500, ...params }) }))).items,
     listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/groups', { params: groupListParams(params) })),
     options: (params?: GroupOptionParams) => unwrap<GroupOptionSummary[]>(http.get('/groups/options', { params: groupOptionParams(params) })),
     accountOptions: (params?: GroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params: groupOptionParams(params) })),
@@ -626,7 +633,7 @@ export const api = {
     delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
   },
   myGroups: {
-    list: () => unwrap<GroupSummary[]>(http.get('/my-groups')),
+    list: async (params?: Omit<GroupListParams, 'systemAccountId'>) => (await unwrap<GroupListResult>(http.get('/my-groups', { params: groupListParams({ page: 1, pageSize: 500, ...params }, false) }))).items,
     listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/my-groups', { params: groupListParams(params, false) })),
     options: (params?: Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options', { params: groupOptionParams(params, false) })),
     accountOptions: (params?: Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
@@ -645,7 +652,7 @@ export const api = {
     list: (params?: Omit<TeamListParams, 'systemAccountId'>) => unwrap<SystemTeamListResult>(http.get('/my-teams', { params: teamListParams(params, false) }))
   },
   authorizations: {
-    list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/authorizations', { params })),
+    list: async (params?: AuthorizationListParams) => (await unwrap<ResourceAuthorizationListResult>(http.get('/authorizations', { params: boundedAuthorizationListParams(params) }))).items,
     listPage: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationListResult>(http.get('/authorizations', { params })),
     create: (payload: {
       resourceType: AuthorizationResourceType
@@ -659,14 +666,14 @@ export const api = {
     }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.post('/authorizations', payload, { params })),
     update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload, { params })),
     updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload, { params })),
-    revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload, params })),
+    revoke: (id: string, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { params })),
     returnAuthorization: (id: string, params?: AuthorizationScopeParams) => http.delete(`/authorizations/${id}/return`, { params }),
     usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`, { params })),
     teamUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationTeamUsageOverview>(http.get('/authorizations/usage/team-details', { params })),
     userUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationUserUsageOverview>(http.get('/authorizations/usage/user-details', { params }))
   },
   myAuthorizations: {
-    list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/my-authorizations', { params: stripSystemAccountParam(params) })),
+    list: async (params?: AuthorizationListParams) => (await unwrap<ResourceAuthorizationListResult>(http.get('/my-authorizations', { params: boundedAuthorizationListParams(stripSystemAccountParam(params)) }))).items,
     listPage: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationListResult>(http.get('/my-authorizations', { params: stripSystemAccountParam(params) })),
     create: (payload: {
       resourceType: AuthorizationResourceType
@@ -680,7 +687,7 @@ export const api = {
     }) => unwrap<ResourceAuthorizationSummary>(http.post('/my-authorizations', payload)),
     update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/my-authorizations/${id}`, payload)),
     updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/my-authorizations/${id}/expire`, payload)),
-    revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }) => unwrap<ResourceAuthorizationSummary>(http.delete(`/my-authorizations/${id}`, { data: payload })),
+    revoke: (id: string) => unwrap<ResourceAuthorizationSummary>(http.delete(`/my-authorizations/${id}`)),
     returnAuthorization: (id: string) => http.delete(`/my-authorizations/${id}/return`),
     usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/my-authorizations/${id}/usage`, { params: stripSystemAccountParam(params) })),
     teamUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationTeamUsageOverview>(http.get('/my-authorizations/usage/team-details', { params: stripSystemAccountParam(params) })),
@@ -716,7 +723,7 @@ export const api = {
   },
   proxies: {
     list: (params?: ProxyListParams) => unwrap<ProxyProfileListResult>(http.get('/proxies', { params })),
-    options: (params?: Pick<ProxyListParams, 'keyword' | 'limit'>) => unwrap<ProxyProfileOptionSummary[]>(http.get('/proxies/options', { params })),
+    options: (params?: ProxyOptionParams) => unwrap<ProxyProfileOptionSummary[]>(http.get('/proxies/options', { params })),
     create: (payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.post('/proxies', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.patch(`/proxies/${id}`, payload)),
     test: (id: string) => unwrap<ProxyTestReport>(http.post(`/proxies/${id}/test`, {}, { timeout: 120000 })),
@@ -816,6 +823,14 @@ function stripSystemAccountParam<T extends object>(params?: T): Record<string, u
   return Object.keys(output).length ? output : undefined
 }
 
+function boundedAuthorizationListParams<T extends object>(params?: T): Record<string, unknown> {
+  return {
+    ...(params as Record<string, unknown> | undefined),
+    page: (params as { page?: unknown } | undefined)?.page ?? 1,
+    pageSize: (params as { pageSize?: unknown } | undefined)?.pageSize ?? 500
+  }
+}
+
 function stripAdminOperationLogParams(params?: OperationLogListParams): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output = { ...params } as Record<string, unknown>
@@ -831,8 +846,6 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
   if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
-  if (params.limit) output.limit = params.limit
-  if (params.ids?.length) output.ids = params.ids.join(',')
   if (params.keyword) output.keyword = params.keyword
   if (params.providerCode && params.providerCode !== 'all') output.providerCode = params.providerCode
   if (params.groupId) output.groupId = params.groupId
@@ -846,12 +859,11 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
   return output
 }
 
-function accountOptionsParams(params?: AccountListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
+function accountOptionsParams(params?: AccountOptionParams, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
   if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.page) output.page = params.page
-  if (params.pageSize) output.pageSize = params.pageSize
   if (params.limit) output.limit = params.limit
   if (params.ids?.length) output.ids = params.ids.join(',')
   if (params.keyword) output.keyword = params.keyword
@@ -879,7 +891,6 @@ function groupListParams(params?: GroupListParams, includeSystemAccount = true):
   if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
-  if (params.limit) output.limit = params.limit
   return Object.keys(output).length ? output : undefined
 }
 
@@ -902,7 +913,6 @@ function teamListParams(params?: TeamListParams | Omit<TeamListParams, 'systemAc
   if (includeSystemAccount && 'systemAccountId' in params && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
-  if (params.limit) output.limit = params.limit
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   return Object.keys(output).length ? output : undefined
 }
@@ -938,7 +948,6 @@ function systemAccountListParams(params?: SystemAccountListParams): Record<strin
   const output: Record<string, unknown> = {}
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
-  if (params.limit) output.limit = params.limit
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   return Object.keys(output).length ? output : undefined
 }
@@ -949,7 +958,6 @@ function accountUsageStatsParams(params?: AccountUsageStatsParams, includeSystem
   if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
-  if (params.limit) output.limit = params.limit
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.startDate) output.startDate = params.startDate
   if (params.endDate) output.endDate = params.endDate

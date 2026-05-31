@@ -83,10 +83,10 @@
                     <a-input v-model:value="rule.status_codes" placeholder="429, 502, 503" />
                   </a-form-item>
                   <a-form-item label="错误码">
-                    <a-input v-model:value="rule.error_codes" placeholder="insufficient_user_quota" />
+                    <a-input v-model:value="rule.error_codes" placeholder="insufficient_quota" />
                   </a-form-item>
                   <a-form-item label="错误类型">
-                    <a-input v-model:value="rule.error_types" placeholder="new_api_error" />
+                    <a-input v-model:value="rule.error_types" placeholder="rate_limit_exceeded" />
                   </a-form-item>
                   <a-form-item label="关键词">
                     <a-textarea v-model:value="rule.keywords" :rows="1" auto-size placeholder="多个关键词用逗号、分号或换行分隔" />
@@ -172,17 +172,19 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed, h, ref } from 'vue'
 
 import {
-  accountErrorActionOptions,
-  accountErrorHourOptions,
   accountErrorPolicyPresets,
-  accountErrorRecoveryStrategyOptions,
-  accountErrorWeekdayOptions,
   cloneAccountErrorPolicyRule,
   createBlankAccountErrorRule,
   getNextAccountErrorRulePriority,
-  normalizeAccountErrorPolicyPriorities,
+  normalizeAccountErrorPolicyPriorities
+} from './accountErrorPolicyRules'
+import {
+  accountErrorActionOptions,
+  accountErrorHourOptions,
+  accountErrorRecoveryStrategyOptions,
+  accountErrorWeekdayOptions,
   type AccountErrorPolicyRuleForm
-} from './accountErrorPolicy'
+} from './accountErrorPolicyTypes'
 import {
   accountErrorActionColor as actionColor,
   accountErrorActionLabel as actionLabel,

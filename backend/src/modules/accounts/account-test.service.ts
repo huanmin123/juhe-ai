@@ -10,9 +10,9 @@ import {
   findAccountForTest,
   findOpenAIAccountForGroup,
   type RecentOpenAIRequestShape,
-  resolveAccountSystemAccountId,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import { accountSystemAccountId } from '../../storage/resource-authorization-helpers.js'
 import { getRequestAuthContext, withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
 import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
@@ -222,8 +222,8 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
   account: OpenAIAccountSecret
 } {
   const systemAccountId = account.accessType === 'authorized'
-    ? account.bindingSystemAccountId ?? account.systemAccountId ?? authorizedCallerSystemAccountId(account) ?? account.ownerSystemAccountId ?? resolveAccountSystemAccountId(account.id) ?? 'sys_admin'
-    : account.systemAccountId ?? account.ownerSystemAccountId ?? resolveAccountSystemAccountId(account.id) ?? 'sys_admin'
+    ? account.bindingSystemAccountId ?? account.systemAccountId ?? authorizedCallerSystemAccountId(account) ?? account.ownerSystemAccountId ?? accountSystemAccountId(account.id) ?? 'sys_admin'
+    : account.systemAccountId ?? account.ownerSystemAccountId ?? accountSystemAccountId(account.id) ?? 'sys_admin'
   const groupId = input.groupId || account.boundGroupId
   if (!groupId) {
     throw new AccountTestConfigurationError('账户未绑定可用分组，无法按客户真实链路测试')

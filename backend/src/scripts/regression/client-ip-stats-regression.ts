@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import type { SQLInputValue } from 'node:sqlite'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -195,8 +196,26 @@ try {
   assert.equal(list.items.length, 2, '列表应只返回有 IP 聚合事实的来源')
 
   const statsDatabase = databaseModule.getStatsDatabase()
-  const policyColumns = statsDatabase.prepare('PRAGMA table_info(client_ip_policies)').all() as Array<{ name?: string }>
-  assert.equal(policyColumns.some((column) => column.name === 'policy_type'), false, 'IP 封禁策略表只保留当前封禁策略字段')
+  const policyColumns = new Set(
+    (statsDatabase.prepare('PRAGMA table_info(client_ip_policies)').all() as Array<{ name?: string }>)
+      .map((column) => column.name)
+      .filter((name): name is string => Boolean(name))
+  )
+  for (const column of [
+    'id',
+    'ip_hash',
+    'status',
+    'reason',
+    'expires_at',
+    'created_by_system_account_id',
+    'created_at',
+    'updated_at',
+    'disabled_at',
+    'disabled_by_system_account_id',
+    'disabled_reason'
+  ]) {
+    assert(policyColumns.has(column), `IP 封禁策略表应包含当前字段 ${column}`)
+  }
 
   const ipv4Row = list.items.find((item) => item.ipHash === ipv4Identity.ipHash)
   assert(ipv4Row, 'IPv4 聚合行应存在')
@@ -234,8 +253,8 @@ try {
   ])
   assert.equal(clientIpStats.aggregateClientIpStatsBatch(100), 1, '新 IP 用量进入 daily 后应只标记窗口过期，不在请求内刷新')
   const staleList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
-  assert.equal(staleList.rangeReady, false, '旧窗口已有行时，新数据仍应让范围窗口进入未就绪状态')
-  assert.equal(staleList.pageUpperBound, 0, '过期窗口不应继续返回旧分页上界')
+  assert.equal(staleList.rangeReady, false, '已发布窗口存在时，新数据仍应让范围窗口进入未就绪状态')
+  assert.equal(staleList.pageUpperBound, 0, '过期窗口不应继续返回已发布分页上界')
   clientIpStats.refreshClientIpUsageRangeWindows()
   const refreshedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10, sortField: 'requestCount', sortOrder: 'desc' })
   const refreshedIpv4Row = refreshedList.items.find((item) => item.ipHash === ipv4Identity.ipHash)
@@ -254,6 +273,9 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === policy.id), true, 'active 封禁策略应进入运行态列表')
+  const blacklistedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 })
+  assert.deepEqual(blacklistedList.items.map((item) => item.ipHash), [ipv4Identity.ipHash], 'IP 列表封禁筛选应只返回 active 封禁 IP')
+  assertClientIpListPolicyQueryPlan(today)
   assert.equal(
     clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: policy.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
     1,
@@ -278,4 +300,37 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertClientIpListPolicyQueryPlan(today: string): void {
+  const policyNow = new Date().toISOString()
+  const details = explainStatsQuery(`
+    SELECT registry.ip_hash
+    FROM client_ip_usage_range_windows range_stats
+    INNER JOIN client_ip_registry registry ON registry.ip_hash = range_stats.ip_hash
+    WHERE range_stats.start_date = ?
+      AND range_stats.end_date = ?
+      AND EXISTS (
+        SELECT 1
+        FROM client_ip_policies active_policies
+        WHERE active_policies.status = 'active'
+          AND active_policies.ip_hash = registry.ip_hash
+          AND (active_policies.expires_at IS NULL OR active_policies.expires_at > ?)
+        LIMIT 1
+      )
+    ORDER BY range_stats.request_count DESC, registry.ip_hash ASC
+    LIMIT ? OFFSET ?
+  `, [today, today, policyNow, 11, 0])
+  assert(details.includes('idx_client_ip_range_requests'), `IP 列表应通过范围窗口排序索引读取当前页，实际计划：${details}`)
+  assert(details.includes('idx_client_ip_policies_active'), `IP 封禁筛选应按 ip_hash 命中策略索引，实际计划：${details}`)
+  assert(!details.includes('MATERIALIZE'), `IP 列表不应 materialize 封禁策略全集，实际计划：${details}`)
+  assert(!details.includes('USE TEMP B-TREE FOR GROUP BY'), `IP 列表不应为封禁策略做临时 GROUP BY，实际计划：${details}`)
+}
+
+function explainStatsQuery(sql: string, params: SQLInputValue[]): string {
+  return databaseModule.getStatsDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
 }

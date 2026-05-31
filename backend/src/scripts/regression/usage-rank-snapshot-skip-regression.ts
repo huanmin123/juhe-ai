@@ -84,7 +84,7 @@ try {
   console.log('用量排行快照跳过回归通过：无新增聚合数据跳过，水位或日期变化会重新刷新')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

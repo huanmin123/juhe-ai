@@ -111,7 +111,7 @@ try {
   console.log('数据保留 SQL 防护回归通过：预聚合清理按表推进，模型检测与运行日志游标可清理，清理列具备索引')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

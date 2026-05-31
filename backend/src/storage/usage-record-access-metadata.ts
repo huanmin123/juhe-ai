@@ -1,5 +1,5 @@
 import { currentSystemAccountId } from './access-scope.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { accountSystemAccountId, activeResourceAuthorization, groupSystemAccountId, resourceAuthorizationSelectColumns } from './resource-authorization-helpers.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
@@ -68,12 +68,12 @@ export function usageApiKeyExists(apiKeyId: string, context?: UsageAccessLookupC
   if (context) {
     return context.apiKeySystemAccountIds.has(apiKeyId)
   }
-  const row = getDatabase().prepare('SELECT id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { id?: string } | undefined
+  const row = getBusinessDatabase().prepare('SELECT id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { id?: string } | undefined
   return Boolean(row?.id)
 }
 
 export function systemAccountIdForUsage(input: UsageAccessLookupInput, context?: UsageAccessLookupContext): string {
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   if (input.apiKeyId) {
     const cachedSystemAccountId = context?.apiKeySystemAccountIds.get(input.apiKeyId)
     if (cachedSystemAccountId) return cachedSystemAccountId
@@ -180,7 +180,7 @@ function loadUsageAccountMetadata(ids: string[]): Map<string, UsageAccountMetada
   const output = new Map<string, UsageAccountMetadata>()
   if (!ids.length) return output
   for (const chunk of chunkValues(ids, 900)) {
-    const rows = getDatabase()
+    const rows = getBusinessDatabase()
       .prepare(`
         SELECT id, system_account_id, authorization_instance_source_account_id,
           authorization_instance_authorization_id, authorization_instance_owner_system_account_id
@@ -211,7 +211,7 @@ function loadOwnerSystemAccountIds(tableName: 'api_keys' | 'groups' | 'accounts'
   const output = new Map<string, string>()
   if (!ids.length) return output
   for (const chunk of chunkValues(ids, 900)) {
-    const rows = getDatabase()
+    const rows = getBusinessDatabase()
       .prepare(`SELECT id, system_account_id FROM ${tableName} WHERE id IN (${sqlPlaceholders(chunk.length)})`)
       .all(...chunk) as unknown as Array<{ id?: string; system_account_id?: string }>
     for (const row of rows) {
@@ -228,7 +228,7 @@ function uniqueIds(values: Array<string | undefined>): string[] {
 }
 
 function resourceAuthorizationSnapshot(authorizationId: string): ResourceAuthorizationRow | undefined {
-  return getDatabase()
+  return getBusinessDatabase()
     .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
     .get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
 }

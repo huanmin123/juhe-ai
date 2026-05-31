@@ -1,17 +1,20 @@
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
-import { buildUsageRecordFilters, buildUsageRecordOrderClause, type NormalizedUsageRecordListOptions, normalizeUsageRecordListOptions, type UsageRecordFilterResult } from './usage-record-list-query.js'
+import { buildUsageRecordEntryFilters, buildUsageRecordEntryOrderClause, buildUsageRecordFilters, buildUsageRecordOrderClause, type NormalizedUsageRecordListOptions, normalizeUsageRecordListOptions, type UsageRecordFilterResult } from './usage-record-list-query.js'
 import { hydrateUsageRecordNames, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
 import {
   generateUsageRecordId,
   getUsageRecordShardDatabase,
+  findRegisteredUsageRecordShardLocation,
   listRecentUsageRecordShardLocations,
   listUsageRecordShardLocations,
   queryUsageRecordShardById,
+  recordUsageRecordShardEntries,
   usageRecordShardLocationForRecord,
+  type UsageRecordShardEntryInput,
   type UsageRecordShardLocation,
   type UsageRecordShardQueryWindow
 } from './usage-record-shards.js'
@@ -66,7 +69,6 @@ export interface UsageRecordListOptions {
   pageSize?: number
   sortBy?: UsageRecordSortField
   sortOrder?: UsageRecordSortDirection
-  limit?: number
   accountKeyword?: string
   clientIp?: string
   result?: 'success' | 'failed' | 'all'
@@ -135,19 +137,19 @@ export interface UsageRecordInput {
 }
 
 export function listUsageRecords(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordListResult {
-  const filters = buildUsageRecordFilters(access, options)
   const listOptions = normalizeUsageRecordListOptions(options)
-  const orderClause = buildUsageRecordOrderClause(listOptions)
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const offset = (listOptions.page - 1) * listOptions.pageSize
-  const rows = listUsageRecordRowsFromShards(
-    filters,
-    listOptions,
-    orderClause,
-    offset + listOptions.pageSize + 1,
-    usageRecordShardQueryWindowFromOptions(options)
+  const entryRows = listUsageRecordEntries(
+    buildUsageRecordEntryFilters(access, options),
+    buildUsageRecordEntryOrderClause(listOptions),
+    offset + listOptions.pageSize + 1
   )
-  const pageRows = takePageRows(rows.slice(offset), listOptions.pageSize)
+  const pageEntryRows = takePageRows(entryRows.slice(offset), listOptions.pageSize)
+  const pageRows = {
+    rows: loadUsageRecordRowsByEntries(pageEntryRows.rows),
+    hasMore: pageEntryRows.hasMore
+  }
   const rowsWithNames = hydrateUsageRecordNames(pageRows.rows)
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
@@ -285,7 +287,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     return
   }
 
-  const businessDatabase = getDatabase()
+  const businessDatabase = getBusinessDatabase()
   const insertSql = `
     INSERT INTO usage_records (
       id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
@@ -301,6 +303,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   const accountLastUsedAt = new Map<string, string>()
   const accessLookupContext = buildUsageAccessLookupContext(inputs)
   const rowsByShard = new Map<string, { location: UsageRecordShardLocation; rows: UsageRecordInsertRow[] }>()
+  const shardEntries: UsageRecordShardEntryInput[] = []
   let accountLastUsedFlushed = false
 
   try {
@@ -362,6 +365,22 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
       const shardRows = rowsByShard.get(location.shardKey) ?? { location, rows: [] }
       shardRows.rows.push(row)
       rowsByShard.set(location.shardKey, shardRows)
+      shardEntries.push({
+        id,
+        shardKey: location.shardKey,
+        systemAccountId,
+        accountId: input.accountId ?? null,
+        groupId: input.groupId ?? null,
+        model: input.model ?? null,
+        trafficSource,
+        success: input.success,
+        statusCode: input.statusCode ?? null,
+        clientIp: input.clientIp ?? null,
+        firstTokenMs: input.firstTokenMs ?? null,
+        durationMs: input.durationMs ?? null,
+        costUsd: input.costUsd ?? null,
+        createdAt: now
+      })
     }
 
     for (const shardRows of rowsByShard.values()) {
@@ -389,6 +408,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     }
 
     updateAccountLastUsedAt(accountLastUsedAt, businessDatabase)
+    recordUsageRecordShardEntries(shardEntries)
     accountLastUsedFlushed = true
   } catch (error) {
     if (!accountLastUsedFlushed && accountLastUsedAt.size > 0) {
@@ -405,6 +425,81 @@ interface UsageRecordInsertRow {
   params: Array<string | number | null>
   accountId?: string
   accountLastUsedAt?: string
+}
+
+interface UsageRecordEntryRow {
+  usage_id: string
+  shard_key: string
+  created_at: string
+}
+
+function listUsageRecordEntries(
+  filters: UsageRecordFilterResult,
+  orderClause: string,
+  limit: number
+): UsageRecordEntryRow[] {
+  return getDatasetDatabase()
+    .prepare(`
+      SELECT usage_id, shard_key, created_at
+      FROM usage_record_shard_entries ue
+      ${filters.clause}
+      ${orderClause}
+      LIMIT ?
+    `)
+    .all(...filters.params, Math.max(1, Math.trunc(limit))) as unknown as UsageRecordEntryRow[]
+}
+
+function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageRecordRow[] {
+  if (entries.length === 0) return []
+  const rowsById = new Map<string, UsageRecordRow>()
+  const entriesByShardKey = new Map<string, UsageRecordEntryRow[]>()
+  for (const entry of entries) {
+    entriesByShardKey.set(entry.shard_key, [...(entriesByShardKey.get(entry.shard_key) ?? []), entry])
+  }
+  for (const [shardKey, shardEntries] of entriesByShardKey) {
+    const location = findRegisteredUsageRecordShardLocation(shardKey)
+    if (!location) continue
+    const shardDatabase = getUsageRecordShardDatabase(location)
+    for (const chunk of chunkValues(shardEntries.map((entry) => entry.usage_id), 900)) {
+      const rows = shardDatabase
+        .prepare(`
+          SELECT
+            ur.id,
+            ur.system_account_id,
+            ur.trace_id,
+            ur.traffic_source,
+            ur.client_ip,
+            ur.api_key_id,
+            ur.group_id,
+            ur.account_id,
+            ur.endpoint,
+            ur.provider_code,
+            ur.model,
+            ur.stream,
+            ur.status_code,
+            ur.success,
+            ur.first_token_ms,
+            ur.duration_ms,
+            ur.input_tokens,
+            ur.output_tokens,
+            ur.cache_read_tokens,
+            ur.cache_read_cost_usd,
+            ur.input_image_tokens,
+            ur.output_image_tokens,
+            ur.cost_usd,
+            ur.error_code,
+            ur.error_message,
+            ur.created_at
+          FROM usage_records ur
+          WHERE ur.id IN (${sqlPlaceholders(chunk.length)})
+        `)
+        .all(...chunk) as UsageRecordRow[]
+      for (const row of rows) {
+        rowsById.set(String(row.id), row)
+      }
+    }
+  }
+  return entries.map((entry) => rowsById.get(entry.usage_id)).filter((row): row is UsageRecordRow => Boolean(row))
 }
 
 function listUsageRecordRowsFromShards(
@@ -512,7 +607,7 @@ function mergeAccountLastUsedAt(target: Map<string, string>, source: Map<string,
   }
 }
 
-function updateAccountLastUsedAt(accountLastUsedAt: Map<string, string>, database: ReturnType<typeof getDatabase>): void {
+function updateAccountLastUsedAt(accountLastUsedAt: Map<string, string>, database: ReturnType<typeof getBusinessDatabase>): void {
   if (accountLastUsedAt.size === 0) return
   const updateAccountStatement = database.prepare(`
     UPDATE accounts

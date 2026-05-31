@@ -8,7 +8,8 @@ import {
   clearAccountFailureState,
   findAccountForTest,
   getSettings,
-  listAccounts,
+  listOpenAIOAuthAccountsDueForAccessTokenRefresh,
+  listOpenAIOAuthStoppedRefreshExceptionAccounts,
   markAccountException,
   resolveProxyUrlForProfile,
   updateAccount
@@ -61,7 +62,7 @@ let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthTok
 type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerCode' | 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode'>> & {
   proxyUrl?: string
 }
-type OpenAIOAuthRefreshAccount = RefreshableOpenAIOAuthAccount & Partial<Pick<AccountSummary, 'systemAccountId' | 'concurrencyLimit' | 'currentConcurrency' | 'priority' | 'superPriorityEnabled' | 'fallbackEnabled' | 'passthroughEnabled' | 'schedulable' | 'todayUsage' | 'usage' | 'permissions'>> & {
+type OpenAIOAuthRefreshAccount = RefreshableOpenAIOAuthAccount & Partial<Pick<AccountSummary, 'systemAccountId' | 'concurrencyLimit' | 'currentConcurrency' | 'priority' | 'superPriorityEnabled' | 'fallbackEnabled' | 'schedulable' | 'todayUsage' | 'usage' | 'permissions'>> & {
   proxyUrl?: string
 }
 type OpenAIOAuthTokenRefresher = (input: { refreshToken: string; clientId?: string; proxyUrl?: string; signal?: AbortSignal }) => Promise<OpenAITokenInfo>
@@ -211,15 +212,17 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   const retryBackoffPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_backoff', retryBackoffMs)
   cleanupRefreshFailureBackoff(now)
 
-  const accounts = listAccounts()
-  normalizeOpenAIOAuthStoppedRefreshExceptionMessages(accounts)
-  const eligibleAccounts = accounts
-    .filter(isExistingOpenAIOAuthAccountWithRefreshToken)
-  const dueAccounts = eligibleAccounts
-    .filter((account) => shouldPreRefreshAccessToken(account.credentials, now, leadMs))
+  normalizeOpenAIOAuthStoppedRefreshExceptionMessages(listOpenAIOAuthStoppedRefreshExceptionAccounts({
+    stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
+  }))
+  const dueAccounts = listOpenAIOAuthAccountsDueForAccessTokenRefresh({
+    leadSeconds,
+    limit: batchSize + refreshFailureStateByAccountId.size,
+    stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
+  }).filter((account) => isExistingOpenAIOAuthAccountWithRefreshToken(account) && shouldPreRefreshAccessToken(account.credentials, now, leadMs))
 
   const result: OpenAIOAuthAccessTokenRefreshResult = {
-    scanned: eligibleAccounts.length,
+    scanned: dueAccounts.length,
     due: dueAccounts.length,
     refreshed: 0,
     failed: 0,

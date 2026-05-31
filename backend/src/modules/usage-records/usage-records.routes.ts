@@ -50,7 +50,6 @@ function withCostBreakdown(record: UsageRecordSummary) {
 function parseListOptions(query: Record<string, unknown>): UsageRecordListOptions {
   const rawPage = finiteNumberQueryValue(query.page)
   const rawPageSize = finiteNumberQueryValue(query.pageSize)
-  const rawLimit = finiteNumberQueryValue(query.limit)
   const rawStatusCode = finiteNumberQueryValue(query.statusCode)
   const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate)
   const sortBy = typeof query.sortBy === 'string' && usageRecordSortFields.has(query.sortBy as UsageRecordSortField)
@@ -63,10 +62,9 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
   return {
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
-    limit: Number.isInteger(rawLimit) ? rawLimit : undefined,
     sortBy,
     sortOrder,
-    accountKeyword: optionalQueryText(query.accountKeyword ?? query.keyword ?? query.accountName),
+    accountKeyword: optionalQueryText(query.accountKeyword),
     clientIp: optionalQueryText(query.clientIp),
     result,
     statusCode: isHttpStatusCode(rawStatusCode) ? rawStatusCode : undefined,

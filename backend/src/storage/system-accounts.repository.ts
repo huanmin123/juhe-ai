@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto'
 
 import type { SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
-import { hashPassword, hashSecret, verifyPassword } from './crypto.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPasswordAsync } from './crypto.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
@@ -34,7 +34,6 @@ export interface SystemAccountOptionListOptions {
 export interface SystemAccountListOptions {
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
 }
 
@@ -54,7 +53,7 @@ export interface SessionWithAccount {
 }
 
 export function listSystemAccounts(): SystemAccountSummary[] {
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
       FROM system_accounts
@@ -67,7 +66,7 @@ export function listSystemAccounts(): SystemAccountSummary[] {
 export function listSystemAccountsPage(options: SystemAccountListOptions = {}): SystemAccountListResult {
   const normalized = normalizeSystemAccountListOptions(options)
   const keywordFilter = buildSystemAccountListKeywordFilter(normalized.keyword)
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
       FROM system_accounts
@@ -90,7 +89,7 @@ export function listSystemAccountsPage(options: SystemAccountListOptions = {}): 
 export function listSystemAccountOptions(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
   const optionFilter = buildSystemAccountOptionFilter(options)
   const limitClause = systemAccountOptionLimitClause(options.limit)
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, username, display_name, status
       FROM system_accounts
@@ -157,11 +156,11 @@ function normalizeTextList(values?: string[]): string[] {
 }
 
 function normalizeSystemAccountListOptions(options: SystemAccountListOptions): Required<Pick<SystemAccountListOptions, 'page' | 'pageSize'>> & Pick<SystemAccountListOptions, 'keyword'> {
-  const page = typeof options.page === 'number' && Number.isInteger(options.page) ? Math.max(1, options.page) : 1
-  const rawPageSize = options.pageSize ?? options.limit
+  const rawPageSize = options.pageSize
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(maxSystemAccountPageSize, Math.max(1, rawPageSize))
     : defaultSystemAccountPageSize
+  const page = normalizeListPage(options.page, pageSize)
   return {
     page,
     pageSize,
@@ -181,7 +180,7 @@ function escapeLikePrefix(value: string): string {
 }
 
 export function findSystemAccountById(id: string): SystemAccountSummary | undefined {
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare(`
       SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
       FROM system_accounts
@@ -192,7 +191,7 @@ export function findSystemAccountById(id: string): SystemAccountSummary | undefi
 }
 
 export function findSystemAccountByUsername(username: string): (SystemAccountSummary & { passwordHash: string }) | undefined {
-  const row = getDatabase().prepare(`
+  const row = getBusinessDatabase().prepare(`
     SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
     FROM system_accounts
     WHERE lower(username) = lower(?)
@@ -204,14 +203,14 @@ export function findSystemAccountByUsername(username: string): (SystemAccountSum
   return { ...summary, passwordHash: row.password_hash }
 }
 
-function ensureSystemAccountUsernameUnique(username: string, excludeId?: string, database = getDatabase()): void {
+function ensureSystemAccountUsernameUnique(username: string, excludeId?: string, database = getBusinessDatabase()): void {
   const row = database
     .prepare('SELECT id FROM system_accounts WHERE lower(username) = lower(?) AND id <> ? LIMIT 1')
     .get(username, excludeId ?? '') as unknown as { id?: string } | undefined
   if (row?.id) throw new Error('用户账户已存在')
 }
 
-function ensureSystemAccountDisplayNameUnique(displayName: string, excludeId?: string, database = getDatabase()): void {
+function ensureSystemAccountDisplayNameUnique(displayName: string, excludeId?: string, database = getBusinessDatabase()): void {
   const row = database
     .prepare('SELECT id FROM system_accounts WHERE lower(display_name) = lower(?) AND id <> ? LIMIT 1')
     .get(displayName, excludeId ?? '') as unknown as { id?: string } | undefined
@@ -226,6 +225,14 @@ export function verifySystemAccountCredentials(username: string, password: strin
   return verifyPassword(password, account.passwordHash) ? account : undefined
 }
 
+export async function verifySystemAccountCredentialsAsync(username: string, password: string): Promise<SystemAccountSummary | undefined> {
+  const account = findSystemAccountByUsername(username)
+  if (!account || account.status !== 'active') {
+    return undefined
+  }
+  return await verifyPasswordAsync(password, account.passwordHash) ? account : undefined
+}
+
 export function createSystemAccount(input: {
   username: string
   displayName: string
@@ -236,11 +243,38 @@ export function createSystemAccount(input: {
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
 }): SystemAccountSummary {
+  return createSystemAccountWithPasswordHash(input, hashPassword(input.password))
+}
+
+export async function createSystemAccountAsync(input: {
+  username: string
+  displayName: string
+  description?: string | null
+  password: string
+  role?: SystemAccountRole
+  status?: SystemAccountStatus
+  mustChangePassword?: boolean
+  imageGenerationEnabled?: boolean
+}): Promise<SystemAccountSummary> {
+  const passwordHash = await hashPasswordAsync(input.password)
+  return createSystemAccountWithPasswordHash(input, passwordHash)
+}
+
+export function createSystemAccountWithPasswordHash(input: {
+  username: string
+  displayName: string
+  description?: string | null
+  password?: string
+  role?: SystemAccountRole
+  status?: SystemAccountStatus
+  mustChangePassword?: boolean
+  imageGenerationEnabled?: boolean
+}, passwordHash: string): SystemAccountSummary {
   const now = nowIso()
   const id = newId('sysacc')
   const username = input.username.trim()
   const displayName = input.displayName.trim()
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   ensureSystemAccountUsernameUnique(username, undefined, database)
   ensureSystemAccountDisplayNameUnique(displayName, undefined, database)
   const summary: SystemAccountSummary = {
@@ -263,7 +297,7 @@ export function createSystemAccount(input: {
           id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, hashPassword(input.password), summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now)
+      .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now)
     ensureDefaultOpenAIGroupForSystemAccount(summary.id, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -283,6 +317,31 @@ export function updateSystemAccount(id: string, input: {
   imageGenerationEnabled?: boolean
   password?: string
 }): SystemAccountSummary | undefined {
+  return updateSystemAccountWithPasswordHash(id, input, input.password ? hashPassword(input.password) : undefined)
+}
+
+export async function updateSystemAccountAsync(id: string, input: {
+  displayName?: string
+  description?: string | null
+  role?: SystemAccountRole
+  status?: SystemAccountStatus
+  mustChangePassword?: boolean
+  imageGenerationEnabled?: boolean
+  password?: string
+}): Promise<SystemAccountSummary | undefined> {
+  const passwordHash = input.password ? await hashPasswordAsync(input.password) : undefined
+  return updateSystemAccountWithPasswordHash(id, input, passwordHash)
+}
+
+export function updateSystemAccountWithPasswordHash(id: string, input: {
+  displayName?: string
+  description?: string | null
+  role?: SystemAccountRole
+  status?: SystemAccountStatus
+  mustChangePassword?: boolean
+  imageGenerationEnabled?: boolean
+  password?: string
+}, passwordHash?: string): SystemAccountSummary | undefined {
   const current = findSystemAccountById(id)
   if (!current) {
     return undefined
@@ -299,16 +358,16 @@ export function updateSystemAccount(id: string, input: {
   }
   const now = nowIso()
   ensureSystemAccountDisplayNameUnique(next.displayName, id)
-  if (input.password) {
-    getDatabase()
+  if (passwordHash) {
+    getBusinessDatabase()
       .prepare(`
         UPDATE system_accounts
         SET display_name = ?, description = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, image_generation_enabled = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.displayName, next.description ?? null, next.role, next.status, hashPassword(input.password), next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, now, id)
+      .run(next.displayName, next.description ?? null, next.role, next.status, passwordHash, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, now, id)
   } else {
-    getDatabase()
+    getBusinessDatabase()
       .prepare(`
         UPDATE system_accounts
         SET display_name = ?, description = ?, role = ?, status = ?, must_change_password = ?, image_generation_enabled = ?, updated_at = ?
@@ -325,7 +384,7 @@ export function updateSystemAccount(id: string, input: {
 }
 
 export function updateSystemAccountLastLogin(id: string): void {
-  getDatabase()
+  getBusinessDatabase()
     .prepare('UPDATE system_accounts SET last_login_at = ?, updated_at = ? WHERE id = ?')
     .run(nowIso(), nowIso(), id)
 }
@@ -335,7 +394,7 @@ export function createSession(systemAccountId: string, ttlDays = 14): { token: s
   const sessionId = newId('sess')
   const now = new Date()
   const expiresAt = new Date(now.getTime() + Math.max(1, ttlDays) * 24 * 60 * 60 * 1000).toISOString()
-  getDatabase()
+  getBusinessDatabase()
     .prepare(`
       INSERT INTO system_sessions (id, system_account_id, token_hash, expires_at, created_at, last_seen_at)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -345,7 +404,7 @@ export function createSession(systemAccountId: string, ttlDays = 14): { token: s
 }
 
 export function findSessionByToken(token: string): (SessionWithAccount & { tokenHash: string }) | undefined {
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare(`
       SELECT
         ss.id AS id,
@@ -391,15 +450,15 @@ export function touchSession(sessionId: string, lastSeenAt?: string): void {
   }
 
   const cutoff = new Date(nowMs - sessionTouchMinIntervalMs).toISOString()
-  getDatabase()
+  getBusinessDatabase()
     .prepare('UPDATE system_sessions SET last_seen_at = ? WHERE id = ? AND last_seen_at < ?')
     .run(new Date(nowMs).toISOString(), sessionId, cutoff)
 }
 
 export function revokeSession(token: string): void {
-  getDatabase().prepare('DELETE FROM system_sessions WHERE token_hash = ?').run(hashSecret(token))
+  getBusinessDatabase().prepare('DELETE FROM system_sessions WHERE token_hash = ?').run(hashSecret(token))
 }
 
 export function revokeAllSessionsForAccount(systemAccountId: string): void {
-  getDatabase().prepare('DELETE FROM system_sessions WHERE system_account_id = ?').run(systemAccountId)
+  getBusinessDatabase().prepare('DELETE FROM system_sessions WHERE system_account_id = ?').run(systemAccountId)
 }

@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
 import {
@@ -27,12 +28,40 @@ function main(): void {
   testInvalidTurnMetadataDoesNotBecomeCodex()
   testNonCodexMetadataShapesDoNotFallback()
   testRawBodyHashIsPartOfTurnStateKey()
+  testLargeRawBodyHashUsesBoundedSample()
+  testMissingRawBodyHashDoesNotStringifyFullBody()
   testCodexTurnStateKeyIgnoresGroupAndKeepsApiKeyBoundary()
   testFourthCodexRetryAvoidsFailedAccounts()
   testAllFailedAccountsBypassAvoidance()
   testMissingTurnStateDoesNotAvoidAccounts()
   testNonResponsesStreamDoesNotUseCodexProfile()
   console.log('Codex 客户端策略回归通过：精确 turn_id 识别、无 fallback、非法/非 Codex metadata 不升级、body hash 隔离、第 4 次 turn 级切号、状态丢失不避让和非 Responses 隔离符合预期')
+}
+
+function testLargeRawBodyHashUsesBoundedSample(): void {
+  const rawBodyA = Buffer.alloc(768 * 1024, 'a')
+  const rawBodyB = Buffer.from(rawBodyA)
+  rawBodyB[256 * 1024] = 'b'.charCodeAt(0)
+  const headers = {
+    'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_large_body' })
+  }
+  const strategyA = resolveOpenAIGatewayClientStrategy(createRequestWithRawBody('/v1/responses', rawBodyA, headers), identity)
+  const strategyB = resolveOpenAIGatewayClientStrategy(createRequestWithRawBody('/v1/responses', rawBodyB, headers), identity)
+
+  assert(strategyA.codexTurn?.rawBodyHash, '大请求体应生成 Codex body hash')
+  assert(strategyB.codexTurn?.rawBodyHash, '变更后的大请求体应生成 Codex body hash')
+  assert.notEqual(strategyA.codexTurn.rawBodyHash, createHash('sha256').update(rawBodyA).digest('hex'), '大请求体不应同步计算完整 body SHA-256')
+  assert.notEqual(strategyA.codexTurn.rawBodyHash, strategyB.codexTurn.rawBodyHash, '大请求体采样 hash 应能感知采样窗口内的内容变化')
+}
+
+function testMissingRawBodyHashDoesNotStringifyFullBody(): void {
+  const body = buildHashTrapBody()
+  const strategy = resolveOpenAIGatewayClientStrategy(createRequestWithoutRawBody('/v1/responses', body, {
+    'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_hash_trap' })
+  }), identity)
+
+  assert(strategy.codexTurn?.rawBodyHash, '缺少 rawBody 的请求仍应生成有界 body hash')
+  assert(strategy.codexTurn?.stateKey, '缺少 rawBody 的请求仍应生成 Codex turn state key')
 }
 
 function testCodexTurnProfileRequiresPreciseTurnId(): void {
@@ -277,6 +306,72 @@ function createRequest(
         .find(([headerName]) => headerName.toLowerCase() === lowerName)?.[1]
     }
   } as unknown as Request & GatewayRawBodyRequest
+}
+
+function createRequestWithRawBody(
+  originalUrl: string,
+  rawBody: Buffer,
+  headers: Record<string, string> = {}
+): GatewayRawBodyRequest {
+  const normalizedHeaders = {
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+    ...headers
+  }
+  return {
+    method: 'POST',
+    originalUrl,
+    path: originalUrl.split('?', 1)[0],
+    headers: normalizedHeaders,
+    body: { stream: true },
+    rawBody,
+    header(name: string): string | undefined {
+      const lowerName = name.toLowerCase()
+      return Object.entries(normalizedHeaders)
+        .find(([headerName]) => headerName.toLowerCase() === lowerName)?.[1]
+    }
+  } as unknown as Request & GatewayRawBodyRequest
+}
+
+function createRequestWithoutRawBody(
+  originalUrl: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+): GatewayRawBodyRequest {
+  const normalizedHeaders = {
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+    ...headers
+  }
+  return {
+    method: 'POST',
+    originalUrl,
+    path: originalUrl.split('?', 1)[0],
+    headers: normalizedHeaders,
+    body,
+    header(name: string): string | undefined {
+      const lowerName = name.toLowerCase()
+      return Object.entries(normalizedHeaders)
+        .find(([headerName]) => headerName.toLowerCase() === lowerName)?.[1]
+    }
+  } as unknown as Request & GatewayRawBodyRequest
+}
+
+function buildHashTrapBody(): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: 'gpt-5.3-codex',
+    stream: true
+  }
+  for (let index = 0; index < 80; index += 1) {
+    body[`field_${index}`] = 'x'.repeat(1024)
+  }
+  Object.defineProperty(body, 'field_80_trap', {
+    enumerable: true,
+    get() {
+      throw new Error('Codex body hash 不应读取超过字段上限后的属性')
+    }
+  })
+  return body
 }
 
 function account(id: string): UpstreamAccount {

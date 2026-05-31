@@ -7,13 +7,12 @@ import {
   createResourceAuthorization,
   findResourceAuthorization,
   getResourceAuthorizationUsage,
-  listResourceAuthorizations,
   listResourceAuthorizationsPage,
   revokeResourceAuthorization,
   returnResourceAuthorizationForGrantee,
   updateResourceAuthorization
 } from '../../storage/repositories.js'
-import { getDatabase } from '../../storage/database.js'
+import { getBusinessDatabase } from '../../storage/database.js'
 import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -108,23 +107,6 @@ const updateAuthorizationExpireSchema = z.object({
   limits: z.record(z.string(), z.unknown()).nullable().optional()
 })
 
-const revokeAuthorizationSchema = z.object({
-  sourceType: z.enum(['manual', 'team']).optional(),
-  sourceTeamId: z.string().trim().min(1).optional(),
-  revokeAll: z.boolean().optional()
-}).superRefine((value, ctx) => {
-  if (value.revokeAll) {
-    return
-  }
-  if (value.sourceType === 'team' && !value.sourceTeamId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['sourceTeamId'],
-      message: '回收团队来源授权时必须提供团队 ID'
-    })
-  }
-})
-
 authorizationsRouter.get('/', (req, res) => {
   const parsed = parseOrBadRequest(authorizationsQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
@@ -137,11 +119,7 @@ authorizationsRouter.get('/', (req, res) => {
   const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
     ? { ...filters, ...sourceTypeFilter, direction }
     : { ...filters, ...sourceTypeFilter }
-  if (page !== undefined || pageSize !== undefined) {
-    res.json(ok(listResourceAuthorizationsPage(routeFilters, getRequestAccessScope(systemAccountId), { usageRange, page, pageSize })))
-    return
-  }
-  res.json(ok(listResourceAuthorizations(routeFilters, getRequestAccessScope(systemAccountId), { usageRange })))
+  res.json(ok(listResourceAuthorizationsPage(routeFilters, getRequestAccessScope(systemAccountId), { usageRange, page, pageSize })))
 })
 
 authorizationsRouter.get('/usage/team-details', (req, res) => {
@@ -303,21 +281,11 @@ authorizationsRouter.delete('/:id', (req, res) => {
     sendBadRequest(res, paramsParsed.message)
     return
   }
-  const payload = {
-    sourceType: req.body?.sourceType ?? req.query.sourceType,
-    sourceTeamId: req.body?.sourceTeamId ?? req.query.sourceTeamId,
-    revokeAll: req.body?.revokeAll ?? (req.query.revokeAll === 'true' ? true : req.query.revokeAll === 'false' ? false : undefined)
-  }
-  const parsed = parseOrBadRequest(revokeAuthorizationSchema, payload, '回收授权参数不合法')
-  if (!parsed.success) {
-    sendBadRequest(res, parsed.message)
-    return
-  }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const authorization = runLoggedOperation(() => {
       const before = findResourceAuthorization(paramsParsed.data.id, requestAccess, { includeUsage: false })
-      const authorization = revokeResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
+      const authorization = revokeResourceAuthorization(paramsParsed.data.id, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')
       }
@@ -498,7 +466,7 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
   res.json(ok(authorization))
 })
 
-function authorizationTargets(authorization: ReturnType<typeof listResourceAuthorizations>[number]) {
+function authorizationTargets(authorization: ResourceAuthorizationSummary) {
   const targets = [
     ownerTarget({
       targetType: authorization.resourceType,
@@ -527,7 +495,7 @@ function authorizationTargets(authorization: ReturnType<typeof listResourceAutho
   return targets
 }
 
-function authorizationViewers(authorization: ReturnType<typeof listResourceAuthorizations>[number]) {
+function authorizationViewers(authorization: ResourceAuthorizationSummary) {
   return viewers(
     viewer(authorization.resourceOwnerSystemAccountId, 'authorization_owner'),
     viewer(authorization.granteeType === 'system_account' ? authorization.granteeSystemAccountId : undefined, 'authorization_grantee')

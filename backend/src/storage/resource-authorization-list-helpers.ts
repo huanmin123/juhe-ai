@@ -59,12 +59,11 @@ export function sanitizeResourceAuthorizationSummaryForAccess(summary: ResourceA
   if (canManageResourceOwner(summary.resourceOwnerSystemAccountId, access)) {
     return summary
   }
-  const sources = sanitizeAuthorizationSourcesForViewer(summary.authorizationSources ?? summary.sources, true) ?? []
+  const sources = sanitizeAuthorizationSourcesForViewer(summary.authorizationSources, true) ?? []
   return {
     ...summary,
     effectiveSourceTeamId: undefined,
     effectiveSourceTeamName: undefined,
-    sources,
     authorizationSources: sources,
     createdBy: '',
     revokedBy: undefined

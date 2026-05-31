@@ -17,7 +17,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'codex-turn-switch-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
@@ -741,7 +741,7 @@ function waitForClockTick(): void {
 }
 
 function forceGroupAccountOrder(groupId: string, primaryAccountId: string, stickyAccountId: string): void {
-  const statement = databaseModule.getDatabase().prepare('UPDATE group_accounts SET created_at = ? WHERE group_id = ? AND account_id = ?')
+  const statement = databaseModule.getBusinessDatabase().prepare('UPDATE group_accounts SET created_at = ? WHERE group_id = ? AND account_id = ?')
   statement.run('2000-01-01T00:00:00.000Z', groupId, primaryAccountId)
   statement.run('2000-01-01T00:00:01.000Z', groupId, stickyAccountId)
 }

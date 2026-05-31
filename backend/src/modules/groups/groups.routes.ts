@@ -3,11 +3,11 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroups, listGroupsPage, listProviders, updateGroup, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroupsPage, listProviders, updateGroup, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { applyServerAccountConcurrencyToGroupList, applyServerAccountConcurrencyToGroups } from '../gateway/gateway-runtime-snapshot.service.js'
+import { applyServerAccountConcurrencyToGroupList } from '../gateway/gateway-runtime-snapshot.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const groupsRouter = Router()
@@ -23,13 +23,8 @@ const groupSchema = z.object({
 
 groupsRouter.get('/', async (req, res, next) => {
   try {
-    if (hasGroupPageQuery(req.query)) {
-      const page = listGroupsPage(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
-      res.json(ok(await applyServerAccountConcurrencyToGroupList(page)))
-      return
-    }
-    const groups = listGroups(getRequestAccessScope(req.query.systemAccountId))
-    res.json(ok(await applyServerAccountConcurrencyToGroups(groups)))
+    const page = listGroupsPage(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
+    res.json(ok(await applyServerAccountConcurrencyToGroupList(page)))
   } catch (error) {
     next(error)
   }
@@ -38,13 +33,8 @@ groupsRouter.get('/', async (req, res, next) => {
 function parseGroupListOptions(query: Record<string, unknown>) {
   return {
     page: integerQueryValue(query.page),
-    pageSize: integerQueryValue(query.pageSize),
-    limit: integerQueryValue(query.limit)
+    pageSize: integerQueryValue(query.pageSize)
   }
-}
-
-function hasGroupPageQuery(query: Record<string, unknown>): boolean {
-  return query.page !== undefined || query.pageSize !== undefined || query.limit !== undefined
 }
 
 groupsRouter.get('/options', (req, res, next) => {

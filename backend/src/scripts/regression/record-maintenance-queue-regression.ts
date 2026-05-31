@@ -88,7 +88,7 @@ try {
   for (let index = 0; index < 5; index += 1) {
     seedAccount(`acct_codex_snapshot_batch_${index}`, 'sys_admin')
   }
-  const businessDatabase = databaseModule.getDatabase()
+  const businessDatabase = databaseModule.getBusinessDatabase()
   const statsDatabase = databaseModule.getStatsDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
   const originalStatsPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
@@ -211,7 +211,7 @@ try {
   console.log('数据维护队列回归通过：server/db-service 只投递，worker 才执行数据清理')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -253,13 +253,13 @@ function buildAccountUsageSnapshotJob(id: string, accountId: string, usedPercent
 }
 
 function seedAccount(accountId: string, systemAccountId: string): void {
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT OR IGNORE INTO providers (id, code, name, description, enabled, base_url, account_types_json, capabilities_json, created_at, updated_at)
       VALUES ('prov_openai', 'openai', 'OpenAI', NULL, 1, 'https://api.openai.com', '[]', '{}', ?, ?)
     `)
     .run('2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, credentials_encrypted, schedulable, created_at, updated_at)
       VALUES (?, ?, 'openai', ?, 'oauth', 'active', ?, 1, ?, ?)

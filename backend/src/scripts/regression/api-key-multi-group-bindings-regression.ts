@@ -127,7 +127,7 @@ try {
     key: apiKey.key
   })
   assert.equal(runtime.apiKey?.id, apiKey.id, '运行时应识别多分组 API Key')
-  assert.equal(runtime.apiKey?.group_id, fallbackGroup.id, '优先分组无正常可派发账号时运行时应切到后备分组')
+  assert.equal(runtime.apiKey?.selected_group_id, fallbackGroup.id, '优先分组无正常可派发账号时运行时应切到后备分组')
   assert.equal(runtime.accounts.length, 1, '运行时应返回后备分组账号')
   assert.equal(runtime.accounts[0]?.id, fallbackAccount.id, '运行时账号应来自后备分组')
 
@@ -147,7 +147,7 @@ try {
     type: 'read_gateway_runtime',
     key: apiKey.key
   })
-  assert.equal(restoredRuntime.apiKey?.group_id, primaryGroup.id, '优先分组恢复正常账号后运行时应回到主分组')
+  assert.equal(restoredRuntime.apiKey?.selected_group_id, primaryGroup.id, '优先分组恢复正常账号后运行时应回到主分组')
   assert(restoredRuntime.accounts.some((account) => account.id === primaryHealthyAccount.id), '恢复后的运行时应包含主分组正常账号')
   assert(!restoredRuntime.accounts.some((account) => account.id === primaryBlockedAccount.id && account.proxyProfileUnavailable !== true), '主分组代理不可用账号不应被视为正常可派发账号')
 
@@ -338,7 +338,7 @@ try {
   console.log('API Key 多分组绑定回归通过：创建、筛选、优先级更新、优先级/轮询/权重策略、删除优先分组保留后备、最后启用分组删除保护、未绑定拦截、空绑定拦截、重复绑定拦截、唯一索引拒绝重复写入、不可派发优先分组切后备和恢复正常')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -346,14 +346,14 @@ try {
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
 }
 
 function assertSqlUniqueIndexRejectsDuplicateBinding(apiKeyId: string, groupId: string): void {
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const now = new Date().toISOString()
   assert.throws(() => {
     database
@@ -372,7 +372,7 @@ async function runtimeGroupSequence(apiKey: string, count: number): Promise<Arra
       type: 'read_gateway_runtime',
       key: apiKey
     })
-    result.push(runtime.apiKey?.group_id)
+    result.push(runtime.apiKey?.selected_group_id)
   }
   return result
 }

@@ -74,7 +74,7 @@ try {
   console.log('表监控 dbstat 不可用回归通过：不再把未知大小压成 0')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

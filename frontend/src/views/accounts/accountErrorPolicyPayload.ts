@@ -84,9 +84,6 @@ const normalizeWeekday = (value: unknown, fallback = 1): number => {
 }
 
 const normalizeAction = (value: unknown): AccountErrorAction => {
-  if (value === 'switch_account' || value === 'next') return 'retry_next'
-  if (value === 'cooldown' || value === 'temporary_unavailable' || value === 'overloaded') return 'temp_unschedulable'
-  if (value === 'disable') return 'error_disabled'
   return accountErrorActionValues.includes(value as AccountErrorAction) ? value as AccountErrorAction : 'temp_unschedulable'
 }
 
@@ -97,25 +94,22 @@ const normalizeRecoveryStrategy = (value: unknown): AccountErrorRecoveryStrategy
 const buildRuleFromPayload = (value: unknown, index: number): AccountErrorPolicyRuleForm | null => {
   if (!value || typeof value !== 'object') return null
   const entry = value as Record<string, unknown>
-  const match = entry.match && typeof entry.match === 'object' && !Array.isArray(entry.match)
-    ? entry.match as Record<string, unknown>
-    : {}
   const name = String(entry.name || entry.description || '自定义错误处理规则')
   return makeAccountErrorPolicyRule({
     enabled: entry.enabled !== false,
     name,
     priority: normalizeOptionalPositiveInt(entry.priority) ?? (100 + index),
-    status_codes: formatStatusCodes(entry.status_codes ?? entry.statusCodes ?? entry.status_code ?? entry.statusCode ?? match.status_codes ?? match.statusCodes ?? match.status_code ?? match.statusCode),
-    error_codes: formatList(entry.error_codes ?? entry.provider_error_codes ?? entry.providerErrorCodes ?? entry.error_code ?? entry.errorCode ?? match.error_codes ?? match.errorCodes ?? match.error_code ?? match.errorCode),
-    error_types: formatList(entry.error_types ?? entry.provider_error_types ?? entry.providerErrorTypes ?? entry.error_type ?? entry.errorType ?? match.error_types ?? match.errorTypes ?? match.error_type ?? match.errorType),
-    keywords: formatList(entry.keywords ?? entry.body_keywords ?? entry.bodyKeywords ?? match.keywords ?? match.body_keywords ?? match.bodyKeywords),
-    action: normalizeAction(entry.action ?? entry.state),
+    status_codes: formatStatusCodes(entry.status_codes),
+    error_codes: formatList(entry.error_codes),
+    error_types: formatList(entry.error_types),
+    keywords: formatList(entry.keywords),
+    action: normalizeAction(entry.action),
     durationMinutes: normalizeOptionalPositiveInt(entry.durationMinutes),
-    reset_strategy: normalizeRecoveryStrategy(entry.reset_strategy ?? entry.recovery_strategy ?? entry.strategy),
-    duration_hours: normalizeOptionalPositiveInt(entry.duration_hours ?? entry.durationHours),
-    daily_reset_hour: normalizeHour(entry.daily_reset_hour ?? entry.dailyResetHour, 0),
-    weekly_reset_day: normalizeWeekday(entry.weekly_reset_day ?? entry.weeklyResetDay, 1),
-    weekly_reset_hour: normalizeHour(entry.weekly_reset_hour ?? entry.weeklyResetHour, 0),
+    reset_strategy: normalizeRecoveryStrategy(entry.reset_strategy),
+    duration_hours: normalizeOptionalPositiveInt(entry.duration_hours),
+    daily_reset_hour: normalizeHour(entry.daily_reset_hour, 0),
+    weekly_reset_day: normalizeWeekday(entry.weekly_reset_day, 1),
+    weekly_reset_hour: normalizeHour(entry.weekly_reset_hour, 0),
     description: typeof entry.description === 'string' && entry.description.trim() !== name.trim() ? entry.description.trim() : ''
   })
 }

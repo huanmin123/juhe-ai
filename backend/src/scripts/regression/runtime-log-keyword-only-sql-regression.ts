@@ -65,7 +65,7 @@ try {
   console.log('运行日志纯 keyword SQL 回归通过：无其他 filter 时只在 message 列模糊匹配')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

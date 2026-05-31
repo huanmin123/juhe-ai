@@ -56,7 +56,7 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
     droppedSuccessCount: auditLogQueue?.droppedSuccessCount ?? null,
     droppedFailureCount: auditLogQueue?.droppedFailureCount ?? null,
     droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? null,
-    droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? auditLogQueue?.droppedCount ?? null,
+    droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? null,
     activeCaptureCount: serverRuntime?.activeAuditCaptureCount ?? null,
     worker: {
       available: Boolean(workerSnapshot ?? workerRuntime),
@@ -136,12 +136,10 @@ const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_acco
 function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListOptions {
   const rawPage = finiteNumberQueryValue(query.page)
   const rawPageSize = finiteNumberQueryValue(query.pageSize)
-  const rawLimit = finiteNumberQueryValue(query.limit)
   const rawStatusCode = finiteNumberQueryValue(query.statusCode)
   return {
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
-    limit: Number.isInteger(rawLimit) ? rawLimit : undefined,
     traceId: optionalQueryText(query.traceId),
     outcome: typeof query.outcome === 'string' && auditOutcomes.has(query.outcome as AuditOutcome | 'all')
       ? query.outcome as AuditOutcome | 'all'
@@ -161,12 +159,10 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
 function parseAuditErrorGroupListOptions(query: Record<string, unknown>): AuditErrorGroupListOptions {
   const rawPage = finiteNumberQueryValue(query.page)
   const rawPageSize = finiteNumberQueryValue(query.pageSize)
-  const rawLimit = finiteNumberQueryValue(query.limit)
   const rawStatusCode = finiteNumberQueryValue(query.statusCode)
   return {
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
-    limit: Number.isInteger(rawLimit) ? rawLimit : undefined,
     path: optionalQueryText(query.path),
     model: optionalQueryText(query.model),
     statusCode: isHttpStatusCode(rawStatusCode) ? rawStatusCode : undefined,

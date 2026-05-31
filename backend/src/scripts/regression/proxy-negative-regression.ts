@@ -17,7 +17,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'proxy-negative-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
     await postEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}/group`, adminCookie, { groupId: group.id })
     const apiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '代理负向回归 Key',
-      groupId: group.id,
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     })
     assert(apiKey.key, '临时 API Key 未返回明文密钥')
@@ -222,7 +222,7 @@ async function main(): Promise<void> {
     await closeServer(appServer)
     await closeServer(upstreamServer)
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }

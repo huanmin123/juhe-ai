@@ -125,7 +125,6 @@ export interface AccountSummary {
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
-  passthroughEnabled: boolean
   errorPolicyId?: string
   schedulable: boolean
   availabilitySchedule?: AccountAvailabilitySchedule

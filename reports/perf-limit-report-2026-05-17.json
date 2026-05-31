@@ -787,7 +787,7 @@
       "POST /v1/responses": 31962
     }
   },
-  "recordDatabase": {
+  "datasetStorage": {
     "usageRecords": 105356,
     "auditLogs": 11008,
     "bytes": 265515008,

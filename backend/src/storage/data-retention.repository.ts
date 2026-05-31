@@ -1,6 +1,6 @@
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
+import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
 
 type CleanupRow = Record<string, unknown>
 type StatsDatabase = ReturnType<typeof getStatsDatabase>
@@ -398,7 +398,7 @@ export function cleanupModelCheckRunsBefore(cutoffCreatedAt: string, limit = 100
 }
 
 export function cleanupExpiredSystemSessions(expiredBefore = nowIso()): number {
-  return changed(getDatabase().prepare('DELETE FROM system_sessions WHERE expires_at < ?').run(expiredBefore))
+  return changed(getBusinessDatabase().prepare('DELETE FROM system_sessions WHERE expires_at < ?').run(expiredBefore))
 }
 
 function deleteUsageRecordShardRows(rows: UsageRecordShardCleanupRow[]): number {
@@ -423,6 +423,7 @@ function deleteUsageRecordShardRows(rows: UsageRecordShardCleanupRow[]): number 
       throw error
     }
   }
+  deleteUsageRecordShardEntries(rows.map((row) => row.id))
   return deletedRows
 }
 

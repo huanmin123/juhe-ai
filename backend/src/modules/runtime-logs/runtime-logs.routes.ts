@@ -37,10 +37,11 @@ runtimeLogsRouter.get('/', async (req, res, next) => {
 
 runtimeLogsRouter.get('/facets', async (_req, res, next) => {
   try {
-    const [serverRuntime, dbServiceSnapshot, facets] = await Promise.all([
+    const [serverRuntime, dbServiceSnapshot, facets, grepRuntime] = await Promise.all([
       requestServerRuntimeSnapshot(),
       requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch(() => undefined),
-      requestDbService({ type: 'get_runtime_log_facets' })
+      requestDbService({ type: 'get_runtime_log_facets' }),
+      getRuntimeLogGrepRuntime()
     ])
     const workerSnapshot = serverRuntime?.worker?.snapshot
     const workerRuntime = serverRuntime?.worker
@@ -75,7 +76,7 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
         lastRequestAt: dbServiceSnapshot?.lastRequestAt,
         lastError: dbServiceSnapshot?.lastError
       },
-      grep: getRuntimeLogGrepRuntime(),
+      grep: grepRuntime,
       gatewayAccountSideEffectsAvailable: Boolean(gatewayAccountSideEffects),
       gatewayAccountSideEffects: gatewayAccountSideEffects
         ? {
@@ -134,13 +135,11 @@ const runtimeLogLevels = new Set<RuntimeLogLevel | 'all'>([
 function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogListOptions {
   const rawPage = finiteNumberQueryValue(query.page)
   const rawPageSize = finiteNumberQueryValue(query.pageSize)
-  const rawLimit = finiteNumberQueryValue(query.limit)
   const rawLevel = optionalQueryText(query.level)?.toLowerCase()
   const timeRange = dateTimeRangeQueryValue(query.startAt, query.endAt)
   return {
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
-    limit: Number.isInteger(rawLimit) ? rawLimit : undefined,
     traceId: optionalQueryText(query.traceId),
     level: rawLevel && runtimeLogLevels.has(rawLevel as RuntimeLogLevel | 'all')
       ? rawLevel as RuntimeLogLevel | 'all'

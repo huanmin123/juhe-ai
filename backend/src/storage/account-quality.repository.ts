@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues } from './query-utils.js'
 import { minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
 
@@ -174,7 +174,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
 }
 
 function loadQualityAccountMetadata(): Map<string, { systemAccountId: string; providerCode: string }> {
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare('SELECT id, system_account_id, provider_code FROM accounts')
     .all() as unknown as Array<{ id: string; system_account_id: string; provider_code: string }>
   return new Map(rows.map((row) => [row.id, { systemAccountId: row.system_account_id, providerCode: row.provider_code }]))

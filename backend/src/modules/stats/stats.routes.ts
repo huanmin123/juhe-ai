@@ -78,8 +78,7 @@ function parseAccountUsageOptions(query: Record<string, unknown>): Omit<AccountL
   const pageSize = integerQueryValue(query.pageSize)
   return {
     page: integerQueryValue(query.page),
-    pageSize: pageSize ?? integerQueryValue(query.limit) ?? 10,
-    limit: undefined,
+    pageSize: pageSize ?? 10,
     keyword: optionalQueryText(query.keyword),
     accountIds: parseAccountIds(query.accountIds),
     schedulable: schedulableQueryValue(query.schedulable),

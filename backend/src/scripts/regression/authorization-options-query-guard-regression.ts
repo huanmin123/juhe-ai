@@ -61,7 +61,7 @@ try {
   const wildcardTeam = repositories.createSystemTeam({ name: 'percent%literal 团队' })
   const wildcardNeighborTeam = repositories.createSystemTeam({ name: 'percentXliteral 团队' })
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -120,7 +120,7 @@ try {
   console.log('授权候选项查询防护回归通过：用户/团队 options 支持精确/前缀搜索、limit 和通配符转义')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -128,7 +128,7 @@ try {
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)

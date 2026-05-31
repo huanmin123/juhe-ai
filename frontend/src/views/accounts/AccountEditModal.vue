@@ -91,7 +91,7 @@ import AccountFormSelector from './AccountFormSelector.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
 import AccountStreamInterceptPolicyCard from './AccountStreamInterceptPolicyCard.vue'
-import type { AccountErrorPolicyRuleForm } from './accountErrorPolicy'
+import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 

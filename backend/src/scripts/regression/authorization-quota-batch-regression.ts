@@ -74,7 +74,7 @@ try {
       total: { enabled: true, limit: 100 }
     }
   }, ownerAccess)
-  const groupAuthorization = databaseModule.getDatabase()
+  const groupAuthorization = databaseModule.getBusinessDatabase()
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(ownerGroup.id, grantee.id) as unknown as { id?: string } | undefined
   assert(groupAuthorization?.id, '分组授权运行时记录不存在')
@@ -104,7 +104,7 @@ try {
         total: { enabled: true, limit: 1 }
       }
     }, ownerAccess)
-    const runtimeAuthorization = databaseModule.getDatabase()
+    const runtimeAuthorization = databaseModule.getBusinessDatabase()
       .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
       .get(account.id, grantee.id) as unknown as { id?: string } | undefined
     assert(runtimeAuthorization?.id, `运行时授权不存在：${account.name}`)
@@ -117,17 +117,17 @@ try {
   }
 
   const exceededAuthorizationId = accountAuthorizationIds[accountAuthorizationIds.length - 1]
-  const recordDatabase = databaseModule.getStatsDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   const now = new Date()
   const statDate = now.toISOString().slice(0, 10)
-  insertUsageTotal(recordDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, 5)
-  insertUsageDaily(recordDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, statDate, 5)
-  insertUsageHourlyWindow(recordDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, 3, 5)
+  insertUsageTotal(statsDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, 5)
+  insertUsageDaily(statsDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, statDate, 5)
+  insertUsageHourlyWindow(statsDatabase, grantee.id, 'account_authorization', exceededAuthorizationId, 3, 5)
 
   quotaService.clearAuthorizationQuotaCache()
-  const businessDatabase = databaseModule.getDatabase()
+  const businessDatabase = databaseModule.getBusinessDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
-  const originalRecordPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const originalStatsPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
   let authorizationSelects = 0
   let grantSelects = 0
   let usageSelects = 0
@@ -140,12 +140,12 @@ try {
     }
     return originalBusinessPrepare(sql)
   }) as typeof businessDatabase.prepare
-  recordDatabase.prepare = ((sql: string) => {
+  statsDatabase.prepare = ((sql: string) => {
     if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+usage_(stats|quota)_/i.test(sql)) {
       usageSelects += 1
     }
-    return originalRecordPrepare(sql)
-  }) as typeof recordDatabase.prepare
+    return originalStatsPrepare(sql)
+  }) as typeof statsDatabase.prepare
 
   try {
     const decisions = quotaService.checkGatewayAuthorizationQuotaBatchByIds({
@@ -245,9 +245,9 @@ try {
     assert.equal(teamMemberAuthorization.effective_source_team_id, team.id, '团队来源账号授权应记录来源团队')
     const teamAuthorizedInstance = authorizedInstanceForSource(teamAccount.id, { systemAccountId: teamGrantee.id, role: 'user' as const })
     assert.equal(teamAuthorizedInstance.accountAuthorizationId, teamMemberAuthorization.id, '团队来源授权实例应绑定成员运行时授权')
-    insertUsageTotal(recordDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, 150)
-    insertUsageDaily(recordDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, statDate, 150)
-    insertUsageHourlyWindow(recordDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, 3, 150)
+    insertUsageTotal(statsDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, 150)
+    insertUsageDaily(statsDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, statDate, 150)
+    insertUsageHourlyWindow(statsDatabase, teamGrantee.id, 'account_authorization_team', `${teamAuthorizedInstance.id}:${team.id}`, 3, 150)
 
     quotaService.clearAuthorizationQuotaCache()
     authorizationSelects = 0
@@ -271,13 +271,13 @@ try {
     assert(teamAuthorizationGrant.id, '团队授权 grant 应保留可追踪 ID')
   } finally {
     businessDatabase.prepare = originalBusinessPrepare
-    recordDatabase.prepare = originalRecordPrepare
+    statsDatabase.prepare = originalStatsPrepare
   }
 
   console.log('授权额度批量检查回归通过')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -334,7 +334,7 @@ async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
 }
 
 function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare(`
       SELECT id, authorization_instance_authorization_id
       FROM accounts

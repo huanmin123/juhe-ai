@@ -69,7 +69,7 @@ try {
   repositories.createUsageRecordsBatch(records)
   repositories.createUsageRecordsBatch(records)
 
-  assert.equal(datasetUsageRecordTableExists(), false, '数据集目录库不应再创建旧 usage_records 单表')
+  assertCurrentShardRegistry()
   assert.equal(shardUsageRecordCount(), records.length, '新 usage 应写入 usage shard，重复投递应保持幂等')
   assert(usageRecordShards.listUsageRecordShardLocations().length > 1, '固定 4 个 shard 时批量记录应分散到多个 SQLite 文件')
 
@@ -96,7 +96,7 @@ try {
 
   const staleShapeAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '旧请求形态窗口回归账户',
+    name: '过期请求形态窗口回归账户',
     type: 'api_key',
     credentials: {
       api_key: 'sk-usage-record-stale-shape',
@@ -120,24 +120,29 @@ try {
   assert.equal(
     repositories.findRecentOpenAIRequestShapeForAccount(staleShapeAccount.id),
     undefined,
-    '恢复探活请求形态学习应限制最近窗口，避免扫描全历史 shard'
+    '恢复探活请求形态学习应限制最近窗口，避免扫描超出窗口的 shard'
   )
 
   console.log('使用记录分片写入回归通过：新 usage 落到多个 shard，数据集目录库不再创建单表，统计可从 shard 聚合')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function datasetUsageRecordTableExists(): boolean {
-  const row = databaseModule.getDatasetDatabase()
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'usage_records'")
-    .get() as { name?: string } | undefined
-  return row?.name === 'usage_records'
+function assertCurrentShardRegistry(): void {
+  const tables = new Set(
+    (databaseModule.getDatasetDatabase()
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as Array<{ name?: string }>)
+      .map((row) => row.name)
+      .filter((name): name is string => Boolean(name))
+  )
+  assert(tables.has('usage_record_shards'), '数据集目录库应创建 usage shard 注册表')
+  assert(tables.has('usage_record_shard_entries'), '数据集目录库应创建 usage shard 记录索引表')
 }
 
 function shardUsageRecordCount(): number {

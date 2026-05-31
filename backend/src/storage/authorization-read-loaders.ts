@@ -5,7 +5,7 @@ import type {
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
 import { createAppCache } from '../shared/cache.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 interface ResourceAuthorizationSourceRow {
@@ -68,7 +68,7 @@ export function loadResourceAuthorizationStatsByResourceIds(resourceType: Resour
   if (!missingIds.length) return result
 
   const rows: Array<{ resource_id: string; authorization_count: number; authorization_team_count: number }> = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(missingIds, 900)) {
     rows.push(...database.prepare(`
       SELECT
@@ -114,7 +114,7 @@ export function loadResourceAuthorizationSourcesByAuthorizationIds(authorization
   if (!missingIds.length) return result
 
   const rows: Array<ResourceAuthorizationSourceRow & { team_name?: string | null }> = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(missingIds, 900)) {
     rows.push(...database.prepare(`
       SELECT ${resourceAuthorizationSourceSelectColumns('ras')}, system_teams.name AS team_name

@@ -1,6 +1,6 @@
 import type { Ref } from 'vue'
 
-import { api, type AccountListParams, type ApiKeyListParams, type ModelCheckListParams, type ModelCheckStreamOptions, type OperationLogListParams, type UsageRecordListParams } from '@/api/client'
+import { api, type AccountOptionParams, type ApiKeyListParams, type ModelCheckListParams, type ModelCheckStreamOptions, type OperationLogListParams, type UsageRecordListParams } from '@/api/client'
 import type { ModelCheckRunPayload } from '@/types/domain'
 
 type ApiKeyMutationScopeParams = Parameters<typeof api.apiKeys.create>[1]
@@ -30,7 +30,7 @@ export function useScopedApiKeysApi(isManagementView: Ref<boolean>) {
 
 export function useScopedAccountsApi(isManagementView: Ref<boolean>) {
   return {
-    options: (params?: AccountListParams) => isManagementView.value
+    options: (params?: AccountOptionParams) => isManagementView.value
       ? api.accounts.options(params)
       : api.myAccounts.options(params)
   }

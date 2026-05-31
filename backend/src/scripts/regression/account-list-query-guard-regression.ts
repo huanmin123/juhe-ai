@@ -47,7 +47,7 @@ try {
   const disabledStatusAccount = createGuardAccount('多状态筛选停用账户', 'sk-account-list-query-guard-disabled-status', '停用状态筛选', matchedGroup.id, 'disabled')
   const errorStatusAccount = createGuardAccount('多状态筛选异常账户', 'sk-account-list-query-guard-error-status', '异常状态筛选', matchedGroup.id, 'error')
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -119,9 +119,9 @@ try {
       page: 1,
       pageSize: 20
     })
-    assert(invalidNotesSortResult.items.some((item) => item.id === matchedByName.id), 'AI 账户列表应忽略已废弃的备注排序并继续返回结果')
+    assert(invalidNotesSortResult.items.some((item) => item.id === matchedByName.id), 'AI 账户列表应忽略不支持的备注排序并继续返回结果')
     const invalidNotesSortCalls = capturedCalls.slice(invalidNotesSortCapturedStart)
-    assert(invalidNotesSortCalls.length >= 1, '回归应捕获已废弃备注排序的列表 SQL')
+    assert(invalidNotesSortCalls.length >= 1, '回归应捕获不支持备注排序的列表 SQL')
     for (const call of invalidNotesSortCalls) {
       assert(!/\bORDER\s+BY[\s\S]*\baccount_rows\.notes\s+COLLATE\s+NOCASE\b/i.test(call.sql), 'AI 账户列表不应允许按备注长文本排序')
     }
@@ -161,7 +161,7 @@ try {
   console.log('AI 账户列表查询防护回归通过：搜索仅按账户名称精确/前缀匹配，分组使用独立筛选')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -190,15 +190,15 @@ function createGuardAccount(
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
 }
 
 function assertBusinessIndexMissing(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
-  assert.equal(row?.name, undefined, `业务库不应保留已废弃的长文本搜索索引 ${indexName}`)
+  assert.equal(row?.name, undefined, `业务库不应创建长文本搜索索引 ${indexName}`)
 }

@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -314,10 +313,7 @@ function resolveGatewayJsonWorkerPath(): string {
   if (currentModulePath.endsWith('.ts')) {
     return workerSourcePath
   }
-  if (existsSync(workerDistPath)) {
-    return workerDistPath
-  }
-  return workerSourcePath
+  return workerDistPath
 }
 
 function handleWorkerMessage(slot: GatewayJsonWorkerSlot, message: GatewayJsonWorkerResponse): void {

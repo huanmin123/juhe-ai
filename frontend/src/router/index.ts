@@ -374,7 +374,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/table-monitor/TableMonitorView.vue'),
     meta: {
       title: '表监控',
-      description: '查看业务库、统计数据集库和统计结果库的表大小、行数、文件空闲空间和近期增长。',
+      description: '查看业务库、数据集目录库、usage shard 和统计结果库的表大小、行数、文件空闲空间和近期增长。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

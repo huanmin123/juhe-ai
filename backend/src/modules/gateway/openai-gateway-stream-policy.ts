@@ -179,8 +179,15 @@ function hasJsonPathMeaningfulValue(value: unknown): boolean {
   if (value === null || value === undefined || value === false) return false
   if (typeof value === 'string') return value.trim().length > 0
   if (Array.isArray(value)) return value.length > 0
-  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0
+  if (typeof value === 'object') return hasOwnEnumerableKey(value as Record<string, unknown>)
   return true
+}
+
+function hasOwnEnumerableKey(value: Record<string, unknown>): boolean {
+  for (const key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return true
+  }
+  return false
 }
 
 function stringPath(value: unknown, path: string[]): string | undefined {

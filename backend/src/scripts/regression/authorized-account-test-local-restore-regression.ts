@@ -139,7 +139,7 @@ try {
   assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '实例临时不可调用不应改变所有者原账户')
 
   const expiredLocalCooldownUntil = new Date(Date.now() - 1000).toISOString()
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare(`
       UPDATE accounts
       SET cooldown_until = ?,

@@ -172,19 +172,41 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
     scheduleNext()
   }
 
-  const runningCount = (): number => [...items.values()].filter((item) => item.running).length
+  const runningCount = (): number => {
+    let count = 0
+    for (const item of items.values()) {
+      if (item.running) count += 1
+    }
+    return count
+  }
 
   const nextDueItem = (): RetryQueueItem<T> | undefined => {
     const now = Date.now()
-    return [...items.values()]
-      .filter((item) => !item.running && item.nextRunAtMs <= now)
-      .sort((left, right) => left.nextRunAtMs - right.nextRunAtMs || left.key.localeCompare(right.key))[0]
+    let next: RetryQueueItem<T> | undefined
+    for (const item of items.values()) {
+      if (item.running || item.nextRunAtMs > now) continue
+      if (!next || compareRetryQueueItems(item, next) < 0) {
+        next = item
+      }
+    }
+    return next
   }
 
   const nextPendingRunAtMs = (): number | undefined => {
-    return [...items.values()]
-      .filter((item) => !item.running)
-      .reduce<number | undefined>((next, item) => next === undefined ? item.nextRunAtMs : Math.min(next, item.nextRunAtMs), undefined)
+    let nextRunAtMs: number | undefined
+    for (const item of items.values()) {
+      if (item.running) continue
+      nextRunAtMs = nextRunAtMs === undefined ? item.nextRunAtMs : Math.min(nextRunAtMs, item.nextRunAtMs)
+    }
+    return nextRunAtMs
+  }
+
+  const pendingCount = (): number => {
+    let count = 0
+    for (const item of items.values()) {
+      if (!item.running) count += 1
+    }
+    return count
   }
 
   return {
@@ -219,10 +241,14 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
       const nextRunAtMs = nextPendingRunAtMs()
       return {
         name: options.name,
-        pendingCount: [...items.values()].filter((item) => !item.running).length,
+        pendingCount: pendingCount(),
         runningCount: runningCount(),
         nextRunAt: nextRunAtMs === undefined ? undefined : new Date(nextRunAtMs).toISOString()
       }
     }
   }
+}
+
+function compareRetryQueueItems<T>(left: RetryQueueItem<T>, right: RetryQueueItem<T>): number {
+  return left.nextRunAtMs - right.nextRunAtMs || left.key.localeCompare(right.key)
 }

@@ -1211,7 +1211,7 @@ function syncCreateTargetGroup(nextGroups = createTargetGroups.value): void {
 
 function selectDefaultCreateTargetGroup(nextGroups = createTargetGroups.value): void {
   if (createForm.targetGroupId || createTargetGroupSearchKeyword.value.trim()) return
-  const defaultGroup = nextGroups.find((group) => group.enabled && group.isDefault) ?? nextGroups.find((group) => group.enabled)
+  const defaultGroup = nextGroups.find((group) => group.enabled && group.isDefault)
   if (!defaultGroup) return
   createForm.targetGroupId = defaultGroup.id
   createForm.targetGroup = { id: defaultGroup.id, name: defaultGroup.name }
@@ -1423,9 +1423,9 @@ async function revokeManualSource(item: ResourceAuthorizationSummary) {
   try {
     let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      updated = await api.authorizations.revoke(item.id, { sourceType: 'manual' }, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, authorizationScopeParams.value)
     } else {
-      updated = await api.myAuthorizations.revoke(item.id, { sourceType: 'manual' })
+      updated = await api.myAuthorizations.revoke(item.id)
     }
     updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
     message.success('个人授权来源已回收')
@@ -1436,13 +1436,13 @@ async function revokeManualSource(item: ResourceAuthorizationSummary) {
   }
 }
 
-async function revokeTeamSource(item: ResourceAuthorizationSummary, sourceTeamId: string) {
+async function revokeTeamSource(item: ResourceAuthorizationSummary) {
   try {
     let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      updated = await api.authorizations.revoke(item.id, { sourceType: 'team', sourceTeamId }, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, authorizationScopeParams.value)
     } else {
-      updated = await api.myAuthorizations.revoke(item.id, { sourceType: 'team', sourceTeamId })
+      updated = await api.myAuthorizations.revoke(item.id)
     }
     updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
     message.success('团队授权来源已回收')
@@ -1457,7 +1457,7 @@ async function revokeAuthorization(item: ResourceAuthorizationSummary) {
   try {
     let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      updated = await api.authorizations.revoke(item.id, undefined, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, authorizationScopeParams.value)
     } else {
       updated = await api.myAuthorizations.revoke(item.id)
     }
@@ -1515,7 +1515,7 @@ function handleActionMenuClick(event: { key: string | number }, item: ResourceAu
   if (key.startsWith('team:')) {
     const sourceTeamId = key.slice('team:'.length)
     if (sourceTeamId) {
-      void revokeTeamSource(item, sourceTeamId)
+      void revokeTeamSource(item)
     }
   }
 }

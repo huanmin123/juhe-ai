@@ -158,7 +158,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     return {
       systemAccountId: runtime.apiKey.system_account_id,
       apiKeyId: runtime.apiKey.id,
-      groupId: runtime.apiKey.group_id
+      groupId: runtime.apiKey.selected_group_id
     }
   })()
   if (!identity) {

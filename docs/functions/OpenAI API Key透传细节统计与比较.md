@@ -9,7 +9,7 @@
 
 他们的成熟点主要在 Header 边界：`one-api` 默认只转少数通用头，`new-api` 即使支持 header passthrough 也会跳过危险头，Portkey 把 OpenAI 组织 / 项目 / Beta 放在 provider options，LiteLLM 对 OpenAI org 转发有显式开关并会过滤 SDK 噪声。
 
-我们的优势在 body：`/v1` 入口用 `express.raw` 捕获原始字节，API Key 账号透传开启时优先把 `req.rawBody` 原样送上游，不解析再重组。这比很多会读取 body 后再序列化的传统 relay 更接近真正的 API Key 公开协议透传。
+我们的优势在 body：`/v1` 入口用 `express.raw` 捕获原始字节，API Key 账号始终把 `req.rawBody` 原样送上游，不解析再重组。这比很多会读取 body 后再序列化的传统 relay 更接近真正的 API Key 公开协议透传。
 
 最终取舍：API Key 透传不是“所有入站头都裸转”，而是“body 真透传 + Header 最小清洗 + 认证替换 + 不暴露账号上下文字段”。这样既保留客户端请求语义，又避免把本地网关、代理链路、客户端 SDK 内部追踪和错误组织 / 项目信息带给上游。
 
@@ -20,10 +20,10 @@
 | 范围 | 关键文件 | 关注点 |
 | --- | --- | --- |
 | `/v1` 原始 body | `backend/src/server.ts` | `express.raw({ type: () => true, limit: '64mb' })` 捕获 `rawBody`，JSON 请求再解析给本地调度使用 |
-| API Key 上游 body | `backend/src/modules/gateway/openai-gateway-upstream.ts` | 透传开启时优先返回 `req.rawBody`；关闭时才 `JSON.stringify(req.body)` |
+| API Key 上游 body | `backend/src/modules/gateway/openai-gateway-upstream.ts` | 始终使用网关捕获的 `req.rawBody` 作为上游请求体 |
 | API Key 上游 header | `backend/src/modules/gateway/openai-gateway-upstream.ts` | 复制客户端语义头，过滤危险头、代理链路头、SDK / tracing 噪声，替换认证，不从账号凭据写入 OpenAI 组织 / 项目 / Beta |
 | API Key 表单 | `frontend/src/views/accounts/AccountApiKeySection.vue` | 只配置 API Key 和 Base URL，不暴露 OpenAI 组织、项目和 Beta 字段 |
-| 回归验证 | `backend/src/scripts/regression/openai-api-key-passthrough-regression.ts` | 覆盖 raw body、Header 过滤、残留账号凭据不生效和非透传 JSON fallback |
+| 回归验证 | `backend/src/scripts/regression/openai-api-key-passthrough-regression.ts` | 覆盖 raw body、Header 过滤和残留账号凭据不生效 |
 
 ### 本地参考项目
 
@@ -44,7 +44,7 @@ OpenAI OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`；`POS
 
 | 维度 | 统计结论 |
 | --- | --- |
-| 本项目是否保留 raw body | 是，API Key 透传开启时优先原样使用 `req.rawBody` |
+| 本项目是否保留 raw body | 是，API Key 上游请求体直接使用 `req.rawBody` |
 | 参考项目是否普遍全量复制所有 Header | 否。成熟项目要么只设置少数通用头，要么支持显式透传规则但跳过危险头 |
 | 认证头如何处理 | 全部参考实现都会重写上游认证，不把本地 API Key 直接传给上游 |
 | 组织 / 项目头如何处理 | Portkey 按 provider options 写入；LiteLLM 有显式配置；不建议把客户端 `OpenAI-Organization` / `OpenAI-Project` 默认透给账号池 |
@@ -55,7 +55,7 @@ OpenAI OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`；`POS
 
 | 项目 | API Key 请求体做法 | 风险 / 取舍 |
 | --- | --- | --- |
-| `juhe-ai` | 透传开启时优先原始 `rawBody`；关闭时才重新序列化 JSON | body 层最接近真实透传；需要通过旁路解析服务本地统计和调度 |
+| `juhe-ai` | API Key 链路直接使用原始 `rawBody` | body 层最接近真实透传；需要通过旁路解析服务本地统计和调度 |
 | `one-api` | 传统 relay 通常读取 OpenAI 请求对象并转发或转换 | 易做模型映射和计费，但不是严格原始字节透传 |
 | `new-api` | 按 channel / relay mode 读取、转换或转发 | 能兼容多厂商，但 body 会经过更多中间处理 |
 | `Portkey` | 网关 body 会进入 provider / hooks / cache / retry 流程 | 企业能力强，但不是轻量 raw passthrough |
@@ -67,8 +67,7 @@ OpenAI OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`；`POS
 
 | 项目 | 默认 Header 策略 | 对我们的启发 |
 | --- | --- | --- |
-| `juhe-ai` 旧实现 | 黑名单跳过危险头后复制其余入站头，替换 `authorization` | body 很好，但 Header 容易把客户端组织 / 项目、SDK 内部头、tracing 头和部署平台头带给上游 |
-| `juhe-ai` 当前建议 | 过滤危险头、代理链路、本地认证、`OpenAI-Organization` / `OpenAI-Project` 和常见噪声前缀；保留客户端 API 语义头；不提供账号级组织 / 项目 / Beta 输入项 | 保留真实请求语义，同时避免把不可解释字段交给用户 |
+| `juhe-ai` 当前实现 | 过滤危险头、代理链路、本地认证、`OpenAI-Organization` / `OpenAI-Project` 和常见噪声前缀；保留客户端 API 语义头；不提供账号级组织 / 项目 / Beta 输入项 | 保留真实请求语义，同时避免把不可解释字段交给用户 |
 | `one-api` 常规 OpenAI adaptor | 只设置 `Content-Type`、`Accept`，再写 `Authorization` | 稳，但对客户端语义透传较少 |
 | `one-api` proxy adaptor | 复制更多客户端头，但删除 `Host`、`Content-Length`、`Accept-Encoding`、`Connection` | 即使 proxy 模式也不是无条件裸转 |
 | `new-api` | Header override 支持 `*` / regex passthrough，但统一跳过不安全头 | 适合借鉴“显式透传也要有不可绕过的安全跳过集” |
@@ -130,26 +129,26 @@ OpenAI API Key 账号凭据只保留当前必要字段：
 | `api_key` | `Authorization` | 必填 | 被调度上游账号的 API Key |
 | `base_url` | 请求 URL | `https://api.openai.com/v1` | OpenAI compatible 上游地址 |
 
-不新增 `openai_organization`、`openai_project`、`openai_beta` 这类普通表单字段。组织 / 项目 ID 不能由服务端生产；用户不知道来源时也不应被要求填写。即使历史数据里残留这些键，API Key 上游 Header 构造也不会读取它们。
+不新增 `openai_organization`、`openai_project`、`openai_beta` 这类普通表单字段。组织 / 项目 ID 不能由服务端生产；用户不知道来源时也不应被要求填写。API Key 上游 Header 只来自客户端允许集和当前账户必需凭据。
 
 ## 他们的好还是我们的好
 
 | 维度 | 他们更好 | 我们更好 | 结论 |
 | --- | --- | --- | --- |
-| Header 边界 | `one-api`、`new-api`、Portkey、LiteLLM 都比旧实现更克制 | 这次补齐后已接近成熟项目边界 | Header 之前是短板，现在按账号池语义收敛 |
-| Body 透传 | 多数成熟网关会读取和转换 body | 我们的 API Key raw body 更接近真透传 | 保留，不要回退成重序列化 |
+| Header 边界 | `one-api`、`new-api`、Portkey、LiteLLM 的默认边界都很克制 | 当前已接近成熟项目边界 | Header 按账号池语义收敛 |
+| Body 透传 | 多数成熟网关会读取和转换 body | 我们的 API Key raw body 更接近真透传 | 保持原始字节透传，不重序列化 |
 | 账号池隔离 | Portkey / LiteLLM 的企业治理更成熟 | 我们轻量、直接，适合本地账号调度 | 当前版本不引入重型策略，但关键边界要有 |
 | 前端复杂度 | 企业网关配置更多 | 我们只保留 API Key 和 Base URL，不暴露用户难以判断的 OpenAI 账号上下文字段 | 保持轻量，把复杂边界留在后端策略里 |
 | OAuth / API Key 分层 | `new-api`、`sub2api_source` 对 Codex / OAuth 分层更明确 | 已通过 PLAN-0012 拆出 OAuth Codex adapter | API Key 和 OAuth 必须继续分开看 |
 
-总体评价：API Key body 透传我们更好；旧 Header 策略他们更稳。当前应把两者合起来：保持我们的 raw body 优势，吸收他们的 Header 边界。
+总体评价：API Key body 透传是当前优势；Header 策略按成熟网关的克制边界收敛。当前应把两者合起来：保持 raw body 优势，使用清晰的 Header 边界。
 
 ## 本次已落地事项
 
 - API Key 上游 Header 过滤补充 `OpenAI-Organization`、`OpenAI-Project`、tracing、SDK 和部署平台噪声。
 - `OpenAI-Beta` 保留客户端显式语义，但账号凭据不能覆盖。
 - API Key 账号表单撤回 `OpenAI 组织`、`OpenAI 项目`、`OpenAI Beta` 三个可选字段，只保留用户明确知道的 API Key 和 Base URL。
-- API Key 回归脚本覆盖 raw body 字节级保留、危险头过滤、残留账号凭据不生效、`Idempotency-Key` 保留和非透传 JSON fallback。
+- API Key 回归脚本覆盖 raw body 字节级保留、危险头过滤、残留账号凭据不生效和 `Idempotency-Key` 保留。
 - 文档明确 API Key 透传边界，避免把 OAuth Codex adapter 的策略误套到公开 API Key 链路。
 
 ## 后续打磨建议
@@ -168,9 +167,9 @@ OpenAI API Key 账号凭据只保留当前必要字段：
 | --- | --- | --- |
 | 单元 / 脚本 | API Key 请求带复杂 JSON raw body | 上游 body 与 `rawBody` 字节完全一致 |
 | 单元 / 脚本 | 客户端带本地认证、cookie、代理链路、tracing、SDK 噪声头 | 上游 Header 不包含这些字段 |
-| 单元 / 脚本 | 客户端带 `OpenAI-Organization` / `OpenAI-Project`，历史账号凭据也残留对应字段 | 上游不包含组织 / 项目头 |
+| 单元 / 脚本 | 客户端带 `OpenAI-Organization` / `OpenAI-Project` | 上游不包含组织 / 项目头 |
 | 单元 / 脚本 | 客户端带 `OpenAI-Beta`，账号未配置 | 上游保留客户端值 |
-| 单元 / 脚本 | 客户端带 `OpenAI-Beta`，历史账号凭据残留 `openai_beta` | 上游仍使用客户端值，不被账号凭据覆盖 |
+| 单元 / 脚本 | 客户端带 `OpenAI-Beta`，账号凭据不包含 header 覆盖字段 | 上游仍使用客户端值，不被账号凭据覆盖 |
 | 单元 / 脚本 | 客户端带 `Idempotency-Key` | 上游保留 |
 | 回归 | OAuth 账号请求 | 仍走 `openai_oauth_codex` adapter，不受 API Key Header 策略影响 |
 | 类型检查 | 前后端类型 | TypeScript 通过 |
@@ -185,4 +184,4 @@ API Key 透传的重心不是把所有 Header 都发给上游，而是让上游�
 4. `OpenAI-Organization` / `OpenAI-Project` 不从客户端透传，也不从账号凭据生成。
 5. `OpenAI-Beta` 保留客户端功能语义，不做账号级覆盖。
 
-这套策略比旧实现更接近主流中转的稳态，也保留了 `juhe-ai` 当前最有价值的 raw body 真透传优势。
+这套策略接近主流中转的稳态，也保留了 `juhe-ai` 当前最有价值的 raw body 真透传优势。

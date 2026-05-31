@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { AccountUsageStatsRange, AccountUsageSummary, ResourceAuthorizationListResult, ResourceAuthorizationSummary } from '../domain/types.js'
 import { loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, getStatsDatabase } from './database.js'
+import { getBusinessDatabase, getStatsDatabase } from './database.js'
 import { loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
 import {
   authorizationDirectionFilter,
@@ -18,7 +18,7 @@ import { resourceAuthorizationSelectColumns, usageScope } from './resource-autho
 import { loadAccountLookupMap, loadGroupNameMap, loadSystemAccountPrincipalMapByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
-import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
@@ -31,7 +31,6 @@ export interface ResourceAuthorizationListOptions {
   includeUsage?: boolean
   page?: number
   pageSize?: number
-  limit?: number
 }
 
 interface NormalizedResourceAuthorizationPageOptions {
@@ -109,24 +108,24 @@ function listResourceAuthorizationGrantOperationRowsPage(filters: Record<string,
 
 function normalizeResourceAuthorizationPageOptions(options: ResourceAuthorizationListOptions): NormalizedResourceAuthorizationPageOptions {
   const rawPage = options.page
-  const rawPageSize = options.pageSize ?? options.limit
-  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const rawPageSize = options.pageSize
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(maxResourceAuthorizationPageSize, Math.max(1, rawPageSize))
     : defaultResourceAuthorizationPageSize
+  const page = normalizeListPage(rawPage, pageSize)
   return { page, pageSize }
 }
 
 function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope, pagination?: { limit: number; offset: number }): ResourceAuthorizationGrantRow[] {
   const clauses: string[] = []
   const params: Array<string | number | null> = []
-  const grantId = optionalString(filters.id ?? filters.authorizationId ?? filters.authorization_id)
+  const grantId = optionalString(filters.id)
   if (grantId) { clauses.push('rag.id = ?'); params.push(grantId) }
-  const resourceType = normalizeResourceType(filters.resourceType ?? filters.resource_type)
+  const resourceType = normalizeResourceType(filters.resourceType)
   if (resourceType) { clauses.push('rag.resource_type = ?'); params.push(resourceType) }
-  const resourceId = optionalString(filters.resourceId ?? filters.resource_id)
+  const resourceId = optionalString(filters.resourceId)
   if (resourceId) { clauses.push('rag.resource_id = ?'); params.push(resourceId) }
-  const granteeSystemAccountId = optionalString(filters.granteeSystemAccountId ?? filters.grantee_system_account_id)
+  const granteeSystemAccountId = optionalString(filters.granteeSystemAccountId)
   if (granteeSystemAccountId) {
     clauses.push('rag.grantee_type = ?')
     params.push('system_account')
@@ -135,7 +134,7 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
   }
   const status = authorizationStatusFilter(filters.status)
   if (status) { clauses.push('rag.status = ?'); params.push(status) }
-  const sourceType = optionalString(filters.sourceType ?? filters.source_type)
+  const sourceType = optionalString(filters.sourceType)
   if (sourceType === 'manual') {
     clauses.push('rag.grantee_type = ?')
     params.push('system_account')
@@ -143,7 +142,7 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
     clauses.push('rag.grantee_type = ?')
     params.push('team')
   }
-  const teamId = optionalString(filters.teamId ?? filters.team_id)
+  const teamId = optionalString(filters.teamId)
   if (teamId) {
     if (!canAccessAll(access)) {
       clauses.push('EXISTS (SELECT 1 FROM system_team_members stm_scope WHERE stm_scope.team_id = ? AND stm_scope.system_account_id = ? AND stm_scope.status = \'active\')')
@@ -154,7 +153,7 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
     clauses.push('rag.grantee_team_id = ?')
     params.push(teamId)
   }
-  const ownerSystemAccountId = optionalString(filters.resourceOwnerSystemAccountId ?? filters.resource_owner_system_account_id)
+  const ownerSystemAccountId = optionalString(filters.resourceOwnerSystemAccountId)
   if (ownerSystemAccountId) {
     clauses.push('rag.resource_owner_system_account_id = ?')
     params.push(ownerSystemAccountId)
@@ -199,7 +198,7 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
-  return getDatabase().prepare(`SELECT ${resourceAuthorizationGrantSelectColumns('rag')} FROM resource_authorization_grants rag ${where} ORDER BY rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
+  return getBusinessDatabase().prepare(`SELECT ${resourceAuthorizationGrantSelectColumns('rag')} FROM resource_authorization_grants rag ${where} ORDER BY rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
 }
 
 function resourceAuthorizationGrantSelectColumns(alias: string): string {
@@ -225,7 +224,7 @@ function resourceAuthorizationGrantSelectColumns(alias: string): string {
   ].map((column) => `${alias}.${column}`).join(', ')
 }
 
-export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationGrantRow, database = getDatabase()): ResourceAuthorizationRow | undefined {
+export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationGrantRow, database = getBusinessDatabase()): ResourceAuthorizationRow | undefined {
   if (!row.grantee_system_account_id) return undefined
   return database.prepare(`
     SELECT ${resourceAuthorizationSelectColumns()}
@@ -281,7 +280,6 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
       effectiveSourceTeamName: teamName,
       activatedAt: row.created_at,
       lastSourceChangedAt: row.updated_at,
-      sources: [source],
       authorizationSources: [source],
       usage: usage.get(row.id) ?? emptyAccountUsageSummary(),
       lastUsedAt: totalUsage.get(row.id)?.lastUsedAt,
@@ -305,7 +303,7 @@ function loadAuthorizationInstanceAccountNameMap(resourceIds: string[]): Map<str
   const ids = [...new Set(resourceIds.map((id) => id.trim()).filter(Boolean))]
   if (!ids.length) return new Map()
   const output = new Map<string, string>()
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     const rows = database.prepare(`
       SELECT ra.resource_id, accounts.name
@@ -436,7 +434,7 @@ function loadResourceAuthorizationGrantTeamReportUsageSummaries(
 
 function runtimeAuthorizationRowsByGrantIds(rows: ResourceAuthorizationGrantRow[]): Map<string, ResourceAuthorizationRow[]> {
   const result = new Map<string, ResourceAuthorizationRow[]>()
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const row of rows) {
     result.set(row.id, [])
   }

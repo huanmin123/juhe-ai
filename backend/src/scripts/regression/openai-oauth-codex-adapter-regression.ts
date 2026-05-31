@@ -13,6 +13,7 @@ import {
   isEffectiveOpenAIStreamRequest
 } from '../../modules/gateway/openai-gateway-upstream.js'
 import {
+  gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
@@ -28,7 +29,6 @@ type TestRequest = GatewayRawBodyRequest
 const account = {
   id: 'acct_owner_oauth',
   apiKey: 'oauth-access-token',
-  passthroughEnabled: true,
   type: 'oauth',
   credentials: {
     account_id: 'chatgpt-account'
@@ -47,7 +47,8 @@ async function main(): Promise<void> {
   await testHeaderAllowlistAndDefaults()
   await testSessionIsolation()
   await testInvalidBodyRejection()
-  await testLargeBodyCompatibility()
+  await testLargeBodyWorkerNormalization()
+  await testMediumBodyDeferredMiddlewareToOAuthWorker()
   await testLargeBodyDeferredMiddlewareToOAuthWorker()
   await testGatewayJsonWorkerConcurrentParsing()
   await testRequiredBodyFieldRejection()
@@ -243,10 +244,10 @@ async function testInvalidBodyRejection(): Promise<void> {
   }, OpenAIOAuthCodexAdapterError)
 }
 
-async function testLargeBodyCompatibility(): Promise<void> {
+async function testLargeBodyWorkerNormalization(): Promise<void> {
   const requestBody = {
     model: 'gpt-5.3-codex',
-    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes),
+    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 1024),
     store: true,
     stream: false,
     metadata: { session_id: 'large-body-session' },
@@ -258,7 +259,8 @@ async function testLargeBodyCompatibility(): Promise<void> {
     service_tier: 'priority'
   }
   const rawBodyText = JSON.stringify(requestBody)
-  assert.ok(Buffer.byteLength(rawBodyText) > gatewayJsonBodyLargeWarningBytes)
+  assert.ok(Buffer.byteLength(rawBodyText) > gatewayJsonBodyInlineParseMaxBytes)
+  assert.ok(Buffer.byteLength(rawBodyText) < gatewayJsonBodyLargeWarningBytes)
 
   const req = createRequest(
     '/v1/responses',
@@ -281,17 +283,69 @@ async function testLargeBodyCompatibility(): Promise<void> {
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
 }
 
+async function testMediumBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
+  const requestBody = {
+    model: 'gpt-5.3-codex',
+    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 32 * 1024),
+    stream: false,
+    metadata: { session_id: 'middleware-medium-body-session' },
+    tools: [{ type: 'web_search_preview_2025_03_11' }]
+  }
+  const rawBodyText = JSON.stringify(requestBody)
+  const rawBody = Buffer.from(rawBodyText)
+  assert.ok(rawBody.byteLength > gatewayJsonBodyInlineParseMaxBytes)
+  assert.ok(rawBody.byteLength < gatewayJsonBodyLargeWarningBytes)
+
+  const req = createRequest(
+    '/v1/responses',
+    rawBody,
+    { 'content-type': 'application/json' },
+    rawBodyText
+  )
+  let nextCalled = false
+
+  await captureGatewayRawBody(req, new EventEmitter() as never, () => {
+    nextCalled = true
+  })
+
+  assert.equal(nextCalled, true)
+  assert.equal(req.body, undefined)
+  assert.equal(getGatewayRequestBodyState(req)?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(getGatewayRequestBodyState(req)?.model, 'gpt-5.3-codex')
+
+  const originalJsonParse = JSON.parse
+  try {
+    JSON.parse = (() => {
+      throw new Error('主进程不应同步解析 256KB 以上 OAuth Codex JSON 请求体')
+    }) as typeof JSON.parse
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  } finally {
+    JSON.parse = originalJsonParse
+  }
+
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  const body = parseBody(parts.body)
+  const input = body.input as Array<{ content?: Array<{ text?: string }> }>
+
+  assert.equal(body.stream, true)
+  assert.equal(body.store, false)
+  assert.equal(body.metadata, undefined)
+  assert.equal(input[0]?.content?.[0]?.text, requestBody.input)
+  assert.equal(parts.headers.get('accept'), 'text/event-stream')
+}
+
 async function testLargeBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
   const requestBody = {
     model: 'gpt-5.3-codex',
-    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes),
+    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 1024),
     stream: false,
     metadata: { session_id: 'middleware-large-body-session' },
     tools: [{ type: 'web_search_preview_2025_03_11' }]
   }
   const rawBodyText = JSON.stringify(requestBody)
   const rawBody = Buffer.from(rawBodyText)
-  assert.ok(rawBody.byteLength > gatewayJsonBodyLargeWarningBytes)
+  assert.ok(rawBody.byteLength > gatewayJsonBodyInlineParseMaxBytes)
+  assert.ok(rawBody.byteLength < gatewayJsonBodyLargeWarningBytes)
 
   const req = createRequest(
     '/v1/responses',
@@ -400,11 +454,10 @@ function testApiKeyPassthroughUnchanged(): void {
   })
   const apiKeyAccount = {
     apiKey: 'sk-upstream',
-    passthroughEnabled: true,
     type: 'api_key',
     credentials: {}
   }
-  const body = buildUpstreamRequestBody(req, apiKeyAccount.passthroughEnabled)
+  const body = buildUpstreamRequestBody(req)
   const headers = buildUpstreamHeaders(req.headers, apiKeyAccount)
 
   assert.ok(Buffer.isBuffer(body))

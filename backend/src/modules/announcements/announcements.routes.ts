@@ -6,7 +6,7 @@ import {
   createAnnouncement,
   deleteAnnouncement,
   findAnnouncement,
-  listAnnouncements,
+  listAnnouncementsPage,
   listPublicAnnouncements,
   markPublicAnnouncementsRead,
   publishAnnouncement,
@@ -22,6 +22,11 @@ export const announcementsRouter = Router()
 
 const publicListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(30).optional()
+})
+
+const adminListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional()
 })
 
 const readAnnouncementsSchema = z.object({
@@ -60,8 +65,13 @@ announcementsRouter.post('/public/read', (req, res) => {
   res.json(ok(markPublicAnnouncementsRead(requireActor(), parsed.data.announcementIds)))
 })
 
-announcementsRouter.get('/', requireAdmin, (_req, res) => {
-  res.json(ok(listAnnouncements()))
+announcementsRouter.get('/', requireAdmin, (req, res) => {
+  const parsed = adminListQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('公告查询参数无效'))
+    return
+  }
+  res.json(ok(listAnnouncementsPage(parsed.data)))
 })
 
 announcementsRouter.get('/:id', requireAdmin, (req, res) => {

@@ -98,10 +98,10 @@ try {
     })
   ])
 
-  const recordDatabase = databaseModule.getDatasetDatabase()
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const datasetDatabase = databaseModule.getDatasetDatabase()
+  const originalPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
-  recordDatabase.prepare = ((sql: string) => {
+  datasetDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     const shouldCapture = /\bFROM\s+(audit_logs|audit_error_groups|operation_logs)\s+(al|aeg|ol)\b/i.test(sql)
       || /\bFROM\s*\(\s*SELECT[\s\S]*\bFROM\s+operation_logs\s+ol\b/i.test(sql)
@@ -113,7 +113,7 @@ try {
       }) as typeof statement.all
     }
     return statement
-  }) as typeof recordDatabase.prepare
+  }) as typeof datasetDatabase.prepare
 
   try {
     const auditPath = repositories.listAuditLogs({ path: '/v1/responses', pageSize: 10 })
@@ -148,7 +148,7 @@ try {
       '短关键词不再走搜索影子表，应直接通过普通 SQL 模糊匹配操作日志表字段'
     )
   } finally {
-    recordDatabase.prepare = originalPrepare
+    datasetDatabase.prepare = originalPrepare
   }
 
   assert(capturedCalls.length >= 7, '回归应捕获日志列表 SQL')
@@ -166,9 +166,9 @@ try {
     && /\bal\.client_ip\s+<\s+\?/i.test(call.sql)), '审计 clientIp 前缀检索应使用范围条件而不是 LIKE')
 
   const boundedCalls: Array<{ sql: string; params: unknown[] }> = []
-  const boundedRecordDatabase = databaseModule.getDatasetDatabase()
-  const boundedOriginalPrepare = boundedRecordDatabase.prepare.bind(boundedRecordDatabase) as typeof boundedRecordDatabase.prepare
-  boundedRecordDatabase.prepare = ((sql: string) => {
+  const boundedDatasetDatabase = databaseModule.getDatasetDatabase()
+  const boundedOriginalPrepare = boundedDatasetDatabase.prepare.bind(boundedDatasetDatabase) as typeof boundedDatasetDatabase.prepare
+  boundedDatasetDatabase.prepare = ((sql: string) => {
     const statement = boundedOriginalPrepare(sql)
     if (/\bFROM\s+operation_logs\s+ol\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
@@ -178,7 +178,7 @@ try {
       }) as typeof statement.all
     }
     return statement
-  }) as typeof boundedRecordDatabase.prepare
+  }) as typeof boundedDatasetDatabase.prepare
   try {
     const shortKeywordWithWindow = repositories.listOperationLogs({
       keyword: '造数',
@@ -204,7 +204,7 @@ try {
       '用户侧短关键词也应通过普通 SQL 模糊匹配并保留可见性过滤'
     )
   } finally {
-    boundedRecordDatabase.prepare = boundedOriginalPrepare
+    boundedDatasetDatabase.prepare = boundedOriginalPrepare
   }
   assert(boundedCalls.some((call) => /\bol\.created_at\s+>=\s+\?/i.test(call.sql)
     && /\bol\.created_at\s+<=\s+\?/i.test(call.sql)
@@ -216,7 +216,7 @@ try {
   console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志关键词不再走搜索影子表，改为主表字段普通 SQL 模糊匹配')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

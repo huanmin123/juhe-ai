@@ -41,7 +41,7 @@ try {
     }
   }
 
-  const firstPage = repositories.listApiKeysPage(access, { limit: 200 })
+  const firstPage = repositories.listApiKeysPage(access, { page: 1, pageSize: 200 })
   assert.equal(firstPage.items.some((apiKey) => apiKey.id === targetId), false, '最早创建的第 250 条外 API Key 不应出现在前 200 条列表里')
 
   const target = repositories.findApiKeySummary(targetId, access)
@@ -58,7 +58,7 @@ try {
   console.log('API Key 单条读取回归通过：更新/删除日志 before 不再依赖前 200 条列表')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

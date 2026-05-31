@@ -91,7 +91,7 @@ try {
   console.log('审计日志批量已存在查询回归通过：批量预查 ID，避免逐条查询 audit_logs')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

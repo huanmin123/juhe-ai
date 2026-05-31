@@ -57,7 +57,7 @@ try {
   console.log('系统指标窗口查询回归通过：统计概览不再按时间窗扫描进程事件循环原始采样')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

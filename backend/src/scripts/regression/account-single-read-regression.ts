@@ -49,7 +49,7 @@ try {
     }
   }
 
-  const firstPage = repositories.listAccountsPage(access, { limit: 200 })
+  const firstPage = repositories.listAccountsPage(access, { page: 1, pageSize: 200 })
   assert.equal(firstPage.items.some((account) => account.id === targetId), false, '第 250 个创建的停用账户不应出现在默认前 200 条列表里')
 
   const target = repositories.findAccountSummary(targetId, access)
@@ -63,7 +63,7 @@ try {
   console.log('账户单条读取回归通过：删除日志 before 不再依赖前 200 条列表或测试用读取')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

@@ -62,7 +62,7 @@ try {
   console.log('统一授权列表稳定排序回归通过')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -82,7 +82,7 @@ function createStableAuthorization(name: string, granteeId: string, createdAt: s
     granteeId,
     remark: '授权稳定排序回归'
   }, access)
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare('UPDATE resource_authorization_grants SET created_at = ?, updated_at = ? WHERE id = ?')
     .run(createdAt, createdAt, authorization.id)
   return { id: authorization.id }

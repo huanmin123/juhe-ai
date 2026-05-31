@@ -56,7 +56,7 @@ try {
   }, granteeAccess)
   const authorizedSourceAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: 'perfauthold 来源账号',
+    name: '性能授权来源账号',
     type: 'api_key',
     credentials: {
       api_key: 'sk-ai-performance-authorized-source',
@@ -114,7 +114,7 @@ try {
     }
   }, ownerAccess)
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -258,7 +258,7 @@ function uniquePrefix(value: string, otherValue: string): string {
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)

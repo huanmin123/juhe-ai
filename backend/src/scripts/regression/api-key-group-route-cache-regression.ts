@@ -186,7 +186,7 @@ try {
   assert.equal(fakeChild.operationCount('read_gateway_runtime'), 1, '首次请求只应读取一次 API Key 运行时')
   assert.equal(fakeChild.operationCount('resolve_group_usage_access'), 1, '首次 fallback 只应读取一次后备分组授权元数据')
   assert.equal(fakeChild.operationCount('list_openai_accounts_for_group_result'), 1, '首次 fallback 只应读取一次后备分组账号列表及计划元信息')
-  assert.equal(fakeChild.operationCount('list_openai_accounts_for_group'), 0, '首次 fallback 不应再用缺少计划元信息的旧账号列表读取入口')
+  assert.equal(fakeChild.operationCount('list_openai_accounts_for_group'), 0, '首次 fallback 必须读取带计划元信息的分组账号列表')
   assert.equal(fakeChild.operationCount('check_api_key_quota'), 0, 'server 请求链路不应通过 DB service 主动查询 API Key 统计额度窗口')
   assert.equal(fakeChild.operationCount('check_authorization_quota'), 0, 'server 请求链路不应通过 DB service 主动查询单条授权额度')
   assert.equal(fakeChild.operationCount('check_authorization_quota_batch'), 0, 'server 请求链路不应通过 DB service 主动查询批量授权额度')
@@ -225,7 +225,7 @@ try {
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -345,7 +345,6 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
     },
     status: 'active',
     schedulable: true,
-    passthroughEnabled: true
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -358,7 +357,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
       total: { enabled: true, limit: 1000 }
     }
   }, ownerAccess)
-  const authorizationRow = databaseModule.getDatabase()
+  const authorizationRow = databaseModule.getBusinessDatabase()
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(ownerAccount.id, grantee.id) as unknown as { id?: string } | undefined
   assert(authorizationRow?.id, '路由缓存回归需要授权记录 ID')

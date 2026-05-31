@@ -192,7 +192,7 @@ try {
   console.log('运行日志文件导入来源回归通过：重复来源、DB service tail 和超长单行游标均符合预期')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

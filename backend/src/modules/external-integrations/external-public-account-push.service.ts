@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto'
 
 import type { AccountStatus, AccountSummary, ApiKeySummary, GroupSummary, SystemAccountSummary } from '../../domain/types.js'
+import { hashPasswordAsync } from '../../storage/crypto.js'
 import {
   createAccount,
   createApiKeyRecord,
   createGroup,
-  createSystemAccount,
+  createSystemAccountWithPasswordHash,
   deleteAccountWithRelatedCleanup,
   deleteApiKeyWithRelatedCleanup,
   deleteGroup,
@@ -13,8 +14,9 @@ import {
   findApiKeySummary,
   findGroupSummary,
   findSystemAccountByUsername,
-  listAccounts,
+  listAccountsPage,
   listApiKeys,
+  listApiKeysPage,
   listGroupOptions,
   listProviders,
   setAccountGroup,
@@ -22,7 +24,7 @@ import {
   updateApiKey,
   updateGroup
 } from '../../storage/repositories.js'
-import { getDatabase, newId, nowIso, runInDatabaseTransaction } from '../../storage/database.js'
+import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from '../../storage/database.js'
 import { submitAccountRelatedCleanup } from '../accounts/account-cleanup.service.js'
 import { submitApiKeyRelatedCleanup } from '../api-keys/api-key-cleanup.service.js'
 
@@ -203,15 +205,15 @@ type TargetAccess = {
 
 type PublicAccountWriteMode = 'create' | 'update'
 
-export function addPublicWelfareAccount(input: PublicAccountPushInput): PublicAccountPushResponse {
-  return writePublicWelfareAccount(input, 'create')
+export async function addPublicWelfareAccount(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
+  return writePublicWelfareAccount(input, 'create', await autoCreatedTargetPasswordHash())
 }
 
 export function updatePublicWelfareAccount(input: PublicAccountPushInput): PublicAccountPushResponse {
   return writePublicWelfareAccount(input, 'update')
 }
 
-function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAccountWriteMode): PublicAccountPushResponse {
+function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAccountWriteMode, targetPasswordHash?: string): PublicAccountPushResponse {
   const providerCode = normalizedText(input.providerCode) || 'openai'
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
@@ -223,7 +225,7 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAc
   assertSupportedPushAccountType(input.type, provider.accountTypes)
 
   return runInDatabaseTransaction(() => {
-    const target = mode === 'update' ? findPublicTarget(input.targetUsername) : ensureTargetSystemAccount(input)
+    const target = mode === 'update' ? findPublicTarget(input.targetUsername) : ensureTargetSystemAccount(input, targetPasswordHash)
     if (!target) {
       throw new Error(`目标用户不存在：${normalizedText(input.targetUsername) ?? ''}`)
     }
@@ -278,7 +280,7 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAc
       account: sanitizeAccount(account),
       externalId: normalizedText(input.externalId)
     }
-  }, getDatabase())
+  }, getBusinessDatabase())
 }
 
 export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): PublicAccountDeleteResponse {
@@ -370,11 +372,12 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
   }
 }
 
-export function addPublicGroup(input: PublicGroupAddInput): PublicGroupResponse {
+export async function addPublicGroup(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
   const providerCode = normalizedText(input.providerCode) || 'openai'
   assertProviderEnabled(providerCode)
+  const targetPasswordHash = await autoCreatedTargetPasswordHash()
   return runInDatabaseTransaction(() => {
-    const target = ensureTargetSystemAccount(input)
+    const target = ensureTargetSystemAccount(input, targetPasswordHash)
     assertTargetActive(target.account)
     const access = targetAccess(target.account.id)
     const existing = resolvePublicGroup(access, { name: input.name, providerCode })
@@ -389,7 +392,7 @@ export function addPublicGroup(input: PublicGroupAddInput): PublicGroupResponse 
       groupType: input.groupType ?? 'personal'
     }, access)
     return publicGroupResponse('created', target, sanitizeGroup(group))
-  }, getDatabase())
+  }, getBusinessDatabase())
 }
 
 export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupResponse {
@@ -795,11 +798,11 @@ function resolvePublicApiKey(access: TargetAccess, input: { apiKeyId?: string; n
   if (!name) {
     return undefined
   }
-  return listApiKeys(access, { keyword: name, limit: 20 })
+  return listApiKeysPage(access, { keyword: name, page: 1, pageSize: 20 }).items
     .find((item) => sameText(item.name, name))
 }
 
-function ensureTargetSystemAccount(input: { targetUsername: string; targetDisplayName?: string }): ResolvedTarget {
+function ensureTargetSystemAccount(input: { targetUsername: string; targetDisplayName?: string }, passwordHash?: string): ResolvedTarget {
   const username = normalizedText(input.targetUsername)
   if (!username) {
     throw new Error('目标用户不能为空')
@@ -810,16 +813,22 @@ function ensureTargetSystemAccount(input: { targetUsername: string; targetDispla
   }
 
   const displayName = normalizedText(input.targetDisplayName) || username
-  const account = createSystemAccount({
+  if (!passwordHash) {
+    throw new Error('自动创建目标用户缺少密码哈希')
+  }
+  const account = createSystemAccountWithPasswordHash({
     username,
     displayName,
     description: '由公开接口自动创建',
-    password: randomBytes(18).toString('base64url'),
     role: 'user',
     status: 'active',
     mustChangePassword: true
-  })
+  }, passwordHash)
   return { account, created: true }
+}
+
+async function autoCreatedTargetPasswordHash(): Promise<string> {
+  return hashPasswordAsync(randomBytes(18).toString('base64url'))
 }
 
 function ensureTargetGroup(input: {
@@ -902,7 +911,7 @@ function findTargetAccountByExternalId(input: {
   if (!externalId) {
     return undefined
   }
-  const row = getDatabase().prepare(`
+  const row = getBusinessDatabase().prepare(`
     SELECT push_records.account_id AS id
     FROM external_integration_account_push_records push_records
     INNER JOIN accounts ON accounts.id = push_records.account_id
@@ -934,7 +943,7 @@ function findTargetAccountById(input: {
   if (!accountId) {
     return undefined
   }
-  const row = getDatabase().prepare(`
+  const row = getBusinessDatabase().prepare(`
     SELECT accounts.id AS id
     FROM accounts
     INNER JOIN group_accounts ON group_accounts.account_id = accounts.id
@@ -962,7 +971,7 @@ function upsertExternalAccountPushRecord(input: {
   const externalId = normalizedText(input.externalId)
   if (!externalId) return
   const now = nowIso()
-  getDatabase().prepare(`
+  getBusinessDatabase().prepare(`
     INSERT INTO external_integration_account_push_records (
       id, system_account_id, provider_code, group_id, external_id, account_id, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -990,12 +999,13 @@ function findTargetAccount(input: {
   if (!name) {
     throw new Error('账户名称不能为空')
   }
-  return listAccounts(input.access, {
+  return listAccountsPage(input.access, {
     keyword: name,
     providerCode: input.providerCode,
     groupId: input.groupId,
-    limit: 20
-  }).find((item) => item.providerCode === input.providerCode && sameText(item.name, name))
+    page: 1,
+    pageSize: 20
+  }).items.find((item) => item.providerCode === input.providerCode && sameText(item.name, name))
 }
 
 function targetFromInput(username: string, groupName: string): PublicAccountDeleteResponse['target'] {

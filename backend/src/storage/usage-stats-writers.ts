@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries, type UsageStatsAuthorizationLookup } from './usage-stats-aggregation.js'
@@ -115,7 +115,7 @@ function loadUsageStatsAccountAuthorizationLookup(accountAuthorizationIds: strin
   if (!accountAuthorizationIds.length) {
     return { accountAuthorizationResourceIds, accountAuthorizationInstanceAccountIds }
   }
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(accountAuthorizationIds, 900)) {
     const rows = database.prepare(`
       SELECT

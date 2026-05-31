@@ -12,6 +12,7 @@ import {
   removeSystemTeamMember,
   updateSystemTeam
 } from '../../storage/repositories.js'
+import { maxSystemTeamMemberBatchSize } from '../../storage/system-team-limits.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -43,7 +44,7 @@ const updateTeamSchema = z.object({
 })
 
 const teamMembersSchema = z.object({
-  systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员')
+  systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员').max(maxSystemTeamMemberBatchSize, `单次最多添加 ${maxSystemTeamMemberBatchSize} 个团队成员`)
 })
 
 function currentUserTeamScope() {
@@ -68,7 +69,6 @@ function parseSystemTeamListOptions(query: Record<string, unknown>) {
   return {
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize),
-    limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword)
   }
 }
@@ -183,7 +183,7 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     teamId: req.params.id,
-    memberIds: sortedTextValues(bodyField(req, 'systemAccountIds'))
+    systemAccountIds: sortedTextValues(bodyField(req, 'systemAccountIds'))
   })
 }), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)

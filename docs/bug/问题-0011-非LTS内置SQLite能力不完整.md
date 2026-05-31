@@ -14,7 +14,7 @@
 
 ## 问题概述
 
-- 现象：其他电脑运行 `pnpm -r --parallel dev` 时，前端正常启动，后端在记录库建表阶段报 SQLite 能力缺失错误。
+- 现象：其他电脑运行 `pnpm -r --parallel dev` 时，前端正常启动，后端在记录域建表阶段报 SQLite 能力缺失错误。
 - 期望：后端启动前明确拒绝不符合要求的 Node.js 运行时，并提示使用官方 LTS 与完整 SQLite 能力。
 - 实际：旧预检只验证 `node:sqlite` 能否导入，Node.js v23.11.0 可以通过导入检查，但内置 SQLite 编译能力不满足当时 schema 要求。
 - 影响范围：使用非 LTS Node.js 或自带 SQLite 编译能力不完整的环境。
@@ -23,12 +23,12 @@
 
 1. 在 Node.js v23.11.0 环境运行 `pnpm -r --parallel dev`。
 2. 后端执行 `tsx src/scripts/preflight/check-node-sqlite.ts && tsx watch src/server.ts`。
-3. 预检通过后，`applyRecordSchema` 在记录库 schema 初始化阶段报 SQLite 能力缺失错误。
+3. 预检通过后，记录域 schema 初始化阶段报 SQLite 能力缺失错误。
 
 ## 环境信息
 
 - 分支 / 版本：2026-05-17 本地开发版本。
-- 数据状态：与业务数据无关，记录库 schema 初始化即可复现。
+- 数据状态：与业务数据无关，记录域 schema 初始化即可复现。
 - 系统 / Node 版本：用户反馈环境为 Node.js v23.11.0；本机验证环境为 Node.js v22.19.0 LTS。
 - 是否稳定复现：在 SQLite 编译能力不完整的运行时稳定复现。
 
@@ -45,8 +45,8 @@
 - 修改点：根目录和后端 `engines.node` 收敛到当前支持的 LTS 范围，并新增 `.npmrc` 开启 `engine-strict`。
 - 修改点：发布打包脚本和发布包启动脚本复用运行时预检，开发、打包、部署入口统一口径。
 - 修改点：README、开发文档、部署文档和 SQLite 存储说明同步为官方 LTS + 完整 SQLite 能力要求。
-- 兼容影响：非 LTS Node.js 和 SQLite 能力不完整的 Node.js 会更早失败；当前支持 22.x LTS（>=22.13.0）和 24.x LTS（>=24.11.0）。
-- 回滚方式：回滚预检脚本、`engines`、`.npmrc` 和文档口径；不建议回滚。
+- 行为影响：非 LTS Node.js 和 SQLite 能力不完整的 Node.js 会更早失败；当前支持 22.x LTS（>=22.13.0）和 24.x LTS（>=24.11.0）。
+- 发布异常处理：如运行时预检误判，修正当前预检脚本、`engines`、`.npmrc` 和文档口径；不恢复非 LTS 支持。
 
 ## 验证记录
 

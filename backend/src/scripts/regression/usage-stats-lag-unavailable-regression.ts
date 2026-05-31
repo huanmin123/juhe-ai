@@ -23,11 +23,11 @@ const [databaseModule, usageStatsHelpers] = await Promise.all([
 ])
 
 try {
-  const recordDatabase = databaseModule.getStatsDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   assert.equal(usageStatsHelpers.latestUsageStatsLagSeconds(), undefined, '缺少 job state 时应返回未知，而不是 0')
 
   const now = new Date().toISOString()
-  recordDatabase.prepare(`
+  statsDatabase.prepare(`
     INSERT INTO stats_job_state (
       scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -44,7 +44,7 @@ try {
   )
   assert.equal(usageStatsHelpers.latestUsageStatsLagSeconds(), undefined, 'lag 为空时应继续保持未知')
 
-  recordDatabase.prepare(`
+  statsDatabase.prepare(`
     UPDATE stats_job_state
     SET lag_seconds = ?, updated_at = ?
     WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'
@@ -54,7 +54,7 @@ try {
   console.log('用量统计 lag 回归通过：缺少状态时返回 undefined，不再伪装成 0')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

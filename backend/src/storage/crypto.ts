@@ -1,9 +1,11 @@
-import { createCipheriv, createDecipheriv, createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, pbkdf2, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto'
+import { promisify } from 'node:util'
 
 import { runtimeConfig } from '../config/runtime.js'
 
 const secret = runtimeConfig.secret
 const key = createHash('sha256').update(secret).digest()
+const pbkdf2Async = promisify(pbkdf2)
 
 export function encryptJson(value: unknown): string {
   const iv = randomBytes(12)
@@ -51,6 +53,12 @@ export function hashPassword(value: string): string {
   return ['pbkdf2', 'sha512', String(passwordIterations), salt, derived.toString('base64url')].join('$')
 }
 
+export async function hashPasswordAsync(value: string): Promise<string> {
+  const salt = randomBytes(16).toString('base64url')
+  const derived = await pbkdf2Async(value, salt, passwordIterations, 32, 'sha512')
+  return ['pbkdf2', 'sha512', String(passwordIterations), salt, derived.toString('base64url')].join('$')
+}
+
 export function verifyPassword(value: string, passwordHash: string): boolean {
   const parts = passwordHash.split('$')
   if (parts.length !== 5 || parts[0] !== 'pbkdf2' || parts[1] !== 'sha512') {
@@ -65,5 +73,22 @@ export function verifyPassword(value: string, passwordHash: string): boolean {
   const salt = parts[3]
   const expected = Buffer.from(parts[4], 'base64url')
   const actual = pbkdf2Sync(value, salt, Math.trunc(iterations), expected.length, 'sha512')
+  return expected.length === actual.length && timingSafeEqual(expected, actual)
+}
+
+export async function verifyPasswordAsync(value: string, passwordHash: string): Promise<boolean> {
+  const parts = passwordHash.split('$')
+  if (parts.length !== 5 || parts[0] !== 'pbkdf2' || parts[1] !== 'sha512') {
+    return false
+  }
+
+  const iterations = Number(parts[2])
+  if (!Number.isFinite(iterations) || iterations < 1) {
+    return false
+  }
+
+  const salt = parts[3]
+  const expected = Buffer.from(parts[4], 'base64url')
+  const actual = await pbkdf2Async(value, salt, Math.trunc(iterations), expected.length, 'sha512')
   return expected.length === actual.length && timingSafeEqual(expected, actual)
 }

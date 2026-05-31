@@ -113,19 +113,19 @@ try {
     '运行日志 traceId 筛选应支持右侧前缀定位，与审计/操作日志契约一致'
   )
 
-  const recordDatabase = databaseModule.getDatasetDatabase()
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const datasetDatabase = databaseModule.getDatasetDatabase()
+  const originalPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
   const facetMaintenanceSql: string[] = []
-  recordDatabase.prepare = ((sql: string) => {
+  datasetDatabase.prepare = ((sql: string) => {
     facetMaintenanceSql.push(sql)
     return originalPrepare(sql)
-  }) as typeof recordDatabase.prepare
+  }) as typeof datasetDatabase.prepare
   try {
-    recordDatabase.prepare('DELETE FROM runtime_log_facet_summary').run()
+    datasetDatabase.prepare('DELETE FROM runtime_log_facet_summary').run()
     runtimeLogsRepository.ensureRuntimeLogFacetSnapshots()
     runtimeLogsRepository.cleanupRuntimeLogIndex(new Date(Date.parse(now) - 1).toISOString(), 10)
   } finally {
-    recordDatabase.prepare = originalPrepare
+    datasetDatabase.prepare = originalPrepare
   }
   assert(
     !facetMaintenanceSql.some((sql) => /\bFROM\s+runtime_logs\b[\s\S]*\bGROUP\s+BY\b/i.test(sql)),
@@ -176,7 +176,7 @@ try {
   console.log('运行日志搜索保护回归通过：索引模式仅模糊匹配 message，rawJson 不检索')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

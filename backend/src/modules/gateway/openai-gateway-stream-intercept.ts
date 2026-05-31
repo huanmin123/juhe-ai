@@ -506,20 +506,31 @@ function findCrossChunkBoundaryEnd(chunkOffset: number, previousTail: Buffer, ch
 }
 
 function findSseEventBoundary(buffer: Buffer): { index: number; endIndex: number } | undefined {
-  const candidates = [
-    boundaryCandidate(buffer, '\r\n\r\n'),
-    boundaryCandidate(buffer, '\n\n'),
-    boundaryCandidate(buffer, '\r\r')
-  ].filter((item): item is { index: number; length: number } => Boolean(item))
-  if (!candidates.length) return undefined
-  const first = candidates.sort((left, right) => left.index - right.index || right.length - left.length)[0]
+  const first = earliestBoundaryCandidate(
+    boundaryCandidate(buffer, sseCrLfBoundary),
+    boundaryCandidate(buffer, sseLfBoundary),
+    boundaryCandidate(buffer, sseCrBoundary)
+  )
+  if (!first) return undefined
   return { index: first.index, endIndex: first.index + first.length }
 }
 
-function boundaryCandidate(buffer: Buffer, token: string): { index: number; length: number } | undefined {
-  const tokenBuffer = Buffer.from(token, 'utf8')
+function earliestBoundaryCandidate(
+  ...candidates: Array<{ index: number; length: number } | undefined>
+): { index: number; length: number } | undefined {
+  let first: { index: number; length: number } | undefined
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if (!first || candidate.index < first.index || (candidate.index === first.index && candidate.length < first.length)) {
+      first = candidate
+    }
+  }
+  return first
+}
+
+function boundaryCandidate(buffer: Buffer, tokenBuffer: Buffer): { index: number; length: number } | undefined {
   const index = buffer.indexOf(tokenBuffer)
-  return index >= 0 ? { index, length: token.length } : undefined
+  return index >= 0 ? { index, length: tokenBuffer.length } : undefined
 }
 
 function trailingBytes(previousTail: Buffer, chunk: Buffer, length: number): Buffer {
@@ -533,3 +544,7 @@ function trailingBytes(previousTail: Buffer, chunk: Buffer, length: number): Buf
 function bufferEndsWith(buffer: Buffer, suffix: Buffer): boolean {
   return buffer.length >= suffix.length && buffer.subarray(buffer.length - suffix.length).equals(suffix)
 }
+
+const sseCrLfBoundary = Buffer.from('\r\n\r\n', 'utf8')
+const sseLfBoundary = Buffer.from('\n\n', 'utf8')
+const sseCrBoundary = Buffer.from('\r\r', 'utf8')

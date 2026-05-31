@@ -1,6 +1,6 @@
 import type { ApiKeyGroupBindingSummary } from '../domain/types.js'
 import { normalizeApiKeyGroupBindingWeight } from '../domain/api-key-routing.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export interface ApiKeyGroupBindingRow {
@@ -21,7 +21,7 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
   const result = new Map<string, ApiKeyGroupBindingSummary[]>()
   if (!ids.length) return result
 
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 500)) {
     const rows = database
       .prepare(`

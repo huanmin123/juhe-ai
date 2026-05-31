@@ -57,7 +57,11 @@ try {
   const authorizedAccount = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)
   const accountAuthorizationId = authorizedAccount?.accountAuthorizationId
   assert(accountAuthorizationId, '被授权账户应带运行态授权 ID')
-  await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${accountAuthorizationId}/return`, seed.granteeCookie)
+  const initialAccountGrant = repositories
+    .listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAccess)
+    .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
+  assert(initialAccountGrant, '被授权账户应能在授权操作列表读取授权业务记录')
+  await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${initialAccountGrant.id}/return`, seed.granteeCookie)
   assert.equal(
     repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.ownerAccountId),
     false,
@@ -110,7 +114,11 @@ try {
     .listGroups({ systemAccountId: seed.granteeId, role: 'user' as const })
     .find((group) => group.id === seed.ownerGroupId)?.groupAuthorizationId
   assert(groupAuthorizationId, '被授权分组应带运行态授权 ID')
-  await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${groupAuthorizationId}/return`, seed.granteeCookie)
+  const inboundGroupGrant = repositories
+    .listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAccess)
+    .find((authorization) => authorization.resourceType === 'group' && authorization.resourceId === seed.ownerGroupId && authorization.granteeSystemAccountId === seed.granteeId)
+  assert(inboundGroupGrant, '被授权分组应能在授权操作列表读取授权业务记录')
+  await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${inboundGroupGrant.id}/return`, seed.granteeCookie)
   assert.equal(
     repositories.listGroups({ systemAccountId: seed.granteeId, role: 'user' as const }).some((group) => group.id === seed.ownerGroupId),
     false,
@@ -128,7 +136,7 @@ try {
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorization-return' }
   }, { systemAccountId: seed.ownerId, role: 'user' as const })
-  repositories.createResourceAuthorization({
+  const adminManagedGrant = repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: adminManagedAccount.id,
     granteeType: 'system_account',
@@ -140,7 +148,7 @@ try {
   assert(adminManagedAuthorizationId, '管理员代归还前应能看到被授权账户')
   await returnOk(
     baseUrl,
-    `/__aisys__/api/authorizations/${adminManagedAuthorizationId}/return?systemAccountId=${seed.granteeId}`,
+    `/__aisys__/api/authorizations/${adminManagedGrant.id}/return?systemAccountId=${seed.granteeId}`,
     seed.adminCookie
   )
   assert.equal(

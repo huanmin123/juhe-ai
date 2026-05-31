@@ -24,9 +24,10 @@ export interface AccountRow {
   status: AccountStatus
   credential_mask: string
   credentials_encrypted: string
+  oauth_access_token_expires_at?: string | null
+  oauth_refresh_token_present?: number
   proxy_profile_id: string | null
   concurrency_limit: number
-  passthrough_enabled: number
   error_policy_id: string | null
   priority: number
   super_priority_enabled: number
@@ -186,7 +187,6 @@ export type AccountListRow = AccountRow & {
   source_credentials_encrypted?: string | null
   source_proxy_profile_id?: string | null
   source_concurrency_limit?: number | null
-  source_passthrough_enabled?: number | null
   source_error_policy_id?: string | null
   quality_score?: number | null
   quality_state?: string | null

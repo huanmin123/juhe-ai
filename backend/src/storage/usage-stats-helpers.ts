@@ -1,5 +1,5 @@
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 
 const hourMs = 60 * 60 * 1000
 const dayMs = 24 * hourMs
@@ -214,7 +214,7 @@ export function usageStatsTimezone(): string {
   if (cachedUsageStatsTimezone && cachedUsageStatsTimezone.expiresAtMs > nowMs) {
     return cachedUsageStatsTimezone.value
   }
-  const row = getDatabase().prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
+  const row = getBusinessDatabase().prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
   if (!row?.value_json) {
     return cacheUsageStatsTimezone(DEFAULT_USAGE_STATS_TIMEZONE, nowMs)
   }

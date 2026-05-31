@@ -125,7 +125,7 @@ try {
     })
   }
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -147,7 +147,7 @@ try {
     const teamPageOne = repositories.listSystemTeamsPage(adminAccess, { page: 1, pageSize: 1 })
     assert.equal(teamPageOne.items.length, 1, '系统团队分页第一页应只返回 pageSize 条')
     assert.equal(teamPageOne.hasMore, true, '系统团队第一页应通过 pageSize + 1 标记还有更多')
-    assert(teamPageOne.total >= 2, '系统团队分页 total 应提供兼容上界')
+    assert(teamPageOne.total >= 2, '系统团队分页 total 应提供分页上界')
 
     const teamSearchIds = repositories.listSystemTeamsPage(adminAccess, { keyword: '分页搜索团队', page: 1, pageSize: 20 }).items.map((team) => team.id)
     assert(teamSearchIds.includes(teamMatched.id), '系统团队搜索应命中名称精确值')
@@ -170,7 +170,7 @@ try {
     const proxyPageOne = repositories.listProxiesPage({ page: 1, pageSize: 1 })
     assert.equal(proxyPageOne.items.length, 1, '代理分页第一页应只返回 pageSize 条')
     assert.equal(proxyPageOne.hasMore, true, '代理第一页应通过 pageSize + 1 标记还有更多')
-    assert(proxyPageOne.total >= 2, '代理分页 total 应提供兼容上界')
+    assert(proxyPageOne.total >= 2, '代理分页 total 应提供分页上界')
 
     const proxySearchNames = repositories.listProxiesPage({ keyword: '分页搜索代理', page: 1, pageSize: 20 }).items.map((proxy) => proxy.name)
     assert(proxySearchNames.includes('分页搜索代理'), '代理搜索应命中名称精确值')
@@ -221,7 +221,7 @@ try {
   console.log('系统团队和代理分页搜索回归通过：分页使用 pageSize+1，关键词仅按名称精确/前缀匹配并转义通配符')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -229,15 +229,15 @@ try {
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
 }
 
 function assertBusinessIndexMissing(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
-  assert.equal(row?.name, undefined, `业务库不应保留已废弃的代理搜索索引 ${indexName}`)
+  assert.equal(row?.name, undefined, `业务库不应创建代理长文本搜索索引 ${indexName}`)
 }

@@ -1,4 +1,5 @@
 import type { ApiKeyListOptions } from './api-key.repository.js'
+import { normalizeListPage } from './query-utils.js'
 
 type ApiKeyFilterValue = string | number
 
@@ -14,11 +15,11 @@ const maxApiKeyListPageSize = 200
 
 export function normalizeApiKeyListOptions(options?: ApiKeyListOptions): NormalizedApiKeyListOptions {
   const rawPage = options?.page
-  const rawPageSize = options?.pageSize ?? options?.limit
-  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const rawPageSize = options?.pageSize
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(maxApiKeyListPageSize, Math.max(1, rawPageSize))
     : defaultApiKeyListPageSize
+  const page = normalizeListPage(rawPage, pageSize)
   return {
     page,
     pageSize,

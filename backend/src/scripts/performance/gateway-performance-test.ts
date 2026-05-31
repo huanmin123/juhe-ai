@@ -10,6 +10,7 @@ import express, { type NextFunction, type Request, type Response as ExpressRespo
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes } from '../../modules/gateway/openai-gateway-request-body.js'
 
 type ScenarioName = 'models' | 'responses' | 'chat' | 'responses_stream'
 
@@ -154,7 +155,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'juhe-ai-performance-test-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -257,7 +258,7 @@ function loadConfig(): PerfConfig {
     accountCount: envInteger('JUHE_AI_PERF_ACCOUNT_COUNT', 8, 1, 1000),
     accountConcurrencyLimit: envInteger('JUHE_AI_PERF_ACCOUNT_CONCURRENCY', 10000, 1, 1000000),
     model: envText('JUHE_AI_PERF_MODEL', 'gpt-5.4-mini'),
-    promptBytes: envInteger('JUHE_AI_PERF_PROMPT_BYTES', 64, 1, 2 * 1024 * 1024),
+    promptBytes: envInteger('JUHE_AI_PERF_PROMPT_BYTES', 64, 1, Math.max(1, gatewayRawBodyHardLimitBytes - 64 * 1024)),
     p95TargetMs: envInteger('JUHE_AI_PERF_P95_TARGET_MS', 1000, 1, 600000),
     reportPath: optionalEnvText('JUHE_AI_PERF_REPORT_PATH')
   }
@@ -298,13 +299,13 @@ function prewarmUsageRecordShards(): void {
 }
 
 function prewarmStorageDatabases(): void {
-  databaseModule.getDatabase().prepare('SELECT 1').get()
+  databaseModule.getBusinessDatabase().prepare('SELECT 1').get()
   databaseModule.getDatasetDatabase().prepare('SELECT 1').get()
   databaseModule.getStatsDatabase().prepare('SELECT 1').get()
 }
 
 function createGatewayServer(connectionTracker: ConnectionTracker): http.Server {
-  const gatewayRawBodyLimit = '64mb'
+  const gatewayRawBodyLimit = gatewayRawBodyHardLimit
   const app = express()
   app.use((req, _res, next) => {
     recordSocketRequest(connectionTracker, req.socket)
@@ -316,9 +317,28 @@ function createGatewayServer(connectionTracker: ConnectionTracker): http.Server 
     res.json({ status: 'ok', service: 'juhe-ai-performance-test' })
   })
   app.use(express.raw({ type: () => true, limit: gatewayRawBodyLimit }), handleGatewayRawBodyError, captureGatewayRawBody, openAIGatewayRouter)
+  app.use(handleGatewayPerfUnhandledError)
   const server = http.createServer(app)
   attachConnectionTracker(server, connectionTracker)
   return server
+}
+
+function handleGatewayPerfUnhandledError(
+  error: Error,
+  _req: Request,
+  res: ExpressResponse,
+  _next: NextFunction
+): void {
+  if (res.headersSent) {
+    res.end()
+    return
+  }
+  res.status(500).json({
+    error: {
+      message: error.message,
+      type: 'perf_gateway_error'
+    }
+  })
 }
 
 function handleGatewayRawBodyError(error: Error & { status?: number; statusCode?: number }, _req: Request, res: ExpressResponse, next: NextFunction): void {
@@ -1116,7 +1136,7 @@ async function closeServer(server: http.Server | undefined): Promise<void> {
 
 function closeDatabases(): void {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
   } catch {
   }
   try {

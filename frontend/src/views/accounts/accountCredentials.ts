@@ -1,8 +1,8 @@
 import type { AccountSummary } from '@/types/domain'
 import {
-  writeAccountErrorPolicyToCredentials,
-  type AccountErrorPolicyRuleForm
-} from './accountErrorPolicy'
+  writeAccountErrorPolicyToCredentials
+} from './accountErrorPolicyPayload'
+import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import {
   writeAccountStreamInterceptRulesToCredentials
 } from './accountStreamInterceptPolicyPayload'

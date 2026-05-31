@@ -171,16 +171,6 @@ const authorizedActions = computed<RowActionItem[]>(() => {
   if (props.canEdit) {
     list.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
   }
-  if (props.account.accountAuthorizationId) {
-    list.push({
-      key: 'return',
-      label: '归还',
-      icon: 'revoke',
-      tone: 'danger',
-      confirmTitle: `确认归还授权账户「${props.account.name}」？归还后你将不再看到或使用它，不影响授权方原账户。`,
-      confirmOkText: '归还'
-    })
-  }
   return list
 })
 
@@ -189,7 +179,7 @@ function handleActionClick(key: string) {
     emit('bind-group')
     return
   }
-  if (key === 'delete' || key === 'return') {
+  if (key === 'delete') {
     emit('delete')
     return
   }

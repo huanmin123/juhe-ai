@@ -34,7 +34,7 @@ export interface OpenAITokenInfo {
   expiresAt: string
   clientId: string
   email?: string
-  chatgptAccountId?: string
+  accountId?: string
   chatgptUserId?: string
   planType?: string
 }
@@ -127,7 +127,7 @@ export function buildOpenAIOAuthCredentials(tokenInfo: OpenAITokenInfo, fallback
   if (refreshToken) credentials.refresh_token = refreshToken
   if (tokenInfo.idToken) credentials.id_token = tokenInfo.idToken
   if (tokenInfo.email) credentials.email = tokenInfo.email
-  if (tokenInfo.chatgptAccountId) credentials.chatgpt_account_id = tokenInfo.chatgptAccountId
+  if (tokenInfo.accountId) credentials.account_id = tokenInfo.accountId
   if (tokenInfo.chatgptUserId) credentials.chatgpt_user_id = tokenInfo.chatgptUserId
   if (tokenInfo.planType) credentials.plan_type = tokenInfo.planType
   return credentials
@@ -201,7 +201,7 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
     expiresAt: new Date(Date.now() + Math.max(expiresIn, 0) * 1000).toISOString(),
     clientId,
     email: normalizeString(claims?.email),
-    chatgptAccountId: normalizeString(openAIAuth?.chatgpt_account_id),
+    accountId: normalizeString(openAIAuth?.chatgpt_account_id),
     chatgptUserId: normalizeString(openAIAuth?.chatgpt_user_id) || normalizeString(openAIAuth?.user_id),
     planType: normalizeString(openAIAuth?.chatgpt_plan_type)
   }

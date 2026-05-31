@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import express from 'express'
+import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import type { GatewayRuntimeRequest } from '../../modules/gateway/openai-gateway-request.js'
@@ -30,7 +30,9 @@ const [
   requestContext,
   gatewayRequest,
   gatewayRoutes,
-  gatewayBodyMiddleware
+  gatewayBodyMiddleware,
+  gatewayJsonParser,
+  gatewayRequestBody
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
@@ -39,7 +41,9 @@ const [
   import('../../shared/request-context.js'),
   import('../../modules/gateway/openai-gateway-request.js'),
   import('../../modules/gateway/openai-gateway.routes.js'),
-  import('../../modules/gateway/openai-gateway-request-body-middleware.js')
+  import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
+  import('../../modules/gateway/openai-gateway-json-parser.js'),
+  import('../../modules/gateway/openai-gateway-request-body.js')
 ])
 
 class FakeDbServiceChild extends EventEmitter {
@@ -129,14 +133,20 @@ try {
       apiKeyId: apiKey.id,
       rawBodyBytes: Buffer.byteLength(body)
     })
+
+    const oversizeBody = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(gatewayRequestBody.gatewayRawBodyHardLimitBytes) })
+    const oversize = await postJson(`${baseUrl}/v1/responses`, oversizeBody, apiKey.key)
+    assert.equal(oversize.status, 413, '超过网关请求体硬上限应在进入业务解析前返回 413')
+    assert.equal(rawBodyMiddlewareHitCount, 1, '超过硬上限的合法请求也不应进入 raw body 后续解析链路')
   } finally {
     await close(server)
   }
 
   console.log('网关认证预解析回归通过：无效请求不读取大 body，合法请求复用 runtime 后继续处理')
 } finally {
+  await gatewayJsonParser.stopGatewayJsonParseWorker()
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -170,7 +180,8 @@ async function listen(): Promise<Server> {
   app.use(requestContext.requestContextMiddleware)
   app.use(gatewayRequest.preResolveOpenAIGatewayRuntime)
   app.use(gatewayRoutes.handleGatewayDbServiceUnavailable)
-  app.use(express.raw({ type: () => true, limit: '64mb' }))
+  app.use(express.raw({ type: () => true, limit: gatewayRequestBody.gatewayRawBodyHardLimit }))
+  app.use(handleRawBodyErrorForTest)
   app.use((_req, _res, next) => {
     rawBodyMiddlewareHitCount += 1
     next()
@@ -189,6 +200,29 @@ async function listen(): Promise<Server> {
     server.listen(0, '127.0.0.1', resolveListen)
   })
   return server
+}
+
+function handleRawBodyErrorForTest(
+  error: Error & { status?: number; statusCode?: number },
+  _req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  const statusCode = Number.isInteger(error.statusCode)
+    ? Number(error.statusCode)
+    : Number.isInteger(error.status)
+      ? Number(error.status)
+      : 400
+  if (statusCode >= 400 && statusCode < 600) {
+    res.status(statusCode).json({
+      error: {
+        message: statusCode === 413 ? '请求体过大' : '请求体无效',
+        type: statusCode === 413 ? 'request_too_large' : 'invalid_request_error'
+      }
+    })
+    return
+  }
+  next(error)
 }
 
 async function postJson(url: string, body: string, token?: string): Promise<{ status: number; text: string }> {

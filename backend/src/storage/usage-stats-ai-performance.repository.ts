@@ -7,7 +7,7 @@ import type {
   AccountUsageStatsRange
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
@@ -310,7 +310,7 @@ function loadAiPerformanceAccountOptionRows(
 
   const keywordPrefix = `${escapeLikePrefix(keyword)}%`
   const visibleFilter = aiPerformanceVisibleAccountFilter(scope)
-  const accountRows = getDatabase().prepare(`
+  const accountRows = getBusinessDatabase().prepare(`
     SELECT accounts.id
     FROM accounts
     WHERE (accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\')
@@ -319,7 +319,7 @@ function loadAiPerformanceAccountOptionRows(
     LIMIT ?
   `).all(keyword, keywordPrefix, ...visibleFilter.params, options.limit) as unknown as Array<{ id: string }>
   const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
-  const sourceInstanceRows = getDatabase().prepare(`
+  const sourceInstanceRows = getBusinessDatabase().prepare(`
     SELECT instance_accounts.id
     FROM accounts source_accounts
     INNER JOIN accounts instance_accounts
@@ -363,7 +363,7 @@ function mergeAiPerformanceStatsWithAccounts(
     END`
     : "'owner'"
   const accessTypeParams = scope.scopeType === 'caller_account' && scope.systemAccountId !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [scope.systemAccountId] : []
-  const accounts = getDatabase().prepare(`
+  const accounts = getBusinessDatabase().prepare(`
     SELECT
       accounts.id,
       accounts.name,
@@ -449,12 +449,12 @@ function aiPerformanceVisibleAccountFilter(scope: AiPerformanceScope): { sql: st
       OR EXISTS (
         SELECT 1
         FROM group_accounts visible_group_accounts
-        INNER JOIN resource_authorizations visible_group_authorizations
-          ON visible_group_authorizations.resource_type = 'group'
-          AND visible_group_authorizations.resource_id = visible_group_accounts.group_id
-          AND visible_group_authorizations.grantee_system_account_id = ?
-          AND visible_group_authorizations.status = 'active'
-          AND (visible_group_authorizations.expires_at IS NULL OR visible_group_authorizations.expires_at > ?)
+        INNER JOIN resource_authorizations visible_group_authorization_rows
+          ON visible_group_authorization_rows.resource_type = 'group'
+          AND visible_group_authorization_rows.resource_id = visible_group_accounts.group_id
+          AND visible_group_authorization_rows.grantee_system_account_id = ?
+          AND visible_group_authorization_rows.status = 'active'
+          AND (visible_group_authorization_rows.expires_at IS NULL OR visible_group_authorization_rows.expires_at > ?)
         WHERE visible_group_accounts.account_id = accounts.id
           AND visible_group_accounts.enabled = 1
       )

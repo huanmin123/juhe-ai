@@ -1,5 +1,5 @@
 import type { AccountType, ProviderCode, ProviderDefinition } from '../domain/types.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 import { parseJsonArray } from './value-utils.js'
 
 interface ProviderRow {
@@ -14,7 +14,7 @@ interface ProviderRow {
 }
 
 export function listProviders(): ProviderDefinition[] {
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, code, name, description, enabled, base_url, account_types_json, capabilities_json
       FROM providers
@@ -31,8 +31,4 @@ export function listProviders(): ProviderDefinition[] {
     accountTypes: parseJsonArray(row.account_types_json) as AccountType[],
     capabilities: parseJsonArray(row.capabilities_json)
   }))
-}
-
-export function providerPassthroughEnabled(_provider?: ProviderDefinition): boolean {
-  return true
 }

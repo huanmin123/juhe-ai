@@ -74,7 +74,6 @@ export interface OperationLogInput {
 export interface OperationLogListOptions {
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
   module?: string
   action?: string
@@ -184,6 +183,7 @@ interface PreparedOperationLogInput {
 
 const operationLogDefaultPageSize = 100
 const operationLogMaxPageSize = 100
+const operationLogMaxListWindowRows = 1001
 const operationLogKeywordColumns = [
   'ol.summary',
   'ol.resource_name',
@@ -291,8 +291,8 @@ export function cleanupOperationLogsBefore(cutoffCreatedAt: string, limit = 1000
 }
 
 function listOperationLogsWithFilters(filters: OperationLogWhereFilters, options: OperationLogListOptions, viewerSystemAccountId?: string): OperationLogListResult {
-  const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
-  const page = normalizeOperationLogPage(options.page)
+  const pageSize = normalizeOperationLogPageSize(options.pageSize)
+  const page = normalizeOperationLogPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const database = getDatasetDatabase()
   const rows = database
@@ -387,8 +387,8 @@ function operationLogOuterListSelectColumns(): string {
 }
 
 function listVisibleOperationLogsForViewer(systemAccountId: string, options: OperationLogListOptions): OperationLogListResult {
-  const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
-  const page = normalizeOperationLogPage(options.page)
+  const pageSize = normalizeOperationLogPageSize(options.pageSize)
+  const page = normalizeOperationLogPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const database = getDatasetDatabase()
   const commonFilters = buildCommonOperationLogFilters(options)
@@ -878,9 +878,10 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   }
 }
 
-function normalizeOperationLogPage(value: unknown): number {
+function normalizeOperationLogPage(value: unknown, pageSize: number): number {
+  const maxPage = Math.max(1, Math.floor((operationLogMaxListWindowRows - 1) / Math.max(1, Math.trunc(pageSize))))
   return typeof value === 'number' && Number.isInteger(value)
-    ? Math.max(1, value)
+    ? Math.min(maxPage, Math.max(1, value))
     : 1
 }
 

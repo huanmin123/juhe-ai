@@ -625,16 +625,6 @@ function canDeleteGroup(group: GroupSummary): boolean {
 function groupRowActions(group: GroupSummary): RowActionItem[] {
   const actions: RowActionItem[] = []
   if (isAuthorizedGroup(group)) {
-    if (group.groupAuthorizationId) {
-      actions.push({
-        key: 'return',
-        label: '归还',
-        icon: 'revoke',
-        tone: 'danger',
-        confirmTitle: `确认归还授权分组「${group.name}」？归还后你将不再看到或使用它，不影响授权方原分组。`,
-        confirmOkText: '归还'
-      })
-    }
     return actions
   }
   if (canDeleteGroup(group)) {
@@ -824,23 +814,7 @@ function groupFormPayload(): Record<string, unknown> {
 async function removeGroup(id: string) {
   const group = groups.value.find((item) => item.id === id)
   if (group && isAuthorizedGroup(group)) {
-    if (!group.groupAuthorizationId) {
-      message.warning('当前授权分组缺少授权记录，无法归还')
-      return
-    }
-    try {
-      if (isManagementView.value) {
-        await api.authorizations.returnAuthorization(group.groupAuthorizationId, groupScopeParams.value)
-      } else {
-        await api.myAuthorizations.returnAuthorization(group.groupAuthorizationId)
-      }
-      removeGroupItems((item) => item.id === id)
-      message.success('授权分组已归还')
-      void loadData({ quiet: true })
-    } catch (error) {
-      console.error(error)
-      message.error(extractApiErrorMessage(error, '归还授权分组失败'))
-    }
+    message.warning('请到授权操作页归还授权分组')
     return
   }
   if (group?.isDefault) {

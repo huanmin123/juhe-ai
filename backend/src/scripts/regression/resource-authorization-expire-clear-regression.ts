@@ -109,12 +109,12 @@ try {
     expiresAt: futureExpiresAt
   }, ownerAccess)
   const alreadyExpiredAt = new Date(Date.now() - 60_000).toISOString()
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare('UPDATE resource_authorization_grants SET expires_at = ?, updated_at = ? WHERE id = ?')
     .run(alreadyExpiredAt, alreadyExpiredAt, expiredRevokeAuthorization.id)
   const expiredListItem = repositories.listResourceAuthorizations({ status: 'expired' }, ownerAccess).find((authorization) => authorization.id === expiredRevokeAuthorization.id)
   assert.equal(expiredListItem?.status, 'expired', '到期扫描后授权应进入过期状态')
-  const revokedExpiredAuthorization = repositories.revokeResourceAuthorization(expiredRevokeAuthorization.id, {}, ownerAccess)
+  const revokedExpiredAuthorization = repositories.revokeResourceAuthorization(expiredRevokeAuthorization.id, ownerAccess)
   assert.equal(revokedExpiredAuthorization?.status, 'revoked', '到期授权仍应允许显式回收')
   assert.equal(runtimeStatus('group', expiredRevokeGroup.id, grantee.id), 'revoked', '到期授权显式回收后运行态也应标记已回收')
   assert.equal(repositories.listResourceAuthorizations({}, ownerAccess).some((authorization) => authorization.id === expiredRevokeAuthorization.id), true, '到期授权回收后默认列表仍应保留授权记录')
@@ -190,12 +190,12 @@ try {
   assert.equal(authorizedAccount?.authorizationLimits?.total?.limit, 30, '被授权账户列表应返回总限额')
   assert.equal(authorizedAccount?.authorizationQuotaExceeded, false, '未超限时被授权账户列表不应标记额度用完')
 
-  const recordDatabase = databaseModule.getStatsDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   const statDate = usageStatsHelpers.todayDateKey(usageStatsHelpers.usageStatsTimezone())
   const runtimeAccountAuthorizationId = runtimeAuthorizationId('account', account.id, grantee.id)
   assert(runtimeAccountAuthorizationId, '账号授权运行时记录不存在')
-  insertUsageTotal(recordDatabase, grantee.id, 'account_authorization', runtimeAccountAuthorizationId, 30)
-  insertUsageDaily(recordDatabase, grantee.id, 'account_authorization', runtimeAccountAuthorizationId, statDate, 12)
+  insertUsageTotal(statsDatabase, grantee.id, 'account_authorization', runtimeAccountAuthorizationId, 30)
+  insertUsageDaily(statsDatabase, grantee.id, 'account_authorization', runtimeAccountAuthorizationId, statDate, 12)
   const quotaExceededAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === quotaAuthorizedAccount.id)
   assert.equal(quotaExceededAccount?.authorizationQuotaExceeded, true, '授权额度用完时被授权账户列表应返回超限标记')
   assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(quotaAuthorizedAccount.id, {
@@ -258,14 +258,14 @@ try {
   const teamAuthorizedAccount = repositories.listAccounts(teamMemberAccess).find((item) => item.authorizationInstanceSourceAccountId === teamQuotaAccount.id)
   assert.equal(teamAuthorizedAccount?.authorizationQuotaExceeded, false, '团队来源授权未超限时列表不应标记额度用完')
   assert(teamAuthorizedAccount?.id, '团队来源授权应创建独立授权实例账户')
-  insertUsageDaily(recordDatabase, teamMember.id, 'account_authorization_team', `${teamAuthorizedAccount.id}:${team.id}`, statDate, 5)
+  insertUsageDaily(statsDatabase, teamMember.id, 'account_authorization_team', `${teamAuthorizedAccount.id}:${team.id}`, statDate, 5)
   const teamQuotaExceededAccount = repositories.listAccounts(teamMemberAccess).find((item) => item.id === teamAuthorizedAccount?.id)
   assert.equal(teamQuotaExceededAccount?.authorizationQuotaExceeded, true, '团队来源授权额度用完时列表应返回超限标记')
 
   console.log('资源授权有效期清空回归通过：grant 和 runtime 过期时间保持一致')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -273,28 +273,28 @@ try {
 }
 
 function grantExpiresAt(id: string): string | null {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT expires_at FROM resource_authorization_grants WHERE id = ?')
     .get(id) as { expires_at?: string | null } | undefined
   return row?.expires_at ?? null
 }
 
 function runtimeExpiresAt(resourceType: string, resourceId: string, granteeSystemAccountId: string): string | null {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT expires_at FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?')
     .get(resourceType, resourceId, granteeSystemAccountId) as { expires_at?: string | null } | undefined
   return row?.expires_at ?? null
 }
 
 function runtimeAuthorizationId(resourceType: string, resourceId: string, granteeSystemAccountId: string): string | undefined {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT id FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?')
     .get(resourceType, resourceId, granteeSystemAccountId) as { id?: string } | undefined
   return row?.id
 }
 
 function runtimeStatus(resourceType: string, resourceId: string, granteeSystemAccountId: string): string | undefined {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT status FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?')
     .get(resourceType, resourceId, granteeSystemAccountId) as { status?: string } | undefined
   return row?.status

@@ -14,8 +14,10 @@ import { isSensitiveHeaderName } from './openai-gateway-usage.js'
 const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
 const usageRecordBatchSize = 1000
+const usageRecordFlushBatchMaxBytes = 8 * 1024 * 1024
 const usageRecordQueueMaxItems = 10_000
 const usageRecordQueueMaxBytes = 64 * 1024 * 1024
+const usageRecordEstimateMaxBytes = usageRecordQueueMaxBytes + 1
 
 interface QueuedUsageRecord {
   input: UsageRecordInput
@@ -98,11 +100,10 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
   const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     do {
-      const batch = pendingUsageRecords.splice(0, usageRecordBatchSize)
+      const batch = takeUsageRecordFlushBatch(usageRecordBatchSize, usageRecordFlushBatchMaxBytes)
       if (batch.length === 0) {
         break
       }
-      pendingUsageRecordBytes = Math.max(0, pendingUsageRecordBytes - sumQueuedUsageRecordBytes(batch))
       flushedBatches += 1
 
       try {
@@ -295,25 +296,34 @@ function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext)
     return items
   }
   const output: Record<string, unknown> = {}
-  const entries = Object.entries(value as Record<string, unknown>)
-  for (let index = 0; index < entries.length && index < usageSnapshotMaxObjectKeys; index += 1) {
-    const [key, item] = entries[index]
-    context.bytes += Buffer.byteLength(key, 'utf8') + 4
+  let visitedKeys = 0
+  let truncatedByKeyLimit = false
+  const record = value as Record<string, unknown>
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      continue
+    }
+    if (visitedKeys >= usageSnapshotMaxObjectKeys) {
+      truncatedByKeyLimit = true
+      break
+    }
+    context.bytes += boundedStringByteLength(key, usageSnapshotMaxBytes - context.bytes) + 4
     context.depth += 1
-    output[key] = sanitizeSnapshotValue(sanitizeSnapshotField(key, item), context)
+    output[key] = sanitizeSnapshotValue(sanitizeSnapshotField(key, record[key]), context)
     context.depth -= 1
+    visitedKeys += 1
     if (context.bytes >= usageSnapshotMaxBytes) break
   }
-  if (entries.length > Object.keys(output).length || context.truncated) {
+  if (truncatedByKeyLimit || context.truncated || context.bytes >= usageSnapshotMaxBytes) {
     output._truncated = true
   }
   return output
 }
 
 function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext): string {
-  const bytes = Buffer.byteLength(value, 'utf8')
   const remaining = Math.max(0, usageSnapshotMaxBytes - context.bytes)
   const limit = Math.min(usageSnapshotMaxStringBytes, remaining)
+  const bytes = boundedStringByteLength(value, limit + 1)
   if (bytes <= limit) {
     context.bytes += bytes
     return value
@@ -321,8 +331,8 @@ function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext)
   context.truncated = true
   const suffix = `...[truncated ${bytes - limit} bytes]`
   const prefixBytes = Math.max(0, limit - Buffer.byteLength(suffix, 'utf8'))
-  const truncated = value.slice(0, prefixBytes)
-  context.bytes += Buffer.byteLength(truncated, 'utf8') + Buffer.byteLength(suffix, 'utf8')
+  const truncated = sliceStringByUtf8Bytes(value, prefixBytes)
+  context.bytes += boundedStringByteLength(truncated, prefixBytes) + Buffer.byteLength(suffix, 'utf8')
   return `${truncated}${suffix}`
 }
 
@@ -380,13 +390,63 @@ const usageSnapshotMaxStringBytes = 16 * 1024
 const usageSnapshotMaxArrayItems = 50
 const usageSnapshotMaxObjectKeys = 80
 const usageSnapshotMaxDepth = 6
+const exactSnapshotStringByteLengthMaxChars = 16 * 1024
+
+function boundedStringByteLength(value: string, maxBytes: number): number {
+  if (maxBytes <= 0) return 0
+  if (value.length <= exactSnapshotStringByteLengthMaxChars) {
+    return Math.min(maxBytes, Buffer.byteLength(value, 'utf8'))
+  }
+  return Math.min(maxBytes, value.length * 4)
+}
+
+function sliceStringByUtf8Bytes(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  let bytes = 0
+  let index = 0
+  while (index < value.length) {
+    const codePoint = value.codePointAt(index)
+    if (codePoint === undefined) break
+    const charBytes = codePointUtf8ByteLength(codePoint)
+    if (bytes + charBytes > maxBytes) break
+    bytes += charBytes
+    index += codePoint > 0xffff ? 2 : 1
+  }
+  return value.slice(0, index)
+}
+
+function codePointUtf8ByteLength(codePoint: number): number {
+  if (codePoint <= 0x7f) return 1
+  if (codePoint <= 0x7ff) return 2
+  if (codePoint <= 0xffff) return 3
+  return 4
+}
 
 function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
 }
 
+function takeUsageRecordFlushBatch(maxItems: number, maxBytes: number): QueuedUsageRecord[] {
+  const itemLimit = Math.max(1, Math.trunc(maxItems))
+  const byteLimit = Math.max(1, Math.trunc(maxBytes))
+  let count = 0
+  let bytes = 0
+  while (count < itemLimit && count < pendingUsageRecords.length) {
+    const next = pendingUsageRecords[count]
+    if (!next) break
+    if (count > 0 && bytes + next.bytes > byteLimit) {
+      break
+    }
+    bytes += next.bytes
+    count += 1
+  }
+  const batch = pendingUsageRecords.splice(0, count)
+  pendingUsageRecordBytes = Math.max(0, pendingUsageRecordBytes - bytes)
+  return batch
+}
+
 function estimateUsageRecordBytes(input: UsageRecordInput): number {
-  return estimateJsonLikeBytes(input) + 256
+  return estimateJsonLikeBytes(input, { maxBytes: usageRecordEstimateMaxBytes }) + 256
 }
 
 function sumQueuedUsageRecordBytes(items: QueuedUsageRecord[]): number {

@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
+import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { GatewayQuotaSnapshot } from '../gateway/gateway-quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
@@ -197,14 +198,20 @@ const usageRecordMessageQueueMaxMessages = 10_000
 const usageRecordMessageQueueMaxBytes = 64 * 1024 * 1024
 const regularWorkerMessageQueueMaxMessages = 5_000
 const regularWorkerMessageQueueMaxBytes = 64 * 1024 * 1024
+const usageRecordWorkerMessageMaxBytes = 8 * 1024 * 1024
+const regularWorkerMessageMaxBytes = 8 * 1024 * 1024
+const workerMessageEstimateMaxBytes = Math.max(usageRecordWorkerMessageMaxBytes, regularWorkerMessageMaxBytes) + 1
+const workerMessageEstimateMaxNodes = 20_000
+const auditWorkerMessageMaxBytes = 2 * 1024 * 1024
+const auditWorkerPayloadBodyInlineMaxBytes = 512 * 1024
 const usageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 let usageRecordMessageQueueBytes = 0
 let regularWorkerMessageQueueBytes = 0
 let sendingMessage = false
 let sendingWorkerMessage: BackgroundWorkerMessage | undefined
-const pendingMessageDropCounts = emptyIpcQueueCounts()
-const pendingMessageRejectCounts = emptyIpcQueueCounts()
+const pendingQueueRuntime = emptyIpcQueuesRuntime()
+const workerMessageBytesCache = new WeakMap<object, number>()
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let timedOutSnapshotRequestCount = 0
@@ -264,7 +271,7 @@ export function sendAuditLogsToWorker(items: AuditLogInput[]): boolean {
 
   return sendBackgroundWorkerMessage({
     type: 'background_worker_audit_logs',
-    items
+    items: trimAuditLogsForWorkerIpc(items)
   })
 }
 
@@ -467,8 +474,9 @@ function handleParentMessage(message: unknown): void {
 
 function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
   const messageBytes = estimateWorkerMessageBytes(message)
+  const queueKey = ipcQueueKeyForMessage(message)
   if (!canQueueWorkerMessage(message, messageBytes)) {
-    pendingMessageRejectCounts[ipcQueueKeyForMessage(message)] += 1
+    pendingQueueRuntime[queueKey].rejectedCount = (pendingQueueRuntime[queueKey].rejectedCount ?? 0) + 1
     return false
   }
   if (message.type === 'background_worker_usage_records') {
@@ -478,6 +486,7 @@ function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
     regularWorkerMessageQueue.push(message)
     regularWorkerMessageQueueBytes += messageBytes
   }
+  addPendingQueueRuntimeMessage(queueKey, messageBytes)
 
   flushWorkerMessageQueue()
   return true
@@ -486,9 +495,11 @@ function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
 function canQueueWorkerMessage(message: BackgroundWorkerMessage, messageBytes: number): boolean {
   if (message.type === 'background_worker_usage_records') {
     return usageRecordMessageQueue.length < usageRecordMessageQueueMaxMessages
+      && messageBytes <= usageRecordWorkerMessageMaxBytes
       && usageRecordMessageQueueBytes + messageBytes <= usageRecordMessageQueueMaxBytes
   }
   return regularWorkerMessageQueue.length < regularWorkerMessageQueueMaxMessages
+    && messageBytes <= regularWorkerMessageMaxBytes
     && regularWorkerMessageQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
 }
 
@@ -536,20 +547,25 @@ function flushWorkerMessageQueue(): void {
 }
 
 function shiftWorkerMessage(): BackgroundWorkerMessage | undefined {
-  const message = usageRecordMessageQueue.shift() ?? regularWorkerMessageQueue.shift()
+  let queueKey: IpcQueueKey | undefined
+  const usageMessage = usageRecordMessageQueue.shift()
+  const message = usageMessage ?? regularWorkerMessageQueue.shift()
   if (message) {
+    queueKey = ipcQueueKeyForMessage(message)
     const messageBytes = estimateWorkerMessageBytes(message)
     if (message.type === 'background_worker_usage_records') {
       usageRecordMessageQueueBytes = Math.max(0, usageRecordMessageQueueBytes - messageBytes)
     } else {
       regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - messageBytes)
     }
+    removePendingQueueRuntimeMessage(queueKey, messageBytes)
   }
   return message
 }
 
 function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
   const messageBytes = estimateWorkerMessageBytes(message)
+  const queueKey = ipcQueueKeyForMessage(message)
   if (message.type === 'background_worker_usage_records') {
     usageRecordMessageQueue.unshift(message)
     usageRecordMessageQueueBytes += messageBytes
@@ -557,26 +573,37 @@ function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
     regularWorkerMessageQueue.unshift(message)
     regularWorkerMessageQueueBytes += messageBytes
   }
+  addPendingQueueRuntimeMessage(queueKey, messageBytes)
 }
 
 function buildPendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
-  const runtime = emptyIpcQueuesRuntime()
-  addQueueRuntimeMessages(runtime, usageRecordMessageQueue)
-  addQueueRuntimeMessages(runtime, regularWorkerMessageQueue)
-  for (const key of ipcQueueKeys()) {
-    runtime[key].droppedCount = pendingMessageDropCounts[key]
-    runtime[key].rejectedCount = pendingMessageRejectCounts[key]
-  }
-  return runtime
+  return clonePendingQueueRuntime(pendingQueueRuntime)
 }
 
-function addQueueRuntimeMessages(runtime: BackgroundWorkerIpcQueuesRuntime, queue: HeadIndexedQueue<BackgroundWorkerMessage>): void {
-  for (let index = 0; index < queue.length; index += 1) {
-    const message = queue.at(index)
-    if (!message) continue
-    const item = runtime[ipcQueueKeyForMessage(message)]
-    item.queueLength += 1
-    item.queueBytes = (item.queueBytes ?? 0) + estimateWorkerMessageBytes(message)
+function addPendingQueueRuntimeMessage(key: IpcQueueKey, bytes: number): void {
+  const queue = pendingQueueRuntime[key]
+  queue.queueLength += 1
+  queue.queueBytes = (queue.queueBytes ?? 0) + bytes
+}
+
+function removePendingQueueRuntimeMessage(key: IpcQueueKey, bytes: number): void {
+  const queue = pendingQueueRuntime[key]
+  queue.queueLength = Math.max(0, queue.queueLength - 1)
+  queue.queueBytes = Math.max(0, (queue.queueBytes ?? 0) - bytes)
+}
+
+function clonePendingQueueRuntime(input: BackgroundWorkerIpcQueuesRuntime): BackgroundWorkerIpcQueuesRuntime {
+  return {
+    usageRecords: { ...input.usageRecords },
+    auditLogs: { ...input.auditLogs },
+    operationLogs: { ...input.operationLogs },
+    recordMaintenance: { ...input.recordMaintenance },
+    runtimeLogLines: { ...input.runtimeLogLines },
+    statusRequests: { ...input.statusRequests },
+    processEventLoopRequests: { ...input.processEventLoopRequests },
+    processEventLoopResponses: { ...input.processEventLoopResponses },
+    gatewayRuntimeCacheInvalidations: { ...input.gatewayRuntimeCacheInvalidations },
+    other: { ...input.other }
   }
 }
 
@@ -607,10 +634,6 @@ function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueueKey {
     default:
       return 'other'
   }
-}
-
-function emptyIpcQueueCounts(): Record<IpcQueueKey, number> {
-  return Object.fromEntries(ipcQueueKeys().map((key) => [key, 0])) as Record<IpcQueueKey, number>
 }
 
 function emptyIpcQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
@@ -649,73 +672,103 @@ function ipcQueueKeys(): IpcQueueKey[] {
   ]
 }
 
+function trimAuditLogsForWorkerIpc(items: AuditLogInput[]): AuditLogInput[] {
+  return items.map((item) => {
+    let bytes = 2048 + item.attempts.length * 512
+    let changed = false
+    const payloads: AuditLogInput['payloads'] = item.payloads.map((payload) => {
+      const headerBytes = payload.headers ? estimateJsonBytes(payload.headers) : 0
+      const bodyBytes = auditPayloadBodyBytes(payload.body)
+      const nextBytes = headerBytes + bodyBytes + 512
+      const shouldDropBody = bodyBytes > auditWorkerPayloadBodyInlineMaxBytes || bytes + nextBytes > auditWorkerMessageMaxBytes
+      bytes += shouldDropBody ? headerBytes + 512 : nextBytes
+      if (!shouldDropBody) {
+        return payload
+      }
+      changed = true
+      return {
+        ...payload,
+        body: undefined,
+        contentEncoding: undefined,
+        rawBodySizeBytes: payload.rawBodySizeBytes ?? bodyBytes,
+        captureStatus: payload.bodySha256 ? 'hash_only' as const : 'dropped' as const
+      }
+    })
+    return changed
+      ? {
+          ...item,
+          payloads,
+          captureStatus: item.captureStatus === 'overflow' ? 'overflow' : 'dropped'
+        }
+      : item
+  })
+}
+
+function auditPayloadBodyBytes(body: Buffer | string | undefined): number {
+  if (body === undefined) return 0
+  return Buffer.isBuffer(body) ? body.byteLength : estimateJsonBytes(body)
+}
+
 function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
+  if (typeof message === 'object' && message !== null) {
+    const cached = workerMessageBytesCache.get(message)
+    if (cached !== undefined) {
+      return cached
+    }
+  }
+
+  let bytes: number
   switch (message.type) {
     case 'background_worker_runtime_log_line':
-      return Buffer.byteLength(message.line, 'utf8')
+      bytes = Buffer.byteLength(message.line, 'utf8')
         + Buffer.byteLength(message.sourceKey ?? '', 'utf8')
         + Buffer.byteLength(message.logFile ?? '', 'utf8')
         + 192
+      break
     case 'background_worker_usage_records':
-      return message.items.reduce((sum, item) => sum + estimateJsonBytes(item) + 256, 128)
+      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
+      break
     case 'background_worker_audit_logs':
-      return message.items.reduce((sum, item) => sum + estimateAuditLogBytes(item), 128)
+      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateAuditLogBytes(item)), 128)
+      break
     case 'background_worker_operation_logs':
-      return message.items.reduce((sum, item) => sum + estimateJsonBytes(item) + 256, 128)
+      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
+      break
     case 'background_worker_record_maintenance':
-      return message.items.reduce((sum, item) => sum + estimateJsonBytes(item) + 256, 128)
+      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
+      break
     case 'background_worker_status_request':
     case 'background_worker_status_response':
     case 'background_worker_ready':
     case 'gateway_runtime_cache_invalidate':
     case 'gateway_quota_snapshot_update':
-      return 512
+      bytes = 512
+      break
     default:
-      return 512
+      bytes = 512
+      break
   }
+  if (typeof message === 'object' && message !== null) {
+    workerMessageBytesCache.set(message, bytes)
+  }
+  return bytes
 }
 
 function estimateAuditLogBytes(input: AuditLogInput): number {
   const payloadBytes = input.payloads.reduce((sum, payload) => {
     const body = payload.body
-    const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0
+    const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? estimateJsonBytes(body) : 0
     const headerBytes = payload.headers ? estimateJsonBytes(payload.headers) : 0
-    return sum + bodyBytes + headerBytes + 512
+    return Math.min(workerMessageEstimateMaxBytes, sum + bodyBytes + headerBytes + 512)
   }, 0)
-  return payloadBytes + input.attempts.length * 512 + 2048
+  return Math.min(workerMessageEstimateMaxBytes, payloadBytes + input.attempts.length * 512 + 2048)
 }
 
 function estimateJsonBytes(value: unknown): number {
-  return estimateJsonLikeBytes(value)
-}
-
-function estimateJsonLikeBytes(value: unknown, seen = new WeakSet<object>()): number {
-  if (value === null || value === undefined) return 4
-  if (typeof value === 'string') return Buffer.byteLength(value, 'utf8') + 2
-  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
-    return String(value).length
-  }
-  if (Buffer.isBuffer(value)) return value.byteLength
-  if (value instanceof Date) return value.toISOString().length + 2
-  if (Array.isArray(value)) {
-    if (seen.has(value)) return 16
-    seen.add(value)
-    let bytes = 2
-    for (const item of value) {
-      bytes += estimateJsonLikeBytes(item, seen) + 1
-    }
-    return bytes
-  }
-  if (typeof value === 'object') {
-    if (seen.has(value)) return 16
-    seen.add(value)
-    let bytes = 2
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      bytes += Buffer.byteLength(key, 'utf8') + 3 + estimateJsonLikeBytes(item, seen) + 1
-    }
-    return bytes
-  }
-  return 16
+  return estimateJsonLikeBytes(value, {
+    maxBytes: workerMessageEstimateMaxBytes,
+    maxNodes: workerMessageEstimateMaxNodes
+  })
 }
 
 function finishPendingRequest(requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {

@@ -17,7 +17,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'stream-first-output-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const noFirstChunkFailureState = databaseModule.getDatabase()
+    const noFirstChunkFailureState = databaseModule.getBusinessDatabase()
       .prepare('SELECT stream_failure_count FROM accounts WHERE id = ?')
       .get(noFirstChunkCredential.account.id) as { stream_failure_count?: number } | undefined
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '首段前失败未产生可见输出，不应本地屏蔽账号')
@@ -371,7 +371,7 @@ async function main(): Promise<void> {
     await closeServer(appServer)
     await closeServer(upstreamServer)
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }

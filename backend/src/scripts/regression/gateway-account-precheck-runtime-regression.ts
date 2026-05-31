@@ -41,7 +41,7 @@ try {
   await testFailedUsageDoesNotMakePrecheckStale()
   await testFreshPrecheckStillMarksTemporaryUnavailable()
 
-  console.log('网关账号事前确认运行态与旧写回保护回归通过')
+  console.log('网关账号事前确认运行态与过期写回保护回归通过')
 } finally {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   try {
@@ -139,8 +139,8 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
   const { account, gatewayAccount } = createGatewayAccount('落库错误清理运行态', {
     error_handling_rules: [{
       name: '测试 529 冷却',
-      statusCode: '529',
-      action: 'temporary_unavailable',
+      status_codes: '529',
+      action: 'temp_unschedulable',
       durationMinutes: 1
     }]
   })
@@ -157,7 +157,7 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
       trafficSource: 'manual_account_test'
     }
   })
-  await gatewaySideEffects.flushGatewayAccountSideEffectsForTest()
+  await withDbServiceRole(() => gatewaySideEffects.flushGatewayAccountSideEffectsForTest())
 
   const latest = repositories.findAccountSummary(account.id, adminAccess)
   assert.equal(latest?.status, 'temporary_unavailable', '错误策略落库后账号应进入临时不可调用')
@@ -170,11 +170,11 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
 }
 
 async function testStalePrecheckAfterManualRestoreIsSkipped(): Promise<void> {
-  const { account, group, gatewayAccount } = createGatewayAccount('预检查旧写回手动恢复')
+  const { account, group, gatewayAccount } = createGatewayAccount('预检查过期写回手动恢复')
   await delay(5)
   const precheckStartedAt = new Date().toISOString()
   await delay(5)
-  const cooled = repositories.markAccountCooldown(account.id, new Date(Date.now() + 60_000).toISOString(), '模拟旧预检查先写入冷却')
+  const cooled = repositories.markAccountCooldown(account.id, new Date(Date.now() + 60_000).toISOString(), '模拟较早预检查先写入冷却')
   assert.equal(cooled?.status, 'temporary_unavailable', '测试账号应先被写入临时不可调用')
   const restored = repositories.clearAccountFailureState(account.id, adminAccess)
   assert.equal(restored?.status, 'active', '测试账号应已手动恢复正常')
@@ -182,12 +182,12 @@ async function testStalePrecheckAfterManualRestoreIsSkipped(): Promise<void> {
   const result = await handleDbServiceOperation({
     type: 'mark_account_precheck_temporary_unavailable',
     account: gatewayAccount,
-    reason: '旧预检查失败不应覆盖手动恢复',
+    reason: '较早预检查失败不应覆盖手动恢复',
     precheckStartedAt
   })
-  assert.equal(result.updated, false, '手动恢复后的旧预检查写回不应再次改状态')
-  assert.equal(result.skippedReason, 'stale_account_updated', '旧预检查应被识别为账号状态已更新')
-  assertActiveAccount(account.id, '手动恢复后的旧预检查不应把账号改回临时不可调用')
+  assert.equal(result.updated, false, '手动恢复后的过期预检查写回不应再次改状态')
+  assert.equal(result.skippedReason, 'stale_account_updated', '过期预检查应被识别为账号状态已更新')
+  assertActiveAccount(account.id, '手动恢复后的过期预检查不应把账号改回临时不可调用')
   assert.equal(group.providerCode, 'openai', '测试分组应为 OpenAI 分组')
 }
 
@@ -296,7 +296,6 @@ function createRuntimeAccount(id: string): OpenAIAccountSecret {
     currentConcurrency: 0,
     baseUrl: 'http://127.0.0.1:9/v1',
     apiKey: 'sk-precheck-runtime',
-    passthroughEnabled: true,
     streamFailureCount: 0,
     credentials: {
       api_key: 'sk-precheck-runtime',
@@ -316,6 +315,16 @@ function createRuntimeAuthorizedAccount(id: string): OpenAIAccountSecret {
     boundGroupId: 'group-authorized',
     accountAuthorizationId: 'auth-account-a',
     name: '授权事前确认运行态账号'
+  }
+}
+
+async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
+  const previousRole = runtimeConfig.processRole
+  runtimeConfig.processRole = 'db-service'
+  try {
+    return await action()
+  } finally {
+    runtimeConfig.processRole = previousRole
   }
 }
 

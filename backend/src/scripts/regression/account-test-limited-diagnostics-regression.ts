@@ -25,7 +25,6 @@ const account: AccountSummary = {
   priority: 0,
   superPriorityEnabled: false,
   fallbackEnabled: false,
-  passthroughEnabled: false,
   schedulable: true,
   todayUsage: emptyUsage,
   usage: emptyUsage,

@@ -10,7 +10,7 @@ import {
   isOpenAIOAuthCodexCompactRequest,
   type OpenAIOAuthCodexIdentity
 } from './openai-oauth-codex-adapter.js'
-import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
+import { type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
 import { requestStream } from './openai-gateway-usage.js'
 
 export interface GatewayUpstreamResponse {
@@ -33,7 +33,6 @@ interface UpstreamRequestOptions {
 interface UpstreamHeaderAccount {
   id?: string
   apiKey: string
-  passthroughEnabled: boolean
   type?: string
   credentials?: Record<string, unknown>
 }
@@ -227,34 +226,19 @@ export function isEffectiveOpenAIStreamRequest(req: Request, account?: { type?: 
   return requestStream(req)
 }
 
-export function buildUpstreamRequestBody(req: Request, passthroughEnabled: boolean): Buffer | string | undefined {
+export function buildUpstreamRequestBody(req: Request): Buffer | undefined {
   if (req.method === 'GET' || req.method === 'HEAD') {
     return undefined
   }
-  const bodyCacheKey = passthroughEnabled ? 'passthrough' : 'normalized'
   const requestWithBodyCache = req as GatewayRawBodyRequest
-  const cached = requestWithBodyCache.gatewayUpstreamBodyCache?.[bodyCacheKey]
+  const cached = requestWithBodyCache.gatewayUpstreamBodyCache?.passthrough
   if (cached) {
     return cached.body
   }
   const rawBody = (req as GatewayRawBodyRequest).rawBody
-  let body: Buffer | string | undefined
-  if (!passthroughEnabled) {
-    const bodyState = getGatewayRequestBodyState(req)
-    if (bodyState?.jsonParseStatus === 'deferred_large_json' && rawBody && rawBody.length > 0) {
-      body = rawBody
-    } else {
-      body = JSON.stringify(req.body ?? {})
-    }
-  } else if (rawBody && rawBody.length > 0) {
-    body = rawBody
-  } else if (req.body === undefined || isEmptyPlainObject(req.body)) {
-    body = undefined
-  } else {
-    body = JSON.stringify(req.body)
-  }
+  const body = rawBody && rawBody.length > 0 ? rawBody : undefined
   requestWithBodyCache.gatewayUpstreamBodyCache = requestWithBodyCache.gatewayUpstreamBodyCache ?? {}
-  requestWithBodyCache.gatewayUpstreamBodyCache[bodyCacheKey] = { body }
+  requestWithBodyCache.gatewayUpstreamBodyCache.passthrough = { body }
   return body
 }
 
@@ -269,7 +253,7 @@ export async function buildUpstreamRequestParts(
   }
   return {
     headers: buildUpstreamHeaders(req.headers, account),
-    body: buildUpstreamRequestBody(req, account.passthroughEnabled)
+    body: buildUpstreamRequestBody(req)
   }
 }
 
@@ -289,9 +273,6 @@ export function buildUpstreamHeaders(inputHeaders: Record<string, string | strin
   headers.set('authorization', `Bearer ${account.apiKey}`)
   if (account.type === 'oauth') {
     applyOpenAICodexHeaders(headers, account)
-  }
-  if (!account.passthroughEnabled) {
-    headers.set('content-type', 'application/json')
   }
   return headers
 }
@@ -355,9 +336,9 @@ function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccoun
   if (!headers.get('openai-beta')) {
     headers.set('openai-beta', 'responses=experimental')
   }
-  const chatGPTAccountId = stringCredential(account.credentials, 'chatgpt_account_id') ?? stringCredential(account.credentials, 'account_id')
-  if (chatGPTAccountId && !headers.get('chatgpt-account-id')) {
-    headers.set('chatgpt-account-id', chatGPTAccountId)
+  const accountId = stringCredential(account.credentials, 'account_id')
+  if (accountId && !headers.get('chatgpt-account-id')) {
+    headers.set('chatgpt-account-id', accountId)
   }
 }
 
@@ -426,10 +407,6 @@ function bindAbortSignalToIncomingMessage(message: IncomingMessage, signal?: Abo
   }
   signal.addEventListener('abort', abort, { once: true })
   message.once('close', () => signal.removeEventListener('abort', abort))
-}
-
-function isEmptyPlainObject(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0
 }
 
 function stringCredential(credentials: Record<string, unknown> | undefined, key: string): string | undefined {

@@ -1,5 +1,7 @@
 # PLAN-0014 OAuth 主动请求降噪与被动额度快照
 
+> 归档说明：本文记录 2026-05-08 的实施计划和验证现场。当前运行路径以最新代码、`docs/functions/SQLite存储说明.md` 和 `docs/functions/模型检测设计.md` 为准，不保留账号质量主动探测字段、主动额度刷新脚本或旧探针入口。
+
 ## 基本信息
 
 - 编号：PLAN-0014
@@ -47,8 +49,8 @@
 - [x] 保留冷却账号恢复性复测；后续 BUG-0013 已将候选收敛为冷却到期的 `temporary_unavailable` 账号。
 - [x] 文档同步：OAuth 快照、用量统计口径、SQLite 默认设置、账号质量计划和透传比较文档。
 - [x] 回归验证并记录结果。
-- [x] 清理源码残留：删除 `account_quality_scores.last_probe_at` schema 定义和未使用的 `recordAccountQualityProbe()`。
-- [x] 清理本地 SQLite：通过一次性离线脚本备份后删除旧 probe 设置，并物理移除 `account_quality_scores.last_probe_at`；脚本完成后已从源码移除。
+- [x] 清理源码残留：删除账号质量主动探测遗留 schema 定义和未使用的主动探测函数。
+- [x] 清理本地 SQLite：通过一次性离线脚本备份后删除旧 probe 设置，并物理移除主动探测遗留列；脚本完成后已从源码移除。
 - [x] 冷却恢复性复测改为学习最近真实请求形态，只取 `endpoint` / `model` / `stream` 元信息，不读取或重放用户请求内容。
 - [x] 补充回归验证并记录结果。
 
@@ -67,8 +69,8 @@
 | 后台任务 | 质量主动探测已删除 | 代码检查与回归脚本 | worker 只刷新真实请求质量缓存，不再包含主动探测候选、执行和设置项 | 已通过 | 回归脚本断言后台代码不再引用主动探测开关和候选函数 |
 | 后台任务 | 冷却复测恢复性处理 | 默认设置和代码检查 | 后续 BUG-0013 口径为只复测冷却到期且状态为 `temporary_unavailable` 的账号 | 已通过 | 当前 SQL 已限制为 `temporary_unavailable` |
 | 后台任务 | 冷却复测请求形态 | 代码检查与回归脚本 | 复测优先学习最近真实 `endpoint/model/stream`，但探活 body 只使用最小安全 payload，不重放用户内容 | 已通过 | `test:usage-pricing` 已断言不再使用固定 `hi`，并断言读取真实请求形态 |
-| 存储清理 | 本地 probe 残留清理 | 一次性离线脚本 | 备份数据库，删除旧 probe 设置，移除 `account_quality_scores.last_probe_at` | 已通过 | 2026-05-08 通过，两轮共删除旧 probe 设置 6 条，备份到 `backend/data/backups/`；脚本已按预上线规则从源码移除 |
-| 存储清理 | 表结构和旧设置复核 | `PRAGMA table_info(account_quality_scores)` / 查询旧 probe 设置 | 本地库不再包含 `last_probe_at`，`system_settings` 不再有旧 probe key | 已通过 | 2026-05-08 通过 |
+| 存储清理 | 本地 probe 残留清理 | 一次性离线脚本 | 备份数据库，删除旧 probe 设置，移除主动探测遗留列 | 已通过 | 2026-05-08 通过，两轮共删除旧 probe 设置 6 条，备份到 `backend/data/backups/`；脚本已按预上线规则从源码移除 |
+| 存储清理 | 表结构和旧设置复核 | 列清单 / 查询旧 probe 设置 | 本地库不再包含主动探测遗留列，`system_settings` 不再有旧 probe key | 已通过 | 2026-05-08 通过 |
 
 ## 决策记录
 
@@ -78,7 +80,7 @@
 | 2026-05-08 | 质量主动探测直接删除 | 该能力不是恢复项，只是优化项；保留旧开关容易被后续误恢复并再次产生无业务价值的上游请求 | 调度永久回到真实请求质量缓存，不再保留旧探测开关 |
 | 2026-05-08 | 冷却复测保留恢复性处理 | 临时不可调用到期后需要自动确认是否恢复 | 当时保留受限复测；后续 BUG-0013 已收敛为只复测冷却到期的 `temporary_unavailable` |
 | 2026-05-08 | 本轮不做 Codex 请求形态识别 | 用户体验优先，不因客户端形态判断误伤正常请求 | OAuth adapter 继续做协议适配，不新增拒绝策略 |
-| 2026-05-08 | 删除本地库和源码中的 probe 残留 | 主动探测已删除，继续保留 `last_probe_at` 和未调用函数会误导后续维护 | 新库 schema 和本地 SQLite 都不再包含 `last_probe_at`，旧设置通过一次性离线脚本清理，脚本完成后移除 |
+| 2026-05-08 | 删除本地库和源码中的 probe 残留 | 主动探测已删除，继续保留主动探测遗留列和未调用函数会误导后续维护 | 新库 schema 和本地 SQLite 都不再包含主动探测遗留列，旧设置通过一次性离线脚本清理，脚本完成后移除 |
 | 2026-05-08 | 冷却复测只学习真实请求形态，不学习用户内容 | 固定 payload 容易形成高风险探活特征；重放用户 prompt 又有隐私和安全边界问题 | 复测只读取最近真实 `endpoint/model/stream`，生成最小 tokens 的新探活 body |
 
 ## 进度记录
@@ -87,8 +89,8 @@
 - 2026-05-08：完成后端改造：删除 OAuth usage refresh 服务，建号流程不再主动刷新额度快照，后台 worker 不再注册 usage refresh，质量主动探测代码直接删除，冷却复测恢复为受限处理。
 - 2026-05-08：完成文档同步：长期文档、阶段计划、后台任务说明、部署说明和 PLAN-0011 均改为被动快照与“质量主动探测已删除”的口径。
 - 2026-05-08：完成回归验证和类型检查。
-- 2026-05-08：复核后发现 `schema.ts` 和本地 SQLite 仍残留 `account_quality_scores.last_probe_at`，`account-quality.repository.ts` 仍残留未调用的 `recordAccountQualityProbe()`；已按“删除而非禁用”原则清理。
-- 2026-05-08：新增并执行一次性离线脚本，备份本地数据库后删除旧 probe 设置和 `last_probe_at` 列；复查时补强脚本匹配规则，清理剩余 `accountQuality*Probe*` 设置，并验证脚本幂等。2026-05-09 文档对账时已按预上线规则移除该一次性脚本源码。
+- 2026-05-08：复核后发现 schema 和本地 SQLite 仍残留主动探测遗留列，账号质量仓储仍残留未调用的主动探测函数；已按“删除而非禁用”原则清理。
+- 2026-05-08：新增并执行一次性离线脚本，备份本地数据库后删除旧 probe 设置和主动探测遗留列；复查时补强脚本匹配规则，清理剩余主动探测设置，并验证脚本幂等。2026-05-09 文档对账时已按预上线规则移除该一次性脚本源码。
 - 2026-05-08：冷却复测不再固定 `prompt: 'hi'`；后台任务先读取真实使用记录中的接口形态元信息，测试服务再构造 `/v1/responses` 或 `/v1/chat/completions` 的最小探活 payload。
 
 ## 验收标准
@@ -98,7 +100,7 @@
 - `backend/src/modules/openai-oauth/openai-oauth-usage-refresh.service.ts` 不再被引用；如无保留必要则删除。
 - 网关 OAuth 响应头被动快照写入仍存在。
 - 默认实现下，账号质量主动探测不存在；后续 BUG-0013 口径下，冷却复测只对冷却到期的 `temporary_unavailable` 发起恢复性测试。
-- 源码和本地 SQLite 不再保留主动探测遗留字段 `last_probe_at`。
+- 源码和本地 SQLite 不再保留主动探测遗留字段。
 - 冷却复测不再使用固定 `hi` payload；如存在真实客户请求样本，优先学习 `endpoint/model/stream`，但不得读取或复用用户 prompt、工具参数、文件内容或完整 request snapshot。
 - 文档和回归脚本不再把 OAuth 主动 usage refresh 作为既有能力。
 
@@ -109,8 +111,8 @@
 - 2026-05-08：`pnpm --filter juhe-ai-backend test:openai-api-key-passthrough` 通过。
 - 2026-05-08：`pnpm --filter juhe-ai-backend typecheck` 通过。
 - 2026-05-08：`pnpm typecheck` 通过。
-- 2026-05-08：一次性离线脚本执行通过，两轮共删除旧 probe 设置 6 条，移除 `account_quality_scores.last_probe_at`，并生成本地备份；2026-05-09 脚本源码已移除。
-- 2026-05-08：`PRAGMA table_info(account_quality_scores)` 和旧设置查询通过，本地库列清单不再包含 `last_probe_at`，`system_settings` 不再包含旧 probe key。
+- 2026-05-08：一次性离线脚本执行通过，两轮共删除旧 probe 设置 6 条，移除主动探测遗留列，并生成本地备份；2026-05-09 脚本源码已移除。
+- 2026-05-08：列清单和旧设置查询通过，本地库列清单不再包含主动探测遗留列，`system_settings` 不再包含旧 probe key。
 - 2026-05-08：再次执行一次性离线脚本通过，`deletedSettings = 0`、`droppedLastProbeAt = false`，验证脚本幂等且无变更时不再重复生成备份。
 - 2026-05-08：`pnpm --filter juhe-ai-backend test:usage-pricing` 通过。
 - 2026-05-08：`pnpm --filter juhe-ai-backend test:openai-api-key-passthrough` 通过。
@@ -121,7 +123,7 @@
 
 - 被动快照依赖真实业务请求返回 Codex rate-limit 响应头；新建账号在第一次真实请求前可能没有 OAuth 专属额度展示，这是可接受边界。
 - 删除主动探测后，同层级质量排序完全依赖真实流量样本；没有样本时调度回落到“超级优先 > 优先级 > 稳定兜底顺序”。
-- 冷却复测仍会产生恢复性测试请求；当前已避免固定 `hi` 和固定 stream 形态，并在 BUG-0013 中增加退避上限。没有真实样本时仍会回退到最小 Responses 探活，后续如风控仍敏感，应继续增加更严格的批量预算和审计来源。
+- 冷却复测仍会产生恢复性测试请求；当前已避免固定 `hi` 和固定 stream 形态，并在 BUG-0013 中增加退避上限。没有真实样本时使用最小 Responses 恢复探活 payload，后续如风控仍敏感，应继续增加更严格的批量预算和审计来源。
 - 冷却复测形态只取 `usage_records.endpoint/model/stream`，不读取 `request_snapshot_json`，因此不会重放用户内容；代价是无法完全复刻复杂客户端 header 和 body 形态。
 - 如果后续要恢复任意主动请求，必须先有明确需求、预算上限、退避和可追踪来源字段。
 
@@ -130,6 +132,6 @@
 - OAuth 额度快照已改为纯被动更新：真实网关响应头和账户测试副作用写入快照，建号和后台 worker 不再主动发模型请求拿额度。
 - 已删除 `backend/src/modules/openai-oauth/openai-oauth-usage-refresh.service.ts`，并在回归脚本里断言后台任务和 OAuth 路由不再引用主动刷新。
 - 账号质量主动探测已删除；冷却账号复测只保留恢复性处理。后续 BUG-0013 已收敛为只处理冷却到期的 `temporary_unavailable`。
-- 源码和本地 SQLite 的 probe 残留已清理；`account_quality_scores.last_probe_at` 不再作为新库字段存在；一次性清理脚本已移除，避免成为长期维护入口。
+- 源码和本地 SQLite 的 probe 残留已清理；主动探测遗留列不再作为新库字段存在；一次性清理脚本已移除，避免成为长期维护入口。
 - 冷却复测已改为学习最近真实请求形态元信息并生成最小探活 payload，不再使用固定 `hi`。
-- Codex 请求形态识别本轮按用户要求不做；OAuth adapter 继续保持兼容体验优先。
+- Codex 请求形态识别本轮按用户要求不做；OAuth adapter 继续保持客户端体验优先。

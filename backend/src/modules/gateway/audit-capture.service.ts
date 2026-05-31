@@ -96,8 +96,9 @@ const failedAuditFullBodyLimitBytes = 2 * 1024 * 1024
 const successAuditFullBodyLimitBytes = 512 * 1024
 const auditBodySummaryEdgeBytes = 256 * 1024
 const auditBodySummaryTextPreviewBytes = 4 * 1024
-const auditJsonSummaryParseMaxBytes = 8 * 1024 * 1024
+const auditJsonSummaryParseMaxBytes = 512 * 1024
 const auditJsonSummaryMaxKeys = 50
+const auditInlineSha256MaxBytes = 1024 * 1024
 const auditPayloadSummaryContentType = 'application/json; audit=payload-summary'
 const auditActiveCaptureHardLimitBytes = 64 * 1024 * 1024
 
@@ -250,7 +251,7 @@ export class AuditCaptureContext {
       const bodyBuffer = bodyToBuffer(payload.body)
       omittedPayloadCount += 1
       omittedBodyBytes += bodyBuffer.byteLength
-      payload.bodySha256 = payload.bodySha256 ?? sha256Buffer(bodyBuffer)
+      payload.bodySha256 = payload.bodySha256 ?? sha256BufferIfSmall(bodyBuffer)
       payload.rawBodySizeBytes = payload.rawBodySizeBytes ?? bodyBuffer.byteLength
       payload.captureStatus = 'hash_only'
       payload.body = undefined
@@ -537,7 +538,7 @@ function summarizePayloadForLimit(payload: Omit<AuditLogPayloadInput, 'sequenceI
   }
   const originalContentType = payload.contentType
   const originalContentEncoding = payload.contentEncoding
-  const originalSha256 = payload.bodySha256 ?? sha256Buffer(bodyBuffer)
+  const originalSha256 = payload.bodySha256 ?? sha256BufferIfSmall(bodyBuffer)
   payload.body = JSON.stringify(buildPayloadSummary({
     body: bodyBuffer,
     originalSha256,
@@ -574,7 +575,7 @@ function updateExistingPayloadSummaryLimit(
 
 function buildPayloadSummary(input: {
   body: Buffer
-  originalSha256: string
+  originalSha256?: string
   originalBodySizeBytes: number
   originalContentType?: string
   originalContentEncoding?: string
@@ -646,23 +647,42 @@ function summarizeParsedJsonValue(value: unknown): Record<string, unknown> {
       topLevelLength: value.length,
       firstItemType: jsonValueType(value[0]),
       firstItemKeys: value[0] && typeof value[0] === 'object' && !Array.isArray(value[0])
-        ? Object.keys(value[0] as Record<string, unknown>).slice(0, auditJsonSummaryMaxKeys)
+        ? topLevelObjectKeys(value[0] as Record<string, unknown>).keys
         : undefined
     }
   }
   if (value && typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>)
+    const keys = topLevelObjectKeys(value as Record<string, unknown>)
     return {
       parseable: true,
       topLevelType: 'object',
-      topLevelKeyCount: keys.length,
-      topLevelKeys: keys.slice(0, auditJsonSummaryMaxKeys)
+      topLevelKeyCountAtLeast: keys.countAtLeast,
+      topLevelKeys: keys.keys,
+      topLevelKeysTruncated: keys.truncated
     }
   }
   return {
     parseable: true,
     topLevelType: jsonValueType(value)
   }
+}
+
+function topLevelObjectKeys(value: Record<string, unknown>): { keys: string[]; countAtLeast: number; truncated: boolean } {
+  const keys: string[] = []
+  let countAtLeast = 0
+  let truncated = false
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue
+    countAtLeast += 1
+    if (countAtLeast > auditJsonSummaryMaxKeys) {
+      truncated = true
+      break
+    }
+    if (keys.length < auditJsonSummaryMaxKeys) {
+      keys.push(key)
+    }
+  }
+  return { keys, countAtLeast: Math.min(countAtLeast, auditJsonSummaryMaxKeys), truncated }
 }
 
 function isJsonLikePayload(body: Buffer, contentType?: string, contentEncoding?: string): boolean {
@@ -795,6 +815,10 @@ function bodyToBuffer(body: Buffer | string): Buffer {
 
 function sha256Buffer(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex')
+}
+
+function sha256BufferIfSmall(buffer: Buffer): string | undefined {
+  return buffer.byteLength <= auditInlineSha256MaxBytes ? sha256Buffer(buffer) : undefined
 }
 
 function estimateHeadersBytes(headers: Record<string, string | string[]>): number {

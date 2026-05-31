@@ -16,6 +16,7 @@ import { loadAccountNameMap } from './repository-lookups.js'
 
 const defaultModelCheckPageSize = 20
 const maxModelCheckPageSize = 100
+const maxModelCheckListWindowRows = 1001
 const maxSummaryStringLength = 500
 const maxSummaryArrayLength = 20
 const maxSummaryObjectKeys = 32
@@ -406,9 +407,11 @@ function buildModelCheckRunFilters(access: AccessScope | undefined, options: Nor
 }
 
 function normalizeListOptions(options: ModelCheckRunListOptions): NormalizedModelCheckRunListOptions {
+  const pageSize = boundedInteger(options.pageSize, defaultModelCheckPageSize, 1, maxModelCheckPageSize)
+  const maxPage = Math.max(1, Math.floor((maxModelCheckListWindowRows - 1) / pageSize))
   return {
-    page: boundedInteger(options.page, 1, 1, 100000),
-    pageSize: boundedInteger(options.pageSize, defaultModelCheckPageSize, 1, maxModelCheckPageSize),
+    page: boundedInteger(options.page, 1, 1, maxPage),
+    pageSize,
     targetType: isTargetType(options.targetType) ? options.targetType : undefined,
     targetId: trimText(options.targetId),
     model: isSupportedModel(options.model) ? options.model : undefined,

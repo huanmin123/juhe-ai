@@ -10,17 +10,26 @@ import {
 import { buildUpstreamHeaders, buildUpstreamRequestBody, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
 import {
   createGatewayRequestBodyState,
+  gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
+  gatewayRawBodyHardLimitBytes,
   type GatewayRawBodyRequest
 } from '../../modules/gateway/openai-gateway-request-body.js'
 import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
 import { stopGatewayJsonParseWorker } from '../../modules/gateway/openai-gateway-json-parser.js'
 
 type TestRequest = GatewayRawBodyRequest
+type MockResponse = EventEmitter & {
+  headersSent: boolean
+  destroyed: boolean
+  statusCode: number
+  body?: unknown
+  status: (statusCode: number) => MockResponse
+  json: (body: unknown) => MockResponse
+}
 
 const apiKeyAccount = {
   apiKey: 'sk-upstream',
-  passthroughEnabled: true,
   type: 'api_key',
   credentials: {}
 }
@@ -31,20 +40,20 @@ async function main(): Promise<void> {
   testOpenAIAccountHeadersAreNotClientOrCredentialControlled()
   testOpenAIBetaPreservedFromClient()
   testOpenAIUpstreamUrlNormalization()
-  testOpenAIClientPathCompatibility()
-  testJsonBodyFallbackWhenPassthroughDisabled()
-  testLargeJsonBodyParsedForGatewayMetadata()
-  await testLargeJsonBodyDeferredByGatewayMiddleware()
-  await testLargeJsonBodyImageToolMetadataScanned()
-  await testLargeInvalidJsonMarkedWithoutWorkerParse()
-  await testLargeInvalidJsonPrimitiveMarkedWithoutWorkerParse()
+  testOpenAIClientPathNormalization()
+  testParsedJsonBodyPassthroughForGatewayMetadata()
+  await testMediumJsonBodyDeferredByGatewayMiddleware()
+  await testOversizeJsonBodyRejectedByGatewayMiddleware()
+  await testDeferredJsonBodyImageToolMetadataScanned()
+  await testDeferredInvalidJsonMarkedWithoutWorkerParse()
+  await testDeferredInvalidJsonPrimitiveMarkedWithoutWorkerParse()
   console.log('OpenAI API Key passthrough regression passed')
 }
 
 function testRawBodyPassthrough(): void {
   const rawBody = Buffer.from('{"model":"gpt-5.4","input":"hello","metadata":{"keep":true}}')
   const req = createRequest({ model: 'gpt-5.4', input: 'hello' }, { 'content-type': 'application/json' }, rawBody)
-  const body = buildUpstreamRequestBody(req, true)
+  const body = buildUpstreamRequestBody(req)
 
   assert.ok(Buffer.isBuffer(body))
   assert.equal(Buffer.compare(body, rawBody), 0)
@@ -158,7 +167,7 @@ function testOpenAIUpstreamUrlNormalization(): void {
   assert.equal(buildUpstreamUrl('https://example.com/openai/v1/', 'v1/chat/completions'), 'https://example.com/openai/v1/chat/completions')
 }
 
-function testOpenAIClientPathCompatibility(): void {
+function testOpenAIClientPathNormalization(): void {
   assert.equal(isOpenAIModelsRequest(createRequest(undefined, {}, undefined, '/models', 'GET')), true)
   assert.equal(isOpenAIModelsRequest(createRequest(undefined, {}, undefined, '/v1/models', 'GET')), true)
   assert.equal(buildUpstreamUrl('https://api.openai.com', '/models'), 'https://api.openai.com/v1/models')
@@ -179,24 +188,11 @@ function testOpenAIClientPathCompatibility(): void {
   )
 }
 
-function testJsonBodyFallbackWhenPassthroughDisabled(): void {
-  const req = createRequest({ model: 'gpt-5.4', input: 'hello' }, { accept: 'application/json', 'content-type': 'text/plain' })
-  const body = buildUpstreamRequestBody(req, false)
-  const headers = buildUpstreamHeaders(req.headers, {
-    ...apiKeyAccount,
-    passthroughEnabled: false
-  })
-
-  assert.equal(body, JSON.stringify({ model: 'gpt-5.4', input: 'hello' }))
-  assert.equal(headers.get('content-type'), 'application/json')
-  assert.equal(headers.get('accept'), 'application/json')
-}
-
-function testLargeJsonBodyParsedForGatewayMetadata(): void {
+function testParsedJsonBodyPassthroughForGatewayMetadata(): void {
   const body = {
     model: 'gpt-5.4',
     stream: true,
-    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes)
+    input: 'hello'
   }
   const rawBody = Buffer.from(JSON.stringify(body))
   const req = createRequest(body, { 'content-type': 'application/json' }, rawBody)
@@ -208,7 +204,7 @@ function testLargeJsonBodyParsedForGatewayMetadata(): void {
   })
   req.body = undefined
 
-  const upstreamBody = buildUpstreamRequestBody(req, true)
+  const upstreamBody = buildUpstreamRequestBody(req)
 
   assert.ok(Buffer.isBuffer(upstreamBody))
   assert.equal(Buffer.compare(upstreamBody, rawBody), 0)
@@ -216,13 +212,15 @@ function testLargeJsonBodyParsedForGatewayMetadata(): void {
   assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
 }
 
-async function testLargeJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
+async function testMediumJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
   const body = {
     model: 'gpt-5.4',
-    stream: true,
-    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes)
+    stream: false,
+    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes)
   }
   const rawBody = Buffer.from(JSON.stringify(body))
+  assert.ok(rawBody.length > gatewayJsonBodyInlineParseMaxBytes)
+  assert.ok(rawBody.length < gatewayJsonBodyLargeWarningBytes)
   const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
   let nextCalled = false
 
@@ -234,26 +232,50 @@ async function testLargeJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
   assert.equal(req.body, undefined)
   assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'deferred_large_json')
   assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
-  assert.equal(req.gatewayRequestBody?.stream, true)
-  assert.equal(req.gatewayRequestBody?.imageGeneration, false)
-  assert.equal(req.gatewayRequestBody?.imageGenerationForced, false)
-  assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '大 JSON 中间件不应为了元数据完整解析请求体')
+  assert.equal(req.gatewayRequestBody?.stream, false)
+  assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '超过主进程内联解析阈值的 JSON 不应在 server 事件循环完整解析')
   assert.equal(requestModel(req), 'gpt-5.4')
-  assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
-
-  const upstreamBody = buildUpstreamRequestBody(req, true)
-  assert.ok(Buffer.isBuffer(upstreamBody))
-  assert.equal(Buffer.compare(upstreamBody, rawBody), 0)
+  assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), false)
 }
 
-async function testLargeJsonBodyImageToolMetadataScanned(): Promise<void> {
+async function testOversizeJsonBodyRejectedByGatewayMiddleware(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.4',
+    stream: true,
+    input: 'x'.repeat(gatewayRawBodyHardLimitBytes)
+  }))
+  assert.ok(rawBody.length > gatewayRawBodyHardLimitBytes)
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  const res = createMockResponse()
+  let nextCalled = false
+
+  await captureGatewayRawBody(req, res as never, () => {
+    nextCalled = true
+  })
+
+  assert.equal(nextCalled, false)
+  assert.equal(req.body, undefined)
+  assert.equal(req.rawBody, undefined)
+  assert.equal(req.gatewayRequestBody?.rawBodyBytes, rawBody.length)
+  assert.equal(res.statusCode, 413)
+  assert.deepEqual(res.body, {
+    error: {
+      message: '请求体过大',
+      type: 'request_too_large'
+    }
+  })
+}
+
+async function testDeferredJsonBodyImageToolMetadataScanned(): Promise<void> {
   const body = {
     model: 'gpt-5.4',
-    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes),
+    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 32 * 1024),
     tools: [{ type: 'image_generation', output_format: 'png' }],
     tool_choice: 'auto'
   }
   const rawBody = Buffer.from(JSON.stringify(body))
+  assert.ok(rawBody.length > gatewayJsonBodyInlineParseMaxBytes)
+  assert.ok(rawBody.length < gatewayRawBodyHardLimitBytes)
   const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
   let nextCalled = false
 
@@ -270,8 +292,10 @@ async function testLargeJsonBodyImageToolMetadataScanned(): Promise<void> {
   assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '大 JSON optional 图像工具只应扫描顶层元数据')
 }
 
-async function testLargeInvalidJsonMarkedWithoutWorkerParse(): Promise<void> {
-  const rawBody = Buffer.from(`{"model":"gpt-5.4","input":${JSON.stringify('x'.repeat(gatewayJsonBodyLargeWarningBytes))},`)
+async function testDeferredInvalidJsonMarkedWithoutWorkerParse(): Promise<void> {
+  const rawBody = Buffer.from(`{"model":"gpt-5.4","input":${JSON.stringify('x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 32 * 1024))},`)
+  assert.ok(rawBody.length > gatewayJsonBodyInlineParseMaxBytes)
+  assert.ok(rawBody.length < gatewayRawBodyHardLimitBytes)
   const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
   let nextCalled = false
 
@@ -286,8 +310,10 @@ async function testLargeInvalidJsonMarkedWithoutWorkerParse(): Promise<void> {
   assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '大 JSON 非法结构不应通过 worker 完整解析后才判定')
 }
 
-async function testLargeInvalidJsonPrimitiveMarkedWithoutWorkerParse(): Promise<void> {
-  const rawBody = Buffer.from(`{"model":${'x'.repeat(gatewayJsonBodyLargeWarningBytes + 1)}}`)
+async function testDeferredInvalidJsonPrimitiveMarkedWithoutWorkerParse(): Promise<void> {
+  const rawBody = Buffer.from(`{"model":${'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 32 * 1024)}}`)
+  assert.ok(rawBody.length > gatewayJsonBodyInlineParseMaxBytes)
+  assert.ok(rawBody.length < gatewayRawBodyHardLimitBytes)
   const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
   let nextCalled = false
 
@@ -318,6 +344,25 @@ function createRequest(
     body,
     rawBody
   }) as TestRequest
+}
+
+function createMockResponse(): MockResponse {
+  const response = Object.assign(new EventEmitter(), {
+    headersSent: false,
+    destroyed: false,
+    statusCode: 200,
+    body: undefined as unknown,
+    status(statusCode: number) {
+      response.statusCode = statusCode
+      return response
+    },
+    json(body: unknown) {
+      response.body = body
+      response.headersSent = true
+      return response
+    }
+  })
+  return response
 }
 
 try {

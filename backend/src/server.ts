@@ -9,6 +9,7 @@ import { createDbServiceHttpProxy } from './modules/db-service/db-service-http-p
 import { startDbServiceSupervisor } from './modules/db-service/db-service-supervisor.js'
 import { handleGatewayDbServiceUnavailable, openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
 import { captureGatewayRawBody } from './modules/gateway/openai-gateway-request-body-middleware.js'
+import { gatewayRawBodyHardLimit } from './modules/gateway/openai-gateway-request-body.js'
 import { preResolveOpenAIGatewayRuntime } from './modules/gateway/openai-gateway-request.js'
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
@@ -27,7 +28,7 @@ const frontendAssetsPath = resolve(frontendDistPath, 'assets')
 const systemPrefix = '/__aisys__'
 const systemApiPrefix = `${systemPrefix}/api`
 const publicApiPrefix = '/__aipublic__'
-const gatewayRawBodyLimit = '64mb'
+const gatewayRawBodyLimit = gatewayRawBodyHardLimit
 const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
 

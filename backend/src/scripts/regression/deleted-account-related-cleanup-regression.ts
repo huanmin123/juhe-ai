@@ -164,7 +164,7 @@ try {
   console.log('已删除 AI 账户关联清理回归通过：父账户记录清理不影响授权实例和授权列表')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -172,7 +172,7 @@ try {
 }
 
 function accountRuntimeAuthorizationId(accountId: string, granteeSystemAccountId: string): string {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare(`
       SELECT id
       FROM resource_authorizations
@@ -339,28 +339,28 @@ function usageRecordExists(id: string): boolean {
 }
 
 function accountExists(accountId: string): boolean {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT id FROM accounts WHERE id = ?')
     .get(accountId) as { id?: string } | undefined
   return Boolean(row?.id)
 }
 
 function groupAccountCount(accountId: string): number {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT COUNT(*) AS total FROM group_accounts WHERE account_id = ?')
     .get(accountId) as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function resourceAuthorizationCount(accountId: string): number {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT COUNT(*) AS total FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ?")
     .get(accountId) as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function resourceAuthorizationGrantCount(accountId: string): number {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT COUNT(*) AS total FROM resource_authorization_grants WHERE resource_type = 'account' AND resource_id = ?")
     .get(accountId) as { total?: number } | undefined
   return Number(row?.total ?? 0)

@@ -50,7 +50,7 @@ try {
   console.log('分组单条读取回归通过：写路径不再依赖全量分组列表装配')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

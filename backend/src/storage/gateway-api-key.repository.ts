@@ -10,12 +10,12 @@ import {
 } from '../domain/api-key-routing.js'
 import type { ApiKeyGroupRouteStrategy } from '../domain/types.js'
 import { hashSecret } from './crypto.js'
-import { getDatabase } from './database.js'
+import { getBusinessDatabase } from './database.js'
 
 export interface GatewayApiKeyRow {
   id: string
   system_account_id: string
-  group_id: string
+  selected_group_id: string
   status: 'active' | 'disabled'
   expires_at: string | null
   quota_limits_json: string | null
@@ -69,11 +69,11 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     return cached.row
   }
 
-  const row = getDatabase().prepare(`
+  const row = getBusinessDatabase().prepare(`
     SELECT
       api_keys.id,
       api_keys.system_account_id,
-      '' AS group_id,
+      '' AS selected_group_id,
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
@@ -100,7 +100,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
-  row.group_id = row.group_bindings[0]?.group_id ?? row.group_id
+  row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
   gatewayApiKeyCache.set(keyHash, {
     row,
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS,
@@ -114,11 +114,11 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
 export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | undefined {
   const apiKeyId = id.trim()
   if (!apiKeyId) return undefined
-  const row = getDatabase().prepare(`
+  const row = getBusinessDatabase().prepare(`
     SELECT
       api_keys.id,
       api_keys.system_account_id,
-      '' AS group_id,
+      '' AS selected_group_id,
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
@@ -143,7 +143,7 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
   if (!row.group_bindings.length) {
     return undefined
   }
-  row.group_id = row.group_bindings[0]?.group_id ?? row.group_id
+  row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
   return row
 }
 
@@ -194,7 +194,7 @@ function applyGatewayApiKeyScheduleState(row: GatewayApiKeyRow, now = Date.now()
 }
 
 export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAccountId: string): GatewayApiKeyGroupBindingRow[] {
-  return getDatabase().prepare(`
+  return getBusinessDatabase().prepare(`
     SELECT
       api_key_group_bindings.id,
       api_key_group_bindings.api_key_id,

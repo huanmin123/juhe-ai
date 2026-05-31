@@ -109,7 +109,7 @@ export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[]
 
 export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string): GroupOptionSummary | undefined {
   const candidates = manageableGroupsForProvider(groups, providerCode)
-  return candidates.find((group) => group.isDefault) ?? candidates[0]
+  return candidates.find((group) => group.isDefault)
 }
 
 export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountSummary): SelectOption[] {

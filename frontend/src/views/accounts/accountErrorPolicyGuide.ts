@@ -40,14 +40,14 @@ export const accountErrorPolicyGuideFields: AccountErrorPolicyGuideField[] = [
   {
     key: 'error_codes',
     field: '错误码',
-    source: '响应体 error.code；兼容 root.code',
-    example: 'insufficient_user_quota',
+    source: '响应体 error.code；同时读取 root.code',
+    example: 'insufficient_quota',
     note: '适合稳定机器码；不要填中文说明'
   },
   {
     key: 'error_types',
     field: '错误类型',
-    source: '响应体 error.type；兼容 root.type',
+    source: '响应体 error.type；同时读取 root.type',
     example: 'rate_limit_exceeded',
     note: '用于区分同状态码下不同语义'
   },
@@ -55,8 +55,8 @@ export const accountErrorPolicyGuideFields: AccountErrorPolicyGuideField[] = [
     key: 'keywords',
     field: '关键词',
     source: '完整上游响应正文，通常来自 error.message',
-    example: 'daily quota, 用户额度不足',
-    note: '适合兼容接口没有 code/type 时兜底'
+    example: 'quota exceeded, 额度不足',
+    note: '适合上游只提供文本错误时使用'
   }
 ]
 

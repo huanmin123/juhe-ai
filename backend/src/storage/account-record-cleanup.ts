@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
+import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
 import { subtractUsageStatsRecord } from './usage-stats-writers.js'
@@ -520,6 +520,7 @@ function deleteAccountUsageRows(rows: AccountUsageShardRow[], input: DeletedAcco
       throw error
     }
   }
+  deleteUsageRecordShardEntries(rows.map((row) => row.id))
   return deletedRows
 }
 

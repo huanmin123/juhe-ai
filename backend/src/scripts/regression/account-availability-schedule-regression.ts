@@ -83,7 +83,7 @@ try {
   console.log('账户自动启停计划回归通过：保存、列表展示、网关候选过滤和清空计划符合预期')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

@@ -66,7 +66,7 @@ try {
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -123,7 +123,7 @@ try {
   console.log('API Key 列表查询防护回归通过：搜索仅按名称精确/前缀匹配，不再使用 Key 前缀、前导通配符或包含匹配')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -131,15 +131,15 @@ try {
 }
 
 function assertBusinessIndexExists(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
 }
 
 function assertBusinessIndexMissing(indexName: string): void {
-  const row = databaseModule.getDatabase()
+  const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
-  assert.equal(row?.name, undefined, `业务库不应保留已废弃的 API Key 搜索索引 ${indexName}`)
+  assert.equal(row?.name, undefined, `业务库不应创建 API Key 长文本搜索索引 ${indexName}`)
 }

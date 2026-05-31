@@ -71,12 +71,13 @@ async function main(): Promise<void> {
       retryBackoffSeconds: 60
     })
 
-    assert(result.scanned === 5, `应扫描全部未删除 OAuth 账户，实际 ${result.scanned}`)
+    assert(result.scanned === 4, `应只扫描即将到期的 OAuth 刷新候选，实际 ${result.scanned}`)
     assert(result.due === 4, `应刷新 4 个快过期 OAuth 账户，实际 ${result.due}`)
     assert(result.refreshed === 4, `应成功刷新 4 个账户，实际 ${result.refreshed}`)
     assert(result.failed === 0, `不应有刷新失败，实际 ${result.failed}`)
     assert(result.exceptioned === 0, `成功刷新不应标记异常，实际 ${result.exceptioned}`)
     assert(result.cooldowned === 0, `后台保活成功不应改变账号冷却状态，实际 ${result.cooldowned}`)
+    assertOAuthRefreshDuePlanUsesIndex()
 
     assert(!refreshedByToken.has('fresh-token'), '未到期 OAuth 账户不应刷新')
     assert(!refreshedByToken.has('sk-not-oauth'), 'API Key 账户不应参与 OAuth 刷新')
@@ -147,7 +148,7 @@ async function main(): Promise<void> {
       batchSize: 20,
       retryBackoffSeconds: 0
     })
-    assert(refreshedAfterException.scanned === 6, `OAuth 刷新失败异常账户不应再被扫描，实际扫描 ${refreshedAfterException.scanned}`)
+    assert(refreshedAfterException.scanned === 1, `OAuth 刷新失败异常账户不应再被扫描，实际扫描 ${refreshedAfterException.scanned}`)
     assert(refreshedAfterException.due === 1, `OAuth 刷新失败异常账户不应再进入待刷新列表，实际待刷新 ${refreshedAfterException.due}`)
     assert(refreshedAfterException.refreshed === 1, `仅停用对照账户应继续后台保活刷新，实际刷新 ${refreshedAfterException.refreshed}`)
     assertAccountState(failedActive.id, 'error', false, 'oauth_token_refresh_failed', '已停止自动刷新')
@@ -157,7 +158,7 @@ async function main(): Promise<void> {
   } finally {
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
     try {
-      databaseModule.getDatabase().close()
+      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
@@ -223,6 +224,27 @@ function assertAccountLastErrorMessageIncludes(accountId: string, expected: stri
     typeof latest.lastErrorMessage === 'string' && latest.lastErrorMessage.includes(expected),
     `账户异常信息缺少 ${expected}：${latest.lastErrorMessage ?? ''}`
   )
+}
+
+function assertOAuthRefreshDuePlanUsesIndex(): void {
+  const details = databaseModule.getBusinessDatabase()
+    .prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT id
+      FROM accounts
+      WHERE authorization_instance_authorization_id IS NULL
+        AND provider_code = 'openai'
+        AND type = 'oauth'
+        AND oauth_refresh_token_present = 1
+        AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
+        AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
+      ORDER BY oauth_access_token_expires_at IS NOT NULL ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all('oauth_token_refresh_failed', new Date(Date.now() + 300_000).toISOString(), 20)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
+  assert(details.includes('idx_accounts_openai_oauth_refresh_due'), `OAuth 刷新候选查询应使用索引，实际计划：${details}`)
 }
 
 function assert(condition: unknown, message: string): asserts condition {

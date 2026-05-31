@@ -2,6 +2,7 @@ import type { Request } from 'express'
 
 import {
   getGatewayRequestBodyState,
+  gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   type GatewayRawBodyRequest
 } from './openai-gateway-request-body.js'
@@ -73,7 +74,7 @@ async function normalizeOpenAIOAuthCodexBody(
   }
 
   const rawBody = (req as GatewayRawBodyRequest).rawBody
-  if (rawBody && rawBody.length > gatewayJsonBodyLargeWarningBytes) {
+  if (rawBody && rawBody.length > gatewayJsonBodyInlineParseMaxBytes) {
     try {
       return await normalizeOpenAIOAuthCodexBodyInWorker(rawBody, {
         inputHeaders,
@@ -122,7 +123,7 @@ async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortS
   const rawBody = (req as GatewayRawBodyRequest).rawBody
   if (rawBody && rawBody.length > 0) {
     try {
-      return rawBody.length > gatewayJsonBodyLargeWarningBytes
+      return rawBody.length > gatewayJsonBodyInlineParseMaxBytes
         ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
         : JSON.parse(rawBody.toString('utf8')) as unknown
     } catch (error) {
@@ -161,7 +162,7 @@ function logOpenAIOAuthCodexLargeBodyParse(req: Request): void {
     rawBodyBytes: rawBody.length,
     jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
     gatewayJsonParseStatus: bodyState?.jsonParseStatus
-  }, 'OpenAI OAuth Codex 大请求体进入兼容解析')
+  }, 'OpenAI OAuth Codex 大请求体进入受限解析')
 }
 
 function buildOpenAIOAuthCodexHeaders(
@@ -199,9 +200,9 @@ function buildOpenAIOAuthCodexHeaders(
   headers.set('content-type', 'application/json')
   headers.set('accept', input.compact || !input.stream ? 'application/json' : 'text/event-stream')
 
-  const chatGPTAccountId = stringCredential(account.credentials, 'chatgpt_account_id') ?? stringCredential(account.credentials, 'account_id')
-  if (chatGPTAccountId) {
-    headers.set('chatgpt-account-id', chatGPTAccountId)
+  const accountId = stringCredential(account.credentials, 'account_id')
+  if (accountId) {
+    headers.set('chatgpt-account-id', accountId)
   }
   if (input.session.sessionId) {
     headers.set('session_id', input.session.sessionId)
@@ -238,7 +239,11 @@ function headerValue(inputHeaders: Record<string, string | string[] | undefined>
 }
 
 function isEmptyPlainObject(value: unknown): boolean {
-  return isPlainObject(value) && Object.keys(value).length === 0
+  if (!isPlainObject(value)) return false
+  for (const key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return false
+  }
+  return true
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

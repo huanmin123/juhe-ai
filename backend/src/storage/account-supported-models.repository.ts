@@ -1,4 +1,4 @@
-import { getDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export function normalizeAccountSupportedModelsInput(value: unknown): string[] | undefined {
@@ -19,7 +19,7 @@ export function normalizeAccountSupportedModelsInput(value: unknown): string[] |
 
 export function replaceAccountSupportedModels(accountId: string, providerCode: string, models: string[] | undefined): void {
   if (models === undefined) return
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   database.prepare('DELETE FROM account_supported_models WHERE account_id = ?').run(accountId)
   const normalizedModels = normalizeAccountSupportedModelsInput(models) ?? []
   if (!normalizedModels.length) return
@@ -39,7 +39,7 @@ export function loadSupportedModelsByAccountIds(accountIds: string[]): Map<strin
   if (!ids.length) return new Map()
 
   const rows: Array<{ account_id: string; model: string }> = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database
       .prepare(`

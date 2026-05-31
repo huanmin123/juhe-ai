@@ -1,19 +1,22 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, nowIso } from './database.js'
-import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
+import { getBusinessDatabase, nowIso } from './database.js'
+import { normalizeListPage, pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import type { GroupListRow } from './repository-row-types.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
 export interface GroupListOptions {
   page?: number
   pageSize?: number
-  limit?: number
   ids?: string[]
   keyword?: string
   providerCode?: string
   manageableOnly?: boolean
   preferDefault?: boolean
+}
+
+export interface GroupOptionListOptions extends Omit<GroupListOptions, 'pageSize'> {
+  limit?: number
 }
 
 export interface GroupRowsPage {
@@ -45,6 +48,14 @@ export function listGroupRowsForAccess(access?: AccessScope, options?: GroupList
   return queryGroupRowsForAccess(access, pagination, listOptions).rows
 }
 
+export function listGroupOptionRowsForAccess(access?: AccessScope, options?: GroupOptionListOptions): GroupListRow[] {
+  const listOptions = normalizeGroupOptionListOptions(options)
+  const pagination = options
+    ? { limit: listOptions.pageSize, offset: (listOptions.page - 1) * listOptions.pageSize }
+    : undefined
+  return queryGroupRowsForAccess(access, pagination, listOptions).rows
+}
+
 export function listGroupRowsPageForAccess(access: AccessScope | undefined, options?: GroupListOptions): GroupRowsPage {
   const listOptions = normalizeGroupListOptions(options)
   const rows = queryGroupRowsForAccess(access, {
@@ -63,11 +74,11 @@ export function listGroupRowsPageForAccess(access: AccessScope | undefined, opti
 
 function normalizeGroupListOptions(options?: GroupListOptions): NormalizedGroupListOptions {
   const rawPage = options?.page
-  const rawPageSize = options?.pageSize ?? options?.limit
-  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const rawPageSize = options?.pageSize
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(maxGroupListPageSize, Math.max(1, rawPageSize))
     : defaultGroupListPageSize
+  const page = normalizeListPage(rawPage, pageSize)
   return {
     ids: normalizeTextList(options?.ids),
     keyword: normalizeTextFilter(options?.keyword),
@@ -79,6 +90,10 @@ function normalizeGroupListOptions(options?: GroupListOptions): NormalizedGroupL
   }
 }
 
+function normalizeGroupOptionListOptions(options?: GroupOptionListOptions): NormalizedGroupListOptions {
+  return normalizeGroupListOptions({ ...options, pageSize: options?.limit })
+}
+
 function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): { rows: GroupListRow[] } {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
@@ -87,26 +102,26 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
   const orderClause = groupOrderClause(options.preferDefault)
   const directFilter = buildGroupFilter('groups', options)
   if (!ownerSystemAccountId && canAccessAll(access)) {
-    const rows = getDatabase()
+    const rows = getBusinessDatabase()
       .prepare(`SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()} FROM groups${whereClause(directFilter.clauses)}${orderClause}${pageClause}`)
       .all(...directFilter.params, ...pageParams) as unknown as GroupListRow[]
     return { rows }
   }
   if (!viewerSystemAccountId) {
-    const rows = getDatabase()
+    const rows = getBusinessDatabase()
       .prepare(`SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()} FROM groups${whereClause(directFilter.clauses)}${orderClause}${pageClause}`)
       .all(...directFilter.params, ...pageParams) as unknown as GroupListRow[]
     return { rows }
   }
   if (options.manageableOnly) {
     const ownerFilter = buildGroupFilter('groups', options, ['groups.system_account_id = ?'], [ownerSystemAccountId ?? viewerSystemAccountId])
-    const rows = getDatabase()
+    const rows = getBusinessDatabase()
       .prepare(`SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()} FROM groups${whereClause(ownerFilter.clauses)}${orderClause}${pageClause}`)
       .all(...ownerFilter.params, ...pageParams) as unknown as GroupListRow[]
     return { rows }
   }
   const outerFilter = buildGroupFilter(undefined, options)
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT ${groupListRowOuterSelectColumns()} FROM (
         SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()}
@@ -133,16 +148,16 @@ export function findGroupRowForAccess(access: AccessScope | undefined, groupId: 
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
   if (!ownerSystemAccountId && canAccessAll(access)) {
-    return getDatabase()
+    return getBusinessDatabase()
       .prepare(`SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()} FROM groups WHERE groups.id = ?`)
       .get(groupId) as unknown as GroupListRow | undefined
   }
   if (!viewerSystemAccountId) {
-    return getDatabase()
+    return getBusinessDatabase()
       .prepare(`SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()} FROM groups WHERE groups.id = ?`)
       .get(groupId) as unknown as GroupListRow | undefined
   }
-  return getDatabase()
+  return getBusinessDatabase()
     .prepare(`
       SELECT ${groupListRowOuterSelectColumns()} FROM (
         SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()}

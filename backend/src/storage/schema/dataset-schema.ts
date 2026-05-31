@@ -324,6 +324,25 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           updated_at TEXT NOT NULL
         );
 
+    CREATE TABLE IF NOT EXISTS usage_record_shard_entries (
+          usage_id TEXT PRIMARY KEY,
+          shard_key TEXT NOT NULL,
+          system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+          account_id TEXT,
+          group_id TEXT,
+          model TEXT,
+          traffic_source TEXT NOT NULL DEFAULT 'gateway',
+          success INTEGER NOT NULL DEFAULT 0,
+          status_code INTEGER,
+          client_ip TEXT,
+          first_token_ms INTEGER,
+          duration_ms INTEGER,
+          cost_usd REAL,
+          created_at TEXT NOT NULL,
+          indexed_at TEXT NOT NULL,
+          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
+        );
+
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_created ON model_check_runs(created_at DESC, id DESC);
 
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_created ON model_check_runs(system_account_id, created_at DESC, id DESC);
@@ -455,6 +474,28 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_record_cleanup_targets_attempt ON account_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_record_shards_bucket ON usage_record_shards(bucket_date, shard_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_shard ON usage_record_shard_entries(shard_key, created_at);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_created_sort ON usage_record_shard_entries(created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_created_sort ON usage_record_shard_entries(system_account_id, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_group_created_sort ON usage_record_shard_entries(group_id, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_group_created_sort ON usage_record_shard_entries(system_account_id, group_id, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_model_created_sort ON usage_record_shard_entries(model, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_model_created_sort ON usage_record_shard_entries(system_account_id, model, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_client_ip_created_sort ON usage_record_shard_entries(client_ip, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_client_ip_created_sort ON usage_record_shard_entries(system_account_id, client_ip, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_account_created_sort ON usage_record_shard_entries(account_id, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_account_created_sort ON usage_record_shard_entries(system_account_id, account_id, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_traffic_source_created_sort ON usage_record_shard_entries(traffic_source, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_success_created_sort ON usage_record_shard_entries(success, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_success_created_sort ON usage_record_shard_entries(system_account_id, success, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_status_created_sort ON usage_record_shard_entries(status_code, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_status_created_sort ON usage_record_shard_entries(system_account_id, status_code, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_first_token_sort ON usage_record_shard_entries(first_token_ms, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_duration_sort ON usage_record_shard_entries(duration_ms, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_cost_sort ON usage_record_shard_entries(cost_usd, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_first_token_sort ON usage_record_shard_entries(system_account_id, first_token_ms, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_duration_sort ON usage_record_shard_entries(system_account_id, duration_ms, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_cost_sort ON usage_record_shard_entries(system_account_id, cost_usd, created_at, usage_id);
   `)
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_audit_logs_traffic_source_created ON audit_logs(traffic_source, created_at, id);

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { sqliteBusyTimeoutMs } from '../../storage/sqlite-config.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-deleted-record-cleanup-lock-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -113,7 +114,7 @@ function withStatsWriteLock(action: () => void): void {
   } finally {
     statsLock.exec('ROLLBACK')
     statsLock.close()
-    statsDatabase.exec('PRAGMA busy_timeout = 5000')
+    statsDatabase.exec(`PRAGMA busy_timeout = ${sqliteBusyTimeoutMs}`)
   }
 }
 

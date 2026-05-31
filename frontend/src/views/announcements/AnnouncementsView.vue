@@ -6,7 +6,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table announcement-table" :columns="columns" :data-source="announcements" row-key="id" :loading="loading" :scroll-x="1080" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table announcement-table" :columns="columns" :data-source="announcements" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1080" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileAnnouncements" @mobile-refresh="refreshMobileAnnouncements">
       <template #emptyText>
         <a-empty class="page-empty-card" description="暂无公告，新增发布后用户会在顶部铃铛看到提醒。" />
       </template>
@@ -101,6 +101,7 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
@@ -112,13 +113,36 @@ import {
   announcementStatusText
 } from './announcementFormatters'
 
-const loading = ref(false)
 const { submitAction, submittingRef } = useSubmitAction('announcements')
 const announcementSaving = submittingRef('announcements.save')
 const modalOpen = ref(false)
 const detailLoading = ref(false)
 const editingId = ref<string>()
-const announcements = ref<AnnouncementSummary[]>([])
+const pageSize = 50
+const {
+  items: announcements,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileAnnouncements,
+  refreshMobile: refreshMobileAnnouncements
+} = useResponsivePagedList<AnnouncementSummary>({
+  pageSize,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${range?.[1] ?? total - 1} 条公告，还有更多`
+    : `共 ${total} 条公告`,
+  fetchPage: (_options, pageState) => api.announcements.listPage({
+    page: pageState.current,
+    pageSize: pageState.pageSize
+  }),
+  onError: (error) => {
+    console.error(error)
+    message.error('加载公告失败')
+  }
+})
 
 const form = reactive({
   title: '',
@@ -198,18 +222,6 @@ function rowActions(record: AnnouncementSummary): RowActionItem[] {
       confirmOkText: '删除'
     }
   ]
-}
-
-async function loadData() {
-  loading.value = true
-  try {
-    announcements.value = await api.announcements.list()
-  } catch (error) {
-    console.error(error)
-    message.error('加载公告失败')
-  } finally {
-    loading.value = false
-  }
 }
 
 function openCreate() {

@@ -54,7 +54,7 @@ try {
 } finally {
   cleanupTemporaryAuditBlobs()
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

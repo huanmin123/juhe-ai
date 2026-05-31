@@ -53,7 +53,7 @@ try {
   console.log('AI 账户列表稳定排序回归通过')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -73,7 +73,7 @@ function createStableAccount(name: string, apiKey: string, createdAt: string): {
     priority: 10,
     schedulable: true
   }, access)
-  databaseModule.getDatabase()
+  databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET created_at = ?, updated_at = ? WHERE id = ?')
     .run(createdAt, createdAt, account.id)
   return { id: account.id }

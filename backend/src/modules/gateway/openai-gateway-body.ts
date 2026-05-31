@@ -88,13 +88,18 @@ export async function pipeNonStreamUpstreamResponse(
   }
 
   endResponse(res)
+  const capturedBody = capture.completeBuffer()
+  const capturedBodyText = capturedBody ? capturedBody.toString('utf8') : capture.toText()
+  const captureTruncated = capture.isTruncated()
   return {
     firstByteMs,
-    capturedBody: capture.completeBuffer(),
-    capturedBodyText: capture.toText(),
-    diagnosticBodyText: capture.toDiagnosticText(),
+    capturedBody,
+    capturedBodyText,
+    diagnosticBodyText: capturedBodyText === undefined
+      ? undefined
+      : captureTruncated ? `${capturedBodyText}\n[truncated]` : capturedBodyText,
     usageTailText: usageTailCapture.toText(),
-    captureTruncated: capture.isTruncated(),
+    captureTruncated,
     transferredBytes
   }
 }

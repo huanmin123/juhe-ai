@@ -119,7 +119,7 @@ try {
   }, granteeAccess)
   const renamedAuthorizedSourceAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '授权使用记录旧名',
+    name: '授权使用记录来源初始名',
     type: 'api_key',
     credentials: {
       api_key: 'sk-usage-record-authorized-source',
@@ -138,7 +138,7 @@ try {
     granteeId: grantee.id,
     targetGroupId: granteeGroup.id
   }, ownerAccess)
-  const businessSetupDatabase = databaseModule.getDatabase()
+  const businessSetupDatabase = databaseModule.getBusinessDatabase()
   const runtimeAccountAuthorization = businessSetupDatabase
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(renamedAuthorizedSourceAccount.id, grantee.id) as unknown as { id?: string } | undefined
@@ -320,7 +320,7 @@ try {
   assert.equal(inferredAuthorizedRecord?.account_access_type, 'account_authorized', '只传授权实例 accountId 时应自动识别账号授权口径')
   assert.equal(inferredAuthorizedRecord?.account_authorization_id, runtimeAccountAuthorization.id, '只传授权实例 accountId 时应自动补齐运行时授权 ID')
 
-  const businessDatabase = databaseModule.getDatabase()
+  const businessDatabase = databaseModule.getBusinessDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
   const accountLookupCalls: Array<{ sql: string; params: unknown[] }> = []
   businessDatabase.prepare = ((sql: string) => {
@@ -335,11 +335,11 @@ try {
     return statement
   }) as typeof businessDatabase.prepare
 
-  const recordDatabase = databaseModule.getDatasetDatabase()
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const datasetDatabase = databaseModule.getDatasetDatabase()
+  const originalPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
   const usageRecordListCalls: Array<{ sql: string; params: unknown[] }> = []
   const shardPrepareRestorers: Array<() => void> = []
-  recordDatabase.prepare = ((sql: string) => {
+  datasetDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     if (/\bFROM\s+usage_records\s+ur\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
@@ -349,7 +349,7 @@ try {
       }) as typeof statement.all
     }
     return statement
-  }) as typeof recordDatabase.prepare
+  }) as typeof datasetDatabase.prepare
   for (const location of usageRecordShards.listUsageRecordShardLocations()) {
     const shardDatabase = usageRecordShards.getUsageRecordShardDatabase(location)
     const originalShardPrepare = shardDatabase.prepare.bind(shardDatabase) as typeof shardDatabase.prepare
@@ -395,8 +395,11 @@ try {
 
     const clientIpPrefix = repositories.listUsageRecords(access, { clientIp: '127.0.0.', page: 1, pageSize: 10 })
     assert.deepEqual(clientIpPrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '客户端 IP 筛选应按右侧前缀匹配')
+
+    const customIdDetail = repositories.getUsageRecordDetail('usage_list_query_guard_exact', access)
+    assert.equal(customIdDetail?.id, 'usage_list_query_guard_exact', '非标准 usage id 应通过 shard 索引单条读取，不应依赖目录全量扫描')
   } finally {
-    recordDatabase.prepare = originalPrepare
+    datasetDatabase.prepare = originalPrepare
     for (const restore of shardPrepareRestorers) restore()
     businessDatabase.prepare = originalBusinessPrepare
   }
@@ -492,7 +495,7 @@ try {
 
   const recentShapeCalls: Array<{ sql: string; params: unknown[] }> = []
   const recentShapeShardPrepareRestorers: Array<() => void> = []
-  recordDatabase.prepare = ((sql: string) => {
+  datasetDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     if (/\bSELECT\s+id,\s+endpoint,\s+model,\s+stream,\s+created_at\b/i.test(sql) && /\bFROM\s+usage_records\b/i.test(sql)) {
       const originalGet = statement.get.bind(statement) as typeof statement.get
@@ -502,7 +505,7 @@ try {
       }) as typeof statement.get
     }
     return statement
-  }) as typeof recordDatabase.prepare
+  }) as typeof datasetDatabase.prepare
   for (const location of usageRecordShards.listUsageRecordShardLocations()) {
     const shardDatabase = usageRecordShards.getUsageRecordShardDatabase(location)
     const originalShardPrepare = shardDatabase.prepare.bind(shardDatabase) as typeof shardDatabase.prepare
@@ -525,7 +528,7 @@ try {
     const shape = repositories.findRecentOpenAIRequestShapeForAccount(account.id, group.id)
     assert.equal(shape?.endpoint, 'POST /v1/responses/compact', '最近 OpenAI 请求形态应按 endpoint 精确或子路径前缀识别，不应命中中间包含路径')
   } finally {
-    recordDatabase.prepare = originalPrepare
+    datasetDatabase.prepare = originalPrepare
     for (const restore of recentShapeShardPrepareRestorers) restore()
   }
   assert(recentShapeCalls.length >= 1, '回归应捕获最近请求形态 SQL')

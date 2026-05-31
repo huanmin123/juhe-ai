@@ -21,8 +21,8 @@ logger.level = 'silent'
 const databaseModule = await import('../../storage/database.js')
 
 try {
-  const businessDatabase = databaseModule.getDatabase()
-  const recordDatabase = databaseModule.getDatasetDatabase()
+  const businessDatabase = databaseModule.getBusinessDatabase()
+  const datasetDatabase = databaseModule.getDatasetDatabase()
 
   assertPlanUsesIndex(
     businessDatabase,
@@ -33,7 +33,7 @@ try {
   )
 
   assertPlanUsesIndex(
-    recordDatabase,
+    datasetDatabase,
     'operation_log_targets 详情读取',
     'EXPLAIN QUERY PLAN SELECT * FROM operation_log_targets WHERE operation_log_id = ? ORDER BY created_at ASC, id ASC',
     ['op_guard'],
@@ -42,7 +42,7 @@ try {
   )
 
   assertPlanUsesIndex(
-    recordDatabase,
+    datasetDatabase,
     'audit_error_groups API Key 删除清理',
     'EXPLAIN QUERY PLAN SELECT id FROM audit_error_groups WHERE api_key_id = ? AND system_account_id = ?',
     ['key_guard', 'sys_admin'],
@@ -50,7 +50,7 @@ try {
   )
 
   assertPlanUsesIndex(
-    recordDatabase,
+    datasetDatabase,
     'audit_logs API Key 删除批次选择',
     `
       EXPLAIN QUERY PLAN
@@ -67,7 +67,7 @@ try {
   )
 
   assertPlanUsesIndex(
-    recordDatabase,
+    datasetDatabase,
     'audit_payload_blobs 未引用清理',
     `
       EXPLAIN QUERY PLAN
@@ -89,7 +89,7 @@ try {
   console.log('数据维护索引回归通过：删除清理、详情读取和过期清理查询均使用目标索引且避免临时排序')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -97,7 +97,7 @@ try {
 }
 
 function assertPlanUsesIndex(
-  database: ReturnType<typeof databaseModule.getDatabase>,
+  database: ReturnType<typeof databaseModule.getBusinessDatabase>,
   label: string,
   sql: string,
   params: SQLInputValue[],

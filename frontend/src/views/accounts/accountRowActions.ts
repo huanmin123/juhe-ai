@@ -20,16 +20,6 @@ export function buildAccountRowActions(options: AccountRowActionOptions): RowAct
     if (options.canEdit) {
       authorizedList.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
     }
-    if (account.accountAuthorizationId) {
-      authorizedList.push({
-        key: 'return',
-        label: '归还',
-        icon: 'revoke',
-        tone: 'danger',
-        confirmTitle: `确认归还授权账户「${account.name}」？归还后你将不再看到或使用它，不影响授权方原账户。`,
-        confirmOkText: '归还'
-      })
-    }
     return authorizedList
   }
 

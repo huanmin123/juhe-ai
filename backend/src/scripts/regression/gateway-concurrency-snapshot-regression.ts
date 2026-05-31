@@ -122,17 +122,17 @@ try {
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = fakeParent.send.bind(fakeParent)
     runtimeConfig.processRole = 'db-service'
 
-    const dbServiceLocalAccountPage = repositories.listAccountsPage(access, { limit: 20 })
+    const dbServiceLocalAccountPage = repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
     assert.equal(findAccount(dbServiceLocalAccountPage.items, accountA.id).currentConcurrency, 0, 'DB service 本地并发快照应为空')
 
-    const accountPage = repositories.listAccountsPage(access, { limit: 20 })
+    const accountPage = repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
     const accountPageWithRuntime = await runtimeSnapshot.applyServerAccountConcurrencyToAccountList(accountPage)
     assert.equal(findAccount(accountPageWithRuntime.items, accountA.id).currentConcurrency, 2, '账户列表应合并 server 当前并发 A')
     assert.equal(findAccount(accountPageWithRuntime.items, accountA.id).currentConcurrencyAvailable, true, '账户列表应标记 server 并发快照可用')
     assert.equal(findAccount(accountPageWithRuntime.items, accountB.id).currentConcurrency, 1, '账户列表应合并 server 当前并发 B')
     assert.equal(accountPageWithRuntime.runtimeSnapshot.accountConcurrencyAvailable, true, '账户分页结果应标记 server 并发快照可用')
 
-    const granteeAccountPage = repositories.listAccountsPage({ systemAccountId: grantee.id, role: 'user' as const }, { limit: 20 })
+    const granteeAccountPage = repositories.listAccountsPage({ systemAccountId: grantee.id, role: 'user' as const }, { page: 1, pageSize: 20 })
     const authorizedAccountPageWithRuntime = await runtimeSnapshot.applyServerAccountConcurrencyToAccountList(granteeAccountPage)
     const authorizedAccount = findAccount(authorizedAccountPageWithRuntime.items, authorizedAccountA.id)
     assert.equal(authorizedAccount.accessType, 'authorized', '被授权用户账户列表应返回授权账户视角')
@@ -158,7 +158,7 @@ try {
   console.log('网关实时并发快照回归通过：系统 API 通过 server 快照合并账户和分组当前并发')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }

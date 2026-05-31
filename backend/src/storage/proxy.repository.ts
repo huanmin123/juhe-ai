@@ -1,7 +1,7 @@
 import { decryptJson, encryptJson } from './crypto.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
 
 interface ProxyRow {
@@ -44,8 +44,12 @@ export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' 
 export interface ProxyProfileListOptions {
   page?: number
   pageSize?: number
-  limit?: number
   keyword?: string
+}
+
+export interface ProxyProfileOptionListOptions {
+  keyword?: string
+  limit?: number
 }
 
 export interface ProxyProfileListResult {
@@ -90,16 +94,16 @@ export function listProxiesPage(options: ProxyProfileListOptions = {}): ProxyPro
 }
 
 export function findProxy(id: string): ProxyProfileSummary | undefined {
-  const row = getDatabase().prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
+  const row = getBusinessDatabase().prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
   return row ? proxySummaryFromRow(row) : undefined
 }
 
-export function listProxyOptions(options: Pick<ProxyProfileListOptions, 'keyword' | 'limit'> = {}): ProxyProfileOptionSummary[] {
+export function listProxyOptions(options: ProxyProfileOptionListOptions = {}): ProxyProfileOptionSummary[] {
   const keywordFilter = buildProxyKeywordFilter(options.keyword)
   const safeLimit = typeof options.limit === 'number' && Number.isInteger(options.limit)
     ? Math.min(50, Math.max(1, options.limit))
     : 50
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`SELECT id, name, type, enabled FROM proxy_profiles WHERE enabled = 1${keywordFilter.clause ? ` AND ${keywordFilter.clause}` : ''} ORDER BY name ASC, updated_at DESC, id ASC LIMIT ?`)
     .all(...keywordFilter.params, safeLimit) as unknown as Array<Pick<ProxyRow, 'id' | 'name' | 'type' | 'enabled'>>
   return rows.map((row) => ({
@@ -116,7 +120,7 @@ function queryProxies(options: ProxyProfileListOptions = {}, paged = false): Pro
   const whereClause = keywordFilter.clause ? `WHERE ${keywordFilter.clause}` : ''
   const pageClause = paged ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles ${whereClause} ORDER BY updated_at DESC, id DESC${pageClause}`)
     .all(...keywordFilter.params, ...pageParams) as unknown as ProxyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
@@ -131,11 +135,11 @@ function queryProxies(options: ProxyProfileListOptions = {}, paged = false): Pro
 }
 
 function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<Pick<ProxyProfileListOptions, 'page' | 'pageSize'>> & Pick<ProxyProfileListOptions, 'keyword'> {
-  const page = typeof options.page === 'number' && Number.isInteger(options.page) ? Math.max(1, options.page) : 1
-  const rawPageSize = options.pageSize ?? options.limit
+  const rawPageSize = options.pageSize
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(200, Math.max(1, rawPageSize))
     : 20
+  const page = normalizeListPage(options.page, pageSize)
   return {
     page,
     pageSize,
@@ -237,7 +241,7 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
   }
   assertProxyNameAvailable(proxy.name)
   try {
-    getDatabase()
+    getBusinessDatabase()
       .prepare(`
         INSERT INTO proxy_profiles (id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -258,7 +262,7 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   if (!current) {
     return undefined
   }
-  const currentSecret = getDatabase()
+  const currentSecret = getBusinessDatabase()
     .prepare('SELECT password_encrypted FROM proxy_profiles WHERE id = ?')
     .get(id) as unknown as { password_encrypted?: string | null } | undefined
   const shouldUpdatePassword = typeof input.password === 'string' && input.password.trim() !== ''
@@ -283,7 +287,7 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
     : currentSecret?.password_encrypted ?? null
   assertProxyNameAvailable(next.name, id)
   try {
-    getDatabase()
+    getBusinessDatabase()
       .prepare(`
         UPDATE proxy_profiles
         SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
@@ -319,12 +323,12 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
 }
 
 export function getProxyTestConfig(id: string): ProxyProfileTestConfig | undefined {
-  const row = getDatabase().prepare(`SELECT ${proxyTestConfigSelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
+  const row = getBusinessDatabase().prepare(`SELECT ${proxyTestConfigSelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
   return row ? { ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) } : undefined
 }
 
 export function listEnabledProxyTestConfigs(limit = 20): ProxyProfileTestConfig[] {
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare(`
       SELECT ${proxyTestConfigSelectColumns()}
       FROM proxy_profiles
@@ -365,7 +369,7 @@ export function updateProxyTestState(
     nowIso(),
     id
   ]
-  getDatabase()
+  getBusinessDatabase()
     .prepare(sql)
     .run(...params)
   notifyGatewayRuntimeCacheInvalidation('proxy_test_state_updated')
@@ -377,7 +381,7 @@ export function deleteProxy(id: string): boolean {
   if (usage.accountCount > 0) {
     throw new ProxyInUseError(usage.accountCount, usage.accountNames)
   }
-  const result = getDatabase().prepare('DELETE FROM proxy_profiles WHERE id = ?').run(id)
+  const result = getBusinessDatabase().prepare('DELETE FROM proxy_profiles WHERE id = ?').run(id)
   if (Number(result.changes ?? 0) > 0) {
     notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
   }
@@ -385,14 +389,14 @@ export function deleteProxy(id: string): boolean {
 }
 
 function proxyUsageSummary(id: string): { accountCount: number; accountNames: string[] } {
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare('SELECT COUNT(*) AS account_count FROM accounts WHERE proxy_profile_id = ?')
     .get(id) as unknown as { account_count?: number } | undefined
   const accountCount = Number(row?.account_count ?? 0)
   if (accountCount <= 0) {
     return { accountCount: 0, accountNames: [] }
   }
-  const rows = getDatabase()
+  const rows = getBusinessDatabase()
     .prepare('SELECT name FROM accounts WHERE proxy_profile_id = ? ORDER BY name ASC, id ASC LIMIT 3')
     .all(id) as unknown as Array<{ name?: string }>
   return {
@@ -415,7 +419,7 @@ export function resolveProxyUrlsForProfiles(proxyProfileIds: string[]): Map<stri
   if (!ids.length) return output
 
   const rows: Array<Pick<ProxyRow, 'id' | 'type' | 'host' | 'port' | 'username' | 'password_encrypted' | 'enabled'>> = []
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database
       .prepare(`SELECT id, type, host, port, username, password_encrypted, enabled FROM proxy_profiles WHERE id IN (${sqlPlaceholders(chunk.length)})`)
@@ -439,7 +443,7 @@ export function resolveProxyUrlsForProfiles(proxyProfileIds: string[]): Map<stri
 
 export function resolveEnabledProxyProfileId(proxyProfileId?: string | null): string | undefined {
   if (!proxyProfileId) return undefined
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare('SELECT id, enabled FROM proxy_profiles WHERE id = ?')
     .get(proxyProfileId) as unknown as Pick<ProxyRow, 'id' | 'enabled'> | undefined
   if (!row || row.enabled !== 1) {
@@ -450,7 +454,7 @@ export function resolveEnabledProxyProfileId(proxyProfileId?: string | null): st
 
 function proxyUrlForProfile(proxyProfileId?: string | null): string | undefined {
   if (!proxyProfileId) return undefined
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare('SELECT type, host, port, username, password_encrypted, enabled FROM proxy_profiles WHERE id = ?')
     .get(proxyProfileId) as unknown as ProxyRow | undefined
   if (!row || row.enabled !== 1) {
@@ -484,7 +488,7 @@ function assertProxyNameAvailable(name: string, excludeId?: string): void {
   if (excludeId) {
     params.push(excludeId)
   }
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare(`SELECT id FROM proxy_profiles WHERE lower(name) = lower(?)${excludeClause} LIMIT 1`)
     .get(...params) as { id?: string } | undefined
   if (row?.id) {

@@ -1,8 +1,11 @@
-import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { dirname, join, normalize, resolve } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 
 import { defaultUsageShardRoot, runtimeConfig } from '../config/runtime.js'
+import { getDatasetDatabase, nowIso } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { sqliteBusyTimeoutMs } from './sqlite-config.js'
 
 export interface UsageRecordShardLocation {
   shardKey: string
@@ -17,8 +20,25 @@ export interface UsageRecordShardQueryWindow {
   endAt?: string
 }
 
+export interface UsageRecordShardEntryInput {
+  id: string
+  shardKey: string
+  systemAccountId: string
+  accountId?: string | null
+  groupId?: string | null
+  model?: string | null
+  trafficSource: string
+  success: boolean
+  statusCode?: number | null
+  clientIp?: string | null
+  firstTokenMs?: number | null
+  durationMs?: number | null
+  costUsd?: number | null
+  createdAt: string
+}
+
 const usageRecordShardSchemaVersion = 1
-const sqliteBusyTimeoutMs = 5000
+const usageRecordShardWindowMaxDays = 31
 const shardDatabases = new Map<string, DatabaseSync>()
 
 export function usageRecordShardCount(): number {
@@ -51,6 +71,10 @@ export function usageRecordShardLocationFromKey(shardKey: string): UsageRecordSh
   return usageRecordShardLocation(match[1], Number(match[2]))
 }
 
+export function findRegisteredUsageRecordShardLocation(shardKey: string): UsageRecordShardLocation | undefined {
+  return findRegisteredUsageRecordShardLocationByKey(shardKey)
+}
+
 export function getUsageRecordShardDatabase(location: UsageRecordShardLocation): DatabaseSync {
   const cached = shardDatabases.get(location.filePath)
   if (cached) {
@@ -61,6 +85,7 @@ export function getUsageRecordShardDatabase(location: UsageRecordShardLocation):
   configureUsageRecordShardDatabase(database)
   applyUsageRecordShardSchema(database)
   shardDatabases.set(location.filePath, database)
+  registerUsageRecordShardLocation(location)
   return database
 }
 
@@ -75,42 +100,102 @@ export function closeUsageRecordShardDatabases(): void {
 }
 
 export function listUsageRecordShardLocations(window: UsageRecordShardQueryWindow = {}): UsageRecordShardLocation[] {
-  const root = usageRecordShardRoot()
-  if (!existsSync(root)) {
-    return []
-  }
   const startDateKey = window.startAt ? bucketDateKeyFromIso(window.startAt) : undefined
   const endDateKey = window.endAt ? bucketDateKeyFromIso(window.endAt) : undefined
-  const locations: UsageRecordShardLocation[] = []
-  for (const filePath of walkSqliteFiles(root)) {
-    const location = usageRecordShardLocationFromPath(filePath)
-    if (!location) continue
-    if (startDateKey && location.bucketDateKey < startDateKey) continue
-    if (endDateKey && location.bucketDateKey > endDateKey) continue
-    locations.push(location)
+  if (startDateKey || endDateKey) {
+    return listUsageRecordShardLocationsForDateWindow(startDateKey, endDateKey)
   }
-  return locations.sort((left, right) => {
-    if (left.bucketDateKey !== right.bucketDateKey) {
-      return left.bucketDateKey.localeCompare(right.bucketDateKey)
-    }
-    return left.shardId - right.shardId
+  return listRegisteredUsageRecordShardLocations()
+}
+
+function listUsageRecordShardLocationsForDateWindow(startDateKey?: string, endDateKey?: string): UsageRecordShardLocation[] {
+  const endKey = endDateKey ?? startDateKey ?? bucketDateKeyFromDate(new Date())
+  const startKey = startDateKey ?? endKey
+  const startMs = bucketDateKeyToUtcMs(startKey)
+  const endMs = bucketDateKeyToUtcMs(endKey)
+  const ascendingStartMs = Math.min(startMs, endMs)
+  const ascendingEndMs = Math.max(startMs, endMs)
+  const totalDays = Math.floor((ascendingEndMs - ascendingStartMs) / dayMs) + 1
+  const days = Math.max(1, Math.min(totalDays, usageRecordShardWindowMaxDays))
+  const boundedStartMs = ascendingEndMs - (days - 1) * dayMs
+  return listRegisteredUsageRecordShardLocations({
+    startBucketDate: bucketDateFromBucketDateKey(bucketDateKeyFromDate(new Date(boundedStartMs))),
+    endBucketDate: bucketDateFromBucketDateKey(bucketDateKeyFromDate(new Date(ascendingEndMs)))
   })
+}
+
+function listRegisteredUsageRecordShardLocations(input: {
+  startBucketDate?: string
+  endBucketDate?: string
+} = {}): UsageRecordShardLocation[] {
+  const clauses = ["status = 'active'"]
+  const params: string[] = []
+  if (input.startBucketDate) {
+    clauses.push('bucket_date >= ?')
+    params.push(input.startBucketDate)
+  }
+  if (input.endBucketDate) {
+    clauses.push('bucket_date <= ?')
+    params.push(input.endBucketDate)
+  }
+  const rows = getDatasetDatabase()
+    .prepare(`
+      SELECT shard_key, bucket_date, shard_id, file_path
+      FROM usage_record_shards
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY bucket_date ASC, shard_id ASC
+    `)
+    .all(...params) as Array<{ shard_key?: string; bucket_date?: string; shard_id?: number; file_path?: string }>
+  return rows
+    .map(usageRecordShardLocationFromRegistryRow)
+    .filter((location): location is UsageRecordShardLocation => Boolean(location))
+}
+
+function usageRecordShardLocationFromRegistryRow(row: {
+  shard_key?: string
+  bucket_date?: string
+  shard_id?: number
+  file_path?: string
+}): UsageRecordShardLocation | undefined {
+  const shardKey = row.shard_key?.trim()
+  const bucketDate = row.bucket_date?.trim()
+  const filePath = row.file_path?.trim()
+  const shardId = Number(row.shard_id)
+  if (!shardKey || !bucketDate || !filePath || !Number.isInteger(shardId)) {
+    return undefined
+  }
+  const bucketDateKey = bucketDate.replace(/-/g, '')
+  return { shardKey, bucketDate, bucketDateKey, shardId, filePath }
+}
+
+function registerUsageRecordShardLocation(location: UsageRecordShardLocation): void {
+  const timestamp = nowIso()
+  getDatasetDatabase()
+    .prepare(`
+      INSERT INTO usage_record_shards (
+        shard_key, bucket_date, shard_id, file_path, schema_version, status,
+        first_seen_at, last_write_at, last_error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, NULL, ?, ?)
+      ON CONFLICT(shard_key) DO UPDATE SET
+        bucket_date = excluded.bucket_date,
+        shard_id = excluded.shard_id,
+        file_path = excluded.file_path,
+        schema_version = excluded.schema_version,
+        status = 'active',
+        updated_at = excluded.updated_at
+    `)
+    .run(location.shardKey, location.bucketDate, location.shardId, location.filePath, usageRecordShardSchemaVersion, timestamp, timestamp, timestamp)
 }
 
 export function listRecentUsageRecordShardLocations(dayWindow = 7): UsageRecordShardLocation[] {
   const days = Math.max(1, Math.min(Math.trunc(dayWindow), 31))
   const now = Date.now()
-  const locations: UsageRecordShardLocation[] = []
-  for (let dayOffset = 0; dayOffset < days; dayOffset += 1) {
-    const bucketDateKey = bucketDateKeyFromDate(new Date(now - dayOffset * 24 * 60 * 60 * 1000))
-    for (let shardId = 0; shardId < usageRecordShardCount(); shardId += 1) {
-      const location = usageRecordShardLocation(bucketDateKey, shardId)
-      if (existsSync(location.filePath)) {
-        locations.push(location)
-      }
-    }
-  }
-  return locations.sort((left, right) => {
+  const endBucketDateKey = bucketDateKeyFromDate(new Date(now))
+  const startBucketDateKey = bucketDateKeyFromDate(new Date(now - (days - 1) * dayMs))
+  return listRegisteredUsageRecordShardLocations({
+    startBucketDate: bucketDateFromBucketDateKey(startBucketDateKey),
+    endBucketDate: bucketDateFromBucketDateKey(endBucketDateKey)
+  }).sort((left, right) => {
     if (left.bucketDateKey !== right.bucketDateKey) {
       return right.bucketDateKey.localeCompare(left.bucketDateKey)
     }
@@ -124,23 +209,11 @@ export function queryUsageRecordShardById<T extends Record<string, unknown>>(
   params: SQLInputValue[] = [],
   createdAt?: string
 ): T | undefined {
-  const parsedShardId = parseUsageRecordShardId(id)
-  const directLocation = parsedShardId || createdAt
-    ? usageRecordShardLocationForRecord(id, createdAt)
-    : undefined
-  if (!directLocation) {
-    for (const location of listUsageRecordShardLocations()) {
-      const row = getUsageRecordShardDatabase(location)
-        .prepare(selectSql)
-        .get(...params) as T | undefined
-      if (row) return row
-    }
+  const location = registeredUsageRecordShardLocationForLookup(id, createdAt) ?? findUsageRecordShardLocationByUsageId(id)
+  if (!location) {
     return undefined
   }
-  if (!existsSync(directLocation.filePath)) {
-    return undefined
-  }
-  return getUsageRecordShardDatabase(directLocation)
+  return getUsageRecordShardDatabase(location)
     .prepare(selectSql)
     .get(...params) as T | undefined
 }
@@ -152,34 +225,76 @@ export function updateUsageRecordCacheReadCost(input: {
   cacheReadCostUsd: number
 }): void {
   const location = input.sourceShardKey
-    ? usageRecordShardLocationFromKey(input.sourceShardKey)
-    : usageRecordShardLocationForRecord(input.id, input.createdAt)
-  const locations = location ? [location] : listUsageRecordShardLocations()
-  for (const candidate of locations) {
-    if (!existsSync(candidate.filePath)) continue
-    const result = getUsageRecordShardDatabase(candidate)
-      .prepare('UPDATE usage_records SET cache_read_cost_usd = ? WHERE id = ?')
-      .run(input.cacheReadCostUsd, input.id)
-    if (Number(result.changes ?? 0) > 0) {
-      return
-    }
+    ? findRegisteredUsageRecordShardLocationByKey(input.sourceShardKey)
+    : registeredUsageRecordShardLocationForLookup(input.id, input.createdAt) ?? findUsageRecordShardLocationByUsageId(input.id)
+  if (!location) {
+    return
   }
-  if (location) {
-    for (const candidate of listUsageRecordShardLocations()) {
-      if (candidate.shardKey === location.shardKey) continue
-      const result = getUsageRecordShardDatabase(candidate)
-        .prepare('UPDATE usage_records SET cache_read_cost_usd = ? WHERE id = ?')
-        .run(input.cacheReadCostUsd, input.id)
-      if (Number(result.changes ?? 0) > 0) {
-        return
-      }
-    }
+  getUsageRecordShardDatabase(location)
+    .prepare('UPDATE usage_records SET cache_read_cost_usd = ? WHERE id = ?')
+    .run(input.cacheReadCostUsd, input.id)
+}
+
+export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInput[]): void {
+  if (entries.length === 0) return
+  const timestamp = nowIso()
+  const database = getDatasetDatabase()
+  const statement = database.prepare(`
+    INSERT INTO usage_record_shard_entries (
+      usage_id, shard_key, system_account_id, account_id, group_id, model, traffic_source,
+      success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(usage_id) DO UPDATE SET
+      shard_key = excluded.shard_key,
+      system_account_id = excluded.system_account_id,
+      account_id = excluded.account_id,
+      group_id = excluded.group_id,
+      model = excluded.model,
+      traffic_source = excluded.traffic_source,
+      success = excluded.success,
+      status_code = excluded.status_code,
+      client_ip = excluded.client_ip,
+      first_token_ms = excluded.first_token_ms,
+      duration_ms = excluded.duration_ms,
+      cost_usd = excluded.cost_usd,
+      created_at = excluded.created_at,
+      indexed_at = excluded.indexed_at
+  `)
+  for (const entry of entries) {
+    statement.run(
+      entry.id,
+      entry.shardKey,
+      entry.systemAccountId,
+      entry.accountId ?? null,
+      entry.groupId ?? null,
+      entry.model ?? null,
+      entry.trafficSource,
+      entry.success ? 1 : 0,
+      entry.statusCode ?? null,
+      entry.clientIp ?? null,
+      entry.firstTokenMs ?? null,
+      entry.durationMs ?? null,
+      entry.costUsd ?? null,
+      entry.createdAt,
+      timestamp
+    )
+  }
+}
+
+export function deleteUsageRecordShardEntries(ids: string[]): void {
+  const normalizedIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+  if (normalizedIds.length === 0) return
+  const database = getDatasetDatabase()
+  for (const chunk of chunkValues(normalizedIds, 900)) {
+    database
+      .prepare(`DELETE FROM usage_record_shard_entries WHERE usage_id IN (${sqlPlaceholders(chunk.length)})`)
+      .run(...chunk)
   }
 }
 
 export function usageRecordShardExistsForId(id: string, createdAt?: string): boolean {
-  const location = usageRecordShardLocationForRecord(id, createdAt)
-  return existsSync(location.filePath)
+  return Boolean(registeredUsageRecordShardLocationForLookup(id, createdAt))
 }
 
 function usageRecordShardLocation(bucketDateKey: string, shardIdInput: number): UsageRecordShardLocation {
@@ -209,11 +324,37 @@ function parseUsageRecordShardId(id: string): { bucketDateKey: string; shardId: 
   return { bucketDateKey: match[1], shardId }
 }
 
-function usageRecordShardLocationFromPath(filePath: string): UsageRecordShardLocation | undefined {
-  const normalized = filePath.replace(/\\/g, '/')
-  const match = /(?:^|\/)usage-(\d{8})-s(\d+)\.sqlite3$/i.exec(normalized)
-  if (!match) return undefined
-  return usageRecordShardLocation(match[1], Number(match[2]))
+function usageRecordShardLocationForLookup(id: string, createdAt?: string): UsageRecordShardLocation | undefined {
+  const parsedShardId = parseUsageRecordShardId(id)
+  if (!parsedShardId && !createdAt) {
+    return undefined
+  }
+  return usageRecordShardLocationForRecord(id, createdAt)
+}
+
+function registeredUsageRecordShardLocationForLookup(id: string, createdAt?: string): UsageRecordShardLocation | undefined {
+  const location = usageRecordShardLocationForLookup(id, createdAt)
+  return location ? findRegisteredUsageRecordShardLocationByKey(location.shardKey) : undefined
+}
+
+function findUsageRecordShardLocationByUsageId(id: string): UsageRecordShardLocation | undefined {
+  const row = getDatasetDatabase()
+    .prepare('SELECT shard_key FROM usage_record_shard_entries WHERE usage_id = ? LIMIT 1')
+    .get(id) as { shard_key?: string } | undefined
+  return row?.shard_key ? findRegisteredUsageRecordShardLocationByKey(row.shard_key) : undefined
+}
+
+function findRegisteredUsageRecordShardLocationByKey(shardKey: string): UsageRecordShardLocation | undefined {
+  const row = getDatasetDatabase()
+    .prepare(`
+      SELECT shard_key, bucket_date, shard_id, file_path
+      FROM usage_record_shards
+      WHERE shard_key = ?
+        AND status = 'active'
+      LIMIT 1
+    `)
+    .get(shardKey.trim()) as { shard_key?: string; bucket_date?: string; shard_id?: number; file_path?: string } | undefined
+  return row ? usageRecordShardLocationFromRegistryRow(row) : undefined
 }
 
 function stableShardId(value: string): number {
@@ -239,26 +380,24 @@ function bucketDateKeyFromDate(date: Date): string {
   return `${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, '0')}${String(date.getUTCDate()).padStart(2, '0')}`
 }
 
-function formatShardId(shardId: number): string {
-  return String(Math.max(0, Math.trunc(shardId))).padStart(2, '0')
+function bucketDateFromBucketDateKey(value: string): string {
+  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
 }
 
-function walkSqliteFiles(root: string): string[] {
-  const files: string[] = []
-  const stack = [root]
-  while (stack.length > 0) {
-    const current = stack.pop()
-    if (!current) continue
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const path = join(current, entry.name)
-      if (entry.isDirectory()) {
-        stack.push(path)
-      } else if (entry.isFile() && /^usage-\d{8}-s\d+\.sqlite3$/i.test(entry.name)) {
-        files.push(path)
-      }
-    }
-  }
-  return files
+const dayMs = 24 * 60 * 60 * 1000
+
+function bucketDateKeyToUtcMs(value: string): number {
+  const match = /^(\d{4})(\d{2})(\d{2})$/.exec(value)
+  if (!match) return Date.now()
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const time = Date.UTC(year, month - 1, day)
+  return Number.isFinite(time) ? time : Date.now()
+}
+
+function formatShardId(shardId: number): string {
+  return String(Math.max(0, Math.trunc(shardId))).padStart(2, '0')
 }
 
 function configureUsageRecordShardDatabase(database: DatabaseSync): void {

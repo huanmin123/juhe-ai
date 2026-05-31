@@ -4,7 +4,7 @@ import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from '
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
 import { currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
-import { getDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { activeResourceAuthorization, activeResourceAuthorizationById, activeResourceAuthorizationsByIds } from './resource-authorization-helpers.js'
@@ -51,7 +51,6 @@ export interface OpenAIAccountSecret {
   proxyUrl?: string
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
-  passthroughEnabled: boolean
   errorPolicyId?: string
   cooldownUntil?: string
   lastErrorMessage?: string
@@ -95,6 +94,11 @@ type OpenAIAccountAccess = {
   accountAuthorizationSourceTeamId?: string
 }
 
+type EligibleOpenAIGroupAccountSelection = {
+  row: OpenAIGroupAccountSelectionRow
+  accountAccess: OpenAIAccountAccess
+}
+
 type OpenAIAccountSecretOptions = {
   enforceSchedulableAuthorization?: boolean
   accountAuthorizationsByIdOrResourceId?: Map<string, ResourceAuthorizationRow>
@@ -102,6 +106,10 @@ type OpenAIAccountSecretOptions = {
   supportedModelsByAccountId?: Map<string, string[]>
   accountAccess?: OpenAIAccountAccess
 }
+
+const gatewayDispatchAccountCandidateLimit = 256
+
+type AccountAvailabilityScheduleCandidateFilter = 'without_schedule' | 'with_schedule'
 
 export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
   return listOpenAIAccountsForGroup(groupId, systemAccountId)[0]
@@ -120,7 +128,7 @@ export function findOpenAIAccountForGroup(
   }
   ensureAccountAuthorizationInstancesForGrantee(systemAccountId)
   const forceAvailability = options.ignoreAvailability === true
-  const groupAccount = getDatabase()
+  const groupAccount = getBusinessDatabase()
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
@@ -136,17 +144,16 @@ export function findOpenAIAccountForGroup(
     return undefined
   }
 
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare(`
       SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
-        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
+        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.availability_schedule_json, accounts.account_expires_at, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.type AS resource_type,
         source_accounts.credentials_encrypted AS resource_credentials_encrypted,
         source_accounts.proxy_profile_id AS resource_proxy_profile_id,
         source_accounts.concurrency_limit AS resource_concurrency_limit,
-        source_accounts.passthrough_enabled AS resource_passthrough_enabled,
         source_accounts.error_policy_id AS resource_error_policy_id,
         NULL AS quality_score,
         NULL AS quality_state,
@@ -176,7 +183,7 @@ export function findOpenAIAccountForGroup(
 }
 
 export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
-  const groupRow = getDatabase()
+  const groupRow = getBusinessDatabase()
     .prepare('SELECT system_account_id, group_type, scheduling_policy_json FROM groups WHERE id = ?')
     .get(groupId) as unknown as { system_account_id?: string; group_type?: GroupType | null; scheduling_policy_json?: string | null } | undefined
   const groupOwnerSystemAccountId = groupRow?.system_account_id
@@ -218,7 +225,7 @@ export function listOpenAIAccountsForGroupResult(
   systemAccountId = currentSystemAccountId(),
   options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
 ): OpenAIAccountsForGroupResult {
-  const database = getDatabase()
+  const database = getBusinessDatabase()
   const now = nowIso()
   const qualityFreshAfter = qualityFreshAfterIso()
   const groupAccess = options.preResolvedGroupAccess ?? resolveGroupUsageAccessMetadata(groupId, systemAccountId)
@@ -226,30 +233,151 @@ export function listOpenAIAccountsForGroupResult(
     return { accounts: [], hasAccountAvailabilitySchedule: false }
   }
   ensureAccountAuthorizationInstancesForGrantee(systemAccountId, database)
-  const groupAccountRows = database
+  const groupAccountRows = [
+    ...listOpenAIGroupAccountSelectionRows(database, groupId, groupAccess.groupOwnerSystemAccountId, now, 'without_schedule'),
+    ...listOpenAIGroupAccountSelectionRows(database, groupId, groupAccess.groupOwnerSystemAccountId, now, 'with_schedule')
+  ]
+  const hasAccountAvailabilitySchedule = groupAccountRows.some((row) => Boolean(row.availability_schedule_json))
+  const accountAuthorizationsByIdOrResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
+  const eligibleRows = groupAccountRows
+    .map((row) => ({
+      row,
+      accountAccess: resolveSchedulableOpenAIAccountAccess(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId })
+    }))
+    .filter((item): item is EligibleOpenAIGroupAccountSelection => Boolean(item.accountAccess))
+    .filter((item) => isOpenAIAccountAvailableForSelection(item.row, item.row, item.accountAccess, now, false))
+  const qualityByAccountId = loadFreshAccountQualityRows(eligibleRows.map((item) => item.row.account_id), qualityFreshAfter)
+  applyOpenAIAccountQualityRows(eligibleRows, qualityByAccountId)
+
+  const accounts: OpenAIAccountSecret[] = []
+  const orderedEligibleRows = orderOpenAIGroupAccountRowsForDispatch(eligibleRows)
+  for (let offset = 0; offset < orderedEligibleRows.length && accounts.length < gatewayDispatchAccountCandidateLimit; offset += gatewayDispatchAccountCandidateLimit) {
+    const hydrationRows = orderedEligibleRows.slice(offset, offset + gatewayDispatchAccountCandidateLimit)
+    const supportedModelsByAccountId = loadSupportedModelsByAccountIds(hydrationRows.map((item) => openAIAccountResourceAccountId(item.row)))
+    const proxyProfilesById = loadProxyProfilesForSelection(hydrationRows.map((item) => item.row))
+    for (const { row, accountAccess } of hydrationRows) {
+      const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId, proxyProfilesById, supportedModelsByAccountId, accountAccess })
+      if (account) {
+        accounts.push(account)
+        if (accounts.length >= gatewayDispatchAccountCandidateLimit) {
+          break
+        }
+      }
+    }
+  }
+
+  return {
+    accounts,
+    hasAccountAvailabilitySchedule
+  }
+}
+
+function orderOpenAIGroupAccountRowsForDispatch(items: EligibleOpenAIGroupAccountSelection[]): EligibleOpenAIGroupAccountSelection[] {
+  const buckets = new Map<string, number>()
+  for (const item of items) {
+    const bucketKey = openAIGroupAccountDispatchBucketKey(item.row)
+    buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + 1)
+  }
+  return [...items].sort((left, right) => {
+    const leftFallback = openAIGroupAccountDispatchFallbackRank(left.row)
+    const rightFallback = openAIGroupAccountDispatchFallbackRank(right.row)
+    if (leftFallback !== rightFallback) return leftFallback - rightFallback
+    const leftSuper = openAIGroupAccountDispatchSuperRank(left.row)
+    const rightSuper = openAIGroupAccountDispatchSuperRank(right.row)
+    if (leftSuper !== rightSuper) return rightSuper - leftSuper
+    const leftPriority = openAIGroupAccountDispatchPriority(left.row)
+    const rightPriority = openAIGroupAccountDispatchPriority(right.row)
+    if (leftPriority !== rightPriority) return leftPriority - rightPriority
+    const bucketKey = openAIGroupAccountDispatchBucketKey(left.row)
+    if (bucketKey === openAIGroupAccountDispatchBucketKey(right.row) && (buckets.get(bucketKey) ?? 0) >= 2) {
+      const qualityDelta = compareOpenAIAccountRowsByQuality(left.row, right.row)
+      if (qualityDelta !== 0) return qualityDelta
+    }
+    const nameDelta = left.row.name.localeCompare(right.row.name, 'zh-CN')
+    return nameDelta !== 0 ? nameDelta : left.row.id.localeCompare(right.row.id)
+  })
+}
+
+function openAIGroupAccountDispatchBucketKey(row: OpenAIGroupAccountSelectionRow): string {
+  return `${openAIGroupAccountDispatchFallbackRank(row)}:${openAIGroupAccountDispatchSuperRank(row)}:${openAIGroupAccountDispatchPriority(row)}`
+}
+
+function openAIGroupAccountDispatchFallbackRank(row: OpenAIGroupAccountSelectionRow): number {
+  return row.local_fallback_enabled === 1 ? 1 : 0
+}
+
+function openAIGroupAccountDispatchSuperRank(row: OpenAIGroupAccountSelectionRow): number {
+  return row.local_super_priority_enabled === 1 ? 1 : 0
+}
+
+function openAIGroupAccountDispatchPriority(row: OpenAIGroupAccountSelectionRow): number {
+  return Number(row.local_priority ?? row.priority ?? 0)
+}
+
+function compareOpenAIAccountRowsByQuality(left: OpenAIAccountRow, right: OpenAIAccountRow): number {
+  const leftQuality = left.quality_score
+  const rightQuality = right.quality_score
+  const leftHasQuality = typeof leftQuality === 'number'
+  const rightHasQuality = typeof rightQuality === 'number'
+  if (leftHasQuality !== rightHasQuality) return leftHasQuality ? -1 : 1
+  if (leftHasQuality && rightHasQuality && leftQuality !== rightQuality) {
+    return leftQuality - rightQuality
+  }
+  const nameDelta = left.name.localeCompare(right.name, 'zh-CN')
+  return nameDelta !== 0 ? nameDelta : left.id.localeCompare(right.id)
+}
+
+function applyOpenAIAccountQualityRows(
+  rows: EligibleOpenAIGroupAccountSelection[],
+  qualityByAccountId: Map<string, Pick<OpenAIAccountRow, 'quality_score' | 'quality_state' | 'quality_ewma_first_token_ms'>>
+): void {
+  for (const { row } of rows) {
+    const quality = qualityByAccountId.get(row.id)
+    if (quality) {
+      row.quality_score = quality.quality_score
+      row.quality_state = quality.quality_state
+      row.quality_ewma_first_token_ms = quality.quality_ewma_first_token_ms
+    }
+  }
+}
+
+function listOpenAIGroupAccountSelectionRows(
+  database: ReturnType<typeof getBusinessDatabase>,
+  groupId: string,
+  groupOwnerSystemAccountId: string,
+  now: string,
+  scheduleFilter: AccountAvailabilityScheduleCandidateFilter
+): OpenAIGroupAccountSelectionRow[] {
+  const scheduleClause = scheduleFilter === 'with_schedule'
+    ? 'AND accounts.availability_schedule_json IS NOT NULL'
+    : 'AND accounts.availability_schedule_json IS NULL'
+  return database
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
         accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
-        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
+        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.availability_schedule_json, accounts.account_expires_at, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.type AS resource_type,
         source_accounts.credentials_encrypted AS resource_credentials_encrypted,
         source_accounts.proxy_profile_id AS resource_proxy_profile_id,
         source_accounts.concurrency_limit AS resource_concurrency_limit,
-        source_accounts.passthrough_enabled AS resource_passthrough_enabled,
         source_accounts.error_policy_id AS resource_error_policy_id,
         NULL AS quality_score,
         NULL AS quality_state,
         NULL AS quality_ewma_first_token_ms
-      FROM group_accounts
+      FROM group_accounts INDEXED BY idx_group_accounts_dispatch_candidate_window
       INNER JOIN accounts ON accounts.id = group_accounts.account_id
       LEFT JOIN accounts source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
       WHERE group_accounts.group_id = ?
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
         AND accounts.provider_code = 'openai'
+        AND accounts.status = 'active'
+        AND accounts.schedulable = 1
+        AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
+        ${scheduleClause}
         AND COALESCE(source_accounts.type, accounts.type) IN ('api_key', 'oauth')
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       ORDER BY
@@ -258,39 +386,9 @@ export function listOpenAIAccountsForGroupResult(
         group_accounts.local_priority ASC,
         group_accounts.created_at ASC,
         group_accounts.account_id ASC
+      LIMIT ?
     `)
-    .all(groupId, groupAccess.groupOwnerSystemAccountId, now) as unknown as OpenAIGroupAccountSelectionRow[]
-  const hasAccountAvailabilitySchedule = groupAccountRows.some((row) => Boolean(row.availability_schedule_json))
-  const accountAuthorizationsByIdOrResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
-  const eligibleRows = groupAccountRows
-    .map((row) => ({
-      row,
-      accountAccess: resolveSchedulableOpenAIAccountAccess(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId })
-    }))
-    .filter((item): item is { row: OpenAIGroupAccountSelectionRow; accountAccess: OpenAIAccountAccess } => Boolean(item.accountAccess))
-    .filter((item) => isOpenAIAccountAvailableForSelection(item.row, item.row, item.accountAccess, now, false))
-  const qualityByAccountId = loadFreshAccountQualityRows(eligibleRows.map((item) => item.row.account_id), qualityFreshAfter)
-  const supportedModelsByAccountId = loadSupportedModelsByAccountIds(eligibleRows.map((item) => openAIAccountResourceAccountId(item.row)))
-  const proxyProfilesById = loadProxyProfilesForSelection(eligibleRows.map((item) => item.row))
-
-  const accounts: OpenAIAccountSecret[] = []
-  for (const { row, accountAccess } of eligibleRows) {
-    const quality = qualityByAccountId.get(row.id)
-    if (quality) {
-      row.quality_score = quality.quality_score
-      row.quality_state = quality.quality_state
-      row.quality_ewma_first_token_ms = quality.quality_ewma_first_token_ms
-    }
-    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId, proxyProfilesById, supportedModelsByAccountId, accountAccess })
-    if (account) {
-      accounts.push(account)
-    }
-  }
-
-  return {
-    accounts: orderOpenAIAccountsForDispatch(accounts),
-    hasAccountAvailabilitySchedule
-  }
+    .all(groupId, groupOwnerSystemAccountId, now, now, gatewayDispatchAccountCandidateLimit) as unknown as OpenAIGroupAccountSelectionRow[]
 }
 
 export function hasOpenAIAccountAvailabilityScheduleForGroup(
@@ -300,7 +398,7 @@ export function hasOpenAIAccountAvailabilityScheduleForGroup(
 ): boolean {
   const groupAccess = options.preResolvedGroupAccess ?? resolveGroupUsageAccessMetadata(groupId, systemAccountId)
   if (!groupAccess) return false
-  const row = getDatabase()
+  const row = getBusinessDatabase()
     .prepare(`
       SELECT 1
       FROM group_accounts
@@ -331,7 +429,6 @@ interface OpenAIAccountRow {
   fallback_enabled: number
   credentials_encrypted: string
   proxy_profile_id: string | null
-  passthrough_enabled: number
   error_policy_id: string | null
   cooldown_until: string | null
   last_error_message: string | null
@@ -347,7 +444,6 @@ interface OpenAIAccountRow {
   resource_credentials_encrypted?: string | null
   resource_proxy_profile_id?: string | null
   resource_concurrency_limit?: number | null
-  resource_passthrough_enabled?: number | null
   resource_error_policy_id?: string | null
   quality_score?: number | null
   quality_state?: string | null
@@ -372,10 +468,6 @@ function openAIAccountResourceProxyProfileId(row: OpenAIAccountRow): string | nu
 
 function openAIAccountResourceConcurrencyLimit(row: OpenAIAccountRow): number {
   return Number(row.resource_concurrency_limit ?? row.concurrency_limit ?? 1)
-}
-
-function openAIAccountResourcePassthroughEnabled(row: OpenAIAccountRow): number {
-  return Number(row.resource_passthrough_enabled ?? row.passthrough_enabled ?? 0)
 }
 
 function openAIAccountResourceErrorPolicyId(row: OpenAIAccountRow): string | null {
@@ -456,7 +548,6 @@ function openAIAccountSecretFromRow(
     proxyUrl: proxyProfile.proxyUrl,
     proxyProfileUnavailable: proxyProfile.unavailable,
     proxyProfileErrorMessage: proxyProfile.errorMessage,
-    passthroughEnabled: openAIAccountResourcePassthroughEnabled(row) === 1,
     errorPolicyId: openAIAccountResourceErrorPolicyId(row) ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
@@ -467,48 +558,6 @@ function openAIAccountSecretFromRow(
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
     credentials
   }
-}
-
-function compareOpenAIAccountsByQuality(left: OpenAIAccountSecret, right: OpenAIAccountSecret): number {
-  const leftQuality = left.qualityScore
-  const rightQuality = right.qualityScore
-  const leftHasQuality = typeof leftQuality === 'number'
-  const rightHasQuality = typeof rightQuality === 'number'
-  if (leftHasQuality !== rightHasQuality) return leftHasQuality ? -1 : 1
-  if (leftHasQuality && rightHasQuality && leftQuality !== rightQuality) {
-    return leftQuality - rightQuality
-  }
-  const nameDelta = left.name.localeCompare(right.name, 'zh-CN')
-  return nameDelta !== 0 ? nameDelta : left.id.localeCompare(right.id)
-}
-
-function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAIAccountSecret[] {
-  const buckets = new Map<string, OpenAIAccountSecret[]>()
-  for (const account of accounts) {
-    const bucketKey = `${account.fallbackEnabled ? 1 : 0}:${account.superPriorityEnabled ? 1 : 0}:${account.priority}`
-    const bucket = buckets.get(bucketKey)
-    if (bucket) {
-      bucket.push(account)
-    } else {
-      buckets.set(bucketKey, [account])
-    }
-  }
-  return [...accounts].sort((left, right) => {
-    const leftBucket = buckets.get(`${left.fallbackEnabled ? 1 : 0}:${left.superPriorityEnabled ? 1 : 0}:${left.priority}`) ?? []
-    const rightBucket = buckets.get(`${right.fallbackEnabled ? 1 : 0}:${right.superPriorityEnabled ? 1 : 0}:${right.priority}`) ?? []
-    const leftFallback = left.fallbackEnabled ? 1 : 0
-    const rightFallback = right.fallbackEnabled ? 1 : 0
-    if (leftFallback !== rightFallback) return leftFallback - rightFallback
-    const leftSuper = left.superPriorityEnabled ? 1 : 0
-    const rightSuper = right.superPriorityEnabled ? 1 : 0
-    if (leftSuper !== rightSuper) return rightSuper - leftSuper
-    if (left.priority !== right.priority) return left.priority - right.priority
-    if (leftBucket.length >= 2 && rightBucket.length >= 2) {
-      return compareOpenAIAccountsByQuality(left, right)
-    }
-    const nameDelta = left.name.localeCompare(right.name, 'zh-CN')
-    return nameDelta !== 0 ? nameDelta : left.id.localeCompare(right.id)
-  })
 }
 
 function isOpenAIPhysicalAccountAvailableForSelection(row: OpenAIAccountRow, now: string, includeUnavailable: boolean): boolean {

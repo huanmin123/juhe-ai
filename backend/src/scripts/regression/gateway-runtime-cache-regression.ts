@@ -89,7 +89,7 @@ try {
     httpPort: 1
   })
 
-  const database = databaseModule.getDatabase()
+  const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   let groupOwnerLookupCount = 0
   database.prepare = ((sql: string) => {
@@ -212,7 +212,7 @@ try {
   console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，API Key 停用不污染分组账号缓存，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划边界和过期边界后重新计算运行态')
 } finally {
   try {
-    databaseModule.getDatabase().close()
+    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
