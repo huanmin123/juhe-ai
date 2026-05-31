@@ -230,8 +230,6 @@ try {
   assert.equal(ownerPausedBinding?.boundGroupId, granteeQuotaGroup.id, '所有者停调账户的授权实例应能绑定到被授权人的分组')
   const ownerPausedAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerPausedAuthorizedInstance.id)
   assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '所有者停调不应影响授权实例状态')
-  assert.equal(ownerPausedAuthorizedAccount?.localStatus, 'active', '兼容字段应同步授权实例状态')
-  assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, undefined, '授权实例不再暴露父账户来源调度状态')
   assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '所有者停调不应阻断被授权实例调度')
   const ownerPausedDispatch = repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAuthorizedInstance.id, {
     fallbackEnabled: true

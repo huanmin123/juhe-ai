@@ -440,15 +440,14 @@ interface ClientIpBlacklistRequest {
   reason: string
   durationMinutes?: number
   durationDays?: number
-  expiresAt?: string | null
 }
 ```
 
 封禁时长规则：
 
 - `durationMinutes` 和 `durationDays` 用于表达“封禁多少分钟 / 多少天”，由后端按服务器时间换算为 `expiresAt`。
-- 不传时表示永久封禁；旧版 `expiresAt` 继续兼容。
-- `durationMinutes`、`durationDays` 和 `expiresAt` 只能传一种。
+- 不传时表示永久封禁。
+- `durationMinutes` 和 `durationDays` 只能传一种。
 - 到期策略不再被列表和网关视为 active 封禁；网关缓存不会跨过最近的策略过期时间。
 - 网关返回 `403 client_ip_blacklisted` 时，错误消息和 `error.client_ip` 包含当前来源 IPv4，便于调用方反馈给管理员。
 

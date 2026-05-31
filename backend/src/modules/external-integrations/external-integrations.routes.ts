@@ -75,6 +75,7 @@ const accountPushSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   concurrencyLimit: z.coerce.number().int().min(1).max(100000).optional(),
   priority: z.coerce.number().int().min(0).max(100000).optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   notes: z.string().trim().max(1000).optional(),
   externalId: z.string().trim().max(200).optional()
 })
@@ -134,29 +135,18 @@ const apiKeyAddSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(200).nullable().optional(),
-  groupId: z.string().trim().min(1).max(120).optional(),
-  groupName: z.string().trim().min(1).max(80).optional(),
-  groupBindings: z.array(apiKeyGroupBindingSchema).min(1).max(20).optional(),
+  groupBindings: z.array(apiKeyGroupBindingSchema).min(1).max(20),
   groupRouteStrategy: z.enum(['priority_failover', 'round_robin', 'weighted_round_robin']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().trim().optional(),
   quotaLimits: z.record(z.string(), z.unknown()).nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional()
-}).superRefine((value, context) => {
-  if (!value.groupId && !value.groupName && !value.groupBindings?.length) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: '新增 API Key 时必须提供 groupId、groupName 或 groupBindings'
-    })
-  }
 })
 const apiKeyUpdateSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   apiKeyId: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(120).optional(),
   description: z.string().trim().max(200).nullable().optional(),
-  groupId: z.string().trim().min(1).max(120).optional(),
-  groupName: z.string().trim().min(1).max(80).optional(),
   groupBindings: z.array(apiKeyGroupBindingSchema).min(1).max(20).optional(),
   groupRouteStrategy: z.enum(['priority_failover', 'round_robin', 'weighted_round_robin']).optional(),
   status: z.enum(['active', 'disabled']).optional(),

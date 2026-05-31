@@ -17,9 +17,7 @@ export interface ApiKeyRow {
   key_prefix: string
   key_secret_encrypted: string
   status: 'active' | 'disabled'
-  group_id: string
   group_route_strategy?: ApiKeySummary['groupRouteStrategy'] | null
-  group_name?: string | null
   group_owner_system_account_name?: string | null
   expires_at: string | null
   quota_limits_json: string | null
@@ -38,10 +36,7 @@ export function apiKeySummariesFromRows(
   const usageByApiKey = loadApiKeyUsageSummariesForScopes(usageScopes)
   const bindingsByApiKeyId = options.bindingsByApiKeyId ?? loadApiKeyGroupBindingSummariesByApiKeyIds(rows.map((row) => row.id))
   return rows.map((row) => {
-    const groupBindings = apiKeyGroupBindingsForRow(row, bindingsByApiKeyId.get(row.id))
-    const primaryBinding = groupBindings.find((binding) => binding.status === 'active') ?? groupBindings[0]
-    const groupId = primaryBinding?.groupId ?? row.group_id
-    const groupName = primaryBinding?.groupName ?? row.group_name ?? undefined
+    const groupBindings = bindingsByApiKeyId.get(row.id) ?? []
     return {
       id: row.id,
       systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
@@ -51,10 +46,6 @@ export function apiKeySummariesFromRows(
       keyPrefix: row.key_prefix,
       key: includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
       status: row.status,
-      groupId,
-      groupName,
-      primaryGroupId: groupId,
-      primaryGroupName: groupName,
       groupRouteStrategy: normalizeApiKeyGroupRouteStrategy(row.group_route_strategy),
       groupBindings,
       groupOwnerSystemAccountName: row.group_owner_system_account_name ?? undefined,
@@ -72,17 +63,4 @@ function decryptApiKeySecret(value: string): string {
     throw new Error('API Key 密文缺少完整密钥')
   }
   return decrypted.key
-}
-
-function apiKeyGroupBindingsForRow(row: ApiKeyRow, bindings: ApiKeyGroupBindingSummary[] | undefined): ApiKeyGroupBindingSummary[] {
-  if (bindings?.length) return bindings
-  return [{
-    id: `legacy:${row.id}:${row.group_id}`,
-    groupId: row.group_id,
-    groupName: row.group_name ?? undefined,
-    priority: 1,
-    weight: 1,
-    status: 'active',
-    groupEnabled: true
-  }]
 }

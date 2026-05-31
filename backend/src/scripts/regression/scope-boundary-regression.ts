@@ -382,7 +382,7 @@ async function main(): Promise<void> {
 
     const createdApiKey = await postEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}`, seed.adminCookie, {
       name: '用户 B 管理代建 Key',
-      groupId: seed.userBGroupId
+      groupBindings: [{ groupId: seed.userBGroupId, priority: 1, status: 'active' }]
     })
     assert(createdApiKey.systemAccountId === seed.userBId, '管理员按用户 B 创建 API Key 没有归属到用户 B')
     summary.push('管理员代建 API Key 归属检查通过')
@@ -394,7 +394,7 @@ async function main(): Promise<void> {
     const userBKeyPage = await getEnvelope<ApiKeyListResult>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}&keyword=${encodeURIComponent('用户 B')}&page=1&pageSize=1`, seed.adminCookie)
     assert(userBKeyPage.total >= 1 && userBKeyPage.items.length === 1 && userBKeyPage.items[0]?.systemAccountId === seed.userBId, '管理 API Key 分页或关键词筛选异常')
     const activeUserBKeys = await getEnvelope<ApiKeyListResult>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}&status=active&groupId=${seed.userBGroupId}`, seed.adminCookie)
-    assert(activeUserBKeys.items.every((item) => item.status === 'active' && item.groupId === seed.userBGroupId), '管理 API Key 状态或分组筛选异常')
+    assert(activeUserBKeys.items.every((item) => item.status === 'active' && ((item as unknown as { groupBindings: Array<{ groupId: string }> }).groupBindings.some((binding) => binding.groupId === seed.userBGroupId))), '管理 API Key 状态或分组筛选异常')
     summary.push('API Key 分页筛选检查通过')
 
     const userAUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/my-usage-records?systemAccountId=${seed.userBId}&page=1&pageSize=2`, seed.userACookie)
@@ -668,11 +668,13 @@ function seedData(): SeedState {
     granteeId: teamShared.id,
     remark: '用户 B 授权给共享团队的分组'
   }, userBAccess)
+  const userAOwnedGroup = repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
+  assert(userAOwnedGroup, '用户 A 应存在可绑定的自有分组')
   let rejectedAuthorizedGroupApiKey = false
   try {
     repositories.createApiKeyRecord({
       name: '用户 A 禁止绑定授权分组 Key',
-      groupId: userBGroup.id
+      groupBindings: [{ groupId: userBGroup.id, priority: 1, status: 'active' }],
     }, userAAccess)
   } catch (error) {
     rejectedAuthorizedGroupApiKey = error instanceof Error && /API Key 只能绑定自己的分组/.test(error.message)
@@ -684,7 +686,7 @@ function seedData(): SeedState {
   assert(runtimeGroupAuthorization?.id, '共享团队分组授权应生成用户 A 的运行时授权')
   repositories.createApiKeyRecord({
     name: '用户 A Key',
-    groupId: repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
+    groupBindings: [{ groupId: userAOwnedGroup, priority: 1, status: 'active' }],
   }, userAAccess)
   const usageToday = localDateKey(addDays(new Date(), -1))
   const usageYesterday = localDateKey(addDays(new Date(), -2))

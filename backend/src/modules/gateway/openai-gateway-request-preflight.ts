@@ -29,8 +29,18 @@ import {
   orderOpenAIAccountsByClientIpAccountAvoidance,
   type ClientIpAccountAvoidanceTracker
 } from './openai-gateway-client-ip-account-avoidance.service.js'
-import { getGatewayRequestBodyState } from './openai-gateway-request-body.js'
-import { type OpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
+import {
+  createGatewayRequestBodyState,
+  downgradeGatewayAutoImageGenerationTool,
+  getGatewayRequestBodyState,
+  type GatewayImageGenerationToolDowngradeResult,
+  type GatewayRawBodyRequest
+} from './openai-gateway-request-body.js'
+import { isGatewayJsonWorkerQueueFullError, parseGatewayJsonBodyInWorker } from './openai-gateway-json-parser.js'
+import {
+  isOpenAIGatewayImageEndpointOrModelRequest,
+  type OpenAIGatewayRequestLane
+} from './openai-gateway-request-lane.js'
 import {
   orderOpenAIAccountsByCodexTurnAvoidance
 } from './openai-gateway-codex-turn-retry.service.js'
@@ -159,7 +169,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewaySettings ?? await readCachedGatewaySettingsAsync(),
     options.settingsOverride
   )
-  const requestLane = options.requestLane ?? 'text'
+  let requestLane = options.requestLane ?? 'text'
   const trafficSource = options.trafficSource ?? 'gateway'
   const gatewayClientIp = trafficSource === 'gateway' ? clientIp : undefined
   const { systemAccountId, apiKeyId, groupId } = identity
@@ -275,31 +285,105 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     return undefined
   }
-  if (isImageGenerationDisabledForApiKey(apiKeyRecord, requestLane)) {
-    const statusCode = 403
-    const responsePayload = gatewayErrorPayload(imageGenerationDisabledMessage, 'forbidden', imageGenerationDisabledCode)
-    auditCapture.addGatewayMetadata({
-      label: 'system_account_image_generation_permission',
-      metadata: {
-        allowed: false
-      }
-    })
-    sendGatewayFailureResponse({
+  const initialBodyState = getGatewayRequestBodyState(req)
+  if (initialBodyState?.jsonParseStatus === 'invalid_json') {
+    sendInvalidJsonGatewayResponse({
       req,
       res,
       auditCapture,
       usageContext: baseUsageContext,
       startedAt,
-      statusCode,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'authorization',
-        errorCode: imageGenerationDisabledCode,
-        errorMessage: responsePayload.error.message
-      }
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      clientIp: gatewayClientIp,
+      endpoint
     })
     return undefined
+  }
+  if (isImageGenerationDisabledForApiKey(apiKeyRecord, requestLane)) {
+    const downgrade = isOpenAIGatewayImageEndpointOrModelRequest(req)
+      ? { downgraded: false, removedToolCount: 0, reason: 'image_endpoint_or_model' as const }
+      : await downgradeGatewayAutoImageGenerationToolForPermission(req, signal)
+    if (downgrade.downgraded) {
+      requestLane = 'text'
+      logger.warn({
+        event: 'gateway_image_generation_tool_downgraded',
+        removedToolCount: downgrade.removedToolCount,
+        systemAccountId,
+        apiKeyId,
+        groupId
+      }, '系统账户未开启图像生成，已移除 Responses auto 图像生成工具并按文本请求继续')
+      auditCapture.addGatewayMetadata({
+        label: 'system_account_image_generation_permission',
+        metadata: {
+          allowed: false,
+          downgraded: true,
+          removedToolCount: downgrade.removedToolCount,
+          reason: downgrade.reason
+        }
+      })
+    } else if (downgrade.reason === 'invalid_json') {
+      sendInvalidJsonGatewayResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: baseUsageContext,
+        startedAt,
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        clientIp: gatewayClientIp,
+        endpoint
+      })
+      return undefined
+    } else if (downgrade.reason === 'json_worker_overloaded') {
+      const statusCode = 503
+      const responsePayload = gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded', 'server_overloaded')
+      sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: baseUsageContext,
+        startedAt,
+        statusCode,
+        responsePayload,
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: 'request_validation',
+          errorCode: 'server_overloaded',
+          errorMessage: responsePayload.error.message
+        }
+      })
+      return undefined
+    } else {
+      const statusCode = 403
+      const responsePayload = gatewayErrorPayload(imageGenerationDisabledMessage, 'forbidden', imageGenerationDisabledCode)
+      auditCapture.addGatewayMetadata({
+        label: 'system_account_image_generation_permission',
+        metadata: {
+          allowed: false,
+          downgraded: false,
+          reason: downgrade.reason
+        }
+      })
+      sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: baseUsageContext,
+        startedAt,
+        statusCode,
+        responsePayload,
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: 'authorization',
+          errorCode: imageGenerationDisabledCode,
+          errorMessage: responsePayload.error.message
+        }
+      })
+      return undefined
+    }
   }
 
   const groupAccess = runtimeGroupAccess ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
@@ -354,32 +438,17 @@ export async function prepareOpenAIGatewayDispatchContext(
 
   const bodyState = getGatewayRequestBodyState(req)
   if (bodyState?.jsonParseStatus === 'invalid_json') {
-    const statusCode = 400
-    const responsePayload = gatewayErrorPayload('请求体不是合法 JSON', 'invalid_request_error')
-    recordClientIpRequestErrorSample({
-      auditCapture,
-      systemAccountId,
-      apiKeyId,
-      groupId,
-      clientIp: gatewayClientIp,
-      endpoint,
-      reason: 'invalid_json',
-      signature: 'invalid_json'
-    })
-    sendGatewayFailureResponse({
+    sendInvalidJsonGatewayResponse({
       req,
       res,
       auditCapture,
       usageContext,
       startedAt,
-      statusCode,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'request_validation',
-        errorCode: 'invalid_json',
-        errorMessage: responsePayload.error.message
-      }
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      clientIp: gatewayClientIp,
+      endpoint
     })
     return undefined
   }
@@ -969,6 +1038,118 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyRecord,
     releaseClientIpConcurrency
   }
+}
+
+async function downgradeGatewayAutoImageGenerationToolForPermission(
+  req: Request,
+  signal?: AbortSignal
+): Promise<GatewayImageGenerationToolDowngradeResult> {
+  const directDowngrade = downgradeGatewayAutoImageGenerationTool(req)
+  if (directDowngrade.reason !== 'not_json_object' || !shouldParseLargeJsonForImageToolDowngrade(req)) {
+    return directDowngrade
+  }
+
+  const request = req as GatewayRawBodyRequest
+  const rawBody = request.rawBody
+  if (!rawBody || rawBody.length === 0) {
+    return directDowngrade
+  }
+
+  try {
+    const parsedBody = await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
+    request.gatewayParsedJsonBodyAvailable = true
+    request.gatewayParsedJsonBody = parsedBody
+    const previousState = getGatewayRequestBodyState(req)
+    request.gatewayRequestBody = createGatewayRequestBodyState({
+      rawBody,
+      contentType: previousState?.contentType ?? req.headers['content-type'] ?? 'application/json',
+      jsonParseStatus: previousState?.jsonParseStatus ?? 'parsed',
+      parsedBody
+    })
+    logger.warn({
+      event: 'gateway_auto_image_generation_tool_parse_for_downgrade',
+      rawBodyBytes: rawBody.length,
+      jsonParseStatus: request.gatewayRequestBody.jsonParseStatus
+    }, '系统账户未开启图像生成，大 JSON 请求按需完整解析以移除 optional image_generation 工具')
+    return downgradeGatewayAutoImageGenerationTool(req)
+  } catch (error) {
+    if (isGatewayJsonWorkerQueueFullError(error)) {
+      return { downgraded: false, removedToolCount: 0, reason: 'json_worker_overloaded' }
+    }
+    markGatewayJsonBodyInvalid(req)
+    return { downgraded: false, removedToolCount: 0, reason: 'invalid_json' }
+  }
+}
+
+function shouldParseLargeJsonForImageToolDowngrade(req: Request): boolean {
+  const request = req as GatewayRawBodyRequest
+  const state = getGatewayRequestBodyState(req)
+  return Boolean(
+    request.rawBody
+    && request.rawBody.length > 0
+    && state?.jsonParseStatus === 'deferred_large_json'
+    && state.imageGeneration
+    && !state.imageGenerationForced
+  )
+}
+
+function markGatewayJsonBodyInvalid(req: Request): void {
+  const request = req as GatewayRawBodyRequest
+  const previousState = getGatewayRequestBodyState(req)
+  const rawBody = request.rawBody ?? Buffer.alloc(0)
+  request.gatewayParsedJsonBodyAvailable = false
+  request.gatewayParsedJsonBody = undefined
+  request.gatewayUpstreamBodyCache = undefined
+  request.gatewayRequestBody = createGatewayRequestBodyState({
+    rawBody,
+    contentType: previousState?.contentType ?? req.headers['content-type'] ?? 'application/json',
+    jsonParseStatus: 'invalid_json',
+    model: previousState?.model,
+    stream: previousState?.stream,
+    imageGeneration: previousState?.imageGeneration,
+    imageGenerationForced: previousState?.imageGenerationForced
+  })
+}
+
+function sendInvalidJsonGatewayResponse(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+  clientIp?: string
+  endpoint: string
+}): void {
+  const statusCode = 400
+  const responsePayload = gatewayErrorPayload('请求体不是合法 JSON', 'invalid_request_error')
+  recordClientIpRequestErrorSample({
+    auditCapture: input.auditCapture,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    clientIp: input.clientIp,
+    endpoint: input.endpoint,
+    reason: 'invalid_json',
+    signature: 'invalid_json'
+  })
+  sendGatewayFailureResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    usageContext: input.usageContext,
+    startedAt: input.startedAt,
+    statusCode,
+    responsePayload,
+    audit: {
+      outcome: 'gateway_failed',
+      errorPhase: 'request_validation',
+      errorCode: 'invalid_json',
+      errorMessage: responsePayload.error.message
+    }
+  })
 }
 
 interface ApiKeyGroupFallbackDispatchInput {

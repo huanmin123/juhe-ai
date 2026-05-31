@@ -196,8 +196,6 @@ export type ModelCheckProgressEvent = {
   trustedComparison: boolean
   trustedComparisonAccountId?: string
   trustedComparisonAccountName?: string
-  /** @deprecated 使用 trustedComparison。 */
-  officialBaseline: boolean
 } | {
   type: 'run_created'
   message: string
@@ -264,8 +262,7 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
     ],
     defaultModel,
     defaultProfile,
-    trustedComparison,
-    officialBaseline: trustedComparison
+    trustedComparison
   }
 }
 
@@ -283,7 +280,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   }
 
   const trustedComparisonAccountId = input.trustedComparisonAccountId?.trim()
-  const trustedComparison = input.trustedComparison === true || input.officialBaseline === true || Boolean(trustedComparisonAccountId)
+  const trustedComparison = input.trustedComparison === true || Boolean(trustedComparisonAccountId)
   if (trustedComparison && !trustedComparisonAccountId) {
     throw new ModelCheckRequestError(400, '请选择可信对比账户后再开启可信对比检测')
   }
@@ -302,8 +299,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     model,
     trustedComparison,
     trustedComparisonAccountId: comparison?.targetId,
-    trustedComparisonAccountName: comparison?.targetName,
-    officialBaseline: trustedComparison
+    trustedComparisonAccountName: comparison?.targetName
   })
   const actorSystemAccountId = currentSystemAccountId(access)
   const startedAtMs = Date.now()
@@ -321,8 +317,8 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     apiKeyId: target.apiKeyId,
     model,
     profile: defaultProfile,
-    officialBaseline: trustedComparison,
-    officialBaselineAvailable: Boolean(comparison),
+    trustedComparison,
+    trustedComparisonAvailable: Boolean(comparison),
     traceId: runTraceId,
     probeSetVersion,
     startedAt,
@@ -334,8 +330,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       profile: defaultProfile,
       trustedComparison,
       trustedComparisonAccountId: comparison?.targetId,
-      trustedComparisonAccountName: comparison?.targetName,
-      officialBaseline: trustedComparison
+      trustedComparisonAccountName: comparison?.targetName
     }
   })
   emitModelCheckProgress(progress, {
@@ -387,8 +382,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         warningCount: checks.filter((item) => item.status === 'warning').length,
         failedCount: checks.filter((item) => item.status === 'failed').length,
         trustedComparison,
-        trustedComparisonAccountId: comparison?.targetId,
-        officialBaseline: trustedComparison
+        trustedComparisonAccountId: comparison?.targetId
       }
     })
   } catch (error) {

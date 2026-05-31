@@ -16,7 +16,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'api-key-image-permission-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'server'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -31,7 +31,9 @@ const [
   auditLogQueue,
   upstreamModule,
   requestBodyModule,
-  jsonParserModule
+  jsonParserModule,
+  dbServiceHandlers,
+  dbServiceIpc
 ] = await Promise.all([
   import('../../modules/gateway/openai-gateway.routes.js'),
   import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
@@ -43,7 +45,9 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/openai-gateway-upstream.js'),
   import('../../modules/gateway/openai-gateway-request-body.js'),
-  import('../../modules/gateway/openai-gateway-json-parser.js')
+  import('../../modules/gateway/openai-gateway-json-parser.js'),
+  import('../../modules/db-service/db-service-handlers.js'),
+  import('../../modules/db-service/db-service-ipc.js')
 ])
 
 interface SeededGateway {
@@ -56,6 +60,7 @@ interface MockUpstreamRequest {
   path: string
   accountKey: string
   model?: string
+  body: Record<string, unknown>
 }
 
 interface MockUpstreamState {
@@ -66,11 +71,101 @@ let gatewayServer: http.Server | undefined
 let upstreamServer: http.Server | undefined
 const upstreamState: MockUpstreamState = { requests: [] }
 
+class FakeDbServiceChild extends EventTarget {
+  readonly pid = 929292
+  readonly connected = true
+  private listeners = new Map<string, Set<(message?: unknown) => void>>()
+
+  send(message: unknown, callback?: (error?: Error | null) => void): boolean {
+    void this.handleMessage(message, callback)
+    return true
+  }
+
+  on(event: string, listener: (message?: unknown) => void): this {
+    const listeners = this.listeners.get(event) ?? new Set()
+    listeners.add(listener)
+    this.listeners.set(event, listeners)
+    return this
+  }
+
+  once(event: string, listener: (message?: unknown) => void): this {
+    const onceListener = (message?: unknown) => {
+      this.off(event, onceListener)
+      listener(message)
+    }
+    return this.on(event, onceListener)
+  }
+
+  off(event: string, listener: (message?: unknown) => void): this {
+    this.listeners.get(event)?.delete(listener)
+    return this
+  }
+
+  removeAllListeners(event?: string): this {
+    if (event) {
+      this.listeners.delete(event)
+    } else {
+      this.listeners.clear()
+    }
+    return this
+  }
+
+  emit(event: string, message?: unknown): boolean {
+    const listeners = this.listeners.get(event)
+    if (!listeners?.size) return false
+    for (const listener of [...listeners]) {
+      listener(message)
+    }
+    return true
+  }
+
+  private async handleMessage(message: unknown, callback?: (error?: Error | null) => void): Promise<void> {
+    if (!isDbServiceRequest(message)) {
+      callback?.()
+      return
+    }
+    const previousProcessRole = runtimeConfig.processRole
+    try {
+      runtimeConfig.processRole = 'db-service'
+      const result = await dbServiceHandlers.handleDbServiceOperation(message.operation)
+      queueMicrotask(() => {
+        this.emit('message', {
+          type: 'db_service_response',
+          requestId: message.requestId,
+          ok: true,
+          result
+        })
+      })
+      callback?.()
+    } catch (error) {
+      queueMicrotask(() => {
+        this.emit('message', {
+          type: 'db_service_response',
+          requestId: message.requestId,
+          ok: false,
+          errorMessage: error instanceof Error ? error.message : String(error)
+        })
+      })
+      callback?.()
+    } finally {
+      runtimeConfig.processRole = previousProcessRole
+    }
+  }
+}
+
 try {
   upstreamServer = createMockOpenAIUpstream(upstreamState)
   await listen(upstreamServer)
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
   const seeded = seedGateway(upstreamBaseUrl)
+  const fakeChild = new FakeDbServiceChild()
+  dbServiceIpc.attachDbServiceProcess(fakeChild as never)
+  fakeChild.emit('message', {
+    type: 'db_service_ready',
+    pid: fakeChild.pid,
+    httpHost: '127.0.0.1',
+    httpPort: 1
+  })
 
   gatewayServer = createGatewayServer()
   await listen(gatewayServer)
@@ -82,10 +177,15 @@ try {
   assert.match(denied.text, /image_generation_disabled/, '禁用图像生成应返回稳定错误码')
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/images/generations'), 0, '禁用图像生成时不应请求上游图片接口')
 
-  const deniedLargeTool = await requestLargeResponsesImageTool(baseUrl, seeded.apiKey)
-  assert.equal(deniedLargeTool.status, 403, `大 JSON 后段 image_generation 工具也应被图像权限拦截，实际 ${deniedLargeTool.status}: ${deniedLargeTool.text}`)
-  assert.match(deniedLargeTool.text, /image_generation_disabled/, '大 JSON 后段 image_generation 工具应返回稳定错误码')
-  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), 0, '禁用图像生成时大 JSON 后段工具请求不应进入上游')
+  const downgradedLargeTool = await requestLargeResponsesImageTool(baseUrl, seeded.apiKey)
+  assert.equal(downgradedLargeTool.status, 200, `大 JSON 后段 auto image_generation 工具应被移除后继续文本请求，实际 ${downgradedLargeTool.status}: ${downgradedLargeTool.text}`)
+  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), 1, '禁用图像生成时 auto 图像工具请求应按文本请求继续进入上游')
+  assert.equal(hasImageGenerationTool(lastUpstreamRequest(upstreamState, seeded.upstreamKey, '/v1/responses')?.body), false, '禁用图像生成时转发给上游的 Responses body 不应保留 image_generation 工具')
+
+  const forcedTool = await requestForcedResponsesImageTool(baseUrl, seeded.apiKey)
+  assert.equal(forcedTool.status, 403, `强制 image_generation 工具仍应被图像权限拦截，实际 ${forcedTool.status}: ${forcedTool.text}`)
+  assert.match(forcedTool.text, /image_generation_disabled/, '强制 image_generation 工具应返回稳定错误码')
+  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), 1, '禁用图像生成时强制工具请求不应进入上游')
 
   const text = await requestChatCompletion(baseUrl, seeded.apiKey)
   assert.equal(text.status, 200, `图像权限禁用不应影响文本请求，实际 ${text.status}: ${text.text}`)
@@ -98,7 +198,12 @@ try {
   assert.equal(allowed.status, 200, `开启图像生成后同一个 API Key 应通过，实际 ${allowed.status}: ${allowed.text}`)
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/images/generations'), 1, '开启图像生成后应命中上游图片接口')
 
-  console.log('API Key 图像生成权限回归通过：默认禁用不上游，大 JSON 后段 image_generation 工具也会拦截，开启后同一 Key 立即放行')
+  const allowedResponsesTool = await requestLargeResponsesImageTool(baseUrl, seeded.apiKey)
+  assert.equal(allowedResponsesTool.status, 200, `开启图像生成后 Responses image_generation 工具应原样通过，实际 ${allowedResponsesTool.status}: ${allowedResponsesTool.text}`)
+  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), 2, '开启图像生成后 Responses 工具请求应继续进入上游')
+  assert.equal(hasImageGenerationTool(lastUpstreamRequest(upstreamState, seeded.upstreamKey, '/v1/responses')?.body), true, '开启图像生成后转发给上游的 Responses body 应保留 image_generation 工具')
+
+  console.log('API Key 图像生成权限回归通过：默认禁用图片接口不上游，auto image_generation 工具降级为文本，强制工具仍拦截，开启后同一 Key 立即放行')
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
@@ -140,10 +245,11 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     passthroughEnabled: true
   }, access)
   assert(account.boundGroupId, '新建账户应绑定默认分组')
+  const boundGroupId = account.boundGroupId
 
   const apiKey = repositories.createApiKeyRecord({
     name: '图像权限回归 API Key',
-    groupId: account.boundGroupId,
+    groupBindings: [{ groupId: boundGroupId, priority: 1, status: 'active' }],
     status: 'active'
   }, access)
   assert(apiKey.key, '临时 API Key 未返回明文密钥')
@@ -171,7 +277,8 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
       const requestRecord = {
         path: String(req.url ?? '').split('?')[0] || '/',
         accountKey: bearerToken(req.headers.authorization),
-        model: typeof body.model === 'string' ? body.model : undefined
+        model: typeof body.model === 'string' ? body.model : undefined,
+        body
       }
       state.requests.push(requestRecord)
 
@@ -256,8 +363,55 @@ async function requestLargeResponsesImageTool(baseUrl: string, apiKey: string): 
   }
 }
 
+async function requestForcedResponsesImageTool(baseUrl: string, apiKey: string): Promise<{ status: number; text: string }> {
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'force image generation',
+      tools: [{ type: 'image_generation' }],
+      tool_choice: { type: 'image_generation' }
+    })
+  })
+  return {
+    status: response.status,
+    text: await response.text()
+  }
+}
+
 function upstreamHitCount(state: MockUpstreamState, accountKey: string, path: string): number {
   return state.requests.filter((request) => request.accountKey === accountKey && request.path === path).length
+}
+
+function lastUpstreamRequest(state: MockUpstreamState, accountKey: string, path: string): MockUpstreamRequest | undefined {
+  return [...state.requests].reverse().find((request) => request.accountKey === accountKey && request.path === path)
+}
+
+function hasImageGenerationTool(body: Record<string, unknown> | undefined): boolean {
+  return Array.isArray(body?.tools) && body.tools.some((tool) => {
+    return typeof tool === 'object'
+      && tool !== null
+      && !Array.isArray(tool)
+      && (tool as Record<string, unknown>).type === 'image_generation'
+  })
+}
+
+function isDbServiceRequest(value: unknown): value is {
+  type: 'db_service_request'
+  requestId: string
+  operation: Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0]
+} {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).type === 'db_service_request'
+    && typeof (value as Record<string, unknown>).requestId === 'string'
+    && typeof (value as Record<string, unknown>).operation === 'object'
+    && (value as Record<string, unknown>).operation !== null
 }
 
 function bearerToken(value: unknown): string {

@@ -306,7 +306,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'group-add',
         name: '分组新增',
-        summary: '在指定系统用户下新增账号分组。',
+        summary: '在指定系统用户下新增账号分组；同名分组已存在时按幂等成功返回既有分组。',
         status: 'available',
         method: 'POST',
         path: '/__aipublic__/group/add',
@@ -421,13 +421,18 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'name', type: 'string', required: true, description: 'API Key 名称。', example: '公益站访问密钥' },
             { name: 'groupId', type: 'string', required: false, description: '绑定分组 ID；与 groupName、groupBindings 至少提供一个。', example: 'grp_xxx' },
             { name: 'groupName', type: 'string', required: false, description: '绑定分组名称；与 groupId、groupBindings 至少提供一个。', example: '福利' },
-            { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled，默认 active。', example: 'active' }
+            { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled，默认 active。', example: 'active' },
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示不限制。' }
           ],
           example: {
             targetUsername: 'huanmin',
             name: '公益站访问密钥',
             groupId: 'grp_xxx',
-            status: 'active'
+            status: 'active',
+            availabilitySchedule: {
+              enabled: true,
+              windows: [{ daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }]
+            }
           }
         },
         responseExample: {
@@ -436,7 +441,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             generatedAt: '2026-05-30T00:00:00.000Z',
             action: 'created',
             target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
-            apiKey: { id: 'key_xxx', name: '公益站访问密钥', keyPrefix: 'juis_xxx', key: 'juis_xxx_plain_once', status: 'active', groupId: 'grp_xxx', groupName: '福利' }
+            apiKey: { id: 'key_xxx', name: '公益站访问密钥', keyPrefix: 'juis_xxx', key: 'juis_xxx_plain_once', status: 'active', groupId: 'grp_xxx', groupName: '福利', availabilitySchedule: { enabled: true } }
           }
         }
       },
@@ -456,12 +461,14 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'apiKeyId', type: 'string', required: true, description: 'API Key ID。', example: 'key_xxx' },
             { name: 'name', type: 'string', required: false, description: '新的 API Key 名称。' },
             { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled。', example: 'disabled' },
-            { name: 'groupId', type: 'string', required: false, description: '新的主绑定分组 ID。', example: 'grp_xxx' }
+            { name: 'groupId', type: 'string', required: false, description: '新的主绑定分组 ID。', example: 'grp_xxx' },
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示保留。' }
           ],
           example: {
             targetUsername: 'huanmin',
             apiKeyId: 'key_xxx',
-            status: 'disabled'
+            status: 'disabled',
+            availabilitySchedule: null
           }
         },
         responseExample: {
@@ -592,6 +599,12 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               required: false,
               description: '公益站登记 ID；用于后续修改或删除时精确定位原账号。',
               example: 'account-registration:12'
+            },
+            {
+              name: 'availabilitySchedule',
+              type: 'object|null',
+              required: false,
+              description: '自动启停计划；null 表示清空计划，未填写表示不限制。'
             }
           ],
           example: {
@@ -605,6 +618,10 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             supportedModels: ['gpt-5.5', 'gpt-5.4'],
             concurrencyLimit: 20,
             status: 'active',
+            availabilitySchedule: {
+              enabled: true,
+              windows: [{ daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }]
+            },
             externalId: 'account-registration:12'
           }
         },
@@ -631,7 +648,8 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               supportedModels: ['gpt-5.5', 'gpt-5.4'],
               boundGroupId: 'grp_xxx',
               boundGroupName: '福利',
-              schedulable: true
+              schedulable: true,
+              availabilitySchedule: { enabled: true }
             },
             externalId: 'account-registration:12'
           }
@@ -655,7 +673,8 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'baseUrl', type: 'string', required: true, description: 'OpenAI 兼容 Base URL。', example: 'https://api.openai.com/v1' },
             { name: 'apiKey', type: 'string', required: true, description: '上游 API Key；响应不会回显。', example: 'sk-...' },
             { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled。', example: 'disabled' },
-            { name: 'externalId', type: 'string', required: false, description: '外部登记 ID；建议持续传同一个值。', example: 'account-registration:12' }
+            { name: 'externalId', type: 'string', required: false, description: '外部登记 ID；建议持续传同一个值。', example: 'account-registration:12' },
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示保留。' }
           ],
           example: {
             targetUsername: 'huanmin',
@@ -664,6 +683,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             baseUrl: 'https://api.openai.com/v1',
             apiKey: 'sk-...',
             status: 'disabled',
+            availabilitySchedule: null,
             externalId: 'account-registration:12'
           }
         },

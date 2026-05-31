@@ -1,5 +1,5 @@
 import type { AccountGroupBindStatus, AccountStatus, AccountTrafficMigrationSourceStatus, AccountType, AuthorizationStatus, GroupType, ProviderCode, ResourceAccessType } from './base'
-import type { ApiKeyAvailabilitySchedule, RequestQuotaLimits } from './access'
+import type { RequestQuotaLimits } from './access'
 import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
@@ -56,6 +56,33 @@ export interface AccountRuntimeAvailability {
   precheckAttemptCount?: number
 }
 
+export type AccountAvailabilityScheduleMode = 'allow_windows'
+export type AccountAvailabilityScheduleExceptionAction = 'allow' | 'deny'
+
+export interface AccountAvailabilityScheduleWindow {
+  daysOfWeek: number[]
+  start: string
+  end: string
+}
+
+export interface AccountAvailabilityScheduleException {
+  date: string
+  action: AccountAvailabilityScheduleExceptionAction
+  windows?: Array<Pick<AccountAvailabilityScheduleWindow, 'start' | 'end'>>
+}
+
+export interface AccountAvailabilitySchedule {
+  enabled: boolean
+  timezone: string
+  mode: AccountAvailabilityScheduleMode
+  windows: AccountAvailabilityScheduleWindow[]
+  dateRange?: {
+    startDate?: string
+    endDate?: string
+  }
+  exceptions?: AccountAvailabilityScheduleException[]
+}
+
 export interface GroupAccountStats {
   total: number
   available: number
@@ -101,7 +128,7 @@ export interface AccountSummary {
   passthroughEnabled: boolean
   errorPolicyId?: string
   schedulable: boolean
-  availabilitySchedule?: ApiKeyAvailabilitySchedule
+  availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   cooldownUntil?: string
   lastErrorCode?: string
@@ -112,22 +139,6 @@ export interface AccountSummary {
   cooldownRetestLastStatusCode?: number
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
-  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
-  sourceStatus?: AccountStatus
-  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
-  sourceSchedulable?: boolean
-  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
-  sourceCooldownUntil?: string
-  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
-  sourceLastErrorCode?: string
-  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，不能用来源账户状态做业务判断。 */
-  sourceLastErrorMessage?: string
-  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，分组内优先级使用 priority / superPriorityEnabled / fallbackEnabled。 */
-  localStatus?: AccountStatus
-  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，分组内优先级使用 priority / superPriorityEnabled / fallbackEnabled。 */
-  localCooldownUntil?: string
-  /** @deprecated 仅兼容旧接口字段；授权实例运行态以 status / schedulable / cooldownUntil 为准，分组内优先级使用 priority / superPriorityEnabled / fallbackEnabled。 */
-  localLastErrorMessage?: string
   lastUsedAt?: string
   todayUsage: AccountUsageSummary
   usage: AccountUsageSummary

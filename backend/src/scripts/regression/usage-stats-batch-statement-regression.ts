@@ -28,12 +28,12 @@ try {
   const group = repositories.createGroup({ name: '统计批量 statement 分组', providerCode: 'openai' }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '统计批量 statement Key',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const mixedGroup = repositories.createGroup({ name: '统计账号类型合并分组', providerCode: 'openai' }, access)
   const mixedApiKey = repositories.createApiKeyRecord({
     name: '统计账号类型合并 Key',
-    groupId: mixedGroup.id
+    groupBindings: [{ groupId: mixedGroup.id, priority: 1, status: 'active' }],
   }, access)
   const oauthAccount = repositories.createAccount({
     providerCode: 'openai',

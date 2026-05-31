@@ -286,10 +286,7 @@ function summarizeDeletedGroupApiKeyRouteChanges(changes: DeletedGroupApiKeyRout
     const removedText = change.removedBindingStatus === 'disabled'
       ? `移除停用号池 ${removedGroupName}`
       : `移除号池 ${removedGroupName}`
-    const nextText = change.primaryGroupChanged
-      ? `，主号池切到 ${change.nextGroupName || change.nextGroupId || '备用号池'}`
-      : ''
-    return `${change.apiKeyName}${nextText ? `：${removedText}${nextText}` : `：${removedText}`}`
+    return `${change.apiKeyName}：${removedText}`
   }).join('；')
   return changes.length > 3 ? `${sample}；另有 ${changes.length - 3} 个 API Key 受影响` : sample
 }

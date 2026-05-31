@@ -1,5 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
-import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OperationLogInput } from '../../storage/repositories.js'
+import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupResult, OperationLogInput } from '../../storage/repositories.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
@@ -178,6 +178,11 @@ export type DbServiceOperation =
     systemAccountId: string
   }
   | {
+    type: 'list_openai_accounts_for_group_result'
+    groupId: string
+    systemAccountId: string
+  }
+  | {
     type: 'read_gateway_runtime'
     key: string
     groupId?: string
@@ -285,6 +290,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'read_gateway_settings' } ? GatewaySettings :
   T extends { type: 'resolve_group_usage_access' } ? GroupUsageAccessMetadata | undefined :
   T extends { type: 'list_openai_accounts_for_group' } ? OpenAIAccountSecret[] :
+  T extends { type: 'list_openai_accounts_for_group_result' } ? OpenAIAccountsForGroupResult :
   T extends { type: 'read_gateway_runtime' } ? DbServiceGatewayRuntime :
   T extends { type: 'check_api_key_quota' } ? ApiKeyQuotaDecision :
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :

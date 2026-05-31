@@ -67,10 +67,6 @@ export interface ApiKeySummary {
   keyPrefix: string
   key: string
   status: 'active' | 'disabled'
-  groupId: string
-  groupName?: string
-  primaryGroupId?: string
-  primaryGroupName?: string
   groupRouteStrategy: ApiKeyGroupRouteStrategy
   groupBindings: ApiKeyGroupBindingSummary[]
   groupOwnerSystemAccountName?: string

@@ -43,9 +43,7 @@ const createFromCodeSchema = z.object({
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
-  account_expires_at: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
-  availability_schedule: z.record(z.string(), z.unknown()).nullable().optional(),
   credentialsPatch: oauthCredentialsPatchSchema.optional(),
   notes: z.string().optional()
 })
@@ -61,9 +59,7 @@ const createFromRefreshTokenSchema = z.object({
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
-  account_expires_at: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
-  availability_schedule: z.record(z.string(), z.unknown()).nullable().optional(),
   credentialsPatch: oauthCredentialsPatchSchema.optional(),
   notes: z.string().optional()
 })
@@ -141,8 +137,8 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         supportedModels: parsed.data.supportedModels,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
-        accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
-        availabilitySchedule: parsed.data.availabilitySchedule ?? parsed.data.availability_schedule,
+        accountExpiresAt: parsed.data.accountExpiresAt,
+        availabilitySchedule: parsed.data.availabilitySchedule,
         passthroughEnabled: true,
         schedulable: true,
         groupId: parsed.data.groupId,
@@ -214,8 +210,8 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         supportedModels: parsed.data.supportedModels,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
-        accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
-        availabilitySchedule: parsed.data.availabilitySchedule ?? parsed.data.availability_schedule,
+        accountExpiresAt: parsed.data.accountExpiresAt,
+        availabilitySchedule: parsed.data.availabilitySchedule,
         passthroughEnabled: true,
         schedulable: true,
         groupId: parsed.data.groupId,

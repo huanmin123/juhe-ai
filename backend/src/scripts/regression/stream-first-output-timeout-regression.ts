@@ -399,7 +399,7 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
   })
   const apiKey = apiKeyRepository.createApiKeyRecord({
     name: `流式超时回归 Key-${label}`,
-    groupId: group.id,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
   })
   assert(apiKey.key, '临时 API Key 未返回明文密钥')

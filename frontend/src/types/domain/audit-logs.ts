@@ -42,7 +42,6 @@ export interface AuditLogSummary {
   sampleReason: string
   attemptCount: number
   payloadCount: number
-  payloadBytes: number
   rawPayloadBytes: number
   compressedPayloadBytes: number
   compressionSavedBytes: number

@@ -292,14 +292,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       group_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
       account_authorization_id TEXT,
-      local_status TEXT NOT NULL DEFAULT 'active',
-      local_cooldown_until TEXT,
-      local_last_error_message TEXT,
       local_priority INTEGER NOT NULL DEFAULT 0,
       local_super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
-      local_stream_failure_count INTEGER NOT NULL DEFAULT 0,
-      local_stream_failure_window_started_at TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -340,7 +335,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       key_prefix TEXT NOT NULL,
       key_secret_encrypted TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
-      group_id TEXT NOT NULL,
       group_route_strategy TEXT NOT NULL DEFAULT 'priority_failover',
       expires_at TEXT,
       rate_limit INTEGER,
@@ -350,8 +344,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       scopes_json TEXT NOT NULL DEFAULT '[]',
       last_used_at TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (group_id) REFERENCES groups(id)
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS api_key_group_bindings (
@@ -454,7 +447,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_group_accounts_scope_enabled_updated ON group_accounts(system_account_id, account_id, enabled, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at);
     CREATE INDEX IF NOT EXISTS idx_external_account_push_records_account ON external_integration_account_push_records(account_id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_group ON api_keys(group_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
@@ -478,40 +470,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
-  ensureColumn(database, 'stream_intercept_policies', 'provider_code', "TEXT NOT NULL DEFAULT 'openai'")
-  ensureColumn(database, 'stream_intercept_policies', 'action', "TEXT NOT NULL DEFAULT 'avoid_account_ttl'")
   ensureStreamInterceptPolicyIndexes(database)
-  migrateExternalIntegrationSourcesNameOnly(database)
   ensureExternalIntegrationSourceIndexes(database)
-  database.exec(`
-    INSERT OR IGNORE INTO api_key_group_bindings (id, api_key_id, system_account_id, group_id, priority, status, created_at, updated_at)
-    SELECT 'akgb_' || api_keys.id || '_' || api_keys.group_id,
-      api_keys.id,
-      api_keys.system_account_id,
-      api_keys.group_id,
-      1,
-      'active',
-      api_keys.created_at,
-      api_keys.updated_at
-    FROM api_keys
-    INNER JOIN groups ON groups.id = api_keys.group_id
-    WHERE api_keys.group_id IS NOT NULL
-  `)
-  cleanupDuplicateApiKeyGroupBindings(database)
   ensureApiKeyGroupBindingUniqueIndexes(database)
-  ensureColumn(database, 'system_accounts', 'image_generation_enabled', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'group_accounts', 'local_priority', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'group_accounts', 'local_stream_failure_count', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'group_accounts', 'local_stream_failure_window_started_at', 'TEXT')
-  ensureColumn(database, 'accounts', 'authorization_instance_source_account_id', 'TEXT')
-  ensureColumn(database, 'accounts', 'authorization_instance_authorization_id', 'TEXT')
-  ensureColumn(database, 'accounts', 'authorization_instance_owner_system_account_id', 'TEXT')
-  ensureColumn(database, 'accounts', 'availability_schedule_json', 'TEXT')
-  ensureColumn(database, 'api_keys', 'group_route_strategy', "TEXT NOT NULL DEFAULT 'priority_failover'")
-  ensureColumn(database, 'api_key_group_bindings', 'weight', 'INTEGER NOT NULL DEFAULT 1')
-  ensureColumn(database, 'api_keys', 'availability_schedule_json', 'TEXT')
-  ensureColumn(database, 'external_integration_sources', 'rate_limits_json', "TEXT NOT NULL DEFAULT '[]'")
-  ensureColumn(database, 'external_integration_sources', 'expires_at', 'TEXT')
   ensureAuthorizationInstanceIndexes(database)
 }
 
@@ -529,90 +490,6 @@ function ensureStreamInterceptPolicyIndexes(database: DatabaseSync): void {
   `)
 }
 
-function migrateExternalIntegrationSourcesNameOnly(database: DatabaseSync): void {
-  const rows = database.prepare('PRAGMA table_info(external_integration_sources)').all() as Array<{ name?: string }>
-  if (!rows.some((row) => row.name === 'source_id')) {
-    return
-  }
-  database.exec('PRAGMA foreign_keys = OFF')
-  try {
-    database.exec(`
-      BEGIN;
-      DROP TABLE IF EXISTS external_integration_sources_next;
-      CREATE TABLE external_integration_sources_next (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        scopes_json TEXT NOT NULL DEFAULT '[]',
-        rate_limits_json TEXT NOT NULL DEFAULT '[]',
-        expires_at TEXT,
-        notes TEXT,
-        last_used_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      INSERT INTO external_integration_sources_next (
-        id, name, status, scopes_json, rate_limits_json, expires_at, notes, last_used_at, created_at, updated_at
-      )
-      SELECT
-        id,
-        CASE WHEN duplicate_rank = 1 THEN name ELSE name || ' (' || source_id || ')' END,
-        status,
-        scopes_json,
-        COALESCE(rate_limits_json, '[]'),
-        expires_at,
-        notes,
-        last_used_at,
-        created_at,
-        updated_at
-      FROM (
-        SELECT
-          external_integration_sources.*,
-          ROW_NUMBER() OVER (
-            PARTITION BY lower(name)
-            ORDER BY updated_at DESC, created_at DESC, id ASC
-          ) AS duplicate_rank
-        FROM external_integration_sources
-      );
-      DROP TABLE external_integration_sources;
-      ALTER TABLE external_integration_sources_next RENAME TO external_integration_sources;
-      COMMIT;
-    `)
-  } catch (error) {
-    try {
-      database.exec('ROLLBACK')
-    } catch {
-      // Ignore rollback failures so the original migration error stays visible.
-    }
-    throw error
-  } finally {
-    database.exec('PRAGMA foreign_keys = ON')
-  }
-}
-
-function cleanupDuplicateApiKeyGroupBindings(database: DatabaseSync): void {
-  database.exec(`
-    DELETE FROM api_key_group_bindings
-    WHERE rowid IN (
-      SELECT rowid
-      FROM (
-        SELECT
-          rowid,
-          ROW_NUMBER() OVER (
-            PARTITION BY api_key_id, group_id
-            ORDER BY
-              CASE WHEN status = 'active' THEN 0 ELSE 1 END ASC,
-              priority ASC,
-              created_at ASC,
-              id ASC
-          ) AS duplicate_rank
-        FROM api_key_group_bindings
-      )
-      WHERE duplicate_rank > 1
-    );
-  `)
-}
-
 function ensureApiKeyGroupBindingUniqueIndexes(database: DatabaseSync): void {
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_key_group_unique ON api_key_group_bindings(api_key_id, group_id);
@@ -626,10 +503,4 @@ function ensureAuthorizationInstanceIndexes(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source ON accounts(authorization_instance_source_account_id);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_dispatch_priority ON group_accounts(group_id, enabled, local_fallback_enabled, local_super_priority_enabled, local_priority, created_at, account_id);
   `)
-}
-
-function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {
-  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
-  if (rows.some((row) => row.name === column)) return
-  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }

@@ -3,6 +3,7 @@ import type {
   ApiKeyAvailabilityScheduleException,
   ApiKeyAvailabilityScheduleWindow
 } from '../domain/types.js'
+import { availabilityScheduleCacheTtlMs } from './availability-schedule-cache.js'
 import { DEFAULT_USAGE_STATS_TIMEZONE, usageStatsTimezone } from './usage-stats-helpers.js'
 
 const allDaysOfWeek = [1, 2, 3, 4, 5, 6, 7]
@@ -61,12 +62,11 @@ export function apiKeyAvailabilityScheduleJson(schedule: ApiKeyAvailabilitySched
 }
 
 export function apiKeyAvailabilityScheduleFromRequest(input: Record<string, unknown>): ApiKeyAvailabilitySchedule | undefined {
-  return normalizeApiKeyAvailabilitySchedule(input.availabilitySchedule ?? input.availability_schedule)
+  return normalizeApiKeyAvailabilitySchedule(input.availabilitySchedule)
 }
 
 export function isApiKeyAvailabilityScheduleInputPresent(input: Record<string, unknown>): boolean {
   return Object.prototype.hasOwnProperty.call(input, 'availabilitySchedule')
-    || Object.prototype.hasOwnProperty.call(input, 'availability_schedule')
 }
 
 export function evaluateApiKeyAvailabilitySchedule(
@@ -100,8 +100,7 @@ export function evaluateApiKeyAvailabilitySchedule(
 }
 
 export function apiKeyScheduleCacheTtlMs(now = Date.now()): number {
-  const nextMinuteAt = Math.floor(now / 60_000) * 60_000 + 60_000
-  return Math.max(1, nextMinuteAt - now)
+  return availabilityScheduleCacheTtlMs(now)
 }
 
 function normalizeScheduleTimezone(value: unknown): string {

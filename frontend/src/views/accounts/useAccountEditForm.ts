@@ -30,7 +30,7 @@ import {
 } from './accountStreamInterceptPolicyPayload'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { defaultAccountForm } from './accountFormDefaults'
-import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
+import { accountAvailabilityScheduleFormFingerprint, createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import {
   accountTypeDescription,
   accountTypeText,
@@ -80,6 +80,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const editingAccountDetail = ref<AccountSummary>()
   const cloningSourceId = ref<string>()
   const creatingAccountScopeParams = ref<AccountScopeParams>()
+  const editingScheduleFingerprint = ref<string>()
+  const cloningScheduleFingerprint = ref<string>()
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
   const accountStreamInterceptRules = ref<AccountStreamInterceptRuleForm[]>(loadAccountStreamInterceptRules())
@@ -130,6 +132,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function resetForm(providerCode = '', type: AccountType = '') {
     cloningSourceId.value = undefined
+    editingScheduleFingerprint.value = undefined
+    cloningScheduleFingerprint.value = undefined
     Object.assign(form, defaultForm(providerCode, type))
     providerModelOptions.value = []
     providerModelsLoading.value = false
@@ -178,6 +182,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     editingId.value = undefined
     editingAccountDetail.value = undefined
+    editingScheduleFingerprint.value = undefined
+    cloningScheduleFingerprint.value = undefined
     creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
     resetForm('', '')
@@ -255,6 +261,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       availabilitySchedule: createAccountAvailabilityScheduleForm(account.availabilitySchedule),
       notes: account.notes ?? ''
     })
+    editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
+    cloningScheduleFingerprint.value = undefined
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
     accountStreamInterceptRules.value = loadAccountStreamInterceptRules(account.credentials)
     authResult.value = undefined
@@ -278,6 +286,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     editingId.value = undefined
     editingAccountDetail.value = undefined
+    editingScheduleFingerprint.value = undefined
     cloningSourceId.value = account.id
     creatingAccountScopeParams.value = cloneScopeParams
     void options.loadAccountOptions(cloneScopeParams?.systemAccountId)
@@ -334,14 +343,18 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         : await api.myAccounts.detail(accountId)
       if (editingId.value !== accountId) return
       editingAccountDetail.value = detail
-      Object.assign(form, {
+      const nextDetailPatch: Partial<AccountFormModel> = {
         apiKey: asString(detail.credentials.api_key),
         baseUrl: asString(detail.credentials.base_url) || form.baseUrl || 'https://api.openai.com/v1',
         accessToken: asString(detail.credentials.access_token),
         refreshToken: asString(detail.credentials.refresh_token),
-        supportedModels: [...(detail.supportedModels ?? [])],
-        availabilitySchedule: createAccountAvailabilityScheduleForm(detail.availabilitySchedule)
-      })
+        supportedModels: [...(detail.supportedModels ?? [])]
+      }
+      if (editingScheduleFingerprint.value === accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)) {
+        nextDetailPatch.availabilitySchedule = createAccountAvailabilityScheduleForm(detail.availabilitySchedule)
+      }
+      Object.assign(form, nextDetailPatch)
+      editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
       if (detail.boundGroupId || detail.boundGroupName) {
         setFormGroup(groupSelectionForId(detail.boundGroupId, detail.boundGroupName))
       }
@@ -590,6 +603,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       availabilitySchedule: createAccountAvailabilityScheduleForm(account.availabilitySchedule),
       notes: account.notes ?? ''
     })
+    cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)
     accountStreamInterceptRules.value = loadAccountStreamInterceptRules(credentials)
     authResult.value = undefined
@@ -603,6 +617,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     if (account.boundGroupId && (!form.groupId || form.groupId === account.boundGroupId)) {
       setFormGroup(groupSelectionForId(account.boundGroupId, account.boundGroupName))
+    }
+    if (cloningScheduleFingerprint.value === accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)) {
+      form.availabilitySchedule = createAccountAvailabilityScheduleForm(account.availabilitySchedule)
+      cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
     }
     if (accountErrorPolicyRules.value.length === 0) {
       accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)

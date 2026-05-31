@@ -363,7 +363,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
+import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd, parseDatePickerValue } from '@/shared/formatters'
 import { displayGroupName, rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
@@ -622,16 +622,7 @@ function selectedGroupSelection(id: string | undefined): GroupSelection | undefi
 }
 
 function apiKeyGroupBindings(apiKey: ApiKeySummary): ApiKeyGroupBindingSummary[] {
-  if (apiKey.groupBindings?.length) return apiKey.groupBindings
-  return [{
-    id: `legacy:${apiKey.id}:${apiKey.groupId}`,
-    groupId: apiKey.groupId,
-    groupName: apiKey.groupName,
-    priority: 1,
-    weight: 1,
-    status: 'active',
-    groupEnabled: true
-  }]
+  return apiKey.groupBindings ?? []
 }
 
 function apiKeyGroupBindingTagColor(binding: ApiKeyGroupBindingSummary): string {
@@ -1121,9 +1112,9 @@ async function openEdit(apiKey: ApiKeySummary) {
   Object.assign(form, {
     name: apiKey.name,
     groupRouteStrategy: apiKey.groupRouteStrategy ?? 'priority_failover',
-    groupBindings: bindings.length ? bindings : [createGroupBindingFormRow(apiKey.groupName ? { id: apiKey.groupId, name: apiKey.groupName } : undefined)],
+    groupBindings: bindings.length ? bindings : [createGroupBindingFormRow()],
     status: apiKey.status,
-    expiresAt: undefined,
+    expiresAt: parseDatePickerValue(apiKey.expiresAt),
     description: apiKey.description ?? '',
     quotaLimits: createQuotaLimitForm(apiKey.quotaLimits),
     availabilitySchedule: createAvailabilityScheduleForm(apiKey.availabilitySchedule)
@@ -1354,19 +1345,19 @@ const saveApiKey = submitAction('api_keys.save', async () => {
   if (availabilitySchedule === false) {
     return
   }
+  const targetId = editingId.value
+  const expiresAt = formatServerDateTimeInput(form.expiresAt)
   const payload = {
     name: form.name,
     groupRouteStrategy: form.groupRouteStrategy,
-    groupId: groupBindings.find((binding) => binding.status === 'active')?.groupId ?? groupBindings[0]?.groupId,
     groupBindings,
     status: form.status,
-    expiresAt: formatServerDateTimeInput(form.expiresAt) ?? undefined,
+    expiresAt: targetId ? expiresAt : expiresAt ?? undefined,
     description: form.description,
     quotaLimits: quotaLimitsPayload(),
     availabilitySchedule
   }
   try {
-    const targetId = editingId.value
     if (targetId) {
       const updated = await apiKeysApi.update(targetId, payload, apiKeyScopeParams.value)
       updateApiKeyItems((item) => item.id === targetId, () => updated)
@@ -1460,7 +1451,6 @@ watch(groupFilterDisabled, (disabled) => {
 }, { immediate: true })
 watch(apiKeys, (items) => {
   for (const item of items) {
-    rememberGroupLabel(item.groupId, item.groupName)
     for (const binding of apiKeyGroupBindings(item)) {
       rememberGroupLabel(binding.groupId, binding.groupName)
     }

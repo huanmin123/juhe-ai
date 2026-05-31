@@ -628,7 +628,7 @@ function totalUpstreamHitCount(): number {
 function createRegressionApiKey(groupId: string, key: string): { id: string; key: string } {
   const apiKey = repositories.createApiKeyRecord({
     name: `上游失败回归 Key ${key.slice(-8)}`,
-    groupId,
+    groupBindings: [{ groupId, priority: 1, status: 'active' }],
     status: 'active'
   })
   assert(apiKey.key, '回归 API Key 未返回明文密钥')

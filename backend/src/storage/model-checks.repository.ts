@@ -35,8 +35,8 @@ export interface ModelCheckRunCreateInput {
   apiKeyId?: string
   model: 'gpt-5.5' | 'gpt-5.4'
   profile?: ModelCheckProfile
-  officialBaseline: boolean
-  officialBaselineAvailable?: boolean
+  trustedComparison: boolean
+  trustedComparisonAvailable?: boolean
   traceId?: string
   probeSetVersion: string
   startedAt?: string
@@ -109,8 +109,8 @@ interface ModelCheckRunRow {
   api_key_id: string | null
   model: 'gpt-5.5' | 'gpt-5.4'
   profile: ModelCheckProfile
-  official_baseline_enabled: number
-  official_baseline_available: number
+  trusted_comparison_enabled: number
+  trusted_comparison_available: number
   level: ModelCheckLevel
   score: number
   max_score: number
@@ -162,8 +162,8 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
     api_key_id: input.apiKeyId ?? null,
     model: input.model,
     profile: input.profile ?? 'full',
-    official_baseline_enabled: input.officialBaseline ? 1 : 0,
-    official_baseline_available: input.officialBaselineAvailable ? 1 : 0,
+    trusted_comparison_enabled: input.trustedComparison ? 1 : 0,
+    trusted_comparison_available: input.trustedComparisonAvailable ? 1 : 0,
     level: 'unavailable',
     score: 0,
     max_score: 100,
@@ -186,7 +186,7 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
       INSERT INTO model_check_runs (
         id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, target_name,
         target_owner_system_account_id, account_id, group_id, api_key_id, model, profile,
-        official_baseline_enabled, official_baseline_available, level, score, max_score, status, message,
+        trusted_comparison_enabled, trusted_comparison_available, level, score, max_score, status, message,
         trace_id, probe_set_version, started_at, finished_at, duration_ms, request_summary_json,
         result_summary_json, error_code, error_message, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -205,8 +205,8 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
       run.api_key_id,
       run.model,
       run.profile,
-      run.official_baseline_enabled,
-      run.official_baseline_available,
+      run.trusted_comparison_enabled,
+      run.trusted_comparison_available,
       run.level,
       run.score,
       run.max_score,
@@ -439,10 +439,8 @@ function modelCheckRunFromRow(row: ModelCheckRunRow, showSystemAccountFields: bo
     apiKeyId: row.api_key_id ?? undefined,
     model: row.model,
     profile: row.profile,
-    trustedComparison: row.official_baseline_enabled === 1,
-    trustedComparisonAvailable: row.official_baseline_available === 1,
-    officialBaseline: row.official_baseline_enabled === 1,
-    officialBaselineAvailable: row.official_baseline_available === 1,
+    trustedComparison: row.trusted_comparison_enabled === 1,
+    trustedComparisonAvailable: row.trusted_comparison_available === 1,
     level: row.level,
     score: Number(row.score ?? 0),
     maxScore: Number(row.max_score ?? 100),

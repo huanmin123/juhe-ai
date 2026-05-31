@@ -78,6 +78,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 代理
 - 并发上限
 - 账户到期时间（可选，套餐/账号购买到期时间）
+- 自动启停计划（可选，按系统时区在指定星期和时间段内参与调度）
 - 错误策略
 - 备注
 
@@ -89,6 +90,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `base_url` 默认使用 OpenAI 官方地址
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
+- 自动启停计划不改写账户 `status`；计划停用时只退出网关账号候选，计划进入允许时段后自动重新参与调度。时区跟随系统默认值，用户表单不提供时区配置。
 - 可手动启用 / 停用
 
 透传策略：OpenAI 账户默认按供应商网关策略透传，用户侧不提供开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。API Key 账号请求体优先原样使用客户端 `rawBody`；Header 会过滤本地认证、代理链路、SDK / tracing 噪声和客户端传入的 `OpenAI-Organization` / `OpenAI-Project`，不从账号凭据生成这些上游账号上下文头。`OpenAI-Beta` 保留客户端显式传入值，服务端不做账号级覆盖。

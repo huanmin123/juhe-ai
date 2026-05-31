@@ -343,14 +343,6 @@ export interface AccountSummary {
   cooldownRetestLastStatusCode?: number
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
-  sourceStatus?: AccountStatus
-  sourceSchedulable?: boolean
-  sourceCooldownUntil?: string
-  sourceLastErrorCode?: string
-  sourceLastErrorMessage?: string
-  localStatus?: AccountStatus
-  localCooldownUntil?: string
-  localLastErrorMessage?: string
   lastUsedAt?: string
   todayUsage: AccountUsageSummary
   usage: AccountUsageSummary
@@ -387,9 +379,6 @@ export type AccountOptionSummary = Pick<
   | 'name'
   | 'type'
   | 'status'
-  | 'sourceStatus'
-  | 'sourceSchedulable'
-  | 'sourceCooldownUntil'
   | 'accessType'
   | 'accountAuthorizationId'
   | 'authorizationStatus'
@@ -490,7 +479,6 @@ export interface ModelCheckOptions {
   defaultModel: 'gpt-5.5'
   defaultProfile: ModelCheckProfile
   trustedComparison: ModelCheckTrustedComparisonStatus
-  officialBaseline?: ModelCheckTrustedComparisonStatus
 }
 
 export interface ModelCheckRunRequest {
@@ -500,8 +488,6 @@ export interface ModelCheckRunRequest {
   profile?: ModelCheckProfile
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
-  /** @deprecated 使用 trustedComparison + trustedComparisonAccountId。 */
-  officialBaseline?: boolean
 }
 
 export interface ModelCheckItemSummary {
@@ -537,8 +523,6 @@ export interface ModelCheckRunSummary {
   profile: ModelCheckProfile
   trustedComparison: boolean
   trustedComparisonAvailable: boolean
-  officialBaseline: boolean
-  officialBaselineAvailable: boolean
   level: ModelCheckLevel
   score: number
   maxScore: number
@@ -816,7 +800,32 @@ export interface ApiKeyAvailabilitySchedule {
   exceptions?: ApiKeyAvailabilityScheduleException[]
 }
 
-export type AccountAvailabilitySchedule = ApiKeyAvailabilitySchedule
+export type AccountAvailabilityScheduleMode = 'allow_windows'
+export type AccountAvailabilityScheduleExceptionAction = 'allow' | 'deny'
+
+export interface AccountAvailabilityScheduleWindow {
+  daysOfWeek: number[]
+  start: string
+  end: string
+}
+
+export interface AccountAvailabilityScheduleException {
+  date: string
+  action: AccountAvailabilityScheduleExceptionAction
+  windows?: Array<Pick<AccountAvailabilityScheduleWindow, 'start' | 'end'>>
+}
+
+export interface AccountAvailabilitySchedule {
+  enabled: boolean
+  timezone: string
+  mode: AccountAvailabilityScheduleMode
+  windows: AccountAvailabilityScheduleWindow[]
+  dateRange?: {
+    startDate?: string
+    endDate?: string
+  }
+  exceptions?: AccountAvailabilityScheduleException[]
+}
 
 export interface ApiKeySummary {
   id: string
@@ -827,10 +836,6 @@ export interface ApiKeySummary {
   keyPrefix: string
   key: string
   status: 'active' | 'disabled'
-  groupId: string
-  groupName?: string
-  primaryGroupId?: string
-  primaryGroupName?: string
   groupRouteStrategy: ApiKeyGroupRouteStrategy
   groupBindings: ApiKeyGroupBindingSummary[]
   groupOwnerSystemAccountName?: string

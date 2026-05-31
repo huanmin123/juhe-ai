@@ -87,11 +87,11 @@ try {
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '使用记录查询防护 Key',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const otherApiKey = repositories.createApiKeyRecord({
     name: '使用记录查询防护其他 Key',
-    groupId: otherGroup.id
+    groupBindings: [{ groupId: otherGroup.id, priority: 1, status: 'active' }],
   }, access)
   const owner = repositories.createSystemAccount({
     username: 'usage_record_source_owner',

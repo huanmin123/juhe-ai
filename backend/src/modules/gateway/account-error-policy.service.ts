@@ -175,7 +175,7 @@ export function decideAccountErrorPolicy(
       return {
         action,
         ruleName,
-        cooldownMinutes: numericRuleValue(rule.durationMinutes ?? rule.duration_minutes, settings.defaultTemporaryUnschedulableMinutes),
+        cooldownMinutes: numericRuleValue(rule.durationMinutes, settings.defaultTemporaryUnschedulableMinutes),
         cooldownUntil: resolveAccountErrorRuleCooldownUntil(rule),
         cooldownStatus: policyCooldownStatus(rule.action)
       }

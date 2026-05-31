@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { gatewayJsonBodyLargeWarningBytes } from './openai-gateway-request-body.js'
+import { gatewayJsonBodyLargeWarningBytes, type GatewayJsonBodyMetadata } from './openai-gateway-request-body.js'
 import {
   OpenAIOAuthCodexAdapterError,
   type NormalizedCodexBody,
@@ -13,6 +13,7 @@ import {
 } from './openai-oauth-codex-normalizer.js'
 
 type GatewayJsonWorkerJobType =
+  | 'extract_json_body_metadata'
   | 'parse_json_body'
   | 'normalize_openai_oauth_codex_body'
 
@@ -111,14 +112,27 @@ class HeadIndexedQueue<T> {
   }
 }
 
+export class GatewayJsonWorkerQueueFullError extends Error {
+}
+
 let nextJobId = 1
 let nextWorkerSlotId = 1
 const workerSlots: GatewayJsonWorkerSlot[] = []
 const queuedJobs = new HeadIndexedQueue<GatewayJsonWorkerJob>()
+let queuedJobsBytes = 0
 
 export function parseGatewayJsonBodyInWorker(rawBody: Buffer, timeoutMs = 30000, signal?: AbortSignal): Promise<unknown> {
   return enqueueGatewayJsonWorkerJob({
     type: 'parse_json_body',
+    rawBody,
+    timeoutMs,
+    signal
+  })
+}
+
+export function extractGatewayJsonBodyMetadataInWorker(rawBody: Buffer, timeoutMs = 30000, signal?: AbortSignal): Promise<GatewayJsonBodyMetadata> {
+  return enqueueGatewayJsonWorkerJob<GatewayJsonBodyMetadata>({
+    type: 'extract_json_body_metadata',
     rawBody,
     timeoutMs,
     signal
@@ -140,6 +154,10 @@ export function normalizeOpenAIOAuthCodexBodyInWorker(
   })
 }
 
+export function isGatewayJsonWorkerQueueFullError(error: unknown): error is GatewayJsonWorkerQueueFullError {
+  return error instanceof GatewayJsonWorkerQueueFullError
+}
+
 export async function stopGatewayJsonParseWorker(): Promise<void> {
   const currentSlots = workerSlots.splice(0, workerSlots.length)
   for (const slot of currentSlots) {
@@ -159,6 +177,7 @@ export async function stopGatewayJsonParseWorker(): Promise<void> {
       job.reject(new Error('网关 JSON worker 已关闭'))
     }
   }
+  queuedJobsBytes = 0
   await Promise.all(currentSlots.map(async (slot) => {
     slot.worker.removeAllListeners()
     await slot.worker.terminate()
@@ -187,6 +206,10 @@ function enqueueGatewayJsonWorkerJob<TValue>(input: {
       reject,
       timeoutMs: input.timeoutMs,
       signal: input.signal
+    }
+    if (!canQueueGatewayJsonWorkerJob(job)) {
+      reject(new GatewayJsonWorkerQueueFullError('网关 JSON worker 队列已满，请稍后重试'))
+      return
     }
     if (input.signal) {
       job.abortListener = () => cancelJob(job)
@@ -331,14 +354,33 @@ function workerResponseError(job: GatewayJsonWorkerJob, message: GatewayJsonWork
 
 function pushQueuedJob(job: GatewayJsonWorkerJob): void {
   queuedJobs.push(job)
+  queuedJobsBytes += gatewayJsonWorkerJobBytes(job)
 }
 
 function shiftQueuedJob(): GatewayJsonWorkerJob | undefined {
-  return queuedJobs.shift()
+  const job = queuedJobs.shift()
+  if (job) {
+    queuedJobsBytes = Math.max(0, queuedJobsBytes - gatewayJsonWorkerJobBytes(job))
+  }
+  return job
 }
 
 function removeQueuedJobAt(index: number): GatewayJsonWorkerJob | undefined {
-  return queuedJobs.removeAt(index)
+  const job = queuedJobs.removeAt(index)
+  if (job) {
+    queuedJobsBytes = Math.max(0, queuedJobsBytes - gatewayJsonWorkerJobBytes(job))
+  }
+  return job
+}
+
+function canQueueGatewayJsonWorkerJob(job: GatewayJsonWorkerJob): boolean {
+  const jobBytes = gatewayJsonWorkerJobBytes(job)
+  return queuedJobs.length < gatewayJsonWorkerMaxQueuedJobs
+    && queuedJobsBytes + jobBytes <= gatewayJsonWorkerMaxQueuedBytes
+}
+
+function gatewayJsonWorkerJobBytes(job: GatewayJsonWorkerJob): number {
+  return job.rawBody.byteLength + 512
 }
 
 function failActiveJob(slot: GatewayJsonWorkerSlot, error: Error, restartWorker: boolean): void {
@@ -380,7 +422,8 @@ function failJob(job: GatewayJsonWorkerJob, error: Error, restartWorker: boolean
     queuedWaitMs: job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : undefined,
     workerDurationMs: job.startedAtMs ? Date.now() - job.startedAtMs : undefined,
     totalMs: Date.now() - job.enqueuedAtMs,
-    queuedJobs: queuedJobs.length
+    queuedJobs: queuedJobs.length,
+    queuedBytes: queuedJobsBytes
   }), '网关 JSON worker 失败')
   job.reject(error)
   if (restartWorker && activeSlot) {
@@ -426,7 +469,8 @@ function logJobCompleted(job: GatewayJsonWorkerJob): void {
     queuedWaitMs,
     workerDurationMs,
     totalMs,
-    queuedJobs: queuedJobs.length
+    queuedJobs: queuedJobs.length,
+    queuedBytes: queuedJobsBytes
   }
   if (queuedWaitMs >= gatewayJsonWorkerSlowQueueWaitMs || (workerDurationMs ?? 0) >= gatewayJsonWorkerSlowDurationMs) {
     logger.warn(fields, '网关 JSON worker 任务耗时偏高')
@@ -473,3 +517,5 @@ function gatewayJsonWorkerPoolSize(): number {
 
 const gatewayJsonWorkerSlowQueueWaitMs = 500
 const gatewayJsonWorkerSlowDurationMs = 1000
+const gatewayJsonWorkerMaxQueuedJobs = 128
+const gatewayJsonWorkerMaxQueuedBytes = 256 * 1024 * 1024

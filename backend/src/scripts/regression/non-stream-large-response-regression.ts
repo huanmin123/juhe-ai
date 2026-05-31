@@ -78,7 +78,7 @@ async function main(): Promise<void> {
     })
     const apiKey = repositories.createApiKeyRecord({
       name: '大响应回归 Key',
-      groupId: group.id,
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     })
 

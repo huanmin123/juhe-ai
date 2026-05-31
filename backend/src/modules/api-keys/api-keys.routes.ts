@@ -15,7 +15,6 @@ export const apiKeysRouter = Router()
 const apiKeyMutationSchema = z.object({
   name: z.string().trim().min(1, '请填写 API Key 名称'),
   description: z.string().trim().max(200).nullable().optional(),
-  groupId: z.string().trim().min(1, 'API Key 分组无效').optional(),
   groupBindings: z.array(z.object({
     groupId: z.string().trim().min(1, 'API Key 分组无效'),
     priority: z.number().int().positive().optional(),
@@ -24,11 +23,11 @@ const apiKeyMutationSchema = z.object({
   })).min(1, 'API Key 至少需要绑定一个分组').max(20).optional(),
   groupRouteStrategy: z.string().optional().refine((value) => value === undefined || value === 'priority_failover' || value === 'round_robin' || value === 'weighted_round_robin', '分组路由策略无效'),
   status: z.enum(['active', 'disabled']).optional(),
-  expiresAt: z.string().optional(),
+  expiresAt: z.string().nullable().optional(),
   quotaLimits: z.record(z.string(), z.unknown()).nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional()
 })
-const apiKeyCreateSchema = apiKeyMutationSchema.refine((value) => Boolean(value.groupId || value.groupBindings?.length), {
+const apiKeyCreateSchema = apiKeyMutationSchema.refine((value) => Boolean(value.groupBindings?.length), {
   message: 'API Key 至少需要绑定一个分组'
 })
 const apiKeyUpdateSchema = apiKeyMutationSchema.partial()
@@ -143,7 +142,6 @@ apiKeysRouter.patch('/:id', (req, res) => {
             name: '名称',
             description: '说明',
             status: '状态',
-            groupId: '主分组',
             groupRouteStrategy: '分组路由策略',
             groupBindings: '绑定分组路由',
             expiresAt: '过期时间',

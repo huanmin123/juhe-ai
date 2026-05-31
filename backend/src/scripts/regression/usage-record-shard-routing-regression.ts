@@ -39,7 +39,10 @@ try {
     },
     groupId: group.id
   }, access)
-  const apiKey = repositories.createApiKeyRecord({ name: '分片写入回归 Key', groupId: group.id }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '分片写入回归 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }]
+  }, access)
   const createdAtBase = Date.now() - 60_000
   const recordsLength = 40
   const records = Array.from({ length: recordsLength }, (_, index) => {

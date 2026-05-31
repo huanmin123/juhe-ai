@@ -333,7 +333,6 @@ export interface ClientIpStatsListParams {
 
 export interface ClientIpPolicyPayload {
   reason?: string
-  expiresAt?: string
   durationMinutes?: number
   durationDays?: number
 }

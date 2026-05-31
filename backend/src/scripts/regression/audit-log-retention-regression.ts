@@ -362,13 +362,13 @@ try {
   }, apiKeyAccess)
   const apiKey = repositories.createApiKeyRecord({
     name: '审计删除保留 API Key',
-    groupId: apiKeyGroup.id
+    groupBindings: [{ groupId: apiKeyGroup.id, priority: 1, status: 'active' }],
   }, apiKeyAccess)
   repositories.createAuditLogsBatch([
     {
       ...auditLog('audit_api_key_delete_retained', 'trace-api-key-delete-retained', JSON.stringify({ error: 'api key deleted after audit' })),
       apiKeyId: apiKey.id,
-      groupId: apiKey.groupId,
+      groupId: apiKeyGroup.id,
       auditOutcome: 'gateway_failed',
       finalStatusCode: 500,
       errorPhase: 'gateway',
@@ -693,9 +693,8 @@ function assertAuditPayloadByteColumns(
 ): void {
   const database = databaseModule.getDatasetDatabase()
   const logRow = database
-    .prepare('SELECT payload_bytes, raw_payload_bytes, compressed_payload_bytes, compression_saved_bytes FROM audit_logs WHERE id = ?')
+    .prepare('SELECT raw_payload_bytes, compressed_payload_bytes, compression_saved_bytes FROM audit_logs WHERE id = ?')
     .get(auditLogId) as {
-      payload_bytes: number
       raw_payload_bytes: number
       compressed_payload_bytes: number
       compression_saved_bytes: number
@@ -708,7 +707,6 @@ function assertAuditPayloadByteColumns(
   const compressedPayloadBytes = Number(logRow.compressed_payload_bytes)
   assert.equal(rawPayloadBytes, Number(refRow.raw_size_bytes), 'raw_payload_bytes 应等于 payload refs 的原始逻辑字节汇总')
   assert.equal(compressedPayloadBytes, Number(refRow.compressed_size_bytes), 'compressed_payload_bytes 应等于 payload refs 的落盘压缩字节汇总')
-  assert.equal(Number(logRow.payload_bytes), rawPayloadBytes, '兼容字段 payload_bytes 应继续跟随原始逻辑字节口径')
   assert.equal(Number(logRow.compression_saved_bytes), Math.max(0, rawPayloadBytes - compressedPayloadBytes), 'compression_saved_bytes 应由两个独立口径计算')
   if (options.rawGreaterThan !== undefined) {
     assert(rawPayloadBytes > options.rawGreaterThan, 'raw_payload_bytes 应包含原始 body 字节和 headers 字节')

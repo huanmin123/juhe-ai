@@ -5,20 +5,25 @@ import { getGatewayRequestBodyState, requestBodyHasImageGenerationHint } from '.
 export type OpenAIGatewayRequestLane = 'text' | 'image'
 
 export function resolveOpenAIGatewayRequestLane(req: Request): OpenAIGatewayRequestLane {
-  const path = String(req.path || req.originalUrl || '').split('?')[0]?.toLowerCase() ?? ''
-  if (path === '/images' || path.startsWith('/images/') || path === '/v1/images' || path.startsWith('/v1/images/')) {
+  if (isOpenAIGatewayImageEndpointOrModelRequest(req)) {
     return 'image'
   }
 
-  const model = requestModelHint(req)
-  if (isImageGenerationModel(model)) {
-    return 'image'
-  }
   const bodyState = getGatewayRequestBodyState(req)
   if (bodyState?.imageGeneration || requestBodyHasImageGenerationHint(req.body)) {
     return 'image'
   }
   return 'text'
+}
+
+export function isOpenAIGatewayImageEndpointOrModelRequest(req: Request): boolean {
+  const path = String(req.path || req.originalUrl || '').split('?')[0]?.toLowerCase() ?? ''
+  if (path === '/images' || path.startsWith('/images/') || path === '/v1/images' || path.startsWith('/v1/images/')) {
+    return true
+  }
+
+  const model = requestModelHint(req)
+  return isImageGenerationModel(model)
 }
 
 function requestModelHint(req: Request): string | undefined {

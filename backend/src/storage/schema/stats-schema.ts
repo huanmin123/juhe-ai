@@ -1,7 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 export function applyStatsSchema(database: DatabaseSync): void {
-  migrateClientIpPoliciesWithoutPolicyType(database)
   database.exec(`
     PRAGMA foreign_keys = ON;
 
@@ -1150,84 +1149,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)
-  ensureColumn(database, 'client_ip_stats_daily', 'duration_ms_max', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'client_ip_usage_range_windows', 'duration_ms_max', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'client_ip_usage_range_windows', 'average_duration_ms', 'REAL')
-  ensureColumn(database, 'client_ip_usage_range_windows', 'average_first_token_ms', 'REAL')
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_account
       ON usage_record_cleanup_deductions(account_id, shard_deleted_at);
   `)
-}
-
-function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {
-  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
-  if (rows.some((row) => row.name === column)) return
-  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
-}
-
-function migrateClientIpPoliciesWithoutPolicyType(database: DatabaseSync): void {
-  const rows = database.prepare('PRAGMA table_info(client_ip_policies)').all() as Array<{ name?: string }>
-  if (!rows.some((row) => row.name === 'policy_type')) return
-  const legacyTable = `client_ip_policies_policy_type_legacy_${Date.now().toString(36)}`
-  database.exec('BEGIN IMMEDIATE')
-  try {
-    database.exec(`
-      DROP INDEX IF EXISTS idx_client_ip_policies_active;
-      DROP INDEX IF EXISTS idx_client_ip_policies_ip;
-
-      ALTER TABLE client_ip_policies RENAME TO ${legacyTable};
-
-      CREATE TABLE client_ip_policies (
-        id TEXT PRIMARY KEY,
-        ip_hash TEXT NOT NULL,
-        status TEXT NOT NULL,
-        reason TEXT,
-        expires_at TEXT,
-        created_by_system_account_id TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        disabled_at TEXT,
-        disabled_by_system_account_id TEXT,
-        disabled_reason TEXT
-      );
-
-      INSERT INTO client_ip_policies (
-        id,
-        ip_hash,
-        status,
-        reason,
-        expires_at,
-        created_by_system_account_id,
-        created_at,
-        updated_at,
-        disabled_at,
-        disabled_by_system_account_id,
-        disabled_reason
-      )
-      SELECT
-        id,
-        ip_hash,
-        status,
-        reason,
-        expires_at,
-        created_by_system_account_id,
-        created_at,
-        updated_at,
-        disabled_at,
-        disabled_by_system_account_id,
-        disabled_reason
-      FROM ${legacyTable}
-      WHERE policy_type = 'blacklist';
-
-      DROP TABLE ${legacyTable};
-    `)
-    database.exec('COMMIT')
-  } catch (error) {
-    try {
-      database.exec('ROLLBACK')
-    } catch {
-    }
-    throw error
-  }
 }

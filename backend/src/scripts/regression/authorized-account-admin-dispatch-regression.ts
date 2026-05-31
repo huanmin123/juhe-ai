@@ -61,12 +61,9 @@ interface AccountSummary {
   bindingSystemAccountId?: string
   ownerSystemAccountId?: string
   authorizationInstanceSourceAccountId?: string
-  sourceStatus?: string
-  sourceSchedulable?: boolean
   schedulable?: boolean
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
-  localStatus?: string
 }
 
 interface AccountListResult {
@@ -153,8 +150,6 @@ try {
     { status: 'disabled' }
   )
   assert.equal(locallyDisabled.status, 'disabled', '被授权用户应能在自己的分组内停用授权账户')
-  assert.equal(locallyDisabled.localStatus, 'disabled', '兼容字段应同步授权实例状态')
-  assert.equal(locallyDisabled.sourceStatus, undefined, '授权实例不应再暴露归属账户来源状态')
   assert.equal(repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const }).find((account) => account.id === seed.ownerSourceAccountId)?.status, 'active', '停用授权实例不应修改账户所有者原账户状态')
   const granteeDisabledAccounts = await getEnvelope<AccountListResult>(
     baseUrl,
@@ -163,8 +158,6 @@ try {
   )
   const granteeDisabledAccount = granteeDisabledAccounts.items.find((account) => account.id === seed.ownerAccountId)
   assert.equal(granteeDisabledAccount?.status, 'disabled', '被授权用户停用后重新拉取列表应显示停用')
-  assert.equal(granteeDisabledAccount?.localStatus, 'disabled', '兼容字段应同步授权实例停用状态')
-  assert.equal(granteeDisabledAccount?.sourceStatus, undefined, '被授权用户列表不应再暴露归属账户来源状态')
   assert.equal(granteeDisabledAccount?.schedulable, false, '本地停用后授权账户在被授权用户视角不可调度')
   const adminGranteeDisabledAccounts = await getEnvelope<AccountListResult>(
     baseUrl,
@@ -173,7 +166,6 @@ try {
   )
   const adminGranteeDisabledAccount = adminGranteeDisabledAccounts.items.find((account) => account.id === seed.ownerAccountId)
   assert.equal(adminGranteeDisabledAccount?.status, 'disabled', '管理员查看被授权用户作用域时应显示授权账户本地停用')
-  assert.equal(adminGranteeDisabledAccount?.localStatus, 'disabled', '管理员查看被授权用户作用域时兼容字段应同步实例状态')
   const adminGranteeDisabledStatusFilteredAccounts = await getEnvelope<AccountListResult>(
     baseUrl,
     `/__aisys__/api/accounts?systemAccountId=${seed.granteeId}&page=1&pageSize=20&status=disabled`,
@@ -209,7 +201,7 @@ try {
     '/__aisys__/api/my-accounts/options?status=disabled&limit=20',
     seed.granteeCookie
   )
-  assert.equal(granteeDisabledOptions.some((account) => account.id === seed.ownerAccountId && account.status === 'disabled' && account.sourceStatus === undefined), true, '账户选项应按授权实例状态筛选和展示')
+  assert.equal(granteeDisabledOptions.some((account) => account.id === seed.ownerAccountId && account.status === 'disabled'), true, '账户选项应按授权实例状态筛选和展示')
   const ownerAfterGranteeDisabledAccounts = await getEnvelope<AccountListResult>(
     baseUrl,
     `/__aisys__/api/accounts?systemAccountId=${seed.ownerId}&page=1&pageSize=20`,
@@ -223,7 +215,6 @@ try {
     { status: 'active' }
   )
   assert.equal(locallyEnabled.status, 'active', '被授权用户应能重新启用自己的授权账户绑定')
-  assert.equal(locallyEnabled.localStatus, 'active', '兼容字段应同步恢复授权实例状态')
 
   const updated = await patchEnvelope<AccountSummary>(
     baseUrl,
@@ -245,16 +236,16 @@ try {
   const testAccount = repositories.findAccountForTest(seed.ownerAccountId, { systemAccountId: seed.granteeId, role: 'user' as const })
   assert.equal(testAccount?.accessType, 'authorized', '被授权用户视角应能拿到授权账户测试对象')
   assert.equal(testAccount?.bindingSystemAccountId, seed.granteeId, '测试对象应保留本地绑定所属系统账户')
-  const tested: AccountTestResult = await testOpenAIAccount(testAccount, { model: 'gpt-5.5', prompt: 'hi' })
+  const tested: AccountTestResult = await withDbServiceRole(() => testOpenAIAccount(testAccount, { model: 'gpt-5.5', prompt: 'hi' }))
   assert.equal(tested.success, true, `管理员应能代被授权用户测试授权账户：${tested.message}`)
   assert.equal(tested.statusCode, 200, '授权账户测试应通过被授权用户自己的分组绑定进入网关链路')
 
-  const granteeLimitedTest = await postEnvelope<AccountTestResult>(
+  const granteeLimitedTest = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
     baseUrl,
     `/__aisys__/api/my-accounts/${seed.ownerAccountId}/test`,
     seed.granteeCookie,
     { model: 'gpt-5.5', prompt: 'hi' }
-  )
+  ))
   assert.equal(granteeLimitedTest.success, true, `被授权用户应能测试已绑定且可用的授权账户：${granteeLimitedTest.message}`)
   assert.equal(granteeLimitedTest.statusCode, 200, '被授权用户测试应保留状态码')
   assert.equal(granteeLimitedTest.outputText, 'OK', '被授权用户测试成功时可看到模型输出')
@@ -277,9 +268,6 @@ try {
   )
   const ownerPausedAuthorizedAccount = ownerPausedAuthorizedAccounts.items.find((account) => account.id === seed.ownerPausedAccountId)
   assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '归属人停用主账户后授权实例仍应保持自己的状态')
-  assert.equal(ownerPausedAuthorizedAccount?.localStatus, 'active', '兼容字段应同步授权实例状态')
-  assert.equal(ownerPausedAuthorizedAccount?.sourceStatus, undefined, '授权实例不应展示归属账户来源状态')
-  assert.equal(ownerPausedAuthorizedAccount?.sourceSchedulable, undefined, '授权实例不应展示归属账户来源调度状态')
   assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '归属人停用主账户不应阻断被授权实例调度')
   const ownerPausedEnabledAccounts = await getEnvelope<AccountListResult>(
     baseUrl,
@@ -302,20 +290,20 @@ try {
   assert.equal(ownerPausedFallback.fallbackEnabled, true, '归属人停用主账户后被授权用户仍能管理自己的授权实例备用标记')
   const ownerPausedGatewayAccounts = repositories.listOpenAIAccountsForGroup(seed.granteeGroupId, seed.granteeId)
   assert.equal(ownerPausedGatewayAccounts.some((account) => account.id === seed.ownerPausedAccountId && account.accountAccessType === 'account_authorized'), true, '网关调度不应因归属人停用主账户排除授权实例')
-  const ownerPausedTest = await postEnvelope<AccountTestResult>(
+  const ownerPausedTest = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
     baseUrl,
     `/__aisys__/api/my-accounts/${seed.ownerPausedAccountId}/test`,
     seed.granteeCookie,
     { model: 'gpt-5.5', prompt: 'hi' }
-  )
+  ))
   assert.equal(ownerPausedTest.success, true, `归属人停用主账户后被授权用户仍应能测试授权副本：${ownerPausedTest.message}`)
 
-  const granteeLimitedErrorTest = await postEnvelope<AccountTestResult>(
+  const granteeLimitedErrorTest = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
     baseUrl,
     `/__aisys__/api/my-accounts/${seed.ownerErrorAccountId}/test`,
     seed.granteeCookie,
     { model: 'gpt-5.5-diagnostic-error', prompt: 'hi' }
-  )
+  ))
   assert.equal(granteeLimitedErrorTest.success, false, '被授权用户测试上游错误时应返回测试失败')
   assert.equal(typeof granteeLimitedErrorTest.statusCode, 'number', '被授权用户测试上游错误时可保留 HTTP 状态码')
   assert.equal(granteeLimitedErrorTest.message, `账户测试未通过，上游返回 HTTP ${granteeLimitedErrorTest.statusCode}；请联系授权人或管理员查看完整诊断`)
@@ -532,6 +520,16 @@ async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, bo
     body: JSON.stringify(body)
   })
   return parseEnvelope<T>(path, response)
+}
+
+async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'db-service'
+    return await action()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
 }
 
 async function parseEnvelope<T>(path: string, response: Response): Promise<T> {

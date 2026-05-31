@@ -813,8 +813,8 @@ function accountTypeText(value: string) {
   return value
 }
 
-function runTrustedComparison(run: Pick<ModelCheckRunSummary, 'trustedComparison' | 'officialBaseline'>) {
-  return run.trustedComparison || run.officialBaseline
+function runTrustedComparison(run: Pick<ModelCheckRunSummary, 'trustedComparison'>) {
+  return run.trustedComparison
 }
 
 function statusText(value: ModelCheckStatus) {
@@ -887,8 +887,7 @@ function checkTitleByType(itemType: string, itemKey: string) {
     stability: '稳定性探针',
     cross_model: '辅助模型对照',
     distribution_similarity: '分布相似度对照',
-    trusted_comparison: '可信对比',
-    official_baseline: '可信对比'
+    trusted_comparison: '可信对比'
   }
   return labels[itemType] ?? itemKey
 }

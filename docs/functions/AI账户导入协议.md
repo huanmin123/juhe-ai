@@ -114,6 +114,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `concurrencyLimit` | 系统默认 | 账户并发上限，必须大于 0。 |
 | `priority` | `0` | 调度优先级。 |
 | `accountExpiresAt` | 无 | 账户过期时间，使用可解析时间字符串。 |
+| `availabilitySchedule` | 无 | 自动启停计划；结构同账户接口，未填写表示不限制时段。 |
 
 ## accounts 字段
 
@@ -132,6 +133,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `priority` | 否 | 调度优先级。 |
 | `supportedModels` | 否 | 支持模型列表。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
+| `availabilitySchedule` | 否 | 自动启停计划；`null` 表示不继承默认计划。 |
 | `credentials` | 是 | 凭据对象。 |
 | `notes` | 否 | 备注。 |
 

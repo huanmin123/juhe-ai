@@ -145,8 +145,6 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
   if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
   const instance = ensureAccountAuthorizationInstance(database, authorization, now)
   if (!instance?.id || !instance.provider_code) return
-  const migratedGroupId = migrateAccountAuthorizationBindingsToInstance(database, authorization, instance.id, now)
-  const repairedGroupId = repairAccountAuthorizationInstanceBindings(database, authorization, instance.id, now)
   const requestedGroupId = targetGroupId?.trim()
   const existingBinding = database
     .prepare(`
@@ -161,7 +159,7 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
     `)
     .get(instance.id, authorization.grantee_system_account_id, authorization.id) as unknown as { group_id?: string } | undefined
   if (existingBinding?.group_id && (!requestedGroupId || existingBinding.group_id === requestedGroupId)) return
-  const bindGroupId = groupIdForAuthorizationBinding(database, instance.provider_code, authorization.grantee_system_account_id, now, requestedGroupId ?? migratedGroupId ?? repairedGroupId)
+  const bindGroupId = groupIdForAuthorizationBinding(database, instance.provider_code, authorization.grantee_system_account_id, now, requestedGroupId)
   if (!bindGroupId) return
   if (existingBinding?.group_id && existingBinding.group_id !== bindGroupId) {
     database
@@ -200,155 +198,45 @@ export function ensureAccountAuthorizationInstancesForGrantee(granteeSystemAccou
   for (const authorization of rows) {
     const instance = ensureAccountAuthorizationInstance(database, authorization, now)
     if (!instance?.id) continue
-    const migratedGroupId = migrateAccountAuthorizationBindingsToInstance(database, authorization, instance.id, now)
-    const repairedGroupId = repairAccountAuthorizationInstanceBindings(database, authorization, instance.id, now)
-    if (migratedGroupId || repairedGroupId) changed += 1
+    changed += 1
     if (authorization.status === 'active' && !isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) {
-      bindActiveAccountAuthorizationToGranteeGroup(database, authorization, now, migratedGroupId ?? repairedGroupId)
+      bindActiveAccountAuthorizationToGranteeGroup(database, authorization, now)
     }
-  }
-  if (changed > 0) {
-    notifyGatewayRuntimeCacheInvalidation('authorization_instance_migrated')
   }
   return changed
 }
 
-interface LegacyAccountAuthorizationBindingRow {
-  group_id: string
-  local_status?: string | null
-  local_cooldown_until?: string | null
-  local_last_error_message?: string | null
-  local_priority?: number | null
-  local_super_priority_enabled?: number | null
-  local_fallback_enabled?: number | null
-  local_stream_failure_count?: number | null
-  local_stream_failure_window_started_at?: string | null
-  created_at?: string | null
-  updated_at?: string | null
-}
-
-function migrateAccountAuthorizationBindingsToInstance(database: DatabaseSync, authorization: ResourceAuthorizationRow, instanceAccountId: string, now: string): string | undefined {
-  const legacyRows = database
-    .prepare(`
-      SELECT group_id, local_status, local_cooldown_until, local_last_error_message,
-        local_priority, local_super_priority_enabled, local_fallback_enabled,
-        local_stream_failure_count, local_stream_failure_window_started_at,
-        created_at, updated_at
-      FROM group_accounts
-      WHERE account_id = ?
-        AND system_account_id = ?
-        AND account_authorization_id = ?
-        AND enabled = 1
-      ORDER BY updated_at DESC, group_id ASC, account_id ASC
-    `)
-    .all(authorization.resource_id, authorization.grantee_system_account_id, authorization.id) as unknown as LegacyAccountAuthorizationBindingRow[]
-  if (!legacyRows.length) return undefined
-  const latestRuntime = legacyRows[0]
-  applyLegacyAccountAuthorizationRuntimeToInstance(database, instanceAccountId, authorization.id, latestRuntime, now)
-  for (const row of legacyRows) {
-    database
-      .prepare(`
-        INSERT INTO group_accounts (
-          system_account_id, group_id, account_id, account_authorization_id,
-          local_priority, local_super_priority_enabled, local_fallback_enabled,
-          enabled, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-        ON CONFLICT(group_id, account_id) DO UPDATE SET
-          system_account_id = excluded.system_account_id,
-          account_authorization_id = excluded.account_authorization_id,
-          local_priority = excluded.local_priority,
-          local_super_priority_enabled = excluded.local_super_priority_enabled,
-          local_fallback_enabled = excluded.local_fallback_enabled,
-          enabled = 1,
-          updated_at = excluded.updated_at
-      `)
-      .run(
-        authorization.grantee_system_account_id,
-        row.group_id,
-        instanceAccountId,
-        authorization.id,
-        Math.max(0, Number(row.local_priority ?? 0)),
-        row.local_super_priority_enabled === 1 ? 1 : 0,
-        row.local_fallback_enabled === 1 ? 1 : 0,
-        row.created_at ?? now,
-        now
-      )
-    invalidateGroupAccountIdsCache(row.group_id)
-  }
-  database
-    .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ? AND account_authorization_id = ?')
-    .run(authorization.resource_id, authorization.grantee_system_account_id, authorization.id)
-  return latestRuntime.group_id
-}
-
-function repairAccountAuthorizationInstanceBindings(database: DatabaseSync, authorization: ResourceAuthorizationRow, instanceAccountId: string, now: string): string | undefined {
+export function syncAccountAuthorizationInstanceNamesForSourceAccount(database: DatabaseSync, sourceAccountId: string, sourceName: string, providerCode: string, now = nowIso()): string[] {
   const rows = database
     .prepare(`
-      SELECT group_id
-      FROM group_accounts
-      WHERE account_id = ?
-        AND system_account_id = ?
-        AND enabled = 1
-        AND (
-          account_authorization_id IS NULL
-          OR account_authorization_id <> ?
-        )
-      ORDER BY updated_at DESC, group_id ASC, account_id ASC
+      SELECT id, system_account_id, authorization_instance_authorization_id, name
+      FROM accounts
+      WHERE authorization_instance_source_account_id = ?
+      ORDER BY system_account_id ASC, id ASC
     `)
-    .all(instanceAccountId, authorization.grantee_system_account_id, authorization.id) as unknown as Array<{ group_id?: string }>
-  if (!rows.length) return undefined
+    .all(sourceAccountId) as unknown as Array<{
+      id?: string
+      system_account_id?: string
+      authorization_instance_authorization_id?: string | null
+      name?: string
+    }>
+  const changedIds: string[] = []
+  const updateName = database.prepare('UPDATE accounts SET name = ?, updated_at = ? WHERE id = ?')
   for (const row of rows) {
-    if (!row.group_id) continue
-    database
-      .prepare(`
-        UPDATE group_accounts
-        SET account_authorization_id = ?,
-            updated_at = ?
-        WHERE account_id = ?
-          AND system_account_id = ?
-          AND group_id = ?
-          AND enabled = 1
-      `)
-      .run(authorization.id, now, instanceAccountId, authorization.grantee_system_account_id, row.group_id)
-    invalidateGroupAccountIdsCache(row.group_id)
-  }
-  return rows.find((row) => row.group_id)?.group_id
-}
-
-function applyLegacyAccountAuthorizationRuntimeToInstance(database: DatabaseSync, instanceAccountId: string, authorizationId: string, row: LegacyAccountAuthorizationBindingRow, now: string): void {
-  const localStatus = normalizedLegacyAccountStatus(row.local_status)
-  const nextStatus = localStatus ?? 'active'
-  database
-    .prepare(`
-      UPDATE accounts
-      SET status = ?,
-          schedulable = ?,
-          cooldown_until = ?,
-          last_error_message = ?,
-          stream_failure_count = ?,
-          stream_failure_window_started_at = ?,
-          updated_at = ?
-      WHERE id = ?
-        AND authorization_instance_authorization_id = ?
-    `)
-    .run(
-      nextStatus,
-      nextStatus === 'disabled' || nextStatus === 'error' ? 0 : 1,
-      row.local_cooldown_until ?? null,
-      row.local_last_error_message ?? null,
-      Math.max(0, Number(row.local_stream_failure_count ?? 0)),
-      row.local_stream_failure_window_started_at ?? null,
-      now,
-      instanceAccountId,
-      authorizationId
+    if (!row.id || !row.system_account_id || !row.authorization_instance_authorization_id) continue
+    const nextName = uniqueAuthorizedAccountInstanceName(
+      database,
+      sourceName,
+      row.system_account_id,
+      providerCode,
+      row.authorization_instance_authorization_id,
+      row.id
     )
-}
-
-function normalizedLegacyAccountStatus(value: string | null | undefined): 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable' | undefined {
-  return value === 'active' || value === 'disabled' || value === 'error' || value === 'rate_limited' || value === 'temporary_unavailable'
-    ? value
-    : undefined
+    if (row.name === nextName) continue
+    updateName.run(nextName, now, row.id)
+    changedIds.push(row.id)
+  }
+  return changedIds
 }
 
 function ensureAccountAuthorizationInstance(database: DatabaseSync, authorization: ResourceAuthorizationRow, now: string): AccountRow | undefined {
@@ -360,7 +248,10 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
       ? true
       : Boolean(database.prepare('SELECT id FROM accounts WHERE id = ? LIMIT 1').get(authorization.resource_id))
     const sourceAccountId = sourceExists ? authorization.resource_id : null
-    if ((sourceAccountId && !existing.authorization_instance_source_account_id) || !existing.authorization_instance_owner_system_account_id) {
+    if (
+      (sourceAccountId && !existing.authorization_instance_source_account_id)
+      || !existing.authorization_instance_owner_system_account_id
+    ) {
       database
         .prepare(`
           UPDATE accounts
@@ -421,7 +312,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
   return database.prepare('SELECT * FROM accounts WHERE id = ? LIMIT 1').get(id) as unknown as AccountRow | undefined
 }
 
-function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName: string, systemAccountId: string, providerCode: string, authorizationId: string): string {
+function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName: string, systemAccountId: string, providerCode: string, authorizationId: string, exceptAccountId?: string): string {
   const baseName = sourceName.trim() || '授权账户'
   const shortId = authorizationId.split('_').pop()?.slice(0, 6) || authorizationId.slice(-6)
   const candidates = [
@@ -430,20 +321,20 @@ function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName:
     `${baseName}（授权 ${shortId}）`
   ]
   for (const candidate of candidates) {
-    if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate)) return candidate
+    if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate, exceptAccountId)) return candidate
   }
   for (let index = 2; index <= 1000; index += 1) {
     const candidate = `${baseName}（授权 ${shortId}-${index}）`
-    if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate)) return candidate
+    if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate, exceptAccountId)) return candidate
   }
   return `${baseName}（授权 ${shortId}-${Date.now()}）`
 }
 
-function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string, providerCode: string, name: string): boolean {
+function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string, providerCode: string, name: string, exceptAccountId?: string): boolean {
   const row = database
     .prepare('SELECT id FROM accounts WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?) LIMIT 1')
     .get(systemAccountId, providerCode, name) as unknown as { id?: string } | undefined
-  return !row?.id
+  return !row?.id || row.id === exceptAccountId
 }
 
 function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, now: string, targetGroupId?: string): string | undefined {

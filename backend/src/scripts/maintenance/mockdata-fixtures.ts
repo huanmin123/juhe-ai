@@ -59,7 +59,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
     ? undefined
     : repositories.createApiKeyRecord({
       name: `${nameScope}Key-${runId}`,
-      groupId: group.id,
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active',
       description: `${options.label}通过 Mockdata 共享夹具生成的临时本地网关 Key`
     }, access) as ApiKeyWithSecret

@@ -33,7 +33,7 @@ try {
   for (let index = 0; index < 250; index += 1) {
     const apiKey = repositories.createApiKeyRecord({
       name: `单条读取回归-${String(index).padStart(3, '0')}`,
-      groupId: group.id,
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
     if (index === 0) {

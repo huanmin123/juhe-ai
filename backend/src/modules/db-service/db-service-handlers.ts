@@ -4,9 +4,9 @@ import {
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
   getAccountPrecheckMutationState,
-  hasOpenAIAccountAvailabilityScheduleForGroup,
   isGatewayApiKeyScheduleInactive,
   listOpenAIAccountsForGroup,
+  listOpenAIAccountsForGroupResult,
   listPublicGlobalSettings,
   markAccountCooldown,
   markAuthorizedAccountBindingCooldownByContext,
@@ -101,6 +101,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return resolveGroupUsageAccessMetadata(operation.groupId, operation.systemAccountId)
     case 'list_openai_accounts_for_group':
       return listOpenAIAccountsForGroup(operation.groupId, operation.systemAccountId)
+    case 'list_openai_accounts_for_group_result':
+      return listOpenAIAccountsForGroupResult(operation.groupId, operation.systemAccountId)
     case 'read_gateway_runtime':
       return readGatewayRuntime(operation)
     case 'check_api_key_quota':
@@ -291,23 +293,23 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
   }
 
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
-  const orderedBindings = operation.groupId
-    ? apiKey.group_bindings ?? []
-    : orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
+  const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
   const candidateGroupIds = operation.groupId
-    ? [operation.groupId]
-    : orderedBindings.length
-      ? orderedBindings.map((binding) => binding.group_id)
-      : [apiKey.group_id]
+    ? orderedBindings.some((binding) => binding.group_id === operation.groupId)
+      ? [operation.groupId]
+      : []
+    : orderedBindings.map((binding) => binding.group_id)
   const uniqueCandidateGroupIds = [...new Set(candidateGroupIds.filter(Boolean))]
+  let hasCandidateAccountAvailabilitySchedule = false
 
   for (const groupId of uniqueCandidateGroupIds) {
     const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
     if (!groupAccess) {
       continue
     }
-    const accounts = listOpenAIAccountsForGroup(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
-    const hasAccountAvailabilitySchedule = hasOpenAIAccountAvailabilityScheduleForGroup(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
+    const groupAccountsResult = listOpenAIAccountsForGroupResult(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
+    const accounts = groupAccountsResult.accounts
+    hasCandidateAccountAvailabilitySchedule = hasCandidateAccountAvailabilitySchedule || groupAccountsResult.hasAccountAvailabilitySchedule
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
@@ -320,7 +322,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       settings,
       groupAccess,
       accounts,
-      hasAccountAvailabilitySchedule,
+      hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
       clientIpPolicies,
       streamInterceptPolicies
     }
@@ -330,6 +332,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     apiKey,
     settings,
     accounts: [],
+    hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
     clientIpPolicies,
     streamInterceptPolicies
   }

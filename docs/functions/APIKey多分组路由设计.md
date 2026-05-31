@@ -147,7 +147,7 @@ OpenAI 分组内允许混合 OAuth 账户和 API Key 账户，但每个账号类
 | 公开 `/chat/completions` | OAuth 账号不参与，API Key 账号可参与 |
 | 公开 `/responses` | API Key 账号可按公开 API 透传；OAuth 账号只有在命中 Codex adapter 支持范围时参与 |
 | Codex 专属 Responses / compact | 只允许支持 Codex adapter 的 OAuth 账号或后续显式支持该 profile 的账号参与 |
-| Images API / 图像工具 | 先校验系统账户图像生成权限，再只保留支持对应图像能力的账号 |
+| Images API / 图像工具 | Images API、GPT Image / DALL-E 模型和强制 Responses 图像工具先校验系统账户图像生成权限，再只保留支持对应图像能力的账号；仅 auto 暴露的 Responses `image_generation` 工具在权限关闭时会被移除并按文本请求继续 |
 | 不支持路径 | 当前分组内没有可支持账号时，按 `request_capability_mismatch` 记录并尝试下一号池 |
 
 如果 A 分组只有 OAuth 账号，而当前请求是 OAuth 不支持的公开路径，A 不算“可承接”，应尝试 B 分组。如果 B 分组里有 API Key 账号，则由 B 承接。这个切换优先在上游请求发出前完成；一旦已经进入 A 分组真实派发，普通上游失败先消耗 A 分组内可用账号，只有当前分组账号耗尽且尚未写下游输出时，才回到 API Key 的候选分组继续寻找未失败且当前可承接的账号。这样混合账号类型不会把请求打到明知不支持的上游，也不会因为 A 号池账号多但能力不匹配而阻断后续号池。
@@ -189,7 +189,7 @@ OpenAI 分组内允许混合 OAuth 账户和 API Key 账户，但每个账号类
 | API Key 无效 | Key 不存在、停用、删除、过期或系统账户不可用，直接拒绝 |
 | API Key 额度耗尽 | Key 额度是入口级共享边界，命中后不尝试任何号池 |
 | 请求本身无效 | JSON 解析失败、路径不支持、缺少必要字段或客户端协议错误，不进入号池路由 |
-| 图像生成权限关闭 | 调用方系统账户未开启图像生成权限时直接返回权限错误 |
+| 图像生成权限关闭 | 调用方系统账户未开启图像生成权限时，确定图像生成请求直接返回权限错误；仅 auto 暴露的 Responses `image_generation` 工具不切号，移除工具后按文本请求继续 |
 | 已进入真实上游派发 | 选定分组后，普通上游请求失败先在该分组内账号切换和错误策略处理；当前分组账号耗尽且尚未写下游输出时，回到 API Key 候选分组继续寻找未失败且当前可承接的账号；已写下游输出后的流式中断不透明切到其他号池重放 |
 | 已有可见流式输出 | 一旦已经向客户端写出可见 assistant 内容、reasoning 或工具参数，更不能服务端透明切到其他号池重放 |
 | 非幂等或客户端续写敏感 | 可能造成重复副作用、重复工具调用或破坏客户端 turn 状态的场景，不做跨号池重试 |
@@ -284,22 +284,17 @@ CREATE INDEX idx_api_key_group_bindings_owner
 
 | 值 | 说明 |
 | --- | --- |
-| `priority_failover` | 主备优先，兼容既有行为 |
+| `priority_failover` | 主备优先 |
 | `round_robin` | 启用号池等权轮询 |
 | `weighted_round_robin` | 启用号池按绑定权重平滑轮询 |
 
-保留 `api_keys.group_id` 作为兼容主号池字段：
-
-- 现有单分组 Key 迁移时，按 `api_keys.group_id` 生成一条 `priority = 1`、`status = active` 的绑定。
-- 新建或更新 Key 时，`api_keys.group_id` 始终写入当前 active 绑定中优先级最小的分组，用于旧查询、旧展示和渐进改造。
-- 网关和新列表以 `api_key_group_bindings` 为准；只有绑定表缺失时，才把 `api_keys.group_id` 视为单绑定数据修复入口。
-- 后续如果确认所有代码都改为绑定表，再单独评估是否移除 `api_keys.group_id`，不在本轮同时清理。
+`api_keys` 不再保存单独的主号池字段。API Key 到分组的唯一事实来源是 `api_key_group_bindings`；列表、详情、筛选和网关运行态都从绑定表读取。网关运行态里的 `apiKey.group_id` 只表示本次已经选中的实际分组，不是 `api_keys` 表字段。
 
 分组删除规则：
 
 - 默认分组仍不允许删除。
 - 删除非默认分组前，如果该分组是某个 API Key 的最后一个 active 绑定，后端应拒绝并提示先调整该 Key 的号池。
-- 如果该分组不是最后一个 active 绑定，删除分组时在同一业务库事务内同步删除相关绑定；当被删分组正好是 `api_keys.group_id` 兼容主号池时，先切到该 Key 的下一个 active 绑定，再删除分组、刷新 Key 校验缓存并写操作日志。操作日志需要记录受影响的 API Key 路由摘要，并把受影响 API Key 作为 affected target，方便后续追溯自动切换。
+- 如果该分组不是最后一个 active 绑定，删除分组时在同一业务库事务内同步删除相关绑定，刷新 Key 校验缓存并写操作日志。操作日志记录受影响的 API Key 路由摘要，并把受影响 API Key 作为 affected target，方便追溯绑定移除。
 
 API Key 删除规则：
 
@@ -308,7 +303,7 @@ API Key 删除规则：
 
 ## API 契约
 
-创建和更新 API Key 建议支持新字段：
+创建和更新 API Key 使用绑定数组表达号池：
 
 ```ts
 type ApiKeyGroupBindingInput = {
@@ -321,9 +316,8 @@ type ApiKeyGroupBindingInput = {
 type ApiKeyCreateOrUpdateInput = {
   name: string
   description?: string
-  groupId?: string
   groupRouteStrategy?: 'priority_failover' | 'round_robin' | 'weighted_round_robin'
-  groupBindings?: ApiKeyGroupBindingInput[]
+  groupBindings: ApiKeyGroupBindingInput[]
   expiresAt?: string | null
   quotaLimits?: Record<string, unknown> | null
 }
@@ -331,11 +325,9 @@ type ApiKeyCreateOrUpdateInput = {
 
 写入规则：
 
-- 新前端提交 `groupBindings`。
-- 旧前端只提交 `groupId` 时，后端自动转为单条 active 绑定。
-- 创建 API Key 必须显式提交 `groupBindings` 或 `groupId`，不能再由数据层隐式绑定默认分组；这样前端、接口和存储层都能统一拦截“未选择号池”的配置。
-- 未提交 `groupRouteStrategy` 时默认 `priority_failover`，保持现有主备行为。
-- 同一个请求同时提交 `groupId` 和 `groupBindings` 时，`groupBindings` 为准；如果 `groupId` 不等于 active 绑定中的最高优先级分组，后端应返回中文校验错误，避免两个入口表达冲突。
+- 创建 API Key 必须显式提交 `groupBindings`，不能由数据层隐式绑定默认分组；这样前端、接口和存储层都能统一拦截“未选择号池”的配置。
+- 更新 API Key 未提交 `groupBindings` 时保留现有绑定；提交时按数组整体替换。
+- 未提交 `groupRouteStrategy` 时默认 `priority_failover`。
 - 后端校验重复分组、active 绑定数量、优先级唯一、权重范围、分组归属、分组启用状态和 provider 一致性。
 - 后端允许个人分组和高并发分组混合绑定；分组类型不影响写入校验，只影响运行时选中该分组后的内部调度。
 
@@ -356,10 +348,6 @@ type ApiKeyGroupBindingSummary = {
 type ApiKeySummary = {
   id: string
   name: string
-  groupId: string
-  groupName: string
-  primaryGroupId: string
-  primaryGroupName: string
   groupRouteStrategy: 'priority_failover' | 'round_robin' | 'weighted_round_robin'
   groupBindings: ApiKeyGroupBindingSummary[]
 }
@@ -369,7 +357,7 @@ type ApiKeySummary = {
 
 - `keyword` 仍只按 API Key 名称精确 / 前缀匹配。
 - `status` 仍筛选 API Key 自身状态。
-- `groupId` 改为匹配任意绑定关系，不只匹配 `api_keys.group_id`；返回结果中应带出绑定状态，让用户能看出该组是 active 还是 disabled。
+- `groupId` 匹配任意绑定关系；返回结果中带出绑定状态，让用户能看出该组是 active 还是 disabled。
 
 操作日志：
 
@@ -478,19 +466,9 @@ DB service 的 API Key 运行时快照应一次性带出：
 - 绑定关系不授予额外资源使用权；它只引用已经属于调用方本地分组的号池。
 - 完整 API Key 明文展示规则不变；多号池信息不包含敏感凭据。
 
-## 兼容与落地阶段
-
-建议分三步落地，避免一次性改动过大：
-
-1. Schema 与数据读写：新增 `api_key_group_bindings`，迁移现有 `api_keys.group_id`，API Key 创建 / 编辑 / 列表同时支持 `groupBindings` 和旧 `groupId`。
-2. 网关路由：DB service 运行时快照带出多号池候选，网关按 API Key 路由策略生成候选顺序并故障切换，使用记录写实际命中 `group_id`。
-3. 前端体验与诊断：API Key 表单支持多号池策略、排序、权重和启停，列表展示主备 / 轮询 / 权重标签，审计 / 使用记录补安全路由摘要。
-
-第一步完成后，旧单分组 Key 的页面和网关行为应保持不变；第二步完成后，配置了多个 active 绑定的 Key 才开始获得自动切换能力。
-
 ## 验收清单
 
-- 旧 API Key 只有一个绑定时行为不变。
+- API Key 只有一个绑定时按单号池路由。
 - 创建 API Key 时可以绑定 A、B、C 三个同供应商自有分组，并按 `1, 2, 3` 保存优先级；未设置策略时默认主备优先。
 - 可以选择轮询策略，连续请求在多个启用号池之间按稳定顺序轮转。
 - 可以选择权重策略，连续请求在多个启用号池之间按绑定权重接近比例分配。

@@ -73,7 +73,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     SELECT
       api_keys.id,
       api_keys.system_account_id,
-      api_keys.group_id,
+      '' AS group_id,
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
@@ -82,9 +82,6 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
-    INNER JOIN groups
-      ON groups.id = api_keys.group_id
-      AND groups.system_account_id = api_keys.system_account_id
     WHERE api_keys.key_hash = ?
       AND system_accounts.status = 'active'
   `).get(keyHash) as unknown as GatewayApiKeyRow | undefined
@@ -121,7 +118,7 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
     SELECT
       api_keys.id,
       api_keys.system_account_id,
-      api_keys.group_id,
+      '' AS group_id,
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
@@ -130,9 +127,6 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
-    INNER JOIN groups
-      ON groups.id = api_keys.group_id
-      AND groups.system_account_id = api_keys.system_account_id
     WHERE api_keys.id = ?
       AND system_accounts.status = 'active'
     LIMIT 1

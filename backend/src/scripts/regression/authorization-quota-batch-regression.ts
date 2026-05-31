@@ -180,13 +180,13 @@ try {
     authorizationSelects = 0
     grantSelects = 0
     usageSelects = 0
-    const asyncFirstDecisions = await quotaService.checkGatewayAuthorizationQuotaBatchAsync({
+    const asyncFirstDecisions = await withDbServiceRole(() => quotaService.checkGatewayAuthorizationQuotaBatchAsync({
       groupAccess: quotaGroupAccess(groupAuthorization.id),
       accounts: [
         quotaAccount('async-manual-ok', accountAuthorizationIds[0]),
         quotaAccount('async-manual-over-limit', exceededAuthorizationId)
       ]
-    })
+    }))
     assert.deepEqual(
       [asyncFirstDecisions.get('async-manual-ok')?.allowed, asyncFirstDecisions.get('async-manual-over-limit')?.allowed],
       [true, false],
@@ -197,13 +197,13 @@ try {
     authorizationSelects = 0
     grantSelects = 0
     usageSelects = 0
-    const asyncSecondDecisions = await quotaService.checkGatewayAuthorizationQuotaBatchAsync({
+    const asyncSecondDecisions = await withDbServiceRole(() => quotaService.checkGatewayAuthorizationQuotaBatchAsync({
       groupAccess: quotaGroupAccess(groupAuthorization.id),
       accounts: [
         quotaAccount('async-manual-ok-second', accountAuthorizationIds[0]),
         quotaAccount('async-manual-over-limit-second', exceededAuthorizationId)
       ]
-    })
+    }))
     assert.deepEqual(
       [asyncSecondDecisions.get('async-manual-ok-second')?.allowed, asyncSecondDecisions.get('async-manual-over-limit-second')?.allowed],
       [true, false],
@@ -321,6 +321,16 @@ function quotaAccount(accountId: string, accountAuthorizationId?: string): OpenA
     id: accountId,
     accountAuthorizationId
   } as OpenAIAccountSecret
+}
+
+async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'db-service'
+    return await action()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
 }
 
 function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {

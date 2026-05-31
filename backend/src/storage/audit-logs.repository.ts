@@ -132,7 +132,6 @@ export interface AuditLogSummary {
   sampleReason: string
   attemptCount: number
   payloadCount: number
-  payloadBytes: number
   rawPayloadBytes: number
   compressedPayloadBytes: number
   compressionSavedBytes: number
@@ -327,10 +326,10 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
     INSERT INTO audit_logs (
       id, trace_id, traffic_source, system_account_id, api_key_id, group_id, account_id, provider_code, method, path, query_string,
       model, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
-      error_message, sample_bucket, sample_reason, attempt_count, payload_count, payload_bytes, raw_payload_bytes,
+      error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
       duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertAttempt = database.prepare(`
@@ -403,7 +402,6 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         input.sampleReason,
         preparedAttempts.length,
         payloads.length,
-        rawPayloadBytes,
         rawPayloadBytes,
         compressedPayloadBytes,
         compressionSavedBytes,

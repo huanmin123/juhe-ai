@@ -22,7 +22,6 @@ export interface ModelCheckOptions {
   supportedModels: ModelCheckOption[]
   supportedProfiles: ModelCheckOption[]
   trustedComparison: ModelCheckTrustedComparisonOptions
-  officialBaseline?: ModelCheckTrustedComparisonOptions
   defaultModel: ModelCheckModel
   defaultProfile: ModelCheckProfile
 }
@@ -34,8 +33,6 @@ export interface ModelCheckRunPayload {
   profile?: ModelCheckProfile
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
-  /** @deprecated 使用 trustedComparison + trustedComparisonAccountId。 */
-  officialBaseline?: boolean
 }
 
 export interface ModelCheckRunListParams {
@@ -64,8 +61,6 @@ export interface ModelCheckRunSummary {
   profile: ModelCheckProfile
   trustedComparison: boolean
   trustedComparisonAvailable: boolean
-  officialBaseline: boolean
-  officialBaselineAvailable: boolean
   level: ModelCheckLevel
   score: number
   maxScore: number
@@ -122,8 +117,6 @@ export type ModelCheckProgressEvent = {
   trustedComparison: boolean
   trustedComparisonAccountId?: string
   trustedComparisonAccountName?: string
-  /** @deprecated 使用 trustedComparison。 */
-  officialBaseline: boolean
 } | {
   type: 'run_created'
   message: string

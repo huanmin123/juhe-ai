@@ -50,6 +50,11 @@ interface ApiEnvelope<T> {
 
 interface ApiKeySummary {
   id: string
+  expiresAt?: string
+  availabilitySchedule?: {
+    enabled?: boolean
+    windows?: unknown[]
+  }
 }
 
 async function main(): Promise<void> {
@@ -103,6 +108,17 @@ async function main(): Promise<void> {
     })
     assert(disabledApiKey.status === 'disabled', '仅更新 API Key 状态时不应要求重新提交分组绑定')
 
+    const expiringApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
+      name: '清空过期时间回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      expiresAt: '2026-06-01T00:01:00'
+    })
+    assert(Boolean(expiringApiKey.expiresAt), '创建 API Key 时应保存过期时间')
+    const clearedExpiringApiKey = await patchEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys/${expiringApiKey.id}`, adminCookie, {
+      expiresAt: null
+    })
+    assert(!clearedExpiringApiKey.expiresAt, '更新 API Key 时 expiresAt: null 应清空已有过期时间')
+
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法自动启停计划回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
@@ -127,7 +143,24 @@ async function main(): Promise<void> {
       }
     }, 'API Key 自动启停计划重复日期无效')
 
-    console.log('API Key 路由校验回归通过：创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法自动启停时段和非法星期均返回中文错误')
+    const scheduleApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
+      name: '自动启停计划清空回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      availabilitySchedule: {
+        enabled: true,
+        windows: [
+          { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
+        ]
+      }
+    })
+    assert(scheduleApiKey.availabilitySchedule?.enabled === true, '创建 API Key 应保存 availabilitySchedule 自动启停计划字段')
+    assert(scheduleApiKey.availabilitySchedule.windows?.length === 1, '自动启停计划字段应保存时段配置')
+    const clearedScheduleApiKey = await patchEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys/${scheduleApiKey.id}`, adminCookie, {
+      availabilitySchedule: null
+    })
+    assert(!clearedScheduleApiKey.availabilitySchedule, '更新 API Key 应支持 availabilitySchedule: null 清空自动启停计划')
+
+    console.log('API Key 路由校验回归通过：创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法自动启停时段、非法星期、自动启停清空和清空过期时间均符合预期')
   } finally {
     operationLogQueue.flushAllOperationLogQueue()
     await closeServer(appServer)

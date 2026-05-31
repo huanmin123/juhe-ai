@@ -27,7 +27,7 @@ export function hydrateAuditRows(rows: AuditLogRow[]): AuditLogRow[] {
 
 export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map<string, string>): AuditLogSummary {
   const systemAccountId = optionalString(row.system_account_id)
-  const rawPayloadBytes = Number(row.raw_payload_bytes ?? row.payload_bytes ?? 0)
+  const rawPayloadBytes = Number(row.raw_payload_bytes ?? 0)
   const compressedPayloadBytes = Number(row.compressed_payload_bytes ?? rawPayloadBytes)
   return {
     id: String(row.id),
@@ -59,7 +59,6 @@ export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map
     sampleReason: String(row.sample_reason),
     attemptCount: Number(row.attempt_count ?? 0),
     payloadCount: Number(row.payload_count ?? 0),
-    payloadBytes: Number(row.payload_bytes ?? rawPayloadBytes),
     rawPayloadBytes,
     compressedPayloadBytes,
     compressionSavedBytes: Number(row.compression_saved_bytes ?? Math.max(0, rawPayloadBytes - compressedPayloadBytes)),

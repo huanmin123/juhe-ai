@@ -67,15 +67,16 @@ try {
     proxyProfileId: proxy.id
   }, ownerAccess)
   assert(account.boundGroupId, '新建账户应绑定默认分组')
+  const ownerGroupId = account.boundGroupId
   const apiKey = repositories.createApiKeyRecord({
     name: '缓存失效 API Key',
-    groupId: account.boundGroupId
+    groupBindings: [{ groupId: ownerGroupId, priority: 1, status: 'active' }],
   }, ownerAccess)
 
   const firstRuntime = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert.deepEqual(firstRuntime.accounts.map((item) => item.id), [account.id], '首次运行配置应包含主账户')
   assert.equal(firstRuntime.accounts[0]?.proxyUrl, 'http://127.0.0.1:18180', '首次运行配置应包含代理 URL')
-  assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(account.boundGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18180', '首次分组账号缓存应包含代理 URL')
+  assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(ownerGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18180', '首次分组账号缓存应包含代理 URL')
 
   const transactionStarted = databaseModule.beginDatabaseTransaction()
   try {
@@ -87,13 +88,13 @@ try {
       enabled: true
     })
     repositories.updateAccount(account.id, { proxyProfileId: transactionalProxy.id }, ownerAccess)
-    assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(account.boundGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18180', '事务提交前不应提前清理分组账号缓存')
+    assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(ownerGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18180', '事务提交前不应提前清理分组账号缓存')
     databaseModule.commitDatabaseTransaction(databaseModule.getDatabase(), transactionStarted)
   } catch (error) {
     databaseModule.rollbackDatabaseTransaction(databaseModule.getDatabase(), transactionStarted)
     throw error
   }
-  assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(account.boundGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18183', '事务提交后应统一清理分组账号缓存')
+  assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(ownerGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18183', '事务提交后应统一清理分组账号缓存')
 
   repositories.updateProxy(proxy.id, { port: 18_181 })
   repositories.updateAccount(account.id, { proxyProfileId: proxy.id }, ownerAccess)
@@ -108,9 +109,14 @@ try {
     name: '缓存失效新空分组',
     providerCode: 'openai'
   }, ownerAccess)
-  repositories.updateApiKey(apiKey.id, { status: 'active', groupId: emptyGroup.id }, ownerAccess)
+  repositories.updateApiKey(apiKey.id, {
+    status: 'active',
+    groupBindings: [{ groupId: emptyGroup.id, priority: 1, status: 'active' }]
+  }, ownerAccess)
   assert.deepEqual(await runtimeAccountIds(apiKey.key), [], '直接新建空分组并切换 API Key 后运行配置应立即使用新分组')
-  repositories.updateApiKey(apiKey.id, { groupId: account.boundGroupId }, ownerAccess)
+  repositories.updateApiKey(apiKey.id, {
+    groupBindings: [{ groupId: ownerGroupId, priority: 1, status: 'active' }]
+  }, ownerAccess)
   assert.deepEqual(await runtimeAccountIds(apiKey.key), [account.id], '直接切回原分组后运行配置应立即恢复原账号')
 
   const lateProxy = repositories.createProxy({
@@ -139,7 +145,7 @@ try {
   }, granteeAccess)
   const granteeApiKey = repositories.createApiKeyRecord({
     name: '缓存失效被授权 API Key',
-    groupId: granteeGroup.id
+    groupBindings: [{ groupId: granteeGroup.id, priority: 1, status: 'active' }],
   }, granteeAccess)
   const sharedAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -219,9 +225,10 @@ try {
     credentials: { api_key: 'sk-cache-invalidation-status', base_url: 'https://api.openai.com/v1' }
   }, statusOwnerAccess)
   assert(statusAccount.boundGroupId, '状态账户应绑定默认分组')
+  const statusGroupId = statusAccount.boundGroupId
   const statusApiKey = repositories.createApiKeyRecord({
     name: '缓存失效状态 API Key',
-    groupId: statusAccount.boundGroupId
+    groupBindings: [{ groupId: statusGroupId, priority: 1, status: 'active' }],
   }, statusOwnerAccess)
   assert.deepEqual(await runtimeAccountIds(statusApiKey.key), [statusAccount.id], '停用系统账户前应可读取运行配置')
   repositories.updateSystemAccount(statusOwner.id, { status: 'disabled' })

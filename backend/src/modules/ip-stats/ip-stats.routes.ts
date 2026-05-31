@@ -32,10 +32,9 @@ const ipHashParamSchema = z.object({
 
 const policyBodySchema = z.object({
   reason: z.string().trim().max(500, '原因不能超过 500 个字符').optional(),
-  expiresAt: z.string().trim().optional(),
   durationMinutes: z.coerce.number().int().min(1, '封禁分钟数不能小于 1').max(525600, '封禁分钟数不能超过 525600').optional(),
   durationDays: z.coerce.number().int().min(1, '封禁天数不能小于 1').max(3650, '封禁天数不能超过 3650').optional()
-})
+}).strict('IP 策略参数包含未知字段')
 
 ipStatsRouter.get('/', (req, res) => {
   const parsed = listQuerySchema.safeParse(req.query)
@@ -54,7 +53,6 @@ ipStatsRouter.post('/:ipHash/blacklist', mutationGuard({
   fingerprint: (req) => ({
     ipHash: req.params.ipHash,
     reason: bodyField(req, 'reason'),
-    expiresAt: bodyField(req, 'expiresAt'),
     durationMinutes: bodyField(req, 'durationMinutes'),
     durationDays: bodyField(req, 'durationDays')
   })
@@ -173,18 +171,10 @@ function handleCreatePolicy(req: Request, res: Response): void {
   }
 }
 
-function normalizeExpiresAt(value?: string): string | undefined {
-  const text = value?.trim()
-  if (!text) return undefined
-  const time = Date.parse(text)
-  return Number.isFinite(time) ? new Date(time).toISOString() : undefined
-}
-
 function resolvePolicyDuration(input: z.infer<typeof policyBodySchema>): { expiresAt?: string; label: string; error?: string } {
   const hasDurationMinutes = input.durationMinutes !== undefined
   const hasDurationDays = input.durationDays !== undefined
-  const hasExpiresAt = Boolean(input.expiresAt?.trim())
-  const selectedCount = [hasDurationMinutes, hasDurationDays, hasExpiresAt].filter(Boolean).length
+  const selectedCount = [hasDurationMinutes, hasDurationDays].filter(Boolean).length
   if (selectedCount > 1) {
     return { label: '无效', error: '封禁时长只能选择一种' }
   }
@@ -200,12 +190,5 @@ function resolvePolicyDuration(input: z.infer<typeof policyBodySchema>): { expir
       label: `${input.durationDays} 天`
     }
   }
-  const expiresAt = normalizeExpiresAt(input.expiresAt)
-  if (hasExpiresAt && !expiresAt) {
-    return { label: '无效', error: '过期时间无效' }
-  }
-  if (expiresAt && expiresAt <= new Date().toISOString()) {
-    return { label: '无效', error: '过期时间必须晚于当前时间' }
-  }
-  return expiresAt ? { expiresAt, label: `到 ${expiresAt}` } : { label: '永久' }
+  return { label: '永久' }
 }

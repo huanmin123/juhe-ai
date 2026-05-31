@@ -243,7 +243,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
   })
   const apiKey = repositories.createApiKeyRecord({
     name: 'IP 级账号回避回归 Key',
-    groupId: group.id,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
   })
   assert(apiKey.key, '临时 API Key 未返回明文密钥')

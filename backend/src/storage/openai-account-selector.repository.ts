@@ -7,7 +7,7 @@ import { decryptJson } from './crypto.js'
 import { getDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { activeResourceAuthorization, activeResourceAuthorizationById, activeResourceAuthorizationsByIds, activeResourceAuthorizationsByResourceIds } from './resource-authorization-helpers.js'
+import { activeResourceAuthorization, activeResourceAuthorizationById, activeResourceAuthorizationsByIds } from './resource-authorization-helpers.js'
 import { ensureAccountAuthorizationInstancesForGrantee } from './resource-authorization-write-state.repository.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
@@ -79,12 +79,7 @@ interface GroupAccountRow {
   binding_system_account_id?: string | null
   group_id?: string | null
   account_authorization_id?: string | null
-  local_status?: AccountStatus | null
-  local_cooldown_until?: string | null
-  local_last_error_message?: string | null
   local_priority?: number | null
-  local_stream_failure_count?: number | null
-  local_stream_failure_window_started_at?: string | null
   local_super_priority_enabled?: number | null
   local_fallback_enabled?: number | null
 }
@@ -128,8 +123,6 @@ export function findOpenAIAccountForGroup(
   const groupAccount = getDatabase()
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
-        group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
-        group_accounts.local_stream_failure_count, group_accounts.local_stream_failure_window_started_at,
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
       FROM group_accounts
       WHERE group_accounts.group_id = ?
@@ -212,19 +205,30 @@ export function listOpenAIAccountsForGroup(
   systemAccountId = currentSystemAccountId(),
   options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
 ): OpenAIAccountSecret[] {
+  return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options).accounts
+}
+
+export interface OpenAIAccountsForGroupResult {
+  accounts: OpenAIAccountSecret[]
+  hasAccountAvailabilitySchedule: boolean
+}
+
+export function listOpenAIAccountsForGroupResult(
+  groupId: string,
+  systemAccountId = currentSystemAccountId(),
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
+): OpenAIAccountsForGroupResult {
   const database = getDatabase()
   const now = nowIso()
   const qualityFreshAfter = qualityFreshAfterIso()
   const groupAccess = options.preResolvedGroupAccess ?? resolveGroupUsageAccessMetadata(groupId, systemAccountId)
   if (!groupAccess) {
-    return []
+    return { accounts: [], hasAccountAvailabilitySchedule: false }
   }
   ensureAccountAuthorizationInstancesForGrantee(systemAccountId, database)
   const groupAccountRows = database
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
-        group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
-        group_accounts.local_stream_failure_count, group_accounts.local_stream_failure_window_started_at,
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
         accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
@@ -256,6 +260,7 @@ export function listOpenAIAccountsForGroup(
         group_accounts.account_id ASC
     `)
     .all(groupId, groupAccess.groupOwnerSystemAccountId, now) as unknown as OpenAIGroupAccountSelectionRow[]
+  const hasAccountAvailabilitySchedule = groupAccountRows.some((row) => Boolean(row.availability_schedule_json))
   const accountAuthorizationsByIdOrResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
   const eligibleRows = groupAccountRows
     .map((row) => ({
@@ -282,7 +287,10 @@ export function listOpenAIAccountsForGroup(
     }
   }
 
-  return orderOpenAIAccountsForDispatch(accounts)
+  return {
+    accounts: orderOpenAIAccountsForDispatch(accounts),
+    hasAccountAvailabilitySchedule
+  }
 }
 
 export function hasOpenAIAccountAvailabilityScheduleForGroup(
@@ -603,13 +611,6 @@ function loadAccountAuthorizationsForSelection(
     .map((row) => row.authorization_instance_authorization_id ?? '')
     .filter(Boolean)
   for (const authorization of activeResourceAuthorizationsByIds(authorizationIds, systemAccountId).values()) {
-    result.set(authorization.id, authorization)
-    result.set(authorization.resource_id, authorization)
-  }
-  const legacyAuthorizedAccountIds = rows
-    .filter((row) => row.system_account_id !== systemAccountId)
-    .map((row) => row.id)
-  for (const authorization of activeResourceAuthorizationsByResourceIds('account', legacyAuthorizedAccountIds, systemAccountId).values()) {
     result.set(authorization.id, authorization)
     result.set(authorization.resource_id, authorization)
   }

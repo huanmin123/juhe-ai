@@ -411,6 +411,13 @@ async function runChild(): Promise<void> {
       apiKey: 'sk-public-push-regression-001',
       supportedModels: ['gpt-5.5'],
       status: 'active',
+      availabilitySchedule: {
+        enabled: true,
+        timezone: 'UTC',
+        windows: [
+          { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
+        ]
+      },
       externalId: 'account-registration:1001'
     })
     assert.equal(accountAdd.status, 201)
@@ -421,6 +428,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountAdd.body.data.target.created, true)
     assert.equal(accountAdd.body.data.target.groupCreated, true)
     assert.equal(accountAdd.body.data.account.name, '公益站测试账号')
+    assert.equal(accountAdd.body.data.account.availabilitySchedule?.enabled, true, '公开账号新增应写入并回显自动启停计划')
     assert.equal(Object.prototype.hasOwnProperty.call(accountAdd.body.data.account, 'credentials'), false, '正式新增响应不能返回凭据')
 
     const targetAccount = findSystemAccountByUsername('huanmin')
@@ -433,6 +441,7 @@ async function runChild(): Promise<void> {
       .find((item) => item.name === '公益站测试账号')
     assert(addedAccount, '账号新增应把账号绑定到福利分组')
     assert.equal(addedAccount.boundGroupId, welfareGroup.id)
+    assert.equal(addedAccount.availabilitySchedule?.enabled, true, '公开账号新增应持久化自动启停计划')
     const addLogs = listOperationLogs({
       module: 'external_integrations',
       action: 'account_add',
@@ -463,6 +472,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountUpdate.body.data.action, 'updated')
     assert.equal(accountUpdate.body.data.account.id, accountAdd.body.data.account.id)
     assert.equal(accountUpdate.body.data.account.status, 'disabled')
+    assert.equal(accountUpdate.body.data.account.availabilitySchedule?.enabled, true, '公开账号修改未提交计划时不应清空既有自动启停计划')
 
     const accountRename = await requestJson(baseUrl, '/__aipublic__/account/update', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -476,6 +486,7 @@ async function runChild(): Promise<void> {
       apiKey: 'sk-public-push-regression-001',
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
       status: 'active',
+      availabilitySchedule: null,
       externalId: 'account-registration:1001'
     })
     assert.equal(accountRename.status, 200)
@@ -483,6 +494,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountRename.body.data.account.id, accountAdd.body.data.account.id)
     assert.equal(accountRename.body.data.account.name, '公益站测试账号新版')
     assert.equal(accountRename.body.data.account.status, 'active')
+    assert.equal(accountRename.body.data.account.availabilitySchedule, undefined, '公开账号修改应支持 availabilitySchedule: null 清空计划')
     const renamedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号新版', providerCode: 'openai', groupId: welfareGroup.id })
       .find((item) => item.name === '公益站测试账号新版')
     assert.equal(renamedAccount?.id, addedAccount.id, '同一 externalId 的账号改名应更新原账号，不能因凭据重复创建失败')
@@ -575,12 +587,20 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'public_control_user',
       name: '公开接口控制 Key',
-      groupId: publicGroupId,
-      status: 'active'
+      groupBindings: [{ groupId: publicGroupId }],
+      status: 'active',
+      availabilitySchedule: {
+        enabled: true,
+        timezone: 'UTC',
+        windows: [
+          { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
+        ]
+      }
     })
     assert.equal(publicApiKeyAdd.status, 201)
     assert.equal(publicApiKeyAdd.body.data.action, 'created')
     assert.equal(typeof publicApiKeyAdd.body.data.apiKey.key, 'string', 'API Key 新增响应应只在创建时返回明文密钥')
+    assert.equal(publicApiKeyAdd.body.data.apiKey.availabilitySchedule?.enabled, true, '公开 API Key 新增应写入并回显自动启停计划')
     const publicApiKeyId = publicApiKeyAdd.body.data.apiKey.id as string
 
     const publicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
@@ -588,12 +608,14 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'public_control_user',
       apiKeyId: publicApiKeyId,
-      status: 'disabled'
+      status: 'disabled',
+      availabilitySchedule: null
     })
     assert.equal(publicApiKeyUpdate.status, 200)
     assert.equal(publicApiKeyUpdate.body.data.action, 'updated')
     assert.equal(Object.prototype.hasOwnProperty.call(publicApiKeyUpdate.body.data.apiKey, 'key'), false, 'API Key 修改响应不应返回明文密钥')
     assert.equal(publicApiKeyUpdate.body.data.apiKey.status, 'disabled')
+    assert.equal(publicApiKeyUpdate.body.data.apiKey.availabilitySchedule, undefined, '公开 API Key 修改应支持 availabilitySchedule: null 清空计划')
 
     const publicApiKeyDelete = await requestJson(baseUrl, '/__aipublic__/api-key/del', {
       Authorization: `Bearer ${accountWriteToken}`

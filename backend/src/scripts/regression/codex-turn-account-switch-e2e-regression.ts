@@ -374,7 +374,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
   }
   const apiKey = repositories.createApiKeyRecord({
     name: `Codex 切号 e2e Key-${label}`,
-    groupId: group.id,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
   })
   assert(apiKey.key, '临时 API Key 未返回明文密钥')

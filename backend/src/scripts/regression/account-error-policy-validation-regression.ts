@@ -31,7 +31,7 @@ const decision = decideAccountErrorPolicy({
   type: 'api_key',
   credentials: {
     error_handling_rules: [
-      { name: 'manual 200', status_codes: [200], action: 'temp_unschedulable', duration_minutes: 5 }
+      { name: 'manual 200', status_codes: [200], action: 'temp_unschedulable', durationMinutes: 5 }
     ]
   },
   status: 'active'

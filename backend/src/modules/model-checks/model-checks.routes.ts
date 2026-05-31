@@ -22,8 +22,7 @@ const modelCheckRunSchema = z.object({
   model: z.enum(['gpt-5.5', 'gpt-5.4'], { invalid_type_error: '当前模型检测仅支持 gpt-5.5 和 gpt-5.4' }),
   profile: z.enum(['full']).optional(),
   trustedComparison: z.boolean().optional(),
-  trustedComparisonAccountId: z.string().trim().optional(),
-  officialBaseline: z.boolean().optional()
+  trustedComparisonAccountId: z.string().trim().optional()
 })
 
 modelChecksRouter.get('/options', (req, res, next) => {

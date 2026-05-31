@@ -499,12 +499,7 @@ function groupBindingSelectColumns(): string {
           group_bindings.group_id AS bound_group_id,
           bound_groups.name AS bound_group_name,
           group_bindings.account_authorization_id AS bound_group_account_authorization_id,
-          group_bindings.local_status AS bound_group_local_status,
-          group_bindings.local_cooldown_until AS bound_group_local_cooldown_until,
-          group_bindings.local_last_error_message AS bound_group_local_last_error_message,
           group_bindings.local_priority AS bound_group_local_priority,
-          group_bindings.local_stream_failure_count AS bound_group_local_stream_failure_count,
-          group_bindings.local_stream_failure_window_started_at AS bound_group_local_stream_failure_window_started_at,
           group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled,
           group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled`
 }

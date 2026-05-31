@@ -31,7 +31,7 @@ import { defaultGroupIdForSystemAccount, ensureDefaultOpenAIGroupForSystemAccoun
 import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
 import { findGroupRowForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions } from './group-read.repository.js'
-import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds, type GroupAccountStatsRow } from './group-read-loaders.js'
+import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
@@ -67,6 +67,7 @@ import {
   revokeResourceAuthorizationGrant,
   revokeTeamSourcesForMember,
   returnResourceAuthorizationGrant,
+  syncAccountAuthorizationInstanceNamesForSourceAccount,
   syncResourceAuthorizationGrantRuntime,
   upsertResourceAuthorizationForUser,
   upsertResourceAuthorizationGrant
@@ -85,7 +86,7 @@ import { getSettings } from './settings.repository.js'
 import { systemAccountPrincipalSummaryFromRow } from './system-account-mappers.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
-import { GROUP_ACCOUNT_STATS_DIRTY_ALL, markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
+import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
@@ -100,7 +101,6 @@ import {
 } from './value-utils.js'
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
-const GROUP_ACCOUNT_STATS_FALLBACK_MAX_GROUPS = 500
 const manualTrafficMigrationReason = '手动迁移流量'
 const defaultResourceAuthorizationUsageDetailPageSize = 200
 const temporaryUnavailableInitialBackoffSeconds = 3
@@ -130,8 +130,6 @@ interface AccountOptionRow {
   authorization_expires_at?: string | null
   authorization_resource_owner_system_account_id?: string | null
   authorization_resource_id?: string | null
-  local_status?: AccountStatus | null
-  local_cooldown_until?: string | null
 }
 
 export type { AccountListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
@@ -371,10 +369,12 @@ export {
   findOpenAIAccountForGroup,
   hasOpenAIAccountAvailabilityScheduleForGroup,
   listOpenAIAccountsForGroup,
+  listOpenAIAccountsForGroupResult,
   resolveGroupUsageAccessMetadata,
   selectOpenAIAccountForGroup,
   type GroupUsageAccessMetadata,
-  type OpenAIAccountSecret
+  type OpenAIAccountSecret,
+  type OpenAIAccountsForGroupResult
 } from './openai-account-selector.repository.js'
 export {
   createModelCheckItems,
@@ -1024,9 +1024,6 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
       name: row.name,
       type: row.type,
       status: effectiveStatus,
-      sourceStatus: undefined,
-      sourceSchedulable: undefined,
-      sourceCooldownUntil: undefined,
       accessType: row.access_type ?? 'owner',
       accountAuthorizationId: row.authorization_id ?? undefined,
       authorizationInstanceSourceAccountId: isAuthorizedView ? row.authorization_instance_source_account_id ?? undefined : undefined,
@@ -1061,7 +1058,7 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   if (!ownerSystemAccountId && canAccessAll(access)) {
     const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
     return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS local_status, NULL AS local_cooldown_until
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at
       FROM accounts
       WHERE 1 = 1${filters.clause}
     `, filters.params)
@@ -1069,7 +1066,7 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   if (!viewerSystemAccountId) {
     const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
     return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS local_status, NULL AS local_cooldown_until
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at
       FROM accounts
       WHERE 1 = 1${filters.clause}
     `, filters.params)
@@ -1079,10 +1076,9 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   const ownerFilters = buildAccountOptionFilters(options, 'accounts.system_account_id')
   const authorizedFilters = buildAccountOptionFilters(options, '?', [viewerSystemAccountId], true)
   return queryRows(`
-    SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type,
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type,
       NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at,
-      NULL AS authorization_resource_owner_system_account_id, NULL AS authorization_resource_id,
-      NULL AS local_status, NULL AS local_cooldown_until
+      NULL AS authorization_resource_owner_system_account_id, NULL AS authorization_resource_id
     FROM accounts
     WHERE accounts.system_account_id = ?
       AND accounts.authorization_instance_authorization_id IS NULL${ownerFilters.clause}
@@ -1090,21 +1086,15 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
     SELECT ${accountOptionSelectColumns()}, 'authorized' AS access_type,
       ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
       ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
-      ra.resource_id AS authorization_resource_id,
-      option_group_bindings.local_status AS local_status,
-      option_group_bindings.local_cooldown_until AS local_cooldown_until
+      ra.resource_id AS authorization_resource_id
     FROM accounts
     INNER JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
-    LEFT JOIN group_accounts option_group_bindings
-      ON option_group_bindings.account_id = accounts.id
-      AND option_group_bindings.system_account_id = ?
-      AND option_group_bindings.enabled = 1
     WHERE accounts.system_account_id = ?
       AND ra.resource_type = 'account'
       AND ra.grantee_system_account_id = ?
       AND ra.status IN ('active', 'paused', 'expired')
       AND accounts.authorization_instance_authorization_id IS NOT NULL${authorizedFilters.clause}
-  `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, ownerId, viewerSystemAccountId, ...authorizedFilters.params])
+  `, [ownerId, ...ownerFilters.params, ownerId, viewerSystemAccountId, ...authorizedFilters.params])
 }
 
 function accountOptionSelectColumns(): string {
@@ -1291,8 +1281,6 @@ function accountSummariesFromRows(
         && row.schedulable === 1
         && !isLaterIso(row.cooldown_until ?? undefined, nowIso())
       : row.schedulable === 1
-    const authorizedCooldownUntil = isAuthorizedView ? row.cooldown_until ?? undefined : row.bound_group_local_cooldown_until ?? undefined
-    const authorizedLastErrorMessage = isAuthorizedView ? row.last_error_message ?? undefined : row.bound_group_local_last_error_message ?? undefined
     const displayOwnerSystemAccountId = isAuthorizedView
       ? row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
       : row.system_account_id
@@ -1333,23 +1321,15 @@ function accountSummariesFromRows(
       schedulable: effectiveAuthorizedSchedulable,
       availabilitySchedule,
       accountExpiresAt: row.account_expires_at ?? undefined,
-      cooldownUntil: isAuthorizedView ? authorizedCooldownUntil : row.cooldown_until ?? undefined,
+      cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: isAuthorizedView ? undefined : row.last_error_code ?? undefined,
-      lastErrorMessage: isAuthorizedView ? authorizedLastErrorMessage : row.last_error_message ?? undefined,
+      lastErrorMessage: row.last_error_message ?? undefined,
       cooldownRetestFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: isAuthorizedView ? undefined : row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: isAuthorizedView ? undefined : row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: isAuthorizedView ? undefined : optionalNumber(row.cooldown_retest_last_status_code),
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-      sourceStatus: undefined,
-      sourceSchedulable: undefined,
-      sourceCooldownUntil: undefined,
-      sourceLastErrorCode: undefined,
-      sourceLastErrorMessage: undefined,
-      localStatus: isAuthorizedView ? row.status : undefined,
-      localCooldownUntil: isAuthorizedView ? row.cooldown_until ?? undefined : undefined,
-      localLastErrorMessage: isAuthorizedView ? row.last_error_message ?? undefined : undefined,
       lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? usage.lastUsedAt,
       todayUsage,
       usage,
@@ -1650,7 +1630,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
     : null
-  const accountExpiresAt = optionalNullableServerDateTimeIso(input.accountExpiresAt ?? input.account_expires_at)
+  const accountExpiresAt = optionalNullableServerDateTimeIso(input.accountExpiresAt)
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels ?? input.supported_models, providerCode) ?? []
   const initialStatus = normalizeAccountStatus(input.status, 'active')
@@ -1816,9 +1796,8 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     ? accountFingerprint(current.providerCode, current.type, baseUrl, credentialSource)
     : null
   const hasAccountExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'accountExpiresAt')
-    || Object.prototype.hasOwnProperty.call(input, 'account_expires_at')
   const nextAccountExpiresAt = hasAccountExpiresAtInput
-    ? optionalNullableServerDateTimeIso(input.accountExpiresAt ?? input.account_expires_at)
+    ? optionalNullableServerDateTimeIso(input.accountExpiresAt)
     : current.accountExpiresAt ?? null
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
@@ -1954,7 +1933,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   assertAccountNameAvailable(systemAccountId, next.providerCode, next.name, id)
   const database = getDatabase()
+  const updatedAt = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
+  let renamedAuthorizationInstanceIds: string[] = []
   try {
     const result = database
       .prepare(`
@@ -1989,10 +1970,13 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.cooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
-        nowIso(),
+        updatedAt,
         id,
         systemAccountId
     )
+    if (Number(result.changes ?? 0) > 0 && next.name !== current.name) {
+      renamedAuthorizationInstanceIds = syncAccountAuthorizationInstanceNamesForSourceAccount(database, id, next.name, next.providerCode, updatedAt)
+    }
     if (Number(result.changes ?? 0) > 0 && hasSupportedModelsInput) {
       replaceAccountSupportedModels(id, next.providerCode, nextSupportedModels)
     }
@@ -2010,7 +1994,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.priority,
         next.superPriorityEnabled ? 1 : 0,
         next.fallbackEnabled ? 1 : 0,
-        nowIso(),
+        updatedAt,
         id,
         systemAccountId
       )
@@ -2019,6 +2003,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     if (Number(result.changes ?? 0) > 0) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_updated' })
       invalidateAccountLookupCache(id)
+      for (const instanceId of renamedAuthorizationInstanceIds) {
+        invalidateAccountLookupCache(instanceId)
+      }
       invalidateGatewayRuntimeAfterBusinessWrite('account_updated')
     }
   } catch (error) {
@@ -3500,7 +3487,7 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
   const timezone = usageStatsTimezone()
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const groupIds = rows.map((row) => row.id)
-  const groupStatsByGroup = withFallbackGroupAccountStats(groupIds, loadGroupAccountStatsByGroupIds(groupIds))
+  const groupStatsByGroup = loadGroupAccountStatsByGroupIds(groupIds)
   const accountIdsByGroup = loadGroupAccountIdsByGroupIds(groupIds)
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds([...accountIdsByGroup.values()].flat())
   const groupUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
@@ -3549,127 +3536,6 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
   })
-}
-
-function withFallbackGroupAccountStats(groupIds: string[], statsByGroup: Map<string, GroupAccountStatsRow>): Map<string, GroupAccountStatsRow> {
-  const ids = [...new Set(groupIds)].filter(Boolean)
-  const missingGroupIds = ids.filter((groupId) => !statsByGroup.has(groupId))
-  if (missingGroupIds.length > GROUP_ACCOUNT_STATS_FALLBACK_MAX_GROUPS) return statsByGroup
-  const fallbackGroupIds = new Set(missingGroupIds)
-  if (ids.length <= GROUP_ACCOUNT_STATS_FALLBACK_MAX_GROUPS) {
-    for (const groupId of loadDirtyGroupAccountStatsGroupIds(ids)) {
-      fallbackGroupIds.add(groupId)
-    }
-  }
-  if (!fallbackGroupIds.size || fallbackGroupIds.size > GROUP_ACCOUNT_STATS_FALLBACK_MAX_GROUPS) return statsByGroup
-  const fallbackStats = loadGroupAccountStatsFallbackByGroupIds([...fallbackGroupIds])
-  if (!fallbackStats.size) return statsByGroup
-  return new Map([...statsByGroup, ...fallbackStats])
-}
-
-function loadDirtyGroupAccountStatsGroupIds(groupIds: string[]): Set<string> {
-  const ids = [...new Set(groupIds.filter(Boolean))]
-  const result = new Set<string>()
-  if (!ids.length) return result
-  const sql = `
-    SELECT group_id
-    FROM group_account_stats_dirty
-    WHERE group_id = ?
-      OR group_id IN (${sqlPlaceholders(ids.length)})
-  `
-  const rows = [
-    ...getDatabase().prepare(sql).all(GROUP_ACCOUNT_STATS_DIRTY_ALL, ...ids) as unknown as Array<{ group_id: string }>,
-    ...getStatsDatabase().prepare(sql).all(GROUP_ACCOUNT_STATS_DIRTY_ALL, ...ids) as unknown as Array<{ group_id: string }>
-  ]
-  if (rows.some((row) => row.group_id === GROUP_ACCOUNT_STATS_DIRTY_ALL)) {
-    return new Set(ids)
-  }
-  for (const row of rows) {
-    if (row.group_id) result.add(row.group_id)
-  }
-  return result
-}
-
-function loadGroupAccountStatsFallbackByGroupIds(groupIds: string[]): Map<string, GroupAccountStatsRow> {
-  const ids = [...new Set(groupIds.filter(Boolean))]
-  const result = new Map<string, GroupAccountStatsRow>()
-  if (!ids.length) return result
-  const database = getDatabase()
-  const updatedAt = nowIso()
-  type GroupAccountStatsFallbackRow = {
-    group_id: string
-    system_account_id: string
-    account_id: string | null
-    account_system_account_id: string | null
-    status: string | null
-    schedulable: number | null
-    cooldown_until: string | null
-    concurrency_limit: number | null
-    authorization_status: string | null
-    authorization_expires_at: string | null
-  }
-  for (const chunk of chunkValues(ids, 900)) {
-    const rows = database.prepare(`
-      SELECT
-        groups.id AS group_id,
-        groups.system_account_id AS system_account_id,
-        accounts.id AS account_id,
-        accounts.system_account_id AS account_system_account_id,
-        accounts.status,
-        accounts.schedulable,
-        accounts.cooldown_until,
-        accounts.concurrency_limit,
-        account_authorizations.status AS authorization_status,
-        account_authorizations.expires_at AS authorization_expires_at
-      FROM groups
-      LEFT JOIN group_accounts
-        ON group_accounts.group_id = groups.id
-       AND group_accounts.enabled = 1
-      LEFT JOIN accounts ON accounts.id = group_accounts.account_id
-      LEFT JOIN resource_authorizations account_authorizations
-        ON account_authorizations.id = group_accounts.account_authorization_id
-      WHERE groups.id IN (${sqlPlaceholders(chunk.length)})
-    `).all(...chunk) as unknown as GroupAccountStatsFallbackRow[]
-    for (const row of rows) {
-      const stats = result.get(row.group_id) ?? emptyGroupAccountStatsRow(row.group_id, row.system_account_id)
-      result.set(row.group_id, stats)
-      if (!row.account_id || !row.account_system_account_id) continue
-      const authorized = row.account_system_account_id === row.system_account_id
-        || (row.authorization_status === 'active' && (!row.authorization_expires_at || row.authorization_expires_at > updatedAt))
-      if (!authorized) continue
-      stats.total += 1
-      stats.concurrency_limit += Number(row.concurrency_limit ?? 0)
-      if (row.status === 'active') {
-        stats.active += 1
-        if (row.schedulable === 1 && (!row.cooldown_until || row.cooldown_until <= updatedAt)) {
-          stats.available += 1
-        }
-      } else if (row.status === 'disabled') {
-        stats.disabled += 1
-      } else {
-        stats.error += 1
-      }
-      if (row.status === 'rate_limited') {
-        stats.rate_limited += 1
-      }
-    }
-  }
-  return result
-}
-
-function emptyGroupAccountStatsRow(groupId: string, systemAccountId: string): GroupAccountStatsRow {
-  return {
-    system_account_id: systemAccountId,
-    group_id: groupId,
-    total: 0,
-    active: 0,
-    disabled: 0,
-    rate_limited: 0,
-    error: 0,
-    available: 0,
-    current_concurrency: 0,
-    concurrency_limit: 0
-  }
 }
 
 function groupTypeFromRow(row: Pick<GroupListRow, 'group_type'>): GroupType {
@@ -3784,9 +3650,6 @@ export interface DeletedGroupApiKeyRouteChange {
   removedGroupId: string
   removedGroupName?: string
   removedBindingStatus?: string
-  primaryGroupChanged: boolean
-  nextGroupId?: string
-  nextGroupName?: string
 }
 
 export interface DeleteGroupResult {
@@ -3829,14 +3692,7 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
 type ApiKeyAffectedByGroupDeleteRow = {
   id: string
   name: string
-  groupId: string
   targetBindingStatus?: string | null
-}
-
-type NextApiKeyGroupBindingRow = {
-  apiKeyId: string
-  groupId: string
-  groupName?: string | null
 }
 
 function preserveApiKeyRoutesBeforeGroupDelete(
@@ -3850,100 +3706,73 @@ function preserveApiKeyRoutesBeforeGroupDelete(
       SELECT DISTINCT
         api_keys.id,
         api_keys.name,
-        api_keys.group_id AS groupId,
         target_binding.status AS targetBindingStatus
       FROM api_keys
-      LEFT JOIN api_key_group_bindings target_binding
+      INNER JOIN api_key_group_bindings target_binding
         ON target_binding.api_key_id = api_keys.id
         AND target_binding.system_account_id = api_keys.system_account_id
         AND target_binding.group_id = ?
       WHERE api_keys.system_account_id = ?
-        AND (api_keys.group_id = ? OR target_binding.id IS NOT NULL)
       ORDER BY api_keys.updated_at DESC, api_keys.id DESC
     `)
-    .all(groupId, systemAccountId, groupId) as unknown as ApiKeyAffectedByGroupDeleteRow[]
+    .all(groupId, systemAccountId) as unknown as ApiKeyAffectedByGroupDeleteRow[]
   if (!affectedApiKeys.length) return []
 
-  const nextActiveGroupByApiKeyId = loadNextActiveApiKeyGroupByApiKeyId(
+  const activeBindingCountByApiKeyId = loadActiveApiKeyGroupCountExcludingGroup(
     database,
     groupId,
     systemAccountId,
     affectedApiKeys.map((apiKey) => apiKey.id)
   )
   const blockers = affectedApiKeys.filter((apiKey) => {
-    const needsActiveReplacement = apiKey.groupId === groupId || apiKey.targetBindingStatus === 'active'
-    return needsActiveReplacement && !nextActiveGroupByApiKeyId.has(apiKey.id)
+    if (apiKey.targetBindingStatus !== 'active') return false
+    return (activeBindingCountByApiKeyId.get(apiKey.id) ?? 0) === 0
   })
   if (blockers.length) {
     const names = blockers.slice(0, 3).map((apiKey) => apiKey.name).join('、')
     const suffix = blockers.length > 3 ? ` 等 ${blockers.length} 个` : ''
-    throw new Error(`删除分组前，请先为以下 API Key 添加或启用备用分组：${names}${suffix}`)
+    throw new Error(`删除分组前，请先为以下 API Key 添加或启用其他分组：${names}${suffix}`)
   }
 
-  const now = nowIso()
-  const updatePrimaryGroup = database.prepare(`
-    UPDATE api_keys
-    SET group_id = ?, updated_at = ?
-    WHERE id = ? AND system_account_id = ? AND group_id = ?
-  `)
-  for (const apiKey of affectedApiKeys) {
-    if (apiKey.groupId !== groupId) continue
-    const nextGroup = nextActiveGroupByApiKeyId.get(apiKey.id)
-    if (!nextGroup) continue
-    updatePrimaryGroup.run(nextGroup.groupId, now, apiKey.id, systemAccountId, groupId)
-  }
   return affectedApiKeys.map((apiKey) => {
-    const nextGroup = nextActiveGroupByApiKeyId.get(apiKey.id)
     return {
       apiKeyId: apiKey.id,
       apiKeyName: apiKey.name,
       removedGroupId: groupId,
       removedGroupName: groupName,
-      removedBindingStatus: apiKey.targetBindingStatus ?? undefined,
-      primaryGroupChanged: apiKey.groupId === groupId,
-      nextGroupId: apiKey.groupId === groupId ? nextGroup?.groupId : undefined,
-      nextGroupName: apiKey.groupId === groupId ? nextGroup?.groupName ?? undefined : undefined
+      removedBindingStatus: apiKey.targetBindingStatus ?? undefined
     }
   })
 }
 
-function loadNextActiveApiKeyGroupByApiKeyId(
+function loadActiveApiKeyGroupCountExcludingGroup(
   database: DatabaseSync,
   groupId: string,
   systemAccountId: string,
   apiKeyIds: string[]
-): Map<string, NextApiKeyGroupBindingRow> {
-  const result = new Map<string, NextApiKeyGroupBindingRow>()
+): Map<string, number> {
+  const result = new Map<string, number>()
   const uniqueIds = [...new Set(apiKeyIds.filter(Boolean))]
   for (const chunk of chunkValues(uniqueIds, 500)) {
     const rows = database
       .prepare(`
-        SELECT apiKeyId, groupId, groupName FROM (
-          SELECT
-            api_key_group_bindings.api_key_id AS apiKeyId,
-            api_key_group_bindings.group_id AS groupId,
-            groups.name AS groupName,
-            ROW_NUMBER() OVER (
-              PARTITION BY api_key_group_bindings.api_key_id
-              ORDER BY api_key_group_bindings.priority ASC,
-                api_key_group_bindings.created_at ASC,
-                api_key_group_bindings.id ASC
-            ) AS routeRank
-          FROM api_key_group_bindings
-          INNER JOIN groups
-            ON groups.id = api_key_group_bindings.group_id
-            AND groups.system_account_id = api_key_group_bindings.system_account_id
-            AND groups.enabled = 1
-          WHERE api_key_group_bindings.system_account_id = ?
-            AND api_key_group_bindings.status = 'active'
-            AND api_key_group_bindings.group_id <> ?
-            AND api_key_group_bindings.api_key_id IN (${sqlPlaceholders(chunk.length)})
-        )
-        WHERE routeRank = 1
+        SELECT
+          api_key_group_bindings.api_key_id AS apiKeyId,
+          COUNT(*) AS activeBindingCount
+        FROM api_key_group_bindings
+        INNER JOIN groups
+          ON groups.id = api_key_group_bindings.group_id
+          AND groups.system_account_id = api_key_group_bindings.system_account_id
+          AND groups.enabled = 1
+        WHERE api_key_group_bindings.system_account_id = ?
+          AND api_key_group_bindings.status = 'active'
+          AND api_key_group_bindings.group_id <> ?
+          AND api_key_group_bindings.api_key_id IN (${sqlPlaceholders(chunk.length)})
+        GROUP BY api_key_group_bindings.api_key_id
     `)
-      .all(systemAccountId, groupId, ...chunk) as unknown as NextApiKeyGroupBindingRow[]
+      .all(systemAccountId, groupId, ...chunk) as unknown as Array<{ apiKeyId: string; activeBindingCount: number }>
     for (const row of rows) {
-      result.set(row.apiKeyId, row)
+      result.set(row.apiKeyId, Number(row.activeBindingCount) || 0)
     }
   }
   return result
@@ -4492,20 +4321,20 @@ export function findResourceAuthorization(authorizationId: string, access?: Acce
 }
 
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
-  const resourceType = normalizeResourceType(input.resourceType ?? input.resource_type)
-  const resourceId = optionalString(input.resourceId ?? input.resource_id)
+  const resourceType = normalizeResourceType(input.resourceType)
+  const resourceId = optionalString(input.resourceId)
   if (!resourceType || !resourceId) throw new Error('请选择授权资源')
   const ownerSystemAccountId = resourceOwnerSystemAccountId(resourceType, resourceId)
   if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) throw new Error('授权资源不存在')
-  const granteeType = input.granteeType === 'team' || input.grantee_type === 'team' ? 'team' : 'system_account'
-  const granteeId = optionalString(input.granteeId ?? input.grantee_id ?? input.granteeSystemAccountId ?? input.grantee_system_account_id ?? input.teamId ?? input.team_id)
+  const granteeType = input.granteeType === 'team' ? 'team' : 'system_account'
+  const granteeId = optionalString(input.granteeId)
   if (!granteeId) throw new Error('请选择被授权对象')
   const database = getDatabase()
   const now = nowIso()
-  const expiresAt = optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at)
+  const expiresAt = optionalNullableServerDateTimeIso(input.expiresAt)
   validateResourceAuthorizationExpiresAt(resourceType, resourceId, expiresAt, Date.parse(now))
   const actor = currentSystemAccountId(access)
-  const targetGroupId = optionalString(input.targetGroupId ?? input.target_group_id)
+  const targetGroupId = optionalString(input.targetGroupId)
   if (!targetGroupId && resourceType === 'account' && granteeType === 'system_account') {
     throw new Error('授权 AI 账户给个人时必须选择目标分组')
   }
@@ -4520,18 +4349,18 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
       if (!team) throw new Error('团队不存在或已停用')
       const members = activeTeamMemberRows(granteeId, database).filter((member) => member.system_account_id !== ownerSystemAccountId)
       if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
       createdGrantId = grant.id
       for (const member of members) {
-        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
       }
     } else {
       const grantee = findSystemAccountById(granteeId)
       if (!grantee || grantee.status !== 'active') throw new Error('被授权用户不存在或已停用')
       if (granteeId === ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
       createdGrantId = grant.id
-      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -4680,10 +4509,9 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
   if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) return undefined
   const now = nowIso()
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
-    || Object.prototype.hasOwnProperty.call(input, 'expires_at')
   const hasLimitsInput = Object.prototype.hasOwnProperty.call(input, 'limits')
   const nextExpiresAt = hasExpiresAtInput
-    ? optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at)
+    ? optionalNullableServerDateTimeIso(input.expiresAt)
     : grant.expires_at
   const nextLimits = hasLimitsInput
     ? requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))

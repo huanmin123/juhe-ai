@@ -9,7 +9,7 @@ export const makeAccountErrorPolicyRule = (patch: Partial<AccountErrorPolicyRule
   error_types: '',
   keywords: '',
   action: 'temp_unschedulable',
-  duration_minutes: 10,
+  durationMinutes: 10,
   reset_strategy: 'daily',
   duration_hours: 5,
   daily_reset_hour: 0,
@@ -23,7 +23,7 @@ export const createBlankAccountErrorRule = (priority = 100): AccountErrorPolicyR
   name: '自定义错误处理规则',
   priority,
   action: 'temp_unschedulable',
-  duration_minutes: 10
+  durationMinutes: 10
 })
 
 export const cloneAccountErrorPolicyRule = (rule: AccountErrorPolicyRuleForm): AccountErrorPolicyRuleForm => ({ ...rule })
@@ -33,7 +33,7 @@ const tempRule = (name: string, priority: number, codes: string, durationMinutes
   priority,
   status_codes: codes,
   action: 'temp_unschedulable',
-  duration_minutes: durationMinutes,
+  durationMinutes,
   description
 })
 

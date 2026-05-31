@@ -104,12 +104,12 @@ async function main(): Promise<void> {
       accessToken: undefined,
       expiresAt: new Date(Date.now() - 60_000).toISOString()
     })
-    const legacyStopped = createOAuthAccount('历史 OAuth 刷新异常账户', 'active', true, 'legacy-fail-token', {
+    const stoppedRefresh = createOAuthAccount('OAuth 刷新异常账户', 'active', true, 'stopped-refresh-token', {
       accessToken: undefined,
       expiresAt: new Date(Date.now() - 60_000).toISOString()
     })
     repositories.markAccountException(
-      legacyStopped.id,
+      stoppedRefresh.id,
       'oauth_token_refresh_failed',
       'OpenAI OAuth 访问令牌连续 432 次刷新失败：refresh_token_reused'
     )
@@ -132,8 +132,8 @@ async function main(): Promise<void> {
       )
       assertAccountState(failedDisabled.id, 'disabled', false)
     }
-    assertAccountState(legacyStopped.id, 'error', false, 'oauth_token_refresh_failed', '已停止自动刷新')
-    assertAccountLastErrorMessageIncludes(legacyStopped.id, '连续 432 次')
+    assertAccountState(stoppedRefresh.id, 'error', false, 'oauth_token_refresh_failed', '已停止自动刷新')
+    assertAccountLastErrorMessageIncludes(stoppedRefresh.id, '连续 432 次')
 
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => ({
       accessToken: `access-recovered-${refreshToken}`,

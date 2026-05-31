@@ -71,12 +71,9 @@ const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID = ''
 export const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
 let usageStatsShardScanOffset = 0
 
-type GroupAccountStatsDirtySource = 'business' | 'legacy_stats'
-
 interface GroupAccountStatsDirtyRow {
   groupId: string
   updatedAt: string
-  source: GroupAccountStatsDirtySource
 }
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
@@ -239,14 +236,14 @@ export function markGroupAccountStatsDirtyByAccountIds(accountIds: Array<string 
 export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
   const businessDatabase = getDatabase()
   const statsDatabase = getStatsDatabase()
-  const allDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase, statsDatabase)
+  const allDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase)
   if (allDirtyRows.length > 0) {
     refreshGroupAccountStatsCache()
-    deleteGroupAccountStatsDirtyRows(businessDatabase, statsDatabase, allDirtyRows)
+    deleteGroupAccountStatsDirtyRows(businessDatabase, allDirtyRows)
     return 1
   }
 
-  const rows = loadGroupAccountStatsDirtyRows(businessDatabase, statsDatabase, limit)
+  const rows = loadGroupAccountStatsDirtyRows(businessDatabase, limit)
   if (!rows.length) {
     const hasStats = statsDatabase.prepare('SELECT 1 FROM group_account_stats LIMIT 1').get()
     if (!hasStats) {
@@ -256,67 +253,45 @@ export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
   }
 
   refreshGroupAccountStatsCache(rows.map((row) => row.groupId))
-  deleteGroupAccountStatsDirtyRows(businessDatabase, statsDatabase, rows)
+  deleteGroupAccountStatsDirtyRows(businessDatabase, rows)
   return rows.length
 }
 
-function loadAllGroupAccountStatsDirtyRows(
-  businessDatabase: DatabaseSync,
-  statsDatabase: DatabaseSync
-): GroupAccountStatsDirtyRow[] {
+function loadAllGroupAccountStatsDirtyRows(businessDatabase: DatabaseSync): GroupAccountStatsDirtyRow[] {
   const businessRow = businessDatabase
     .prepare('SELECT group_id, updated_at FROM group_account_stats_dirty WHERE group_id = ? LIMIT 1')
     .get(GROUP_ACCOUNT_STATS_DIRTY_ALL) as unknown as { group_id: string; updated_at: string } | undefined
-  const legacyStatsRow = statsDatabase
-    .prepare('SELECT group_id, updated_at FROM group_account_stats_dirty WHERE group_id = ? LIMIT 1')
-    .get(GROUP_ACCOUNT_STATS_DIRTY_ALL) as unknown as { group_id: string; updated_at: string } | undefined
-  return [
-    ...(businessRow ? [mapGroupAccountStatsDirtyRow(businessRow, 'business')] : []),
-    ...(legacyStatsRow ? [mapGroupAccountStatsDirtyRow(legacyStatsRow, 'legacy_stats')] : [])
-  ]
+  return businessRow ? [mapGroupAccountStatsDirtyRow(businessRow)] : []
 }
 
 function loadGroupAccountStatsDirtyRows(
   businessDatabase: DatabaseSync,
-  statsDatabase: DatabaseSync,
   limit: number
 ): GroupAccountStatsDirtyRow[] {
   const normalizedLimit = Math.max(1, Math.trunc(limit))
   const businessRows = businessDatabase
     .prepare('SELECT group_id, updated_at FROM group_account_stats_dirty WHERE group_id <> ? ORDER BY updated_at ASC, group_id ASC LIMIT ?')
     .all(GROUP_ACCOUNT_STATS_DIRTY_ALL, normalizedLimit) as unknown as Array<{ group_id: string; updated_at: string }>
-  const legacyStatsRows = statsDatabase
-    .prepare('SELECT group_id, updated_at FROM group_account_stats_dirty WHERE group_id <> ? ORDER BY updated_at ASC, group_id ASC LIMIT ?')
-    .all(GROUP_ACCOUNT_STATS_DIRTY_ALL, normalizedLimit) as unknown as Array<{ group_id: string; updated_at: string }>
-  return [
-    ...businessRows.map((row) => mapGroupAccountStatsDirtyRow(row, 'business')),
-    ...legacyStatsRows.map((row) => mapGroupAccountStatsDirtyRow(row, 'legacy_stats'))
-  ]
+  return businessRows
+    .map((row) => mapGroupAccountStatsDirtyRow(row))
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.groupId.localeCompare(right.groupId))
     .slice(0, normalizedLimit)
 }
 
-function mapGroupAccountStatsDirtyRow(
-  row: { group_id: string; updated_at: string },
-  source: GroupAccountStatsDirtySource
-): GroupAccountStatsDirtyRow {
+function mapGroupAccountStatsDirtyRow(row: { group_id: string; updated_at: string }): GroupAccountStatsDirtyRow {
   return {
     groupId: row.group_id,
-    updatedAt: row.updated_at,
-    source
+    updatedAt: row.updated_at
   }
 }
 
 function deleteGroupAccountStatsDirtyRows(
   businessDatabase: DatabaseSync,
-  statsDatabase: DatabaseSync,
   rows: GroupAccountStatsDirtyRow[]
 ): void {
   const deleteBusinessDirty = businessDatabase.prepare('DELETE FROM group_account_stats_dirty WHERE group_id = ? AND updated_at = ?')
-  const deleteLegacyStatsDirty = statsDatabase.prepare('DELETE FROM group_account_stats_dirty WHERE group_id = ? AND updated_at = ?')
   for (const row of rows) {
-    const statement = row.source === 'business' ? deleteBusinessDirty : deleteLegacyStatsDirty
-    statement.run(row.groupId, row.updatedAt)
+    deleteBusinessDirty.run(row.groupId, row.updatedAt)
   }
 }
 

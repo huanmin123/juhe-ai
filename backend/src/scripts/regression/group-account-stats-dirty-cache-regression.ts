@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
+import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -31,11 +31,6 @@ const [
 interface DirtyRow {
   group_id: string
   reason: string | null
-}
-
-interface CapturedSqlCall {
-  sql: string
-  params: unknown[]
 }
 
 try {
@@ -77,15 +72,9 @@ try {
 
   assert.deepEqual(dirtyRows().map((row) => row.group_id), [primaryGroup.id], '创建账户后应只标记所属分组为脏')
   assert.equal(groupStatsRow(primaryGroup.id), undefined, '请求链路不应同步重建 group_account_stats')
-  const ownerFallbackCapture = captureBusinessSql(
-    (sql) => /\bFROM\s+groups\b/i.test(sql) && /\bLEFT\s+JOIN\s+group_accounts\b/i.test(sql),
-    () => repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items
-  )
-  const ownerGroupBeforeStatsRefresh = ownerFallbackCapture.result.find((group) => group.id === primaryGroup.id)
-  assertFallbackSqlIsWindowed(ownerFallbackCapture.calls, 21)
-  assert.equal(groupStatsRow(primaryGroup.id), undefined, '分组列表兜底展示不应写回 group_account_stats')
-  assert.equal(ownerGroupBeforeStatsRefresh?.accountStats.total, 1, '统计缓存缺失时分组列表仍应兜底展示账户总数')
-  assert.equal(ownerGroupBeforeStatsRefresh?.accountStats.available, 1, '统计缓存缺失时分组列表仍应兜底展示可用账户数')
+  const ownerGroupBeforeStatsRefresh = repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items.find((group) => group.id === primaryGroup.id)
+  assert.equal(ownerGroupBeforeStatsRefresh?.accountStats.total, 0, '统计缓存缺失时分组列表不在请求链路实时回算账户总数')
+  assert.equal(ownerGroupBeforeStatsRefresh?.accountStats.available, 0, '统计缓存缺失时分组列表不在请求链路实时回算可用账户数')
   assertBusinessIndexExists('idx_group_accounts_group_enabled')
 
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应按脏分组刷新统计缓存')
@@ -159,15 +148,10 @@ try {
   }, ownerAccess)
   assert.deepEqual(dirtyRows().map((row) => row.group_id), [primaryGroup.id], '已有统计行的分组新增账户后应标记为脏')
   assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, 'worker 刷新前统计缓存仍保留旧值')
-  const ownerDirtyFallbackCapture = captureBusinessSql(
-    (sql) => /\bFROM\s+groups\b/i.test(sql) && /\bLEFT\s+JOIN\s+group_accounts\b/i.test(sql),
-    () => repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items
-  )
-  const ownerDirtyGroupBeforeStatsRefresh = ownerDirtyFallbackCapture.result.find((group) => group.id === primaryGroup.id)
-  assertFallbackSqlIsWindowed(ownerDirtyFallbackCapture.calls, 21)
-  assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, '已标脏分组的列表兜底不应同步改写统计缓存')
-  assert.equal(ownerDirtyGroupBeforeStatsRefresh?.accountStats.total, 2, '统计行已标脏时分组列表应按当前页兜底展示最新账户总数')
-  assert.equal(ownerDirtyGroupBeforeStatsRefresh?.accountStats.available, 2, '统计行已标脏时分组列表应按当前页兜底展示最新可用账户数')
+  const ownerDirtyGroupBeforeStatsRefresh = repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items.find((group) => group.id === primaryGroup.id)
+  assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, '已标脏分组的列表读取不应同步改写统计缓存')
+  assert.equal(ownerDirtyGroupBeforeStatsRefresh?.accountStats.total, 1, '统计行已标脏时分组列表仍展示 worker 上次聚合结果')
+  assert.equal(ownerDirtyGroupBeforeStatsRefresh?.accountStats.available, 1, '统计行已标脏时分组列表仍展示 worker 上次聚合可用数')
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应刷新已标脏分组的旧统计行')
   assert.deepEqual(dirtyRows(), [], '旧统计行刷新后应清空脏标记')
   assert.equal(groupStatsRow(primaryGroup.id)?.total, 2, 'worker 刷新后旧统计行应更新为最新账户数')
@@ -225,16 +209,11 @@ try {
   databaseModule.getStatsDatabase()
     .prepare('DELETE FROM group_account_stats WHERE group_id = ?')
     .run(primaryGroup.id)
-  const authorizedFallbackCapture = captureBusinessSql(
-    (sql) => /\bFROM\s+groups\b/i.test(sql) && /\bLEFT\s+JOIN\s+group_accounts\b/i.test(sql),
-    () => repositories.listGroupsPage({ systemAccountId: grantee.id, role: 'user' as const }, { page: 1, pageSize: 20 }).items
-  )
-  const authorizedGroupBeforeStatsRefresh = authorizedFallbackCapture.result.find((group) => group.id === primaryGroup.id)
-  assertFallbackSqlIsWindowed(authorizedFallbackCapture.calls, 21)
-  assert.equal(groupStatsRow(primaryGroup.id), undefined, '授权分组兜底展示不应写回 group_account_stats')
+  const authorizedGroupBeforeStatsRefresh = repositories.listGroupsPage({ systemAccountId: grantee.id, role: 'user' as const }, { page: 1, pageSize: 20 }).items.find((group) => group.id === primaryGroup.id)
+  assert.equal(groupStatsRow(primaryGroup.id), undefined, '授权分组列表不应在请求链路写回 group_account_stats')
   assert.equal(authorizedGroupBeforeStatsRefresh?.accessType, 'authorized', '被授权用户应能在缓存缺失时看到授权分组')
-  assert.equal(authorizedGroupBeforeStatsRefresh?.accountStats.total, 2, '统计缓存缺失时授权分组列表仍应兜底展示账户总数')
-  assert.equal(authorizedGroupBeforeStatsRefresh?.accountStats.available, 2, '统计缓存缺失时授权分组列表仍应兜底展示可用账户数')
+  assert.equal(authorizedGroupBeforeStatsRefresh?.accountStats.total, 0, '统计缓存缺失时授权分组列表不在请求链路实时回算账户总数')
+  assert.equal(authorizedGroupBeforeStatsRefresh?.accountStats.available, 0, '统计缓存缺失时授权分组列表不在请求链路实时回算可用账户数')
 
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '分组授权后 worker 应刷新统计缓存')
   const authorizedGroup = repositories.listGroupsPage({ systemAccountId: grantee.id, role: 'user' as const }, { page: 1, pageSize: 20 }).items
@@ -245,13 +224,7 @@ try {
   assert.equal(authorizedGroup?.description, '用于验证授权分组摘要展示', '授权分组列表应展示原分组说明')
   assert.deepEqual(authorizedGroup?.accountIds, [], '授权分组列表不应暴露具体账户 ID')
 
-  databaseModule.getStatsDatabase()
-    .prepare('INSERT INTO group_account_stats_dirty (group_id, reason, updated_at) VALUES (?, ?, ?)')
-    .run(usageStatsRepository.GROUP_ACCOUNT_STATS_DIRTY_ALL, 'legacy_stats_dirty_marker', new Date().toISOString())
-  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应兼容消费旧统计结果库中的脏标记')
-  assert.deepEqual(legacyStatsDirtyRows(), [], '旧统计结果库脏标记被消费后应清空')
-
-  console.log('分组账户统计脏缓存回归通过：请求路径只打业务库脏标记，全量影响只写哨兵，统计由 worker 异步刷新，统计库写锁期间业务写入不受影响，缓存缺失或已标脏时列表兜底展示账户数，并兼容旧统计库脏标记')
+  console.log('分组账户统计脏缓存回归通过：请求路径只打业务库脏标记，全量影响只写哨兵，统计由 worker 异步刷新，统计库写锁期间业务写入不受影响，缓存缺失或已标脏时列表只读预聚合结果')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -263,13 +236,6 @@ try {
 
 function dirtyRows(): DirtyRow[] {
   const rows = databaseModule.getDatabase()
-    .prepare('SELECT group_id, reason FROM group_account_stats_dirty ORDER BY group_id')
-    .all() as unknown as DirtyRow[]
-  return rows.map((row) => ({ group_id: row.group_id, reason: row.reason }))
-}
-
-function legacyStatsDirtyRows(): DirtyRow[] {
-  const rows = databaseModule.getStatsDatabase()
     .prepare('SELECT group_id, reason FROM group_account_stats_dirty ORDER BY group_id')
     .all() as unknown as DirtyRow[]
   return rows.map((row) => ({ group_id: row.group_id, reason: row.reason }))
@@ -292,44 +258,6 @@ function groupStatsRow(groupId: string): { total: number } | undefined {
   return databaseModule.getStatsDatabase()
     .prepare('SELECT total FROM group_account_stats WHERE group_id = ?')
     .get(groupId) as unknown as { total: number } | undefined
-}
-
-function captureBusinessSql<T>(predicate: (sql: string) => boolean, action: () => T): { result: T; calls: CapturedSqlCall[] } {
-  const database = databaseModule.getDatabase()
-  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
-  const calls: CapturedSqlCall[] = []
-  database.prepare = ((sql: string) => {
-    const statement = originalPrepare(sql)
-    if (predicate(sql)) {
-      const originalAll = statement.all.bind(statement) as typeof statement.all
-      statement.all = ((...params: SQLInputValue[]) => {
-        calls.push({ sql, params })
-        return originalAll(...params)
-      }) as typeof statement.all
-    }
-    return statement
-  }) as typeof database.prepare
-  try {
-    return { result: action(), calls }
-  } finally {
-    database.prepare = originalPrepare
-  }
-}
-
-function assertFallbackSqlIsWindowed(calls: CapturedSqlCall[], maxGroupParams: number): void {
-  assert(calls.length > 0, '回归应捕获分组账户数兜底 SQL')
-  for (const call of calls) {
-    assert(/\bgroups\.id\s+IN\s*\(/i.test(call.sql), '兜底查询必须按当前页分组 ID 窗口读取')
-    assert(call.params.length <= maxGroupParams, `兜底查询参数数量应受当前页窗口限制，实际 ${call.params.length}`)
-    assert(!/\bINSERT\s+INTO\s+group_account_stats\b/i.test(call.sql), '兜底查询不能写入统计缓存')
-    assert(!/\bDELETE\s+FROM\s+group_account_stats\b/i.test(call.sql), '兜底查询不能删除统计缓存')
-    const planRows = databaseModule.getDatabase()
-      .prepare(`EXPLAIN QUERY PLAN ${call.sql}`)
-      .all(...call.params as SQLInputValue[]) as unknown as Array<{ detail?: string }>
-    const details = planRows.map((row) => row.detail ?? '').join('\n')
-    assert(!/SCAN\s+group_accounts\b/i.test(details), `兜底查询不应扫描 group_accounts：${details}`)
-    assert(/SEARCH\s+group_accounts\b/i.test(details), `兜底查询应按 group_accounts 索引查找：${details}`)
-  }
 }
 
 function assertBusinessIndexExists(indexName: string): void {

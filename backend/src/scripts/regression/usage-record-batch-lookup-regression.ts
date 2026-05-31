@@ -45,7 +45,7 @@ try {
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '使用记录批量查询回归 Key',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
 
   const database = databaseModule.getDatabase()

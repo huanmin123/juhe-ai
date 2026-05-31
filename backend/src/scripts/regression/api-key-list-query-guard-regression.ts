@@ -33,37 +33,37 @@ try {
   const matchedByName = repositories.createApiKeyRecord({
     name: '检索目标 Key',
     description: '普通说明',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const matchedByNamePrefix = repositories.createApiKeyRecord({
     name: '检索目标 Key 扩展',
     description: '普通说明扩展',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const middleNameOnly = repositories.createApiKeyRecord({
     name: '普通检索目标 Key',
     description: '普通说明中间命中',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const matchedByDescription = repositories.createApiKeyRecord({
     name: '说明字段 Key',
     description: '说明前缀命中',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const middleDescriptionOnly = repositories.createApiKeyRecord({
     name: '普通说明 Key',
     description: '普通说明前缀命中',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const wildcardLiteral = repositories.createApiKeyRecord({
     name: 'percent%literal Key',
     description: '通配符字面量',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const wildcardNeighbor = repositories.createApiKeyRecord({
     name: 'percentXliteral Key',
     description: '通配符邻近值',
-    groupId: group.id
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
 
   const database = databaseModule.getDatabase()

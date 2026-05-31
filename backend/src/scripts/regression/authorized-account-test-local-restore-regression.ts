@@ -55,9 +55,6 @@ interface AccountView {
   schedulable: boolean
   cooldownUntil?: string
   lastErrorMessage?: string
-  localStatus?: string
-  localCooldownUntil?: string
-  localLastErrorMessage?: string
   authorizationInstanceSourceAccountId?: string
   ownerSystemAccountId?: string
 }
@@ -139,7 +136,6 @@ try {
   assert(repositories.setAccountGroup(granteeAccount.id, granteeGroup.id, granteeAccess), '授权实例账户绑定到被授权用户分组失败')
   const cooled = repositories.markAccountTestTemporaryUnavailable(granteeAccount, '模拟授权账户测试失败', granteeAccess)
   assert.equal(cooled?.status, 'temporary_unavailable', '授权账户测试失败应写入被授权实例临时不可调用')
-  assert.equal(cooled?.localStatus, 'temporary_unavailable', '兼容字段应同步授权实例状态')
   assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '实例临时不可调用不应改变所有者原账户')
 
   const expiredLocalCooldownUntil = new Date(Date.now() - 1000).toISOString()
@@ -155,7 +151,6 @@ try {
   const expiredCooledView = repositories.findAccountSummary(granteeAccount.id, granteeAccess) as AccountView | undefined
   assert.equal(expiredCooledView?.status, 'temporary_unavailable', '授权实例冷却到期后仍应显示临时不可调用，直到测试成功或手动恢复')
   assert.equal(expiredCooledView?.schedulable, false, '授权实例冷却到期但未恢复前不应重新进入调度')
-  assert.equal(expiredCooledView?.localStatus, 'temporary_unavailable', '兼容字段应保留授权实例失败态')
   assert.equal(
     repositories.listAccounts(granteeAccess, { status: 'active' }).some((account) => account.id === granteeAccount.id),
     false,
@@ -179,12 +174,12 @@ try {
     '授权实例失败态仍应允许测试链路按单账号诊断'
   )
 
-  const result = await postEnvelope<AccountTestResult>(
+  const result = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
     appBaseUrl,
     `/__aisys__/api/my-accounts/${granteeAccount.id}/test`,
     sessionCookie(grantee.id),
     { model: 'gpt-5.5' }
-  )
+  ))
   assert.equal(result.success, true, `授权实例临时不可调用时手动测试应允许探活：${result.message}`)
   assert.equal(result.statusCode, 200, '授权实例探活成功应返回上游状态码')
   assert.equal(result.accountStatusChanged, true, '授权实例状态恢复应在测试结果中标记状态变化')
@@ -192,7 +187,6 @@ try {
 
   const granteeView = repositories.findAccountSummary(granteeAccount.id, granteeAccess) as AccountView | undefined
   assert.equal(granteeView?.status, 'active', '测试成功后被授权用户视角应恢复正常')
-  assert.equal(granteeView?.localStatus, 'active', '兼容字段应同步清理授权实例状态')
   assert.equal(granteeView?.cooldownUntil, undefined, '测试成功后应清理授权实例冷却时间')
   assert.equal(granteeView?.lastErrorMessage, undefined, '测试成功后应清理授权实例错误信息')
   assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '测试恢复授权实例状态不应修改所有者原账户')
@@ -214,12 +208,12 @@ try {
   const failingGranteeAccount = authorizedInstanceForSource(failingOwnerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(failingGranteeAccount.id, granteeGroup.id, granteeAccess), '失败授权实例账户绑定到被授权用户分组失败')
 
-  const failureResult = await postEnvelope<AccountTestResult>(
+  const failureResult = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
     appBaseUrl,
     `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
     sessionCookie(admin.id),
     { model: 'gpt-5.5' }
-  )
+  ))
   assert.equal(failureResult.success, false, '授权账户测试收到上游失败时测试结果不应成功')
   assert.equal(failureResult.statusCode, 400, '授权账户测试应保留上游失败状态码用于诊断')
   assert.equal(failureResult.accountStatusChanged, true, '授权账户测试失败应返回实例状态已变更')
@@ -227,16 +221,15 @@ try {
 
   const failedGranteeView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
   assert.equal(failedGranteeView?.status, 'temporary_unavailable', '测试失败后被授权用户视角应为临时不可调用')
-  assert.equal(failedGranteeView?.localStatus, 'temporary_unavailable', '兼容字段应同步授权实例状态')
   assert(failedGranteeView?.cooldownUntil, '测试失败应写入授权实例冷却时间')
   assert(failedGranteeView?.lastErrorMessage?.includes('账户测试失败'), `测试失败应写入授权实例错误信息，实际 ${failedGranteeView?.lastErrorMessage}`)
 
-  const secondFailureResult = await postEnvelope<AccountTestResult>(
+  const secondFailureResult = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
     appBaseUrl,
     `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
     sessionCookie(admin.id),
     { model: 'gpt-5.5' }
-  )
+  ))
   assert.equal(secondFailureResult.success, false, '再次测试失败时结果仍不应成功')
   assert.equal(secondFailureResult.accountStatusChanged, true, '再次测试失败应覆盖上一条结果并返回状态变化')
   const secondFailedView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
@@ -327,6 +320,16 @@ async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, bo
     throw new Error(`${path} HTTP ${response.status}: ${text}`)
   }
   return (JSON.parse(text) as ApiEnvelope<T>).data
+}
+
+async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'db-service'
+    return await action()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
 }
 
 async function onceListening(listeningServer: ReturnType<typeof app.listen>): Promise<void> {

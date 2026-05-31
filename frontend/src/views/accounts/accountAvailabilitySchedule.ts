@@ -1,4 +1,4 @@
-import type { ApiKeyAvailabilitySchedule } from '@/types/domain'
+import type { AccountAvailabilitySchedule } from '@/types/domain'
 
 export interface AccountScheduleWindowFormRow {
   key: string
@@ -12,7 +12,7 @@ export interface AccountAvailabilityScheduleForm {
   windows: AccountScheduleWindowFormRow[]
 }
 
-export type AccountAvailabilitySchedulePayload = Pick<ApiKeyAvailabilitySchedule, 'enabled' | 'mode' | 'windows'>
+export type AccountAvailabilitySchedulePayload = Pick<AccountAvailabilitySchedule, 'enabled' | 'mode' | 'windows'>
 
 let scheduleWindowFormKeySeed = 0
 
@@ -26,7 +26,7 @@ export const weekdayOptions = [
   { label: '周日', value: 7 }
 ]
 
-export function createAccountAvailabilityScheduleForm(schedule?: ApiKeyAvailabilitySchedule): AccountAvailabilityScheduleForm {
+export function createAccountAvailabilityScheduleForm(schedule?: AccountAvailabilitySchedule): AccountAvailabilityScheduleForm {
   return {
     enabled: schedule?.enabled === true,
     windows: schedule?.windows?.length
@@ -63,7 +63,19 @@ export function buildAccountAvailabilitySchedulePayload(schedule: AccountAvailab
   }
 }
 
-export function accountScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {
+export function accountAvailabilityScheduleFormFingerprint(schedule: AccountAvailabilityScheduleForm): string {
+  if (!schedule.enabled) return JSON.stringify({ enabled: false })
+  return JSON.stringify({
+    enabled: true,
+    windows: normalizedScheduleWindows(schedule).map((window) => ({
+      daysOfWeek: window.daysOfWeek,
+      start: window.start,
+      end: window.end
+    }))
+  })
+}
+
+export function accountScheduleSummary(schedule?: AccountAvailabilitySchedule): string {
   if (!schedule?.enabled || !schedule.windows.length) return '未设置'
   const windows = schedule.windows
     .slice(0, 2)
@@ -73,7 +85,7 @@ export function accountScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): s
   return `${current}：${windows.join(' / ')}${suffix}`
 }
 
-export function accountScheduleTagColor(schedule?: ApiKeyAvailabilitySchedule): string {
+export function accountScheduleTagColor(schedule?: AccountAvailabilitySchedule): string {
   if (!schedule?.enabled) return 'default'
   return isScheduleCurrentlyAllowed(schedule) ? 'green' : 'orange'
 }
@@ -99,7 +111,7 @@ function daysOfWeekText(days: number[]): string {
   return [...new Set(days)].sort((left, right) => left - right).map((day) => labels.get(day) ?? `周${day}`).join('、')
 }
 
-function isScheduleCurrentlyAllowed(schedule: ApiKeyAvailabilitySchedule): boolean {
+function isScheduleCurrentlyAllowed(schedule: AccountAvailabilitySchedule): boolean {
   if (!schedule.enabled) return true
   const current = zonedScheduleParts(new Date(), schedule.timezone)
   if (schedule.dateRange?.startDate && current.dateKey < schedule.dateRange.startDate) return false

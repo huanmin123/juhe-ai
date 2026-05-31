@@ -37,9 +37,7 @@ const accountCreateSchema = z.object({
   schedulable: z.boolean().optional(),
   groupId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
-  account_expires_at: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
-  availability_schedule: z.record(z.string(), z.unknown()).nullable().optional(),
   notes: z.string().optional()
 })
 

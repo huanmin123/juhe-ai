@@ -10,7 +10,7 @@ export interface AccountErrorPolicyRuleForm {
   error_types: string
   keywords: string
   action: AccountErrorAction
-  duration_minutes: number | null
+  durationMinutes: number | null
   reset_strategy: AccountErrorRecoveryStrategy
   duration_hours: number | null
   daily_reset_hour: number | null
@@ -40,7 +40,7 @@ export interface AccountErrorHandlingRulePayload {
   error_types?: string[]
   keywords?: string[]
   action: AccountErrorAction
-  duration_minutes?: number
+  durationMinutes?: number
   reset_strategy?: AccountErrorRecoveryStrategy
   duration_hours?: number
   daily_reset_hour?: number

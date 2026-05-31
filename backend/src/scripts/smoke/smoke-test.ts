@@ -383,7 +383,7 @@ async function createTemporaryGatewayKeyForAccount(
   resourceState.activeGatewayGroupId = groupId
   const apiKey = await postEnvelope<ApiKeySummary>(apiPath(`/api-keys${ownerScope}`), {
     name: `${temporaryResourcePrefix}-Key-${smokeRunId()}`,
-    groupId,
+    groupBindings: [{ groupId, priority: 1, status: 'active' }],
     status: 'active',
     description: '真实网关链路临时烟测 Key'
   })

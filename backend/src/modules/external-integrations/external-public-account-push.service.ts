@@ -39,6 +39,7 @@ export interface PublicAccountPushInput {
   status?: 'active' | 'disabled'
   concurrencyLimit?: number
   priority?: number
+  availabilitySchedule?: Record<string, unknown> | null
   notes?: string
   externalId?: string
 }
@@ -66,6 +67,7 @@ export interface PublicAccountPushResponse {
     boundGroupId?: string
     boundGroupName?: string
     schedulable: boolean
+    availabilitySchedule?: AccountSummary['availabilitySchedule']
   }
   externalId?: string
 }
@@ -118,7 +120,7 @@ export interface PublicGroupDeleteInput {
 export interface PublicGroupResponse {
   source: 'stats' | 'mock'
   generatedAt: string
-  action: 'created' | 'updated' | 'deleted' | 'not_found' | 'mock'
+  action: 'created' | 'existing' | 'updated' | 'deleted' | 'not_found' | 'mock'
   target: Omit<PublicAccountPushResponse['target'], 'groupId' | 'groupName' | 'groupCreated'>
   group: PublicGroupSummary | null
 }
@@ -127,8 +129,6 @@ export interface PublicApiKeyAddInput {
   targetUsername: string
   name: string
   description?: string | null
-  groupId?: string
-  groupName?: string
   groupBindings?: Array<{ groupId: string; priority?: number; weight?: number; status?: 'active' | 'disabled' }>
   groupRouteStrategy?: string
   status?: 'active' | 'disabled'
@@ -142,8 +142,6 @@ export interface PublicApiKeyUpdateInput {
   apiKeyId?: string
   name?: string
   description?: string | null
-  groupId?: string
-  groupName?: string
   groupBindings?: Array<{ groupId: string; priority?: number; weight?: number; status?: 'active' | 'disabled' }>
   groupRouteStrategy?: string
   status?: 'active' | 'disabled'
@@ -182,11 +180,10 @@ interface PublicApiKeySummary {
   keyPrefix: string
   key?: string
   status: 'active' | 'disabled'
-  groupId: string
-  groupName?: string
   groupRouteStrategy: string
   groupBindings: ApiKeySummary['groupBindings']
   expiresAt?: string
+  availabilitySchedule?: ApiKeySummary['availabilitySchedule']
 }
 
 type ResolvedTarget = {
@@ -380,6 +377,10 @@ export function addPublicGroup(input: PublicGroupAddInput): PublicGroupResponse 
     const target = ensureTargetSystemAccount(input)
     assertTargetActive(target.account)
     const access = targetAccess(target.account.id)
+    const existing = resolvePublicGroup(access, { name: input.name, providerCode })
+    if (existing) {
+      return publicGroupResponse('existing', target, sanitizeGroup(existing))
+    }
     const group = createGroup({
       name: input.name,
       providerCode,
@@ -443,7 +444,7 @@ export function addPublicApiKey(input: PublicApiKeyAddInput): PublicApiKeyRespon
   }
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
-  const payload = publicApiKeyPayload(input, access)
+  const payload = publicApiKeyPayload(input)
   const apiKey = createApiKeyRecord(payload, access)
   return publicApiKeyResponse('created', target, sanitizeApiKey(apiKey, { includeSecret: true }))
 }
@@ -458,7 +459,7 @@ export function updatePublicApiKey(input: PublicApiKeyUpdateInput): PublicApiKey
   if (!apiKey) {
     return publicApiKeyResponse('not_found', target, null)
   }
-  const updated = updateApiKey(apiKey.id, publicApiKeyPayload(input, access, true), access)
+  const updated = updateApiKey(apiKey.id, publicApiKeyPayload(input, true), access)
   return publicApiKeyResponse(updated ? 'updated' : 'not_found', target, updated ? sanitizeApiKey(updated) : null)
 }
 
@@ -582,30 +583,28 @@ export function mockPublicGroupDelete(input: PublicGroupDeleteInput): PublicGrou
 }
 
 export function mockPublicApiKeyAdd(input: PublicApiKeyAddInput): PublicApiKeyResponse {
+  const groupBindings = mockPublicApiKeyGroupBindings(input.groupBindings)
   return publicMockApiKeyResponse('mock', input.targetUsername, {
     id: 'mock_api_key_public',
     name: normalizedText(input.name) || '公开接口 API Key',
     keyPrefix: 'juis_mock',
     key: 'juis_mock_public_api_key',
     status: input.status === 'disabled' ? 'disabled' : 'active',
-    groupId: normalizedText(input.groupId) || 'mock_group_public',
-    groupName: normalizedText(input.groupName) || '公开接口分组',
     groupRouteStrategy: normalizedText(input.groupRouteStrategy) || 'priority_failover',
-    groupBindings: [],
+    groupBindings,
     expiresAt: normalizedText(input.expiresAt)
   })
 }
 
 export function mockPublicApiKeyUpdate(input: PublicApiKeyUpdateInput): PublicApiKeyResponse {
+  const groupBindings = mockPublicApiKeyGroupBindings(input.groupBindings)
   return publicMockApiKeyResponse('mock', input.targetUsername, {
     id: normalizedText(input.apiKeyId) || 'mock_api_key_public',
     name: normalizedText(input.name) || '公开接口 API Key',
     keyPrefix: 'juis_mock',
     status: input.status === 'disabled' ? 'disabled' : 'active',
-    groupId: normalizedText(input.groupId) || 'mock_group_public',
-    groupName: normalizedText(input.groupName) || '公开接口分组',
     groupRouteStrategy: normalizedText(input.groupRouteStrategy) || 'priority_failover',
-    groupBindings: [],
+    groupBindings,
     expiresAt: normalizedText(input.expiresAt)
   })
 }
@@ -616,11 +615,22 @@ export function mockPublicApiKeyDelete(input: PublicApiKeyDeleteInput): PublicAp
     name: normalizedText(input.name) || '公开接口 API Key',
     keyPrefix: 'juis_mock',
     status: 'disabled',
-    groupId: 'mock_group_public',
-    groupName: '公开接口分组',
     groupRouteStrategy: 'priority_failover',
-    groupBindings: []
+    groupBindings: mockPublicApiKeyGroupBindings()
   })
+}
+
+function mockPublicApiKeyGroupBindings(input: PublicApiKeyAddInput['groupBindings'] = []): ApiKeySummary['groupBindings'] {
+  const bindings = input.length ? input : [{ groupId: 'mock_group_public', priority: 1, status: 'active' as const }]
+  return bindings.map((binding, index) => ({
+    id: `mock_api_key_group_binding_${index + 1}`,
+    groupId: binding.groupId,
+    groupName: binding.groupId === 'mock_group_public' ? '公开接口分组' : binding.groupId,
+    priority: binding.priority ?? index + 1,
+    weight: binding.weight ?? 1,
+    status: binding.status ?? 'active',
+    groupEnabled: true
+  }))
 }
 
 function assertProviderEnabled(providerCode: string): void {
@@ -758,27 +768,7 @@ function resolvePublicGroup(access: TargetAccess, input: { groupId?: string; nam
   return findExistingTargetGroup({ access, providerCode, groupName: name })
 }
 
-function resolvePublicGroupId(access: TargetAccess, input: { groupId?: string; groupName?: string }): string | undefined {
-  const groupId = normalizedText(input.groupId)
-  if (groupId) {
-    const group = findGroupSummary(groupId, access)
-    if (!group) {
-      throw new Error('API Key 分组不存在')
-    }
-    return group.id
-  }
-  const groupName = normalizedText(input.groupName)
-  if (!groupName) {
-    return undefined
-  }
-  const group = findExistingTargetGroup({ access, providerCode: 'openai', groupName })
-  if (!group) {
-    throw new Error(`API Key 分组不存在：${groupName}`)
-  }
-  return group.id
-}
-
-function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUpdateInput, access: TargetAccess, partial = false): Record<string, unknown> {
+function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUpdateInput, partial = false): Record<string, unknown> {
   const payload: Record<string, unknown> = {}
   if ('name' in input && input.name !== undefined) payload.name = input.name
   if ('description' in input && input.description !== undefined) payload.description = input.description
@@ -789,11 +779,8 @@ function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUpdateInp
   if ('groupRouteStrategy' in input && input.groupRouteStrategy !== undefined) payload.groupRouteStrategy = input.groupRouteStrategy
   if (input.groupBindings?.length) {
     payload.groupBindings = input.groupBindings
-  } else {
-    const groupId = resolvePublicGroupId(access, input)
-    if (groupId) payload.groupId = groupId
   }
-  if (!partial && !payload.groupId && !payload.groupBindings) {
+  if (!partial && !payload.groupBindings) {
     throw new Error('API Key 至少需要绑定一个分组')
   }
   return payload
@@ -1051,7 +1038,7 @@ function accountInputForPush(input: PublicAccountPushInput, providerCode: string
     throw new Error('API Key 不能为空')
   }
 
-  return {
+  const payload: Record<string, unknown> = {
     providerCode,
     name,
     type: 'api_key',
@@ -1067,6 +1054,10 @@ function accountInputForPush(input: PublicAccountPushInput, providerCode: string
     groupId,
     notes: pushNotes(input)
   }
+  if (Object.prototype.hasOwnProperty.call(input, 'availabilitySchedule')) {
+    payload.availabilitySchedule = input.availabilitySchedule
+  }
+  return payload
 }
 
 function assertSupportedPushAccountType(value: unknown, providerAccountTypes: readonly string[]): void {
@@ -1089,7 +1080,8 @@ function sanitizeAccount(account: AccountSummary): PublicAccountPushResponse['ac
     supportedModels: account.supportedModels,
     boundGroupId: account.boundGroupId,
     boundGroupName: account.boundGroupName,
-    schedulable: account.schedulable
+    schedulable: account.schedulable,
+    availabilitySchedule: account.availabilitySchedule
   }
 }
 
@@ -1112,11 +1104,10 @@ function sanitizeApiKey(apiKey: ApiKeySummary & { key?: string }, options: { inc
     keyPrefix: apiKey.keyPrefix,
     key: options.includeSecret ? apiKey.key : undefined,
     status: apiKey.status,
-    groupId: apiKey.groupId,
-    groupName: apiKey.groupName,
     groupRouteStrategy: apiKey.groupRouteStrategy,
     groupBindings: apiKey.groupBindings,
-    expiresAt: apiKey.expiresAt
+    expiresAt: apiKey.expiresAt,
+    availabilitySchedule: apiKey.availabilitySchedule
   }
 }
 

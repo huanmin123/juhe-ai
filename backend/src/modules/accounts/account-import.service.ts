@@ -1,5 +1,6 @@
-import type { AccountType, ProviderDefinition } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountType, ProviderDefinition } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
 import {
   DuplicateAccountCredentialError,
   createAccount,
@@ -101,6 +102,7 @@ interface ImportDefaults {
   concurrencyLimit?: number
   priority?: number
   accountExpiresAt?: string
+  availabilitySchedule?: AccountAvailabilitySchedule
 }
 
 interface NormalizedImportAccount {
@@ -121,6 +123,7 @@ interface NormalizedImportAccount {
   fallbackEnabled?: boolean
   supportedModels?: string[]
   accountExpiresAt?: string
+  availabilitySchedule?: AccountAvailabilitySchedule
   notes?: string
   messages: string[]
   warnings: string[]
@@ -214,6 +217,7 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
         fallbackEnabled: account.source.fallbackEnabled,
         supportedModels: account.source.supportedModels,
         accountExpiresAt: account.source.accountExpiresAt,
+        availabilitySchedule: account.source.availabilitySchedule,
         notes: account.source.notes
       }, access)
       account.item.accountId = created.id
@@ -272,7 +276,10 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
     return emptyPlan(result)
   }
 
-  const defaults = normalizeDefaults(data.defaults, context)
+  const defaults = normalizeDefaults(data.defaults, context, result.messages)
+  if (result.messages.length > 0) {
+    return emptyPlan(result)
+  }
   const rawProxies = Array.isArray(data.proxies) ? data.proxies : []
   const rawAccounts = Array.isArray(data.accounts) ? data.accounts : undefined
   if (!rawAccounts || rawAccounts.length === 0) {
@@ -350,7 +357,7 @@ function emptyResult(mode: AccountImportResult['mode']): AccountImportResult {
   }
 }
 
-function normalizeDefaults(value: unknown, context: ImportContext): ImportDefaults {
+function normalizeDefaults(value: unknown, context: ImportContext, messages: string[]): ImportDefaults {
   const record = isRecord(value) ? value : {}
   const providerCode = text(record.providerCode) || 'openai'
   const provider = context.providerByCode.get(providerCode)
@@ -365,7 +372,8 @@ function normalizeDefaults(value: unknown, context: ImportContext): ImportDefaul
     proxyProfileId: text(record.proxyProfileId),
     concurrencyLimit: positiveInteger(record.concurrencyLimit),
     priority: integer(record.priority),
-    accountExpiresAt: dateTimeString(record.accountExpiresAt)
+    accountExpiresAt: dateTimeString(record.accountExpiresAt),
+    availabilitySchedule: normalizeImportAvailabilitySchedule(importAvailabilityScheduleInput(record).value, messages)
   }
 }
 
@@ -477,6 +485,10 @@ function planAccount(
   source.supportedModels = stringArray(value.supportedModels)
   const rawAccountExpiresAt = text(value.accountExpiresAt)
   source.accountExpiresAt = dateTimeString(value.accountExpiresAt) ?? defaults.accountExpiresAt
+  const availabilityScheduleInput = importAvailabilityScheduleInput(value)
+  source.availabilitySchedule = availabilityScheduleInput.present
+    ? normalizeImportAvailabilitySchedule(availabilityScheduleInput.value, item.messages)
+    : defaults.availabilitySchedule
   source.notes = text(value.notes)
   source.credentials = normalizeCredentials(value.credentials, defaults, source.providerCode)
 
@@ -532,6 +544,23 @@ function validateAccountBasics(account: NormalizedImportAccount, context: Import
   }
   if (account.accountExpiresAt && !dateTimeString(account.accountExpiresAt)) {
     account.messages.push('accountExpiresAt 必须是有效时间字符串')
+  }
+}
+
+function importAvailabilityScheduleInput(record: Record<string, unknown>): { present: boolean; value: unknown } {
+  if (Object.prototype.hasOwnProperty.call(record, 'availabilitySchedule')) {
+    return { present: true, value: record.availabilitySchedule }
+  }
+  return { present: false, value: undefined }
+}
+
+function normalizeImportAvailabilitySchedule(value: unknown, messages: string[]): AccountAvailabilitySchedule | undefined {
+  if (value === undefined) return undefined
+  try {
+    return accountAvailabilityScheduleFromRequest({ availabilitySchedule: value })
+  } catch (error) {
+    messages.push(errorMessage(error))
+    return undefined
   }
 }
 

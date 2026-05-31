@@ -404,7 +404,7 @@ function createErrorPolicies(adminId: string): { quota: string; strict: string; 
           priority: 30,
           status_codes: [503],
           action: 'temp_unschedulable',
-          duration_minutes: 15
+          durationMinutes: 15
         },
         {
           enabled: true,
@@ -412,7 +412,7 @@ function createErrorPolicies(adminId: string): { quota: string; strict: string; 
           priority: 40,
           status_codes: [500],
           action: 'temp_unschedulable',
-          duration_minutes: 8
+          durationMinutes: 8
         }
       ]
     }
@@ -703,7 +703,7 @@ function apiKeyCredentials(suffix: string, policyId: string): Record<string, unk
         priority: 40,
         status_codes: [429],
         action: 'temp_unschedulable',
-        duration_minutes: 10
+        durationMinutes: 10
       },
       {
         enabled: true,
@@ -711,7 +711,7 @@ function apiKeyCredentials(suffix: string, policyId: string): Record<string, unk
         priority: 80,
         status_codes: [503],
         action: 'temp_unschedulable',
-        duration_minutes: 8
+        durationMinutes: 8
       }
     ]
   }
@@ -926,7 +926,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
   const adminMain = repositories.createApiKeyRecord({
     name: `${namePrefix}主力网关 Key`,
     description: 'Mockdata 主力本地网关 Key，绑定主力分组',
-    groupId: groups.main.id,
+    groupBindings: [{ groupId: groups.main.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(35, 260, 1000),
     scopes: ['responses', 'chat', 'models']
@@ -934,7 +934,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
   const adminHighFrequency = repositories.createApiKeyRecord({
     name: `${namePrefix}高频限额 Key`,
     description: 'Mockdata 高频限额 Key，用于额度窗口展示',
-    groupId: groups.main.id,
+    groupBindings: [{ groupId: groups.main.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: {
       hourly: { enabled: true, hours: 3, limit: 90 },
@@ -946,28 +946,28 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
   const adminBackup = repositories.createApiKeyRecord({
     name: `${namePrefix}备用网关 Key`,
     description: 'Mockdata 备用 Key，绑定备用分组',
-    groupId: groups.backup.id,
+    groupBindings: [{ groupId: groups.backup.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(20, 120, 480)
   }, adminAccess)
   const adminOAuth = repositories.createApiKeyRecord({
     name: `${namePrefix}OAuth 网关 Key`,
     description: 'Mockdata OAuth Key，绑定 OAuth 分组',
-    groupId: groups.oauth.id,
+    groupBindings: [{ groupId: groups.oauth.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(18, 140, 520)
   }, adminAccess)
   const adminDisabled = repositories.createApiKeyRecord({
     name: `${namePrefix}停用网关 Key`,
     description: 'Mockdata 停用 Key，用于状态展示',
-    groupId: groups.experiment.id,
+    groupBindings: [{ groupId: groups.experiment.id, priority: 1, status: 'active' }],
     status: 'disabled',
     quotaLimits: quotaLimits(5, 30, 100)
   }, adminAccess)
   const adminExpired = repositories.createApiKeyRecord({
     name: `${namePrefix}已过期网关 Key`,
     description: 'Mockdata 已过期 Key，用于过期状态展示',
-    groupId: groups.experiment.id,
+    groupBindings: [{ groupId: groups.experiment.id, priority: 1, status: 'active' }],
     status: 'active',
     expiresAt: new Date(Date.now() - 2 * dayMs).toISOString(),
     quotaLimits: quotaLimits(5, 30, 100)
@@ -976,7 +976,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
   const devGroupAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}研发授权调用 Key`,
     description: 'Mockdata 研发用户使用被授权账户的 Key，绑定研发用户自己的默认分组',
-    groupId: groups.devDefault.id,
+    groupBindings: [{ groupId: groups.devDefault.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(8, 50, 180)
   }, { systemAccountId: users.dev.id, role: 'user' })
@@ -984,7 +984,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
   const testerTeamAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}团队授权调用 Key`,
     description: 'Mockdata 测试用户通过团队账号授权使用自己的默认分组',
-    groupId: groups.testerDefault.id,
+    groupBindings: [{ groupId: groups.testerDefault.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(6, 40, 150)
   }, { systemAccountId: users.tester.id, role: 'user' })
@@ -992,7 +992,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
   const opsAccountAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}账户授权调用 Key`,
     description: 'Mockdata 运维用户使用被授权账户的 Key',
-    groupId: groups.opsDefault.id,
+    groupBindings: [{ groupId: groups.opsDefault.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(6, 36, 120)
   }, { systemAccountId: users.ops.id, role: 'user' })
@@ -1640,8 +1640,8 @@ function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOpt
       apiKeyId: target.apiKey.id,
       model,
       profile: 'full',
-      officialBaseline: trustedComparison,
-      officialBaselineAvailable: trustedComparison && index % 4 !== 0,
+      trustedComparison,
+      trustedComparisonAvailable: trustedComparison && index % 4 !== 0,
       traceId,
       probeSetVersion: 'openai-model-check-v1',
       startedAt,
@@ -2093,6 +2093,7 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     deleteWhereIn(database, 'resource_authorization_grants', 'id', mockGrantIds)
 
     const mockApiKeyIds = selectIds(database, 'SELECT id FROM api_keys WHERE name LIKE ?', likeName)
+    deleteWhereIn(database, 'api_key_group_bindings', 'api_key_id', mockApiKeyIds)
     deleteWhereIn(database, 'api_keys', 'id', mockApiKeyIds)
 
     const mockGroupIds = selectIds(database, 'SELECT id FROM groups WHERE name LIKE ?', likeName)
@@ -2103,8 +2104,11 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     deleteWhereIn(database, 'groups', 'id', mockGroupIds)
 
     const userGroupIds = selectIdsForChunks(database, mockUserIds, 'SELECT id FROM groups WHERE system_account_id IN ({placeholders})')
+    const userApiKeyIds = selectIdsForChunks(database, mockUserIds, 'SELECT id FROM api_keys WHERE system_account_id IN ({placeholders})')
     deleteWhereIn(database, 'group_accounts', 'group_id', userGroupIds)
-    deleteWhereIn(database, 'api_keys', 'group_id', userGroupIds)
+    deleteWhereIn(database, 'api_key_group_bindings', 'group_id', userGroupIds)
+    deleteWhereIn(database, 'api_key_group_bindings', 'api_key_id', userApiKeyIds)
+    deleteWhereIn(database, 'api_keys', 'id', userApiKeyIds)
     deleteWhereIn(database, 'groups', 'id', userGroupIds)
 
     deleteWhereIn(database, 'resource_authorizations', 'id', mockRuntimeAuthorizationIds)
@@ -2375,7 +2379,11 @@ function writeSummary(
       id: key.id,
       label: key.name,
       ownerSystemAccountId: key.systemAccountId,
-      groupId: key.groupId,
+      groupBindings: key.groupBindings.map((binding: { groupId: string; priority: number; status: string }) => ({
+        groupId: binding.groupId,
+        priority: binding.priority,
+        status: binding.status
+      })),
       status: key.status,
       key: key.key
     })),

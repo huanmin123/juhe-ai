@@ -6,6 +6,7 @@ import {
   type GatewayRawBodyRequest
 } from './openai-gateway-request-body.js'
 import {
+  isGatewayJsonWorkerQueueFullError,
   normalizeOpenAIOAuthCodexBodyInWorker,
   parseGatewayJsonBodyInWorker
 } from './openai-gateway-json-parser.js'
@@ -84,6 +85,12 @@ async function normalizeOpenAIOAuthCodexBody(
       if (error instanceof OpenAIOAuthCodexAdapterError) {
         throw error
       }
+      if (isGatewayJsonWorkerQueueFullError(error)) {
+        throw new OpenAIOAuthCodexAdapterError('网关请求解析繁忙，请稍后重试', 'server_overloaded', {
+          statusCode: 503,
+          type: 'server_overloaded'
+        })
+      }
       throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
     }
   }
@@ -121,6 +128,12 @@ async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortS
     } catch (error) {
       if (error instanceof OpenAIOAuthCodexAdapterError) {
         throw error
+      }
+      if (isGatewayJsonWorkerQueueFullError(error)) {
+        throw new OpenAIOAuthCodexAdapterError('网关请求解析繁忙，请稍后重试', 'server_overloaded', {
+          statusCode: 503,
+          type: 'server_overloaded'
+        })
       }
       throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
     }

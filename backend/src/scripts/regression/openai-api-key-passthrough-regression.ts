@@ -35,6 +35,9 @@ async function main(): Promise<void> {
   testJsonBodyFallbackWhenPassthroughDisabled()
   testLargeJsonBodyParsedForGatewayMetadata()
   await testLargeJsonBodyDeferredByGatewayMiddleware()
+  await testLargeJsonBodyImageToolMetadataScanned()
+  await testLargeInvalidJsonMarkedWithoutWorkerParse()
+  await testLargeInvalidJsonPrimitiveMarkedWithoutWorkerParse()
   console.log('OpenAI API Key passthrough regression passed')
 }
 
@@ -233,12 +236,69 @@ async function testLargeJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
   assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
   assert.equal(req.gatewayRequestBody?.stream, true)
   assert.equal(req.gatewayRequestBody?.imageGeneration, false)
+  assert.equal(req.gatewayRequestBody?.imageGenerationForced, false)
+  assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '大 JSON 中间件不应为了元数据完整解析请求体')
   assert.equal(requestModel(req), 'gpt-5.4')
   assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
 
   const upstreamBody = buildUpstreamRequestBody(req, true)
   assert.ok(Buffer.isBuffer(upstreamBody))
   assert.equal(Buffer.compare(upstreamBody, rawBody), 0)
+}
+
+async function testLargeJsonBodyImageToolMetadataScanned(): Promise<void> {
+  const body = {
+    model: 'gpt-5.4',
+    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes),
+    tools: [{ type: 'image_generation', output_format: 'png' }],
+    tool_choice: 'auto'
+  }
+  const rawBody = Buffer.from(JSON.stringify(body))
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  let nextCalled = false
+
+  await captureGatewayRawBody(req, new EventEmitter() as never, () => {
+    nextCalled = true
+  })
+
+  assert.equal(nextCalled, true)
+  assert.equal(req.body, undefined)
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
+  assert.equal(req.gatewayRequestBody?.imageGeneration, true)
+  assert.equal(req.gatewayRequestBody?.imageGenerationForced, false)
+  assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '大 JSON optional 图像工具只应扫描顶层元数据')
+}
+
+async function testLargeInvalidJsonMarkedWithoutWorkerParse(): Promise<void> {
+  const rawBody = Buffer.from(`{"model":"gpt-5.4","input":${JSON.stringify('x'.repeat(gatewayJsonBodyLargeWarningBytes))},`)
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  let nextCalled = false
+
+  await captureGatewayRawBody(req, new EventEmitter() as never, () => {
+    nextCalled = true
+  })
+
+  assert.equal(nextCalled, true)
+  assert.equal(req.body, undefined)
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'invalid_json')
+  assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
+  assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '大 JSON 非法结构不应通过 worker 完整解析后才判定')
+}
+
+async function testLargeInvalidJsonPrimitiveMarkedWithoutWorkerParse(): Promise<void> {
+  const rawBody = Buffer.from(`{"model":${'x'.repeat(gatewayJsonBodyLargeWarningBytes + 1)}}`)
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  let nextCalled = false
+
+  await captureGatewayRawBody(req, new EventEmitter() as never, () => {
+    nextCalled = true
+  })
+
+  assert.equal(nextCalled, true)
+  assert.equal(req.body, undefined)
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'invalid_json')
+  assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '大 JSON 非法 primitive token 不应被延迟到上游才失败')
 }
 
 function createRequest(

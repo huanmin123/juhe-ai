@@ -156,9 +156,11 @@ function seedGatewayRuntime(): { id: string; key: string } {
     concurrencyLimit: 20,
     schedulable: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
+  assert(account.boundGroupId, '认证预解析账户应绑定默认分组')
+  const boundGroupId = account.boundGroupId
   const apiKey = repositories.createApiKeyRecord({
     name: '认证预解析 API Key',
-    groupId: account.boundGroupId
+    groupBindings: [{ groupId: boundGroupId, priority: 1, status: 'active' }],
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   return { id: apiKey.id, key: apiKey.key }
 }

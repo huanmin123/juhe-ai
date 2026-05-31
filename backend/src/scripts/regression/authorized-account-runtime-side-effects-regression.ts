@@ -70,7 +70,7 @@ try {
     enabled: true,
     status_codes: '500',
     action: 'temp_unschedulable',
-    duration_minutes: 5
+    durationMinutes: 5
   }], ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
   const disableAccount = createAuthorizedAccount('授权副作用异常账户', 'sk-runtime-side-effect-disable', [{
     name: '授权副本 503 标记异常',
@@ -109,7 +109,7 @@ try {
   assertAuthorizedInstanceError(disableAccount.instanceId, granteeAccess, /server_is_overloaded；runtime side effect disable/, '错误策略异常应保留真实上游错误摘要')
 
   const streamGatewayAccount = authorizedGatewayAccount(streamAccount.instanceId, granteeGroup.id, grantee.id)
-  const streamResult = await requestDbService({
+  const streamResult = await withDbServiceRole(() => requestDbService({
     type: 'record_account_stream_failure',
     input: {
       accountId: streamGatewayAccount.id,
@@ -120,7 +120,7 @@ try {
       cooldownMinutes: 5,
       reason: '模拟授权副本流式失败'
     }
-  })
+  }))
   assert.equal(streamResult.count, 1, '授权副本流式失败应累计到本地绑定窗口')
   assert.equal(streamResult.triggered, true, '授权副本流式失败达到阈值后应触发本地冷却')
   assertOwnerStillActive(streamAccount.sourceId, ownerAccess, '流式失败阈值不应修改归属人原账户')
@@ -189,13 +189,21 @@ function assertOwnerStillActive(accountId: string, ownerAccess: { systemAccountI
 function assertAuthorizedInstanceStatus(accountId: string, granteeAccess: { systemAccountId: string; role: 'user' }, expectedStatus: string, message: string): void {
   const granteeView = repositories.findAccountSummary(accountId, granteeAccess)
   assert.equal(granteeView?.status, expectedStatus, message)
-  assert.equal(granteeView?.localStatus, expectedStatus, `${message}：兼容字段应同步实例状态`)
-  assert.equal(granteeView?.sourceStatus, undefined, `${message}：列表不应再暴露父账户来源状态`)
 }
 
 function assertAuthorizedInstanceError(accountId: string, granteeAccess: { systemAccountId: string; role: 'user' }, pattern: RegExp, message: string): void {
   const granteeView = repositories.findAccountSummary(accountId, granteeAccess)
   assert.match(granteeView?.lastErrorMessage ?? '', pattern, message)
+}
+
+async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'db-service'
+    return await action()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
 }
 
 function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {

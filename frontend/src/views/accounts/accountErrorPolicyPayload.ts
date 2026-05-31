@@ -110,7 +110,7 @@ const buildRuleFromPayload = (value: unknown, index: number): AccountErrorPolicy
     error_types: formatList(entry.error_types ?? entry.provider_error_types ?? entry.providerErrorTypes ?? entry.error_type ?? entry.errorType ?? match.error_types ?? match.errorTypes ?? match.error_type ?? match.errorType),
     keywords: formatList(entry.keywords ?? entry.body_keywords ?? entry.bodyKeywords ?? match.keywords ?? match.body_keywords ?? match.bodyKeywords),
     action: normalizeAction(entry.action ?? entry.state),
-    duration_minutes: normalizeOptionalPositiveInt(entry.duration_minutes ?? entry.durationMinutes),
+    durationMinutes: normalizeOptionalPositiveInt(entry.durationMinutes),
     reset_strategy: normalizeRecoveryStrategy(entry.reset_strategy ?? entry.recovery_strategy ?? entry.strategy),
     duration_hours: normalizeOptionalPositiveInt(entry.duration_hours ?? entry.durationHours),
     daily_reset_hour: normalizeHour(entry.daily_reset_hour ?? entry.dailyResetHour, 0),
@@ -140,7 +140,7 @@ export const validateAccountErrorPolicyRules = (rules: AccountErrorPolicyRuleFor
     if (hasSuccessErrorCodeItems(rule.error_codes)) return { valid: false, message: `第 ${ruleIndex} 条规则的错误码不能填写 2xx 成功码，例如 200`, index: ruleIndex }
     const hasMatcher = statusCodes.length > 0 || splitList(rule.error_codes).length > 0 || splitList(rule.error_types).length > 0 || splitList(rule.keywords).length > 0
     if (!hasMatcher) return { valid: false, message: `第 ${ruleIndex} 条规则至少需要一个匹配条件`, index: ruleIndex }
-    if (rule.action === 'temp_unschedulable' && normalizeOptionalPositiveInt(rule.duration_minutes) === null) {
+    if (rule.action === 'temp_unschedulable' && normalizeOptionalPositiveInt(rule.durationMinutes) === null) {
       return { valid: false, message: `第 ${ruleIndex} 条规则需要填写临时避让分钟数`, index: ruleIndex }
     }
     if (rule.action === 'rate_limited' && rule.reset_strategy === 'duration' && normalizeOptionalPositiveInt(rule.duration_hours) === null) {
@@ -168,7 +168,7 @@ export const buildAccountErrorPolicyPayload = (rules: AccountErrorPolicyRuleForm
     if (keywords.length > 0) payload.keywords = keywords
     if (rule.description.trim()) payload.description = rule.description.trim()
     if (payload.action === 'temp_unschedulable') {
-      payload.duration_minutes = normalizeOptionalPositiveInt(rule.duration_minutes) ?? 10
+      payload.durationMinutes = normalizeOptionalPositiveInt(rule.durationMinutes) ?? 10
     }
     if (payload.action === 'rate_limited') {
       payload.reset_strategy = normalizeRecoveryStrategy(rule.reset_strategy)

@@ -38,8 +38,8 @@ const run = repositories.createModelCheckRun({
   groupId: 'grp_storage_sanitizer',
   model: 'gpt-5.5',
   profile: 'full',
-  officialBaseline: false,
-  officialBaselineAvailable: false,
+  trustedComparison: false,
+  trustedComparisonAvailable: false,
   traceId: 'trace_storage_sanitizer',
   probeSetVersion: 'storage-sanitizer-regression',
   requestSummary: {
@@ -112,8 +112,8 @@ const atomicRun = repositories.createModelCheckRun({
   groupId: 'grp_storage_atomic',
   model: 'gpt-5.5',
   profile: 'full',
-  officialBaseline: false,
-  officialBaselineAvailable: false,
+  trustedComparison: false,
+  trustedComparisonAvailable: false,
   traceId: 'trace_storage_atomic',
   probeSetVersion: 'storage-sanitizer-regression',
   requestSummary: {}
@@ -152,8 +152,8 @@ const otherRun = repositories.createModelCheckRun({
   groupId: 'grp_storage_other',
   model: 'gpt-5.4',
   profile: 'full',
-  officialBaseline: false,
-  officialBaselineAvailable: false,
+  trustedComparison: false,
+  trustedComparisonAvailable: false,
   traceId: 'trace_storage_other',
   probeSetVersion: 'storage-sanitizer-regression',
   requestSummary: {}

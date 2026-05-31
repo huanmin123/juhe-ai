@@ -17,11 +17,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, dbServiceHandlers, businessSchema] = await Promise.all([
+const [databaseModule, repositories, dbServiceHandlers] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/db-service/db-service-handlers.js'),
-  import('../../storage/schema/business-schema.js')
+  import('../../modules/db-service/db-service-handlers.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -97,17 +96,6 @@ try {
     }, access)
   }, /分组无效/, '创建时空分组绑定应被数据层拒绝')
 
-  assert.throws(() => {
-    repositories.createApiKeyRecord({
-      name: '多分组主分组冲突创建回归 Key',
-      groupId: fallbackGroup.id,
-      groupBindings: [
-        { groupId: primaryGroup.id, priority: 1, status: 'active' },
-        { groupId: fallbackGroup.id, priority: 2, status: 'active' }
-      ]
-    }, access)
-  }, /主分组必须等于最高优先级启用分组/, '同时提交 groupId 和 groupBindings 时，冲突的兼容主分组应被拒绝')
-
   const apiKey = repositories.createApiKeyRecord({
     name: '多分组路由回归 Key',
     groupBindings: [
@@ -117,7 +105,6 @@ try {
   }, access)
 
   const created = repositories.findApiKeySummary(apiKey.id, access)
-  assert.equal(created?.groupId, primaryGroup.id, '兼容主分组应等于最高优先级启用分组')
   assert.equal(created?.groupRouteStrategy, 'priority_failover', '未显式配置策略时应默认主备优先')
   assert.deepEqual(
     created?.groupBindings.map((binding) => [binding.groupId, binding.priority, binding.weight, binding.status]),
@@ -284,7 +271,6 @@ try {
       { groupId: primaryGroup.id, priority: 2, status: 'disabled' }
     ]
   }, access)
-  assert.equal(updated?.groupId, fallbackGroup.id, '更新优先级后兼容主分组应同步为新的最高优先级启用分组')
   assert.deepEqual(
     updated?.groupBindings.map((binding) => [binding.groupId, binding.priority, binding.status]),
     [
@@ -312,16 +298,6 @@ try {
     }, access)
   }, /分组无效/, '更新时空分组绑定应被拒绝')
 
-  assert.throws(() => {
-    repositories.updateApiKey(apiKey.id, {
-      groupId: primaryGroup.id,
-      groupBindings: [
-        { groupId: fallbackGroup.id, priority: 1, status: 'active' },
-        { groupId: primaryGroup.id, priority: 2, status: 'disabled' }
-      ]
-    }, access)
-  }, /主分组必须等于最高优先级启用分组/, '更新时冲突的 groupId 和 groupBindings 应被拒绝')
-
   const deletePrimaryGroup = repositories.createGroup({
     name: '多分组删除回归主池',
     providerCode: 'openai',
@@ -342,26 +318,24 @@ try {
   const deletePrimaryResult = repositories.deleteGroup(deletePrimaryGroup.id, access)
   assert.equal(deletePrimaryResult.deleted, true, '删除非最后启用分组应成功')
   assert.deepEqual(
-    deletePrimaryResult.affectedApiKeyRoutes.map((route) => [route.apiKeyId, route.removedGroupId, route.primaryGroupChanged, route.nextGroupId]),
-    [[deleteRouteKey.id, deletePrimaryGroup.id, true, deleteFallbackGroup.id]],
-    '删除主号池时应返回受影响 API Key 路由变化，供操作日志记录'
+    deletePrimaryResult.affectedApiKeyRoutes.map((route) => [route.apiKeyId, route.removedGroupId]),
+    [[deleteRouteKey.id, deletePrimaryGroup.id]],
+    '删除优先分组时应返回受影响 API Key 路由变化，供操作日志记录'
   )
   const afterDeletePrimary = repositories.findApiKeySummary(deleteRouteKey.id, access)
-  assert.equal(afterDeletePrimary?.groupId, deleteFallbackGroup.id, '删除主号池后 API Key 兼容主分组应切到后备分组')
   assert.deepEqual(
     afterDeletePrimary?.groupBindings.map((binding) => [binding.groupId, binding.status]),
     [[deleteFallbackGroup.id, 'active']],
-    '删除主号池后应同步移除对应绑定并保留后备分组'
+    '删除优先分组后应同步移除对应绑定并保留后备分组'
   )
   assert.throws(() => {
     repositories.deleteGroup(deleteFallbackGroup.id, access)
-  }, /添加或启用备用分组/, '不能删除 API Key 的最后一个启用分组')
+  }, /添加或启用其他分组/, '不能删除 API Key 的最后一个启用分组')
 
-  assertDuplicateGroupBindingMigration(apiKey.id, fallbackGroup.id)
   assertBusinessIndexExists('idx_api_key_group_bindings_key_group_unique')
   assertSqlUniqueIndexRejectsDuplicateBinding(apiKey.id, fallbackGroup.id)
 
-  console.log('API Key 多分组绑定回归通过：创建、筛选、优先级更新、主备/轮询/权重策略、删除主池切后备、最后启用分组删除保护、未绑定拦截、空绑定拦截、重复绑定拦截、历史重复清理、不可派发主池切后备和恢复回主池正常')
+  console.log('API Key 多分组绑定回归通过：创建、筛选、优先级更新、优先级/轮询/权重策略、删除优先分组保留后备、最后启用分组删除保护、未绑定拦截、空绑定拦截、重复绑定拦截、唯一索引拒绝重复写入、不可派发优先分组切后备和恢复正常')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -376,25 +350,6 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
-}
-
-function assertDuplicateGroupBindingMigration(apiKeyId: string, groupId: string): void {
-  const database = databaseModule.getDatabase()
-  const now = new Date().toISOString()
-  database.exec('DROP INDEX IF EXISTS idx_api_key_group_bindings_key_group_unique')
-  database
-    .prepare(`
-      INSERT INTO api_key_group_bindings (id, api_key_id, system_account_id, group_id, priority, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(`akgb_duplicate_${Date.now()}`, apiKeyId, access.systemAccountId, groupId, 99, 'disabled', now, now)
-
-  businessSchema.applyBusinessSchema(database)
-
-  const row = database
-    .prepare('SELECT COUNT(*) AS count FROM api_key_group_bindings WHERE api_key_id = ? AND group_id = ?')
-    .get(apiKeyId, groupId) as unknown as { count: number }
-  assert.equal(row.count, 1, '历史重复分组绑定应在唯一索引创建前被清理')
 }
 
 function assertSqlUniqueIndexRejectsDuplicateBinding(apiKeyId: string, groupId: string): void {

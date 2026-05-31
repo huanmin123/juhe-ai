@@ -7,7 +7,7 @@ import {
 } from './api-key-availability-schedule.js'
 
 export function accountAvailabilityScheduleFromRequest(input: Record<string, unknown>): AccountAvailabilitySchedule | undefined {
-  return normalizeAccountAvailabilitySchedule(input.availabilitySchedule ?? input.availability_schedule)
+  return normalizeAccountAvailabilitySchedule(input.availabilitySchedule)
 }
 
 export function accountAvailabilityScheduleJson(schedule: AccountAvailabilitySchedule | undefined): string | null {
@@ -20,7 +20,6 @@ export function parseAccountAvailabilityScheduleJson(value: string | null | unde
 
 export function isAccountAvailabilityScheduleInputPresent(input: Record<string, unknown>): boolean {
   return Object.prototype.hasOwnProperty.call(input, 'availabilitySchedule')
-    || Object.prototype.hasOwnProperty.call(input, 'availability_schedule')
 }
 
 export function isAccountAvailabilityScheduleAllowed(value: string | null | undefined, now = new Date()): boolean {

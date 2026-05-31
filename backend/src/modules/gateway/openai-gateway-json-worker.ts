@@ -3,6 +3,7 @@ import { parentPort } from 'node:worker_threads'
 import type { OpenAIOAuthCodexNormalizeInput } from './openai-oauth-codex-normalizer.js'
 
 type GatewayJsonWorkerJobType =
+  | 'extract_json_body_metadata'
   | 'parse_json_body'
   | 'normalize_openai_oauth_codex_body'
 
@@ -21,11 +22,22 @@ const {
   OpenAIOAuthCodexAdapterError,
   normalizeOpenAIOAuthCodexRawBody
 } = await import(resolveNormalizerModuleUrl()) as typeof import('./openai-oauth-codex-normalizer.js')
+const {
+  extractGatewayJsonBodyMetadata
+} = await import(resolveRequestBodyModuleUrl()) as typeof import('./openai-gateway-request-body.js')
 
 workerPort.on('message', (message: GatewayJsonWorkerRequest) => {
   const id = message.id
   try {
     const rawBody = Buffer.from(message.rawBody.buffer, message.rawBody.byteOffset, message.rawBody.byteLength)
+    if (message.type === 'extract_json_body_metadata') {
+      workerPort.postMessage({
+        id,
+        ok: true,
+        value: extractGatewayJsonBodyMetadata(rawBody)
+      })
+      return
+    }
     if (message.type === 'normalize_openai_oauth_codex_body') {
       if (!message.normalizeInput) {
         throw new Error('OpenAI OAuth Codex 归一化参数缺失')
@@ -51,6 +63,12 @@ function resolveNormalizerModuleUrl(): string {
   return import.meta.url.endsWith('.ts')
     ? new URL('./openai-oauth-codex-normalizer.ts', import.meta.url).href
     : new URL('./openai-oauth-codex-normalizer.js', import.meta.url).href
+}
+
+function resolveRequestBodyModuleUrl(): string {
+  return import.meta.url.endsWith('.ts')
+    ? new URL('./openai-gateway-request-body.ts', import.meta.url).href
+    : new URL('./openai-gateway-request-body.js', import.meta.url).href
 }
 
 function workerErrorResponse(id: number, error: unknown): Record<string, unknown> {

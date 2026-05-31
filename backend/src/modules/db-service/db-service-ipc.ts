@@ -133,8 +133,11 @@ export async function requestDbService<T extends DbServiceOperation>(
   operation: T,
   options: { timeoutMs?: number } = {}
 ): Promise<DbServiceOperationResult<T>> {
-  if (runtimeConfig.processRole !== 'server') {
+  if (runtimeConfig.processRole === 'db-service') {
     return await runLocalDbServiceOperation(operation)
+  }
+  if (runtimeConfig.processRole !== 'server') {
+    throw new Error(`${runtimeConfig.processRole} 角色不能本地执行 DB service 操作：${operation.type}`)
   }
 
   if (unavailableCircuitOpenUntilMs > Date.now()) {

@@ -2,7 +2,6 @@ import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
@@ -20,12 +19,11 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, clientIpStats, usageStatsHelpers, statsSchema] = await Promise.all([
+const [databaseModule, repositories, clientIpStats, usageStatsHelpers] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/client-ip-stats.repository.js'),
-  import('../../storage/usage-stats-helpers.js'),
-  import('../../storage/schema/stats-schema.js')
+  import('../../storage/usage-stats-helpers.js')
 ])
 
 try {
@@ -198,8 +196,7 @@ try {
 
   const statsDatabase = databaseModule.getStatsDatabase()
   const policyColumns = statsDatabase.prepare('PRAGMA table_info(client_ip_policies)').all() as Array<{ name?: string }>
-  assert.equal(policyColumns.some((column) => column.name === 'policy_type'), false, 'IP 封禁策略表不应保留已废弃的 policy_type 字段')
-  assertClientIpPolicySchemaMigration(statsSchema.applyStatsSchema)
+  assert.equal(policyColumns.some((column) => column.name === 'policy_type'), false, 'IP 封禁策略表只保留当前封禁策略字段')
 
   const ipv4Row = list.items.find((item) => item.ipHash === ipv4Identity.ipHash)
   assert(ipv4Row, 'IPv4 聚合行应存在')
@@ -281,46 +278,4 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
-}
-
-function assertClientIpPolicySchemaMigration(applyStatsSchema: (database: DatabaseSync) => void): void {
-  const database = new DatabaseSync(':memory:')
-  try {
-    database.exec(`
-      CREATE TABLE client_ip_policies (
-        id TEXT PRIMARY KEY,
-        ip_hash TEXT NOT NULL,
-        policy_type TEXT NOT NULL,
-        status TEXT NOT NULL,
-        reason TEXT,
-        expires_at TEXT,
-        created_by_system_account_id TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        disabled_at TEXT,
-        disabled_by_system_account_id TEXT,
-        disabled_reason TEXT
-      );
-
-      CREATE INDEX idx_client_ip_policies_active ON client_ip_policies(status, policy_type, ip_hash, expires_at);
-      CREATE INDEX idx_client_ip_policies_ip ON client_ip_policies(ip_hash, status, policy_type, created_at DESC);
-
-      INSERT INTO client_ip_policies (
-        id, ip_hash, policy_type, status, reason, expires_at,
-        created_by_system_account_id, created_at, updated_at
-      ) VALUES
-        ('legacy_blacklist', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'blacklist', 'active', 'legacy blacklist', NULL, 'sys_admin', '2026-05-29T00:00:00.000Z', '2026-05-29T00:00:00.000Z'),
-        ('legacy_watch', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'watch', 'active', 'legacy watch', NULL, 'sys_admin', '2026-05-29T00:00:00.000Z', '2026-05-29T00:00:00.000Z');
-    `)
-    applyStatsSchema(database)
-    const columns = database.prepare('PRAGMA table_info(client_ip_policies)').all() as Array<{ name?: string }>
-    assert.equal(columns.some((column) => column.name === 'policy_type'), false, '旧库迁移后不应保留 policy_type 字段')
-    const policies = (database.prepare('SELECT id, reason FROM client_ip_policies ORDER BY id').all() as Array<{ id?: string; reason?: string }>)
-      .map((row) => ({ id: row.id, reason: row.reason }))
-    assert.deepEqual(policies, [{ id: 'legacy_blacklist', reason: 'legacy blacklist' }], '旧库迁移只保留有效封禁策略')
-    const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'client_ip_policies' AND sql IS NOT NULL").all() as Array<{ sql?: string }>
-    assert.equal(indexes.some((index) => index.sql?.includes('policy_type')), false, '旧库迁移后策略索引不应引用 policy_type')
-  } finally {
-    database.close()
-  }
 }
