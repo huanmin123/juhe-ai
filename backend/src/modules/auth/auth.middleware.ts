@@ -20,18 +20,25 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
 
   touchSession(session.sessionId, session.lastSeenAt)
-  bindRequestContextFields({
-    systemAccountId: session.account.id,
-    role: session.account.role
-  })
-  withRequestAuthContext({
+  const context = {
     systemAccountId: session.account.id,
     username: session.account.username,
     displayName: session.account.displayName,
     role: session.account.role,
     mustChangePassword: session.account.mustChangePassword,
     sessionId: session.sessionId
-  }, next)
+  }
+
+  if (context.mustChangePassword) {
+    res.status(403).json({ message: '请先修改初始密码', code: 'must_change_password' })
+    return
+  }
+
+  bindRequestContextFields({
+    systemAccountId: context.systemAccountId,
+    role: context.role
+  })
+  withRequestAuthContext(context, next)
 }
 
 export function requireAdmin(_req: Request, res: Response, next: NextFunction): void {

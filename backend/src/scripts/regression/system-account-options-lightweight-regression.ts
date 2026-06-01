@@ -157,11 +157,20 @@ try {
       password: 'password',
       role: 'user'
     }, 403, '普通管理员不应创建系统账户')
+    await assertJsonStatus(baseUrl, '/__aisys__/api/system-accounts', seed.adminCookie, 'POST', {
+      username: 'system_account_options_blocked_super_admin',
+      displayName: '禁止新增超级管理员',
+      password: 'password',
+      role: 'super_admin'
+    }, 400, '系统账户接口不应新增超级管理员')
     await assertJsonStatus(baseUrl, `/__aisys__/api/system-accounts/${seed.activeUserId}`, seed.readonlyAdminCookie, 'PATCH', {
       displayName: '普通管理员禁止更新'
     }, 403, '普通管理员不应更新系统账户')
     const promoted = await patchEnvelope<SystemAccountSummary>(baseUrl, `/__aisys__/api/system-accounts/${seed.promotionTargetId}`, seed.adminCookie, { role: 'admin' })
     assert.equal(promoted.role, 'admin', '超级管理员应能把普通用户升级为管理员')
+    await assertJsonStatus(baseUrl, `/__aisys__/api/system-accounts/${seed.promotionTargetId}`, seed.adminCookie, 'PATCH', {
+      role: 'super_admin'
+    }, 400, '系统账户接口不应把用户升级为超级管理员')
     await assertJsonStatus(baseUrl, `/__aisys__/api/system-accounts/${seed.adminId}`, seed.adminCookie, 'PATCH', {
       role: 'admin'
     }, 409, '不能移除最后一个启用的超级管理员')
@@ -191,6 +200,7 @@ try {
 function seedData(): SeedState {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const activeUser = repositories.createSystemAccount({
     username: 'system_account_options_user',
     displayName: '系统账户选项用户',

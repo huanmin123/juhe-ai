@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
-import { loadCurrentUser } from '@/composables/useAuth'
+import { setMustChangePasswordHandler, setUnauthorizedHandler } from '@/api/client'
+import { clearAuthState, loadCurrentUser } from '@/composables/useAuth'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import type { SystemAccountRole } from '@/types/domain'
 
@@ -483,12 +484,25 @@ export const router = createRouter({
         public: true
       }
     },
-    ...menuRoutes
+    ...menuRoutes,
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: { render: () => null },
+      meta: {
+        title: '页面不存在',
+        description: '错误路径会回到当前用户默认入口'
+      }
+    }
   ]
 })
 
 router.beforeEach(async (to) => {
   const user = await loadCurrentUser()
+  if (to.name === 'not-found') {
+    if (user) return getPreferredEntryPath(user)
+    return { path: '/login', query: { redirect: '/' } }
+  }
   if (to.meta.public) {
     if (to.path === '/login' && user) return getPreferredEntryPath(user)
     return true
@@ -503,4 +517,30 @@ router.beforeEach(async (to) => {
     return getPreferredEntryPath(user)
   }
   return true
+})
+
+setUnauthorizedHandler(() => {
+  clearAuthState()
+  if (router.currentRoute.value.path !== '/login') {
+    void router.replace({
+      path: '/login',
+      query: { redirect: router.currentRoute.value.fullPath }
+    })
+  }
+})
+
+let mustChangePasswordRefreshRunning = false
+
+setMustChangePasswordHandler(() => {
+  if (mustChangePasswordRefreshRunning) return
+  mustChangePasswordRefreshRunning = true
+  void loadCurrentUser(true)
+    .then((user) => {
+      if (user?.mustChangePassword && router.currentRoute.value.path === '/login') {
+        void router.replace(getPreferredEntryPath(user))
+      }
+    })
+    .finally(() => {
+      mustChangePasswordRefreshRunning = false
+    })
 })

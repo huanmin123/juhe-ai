@@ -142,11 +142,15 @@ const form = reactive({
   imageGenerationEnabled: false
 })
 
-const roleOptions = [
-  { label: '超级管理员', value: 'super_admin', disabled: true },
-  { label: '管理员', value: 'admin' },
-  { label: '用户', value: 'user' }
-]
+const roleOptions = computed(() => {
+  const options = [
+    { label: '管理员', value: 'admin' },
+    { label: '用户', value: 'user' }
+  ]
+  return form.role === 'super_admin'
+    ? [{ label: '超级管理员', value: 'super_admin', disabled: true }, ...options]
+    : options
+})
 
 const statusOptions = [
   { label: '启用', value: 'active' },
@@ -256,13 +260,23 @@ const handleSave = submitAction('system_accounts.save', async () => {
     return
   }
   try {
-    const basePayload = {
+    const basePayload: {
+      displayName: string
+      description: string
+      role?: SystemAccountRole
+      status: SystemAccountStatus
+      mustChangePassword: boolean
+      imageGenerationEnabled: boolean
+    } = {
       displayName,
       description: form.description,
       role: form.role,
       status: form.status,
       mustChangePassword: form.mustChangePassword,
       imageGenerationEnabled: form.imageGenerationEnabled
+    }
+    if (basePayload.role === 'super_admin') {
+      delete basePayload.role
     }
     if (editingId.value) {
       await api.systemAccounts.update(editingId.value, basePayload)

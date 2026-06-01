@@ -16,7 +16,7 @@ const createSchema = z.object({
   displayName: z.string().trim().min(1),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4),
-  role: z.enum(['super_admin', 'admin', 'user']).optional(),
+  role: z.enum(['admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional()
@@ -26,7 +26,7 @@ const updateSchema = z.object({
   displayName: z.string().trim().min(1).optional(),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4).optional(),
-  role: z.enum(['super_admin', 'admin', 'user']).optional(),
+  role: z.enum(['admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional()

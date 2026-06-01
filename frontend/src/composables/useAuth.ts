@@ -44,12 +44,16 @@ export async function logout(): Promise<void> {
   try {
     await api.auth.logout()
   } finally {
-    currentUser.value = undefined
-    authChecked.value = true
+    clearAuthState()
   }
 }
 
 export async function changePassword(payload: { oldPassword?: string; newPassword: string }): Promise<CurrentUserSummary> {
   currentUser.value = await api.auth.changePassword(payload)
   return currentUser.value
+}
+
+export function clearAuthState(): void {
+  currentUser.value = undefined
+  authChecked.value = true
 }
