@@ -51,7 +51,13 @@ try {
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const futureExpiresAt = '2099-01-01T00:00:00.000Z'
+  const ownerAccountGroup = repositories.createGroup({
+    name: '授权有效期账号来源分组',
+    providerCode: 'openai',
+    enabled: true
+  }, ownerAccess)
 
   const userGroup = repositories.createGroup({
     name: '授权有效期清空个人分组',
@@ -75,8 +81,8 @@ try {
   const team = repositories.createSystemTeam({
     name: '授权有效期清空团队',
     description: '回归测试团队'
-  })
-  repositories.addSystemTeamMembers(team.id, { systemAccountIds: [teamMember.id] })
+  }, adminAccess)
+  repositories.addSystemTeamMembers(team.id, { systemAccountIds: [teamMember.id] }, adminAccess)
   const teamGroup = repositories.createGroup({
     name: '授权有效期清空团队分组',
     providerCode: 'openai',
@@ -126,7 +132,8 @@ try {
     name: '授权有效期边界账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-expire-boundary', base_url: 'https://api.openai.com/v1' },
-    accountExpiresAt
+    accountExpiresAt,
+    groupId: ownerAccountGroup.id
   }, ownerAccess)
   const granteeQuotaGroup = repositories.createGroup({
     name: '授权额度拦截分组',
@@ -168,7 +175,8 @@ try {
     providerCode: 'openai',
     name: '授权额度迁移源账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-resource-authorization-quota-source', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-resource-authorization-quota-source', base_url: 'https://api.openai.com/v1' },
+    groupId: ownerAccountGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -215,7 +223,8 @@ try {
     name: '授权所有者停调账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-paused', base_url: 'https://api.openai.com/v1' },
-    schedulable: false
+    schedulable: false,
+    groupId: ownerAccountGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -243,7 +252,8 @@ try {
     providerCode: 'openai',
     name: '授权有效期团队额度账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-resource-authorization-team-quota', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-resource-authorization-team-quota', base_url: 'https://api.openai.com/v1' },
+    groupId: ownerAccountGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

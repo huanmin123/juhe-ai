@@ -1,15 +1,15 @@
 import type { AccountType, ProviderDefinition } from '@/types/domain'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import type { AccountFormModel } from './accountFormTypes'
-import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDER } from './accountOptions'
+import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, OPENAI_PROVIDER } from './accountOptions'
 
 export function defaultAccountForm(
   providerCode = '',
   type: AccountType = '',
   providers: ProviderDefinition[] = []
 ): AccountFormModel {
-  const providerList = providers.length ? providers : [FALLBACK_PROVIDER]
-  const provider = providerList.find((item) => item.code === providerCode) ?? (providerCode ? FALLBACK_PROVIDER : undefined)
+  const providerList = providers.length ? providers : [OPENAI_PROVIDER]
+  const provider = providerList.find((item) => item.code === providerCode)
   return {
     providerCode,
     name: '',
@@ -17,7 +17,7 @@ export function defaultAccountForm(
     groupId: undefined,
     group: undefined,
     apiKey: '',
-    baseUrl: provider?.baseUrl ?? 'https://api.openai.com/v1',
+    baseUrl: provider?.baseUrl ?? '',
     accessToken: '',
     refreshToken: '',
     oauthMode: 'manual',

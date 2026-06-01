@@ -312,6 +312,11 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerSourceGroup = repositories.createGroup({
+    name: '路由缓存后备授权来源号池',
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, ownerAccess)
   const primaryGroup = repositories.createGroup({
     name: '路由缓存主 OAuth 号池',
     providerCode: 'openai',
@@ -344,6 +349,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
       api_key: fallbackUpstreamKey,
       base_url: upstreamBaseUrl
     },
+    groupId: ownerSourceGroup.id,
     status: 'active',
     schedulable: true,
   }, ownerAccess)

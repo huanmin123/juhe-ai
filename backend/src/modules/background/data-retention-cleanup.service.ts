@@ -1,6 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { cleanupAuditLogsByRetention } from '../../storage/audit-logs.repository.js'
+import { cleanupAuditLogsByRetentionAsync } from '../../storage/audit-logs.repository.js'
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import {
   cleanupExpiredSystemSessions,
@@ -123,7 +123,7 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     const result = emptyCleanupResult()
     result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
     await yieldToEventLoop()
-    result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetention({
+    result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
       successCutoffCreatedAt: cutoffIso(now, retention.auditLogSuccessDays),
       failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
       errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
@@ -205,10 +205,10 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
   }
 }
 
-async function cleanupInBatches(cleanupBatch: () => number, batchSize: number, maxBatches: number): Promise<number> {
+async function cleanupInBatches(cleanupBatch: () => number | Promise<number>, batchSize: number, maxBatches: number): Promise<number> {
   let total = 0
   for (let index = 0; index < maxBatches; index += 1) {
-    const deleted = cleanupBatch()
+    const deleted = await cleanupBatch()
     total += deleted
     await yieldToEventLoop()
     if (deleted < batchSize) {

@@ -13,6 +13,7 @@ import {
   updateResourceAuthorization
 } from '../../storage/repositories.js'
 import { getBusinessDatabase } from '../../storage/database.js'
+import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -22,6 +23,8 @@ import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import type { ResourceAuthorizationSummary } from '../../domain/types.js'
 
 export const authorizationsRouter = Router()
+
+const authorizationExpiresAtSchema = z.string().trim().min(1, '过期时间格式不正确').refine((value) => Boolean(optionalServerDateTimeIso(value)), '过期时间格式不正确')
 
 const authorizationIdParamsSchema = z.object({
   id: z.string().trim().min(1, '授权记录 ID 不能为空')
@@ -69,9 +72,8 @@ const createAuthorizationSchema = z.object({
   granteeId: z.string().trim().min(1, '被授权对象不能为空'),
   targetGroupId: z.string().trim().min(1, '目标分组不能为空').optional(),
   remark: z.string().trim().max(200).optional(),
-  expiresAt: z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确').optional(),
-  limits: requestQuotaLimitsSchema.optional(),
-  modelPolicy: z.record(z.string(), z.unknown()).optional()
+  expiresAt: authorizationExpiresAtSchema.optional(),
+  limits: requestQuotaLimitsSchema.optional()
 }).strict().superRefine((value, ctx) => {
   if (value.resourceType === 'account' && value.granteeType === 'system_account' && !value.targetGroupId) {
     ctx.addIssue({
@@ -92,7 +94,7 @@ const createAuthorizationSchema = z.object({
 const updateAuthorizationSchema = z.object({
   status: z.enum(['active', 'paused']).optional(),
   expiresAt: z.union([
-    z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确'),
+    authorizationExpiresAtSchema,
     z.null()
   ]).optional(),
   limits: requestQuotaLimitsSchema.nullable().optional()
@@ -102,7 +104,7 @@ const updateAuthorizationSchema = z.object({
 
 const updateAuthorizationExpireSchema = z.object({
   expiresAt: z.union([
-    z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确'),
+    authorizationExpiresAtSchema,
     z.null()
   ]),
   limits: requestQuotaLimitsSchema.nullable().optional()
@@ -195,8 +197,7 @@ authorizationsRouter.post('/', mutationGuard({
             safeChange('targetGroupId', '目标分组', undefined, parsed.data.targetGroupId),
             safeChange('status', '状态', undefined, authorization.status),
             safeChange('expiresAt', '过期时间', undefined, authorization.expiresAt),
-            safeChange('limits', '额度限制', undefined, authorization.limits),
-            safeChange('modelPolicy', '模型策略', undefined, authorization.modelPolicy)
+            safeChange('limits', '额度限制', undefined, authorization.limits)
           ],
           targets: authorizationTargets(authorization),
           viewers: authorizationViewers(authorization)

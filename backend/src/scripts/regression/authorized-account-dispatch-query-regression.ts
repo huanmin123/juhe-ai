@@ -41,6 +41,10 @@ try {
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerGroup = repositories.createGroup({
+    name: '所有者调度查询分组',
+    providerCode: 'openai'
+  }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '被授权人调度查询分组',
     providerCode: 'openai'
@@ -53,14 +57,14 @@ try {
     username: 'dispatch_proxy_user',
     password: 'dispatch_proxy_password',
     enabled: true
-  })
+  }, ownerAccess)
   const disabledProxy = repositories.createProxy({
     name: '授权调度查询停用代理',
     type: 'http',
     host: '127.0.0.1',
     port: 18_081,
     enabled: true
-  })
+  }, ownerAccess)
   const staleBadProxy = repositories.createProxy({
     name: '授权失效账户坏代理',
     type: 'http',
@@ -69,7 +73,7 @@ try {
     username: 'stale_bad_proxy_user',
     password: 'stale_bad_proxy_password',
     enabled: true
-  })
+  }, ownerAccess)
   const disabledSourceBadProxy = repositories.createProxy({
     name: '授权父账户停用隔离坏代理',
     type: 'http',
@@ -78,7 +82,7 @@ try {
     username: 'disabled_source_bad_proxy_user',
     password: 'disabled_source_bad_proxy_password',
     enabled: true
-  })
+  }, ownerAccess)
 
   const accountCount = 40
   const accountIds: string[] = []
@@ -88,6 +92,7 @@ try {
       providerCode: 'openai',
       name: `授权调度查询账户 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
+      groupId: ownerGroup.id,
       credentials: { api_key: `sk-authorized-dispatch-query-${index}`, base_url: 'https://api.openai.com/v1' },
       proxyProfileId: index === 0 ? disabledProxy.id : sharedProxy.id
     }, ownerAccess)
@@ -111,6 +116,7 @@ try {
     providerCode: 'openai',
     name: '授权已失效且凭据损坏账户',
     type: 'api_key',
+    groupId: ownerGroup.id,
     credentials: { api_key: 'sk-authorized-dispatch-stale', base_url: 'https://api.openai.com/v1' },
     proxyProfileId: staleBadProxy.id
   }, ownerAccess)
@@ -137,6 +143,7 @@ try {
     providerCode: 'openai',
     name: '授权父账户停用且凭据损坏账户',
     type: 'api_key',
+    groupId: ownerGroup.id,
     credentials: { api_key: 'sk-authorized-dispatch-disabled-source', base_url: 'https://api.openai.com/v1' },
     proxyProfileId: disabledSourceBadProxy.id
   }, ownerAccess)

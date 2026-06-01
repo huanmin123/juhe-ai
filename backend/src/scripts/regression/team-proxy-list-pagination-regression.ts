@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -60,7 +60,7 @@ try {
     port: 18_080,
     username: 'proxy-page-user',
     enabled: true
-  })
+  }, adminAccess)
   repositories.createProxy({
     name: '分页搜索代理扩展',
     type: 'http',
@@ -68,7 +68,7 @@ try {
     port: 18_081,
     username: 'proxy-page-user-extra',
     enabled: true
-  })
+  }, adminAccess)
   repositories.createProxy({
     name: '普通分页搜索代理',
     type: 'http',
@@ -76,7 +76,7 @@ try {
     port: 18_082,
     username: 'ordinary-proxy-page-user',
     enabled: true
-  })
+  }, adminAccess)
   repositories.createProxy({
     name: '分页搜索代理停用',
     type: 'http',
@@ -84,21 +84,21 @@ try {
     port: 18_083,
     username: 'proxy-page-disabled-user',
     enabled: false
-  })
+  }, adminAccess)
   repositories.createProxy({
     name: 'proxy%literal 代理',
     type: 'socks5h',
     host: 'proxy-percent-literal',
     port: 18_084,
     enabled: true
-  })
+  }, adminAccess)
   repositories.createProxy({
     name: 'proxyXliteral 代理',
     type: 'socks5h',
     host: 'proxy-percent-neighbor',
     port: 18_085,
     enabled: true
-  })
+  }, adminAccess)
   repositories.createProxy({
     name: '说明字段代理',
     description: '分页搜索代理说明前缀',
@@ -106,7 +106,7 @@ try {
     host: 'description-only-host',
     port: 18_086,
     enabled: true
-  })
+  }, adminAccess)
   repositories.createProxy({
     name: '用户名字段代理',
     type: 'http',
@@ -114,7 +114,7 @@ try {
     port: 18_087,
     username: '分页搜索代理用户',
     enabled: true
-  })
+  }, adminAccess)
   for (let index = 0; index < 55; index += 1) {
     repositories.createProxy({
       name: `选项上限代理 ${String(index).padStart(2, '0')}`,
@@ -122,7 +122,7 @@ try {
       host: `proxy-option-limit-${index}`,
       port: 19_000 + index,
       enabled: true
-    })
+    }, adminAccess)
   }
 
   const database = databaseModule.getBusinessDatabase()
@@ -220,9 +220,10 @@ try {
   assertBusinessIndexExists('idx_accounts_proxy_profile')
   assertBusinessIndexMissing('idx_proxy_profiles_host_lookup')
   assertBusinessIndexMissing('idx_proxy_profiles_type_lookup')
+  assertProxyDeleteUsageWindowGuard()
   assertQueryPlanUsesIndex(
-    'SELECT COUNT(*) AS account_count FROM accounts WHERE proxy_profile_id = ?',
-    [proxyMatched.id],
+    'SELECT id, name FROM accounts WHERE proxy_profile_id = ? ORDER BY id ASC LIMIT ?',
+    [proxyMatched.id, 4],
     'idx_accounts_proxy_profile'
   )
 
@@ -248,6 +249,12 @@ function assertBusinessIndexMissing(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, undefined, `业务库不应创建代理长文本搜索索引 ${indexName}`)
+}
+
+function assertProxyDeleteUsageWindowGuard(): void {
+  const source = readFileSync(new URL('../../storage/proxy.repository.ts', import.meta.url), 'utf8')
+  assert(!source.includes('COUNT(*) AS account_count FROM accounts WHERE proxy_profile_id = ?'), '代理删除占用检查不能对绑定账户做精确 COUNT(*)')
+  assert(source.includes('SELECT id, name FROM accounts WHERE proxy_profile_id = ? ORDER BY id ASC LIMIT ?'), '代理删除占用检查必须只读取固定账户窗口')
 }
 
 function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {

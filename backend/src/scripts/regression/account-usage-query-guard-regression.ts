@@ -93,6 +93,11 @@ try {
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerGroup = repositories.createGroup({
+    name: '账号用量授权方分组',
+    providerCode: 'openai',
+    enabled: true
+  }, ownerAccess)
   const granteeTargetGroup = repositories.createGroup({
     name: '账号用量授权目标分组',
     providerCode: 'openai',
@@ -105,7 +110,8 @@ try {
     credentials: {
       api_key: 'sk-account-usage-authorized-source',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: ownerGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

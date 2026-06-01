@@ -165,7 +165,7 @@ import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountStatus, GroupOptionSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
 import { accountTypeText } from './accountFormatters'
 import type { AccountFilters } from './accountFormTypes'
-import { FALLBACK_PROVIDER } from './accountOptions'
+import { OPENAI_PROVIDER } from './accountOptions'
 
 type FilterOption<T extends string> = {
   label: string
@@ -209,7 +209,7 @@ const emit = defineEmits<{
 }>()
 
 const accountStatusValues = new Set<AccountStatus>(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])
-const resolvedProviders = computed(() => props.providers.length ? props.providers : [FALLBACK_PROVIDER])
+const resolvedProviders = computed(() => props.providers.length ? props.providers : [OPENAI_PROVIDER])
 const providerOptions = computed(() => [
   { label: '全部供应商', value: 'all' },
   ...resolvedProviders.value.map((provider) => ({ label: provider.name, value: provider.code }))

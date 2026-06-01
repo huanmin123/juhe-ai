@@ -58,7 +58,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS proxy_profiles (
       id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
       type TEXT NOT NULL,
@@ -79,7 +79,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS error_policies (
       id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       rules_json TEXT NOT NULL,
@@ -92,7 +92,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       priority INTEGER NOT NULL DEFAULT 100,
-      provider_code TEXT NOT NULL DEFAULT 'openai',
+      provider_code TEXT NOT NULL,
       match_json TEXT NOT NULL DEFAULT '{}',
       action TEXT NOT NULL DEFAULT 'avoid_account_ttl',
       avoidance_ttl_seconds INTEGER,
@@ -132,13 +132,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      system_account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       credentials_encrypted TEXT NOT NULL,
       credential_fingerprint TEXT,
+      account_identity_fingerprint TEXT,
       credential_mask TEXT NOT NULL DEFAULT '',
       oauth_access_token_expires_at TEXT,
       oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
@@ -224,7 +225,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       remark TEXT,
       expires_at TEXT,
       limits_json TEXT,
-      model_policy_json TEXT,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL,
       revoked_by TEXT,
@@ -265,7 +265,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       remark TEXT,
       expires_at TEXT,
       limits_json TEXT,
-      model_policy_json TEXT,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL,
       revoked_by TEXT,
@@ -282,9 +281,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
-      provider_code TEXT NOT NULL DEFAULT 'openai',
+      provider_code TEXT NOT NULL,
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       is_default INTEGER NOT NULL DEFAULT 0,
@@ -296,7 +295,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     );
 
     CREATE TABLE IF NOT EXISTS group_accounts (
-      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      system_account_id TEXT NOT NULL,
       group_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
       account_authorization_id TEXT,
@@ -336,7 +335,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS api_keys (
       id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
       key_hash TEXT NOT NULL UNIQUE,
@@ -347,7 +346,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       expires_at TEXT,
       quota_limits_json TEXT,
       availability_schedule_json TEXT,
-      scopes_json TEXT NOT NULL DEFAULT '[]',
       last_used_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -368,7 +366,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     );
 
     CREATE TABLE IF NOT EXISTS system_settings (
-      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      system_account_id TEXT NOT NULL,
       key TEXT NOT NULL,
       value_json TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -413,7 +411,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_system_accounts_updated_lookup ON system_accounts(updated_at, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_username_lookup ON system_accounts(username COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(display_name COLLATE NOCASE, id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_identity_fingerprint ON accounts(account_identity_fingerprint) WHERE account_identity_fingerprint IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_provider_name_unique_lower ON accounts(system_account_id, provider_code, lower(name));
     CREATE INDEX IF NOT EXISTS idx_accounts_name_lookup ON accounts(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_name_lookup ON accounts(system_account_id, name COLLATE NOCASE, id);
@@ -486,6 +485,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE status = 'active';
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_group ON api_key_group_bindings(group_id);
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_key ON api_key_group_bindings(system_account_id, api_key_id);
+    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_group_key ON api_key_group_bindings(system_account_id, group_id, api_key_id);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_resource ON resource_authorization_grants(resource_type, resource_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_grantee_user ON resource_authorization_grants(grantee_system_account_id, status);

@@ -37,7 +37,8 @@ try {
       api_key: 'sk-cooldown-retest-recovery',
       base_url: 'http://127.0.0.1:9/v1'
     },
-    status: 'active'
+    status: 'active',
+    groupId: group.id
   }, access)
   assert(repositories.setAccountGroup(account.id, group.id, access), '冷却复测观察窗口账号应能绑定分组')
   const cooled = repositories.markAccountCooldown(account.id, new Date(Date.now() + 60_000).toISOString(), '模拟临时不可调用')
@@ -78,7 +79,8 @@ try {
       api_key: 'sk-cooldown-retest-recovery-fresh',
       base_url: 'http://127.0.0.1:9/v1'
     },
-    status: 'active'
+    status: 'active',
+    groupId: group.id
   }, access)
   assert(repositories.setAccountGroup(freshAccount.id, group.id, access), '冷却复测未超观察窗口账号应能绑定分组')
   repositories.markAccountCooldown(freshAccount.id, new Date(Date.now() + 60_000).toISOString(), '模拟临时不可调用')
@@ -101,7 +103,7 @@ try {
   })
   assert.equal(stillRecovering.recoveryStage, 'slow', '超过快速阈值后应进入慢速恢复')
   assert.notEqual(stillRecovering.action, 'exception', '未超过最长观察时不应转异常')
-  const freshAfterRetest = repositories.findAccountSummary(freshAccount.id)
+  const freshAfterRetest = repositories.findAccountSummary(freshAccount.id, access)
   assert.equal(freshAfterRetest?.status, 'temporary_unavailable', '未超过观察窗口时账号应继续恢复')
   assert.equal(freshAfterRetest?.lastErrorCode, 'insufficient_quota', '后台复测应把上游真实错误码写入账户状态')
   assert.match(freshAfterRetest?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '后台复测状态原因应保留真实上游错误摘要')
@@ -117,7 +119,8 @@ try {
       api_key: 'sk-cooldown-disable-clear-expired-error',
       base_url: 'http://127.0.0.1:9/v1'
     },
-    status: 'active'
+    status: 'active',
+    groupId: group.id
   }, access)
   repositories.markAccountCooldown(disabledCleanupAccount.id, new Date(Date.now() + 60_000).toISOString(), '过期冷却错误')
   const disabledCleanup = repositories.updateAccount(disabledCleanupAccount.id, { status: 'disabled' }, access)
@@ -134,7 +137,8 @@ try {
       api_key: 'sk-cooldown-retest-rate-limited',
       base_url: 'http://127.0.0.1:9/v1'
     },
-    status: 'active'
+    status: 'active',
+    groupId: group.id
   }, access)
   assert(repositories.setAccountGroup(rateLimitedAccount.id, group.id, access), '限流复测账号应能绑定分组')
   const limited = repositories.markAccountCooldown(rateLimitedAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟限流', 'rate_limited')
@@ -152,7 +156,7 @@ try {
     maxPauseMinutes: 10
   })
   assert.equal(limitedStillRecovering.action, 'retry_immediately', '限流首次复测失败应走快速恢复通道')
-  assert.equal(repositories.findAccountSummary(rateLimitedAccount.id)?.status, 'rate_limited', '限流复测失败后应保持限流状态等待下次自动恢复')
+  assert.equal(repositories.findAccountSummary(rateLimitedAccount.id, access)?.status, 'rate_limited', '限流复测失败后应保持限流状态等待下次自动恢复')
 
   console.log('cooldown retest recovery regression passed')
 } finally {

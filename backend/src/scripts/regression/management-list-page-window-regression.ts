@@ -161,6 +161,7 @@ function seedModelCheckRun(): void {
     id: 'model_check_page_window_0',
     systemAccountId: 'sys_admin',
     actorSystemAccountId: 'sys_admin',
+    providerCode: 'openai',
     targetType: 'account',
     targetId: 'account_page_window_0',
     targetName: '页码窗口账号',

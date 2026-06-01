@@ -369,6 +369,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
         id,
         shardKey: location.shardKey,
         systemAccountId,
+        apiKeyId: input.apiKeyId ?? null,
         accountId: input.accountId ?? null,
         groupId: input.groupId ?? null,
         model: input.model ?? null,

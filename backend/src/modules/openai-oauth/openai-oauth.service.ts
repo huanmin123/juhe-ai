@@ -3,6 +3,7 @@ import type { AgentOptions } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 
@@ -12,6 +13,7 @@ export const OPENAI_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
 export const OPENAI_OAUTH_DEFAULT_REDIRECT_URI = 'http://localhost:1455/auth/callback'
 export const OPENAI_OAUTH_DEFAULT_SCOPES = 'openid profile email offline_access'
 export const OPENAI_OAUTH_REFRESH_SCOPES = 'openid profile email'
+export const openAIOAuthTokenResponseMaxBytes = 256 * 1024
 
 interface OAuthSession {
   state: string
@@ -219,10 +221,15 @@ async function performTokenRequest(bodyText: string, proxyUrl?: string, signal?:
       agent,
       timeout: 120000
     }, (response) => {
-      const chunks: Buffer[] = []
-      response.on('data', (chunk: Buffer) => chunks.push(chunk))
+      const body = new BoundedBufferCollector(openAIOAuthTokenResponseMaxBytes)
+      response.on('data', (chunk: Buffer) => {
+        body.append(chunk)
+        if (body.truncated) {
+          request.destroy(new Error('OpenAI OAuth 令牌响应体过大'))
+        }
+      })
       response.on('end', () => {
-        resolve({ statusCode: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') })
+        resolve({ statusCode: response.statusCode ?? 0, body: body.text() })
       })
     })
 

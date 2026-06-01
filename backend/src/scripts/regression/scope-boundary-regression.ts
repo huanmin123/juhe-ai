@@ -605,25 +605,6 @@ function seedData(): SeedState {
     host: '127.0.0.1',
     port: 9,
     enabled: true
-  })
-  const userAAccount = repositories.createAccount({
-    providerCode: 'openai',
-    name: '用户 A 账户',
-    type: 'api_key',
-    credentials: { api_key: 'sk-scope-user-a', base_url: 'https://api.openai.com/v1' }
-  }, userAAccess)
-  const userBAccount = repositories.createAccount({
-    providerCode: 'openai',
-    name: '用户 B 账户',
-    type: 'api_key',
-    credentials: { api_key: 'sk-scope-user-b', base_url: 'https://api.openai.com/v1' },
-    proxyProfileId: userBProxy.id
-  }, userBAccess)
-  repositories.createAccount({
-    providerCode: 'openai',
-    name: 'Scope Extra OAuth',
-    type: 'oauth',
-    credentials: { refresh_token: 'refresh-scope-user-b-extra', base_url: 'https://api.openai.com/v1' }
   }, userBAccess)
   const userBGroup = repositories.createGroup({
     name: '用户 B 自建分组',
@@ -633,6 +614,28 @@ function seedData(): SeedState {
     name: '指定授权目标分组',
     providerCode: 'openai'
   }, userAAccess)
+  const userAAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '用户 A 账户',
+    type: 'api_key',
+    groupId: userATargetGroup.id,
+    credentials: { api_key: 'sk-scope-user-a', base_url: 'https://api.openai.com/v1' }
+  }, userAAccess)
+  const userBAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '用户 B 账户',
+    type: 'api_key',
+    groupId: userBGroup.id,
+    credentials: { api_key: 'sk-scope-user-b', base_url: 'https://api.openai.com/v1' },
+    proxyProfileId: userBProxy.id
+  }, userBAccess)
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: 'Scope Extra OAuth',
+    type: 'oauth',
+    groupId: userBGroup.id,
+    credentials: { refresh_token: 'refresh-scope-user-b-extra', base_url: 'https://api.openai.com/v1' }
+  }, userBAccess)
   const teamShared = repositories.createSystemTeam({
     name: '作用域共享团队',
     description: '用户 A 和用户 B 都在此团队'

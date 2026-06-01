@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import {
   getModelCheckOptions,
   getModelCheckRun,
@@ -44,6 +45,12 @@ modelChecksRouter.post('/run', async (req, res, next) => {
     res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '模型检测参数无效'))
     return
   }
+  const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
+  if (!releaseDiagnosticSlot) {
+    res.setHeader('Retry-After', String(diagnosticTaskRetryAfterSeconds))
+    res.status(503).json({ message: diagnosticTaskBusyMessage })
+    return
+  }
   const abortController = new AbortController()
   req.once('aborted', () => abortController.abort())
   res.once('close', () => {
@@ -66,6 +73,8 @@ modelChecksRouter.post('/run', async (req, res, next) => {
       return
     }
     next(error)
+  } finally {
+    releaseDiagnosticSlot()
   }
 })
 
@@ -78,6 +87,13 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
   const parsed = modelCheckRunSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '模型检测参数无效'))
+    return
+  }
+
+  const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
+  if (!releaseDiagnosticSlot) {
+    res.setHeader('Retry-After', String(diagnosticTaskRetryAfterSeconds))
+    res.status(503).json({ message: diagnosticTaskBusyMessage })
     return
   }
 
@@ -123,6 +139,8 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
     }
     writeEvent('error', { message: error instanceof Error ? error.message : '模型检测失败' })
     res.end()
+  } finally {
+    releaseDiagnosticSlot()
   }
 })
 

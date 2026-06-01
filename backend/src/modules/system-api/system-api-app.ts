@@ -41,14 +41,16 @@ type BodyParserError = Error & {
   type?: string
 }
 
+export const systemApiJsonBodyLimit = '256kb'
+
 export function createSystemApiApp(options: SystemApiAppOptions): express.Express {
   const app = express()
   const { systemApiPrefix } = options
   const publicApiPrefix = options.publicApiPrefix ?? '/__aipublic__'
 
   app.use(requestContextMiddleware)
-  app.use(systemApiPrefix, express.json({ limit: '2mb' }), handleJsonBodyError)
-  app.use(publicApiPrefix, express.json({ limit: '2mb' }), handleJsonBodyError)
+  app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
+  app.use(publicApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
 
   app.get(`${systemApiPrefix}/health`, (_req, res) => {
     res.json({ status: 'ok', service: 'juhe-ai-db-service' })

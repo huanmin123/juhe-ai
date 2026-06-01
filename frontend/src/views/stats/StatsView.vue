@@ -255,7 +255,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
-import { formatDateTime } from '@/shared/formatters'
+import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -622,14 +622,14 @@ function backgroundJobRetryQueueSummary(row: NonNullable<SystemMetricsOverview['
 
 function formatRetryQueueNextRunAt(value?: string) {
   if (!value) return undefined
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return undefined
-  return date.toLocaleTimeString('zh-CN', {
+  const timestamp = serverDateTimeTimestamp(value)
+  if (timestamp === undefined) return undefined
+  return new Intl.DateTimeFormat('zh-CN', {
     hour12: false,
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit'
-  })
+  }).format(timestamp)
 }
 
 function backgroundJobDurationNote(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {

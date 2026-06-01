@@ -82,6 +82,10 @@ async function assertStorageRoundTrip(): Promise<void> {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
   try {
+    const group = repositories.createGroup({
+      name: '账户模型限制回归分组',
+      providerCode: 'openai'
+    }, access)
     const account = repositories.createAccount({
       providerCode: 'openai',
       name: '账户模型限制回归',
@@ -90,7 +94,8 @@ async function assertStorageRoundTrip(): Promise<void> {
         api_key: 'sk-account-model-filter-create',
         base_url: 'http://127.0.0.1:9/v1'
       },
-      supportedModels: ['gpt-5.5', 'gpt-5.4']
+      supportedModels: ['gpt-5.5', 'gpt-5.4'],
+      groupId: group.id
     }, access)
     assert.deepEqual(sorted(account.supportedModels), ['gpt-5.4', 'gpt-5.5'], '创建账户应返回模型限制')
     assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4', 'gpt-5.5'], '创建账户应写入模型限制关系表')
@@ -120,7 +125,8 @@ async function assertStorageRoundTrip(): Promise<void> {
           api_key: 'sk-account-model-filter-invalid',
           base_url: 'http://127.0.0.1:9/v1'
         },
-        supportedModels: ['claude-opus-4-6']
+        supportedModels: ['claude-opus-4-6'],
+        groupId: group.id
       }, access)
     }, /供应商模型目录/, '账户模型限制必须来自供应商模型目录')
   } finally {

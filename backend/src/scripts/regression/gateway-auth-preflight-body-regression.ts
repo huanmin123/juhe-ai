@@ -154,6 +154,12 @@ try {
 }
 
 function seedGatewayRuntime(): { id: string; key: string } {
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const group = repositories.createGroup({
+    name: '认证预解析分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '认证预解析账号',
@@ -164,14 +170,15 @@ function seedGatewayRuntime(): { id: string; key: string } {
     },
     status: 'active',
     concurrencyLimit: 20,
-    schedulable: true
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
+    schedulable: true,
+    groupId: group.id
+  }, access)
   assert(account.boundGroupId, '认证预解析账户应绑定默认分组')
   const boundGroupId = account.boundGroupId
   const apiKey = repositories.createApiKeyRecord({
     name: '认证预解析 API Key',
     groupBindings: [{ groupId: boundGroupId, priority: 1, status: 'active' }],
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  }, access)
   return { id: apiKey.id, key: apiKey.key }
 }
 

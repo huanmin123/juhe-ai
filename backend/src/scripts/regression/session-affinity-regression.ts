@@ -349,6 +349,7 @@ function createAccount(
 ): OpenAIAccountSecret {
   return {
     id,
+    providerCode: 'openai',
     systemAccountId: 'system-a',
     accountOwnerSystemAccountId: 'system-a',
     groupOwnerSystemAccountId: 'system-a',

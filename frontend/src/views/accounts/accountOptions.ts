@@ -1,6 +1,6 @@
 import type { AccountStatus, ProviderDefinition } from '@/types/domain'
 
-export const FALLBACK_PROVIDER: ProviderDefinition = {
+export const OPENAI_PROVIDER: ProviderDefinition = {
   id: 'openai',
   code: 'openai',
   name: 'OpenAI',

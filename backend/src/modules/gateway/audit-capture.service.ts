@@ -118,7 +118,7 @@ export class AuditCaptureContext {
   private readonly fullBodyCapture: AuditFullBodyCaptureConfig
   private readonly payloads: AuditLogPayloadInput[] = []
   private readonly attempts: AuditLogAttemptInput[] = []
-  private gatewayContext: AuditGatewayContext = {}
+  private gatewayContext: AuditGatewayContext = { providerCode: 'openai' }
   private activeAttemptByTempId = new Map<string, AuditAttemptState>()
   private finalized = false
   private hadFailedAttempt = false
@@ -382,7 +382,7 @@ export class AuditCaptureContext {
       traceId: this.traceId,
       ...this.gatewayContext,
       accountId: input.accountId ?? this.gatewayContext.accountId,
-      providerCode: this.gatewayContext.providerCode ?? 'openai',
+      providerCode: this.gatewayContext.providerCode,
       trafficSource: this.gatewayContext.trafficSource ?? this.trafficSource,
       method: this.req.method.toUpperCase(),
       path: sanitizedOriginalUrl.split('?')[0] || this.req.path,

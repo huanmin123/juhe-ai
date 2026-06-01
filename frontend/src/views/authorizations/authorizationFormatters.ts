@@ -4,7 +4,8 @@ import {
   formatNumber,
   formatServerDateTimeInput,
   formatUsd,
-  parseDatePickerValue
+  parseStrictDatePickerValue,
+  serverDateTimeTimestamp
 } from '@/shared/formatters'
 import type {
   AccountUsageSummary,
@@ -166,8 +167,8 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
   return items.reduce<AccountUsageSummary>((summary, usage) => {
     const current = normalizeUsageSummary(usage)
     const lastUsedAt = [summary.lastUsedAt, current.lastUsedAt]
-      .filter((value): value is string => Boolean(value))
-      .sort((left, right) => Date.parse(right) - Date.parse(left))[0]
+      .filter((value): value is string => Boolean(value) && serverDateTimeTimestamp(value) !== undefined)
+      .sort((left, right) => serverDateTimeTimestamp(right)! - serverDateTimeTimestamp(left)!)[0]
     return {
       requestCount: summary.requestCount + current.requestCount,
       inputTokens: summary.inputTokens + current.inputTokens,
@@ -181,4 +182,4 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
   }, emptyUsageSummary())
 }
 
-export { formatDateTime, formatNumber, formatServerDateTimeInput, parseDatePickerValue }
+export { formatDateTime, formatNumber, formatServerDateTimeInput, parseStrictDatePickerValue }

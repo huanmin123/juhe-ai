@@ -12,8 +12,7 @@ import {
   type RecentOpenAIRequestShape,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { accountSystemAccountId } from '../../storage/resource-authorization-helpers.js'
-import { getRequestAuthContext, withRequestAuthContext } from '../auth/request-context.js'
+import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
 import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
 import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-effects.service.js'
@@ -26,7 +25,7 @@ const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
 const gatewayModelsPath = '/v1/models'
-const maxAccountTestResponseBytes = 1024 * 1024
+export const accountTestResponsePreviewBytes = 256 * 1024
 
 export async function testOpenAIAccount(
   account: AccountSummary,
@@ -222,8 +221,11 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
   account: OpenAIAccountSecret
 } {
   const systemAccountId = account.accessType === 'authorized'
-    ? account.bindingSystemAccountId ?? account.systemAccountId ?? authorizedCallerSystemAccountId(account) ?? account.ownerSystemAccountId ?? accountSystemAccountId(account.id) ?? 'sys_admin'
-    : account.systemAccountId ?? account.ownerSystemAccountId ?? accountSystemAccountId(account.id) ?? 'sys_admin'
+    ? account.bindingSystemAccountId
+    : account.ownerSystemAccountId ?? account.systemAccountId
+  if (!systemAccountId) {
+    throw new AccountTestConfigurationError('账户归属数据异常，无法执行网关测试')
+  }
   const groupId = input.groupId || account.boundGroupId
   if (!groupId) {
     throw new AccountTestConfigurationError('账户未绑定可用分组，无法按客户真实链路测试')
@@ -233,10 +235,6 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
     throw new AccountTestConfigurationError('账户不在当前分组或凭据不可用，无法执行网关测试')
   }
   return { systemAccountId, groupId, account: candidate }
-}
-
-function authorizedCallerSystemAccountId(account: AccountSummary): string | undefined {
-  return account.accessType === 'authorized' ? getRequestAuthContext()?.systemAccountId : undefined
 }
 
 function createGatewayTestRequest(path: string, body: Record<string, unknown>, rawBodyText: string, isOAuth: boolean, signal?: AbortSignal): Request {
@@ -329,7 +327,7 @@ export class MemoryGatewayResponse extends EventEmitter {
   writableEnded = false
   destroyed = false
   private readonly headers = new Map<string, string | string[]>()
-  private readonly body = new BoundedBufferCollector(maxAccountTestResponseBytes)
+  private readonly body = new BoundedBufferCollector(accountTestResponsePreviewBytes)
   private readonly streamInspector = new OpenAIStreamInspector()
   private firstOutputMs: number | undefined
 

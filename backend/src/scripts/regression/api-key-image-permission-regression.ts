@@ -232,6 +232,10 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
 
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const upstreamKey = 'sk-image-permission-upstream'
+  const group = repositories.createGroup({
+    name: '图像权限回归分组',
+    providerCode: 'openai'
+  }, access)
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '图像权限回归上游账号',
@@ -242,8 +246,9 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     },
     status: 'active',
     schedulable: true,
+    groupId: group.id
   }, access)
-  assert(account.boundGroupId, '新建账户应绑定默认分组')
+  assert.equal(account.boundGroupId, group.id, '新建账户应绑定指定分组')
   const boundGroupId = account.boundGroupId
 
   const apiKey = repositories.createApiKeyRecord({
@@ -352,7 +357,7 @@ async function requestLargeResponsesImageTool(baseUrl: string, apiKey: string): 
     },
     body: JSON.stringify({
       model: 'gpt-5.4',
-      input: 'x'.repeat(requestBodyModule.gatewayJsonBodyLargeWarningBytes),
+      input: 'x'.repeat(requestBodyModule.gatewayJsonBodyInlineParseMaxBytes + 32 * 1024),
       tools: [{ type: 'image_generation' }]
     })
   })

@@ -269,7 +269,7 @@ type AccountUsagePageState = { current: number; pageSize: number }
 const MAX_RANGE_DAYS = 31
 const accountUsagePageSize = 10
 const maxAddedTrendAccounts = 20
-const FALLBACK_PROVIDER: ProviderDefinition = {
+const OPENAI_PROVIDER: ProviderDefinition = {
   id: 'openai',
   code: 'openai',
   name: 'OpenAI',
@@ -384,7 +384,7 @@ const { pageActive, requestRender: renderChart } = useEchartsPageLifecycle({
   onBeforeUnmount: clearAccountOptionsSearchTimer
 })
 
-const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
+const availableProviders = computed(() => providers.value.length ? providers.value : [OPENAI_PROVIDER])
 const rows = computed(() => orderedUsageRows(accountUsageRows.value))
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
@@ -503,7 +503,7 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
     return
   }
   if (!isManagementView.value) {
-    providers.value = [FALLBACK_PROVIDER]
+    providers.value = [OPENAI_PROVIDER]
     usageStatsOptionsLoaded.value = true
     usageStatsOptionsScopeKey.value = scopeKey
     return
@@ -512,7 +512,7 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
   const [providerList] = await Promise.all([
     api.providers.list()
   ])
-  providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
+  providers.value = providerList.length ? providerList : [OPENAI_PROVIDER]
   usageStatsOptionsLoaded.value = true
   usageStatsOptionsScopeKey.value = scopeKey
 }
@@ -835,19 +835,20 @@ function trendDateKeys(): string[] {
 
 function placeholderTrendRow(id: string): AccountUsageStatsRow | undefined {
   const option = accountOptionById.value.get(id)
+  if (!option?.name?.trim() || !option.providerCode || !option.type || !option.status) return undefined
+  const ownerSystemAccountId = option.ownerSystemAccountId ?? option.systemAccountId
+  if (!ownerSystemAccountId) return undefined
   const selection = addedTrendSelectionById.value.get(id)
-  const name = option?.name?.trim() || selection?.name?.trim()
-  if (!name) return undefined
   return {
     id,
     systemAccountId: option?.systemAccountId,
     systemAccountName: option?.systemAccountName,
-    ownerSystemAccountId: option?.ownerSystemAccountId ?? option?.systemAccountId ?? '',
+    ownerSystemAccountId,
     ownerSystemAccountName: option?.ownerSystemAccountName ?? selection?.ownerSystemAccountName,
-    providerCode: option?.providerCode ?? 'openai',
-    name,
-    type: option?.type ?? 'api_key',
-    status: option?.status ?? 'active',
+    providerCode: option.providerCode,
+    name: option.name.trim(),
+    type: option.type,
+    status: option.status,
     accessType: option?.accessType ?? selection?.accessType,
     rangeUsage: zeroUsageSummary(),
     dailyUsage: trendDateKeys().map((statDate) => ({ ...zeroUsageSummary(), statDate })),

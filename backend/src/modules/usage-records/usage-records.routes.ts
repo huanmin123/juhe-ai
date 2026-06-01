@@ -35,7 +35,7 @@ function withCostBreakdown(record: UsageRecordSummary) {
   return {
     ...record,
     costBreakdown: buildProviderCostBreakdown({
-      providerCode: record.providerCode ?? 'openai',
+      providerCode: requiredUsageRecordProviderCode(record),
       model: record.model,
       inputTokens: record.inputTokens,
       outputTokens: record.outputTokens,
@@ -45,6 +45,13 @@ function withCostBreakdown(record: UsageRecordSummary) {
       costUsd: record.costUsd
     })
   }
+}
+
+function requiredUsageRecordProviderCode(record: UsageRecordSummary): string {
+  if (!record.providerCode) {
+    throw new Error(`使用记录缺少供应商编码：${record.id}`)
+  }
+  return record.providerCode
 }
 
 function parseListOptions(query: Record<string, unknown>): UsageRecordListOptions {

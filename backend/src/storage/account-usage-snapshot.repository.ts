@@ -1,4 +1,3 @@
-import { currentSystemAccountId } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
@@ -18,7 +17,6 @@ export function upsertAccountUsageSnapshots(inputs: AccountUsageSnapshotUpsertIn
   if (inputs.length === 0) return
 
   const now = nowIso()
-  const fallbackSystemAccountId = currentSystemAccountId()
   const ownersByAccountId = loadAccountSystemAccountIds(inputs.map((input) => input.accountId))
   const database = getStatsDatabase()
   const upsert = database.prepare(`
@@ -40,7 +38,10 @@ export function upsertAccountUsageSnapshots(inputs: AccountUsageSnapshotUpsertIn
   try {
     for (const input of inputs) {
       const updatedAt = input.updatedAt ?? now
-      const systemAccountId = ownersByAccountId.get(input.accountId) ?? fallbackSystemAccountId
+      const systemAccountId = ownersByAccountId.get(input.accountId)
+      if (!systemAccountId) {
+        throw new Error(`账户用量快照缺少账户归属：${input.accountId}`)
+      }
       upsert.run(
         systemAccountId,
         input.accountId,
@@ -69,7 +70,10 @@ export function updateAccountUsageSnapshotRefreshState(input: {
   errorMessage?: string
 }): void {
   const now = nowIso()
-  const systemAccountId = accountSystemAccountId(input.accountId) ?? currentSystemAccountId()
+  const systemAccountId = accountSystemAccountId(input.accountId)
+  if (!systemAccountId) {
+    throw new Error(`账户用量刷新状态缺少账户归属：${input.accountId}`)
+  }
   getStatsDatabase()
     .prepare(`
       INSERT INTO account_usage_snapshots (

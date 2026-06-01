@@ -401,7 +401,7 @@ export function gatewayProxyKey(account: Pick<UpstreamAccount, 'proxyProfileId' 
 }
 
 export function gatewayUpstreamBucketKeys(
-  account: Pick<UpstreamAccount, 'baseUrl' | 'type' | 'proxyProfileId' | 'proxyUrl'>,
+  account: Pick<UpstreamAccount, 'providerCode' | 'baseUrl' | 'type' | 'proxyProfileId' | 'proxyUrl'>,
   scope: 'all' | 'proxy' | 'upstream' = 'all'
 ): string[] {
   const keys: string[] = []
@@ -427,9 +427,8 @@ function gatewayBaseUrlKey(account: Pick<UpstreamAccount, 'baseUrl' | 'type'>): 
   return normalized ? `baseUrl:${normalized}` : undefined
 }
 
-function gatewayProviderKey(account: Pick<UpstreamAccount, 'type'>): string {
-  const providerCode = stringProperty(account, 'providerCode') || 'openai'
-  return `provider:${providerCode}`
+function gatewayProviderKey(account: Pick<UpstreamAccount, 'providerCode'>): string {
+  return `provider:${account.providerCode}`
 }
 
 function normalizeOpenAIBaseUrlForBucket(value: unknown): string | undefined {

@@ -268,6 +268,9 @@ CREATE INDEX idx_api_key_group_bindings_group
 
 CREATE INDEX idx_api_key_group_bindings_owner
   ON api_key_group_bindings(system_account_id, api_key_id);
+
+CREATE INDEX idx_api_key_group_bindings_owner_group_key
+  ON api_key_group_bindings(system_account_id, group_id, api_key_id);
 ```
 
 字段说明：
@@ -295,6 +298,7 @@ CREATE INDEX idx_api_key_group_bindings_owner
 
 - 默认分组仍不允许删除。
 - 删除非默认分组前，如果该分组是某个 API Key 的最后一个 active 绑定，后端应拒绝并提示先调整该 Key 的号池。
+- 删除分组前只读取最多 101 条受影响 API Key 绑定作为固定窗口预检；如果受影响 API Key 超过 100 个，后端拒绝本次删除，要求先分批解除绑定后再删除分组，避免管理请求在业务库内全量枚举和大事务删除。
 - 如果该分组不是最后一个 active 绑定，删除分组时在同一业务库事务内同步删除相关绑定，刷新 Key 校验缓存并写操作日志。操作日志记录受影响的 API Key 路由摘要，并把受影响 API Key 作为 affected target，方便追溯绑定移除。
 
 API Key 删除规则：

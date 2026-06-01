@@ -58,6 +58,7 @@ export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsa
   const hourlySeries = accounts.map((account) => ({
     accountId: account.id,
     accountName: account.name,
+    providerCode: account.providerCode,
     systemAccountId: account.systemAccountId,
     points: hourBuckets.map((statHour) => {
       const row = hourlyRowsByAccountHour.get(`${account.id}\n${statHour}`)

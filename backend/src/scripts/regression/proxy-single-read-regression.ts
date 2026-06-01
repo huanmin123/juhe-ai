@@ -21,6 +21,7 @@ const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
+const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
   let targetId = ''
@@ -31,7 +32,7 @@ try {
       host: '127.0.0.1',
       port: 10_000 + index,
       enabled: true
-    })
+    }, access)
     if (index === 0) {
       targetId = proxy.id
     }

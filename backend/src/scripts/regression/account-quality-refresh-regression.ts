@@ -31,6 +31,11 @@ try {
   assertSourceGuards()
 
   const statsDatabase = databaseModule.getStatsDatabase()
+  const group = repositories.createGroup({
+    name: '账号质量刷新回归分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '质量刷新回归账户',
@@ -39,6 +44,7 @@ try {
       api_key: 'sk-account-quality-refresh',
       base_url: 'http://127.0.0.1:9/v1'
     },
+    groupId: group.id,
     status: 'active'
   }, access)
   const staleAccount = repositories.createAccount({
@@ -49,6 +55,7 @@ try {
       api_key: 'sk-account-quality-stale-refresh',
       base_url: 'http://127.0.0.1:9/v1'
     },
+    groupId: group.id,
     status: 'active'
   }, access)
   const batchAccounts = Array.from({ length: 5 }, (_, index) => repositories.createAccount({
@@ -59,6 +66,7 @@ try {
       api_key: `sk-account-quality-batch-${index}`,
       base_url: 'http://127.0.0.1:9/v1'
     },
+    groupId: group.id,
     status: 'active'
   }, access))
   const nowDate = new Date()
@@ -74,6 +82,7 @@ try {
       ) VALUES (?, ?, ?, ?, 1, 0, 1, 0, 0, ?, NULL, ?, ?, ?)
     `)
     .run(account.id, 'sys_admin', 'openai', statMinute, now, now, '质量刷新模拟错误', now)
+  markAccountQualityDirty(account.id, now)
   for (const [index, batchAccount] of batchAccounts.entries()) {
     statsDatabase
       .prepare(`
@@ -84,6 +93,7 @@ try {
         ) VALUES (?, ?, ?, ?, 1, 1, 0, ?, 1, ?, ?, NULL, NULL, ?)
       `)
       .run(batchAccount.id, 'sys_admin', 'openai', statMinute, 800 + index, now, now, now)
+    markAccountQualityDirty(batchAccount.id, now)
   }
   for (let index = 0; index < 1205; index += 1) {
     const inactiveMinute = minuteKey(new Date(nowDate.getTime() - (60 + index) * 60 * 1000), usageStatsTimezone())
@@ -126,6 +136,7 @@ try {
   assert.equal(result.refreshed, 1 + batchAccounts.length, '账号质量刷新应处理分钟桶样本')
   assert.equal(qualityScoreUpsertPrepares, 1, '账号质量刷新应复用 account_quality_scores upsert statement')
   assert.equal(inactiveQualityMinuteCount(inactiveAccountId), 205, '账号质量刷新应小批清理已失效账户分钟桶，剩余等待后续轮次')
+  assert.equal(accountQualityDirtyCount(), 0, '账号质量刷新成功后应删除已消费的 dirty 账号窗口')
   const row = statsDatabase
     .prepare('SELECT quality_score, quality_state, recent_error_count, last_error_message FROM account_quality_scores WHERE account_id = ?')
     .get(account.id) as { quality_score?: number; quality_state?: string; recent_error_count?: number; last_error_message?: string } | undefined
@@ -163,10 +174,34 @@ function inactiveQualityMinuteCount(accountId: string): number {
   return Number(row?.total ?? 0)
 }
 
+function markAccountQualityDirty(accountId: string, updatedAt: string): void {
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO account_quality_dirty_accounts (account_id, first_dirty_at, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(account_id) DO UPDATE SET updated_at = excluded.updated_at
+    `)
+    .run(accountId, updatedAt, updatedAt)
+}
+
+function accountQualityDirtyCount(): number {
+  const row = databaseModule.getStatsDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM account_quality_dirty_accounts')
+    .get() as { total?: number } | undefined
+  return Number(row?.total ?? 0)
+}
+
 function assertSourceGuards(): void {
   const source = readFileSync(resolve('src/storage/account-quality.repository.ts'), 'utf8')
+  const schemaSource = readFileSync(resolve('src/storage/schema/stats-schema.ts'), 'utf8')
+  const writerSource = readFileSync(resolve('src/storage/usage-stats-writers.ts'), 'utf8')
   assert.doesNotMatch(source, /SELECT id, system_account_id, provider_code FROM accounts'\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部账号元数据')
   assert.doesNotMatch(source, /SELECT \$\{accountQualitySelectColumns\(\)\} FROM account_quality_scores`\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部质量缓存')
+  assert.doesNotMatch(source, /FROM account_quality_minute_stats quality_stats\s+WHERE quality_stats\.stat_minute >= \?\s+GROUP BY quality_stats\.account_id/i, '账号质量刷新不应按近窗口全量 GROUP BY 所有样本账号')
+  assert.match(source, /account_quality_dirty_accounts INDEXED BY idx_account_quality_dirty_accounts_updated/, '账号质量刷新应先读取固定 dirty 账号窗口')
+  assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts/, '统计库应保存账号质量 dirty 游标表')
+  assert.match(schemaSource, /idx_account_quality_dirty_accounts_updated/, '账号质量 dirty 表应有更新时间窗口索引')
+  assert.match(writerSource, /markAccountQualityDirty/, '用量统计写入账号质量分钟桶时应同步打 dirty 标记')
   assert.match(source, /loadQualityAccountMetadataByIds/, '账号质量刷新应按样本或固定候选账号批量补业务元数据')
   assert.match(source, /ORDER BY updated_at ASC, account_id ASC\s+LIMIT \?/, '账号质量缓存清理和 stale 推进必须按固定批次')
   assert.match(source, /temp_refreshed_quality_accounts/, '账号质量 stale 推进应避开本轮已刷新账号')

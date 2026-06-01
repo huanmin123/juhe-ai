@@ -189,8 +189,11 @@ const buildRuleFromPayload = (value: unknown): AccountErrorPolicyRuleForm => {
 }
 
 export const loadAccountErrorPolicyRules = (credentials?: Record<string, unknown>): AccountErrorPolicyRuleForm[] => {
-  if (!credentials || !Array.isArray(credentials.error_handling_rules)) {
+  if (!credentials || !Object.prototype.hasOwnProperty.call(credentials, 'error_handling_rules')) {
     return []
+  }
+  if (!Array.isArray(credentials.error_handling_rules)) {
+    throw new Error('账户错误处理规则必须是数组')
   }
   return credentials.error_handling_rules.map(buildRuleFromPayload)
 }

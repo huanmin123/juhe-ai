@@ -197,7 +197,6 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       'expires_at',
       'quota_limits_json',
       'availability_schedule_json',
-      'scopes_json',
       'created_at',
       'updated_at'
     ]
@@ -214,7 +213,6 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       record.expiresAt ?? null,
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
-      JSON.stringify([]),
       now,
       now
     ]

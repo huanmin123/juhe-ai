@@ -64,6 +64,7 @@ export interface AiPerformancePoint {
 export interface AiPerformanceAccountSeries {
   accountId: string
   accountName: string
+  providerCode: ProviderCode
   systemAccountId: string
   points: AiPerformancePoint[]
 }

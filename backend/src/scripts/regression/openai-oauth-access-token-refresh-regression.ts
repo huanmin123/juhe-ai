@@ -28,9 +28,15 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const refreshedByToken = new Set<string>()
+let oauthGroupId = ''
 
 async function main(): Promise<void> {
   try {
+    const group = repositories.createGroup({
+      name: 'OAuth 后台保活回归分组',
+      providerCode: 'openai'
+    }, access)
+    oauthGroupId = group.id
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
       refreshedByToken.add(refreshToken)
       return {
@@ -54,7 +60,8 @@ async function main(): Promise<void> {
       type: 'api_key',
       credentials: { api_key: 'sk-not-oauth', base_url: 'https://api.openai.com/v1' },
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      groupId: oauthGroupId
     }, access)
     const freshOAuthAccount = repositories.createAccount({
       providerCode: 'openai',
@@ -62,7 +69,8 @@ async function main(): Promise<void> {
       type: 'oauth',
       credentials: oauthCredentials('fresh-token', new Date(Date.now() + 3600_000).toISOString()),
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      groupId: oauthGroupId
     }, access)
 
     const result = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
@@ -81,8 +89,8 @@ async function main(): Promise<void> {
 
     assert(!refreshedByToken.has('fresh-token'), '未到期 OAuth 账户不应刷新')
     assert(!refreshedByToken.has('sk-not-oauth'), 'API Key 账户不应参与 OAuth 刷新')
-    assert(repositories.listAccounts().some((account) => account.id === apiKeyAccount.id), 'API Key 对照账户应仍存在')
-    assert(repositories.listAccounts().some((account) => account.id === freshOAuthAccount.id), '未到期 OAuth 对照账户应仍存在')
+    assert(repositories.listAccounts(access).some((account) => account.id === apiKeyAccount.id), 'API Key 对照账户应仍存在')
+    assert(repositories.listAccounts(access).some((account) => account.id === freshOAuthAccount.id), '未到期 OAuth 对照账户应仍存在')
 
     for (const account of dueAccounts) {
       const latest = repositories.findAccountForTest(account.id, access)
@@ -180,7 +188,8 @@ function createOAuthAccount(
     type: 'oauth',
     credentials: oauthCredentials(refreshToken, overrides.expiresAt ?? new Date(Date.now() + 60_000).toISOString(), overrides.accessToken),
     status,
-    schedulable
+    schedulable,
+    groupId: oauthGroupId
   }, access)
   return {
     id: account.id,

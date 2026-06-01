@@ -102,10 +102,13 @@ export function resolveGroupSchedulingPolicy(groupType: GroupType, value: unknow
 }
 
 export function parseGroupSchedulingPolicyJson(value: string | null | undefined, groupType: GroupType): GroupSchedulingPolicy | undefined {
-  if (typeof value !== 'string' || !value.trim()) {
-    return resolveStoredGroupSchedulingPolicy(groupType, undefined)
+  if (groupType !== 'high_concurrency') {
+    return undefined
   }
-  return resolveStoredGroupSchedulingPolicy(groupType, JSON.parse(value) as unknown)
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('高并发分组调度策略缺失')
+  }
+  return resolveStoredGroupSchedulingPolicy(JSON.parse(value) as unknown)
 }
 
 export function groupSchedulingPolicyJson(value: unknown, groupType: GroupType): string | null {
@@ -172,13 +175,15 @@ function clientIpConcurrencyOverflowMode(value: unknown): 'reject' | 'queue' {
   throw new Error('分组调度策略 clientIpConcurrencyOverflowMode 无效')
 }
 
-function resolveStoredGroupSchedulingPolicy(groupType: GroupType, value: unknown): GroupSchedulingPolicy | undefined {
-  if (groupType !== 'high_concurrency') {
-    return undefined
-  }
-  const input = objectValue(value)
+function resolveStoredGroupSchedulingPolicy(value: unknown): GroupSchedulingPolicy {
+  const input = requiredObjectValue(value)
   assertOnlyKeys(input, storedGroupSchedulingPolicyKeys, '分组调度策略')
-  return resolveGroupSchedulingPolicy(groupType, input)
+  assertRequiredKeys(input, storedGroupSchedulingPolicyKeys, '分组调度策略')
+  const policy = resolveGroupSchedulingPolicy('high_concurrency', input)
+  if (!policy) {
+    throw new Error('高并发分组调度策略无效')
+  }
+  return policy
 }
 
 function resolveWritableGroupSchedulingPolicy(groupType: GroupType, value: unknown): GroupSchedulingPolicy | undefined {
@@ -230,4 +235,18 @@ function assertOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly st
   if (unknownKeys.length) {
     throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
   }
+}
+
+function assertRequiredKeys(value: Record<string, unknown>, requiredKeys: readonly string[], label: string): void {
+  const missingKeys = requiredKeys.filter((key) => value[key] === undefined || value[key] === null)
+  if (missingKeys.length) {
+    throw new Error(`${label}缺少字段：${missingKeys.join('、')}`)
+  }
+}
+
+function requiredObjectValue(value: unknown): Record<string, unknown> {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  throw new Error('分组调度策略无效')
 }

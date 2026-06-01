@@ -3,10 +3,13 @@ import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString } from './value-utils.js'
+import { currentSystemAccountId, type AccessScope } from './access-scope.js'
 
 const proxyTypeValues = ['http', 'https', 'socks5', 'socks5h'] as const
 const proxyTestStatusValues = ['unknown', 'passed', 'warning', 'failed'] as const
 const proxyInputKeys = new Set(['name', 'description', 'type', 'host', 'port', 'username', 'password', 'enabled'])
+const proxyUsagePreviewLimit = 3
+const proxyUsageWindowLimit = proxyUsagePreviewLimit + 1
 export type ProxyProfileTestStatus = typeof proxyTestStatusValues[number]
 
 interface ProxyRow {
@@ -76,9 +79,12 @@ export interface ProxyProfileUrlResolution {
 }
 
 export class ProxyInUseError extends Error {
-  constructor(readonly accountCount: number, readonly accountNames: string[]) {
-    const names = accountNames.length > 0 ? `：${accountNames.join('、')}${accountCount > accountNames.length ? ' 等' : ''}` : ''
-    super(`这个代理仍被 ${accountCount} 个账户使用，请先在账户管理中解绑或改绑后再删除${names}`)
+  constructor(readonly accountCount: number, readonly accountNames: string[], readonly accountCountIsLowerBound = false) {
+    const names = accountNames.length > 0
+      ? `：${accountNames.join('、')}${accountCountIsLowerBound || accountCount > accountNames.length ? ' 等' : ''}`
+      : ''
+    const countText = accountCountIsLowerBound ? `至少 ${accountCount}` : String(accountCount)
+    super(`这个代理仍被 ${countText} 个账户使用，请先在账户管理中解绑或改绑后再删除${names}`)
     this.name = 'ProxyInUseError'
   }
 }
@@ -227,9 +233,10 @@ function proxyTestConfigSelectColumns(): string {
   ].join(', ')
 }
 
-export function createProxy(input: Record<string, unknown>): ProxyProfileSummary {
+export function createProxy(input: Record<string, unknown>, access: AccessScope): ProxyProfileSummary {
   assertKnownInputKeys(input, proxyInputKeys, '代理')
   const now = nowIso()
+  const systemAccountId = currentSystemAccountId(access)
   const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
   const password = normalizeProxyPassword(input.password, hasPasswordInput)
   const proxy: ProxyProfileSummary = {
@@ -251,10 +258,10 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
   try {
     getBusinessDatabase()
       .prepare(`
-        INSERT INTO proxy_profiles (id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO proxy_profiles (id, system_account_id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(proxy.id, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, password ? encryptJson({ password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
+      .run(proxy.id, systemAccountId, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, password ? encryptJson({ password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
   } catch (error) {
     if (isDuplicateProxyNameError(error)) {
       throw new Error(`代理名称已存在：${proxy.name}`)
@@ -389,7 +396,7 @@ export function updateProxyTestState(
 export function deleteProxy(id: string): boolean {
   const usage = proxyUsageSummary(id)
   if (usage.accountCount > 0) {
-    throw new ProxyInUseError(usage.accountCount, usage.accountNames)
+    throw new ProxyInUseError(usage.accountCount, usage.accountNames, usage.accountCountIsLowerBound)
   }
   const result = getBusinessDatabase().prepare('DELETE FROM proxy_profiles WHERE id = ?').run(id)
   if (Number(result.changes ?? 0) > 0) {
@@ -398,20 +405,19 @@ export function deleteProxy(id: string): boolean {
   return result.changes > 0
 }
 
-function proxyUsageSummary(id: string): { accountCount: number; accountNames: string[] } {
-  const row = getBusinessDatabase()
-    .prepare('SELECT COUNT(*) AS account_count FROM accounts WHERE proxy_profile_id = ?')
-    .get(id) as unknown as { account_count?: number } | undefined
-  const accountCount = Number(row?.account_count ?? 0)
-  if (accountCount <= 0) {
-    return { accountCount: 0, accountNames: [] }
-  }
+function proxyUsageSummary(id: string): { accountCount: number; accountCountIsLowerBound: boolean; accountNames: string[] } {
   const rows = getBusinessDatabase()
-    .prepare('SELECT name FROM accounts WHERE proxy_profile_id = ? ORDER BY name ASC, id ASC LIMIT 3')
-    .all(id) as unknown as Array<{ name?: string }>
+    .prepare('SELECT id, name FROM accounts WHERE proxy_profile_id = ? ORDER BY id ASC LIMIT ?')
+    .all(id, proxyUsageWindowLimit) as unknown as Array<{ id?: string; name?: string }>
+  const accountCountIsLowerBound = rows.length >= proxyUsageWindowLimit
+  const accountCount = rows.length
   return {
     accountCount,
-    accountNames: rows.map((item) => item.name).filter((name): name is string => Boolean(name))
+    accountCountIsLowerBound,
+    accountNames: rows
+      .slice(0, proxyUsagePreviewLimit)
+      .map((item) => item.name)
+      .filter((name): name is string => Boolean(name))
   }
 }
 

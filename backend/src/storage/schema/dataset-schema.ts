@@ -8,9 +8,9 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS model_check_runs (
           id TEXT PRIMARY KEY,
-          system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
-          actor_system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
-          provider_code TEXT NOT NULL DEFAULT 'openai',
+          system_account_id TEXT NOT NULL,
+          actor_system_account_id TEXT NOT NULL,
+          provider_code TEXT NOT NULL,
           target_type TEXT NOT NULL,
           target_id TEXT NOT NULL,
           target_name TEXT,
@@ -61,7 +61,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS audit_logs (
           id TEXT PRIMARY KEY,
           trace_id TEXT NOT NULL,
-          traffic_source TEXT NOT NULL DEFAULT 'gateway',
+          traffic_source TEXT NOT NULL,
           system_account_id TEXT,
           api_key_id TEXT,
           group_id TEXT,
@@ -335,11 +335,12 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_record_shard_entries (
           usage_id TEXT PRIMARY KEY,
           shard_key TEXT NOT NULL,
-          system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+          system_account_id TEXT NOT NULL,
+          api_key_id TEXT,
           account_id TEXT,
           group_id TEXT,
           model TEXT,
-          traffic_source TEXT NOT NULL DEFAULT 'gateway',
+          traffic_source TEXT NOT NULL,
           success INTEGER NOT NULL DEFAULT 0,
           status_code INTEGER,
           client_ip TEXT,
@@ -348,6 +349,25 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           cost_usd REAL,
           created_at TEXT NOT NULL,
           indexed_at TEXT NOT NULL,
+          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
+        );
+
+    CREATE TABLE IF NOT EXISTS usage_record_account_shards (
+          account_id TEXT NOT NULL,
+          shard_key TEXT NOT NULL,
+          first_created_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          PRIMARY KEY (account_id, shard_key),
+          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
+        );
+
+    CREATE TABLE IF NOT EXISTS usage_record_api_key_shards (
+          api_key_id TEXT NOT NULL,
+          system_account_id TEXT NOT NULL,
+          shard_key TEXT NOT NULL,
+          first_created_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          PRIMARY KEY (api_key_id, system_account_id, shard_key),
           FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
         );
 
@@ -486,9 +506,12 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_record_cleanup_targets_attempt ON account_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_record_shards_bucket ON usage_record_shards(bucket_date, shard_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_account_shards_account_created ON usage_record_account_shards(account_id, first_created_at, shard_key);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_api_key_shards_key_created ON usage_record_api_key_shards(api_key_id, system_account_id, first_created_at, shard_key);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_shard ON usage_record_shard_entries(shard_key, created_at);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_created_sort ON usage_record_shard_entries(created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_created_sort ON usage_record_shard_entries(system_account_id, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_api_key_created_sort ON usage_record_shard_entries(api_key_id, system_account_id, created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_group_created_sort ON usage_record_shard_entries(group_id, created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_group_created_sort ON usage_record_shard_entries(system_account_id, group_id, created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_model_created_sort ON usage_record_shard_entries(model, created_at, usage_id);

@@ -48,10 +48,15 @@ try {
 
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  const group = repositories.createGroup({
+    name: '账户测试 Responses 当前契约分组',
+    providerCode: 'openai'
+  }, { systemAccountId: admin.id, role: 'admin' })
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '测试 Responses 当前契约账户',
     type: 'api_key',
+    groupId: group.id,
     credentials: { api_key: 'sk-account-test-responses-contract', base_url: mockBaseUrl }
   }, { systemAccountId: admin.id, role: 'admin' })
 

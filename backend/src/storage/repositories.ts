@@ -9,6 +9,7 @@ import { listProviderModelPricing } from '../modules/model-pricing/model-pricing
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
+import { accountCredentialFingerprint, accountIdentityFingerprint } from './account-identity.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { cleanupDeletedAccountDetachedStats, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
 import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
@@ -26,11 +27,11 @@ import {
   getAccountUsageStatsOverviewPageFromWindows as buildAccountUsageStatsOverviewPageFromWindows
 } from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
+import { maxGroupDeleteAffectedApiKeyRoutes } from './api-key-group-binding-limits.js'
 import { createApiKeyRecord, deleteApiKey, findApiKeySummary, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
 import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
-import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
+import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
 import { findGroupRowForAccess, listGroupOptionRowsForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions, type GroupOptionListOptions } from './group-read.repository.js'
@@ -95,13 +96,11 @@ import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey
 import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
-  jsonObjectOrNull,
   nullableServerDateTimeIso,
   optionalNullableServerDateTimeIso,
   optionalNullableString,
   optionalServerDateTimeIso,
-  optionalString,
-  parseOptionalJsonObject
+  optionalString
 } from './value-utils.js'
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
@@ -110,6 +109,7 @@ const defaultResourceAuthorizationUsageDetailPageSize = 200
 const temporaryUnavailableInitialBackoffSeconds = 3
 const temporaryUnavailableFastThresholdSeconds = 60
 const temporaryUnavailableBackoffMultiplier = 2
+const internalAccountReadAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin' }
 type AccountOptionFilterValue = string | number
 const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
@@ -198,7 +198,9 @@ export {
 export {
   cleanupDeletedAccountDetachedStats,
   cleanupDeletedAccountRelatedRecordData,
+  cleanupDeletedAccountRelatedRecordDataAsync,
   cleanupPendingDeletedAccountRecordTargets,
+  cleanupPendingDeletedAccountRecordTargetsAsync,
   listDeletedAccountRecordCleanupTargets,
   registerDeletedAccountRecordCleanupTarget,
   type DeletedAccountDetachedStatsCleanupTarget,
@@ -208,7 +210,9 @@ export {
 } from './account-record-cleanup.js'
 export {
   cleanupDeletedApiKeyRelatedRecordData,
+  cleanupDeletedApiKeyRelatedRecordDataAsync,
   cleanupPendingDeletedApiKeyRecordTargets,
+  cleanupPendingDeletedApiKeyRecordTargetsAsync,
   getDeletedApiKeyRecordCleanupQueueSummary,
   listDeletedApiKeyRecordCleanupQueueTargets,
   listDeletedApiKeyRecordCleanupTargets,
@@ -322,8 +326,11 @@ export type {
 } from './api-key.repository.js'
 export {
   cleanupAuditLogsByRetention,
+  cleanupAuditLogsByRetentionAsync,
   cleanupAuditLogsBefore,
+  cleanupAuditLogsBeforeAsync,
   cleanupUnreferencedAuditPayloadBlobs,
+  cleanupUnreferencedAuditPayloadBlobsAsync,
   createAuditLogsBatch,
   createAuditLogsBatchAsync,
   getAuditLogDetail,
@@ -810,6 +817,22 @@ function normalizeOptionalRequiredTextInput(input: Record<string, unknown>, key:
   return requiredTextInput(input[key], label)
 }
 
+function normalizeNullableTextInput(value: unknown, label: string): string | undefined {
+  try {
+    return optionalNullableString(value) ?? undefined
+  } catch {
+    throw new Error(`${label}必须是字符串`)
+  }
+}
+
+function normalizeNullableIdInput(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label}无效`)
+  }
+  return value.trim()
+}
+
 function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {
   const unknownKeys = Object.keys(input).filter((key) => !allowedKeys.has(key))
   if (unknownKeys.length) {
@@ -871,7 +894,7 @@ function writeSystemAccountId(access?: AccessScope): string {
   return manageableSystemAccountId(access) ?? currentSystemAccountId(access)
 }
 
-function validAccountIdsForGroup(providerCode: string, accountIds: string[], systemAccountId = currentSystemAccountId()): string[] {
+function validAccountIdsForGroup(providerCode: string, accountIds: string[], systemAccountId: string): string[] {
   const uniqueIds = [...new Set(accountIds)]
   const accountsById = new Map<string, { provider_code?: string }>()
   const database = getBusinessDatabase()
@@ -1018,13 +1041,6 @@ function copyOptionalCredentialText(input: Record<string, unknown>, output: Reco
   if (value) output[key] = value
 }
 
-function accountFingerprint(providerCode: string, type: string, baseUrl: string, secret: string): string {
-  void providerCode
-  void type
-  void baseUrl
-  return hashSecret(secret.trim())
-}
-
 function requiredAccountCredentialSource(accountType: string, credentials: Record<string, unknown>): string {
   if (accountType === 'oauth') {
     return requiredTextInput(credentials.refresh_token ?? credentials.access_token, 'OAuth 凭据')
@@ -1050,7 +1066,8 @@ function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode
 function isDuplicateAccountCredentialError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const databaseError = error as Error & { code?: string }
-  return databaseError.message.includes('UNIQUE constraint failed: accounts.credential_fingerprint')
+  return databaseError.message.includes('UNIQUE constraint failed: accounts.account_identity_fingerprint')
+    || databaseError.message.includes('idx_accounts_identity_fingerprint')
 }
 
 function throwDuplicateAccountCredentialError(): never {
@@ -1216,6 +1233,10 @@ export function findAccountSummary(accountId: string, access?: AccessScope): Acc
   return accountSummariesFromRows(hydratedRows, access, viewerSystemAccountId)[0]
 }
 
+function findInternalAccountSummary(accountId: string): AccountSummary | undefined {
+  return findAccountSummary(accountId, internalAccountReadAccess)
+}
+
 function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
@@ -1281,12 +1302,7 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
     `, filters.params)
   }
   if (!viewerSystemAccountId) {
-    const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
-    return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at
-      FROM accounts
-      WHERE 1 = 1${filters.clause}
-    `, filters.params)
+    throw new Error('缺少系统账户上下文')
   }
 
   const ownerId = ownerSystemAccountId ?? viewerSystemAccountId
@@ -1547,7 +1563,7 @@ function accountSummariesFromRows(
       cooldownRetestLastStatusCode: isAuthorizedView ? undefined : optionalNumber(row.cooldown_retest_last_status_code),
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-      lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? usage.lastUsedAt,
+      lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? undefined,
       todayUsage,
       usage,
       oauthUsage: resourceProviderCode === 'openai' && resourceType === 'oauth' ? oauthUsageByAccount.get(accountResourceFactAccountId(row)) : undefined,
@@ -1729,7 +1745,8 @@ function loadAccountUsageDefaultTrendAccountIds(access?: AccessScope): string[] 
 }
 
 export function findAccountForTest(accountId: string, access?: AccessScope): AccountSummary | undefined {
-  const visibleAccount = findAccountSummary(accountId, access)
+  const accountAccess = access ?? internalAccountReadAccess
+  const visibleAccount = findAccountSummary(accountId, accountAccess)
   if (!visibleAccount?.permissions?.canUse) {
     return undefined
   }
@@ -1969,7 +1986,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const now = new Date(nowMs).toISOString()
   const id = newId('acc')
   const providerCode = requiredTextInput(input.providerCode, '供应商')
-  const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : undefined
+  const explicitGroupId = hasOwnInput(input, 'groupId') ? normalizeNullableIdInput(input.groupId, '账户分组') : undefined
   const explicitGroup = explicitGroupId ? groupOwnerAndProvider(explicitGroupId) : undefined
   const requestedSystemAccountId = writeSystemAccountId(access)
   const systemAccountId = explicitGroup && canManageResourceOwner(explicitGroup.systemAccountId, access) ? explicitGroup.systemAccountId : requestedSystemAccountId
@@ -1985,7 +2002,10 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const credentialSource = requiredAccountCredentialSource(accountType, credentials)
   const baseUrl = requiredTextInput(credentials.base_url, 'Base URL')
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
-    ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
+    ? accountCredentialFingerprint(credentialSource)
+    : null
+  const accountIdentity = typeof credentialSource === 'string' && credentialSource.trim()
+    ? accountIdentityFingerprint({ providerCode, type: accountType, baseUrl, secret: credentialSource })
     : null
   const oauthRefreshMetadata = openAIOAuthRefreshMetadata(accountType, credentials)
   const accountExpiresAt = hasOwnInput(input, 'accountExpiresAt')
@@ -1998,7 +2018,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const nextStatus = expiredByPackage ? 'disabled' : initialStatus
   const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
   const initialObservationStartedAt = expiredByPackage ? undefined : cooldownRetestObservationStartedAtForStatus(initialStatus, nowMs)
-  const groupId = explicitGroupId ?? defaultGroupIdForSystemAccount(providerCode, systemAccountId)
+  const groupId = explicitGroupId
   if (!groupId) {
     throw new Error('账户分组不能为空')
   }
@@ -2006,7 +2026,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
     throw new Error('账户分组无效')
   }
-  const proxyProfileId = globalProxyProfileId(optionalString(input.proxyProfileId))
+  const proxyProfileId = globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
   const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled, false)
   const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
   if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
@@ -2022,7 +2042,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     providerCode,
     name: requiredTextInput(input.name, '账户名称'),
-    notes: optionalString(input.notes),
+    notes: normalizeNullableTextInput(input.notes, '账户备注'),
     type: accountType,
     credentials,
     status: nextStatus,
@@ -2033,7 +2053,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     fallbackEnabled: createFallbackEnabled,
     supportedModels,
     proxyProfileId,
-    errorPolicyId: optionalString(input.errorPolicyId),
+    errorPolicyId: normalizeNullableIdInput(input.errorPolicyId, '错误处理策略'),
     schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
     accountExpiresAt: accountExpiresAt ?? undefined,
@@ -2059,11 +2079,11 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     database
       .prepare(`
         INSERT INTO accounts (
-          id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+          id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, account_identity_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit, error_policy_id,
           priority, super_priority_enabled, fallback_enabled, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -2074,6 +2094,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.status,
         encryptJson(credentials),
         credentialFingerprint,
+        accountIdentity,
         maskSecret(credentialSource),
         oauthRefreshMetadata.accessTokenExpiresAt,
         oauthRefreshMetadata.refreshTokenPresent ? 1 : 0,
@@ -2085,7 +2106,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.fallbackEnabled ? 1 : 0,
         account.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(account.availabilitySchedule),
-        optionalString(input.notes) ?? null,
+        account.notes ?? null,
         account.accountExpiresAt ?? null,
         account.cooldownUntil ?? null,
         account.lastErrorCode ?? null,
@@ -2143,7 +2164,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (current.accessType === 'authorized' || current.accountAuthorizationId) {
     return undefined
   }
-  const systemAccountId = accountSystemAccountId(id) ?? currentSystemAccountId(access)
+  const systemAccountId = accountSystemAccountId(id)
+  if (!systemAccountId) {
+    throw new Error('账户归属数据异常，请清理后再编辑')
+  }
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
@@ -2153,7 +2177,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const credentialSource = requiredAccountCredentialSource(current.type, credentials)
   const baseUrl = requiredTextInput(credentials.base_url, 'Base URL')
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
-    ? accountFingerprint(current.providerCode, current.type, baseUrl, credentialSource)
+    ? accountCredentialFingerprint(credentialSource)
+    : null
+  const accountIdentity = typeof credentialSource === 'string' && credentialSource.trim()
+    ? accountIdentityFingerprint({ providerCode: current.providerCode, type: current.type, baseUrl, secret: credentialSource })
     : null
   const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials)
   const hasAccountExpiresAtInput = hasOwnInput(input, 'accountExpiresAt')
@@ -2253,7 +2280,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const next: AccountSummary = {
     ...current,
     name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '账户名称'),
-    notes: hasNotesInput ? optionalNullableString(input.notes) ?? undefined : current.notes,
+    notes: hasNotesInput ? normalizeNullableTextInput(input.notes, '账户备注') : current.notes,
     credentials,
     status: nextStatus,
     concurrencyLimit: normalizedPositiveIntegerInput(input.concurrencyLimit, current.concurrencyLimit, '并发限制'),
@@ -2262,9 +2289,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     fallbackEnabled: nextFallbackEnabled,
     supportedModels: nextSupportedModels,
     proxyProfileId: hasOwnInput(input, 'proxyProfileId')
-      ? globalProxyProfileId(optionalString(input.proxyProfileId))
+      ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
       : current.proxyProfileId,
-    errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
+    errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : normalizeNullableIdInput(rawErrorPolicyId, '错误处理策略'),
     schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus)
       ? false
       : hasStatusInput
@@ -2292,7 +2319,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     const result = database
       .prepare(`
       UPDATE accounts
-      SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
+      SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, account_identity_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
@@ -2305,6 +2332,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.status,
         encryptJson(credentials),
         credentialFingerprint,
+        accountIdentity,
         maskSecret(credentialSource),
         oauthRefreshMetadata.accessTokenExpiresAt,
         oauthRefreshMetadata.refreshTokenPresent ? 1 : 0,
@@ -2471,12 +2499,13 @@ export function clearAccountFailureStateResult(
   access?: AccessScope,
   options: ClearAccountFailureStateOptions = {}
 ): AccountFailureStateClearResult {
-  const current = findAccountSummary(id, access)
+  const accountAccess = access ?? internalAccountReadAccess
+  const current = findAccountSummary(id, accountAccess)
   if (!current) {
     return { changed: false }
   }
   const ownerSystemAccountId = accountSystemAccountId(id)
-  if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId, access)) {
+  if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId, accountAccess)) {
     return { changed: false }
   }
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
@@ -2510,7 +2539,7 @@ export function clearAccountFailureStateResult(
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     }
-    return { account: findAccountSummary(id, access), changed }
+    return { account: findAccountSummary(id, accountAccess), changed }
   }
 
   const result = getBusinessDatabase()
@@ -2553,7 +2582,7 @@ export function clearAccountFailureStateResult(
     invalidateGatewayRuntimeAfterBusinessWrite('account_restored')
   }
 
-  return { account: findAccountSummary(id, access), changed }
+  return { account: findAccountSummary(id, accountAccess), changed }
 }
 
 export function clearAuthorizedAccountBindingFailureState(
@@ -2960,7 +2989,7 @@ export interface CooldownAccountRetestFailureResult {
 }
 
 export function recordCooldownAccountRetestFailure(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
-  const current = findAccountSummary(id)
+  const current = findInternalAccountSummary(id)
   const errorCode = normalizedCooldownRetestErrorCode(input)
   const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
   if (!current || !isCoolingAccountStatus(current.status)) {
@@ -3082,7 +3111,7 @@ function normalizedCooldownRetestErrorCode(input: CooldownAccountRetestFailureIn
 }
 
 function failureAccountSummary(id: string, fallback: AccountSummary): AccountSummary {
-  return findAccountSummary(id) ?? fallback
+  return findInternalAccountSummary(id) ?? fallback
 }
 
 function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailureInput, errorCode: string): string {
@@ -3224,7 +3253,7 @@ function markAuthorizedAccountBindingTemporaryUnavailable(
 }
 
 export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
-  const current = findAccountSummary(id)
+  const current = findInternalAccountSummary(id)
   if (!current) {
     return undefined
   }
@@ -3257,7 +3286,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
       invalidateAccountLookupCache(id)
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     }
-    return findAccountSummary(id)
+    return findInternalAccountSummary(id)
   }
 
   const cooldownStatus: AccountStatus = status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
@@ -3292,7 +3321,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
     invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
   }
 
-  return findAccountSummary(id)
+  return findInternalAccountSummary(id)
 }
 
 export function migrateAccountTraffic(input: {
@@ -3599,7 +3628,7 @@ export function markAccountException(
   reason: string,
   options: { preserveDisabled?: boolean } = {}
 ): AccountSummary | undefined {
-  const current = findAccountSummary(id)
+  const current = findInternalAccountSummary(id)
   if (!current) {
     return undefined
   }
@@ -3631,11 +3660,11 @@ export function markAccountException(
     invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
   }
 
-  return findAccountSummary(id)
+  return findInternalAccountSummary(id)
 }
 
 export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {
-  const current = findAccountSummary(id)
+  const current = findInternalAccountSummary(id)
   if (!current || current.status === 'error') {
     return undefined
   }
@@ -3655,7 +3684,7 @@ export function recordAccountStreamFailure(input: {
     return { count: 0, triggered: false }
   }
   if (isHardUnavailableAccountStatus(row.status)) {
-    return { count: Math.max(0, row.stream_failure_count), triggered: false, account: findAccountSummary(input.accountId) }
+    return { count: Math.max(0, row.stream_failure_count), triggered: false, account: findInternalAccountSummary(input.accountId) }
   }
 
   const now = new Date()
@@ -3679,7 +3708,7 @@ export function recordAccountStreamFailure(input: {
 
   const triggered = count >= Math.max(1, input.thresholdCount) && input.action !== 'none'
   if (!triggered) {
-    return { count, triggered: false, account: findAccountSummary(input.accountId) }
+    return { count, triggered: false, account: findInternalAccountSummary(input.accountId) }
   }
 
   if (input.action === 'cooldown') {
@@ -3700,7 +3729,7 @@ export function recordAccountStreamFailure(input: {
     .run(nowIsoValue, input.accountId)
   refreshGroupAccountStatsAfterWrite({ accountIds: [input.accountId], reason: 'stream_failure_threshold' })
 
-  return { count, triggered: true, account: findAccountSummary(input.accountId) }
+  return { count, triggered: true, account: findInternalAccountSummary(input.accountId) }
 }
 
 export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAccountBindingRuntimeTarget & {
@@ -3896,7 +3925,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     name,
     providerCode,
-    description: optionalString(input.description),
+    description: normalizeNullableTextInput(input.description, '分组说明'),
     enabled,
     isDefault: false,
     groupType,
@@ -3928,7 +3957,10 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   if (current.isDefault) {
     throw new DefaultGroupReadonlyError()
   }
-  const systemAccountId = groupOwnerAndProvider(id)?.systemAccountId ?? currentSystemAccountId(access)
+  const systemAccountId = groupOwnerAndProvider(id)?.systemAccountId
+  if (!systemAccountId) {
+    throw new Error('分组归属数据异常，请清理后再编辑')
+  }
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
@@ -3941,7 +3973,7 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
     ...current,
     name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '分组名称'),
     providerCode: normalizeOptionalRequiredTextInput(input, 'providerCode', current.providerCode, '供应商'),
-    description: hasDescriptionInput ? optionalNullableString(input.description) ?? undefined : current.description,
+    description: hasDescriptionInput ? normalizeNullableTextInput(input.description, '分组说明') : current.description,
     enabled: normalizeOptionalBooleanInput(input, 'enabled', current.enabled, '分组启用状态'),
     groupType: nextGroupType,
     schedulingPolicy: parseGroupSchedulingPolicyJson(groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nextGroupType)
@@ -3989,11 +4021,10 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
     return { deleted: false, affectedApiKeyRoutes: [] }
   }
   const database = getBusinessDatabase()
-  const transactionStarted = beginDatabaseTransaction(database)
   let deleted = false
-  let affectedApiKeyRoutes: DeletedGroupApiKeyRouteChange[] = []
+  const affectedApiKeyRoutes = preserveApiKeyRoutesBeforeGroupDelete(database, id, owner.systemAccountId, current?.name)
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
-    affectedApiKeyRoutes = preserveApiKeyRoutesBeforeGroupDelete(database, id, owner.systemAccountId, current?.name)
     database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
     const result = database.prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
     deleted = Number(result.changes ?? 0) > 0
@@ -4025,20 +4056,24 @@ function preserveApiKeyRoutesBeforeGroupDelete(
 ): DeletedGroupApiKeyRouteChange[] {
   const affectedApiKeys = database
     .prepare(`
-      SELECT DISTINCT
-        api_keys.id,
+      SELECT
+        api_key_group_bindings.api_key_id AS id,
         api_keys.name,
-        target_binding.status AS targetBindingStatus
-      FROM api_keys
-      INNER JOIN api_key_group_bindings target_binding
-        ON target_binding.api_key_id = api_keys.id
-        AND target_binding.system_account_id = api_keys.system_account_id
-        AND target_binding.group_id = ?
-      WHERE api_keys.system_account_id = ?
-      ORDER BY api_keys.updated_at DESC, api_keys.id DESC
+        api_key_group_bindings.status AS targetBindingStatus
+      FROM api_key_group_bindings
+      INNER JOIN api_keys
+        ON api_keys.id = api_key_group_bindings.api_key_id
+        AND api_keys.system_account_id = api_key_group_bindings.system_account_id
+      WHERE api_key_group_bindings.system_account_id = ?
+        AND api_key_group_bindings.group_id = ?
+      ORDER BY api_key_group_bindings.api_key_id ASC
+      LIMIT ?
     `)
-    .all(groupId, systemAccountId) as unknown as ApiKeyAffectedByGroupDeleteRow[]
+    .all(systemAccountId, groupId, maxGroupDeleteAffectedApiKeyRoutes + 1) as unknown as ApiKeyAffectedByGroupDeleteRow[]
   if (!affectedApiKeys.length) return []
+  if (affectedApiKeys.length > maxGroupDeleteAffectedApiKeyRoutes) {
+    throw new Error(`该分组关联的 API Key 超过 ${maxGroupDeleteAffectedApiKeyRoutes} 个，请先分批解除绑定后再删除分组`)
+  }
 
   const activeBindingCountByApiKeyId = loadActiveApiKeyGroupCountExcludingGroup(
     database,
@@ -4667,7 +4702,7 @@ export function findResourceAuthorization(authorizationId: string, access?: Acce
   return findResourceAuthorizationSummary(authorizationId, access, options)
 }
 
-const resourceAuthorizationCreateInputKeys = new Set(['resourceType', 'resourceId', 'granteeType', 'granteeId', 'targetGroupId', 'remark', 'expiresAt', 'limits', 'modelPolicy'])
+const resourceAuthorizationCreateInputKeys = new Set(['resourceType', 'resourceId', 'granteeType', 'granteeId', 'targetGroupId', 'remark', 'expiresAt', 'limits'])
 const resourceAuthorizationUpdateInputKeys = new Set(['status', 'expiresAt', 'limits'])
 
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
@@ -4701,19 +4736,19 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
       if (!team) throw new Error('团队不存在或已停用')
       const members = activeTeamMemberRows(granteeId, database).filter((member) => member.system_account_id !== ownerSystemAccountId)
       if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, actor, now, database })
       assertActiveTeamGrantFanoutWithinLimit(granteeId, database)
       createdGrantId = grant.id
       for (const member of members) {
-        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark, expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
+        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark, expiresAt, limits: input.limits, actor, now, database })
       }
     } else {
       const grantee = findSystemAccountById(granteeId)
       if (!grantee || grantee.status !== 'active') throw new Error('被授权用户不存在或已停用')
       if (granteeId === ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, actor, now, database })
       createdGrantId = grant.id
-      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark, expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
+      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark, expiresAt, limits: input.limits, actor, now, database })
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {

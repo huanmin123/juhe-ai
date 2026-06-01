@@ -103,7 +103,7 @@ try {
   const baseUrl = `http://127.0.0.1:${address.port}`
   const seed = seedData(upstreamBaseUrl)
 
-  const detail = await postEnvelope<ModelCheckDetail>(
+  const detail = await withDbServiceRole(() => postEnvelope<ModelCheckDetail>(
     baseUrl,
     `/__aisys__/api/my-model-checks/run?systemAccountId=${seed.ownerId}`,
     seed.granteeCookie,
@@ -114,7 +114,7 @@ try {
       profile: 'full',
       trustedComparison: false
     }
-  )
+  ))
 
   assert.equal(detail.status, 'completed')
   assert.equal(detail.targetType, 'account')
@@ -145,7 +145,7 @@ try {
     `使用记录应保留账号授权 ID，actual=${JSON.stringify(upstreamRows.slice(0, 3))}`
   )
 
-  const intruderResponse = await postRaw(
+  const intruderResponse = await withDbServiceRole(() => postRaw(
     baseUrl,
     '/__aisys__/api/my-model-checks/run',
     seed.intruderCookie,
@@ -156,7 +156,7 @@ try {
       profile: 'full',
       trustedComparison: false
     }
-  )
+  ))
   assert.equal(intruderResponse.status, 404, '未授权用户不能检测别人账户')
   assert.match(await intruderResponse.text(), /账户不存在或无权检测/, '未授权检测应返回中文无权提示')
 
@@ -201,6 +201,10 @@ function seedData(upstreamBaseUrl: string): SeedState {
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerSourceGroup = repositories.createGroup({
+    name: '模型检测授权来源分组',
+    providerCode: 'openai'
+  }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '模型检测授权账户',
@@ -208,7 +212,8 @@ function seedData(upstreamBaseUrl: string): SeedState {
     credentials: {
       api_key: 'sk-user-authorized-model-check',
       base_url: upstreamBaseUrl
-    }
+    },
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '模型检测授权用户分组',
@@ -375,6 +380,16 @@ async function postRaw(baseUrl: string, path: string, cookie: string, body: Reco
     headers: { cookie, 'content-type': 'application/json' },
     body: JSON.stringify(body)
   })
+}
+
+async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'db-service'
+    return await action()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
 }
 
 function sendJson(res: http.ServerResponse, body: unknown): void {

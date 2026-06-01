@@ -19,6 +19,7 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 const [
   { openAIGatewayRouter },
@@ -288,7 +289,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     name: 'IP 级账号回避回归分组',
     providerCode: 'openai',
     enabled: true
-  })
+  }, access)
   const firstUpstreamKey = 'sk-client-ip-avoidance-first'
   const secondUpstreamKey = 'sk-client-ip-avoidance-second'
   const firstAccount = repositories.createAccount({
@@ -303,7 +304,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     status: 'active',
     schedulable: true,
     priority: 0
-  })
+  }, access)
   const secondAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '02-IP回避备用账号',
@@ -316,12 +317,12 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     status: 'active',
     schedulable: true,
     priority: 10
-  })
+  }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: 'IP 级账号回避回归 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
-  })
+  }, access)
   assert(apiKey.key, '临时 API Key 未返回明文密钥')
   gatewayCache.clearGatewayRuntimeCache()
   return {
@@ -433,6 +434,7 @@ function parseJsonObject(text: string): Record<string, unknown> {
 function createTestAccount(id: string): Parameters<typeof clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance>[0][number] {
   return {
     id,
+    providerCode: 'openai',
     systemAccountId: 'sys_bypass',
     accountOwnerSystemAccountId: 'sys_bypass',
     groupOwnerSystemAccountId: 'sys_bypass',

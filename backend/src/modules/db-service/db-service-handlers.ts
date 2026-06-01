@@ -18,6 +18,7 @@ import {
   updateAccount,
   validateGatewayApiKey
 } from '../../storage/repositories.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 import {
   getRuntimeLogFacets,
   getRuntimeLogDetail,
@@ -51,6 +52,7 @@ let pendingRequestCount = 0
 let lastRequestAt: string | undefined
 let lastError: string | undefined
 let dbServiceHttpEndpoint: { host: string; port: number } | undefined
+const internalDbServiceAccountAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin' }
 
 export async function handleDbServiceOperation<T extends DbServiceOperation>(operation: T): Promise<DbServiceOperationResult<T>> {
   pendingRequestCount += 1
@@ -118,7 +120,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         accounts: operation.accounts
       })
     case 'update_openai_oauth_credentials': {
-      const updated = updateAccount(operation.accountId, { credentials: operation.credentials })
+      const updated = updateAccount(operation.accountId, { credentials: operation.credentials }, internalDbServiceAccountAccess)
       if (updated) {
         clearGatewayRuntimeCacheLocal()
       }
@@ -246,7 +248,7 @@ function authorizedBindingRuntimeTarget(account: OpenAIAccountSecret | undefined
     accountAuthorizationId?: string
   }
   if (candidate.accountAccessType !== 'account_authorized') return undefined
-  const systemAccountId = candidate.bindingSystemAccountId ?? candidate.groupOwnerSystemAccountId
+  const systemAccountId = candidate.bindingSystemAccountId
   if (!candidate.id || !systemAccountId || !candidate.boundGroupId || !candidate.accountAuthorizationId) {
     return undefined
   }

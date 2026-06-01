@@ -725,12 +725,13 @@ function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string):
     return account
   }
   if (account.accountAccessType === 'account_authorized' || account.accessType === 'authorized') {
-    const systemAccountId = account.bindingSystemAccountId ?? account.groupOwnerSystemAccountId ?? ''
+    const systemAccountId = account.bindingSystemAccountId ?? ''
     const groupId = account.boundGroupId ?? ''
     const authorizationId = account.accountAuthorizationId ?? ''
     if (systemAccountId && groupId && authorizationId) {
       return `${account.id}:authorized:${systemAccountId}:${groupId}:${authorizationId}`
     }
+    throw new Error('授权账户运行态键缺少绑定上下文')
   }
   return account.id
 }
@@ -746,10 +747,10 @@ function gatewayAccountRuntimeClearKeys(account: GatewayAccountRuntimeClearTarge
   }
   const keys = new Set<string>([accountId])
   const authorizedBinding = isClearTarget
-    ? account.authorizedBinding
-    : account.accountAccessType === 'account_authorized' || account.accessType === 'authorized'
-      ? {
-          systemAccountId: account.bindingSystemAccountId ?? account.groupOwnerSystemAccountId,
+      ? account.authorizedBinding
+      : account.accountAccessType === 'account_authorized' || account.accessType === 'authorized'
+        ? {
+          systemAccountId: account.bindingSystemAccountId,
           groupId: account.boundGroupId,
           accountAuthorizationId: account.accountAuthorizationId
         }
@@ -967,7 +968,7 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
   }
   return {
     id: account.id,
-    systemAccountId: account.bindingSystemAccountId ?? state.systemAccountId ?? account.systemAccountId,
+    systemAccountId: gatewayAccountSummarySystemAccountId(account),
     ownerSystemAccountId: account.accountOwnerSystemAccountId,
     providerCode: 'openai',
     name: account.name,
@@ -991,8 +992,8 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
     usage: emptyUsage,
     accessType: account.accountAccessType === 'account_authorized' ? 'authorized' : 'owner',
     accountAuthorizationId: account.accountAuthorizationId,
-    boundGroupId: account.boundGroupId ?? state.groupId,
-    bindingSystemAccountId: account.bindingSystemAccountId ?? state.systemAccountId,
+    boundGroupId: account.accountAccessType === 'account_authorized' ? gatewayAccountSummaryBoundGroupId(account) : state.groupId,
+    bindingSystemAccountId: account.accountAccessType === 'account_authorized' ? gatewayAccountSummarySystemAccountId(account) : undefined,
     permissions: {
       canUse: true,
       canEdit: false,
@@ -1001,4 +1002,21 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
       canViewCredentials: false
     }
   }
+}
+
+function gatewayAccountSummarySystemAccountId(account: OpenAIAccountSecret): string {
+  if (account.accountAccessType === 'account_authorized') {
+    const bindingSystemAccountId = account.bindingSystemAccountId?.trim()
+    if (bindingSystemAccountId) return bindingSystemAccountId
+    throw new Error('授权账户缺少绑定系统账户，无法构造测试摘要')
+  }
+  const systemAccountId = account.systemAccountId?.trim()
+  if (systemAccountId) return systemAccountId
+  throw new Error('账户缺少系统账户，无法构造测试摘要')
+}
+
+function gatewayAccountSummaryBoundGroupId(account: OpenAIAccountSecret): string {
+  const boundGroupId = account.boundGroupId?.trim()
+  if (boundGroupId) return boundGroupId
+  throw new Error('授权账户缺少绑定分组，无法构造测试摘要')
 }

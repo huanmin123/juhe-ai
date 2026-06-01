@@ -697,6 +697,7 @@ function upsertAccountQualityMinuteStats(database: DatabaseSync, row: UsageStats
   const hasFirstTokenSample = success && Number.isFinite(firstTokenMsValue) && firstTokenMsValue >= 0
   const firstTokenMs = hasFirstTokenSample ? firstTokenMsValue : 0
   const firstTokenCount = hasFirstTokenSample ? 1 : 0
+  const statsSystemAccountId = accountQualityStatsSystemAccountId(row)
   database.prepare(`
     INSERT INTO account_quality_minute_stats (
       account_id, system_account_id, provider_code, stat_minute,
@@ -719,7 +720,7 @@ function upsertAccountQualityMinuteStats(database: DatabaseSync, row: UsageStats
       updated_at = excluded.updated_at
   `).run(
     row.account_id,
-    row.account_access_type === 'account_authorized' ? row.system_account_id : row.account_owner_system_account_id ?? row.system_account_id,
+    statsSystemAccountId,
     row.provider_code ?? 'unknown',
     statMinute,
     success ? 1 : 0,
@@ -732,6 +733,20 @@ function upsertAccountQualityMinuteStats(database: DatabaseSync, row: UsageStats
     success ? null : row.error_message ?? null,
     updatedAt
   )
+  markAccountQualityDirty(database, row.account_id, updatedAt)
+}
+
+function accountQualityStatsSystemAccountId(row: UsageStatsRecordRow): string {
+  if (!row.account_access_type) {
+    throw new Error(`使用记录 ${row.id} 缺少账户访问类型字段 account_access_type`)
+  }
+  if (row.account_access_type === 'account_authorized') {
+    return row.system_account_id
+  }
+  if (!row.account_owner_system_account_id) {
+    throw new Error(`使用记录 ${row.id} 缺少账户归属字段 account_owner_system_account_id`)
+  }
+  return row.account_owner_system_account_id
 }
 
 function subtractAccountQualityMinuteStats(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
@@ -761,6 +776,16 @@ function subtractAccountQualityMinuteStats(database: DatabaseSync, row: UsageSta
       AND request_count = 0 AND success_count = 0 AND error_count = 0
       AND first_token_ms_sum = 0 AND first_token_ms_count = 0
   `).run(row.account_id, statMinute)
+  markAccountQualityDirty(database, row.account_id, updatedAt)
+}
+
+function markAccountQualityDirty(database: DatabaseSync, accountId: string, updatedAt: string): void {
+  database.prepare(`
+    INSERT INTO account_quality_dirty_accounts (account_id, first_dirty_at, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      updated_at = excluded.updated_at
+  `).run(accountId, updatedAt, updatedAt)
 }
 
 function upsertUsageModelBuckets(database: DatabaseSync, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys, updatedAt: string): void {

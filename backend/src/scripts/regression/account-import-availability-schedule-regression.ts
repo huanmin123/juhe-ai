@@ -35,27 +35,38 @@ const schedule = {
     { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
   ]
 }
+const importGroupName = '导入回归分组'
 
 try {
+  repositories.createGroup({
+    name: importGroupName,
+    providerCode: 'openai'
+  }, access)
+
   const importData = {
     type: accountImport.accountImportProtocolType,
     version: accountImport.accountImportProtocolVersion,
-    defaults: {
-      availabilitySchedule: schedule
-    },
     accounts: [
       {
-        name: '导入计划继承账户',
+        name: '导入计划账户',
+        providerCode: 'openai',
+        type: 'api_key',
+        status: 'active',
+        groupName: importGroupName,
+        availabilitySchedule: schedule,
         credentials: {
-          api_key: 'sk-import-schedule-inherited',
+          api_key: 'sk-import-schedule-explicit',
           base_url: 'https://api.openai.com/v1'
         }
       },
       {
-        name: '导入计划清空账户',
-        availabilitySchedule: null,
+        name: '导入无计划账户',
+        providerCode: 'openai',
+        type: 'api_key',
+        status: 'active',
+        groupName: importGroupName,
         credentials: {
-          api_key: 'sk-import-schedule-cleared',
+          api_key: 'sk-import-schedule-empty',
           base_url: 'https://api.openai.com/v1'
         }
       }
@@ -63,20 +74,20 @@ try {
   }
 
   const preview = accountImport.previewAccountImport(importData, {}, access)
-  assert.equal(preview.canImport, true, '带默认自动启停计划的账户导入预览应可导入')
+  assert.equal(preview.canImport, true, '显式自动启停计划的账户导入预览应可导入')
   const result = accountImport.executeAccountImport(importData, {}, access)
-  assert.equal(result.imported, true, '带默认自动启停计划的账户导入应成功')
+  assert.equal(result.imported, true, '显式自动启停计划的账户导入应成功')
 
-  const inherited = repositories.listAccounts(access, { keyword: '导入计划继承账户', providerCode: 'openai' })
-    .find((item) => item.name === '导入计划继承账户')
-  assert(inherited, '继承默认计划的导入账户应创建成功')
-  assert.equal(inherited.availabilitySchedule?.enabled, true, '账户导入应继承 defaults.availabilitySchedule')
-  assert.equal(inherited.availabilitySchedule?.windows?.[0]?.start, '22:00', '账户导入应保存自动启停时段')
+  const scheduled = repositories.listAccounts(access, { keyword: '导入计划账户', providerCode: 'openai' })
+    .find((item) => item.name === '导入计划账户')
+  assert(scheduled, '显式计划的导入账户应创建成功')
+  assert.equal(scheduled.availabilitySchedule?.enabled, true, '账户导入应保存账户级 availabilitySchedule')
+  assert.equal(scheduled.availabilitySchedule?.windows?.[0]?.start, '22:00', '账户导入应保存自动启停时段')
 
-  const cleared = repositories.listAccounts(access, { keyword: '导入计划清空账户', providerCode: 'openai' })
-    .find((item) => item.name === '导入计划清空账户')
-  assert(cleared, '覆盖清空计划的导入账户应创建成功')
-  assert.equal(cleared.availabilitySchedule, undefined, '账户级 availabilitySchedule: null 应覆盖并清空默认计划')
+  const withoutSchedule = repositories.listAccounts(access, { keyword: '导入无计划账户', providerCode: 'openai' })
+    .find((item) => item.name === '导入无计划账户')
+  assert(withoutSchedule, '未配置计划的导入账户应创建成功')
+  assert.equal(withoutSchedule.availabilitySchedule, undefined, '未填写 availabilitySchedule 时账户不应生成计划')
 
   const invalidPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,
@@ -136,7 +147,7 @@ try {
   assert.equal(unknownRootPreview.canImport, false, '导入根对象未知字段不应被静默忽略')
   assert.match(unknownRootPreview.messages.join('\n'), /导入内容包含未知字段：legacyDefaults/, '导入根对象未知字段应返回明确错误')
 
-  const invalidDefaultsPreview = accountImport.previewAccountImport({
+  const defaultsPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,
     version: accountImport.accountImportProtocolVersion,
     defaults: {
@@ -153,9 +164,8 @@ try {
       }
     ]
   }, {}, access)
-  assert.equal(invalidDefaultsPreview.canImport, false, '导入 defaults 非法值不应被默认值兜底')
-  assert.match(invalidDefaultsPreview.messages.join('\n'), /defaults.status 不支持：archived/, '非法 defaults.status 应返回明确错误')
-  assert.match(invalidDefaultsPreview.messages.join('\n'), /defaults\.concurrencyLimit必须是整数/, '字符串 defaults.concurrencyLimit 不应被兼容为数字')
+  assert.equal(defaultsPreview.canImport, false, '导入 defaults 不应被继续支持')
+  assert.match(defaultsPreview.messages.join('\n'), /导入内容包含未知字段：defaults/, '顶层 defaults 应在预览阶段被拒绝')
 
   const strictAccountPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,
@@ -238,9 +248,47 @@ try {
     ]
   }, {}, access)
   assert.equal(missingBaseUrlPreview.canImport, false, 'defaults.baseUrl 不应再为账户凭据补默认 Base URL')
-  assert.match(missingBaseUrlPreview.messages.join('\n'), /defaults包含未知字段：baseUrl/, '旧 defaults.baseUrl 字段应在预览阶段失败')
+  assert.match(missingBaseUrlPreview.messages.join('\n'), /导入内容包含未知字段：defaults/, '旧 defaults 字段应在预览阶段失败')
 
-  console.log('账户导入自动启停计划回归通过：默认继承、账户级清空、非法计划、字段白名单和凭据契约校验符合预期')
+  const overAccountLimitPreview = accountImport.previewAccountImport({
+    type: accountImport.accountImportProtocolType,
+    version: accountImport.accountImportProtocolVersion,
+    accounts: Array.from({ length: accountImport.accountImportMaxAccounts + 1 }, (_, index) => ({
+      name: `导入超限账户 ${index + 1}`,
+      credentials: {
+        api_key: `sk-import-over-account-limit-${index + 1}`,
+        base_url: 'https://api.openai.com/v1'
+      }
+    }))
+  }, {}, access)
+  assert.equal(overAccountLimitPreview.canImport, false, '超过账户导入批量上限应阻止导入')
+  assert.match(overAccountLimitPreview.messages.join('\n'), /accounts 单次最多导入 50 条/, '账户导入批量上限应保持小批次边界')
+
+  const overProxyLimitPreview = accountImport.previewAccountImport({
+    type: accountImport.accountImportProtocolType,
+    version: accountImport.accountImportProtocolVersion,
+    proxies: Array.from({ length: accountImport.accountImportMaxProxies + 1 }, (_, index) => ({
+      ref: `proxy-over-limit-${index + 1}`,
+      name: `导入超限代理 ${index + 1}`,
+      type: 'http',
+      host: '127.0.0.1',
+      port: 7000 + index,
+      enabled: true
+    })),
+    accounts: [
+      {
+        name: '导入代理超限账户',
+        credentials: {
+          api_key: 'sk-import-over-proxy-limit',
+          base_url: 'https://api.openai.com/v1'
+        }
+      }
+    ]
+  }, {}, access)
+  assert.equal(overProxyLimitPreview.canImport, false, '超过代理导入批量上限应阻止导入')
+  assert.match(overProxyLimitPreview.messages.join('\n'), /proxies 单次最多导入 20 条/, '代理导入批量上限应保持小批次边界')
+
+  console.log('账户导入自动启停计划回归通过：显式账户计划、非法计划、字段白名单、凭据契约和小批量边界校验符合预期')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

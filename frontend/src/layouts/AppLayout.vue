@@ -85,7 +85,7 @@ import {
 } from '@/composables/useMenuMode'
 import { menuRoutes } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { AnnouncementSummary } from '@/types/domain'
+import type { PublishedAnnouncementSummary } from '@/types/domain'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
@@ -102,7 +102,7 @@ const passwordForm = reactive({ newPassword: '', confirmPassword: '' })
 const keepAliveMax = 48
 const announcementModalOpen = ref(false)
 const announcementsLoading = ref(false)
-const announcements = ref<AnnouncementSummary[]>([])
+const announcements = ref<PublishedAnnouncementSummary[]>([])
 let announcementsRefreshTimer: number | undefined
 let announcementsRefreshRunning = false
 let announcementsRequestId = 0
@@ -287,7 +287,7 @@ async function refreshAnnouncementsInModal() {
   }
 }
 
-async function loadAnnouncements(): Promise<AnnouncementSummary[]> {
+async function loadAnnouncements(): Promise<PublishedAnnouncementSummary[]> {
   const requestUserKey = currentAnnouncementUserKey()
   if (!requestUserKey) return announcements.value
   const requestId = ++announcementsRequestId

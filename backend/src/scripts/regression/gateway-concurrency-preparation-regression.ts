@@ -376,6 +376,7 @@ function buildAccount(input: {
 }): UpstreamAccount {
   return {
     id: input.id,
+    providerCode: 'openai',
     systemAccountId: 'sys_admin',
     name: input.name,
     type: input.type,

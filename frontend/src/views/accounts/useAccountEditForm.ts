@@ -37,10 +37,10 @@ import {
   accountTypeTitle as buildAccountTypeTitle,
   asString,
   isAuthorizedAccount,
-  parseDatePickerValue
+  parseStrictDatePickerValue
 } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
-import { FALLBACK_PROVIDER } from './accountOptions'
+import { OPENAI_PROVIDER } from './accountOptions'
 import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { buildAccountSavePayload, buildAccountUpdatePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm } from './accountSavePayload'
@@ -97,7 +97,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   })
 
   const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId]))
-  const availableProviders = computed(() => options.providers.value.length ? options.providers.value : [FALLBACK_PROVIDER])
+  const availableProviders = computed(() => options.providers.value.length ? options.providers.value : [OPENAI_PROVIDER])
   const providerNameByCode = computed(() => providerNameByCodeMap(availableProviders.value))
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
   const accountTypeChoices = computed(() => (selectedProvider.value?.accountTypes ?? []).map((type) => ({
@@ -241,14 +241,24 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       : credentialBaseUrlForForm(account.credentials, '账户凭据')
     const policyRules = loadCredentialPolicyRules(account.credentials, '账户策略')
     if (!baseUrl || !policyRules) return
+    const selectedGroup = account.boundGroupId
+      ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
+      : undefined
+    let accountExpiresAt: AccountFormModel['accountExpiresAt']
+    let availabilitySchedule: AccountFormModel['availabilitySchedule']
+    try {
+      accountExpiresAt = parseStrictDatePickerValue(account.accountExpiresAt, '账户过期时间')
+      availabilitySchedule = createAccountAvailabilityScheduleForm(account.availabilitySchedule)
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '账户数据结构异常，请清理后再编辑'))
+      return
+    }
     editingId.value = account.id
     editingAccountDetail.value = account
     cloningSourceId.value = undefined
     creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(editScopeParams?.systemAccountId)
-    const selectedGroup = account.boundGroupId
-      ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
-      : undefined
     Object.assign(form, defaults, {
       providerCode: account.providerCode,
       name: account.name,
@@ -256,7 +266,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       concurrencyLimit: account.concurrencyLimit,
       priority: account.priority,
       proxyProfileId: account.proxyProfileId,
-      accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
+      accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
       group: selectedGroup,
       apiKey: isAuthorizedAccount(account) ? '' : asString(account.credentials.api_key),
@@ -264,7 +274,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accessToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.access_token),
       refreshToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.refresh_token),
       supportedModels: [...(account.supportedModels ?? [])],
-      availabilitySchedule: createAccountAvailabilityScheduleForm(account.availabilitySchedule),
+      availabilitySchedule,
       notes: account.notes ?? ''
     })
     editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
@@ -617,6 +627,16 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
       : undefined
     const defaults = defaultForm(account.providerCode, account.type)
+    let accountExpiresAt: AccountFormModel['accountExpiresAt']
+    let availabilitySchedule: AccountFormModel['availabilitySchedule']
+    try {
+      accountExpiresAt = parseStrictDatePickerValue(account.accountExpiresAt, '账户过期时间')
+      availabilitySchedule = createAccountAvailabilityScheduleForm(account.availabilitySchedule)
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '克隆来源账户数据结构异常，请清理后再克隆'))
+      return false
+    }
     Object.assign(form, defaults, {
       providerCode: account.providerCode,
       name: cloneAccountName(account.name),
@@ -624,7 +644,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       concurrencyLimit: account.concurrencyLimit,
       priority: account.priority,
       proxyProfileId: account.proxyProfileId,
-      accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
+      accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
       group: selectedGroup,
       apiKey: '',
@@ -634,7 +654,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       callbackUrl: '',
       oauthMode: 'manual',
       supportedModels: [...(account.supportedModels ?? [])],
-      availabilitySchedule: createAccountAvailabilityScheduleForm(account.availabilitySchedule),
+      availabilitySchedule,
       notes: account.notes ?? ''
     })
     cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)

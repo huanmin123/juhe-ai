@@ -32,9 +32,9 @@ export interface PublicAccountPushInput {
   targetUsername: string
   targetDisplayName?: string
   targetGroupName: string
-  providerCode?: string
+  providerCode: string
   name: string
-  type?: string
+  type: 'api_key'
   baseUrl: string
   apiKey: string
   supportedModels?: string[]
@@ -77,7 +77,7 @@ export interface PublicAccountPushResponse {
 export interface PublicAccountDeleteInput {
   targetUsername: string
   targetGroupName: string
-  providerCode?: string
+  providerCode: string
   accountId?: string
   name?: string
   externalId?: string
@@ -96,7 +96,7 @@ export interface PublicGroupAddInput {
   targetUsername: string
   targetDisplayName?: string
   name: string
-  providerCode?: string
+  providerCode: string
   description?: string
   enabled?: boolean
   groupType?: 'personal' | 'high_concurrency'
@@ -214,7 +214,7 @@ export function updatePublicWelfareAccount(input: PublicAccountPushInput): Publi
 }
 
 function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAccountWriteMode, targetPasswordHash?: string): PublicAccountPushResponse {
-  const providerCode = normalizedText(input.providerCode) || 'openai'
+  const providerCode = requiredProviderCode(input.providerCode)
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
@@ -286,7 +286,7 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAc
 }
 
 export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): PublicAccountDeleteResponse {
-  const providerCode = normalizedText(input.providerCode) || 'openai'
+  const providerCode = requiredProviderCode(input.providerCode)
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
@@ -375,7 +375,7 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
 }
 
 export async function addPublicGroup(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
-  const providerCode = normalizedText(input.providerCode) || 'openai'
+  const providerCode = requiredProviderCode(input.providerCode)
   assertProviderEnabled(providerCode)
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
   return runInDatabaseTransaction(() => {
@@ -484,7 +484,7 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput): Pub
   const generatedAt = new Date().toISOString()
   const username = normalizedText(input.targetUsername) || 'huanmin'
   const groupName = normalizedText(input.targetGroupName) || '福利'
-  const providerCode = normalizedText(input.providerCode) || 'openai'
+  const providerCode = requiredProviderCode(input.providerCode)
   return {
     source: 'mock',
     generatedAt,
@@ -517,7 +517,7 @@ export function mockPublicWelfareAccountDelete(input: PublicAccountDeleteInput):
   const generatedAt = new Date().toISOString()
   const username = normalizedText(input.targetUsername) || 'huanmin'
   const groupName = normalizedText(input.targetGroupName) || '福利'
-  const providerCode = normalizedText(input.providerCode) || 'openai'
+  const providerCode = requiredProviderCode(input.providerCode)
   const accountId = normalizedText(input.accountId) || 'mock_account_public_welfare'
   return {
     source: 'mock',
@@ -550,7 +550,7 @@ export function mockPublicGroupAdd(input: PublicGroupAddInput): PublicGroupRespo
   return publicMockGroupResponse('mock', input.targetUsername, {
     id: 'mock_group_public',
     name: normalizedText(input.name) || '公开接口分组',
-    providerCode: normalizedText(input.providerCode) || 'openai',
+    providerCode: requiredProviderCode(input.providerCode),
     description: normalizedText(input.description),
     enabled: input.enabled !== false,
     groupType: input.groupType ?? 'personal',
@@ -562,7 +562,7 @@ export function mockPublicGroupUpdate(input: PublicGroupUpdateInput): PublicGrou
   return publicMockGroupResponse('mock', input.targetUsername, {
     id: normalizedText(input.groupId) || 'mock_group_public',
     name: normalizedText(input.name) || '公开接口分组',
-    providerCode: normalizedText(input.providerCode) || 'openai',
+    providerCode: normalizedText(input.providerCode) ?? '',
     description: normalizedText(input.description),
     enabled: input.enabled !== false,
     groupType: input.groupType ?? 'personal',
@@ -574,7 +574,7 @@ export function mockPublicGroupDelete(input: PublicGroupDeleteInput): PublicGrou
   return publicMockGroupResponse('mock', input.targetUsername, {
     id: normalizedText(input.groupId) || 'mock_group_public',
     name: normalizedText(input.name) || '公开接口分组',
-    providerCode: normalizedText(input.providerCode) || 'openai',
+    providerCode: normalizedText(input.providerCode) ?? '',
     enabled: true,
     groupType: 'personal',
     isDefault: false
@@ -763,7 +763,10 @@ function resolvePublicGroup(access: TargetAccess, input: { groupId?: string; nam
   if (!name) {
     return undefined
   }
-  const providerCode = normalizedText(input.providerCode) || 'openai'
+  const providerCode = normalizedText(input.providerCode)
+  if (!providerCode) {
+    return undefined
+  }
   return findExistingTargetGroup({ access, providerCode, groupName: name })
 }
 
@@ -1044,7 +1047,7 @@ function accountCreateInputForPush(input: PublicAccountPushInput, providerCode: 
   return {
     ...accountWriteInputForPush(input),
     providerCode,
-    type: 'api_key',
+    type: input.type,
     groupId
   }
 }
@@ -1087,13 +1090,24 @@ function accountWriteInputForPush(input: PublicAccountPushInput): Record<string,
 }
 
 function assertSupportedPushAccountType(value: unknown, providerAccountTypes: readonly string[]): void {
-  const type = normalizedText(value) || 'api_key'
+  const type = normalizedText(value)
+  if (!type) {
+    throw new Error('账号类型不能为空')
+  }
   if (type !== 'api_key') {
     throw new Error('账号新增仅支持 API Key 账户')
   }
   if (!providerAccountTypes.includes('api_key')) {
     throw new Error('当前供应商不支持 API Key 账户')
   }
+}
+
+function requiredProviderCode(value: string | undefined): string {
+  const providerCode = normalizedText(value)
+  if (!providerCode) {
+    throw new Error('供应商编码不能为空')
+  }
+  return providerCode
 }
 
 function sanitizeAccount(account: AccountSummary): PublicAccountPushResponse['account'] {

@@ -10,6 +10,7 @@ import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
+import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
@@ -22,7 +23,7 @@ import { testOpenAIAccount } from './account-test.service.js'
 export const accountsRouter = Router()
 
 const accountCreateSchema = z.object({
-  providerCode: z.string().min(1).optional(),
+  providerCode: z.string().trim().min(1),
   name: z.string().trim().min(1),
   type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),
@@ -265,6 +266,10 @@ accountsRouter.post('/import/confirm', requireAdmin, mutationGuard({
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  if (!requestAccess) {
+    res.status(401).json(badRequest('缺少系统账户上下文'))
+    return
+  }
   const importOptions: AccountImportOptions = parsed.data.options ?? {}
   const result = runLoggedOperation(() => {
     const result = executeAccountImport(parsed.data.data, importOptions, requestAccess)
@@ -299,7 +304,7 @@ accountsRouter.post('/', mutationGuard({
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
-    providerCode: normalizedText(bodyField(req, 'providerCode')) || 'openai',
+    providerCode: normalizedText(bodyField(req, 'providerCode')),
     type: normalizedText(bodyField(req, 'type')),
     name: normalizedText(bodyField(req, 'name')),
     credential: accountCredentialFingerprint(bodyField(req, 'credentials'))
@@ -327,7 +332,7 @@ accountsRouter.post('/', mutationGuard({
     return
   }
 
-  const providerCode = parsed.data.providerCode?.trim() || 'openai'
+  const providerCode = parsed.data.providerCode
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
     res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
@@ -762,6 +767,13 @@ accountsRouter.post('/:id/test', async (req, res) => {
     return
   }
 
+  const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
+  if (!releaseDiagnosticSlot) {
+    res.setHeader('Retry-After', String(diagnosticTaskRetryAfterSeconds))
+    res.status(503).json({ message: diagnosticTaskBusyMessage })
+    return
+  }
+
   const abortController = new AbortController()
   req.once('aborted', () => abortController.abort())
   res.once('close', () => {
@@ -832,6 +844,8 @@ accountsRouter.post('/:id/test', async (req, res) => {
       return
     }
     throw error
+  } finally {
+    releaseDiagnosticSlot()
   }
 })
 

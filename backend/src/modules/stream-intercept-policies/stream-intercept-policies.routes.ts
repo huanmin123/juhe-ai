@@ -94,7 +94,7 @@ streamInterceptPoliciesRouter.post('/', mutationGuard({
   }
   let policy: StreamInterceptPolicySummary
   try {
-    policy = createStreamInterceptPolicy(parsed.data)
+    policy = createStreamInterceptPolicy({ ...parsed.data, providerCode: 'openai' })
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '流式拦截策略创建失败'))
     return
@@ -124,7 +124,7 @@ streamInterceptPoliciesRouter.patch('/:id', mutationGuard({
   }
   let policy: StreamInterceptPolicySummary | undefined
   try {
-    policy = updateStreamInterceptPolicy(req.params.id, parsed.data)
+    policy = updateStreamInterceptPolicy(req.params.id, { ...parsed.data, providerCode: 'openai' })
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '流式拦截策略更新失败'))
     return

@@ -330,6 +330,7 @@ export interface GroupSchedulingPolicy {
   perApiKeyQueueLimit?: number
   clientIpConcurrencyLimit?: number
   clientIpConcurrencyOverflowMode?: 'reject' | 'queue'
+  imageLaneMaxConcurrency?: number
 }
 
 export interface GroupSummary {

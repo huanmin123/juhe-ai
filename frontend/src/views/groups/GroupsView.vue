@@ -232,14 +232,14 @@ import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd } from '@/shared/formatters'
+import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountUsageSummary, GroupAccountStats, GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 
-const FALLBACK_PROVIDER: ProviderDefinition = {
+const OPENAI_PROVIDER: ProviderDefinition = {
   id: 'openai',
   code: 'openai',
   name: 'OpenAI',
@@ -272,7 +272,8 @@ const defaultHighConcurrencySchedulingPolicy: Required<GroupSchedulingPolicy> = 
   maxQueueSize: 1000,
   perApiKeyQueueLimit: 1000,
   clientIpConcurrencyLimit: 0,
-  clientIpConcurrencyOverflowMode: 'reject'
+  clientIpConcurrencyOverflowMode: 'reject',
+  imageLaneMaxConcurrency: 0
 }
 const defaultClientIpConcurrencyLimit = 5
 const clientIpOverflowModeOptions = [
@@ -384,7 +385,7 @@ const {
   minVisible: 1
 })
 
-const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
+const availableProviders = computed(() => providers.value.length ? providers.value : [OPENAI_PROVIDER])
 const groupScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -454,12 +455,107 @@ function groupAccountStatsTooltip(group: GroupSummary): string {
   ].join('\n')
 }
 
-function cloneHighConcurrencySchedulingPolicy(source?: GroupSchedulingPolicy): Required<GroupSchedulingPolicy> {
-  return {
-    ...defaultHighConcurrencySchedulingPolicy,
-    ...(source ?? {}),
-    mode: 'balanced_fast'
+function cloneHighConcurrencySchedulingPolicy(source?: GroupSchedulingPolicy, options: { requireComplete?: boolean } = {}): Required<GroupSchedulingPolicy> {
+  const input = groupSchedulingPolicyRecord(source, options)
+  assertGroupSchedulingPolicyKeys(input)
+  if (options.requireComplete) {
+    assertCompleteGroupSchedulingPolicy(input)
   }
+  return {
+    mode: normalizeGroupSchedulingMode(input.mode),
+    defaultSoftConcurrency: normalizeGroupSchedulingInteger(input.defaultSoftConcurrency, defaultHighConcurrencySchedulingPolicy.defaultSoftConcurrency, 1, 1_000_000, 'defaultSoftConcurrency'),
+    fastFirstEnabled: normalizeGroupSchedulingBoolean(input.fastFirstEnabled, defaultHighConcurrencySchedulingPolicy.fastFirstEnabled, 'fastFirstEnabled'),
+    fallbackOnQueueEnabled: normalizeGroupSchedulingBoolean(input.fallbackOnQueueEnabled, defaultHighConcurrencySchedulingPolicy.fallbackOnQueueEnabled, 'fallbackOnQueueEnabled'),
+    breakAffinityOnSoftLimit: normalizeGroupSchedulingBoolean(input.breakAffinityOnSoftLimit, defaultHighConcurrencySchedulingPolicy.breakAffinityOnSoftLimit, 'breakAffinityOnSoftLimit'),
+    breakAffinityOnQueueWaitMs: normalizeGroupSchedulingInteger(input.breakAffinityOnQueueWaitMs, defaultHighConcurrencySchedulingPolicy.breakAffinityOnQueueWaitMs, 0, 1_000_000, 'breakAffinityOnQueueWaitMs'),
+    slowRequestThresholdMs: normalizeGroupSchedulingInteger(input.slowRequestThresholdMs, defaultHighConcurrencySchedulingPolicy.slowRequestThresholdMs, 1, 1_000_000, 'slowRequestThresholdMs'),
+    firstOutputSlowThresholdMs: normalizeGroupSchedulingInteger(input.firstOutputSlowThresholdMs, defaultHighConcurrencySchedulingPolicy.firstOutputSlowThresholdMs, 1, 1_000_000, 'firstOutputSlowThresholdMs'),
+    recentTimeoutWindowSeconds: normalizeGroupSchedulingInteger(input.recentTimeoutWindowSeconds, defaultHighConcurrencySchedulingPolicy.recentTimeoutWindowSeconds, 1, 1_000_000, 'recentTimeoutWindowSeconds'),
+    recentTimeoutPenaltyThreshold: normalizeGroupSchedulingInteger(input.recentTimeoutPenaltyThreshold, defaultHighConcurrencySchedulingPolicy.recentTimeoutPenaltyThreshold, 1, 1_000_000, 'recentTimeoutPenaltyThreshold'),
+    maxQueueWaitMs: normalizeGroupSchedulingInteger(input.maxQueueWaitMs, defaultHighConcurrencySchedulingPolicy.maxQueueWaitMs, 1, 3_600_000, 'maxQueueWaitMs'),
+    maxQueueSize: normalizeGroupSchedulingInteger(input.maxQueueSize, defaultHighConcurrencySchedulingPolicy.maxQueueSize, 1, 1_000_000, 'maxQueueSize'),
+    perApiKeyQueueLimit: normalizeGroupSchedulingInteger(input.perApiKeyQueueLimit, defaultHighConcurrencySchedulingPolicy.perApiKeyQueueLimit, 1, 1_000_000, 'perApiKeyQueueLimit'),
+    clientIpConcurrencyLimit: normalizeGroupSchedulingInteger(input.clientIpConcurrencyLimit, defaultHighConcurrencySchedulingPolicy.clientIpConcurrencyLimit, 0, 1_000_000, 'clientIpConcurrencyLimit'),
+    clientIpConcurrencyOverflowMode: normalizeGroupSchedulingOverflowMode(input.clientIpConcurrencyOverflowMode),
+    imageLaneMaxConcurrency: normalizeGroupSchedulingInteger(input.imageLaneMaxConcurrency, defaultHighConcurrencySchedulingPolicy.imageLaneMaxConcurrency, 0, 1_000_000, 'imageLaneMaxConcurrency')
+  }
+}
+
+function groupSchedulingPolicyRecord(source?: GroupSchedulingPolicy, options: { requireComplete?: boolean } = {}): Record<string, unknown> {
+  if (source === undefined || source === null) {
+    if (options.requireComplete) {
+      throw new Error('分组调度策略缺失，请清理后再编辑')
+    }
+    return {}
+  }
+  if (typeof source !== 'object' || Array.isArray(source)) {
+    throw new Error('分组调度策略无效')
+  }
+  return source as Record<string, unknown>
+}
+
+const groupSchedulingPolicyKeys = [
+  'mode',
+  'defaultSoftConcurrency',
+  'fastFirstEnabled',
+  'fallbackOnQueueEnabled',
+  'breakAffinityOnSoftLimit',
+  'breakAffinityOnQueueWaitMs',
+  'slowRequestThresholdMs',
+  'firstOutputSlowThresholdMs',
+  'recentTimeoutWindowSeconds',
+  'recentTimeoutPenaltyThreshold',
+  'maxQueueWaitMs',
+  'maxQueueSize',
+  'perApiKeyQueueLimit',
+  'clientIpConcurrencyLimit',
+  'clientIpConcurrencyOverflowMode',
+  'imageLaneMaxConcurrency'
+] as const
+
+function assertGroupSchedulingPolicyKeys(input: Record<string, unknown>): void {
+  const allowed = new Set<string>(groupSchedulingPolicyKeys)
+  const unknownKeys = Object.keys(input).filter((key) => !allowed.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`分组调度策略包含未知字段：${unknownKeys.join('、')}`)
+  }
+}
+
+function assertCompleteGroupSchedulingPolicy(input: Record<string, unknown>): void {
+  const missingKeys = groupSchedulingPolicyKeys.filter((key) => input[key] === undefined || input[key] === null)
+  if (missingKeys.length) {
+    throw new Error(`分组调度策略缺少字段：${missingKeys.join('、')}`)
+  }
+}
+
+function normalizeGroupSchedulingInteger(value: unknown, fallback: number, min: number, max: number, key: string): number {
+  if (value === undefined || value === null) return fallback
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error(`分组调度策略 ${key} 必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`分组调度策略 ${key} 必须在 ${min}-${max} 之间`)
+  }
+  return value
+}
+
+function normalizeGroupSchedulingBoolean(value: unknown, fallback: boolean, key: string): boolean {
+  if (value === undefined || value === null) return fallback
+  if (typeof value !== 'boolean') {
+    throw new Error(`分组调度策略 ${key} 必须是布尔值`)
+  }
+  return value
+}
+
+function normalizeGroupSchedulingMode(value: unknown): 'balanced_fast' {
+  if (value === undefined || value === null || value === 'balanced_fast') return 'balanced_fast'
+  throw new Error('分组调度策略 mode 无效')
+}
+
+function normalizeGroupSchedulingOverflowMode(value: unknown): 'reject' | 'queue' {
+  if (value === undefined || value === null) return defaultHighConcurrencySchedulingPolicy.clientIpConcurrencyOverflowMode
+  if (value === 'reject' || value === 'queue') return value
+  throw new Error('分组调度策略 clientIpConcurrencyOverflowMode 无效')
 }
 
 function groupTypeText(groupType?: GroupType): string {
@@ -474,7 +570,12 @@ function groupPolicySummary(group: GroupSummary): string {
   if (group.groupType !== 'high_concurrency') {
     return '个人分组保持稳定调度'
   }
-  const policy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy)
+  let policy: Required<GroupSchedulingPolicy>
+  try {
+    policy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy, { requireComplete: true })
+  } catch {
+    return '高并发调度策略数据异常，请清理后再编辑'
+  }
   const clientIpSummary = policy.clientIpConcurrencyLimit > 0
     ? `单 IP ${policy.clientIpConcurrencyLimit} 并发，超过后${policy.clientIpConcurrencyOverflowMode === 'queue' ? '排队等待' : '立即拒绝'}`
     : '单 IP 不限制'
@@ -482,19 +583,20 @@ function groupPolicySummary(group: GroupSummary): string {
 }
 
 function setFormMaxQueueWaitSeconds(value: unknown) {
-  const seconds = typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.trunc(value)
-    : Math.round(defaultHighConcurrencySchedulingPolicy.maxQueueWaitMs / 1000)
-  form.schedulingPolicy.maxQueueWaitMs = Math.min(3600, Math.max(1, seconds)) * 1000
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 3600) return
+  form.schedulingPolicy.maxQueueWaitMs = value * 1000
 }
 
 function setFormClientIpConcurrencyLimit(value: unknown) {
-  form.schedulingPolicy.clientIpConcurrencyLimit = normalizeClientIpConcurrencyLimit(value) || defaultClientIpConcurrencyLimit
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 1_000_000) return
+  form.schedulingPolicy.clientIpConcurrencyLimit = value
 }
 
 function normalizeClientIpConcurrencyLimit(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : 0
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 1_000_000) {
+    return 0
+  }
+  return value
 }
 
 function groupConcurrencyAvailable(group: GroupSummary): boolean {
@@ -608,8 +710,8 @@ function authorizedGroupSourceTone(group: GroupSummary): 'normal' | 'warning' | 
 
 function isAuthorizationExpiringSoon(group: GroupSummary): boolean {
   if (!group.authorizationExpiresAt) return false
-  const timestamp = Date.parse(group.authorizationExpiresAt)
-  if (!Number.isFinite(timestamp)) return false
+  const timestamp = serverDateTimeTimestamp(group.authorizationExpiresAt)
+  if (timestamp === undefined) return false
   const remainingMs = timestamp - Date.now()
   return remainingMs > 0 && remainingMs <= 3 * 24 * 60 * 60 * 1000
 }
@@ -676,7 +778,9 @@ function formatCost(value?: number): string {
 }
 
 function defaultProviderCode() {
-  return availableProviders.value.find((provider) => provider.enabled)?.code ?? 'openai'
+  const provider = availableProviders.value.find((item) => item.enabled)
+  if (!provider) throw new Error('没有可用供应商')
+  return provider.code
 }
 
 function groupListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -696,7 +800,7 @@ async function loadGroupOptions(force = false): Promise<void> {
   const [providerList] = await Promise.all([
     isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[])
   ])
-  providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
+  providers.value = providerList.length ? providerList : [OPENAI_PROVIDER]
   groupOptionsLoaded.value = true
   groupOptionsScopeKey.value = scopeKey
 }
@@ -753,6 +857,13 @@ function openEdit(group: GroupSummary) {
     message.warning(group.isDefault ? '默认分组不允许编辑' : '授权分组不能编辑')
     return
   }
+  let schedulingPolicy: Required<GroupSchedulingPolicy>
+  try {
+    schedulingPolicy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy, { requireComplete: true })
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '分组调度策略数据异常，请清理后再编辑'))
+    return
+  }
   editingId.value = group.id
   void loadGroupOptions()
   Object.assign(form, {
@@ -761,7 +872,7 @@ function openEdit(group: GroupSummary) {
     description: group.description ?? '',
     enabled: group.enabled,
     groupType: group.groupType,
-    schedulingPolicy: cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy)
+    schedulingPolicy
   })
   modalOpen.value = true
 }
@@ -792,6 +903,7 @@ const saveGroup = submitAction('groups.save', async () => {
 })
 
 function groupFormPayload(): Record<string, unknown> {
+  const schedulingPolicy = cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy, { requireComplete: true })
   return {
     name: form.name,
     providerCode: form.providerCode,
@@ -800,12 +912,13 @@ function groupFormPayload(): Record<string, unknown> {
     groupType: form.groupType,
     schedulingPolicy: form.groupType === 'high_concurrency'
       ? {
-          defaultSoftConcurrency: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).defaultSoftConcurrency,
-          maxQueueWaitMs: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).maxQueueWaitMs,
+          defaultSoftConcurrency: schedulingPolicy.defaultSoftConcurrency,
+          maxQueueWaitMs: schedulingPolicy.maxQueueWaitMs,
           clientIpConcurrencyLimit: clientIpLimitEnabled.value ? formClientIpConcurrencyLimit.value : 0,
           clientIpConcurrencyOverflowMode: clientIpLimitEnabled.value
-            ? cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).clientIpConcurrencyOverflowMode
-            : 'reject'
+            ? schedulingPolicy.clientIpConcurrencyOverflowMode
+            : 'reject',
+          imageLaneMaxConcurrency: schedulingPolicy.imageLaneMaxConcurrency
         }
       : undefined
   }

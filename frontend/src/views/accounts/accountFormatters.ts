@@ -4,7 +4,8 @@ import {
   formatNumber,
   formatServerDateTimeInput,
   formatUsd,
-  parseDatePickerValue
+  parseStrictDatePickerValue,
+  serverDateTimeTimestamp
 } from '@/shared/formatters'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary } from '@/types/domain'
 
@@ -207,14 +208,14 @@ export function isCoolingDown(account: AccountSummary) {
 
 function isFutureTime(value?: string): boolean {
   if (!value) return false
-  const time = new Date(value).getTime()
-  return Number.isFinite(time) && time > Date.now()
+  const time = serverDateTimeTimestamp(value)
+  return time !== undefined && time > Date.now()
 }
 
 export function isAccountPackageExpired(account: AccountSummary) {
   if (!account.accountExpiresAt) return false
-  const time = new Date(account.accountExpiresAt).getTime()
-  return Number.isFinite(time) && time <= Date.now()
+  const time = serverDateTimeTimestamp(account.accountExpiresAt)
+  return time !== undefined && time <= Date.now()
 }
 
 export function isAccountPackageExpiredStatus(account: AccountSummary): boolean {
@@ -226,8 +227,8 @@ export function isAuthorizationExpired(account: AccountSummary): boolean {
   if (!isAuthorizedAccount(account)) return false
   if (account.authorizationStatus === 'expired') return true
   if (!account.authorizationExpiresAt) return false
-  const time = new Date(account.authorizationExpiresAt).getTime()
-  return Number.isFinite(time) && time <= Date.now()
+  const time = serverDateTimeTimestamp(account.authorizationExpiresAt)
+  return time !== undefined && time <= Date.now()
 }
 
 export function isAuthorizationPaused(account: AccountSummary): boolean {
@@ -251,8 +252,8 @@ export function accountDisplayExpiresAt(account: AccountSummary): string | undef
 export function isAccountDisplayExpired(account: AccountSummary): boolean {
   const expiresAt = accountDisplayExpiresAt(account)
   if (!expiresAt) return false
-  const time = new Date(expiresAt).getTime()
-  return Number.isFinite(time) && time <= Date.now()
+  const time = serverDateTimeTimestamp(expiresAt)
+  return time !== undefined && time <= Date.now()
 }
 
 export function accountTypeText(type: AccountType) {
@@ -308,8 +309,8 @@ export function oauthUsageBars(account: AccountSummary): OAuthUsageBar[] {
 }
 
 export function formatRelativeReset(value: string): string {
-  const time = Date.parse(value)
-  if (!Number.isFinite(time)) return value
+  const time = serverDateTimeTimestamp(value)
+  if (time === undefined) return '时间格式异常'
   const diffMs = time - Date.now()
   if (diffMs <= 0) return '现在'
   const totalMinutes = Math.ceil(diffMs / 60_000)
@@ -321,10 +322,10 @@ export function formatRelativeReset(value: string): string {
   return `${minutes}m`
 }
 
-export { formatDateTime, formatNumber, formatServerDateTimeInput, parseDatePickerValue }
+export { formatDateTime, formatNumber, formatServerDateTimeInput, parseStrictDatePickerValue }
 
 export function accountLastUsedAt(account: AccountSummary): string | undefined {
-  return account.lastUsedAt || account.usage.lastUsedAt
+  return account.lastUsedAt
 }
 
 export function compareAccountLastUsedAt(left: AccountSummary, right: AccountSummary): number {
@@ -370,6 +371,5 @@ function oauthUsageBar(key: string, label: string, window?: { utilization: numbe
 
 function timestampOf(value?: string): number {
   if (!value) return 0
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? timestamp : 0
+  return serverDateTimeTimestamp(value) ?? 0
 }

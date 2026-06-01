@@ -206,5 +206,6 @@ function assertQueueShutdownFlushIsBounded(): void {
   const workerSource = readFileSync(new URL('../../worker.ts', import.meta.url), 'utf8')
   assert(workerSource.includes('installWorkerSignalShutdownHooks()'), 'worker 应由统一信号钩子协调各本地队列退出 flush')
   assert(workerSource.includes('flushWorkerQueuesForShutdown'), 'worker 信号退出应统一有限 flush 全部本地队列')
+  assert(workerSource.includes('await flushRecordMaintenanceQueueForShutdown()'), 'worker 信号退出应等待数据维护异步有限 flush 完成')
   assert(workerSource.includes('await flushAuditLogQueueForShutdown()'), 'worker 信号退出应等待审计日志异步有限 flush 完成')
 }

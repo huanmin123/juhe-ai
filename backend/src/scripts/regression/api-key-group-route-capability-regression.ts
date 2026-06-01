@@ -682,9 +682,7 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
     providerCode: 'openai',
     groupType: 'high_concurrency',
     schedulingPolicy: {
-      maxQueueWaitMs: 5,
-      maxQueueSize: 10,
-      perApiKeyQueueLimit: 10
+      maxQueueWaitMs: 5
     }
   }, access)
   const finalGroup = repositories.createGroup({
@@ -863,9 +861,7 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
     providerCode: 'openai',
     groupType: 'high_concurrency',
     schedulingPolicy: {
-      maxQueueWaitMs: 5,
-      maxQueueSize: 10,
-      perApiKeyQueueLimit: 10
+      maxQueueWaitMs: 5
     }
   }, access)
   const fallbackGroup = repositories.createGroup({
@@ -948,9 +944,7 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
     providerCode: 'openai',
     groupType: 'high_concurrency',
     schedulingPolicy: {
-      maxQueueWaitMs: 5,
-      maxQueueSize: 10,
-      perApiKeyQueueLimit: 10
+      maxQueueWaitMs: 5
     }
   }, access)
   const primaryUpstreamKey = 'sk-route-personal-busy-primary'
@@ -1113,6 +1107,11 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerSourceGroup = repositories.createGroup({
+    name: '授权额度来源号池',
+    providerCode: 'openai',
+    groupType: 'personal'
+  }, ownerAccess)
   const primaryGroup = repositories.createGroup({
     name: '授权额度主号池',
     providerCode: 'openai',
@@ -1132,6 +1131,7 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
       api_key: primaryUpstreamKey,
       base_url: upstreamBaseUrl
     },
+    groupId: ownerSourceGroup.id,
     status: 'active',
     schedulable: true,
   }, ownerAccess)

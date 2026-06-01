@@ -565,9 +565,16 @@ assert.match(externalPublicApiCatalogSource, /id: 'api-key-delete'[\s\S]+groupRo
 assert.doesNotMatch(externalPublicApiCatalogSource, /apiKey:\s*\{[^\n]*groupId:\s*'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /新的主绑定分组 ID/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /绑定分组 ID；与 groupName/)
+const externalPublicAccountUpdateCatalogSource = sourceBetween(externalPublicApiCatalogSource, "id: 'account-update'", "id: 'account-delete'")
+assert.match(externalPublicAccountUpdateCatalogSource, /name: 'providerCode'[\s\S]+required: true/)
+assert.match(externalPublicAccountUpdateCatalogSource, /name: 'type'[\s\S]+required: true/)
+assert.match(externalPublicAccountUpdateCatalogSource, /providerCode:\s*'openai'/)
+assert.match(externalPublicAccountUpdateCatalogSource, /type:\s*'api_key'/)
 
 const externalIntegrationsRoutesSource = readSource('modules/external-integrations/external-integrations.routes.ts')
 const accountPushSchemaSource = sourceBetween(externalIntegrationsRoutesSource, 'const accountPushSchema', 'const accountDeleteSchema')
+assert.match(accountPushSchemaSource, /providerCode:\s*providerCodeSchema/)
+assert.match(accountPushSchemaSource, /type:\s*publicAccountTypeSchema/)
 assert.match(accountPushSchemaSource, /concurrencyLimit:\s*z\.number\(\)\.int\(\)\.min\(1\)/)
 assert.match(accountPushSchemaSource, /priority:\s*z\.number\(\)\.int\(\)\.min\(0\)/)
 assert.doesNotMatch(accountPushSchemaSource, /z\.coerce\.number/)
@@ -581,6 +588,22 @@ const externalPublicAccountPushSource = readSource('modules/external-integration
 const externalPublicBoundedIntegerSource = sourceFunctionBlock(externalPublicAccountPushSource, 'function boundedInteger')
 assert.match(externalPublicBoundedIntegerSource, /typeof value !== 'number'/)
 assert.doesNotMatch(externalPublicBoundedIntegerSource, /Number\(value\)/)
+assert.doesNotMatch(externalPublicAccountPushSource, /normalizedText\(input\.providerCode\)\s*\|\|\s*'openai'/)
+
+const apiKeyRepositorySource = readSource('storage/api-key.repository.ts')
+assert.doesNotMatch(apiKeyRepositorySource, /'scopes_json'/)
+assert.doesNotMatch(apiKeyRepositorySource, /JSON\.stringify\(\[\]\)/)
+
+const businessSchemaSource = readSource('storage/schema/business-schema.ts')
+const apiKeysSchemaSource = sourceBetween(businessSchemaSource, 'CREATE TABLE IF NOT EXISTS api_keys', 'CREATE TABLE IF NOT EXISTS api_key_group_bindings')
+assert.doesNotMatch(apiKeysSchemaSource, /scopes_json/)
+
+const coreFunctionDocSource = readProjectFile('docs/functions/核心功能设计.md')
+assert.doesNotMatch(coreFunctionDocSource, /`scopes_json`：保留字段/)
+
+const modelChecksRepositorySource = readSource('storage/model-checks.repository.ts')
+assert.match(modelChecksRepositorySource, /providerCode: string/)
+assert.doesNotMatch(modelChecksRepositorySource, /providerCode\s*\?\?\s*'openai'/)
 
 const streamInterceptPoliciesRoutesSource = readSource('modules/stream-intercept-policies/stream-intercept-policies.routes.ts')
 const streamInterceptPolicyBodySchemaSource = sourceBetween(streamInterceptPoliciesRoutesSource, 'const policyBodySchema', 'streamInterceptPoliciesRouter.get')
@@ -589,7 +612,7 @@ assert.match(streamInterceptPolicyBodySchemaSource, /avoidanceTtlSeconds:\s*z\.n
 assert.doesNotMatch(streamInterceptPolicyBodySchemaSource, /z\.coerce\.number/)
 
 const accountStreamInterceptPolicyValidationSource = readSource('modules/accounts/account-stream-intercept-policy-validation.ts')
-assert.match(accountStreamInterceptPolicyValidationSource, /priority:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(9999\)\.optional\(\)/)
+assert.match(accountStreamInterceptPolicyValidationSource, /priority:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(9999\)/)
 assert.match(accountStreamInterceptPolicyValidationSource, /avoidanceTtlSeconds:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(86400\)\.optional\(\)/)
 assert.doesNotMatch(accountStreamInterceptPolicyValidationSource, /z\.coerce\.number/)
 

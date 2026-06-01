@@ -226,7 +226,7 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { disposeChart, ensureChartFromElement, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
+import { formatDateTime, formatServerDateTimeInput, serverDateTimeTimestamp } from '@/shared/formatters'
 import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverview, TableStorageSnapshotSummary, UsageRecordsCleanupResult } from '@/types/domain'
 
 const columns = [
@@ -638,9 +638,9 @@ function escapeHtml(value: unknown) {
 }
 
 function formatSampleTime(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+  const timestamp = serverDateTimeTimestamp(value)
+  if (timestamp === undefined) return '时间格式异常'
+  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(timestamp)
 }
 
 function renderHistoryCharts() {

@@ -4,6 +4,7 @@ import type { SQLInputValue } from 'node:sqlite'
 import { hashSecret } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { normalizeListPage } from './query-utils.js'
+import { optionalServerDateTimeIso } from './value-utils.js'
 
 export const externalIntegrationSourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
 export const externalIntegrationIpUsageReadScope = 'juhe_ai_ip_usage:read'
@@ -805,13 +806,13 @@ function normalizeNullableIso(value: unknown): string | null {
   }
   const text = value.trim()
   if (!text) {
-    return null
-  }
-  const time = Date.parse(text)
-  if (!Number.isFinite(time)) {
     throw new Error('过期时间无效')
   }
-  return new Date(time).toISOString()
+  const normalized = optionalServerDateTimeIso(text)
+  if (!normalized) {
+    throw new Error('过期时间无效')
+  }
+  return normalized
 }
 
 function normalizeNullableText(value: unknown): string | null {

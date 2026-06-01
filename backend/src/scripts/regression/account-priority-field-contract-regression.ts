@@ -25,6 +25,10 @@ const [databaseModule, repositories] = await Promise.all([
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
+  const accountGroup = repositories.createGroup({
+    providerCode: 'openai',
+    name: '账户字段契约回归分组'
+  }, access)
   assert.throws(() => repositories.createAccount({
     providerCode: 'openai',
     name: '优先级拼写残留创建检查',
@@ -33,6 +37,7 @@ try {
       api_key: 'sk-priority-contract-create',
       base_url: 'http://127.0.0.1:9/v1'
     },
+    groupId: accountGroup.id,
     prioritiy: 99
   }, access), /账户创建参数包含未知字段：prioritiy/, '拼错字段 prioritiy 不应在创建账户时被静默忽略')
 
@@ -44,7 +49,8 @@ try {
       api_key: 'sk-priority-contract-update',
       base_url: 'http://127.0.0.1:9/v1'
     },
-    priority: 7
+    priority: 7,
+    groupId: accountGroup.id
   }, access)
   assert.equal(account.priority, 7, '当前 priority 字段应正常生效')
 
@@ -59,7 +65,8 @@ try {
     credentials: {
       api_key: 'sk-priority-contract-missing-provider',
       base_url: 'http://127.0.0.1:9/v1'
-    }
+    },
+    groupId: accountGroup.id
   }, access), /供应商不能为空/, '创建账户必须显式提供当前供应商')
 
   assert.throws(() => repositories.createAccount({
@@ -68,7 +75,8 @@ try {
     credentials: {
       api_key: 'sk-priority-contract-missing-name',
       base_url: 'http://127.0.0.1:9/v1'
-    }
+    },
+    groupId: accountGroup.id
   }, access), /账户名称不能为空/, '创建账户必须显式提供当前账户名称')
 
   assert.throws(() => repositories.createAccount({
@@ -77,7 +85,8 @@ try {
     credentials: {
       api_key: 'sk-priority-contract-missing-type',
       base_url: 'http://127.0.0.1:9/v1'
-    }
+    },
+    groupId: accountGroup.id
   }, access), /账户类型不能为空/, '创建账户必须显式提供当前账户类型')
 
   assert.throws(() => repositories.createAccount({
@@ -88,7 +97,8 @@ try {
       api_key: 'sk-priority-contract-string-concurrency',
       base_url: 'http://127.0.0.1:9/v1'
     },
-    concurrencyLimit: '20'
+    concurrencyLimit: '20',
+    groupId: accountGroup.id
   }, access), /并发限制必须是大于 0 的整数/, '创建账户不应接收数字字符串形式的并发限制')
 
   assert.throws(() => repositories.createAccount({
@@ -97,7 +107,8 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-priority-contract-missing-base-url'
-    }
+    },
+    groupId: accountGroup.id
   }, access), /Base URL不能为空/, '创建账户不应为 API Key 账户补默认 Base URL')
 
   assert.throws(() => repositories.updateAccount(account.id, {
@@ -114,7 +125,8 @@ try {
       api_key: 'sk-priority-contract-unknown-credential',
       base_url: 'http://127.0.0.1:9/v1',
       apiKey: 'legacy-field'
-    }
+    },
+    groupId: accountGroup.id
   }, access), /账户凭据包含未知字段：apiKey/, '创建账户不应静默保留 credentials 内的旧字段')
 
   assert.throws(() => repositories.updateAccount(account.id, {
@@ -140,7 +152,8 @@ try {
       chatgpt_user_id: 'user_priority_contract',
       plan_type: 'plus',
       base_url: 'http://127.0.0.1:9/v1'
-    }
+    },
+    groupId: accountGroup.id
   }, access)
   assert.equal(oauthAccount.credentials.client_id, 'client-priority-contract', '当前 OAuth 元数据字段应正常保留')
 
@@ -152,7 +165,8 @@ try {
       refresh_token: 'refresh-priority-contract-legacy-oauth',
       base_url: 'http://127.0.0.1:9/v1',
       accountId: 'legacy-account-id'
-    }
+    },
+    groupId: accountGroup.id
   }, access), /账户凭据包含未知字段：accountId/, 'OAuth 凭据不应接收 camelCase 旧字段')
 
   assert.throws(() => repositories.createAccount({
@@ -163,7 +177,8 @@ try {
       refresh_token: 'refresh-priority-contract-invalid-expiry',
       expires_at: 'not-a-date',
       base_url: 'http://127.0.0.1:9/v1'
-    }
+    },
+    groupId: accountGroup.id
   }, access), /Access Token 到期时间必须是有效时间字符串/, 'OAuth 凭据时间字段不应吞掉非法字符串')
 
   assert.throws(() => repositories.createGroup({

@@ -102,7 +102,8 @@ try {
     credentials: {
       api_key: 'sk-usage-record-stale-shape',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: group.id
   }, access)
   const staleCreatedAt = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
   repositories.createUsageRecordsBatch([{

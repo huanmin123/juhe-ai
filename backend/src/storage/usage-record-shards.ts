@@ -20,10 +20,16 @@ export interface UsageRecordShardQueryWindow {
   endAt?: string
 }
 
+export interface UsageRecordShardLocationWindow {
+  locations: UsageRecordShardLocation[]
+  hasMore: boolean
+}
+
 export interface UsageRecordShardEntryInput {
   id: string
   shardKey: string
   systemAccountId: string
+  apiKeyId?: string | null
   accountId?: string | null
   groupId?: string | null
   model?: string | null
@@ -35,6 +41,14 @@ export interface UsageRecordShardEntryInput {
   durationMs?: number | null
   costUsd?: number | null
   createdAt: string
+}
+
+interface UsageRecordShardEntryScope {
+  usageId: string
+  shardKey: string
+  systemAccountId: string
+  apiKeyId?: string | null
+  accountId?: string | null
 }
 
 const usageRecordShardSchemaVersion = 1
@@ -108,6 +122,33 @@ export function listUsageRecordShardLocations(window: UsageRecordShardQueryWindo
   return listRegisteredUsageRecordShardLocations()
 }
 
+export function listUsageRecordShardLocationsForAccount(accountId: string, limit = 64): UsageRecordShardLocationWindow {
+  const normalizedAccountId = accountId.trim()
+  if (!normalizedAccountId) {
+    return { locations: [], hasMore: false }
+  }
+  return listUsageRecordShardLocationsByScopeCatalog({
+    tableName: 'usage_record_account_shards',
+    whereClause: 'c.account_id = ?',
+    params: [normalizedAccountId],
+    limit
+  })
+}
+
+export function listUsageRecordShardLocationsForApiKey(apiKeyId: string, systemAccountId: string, limit = 64): UsageRecordShardLocationWindow {
+  const normalizedApiKeyId = apiKeyId.trim()
+  const normalizedSystemAccountId = systemAccountId.trim()
+  if (!normalizedApiKeyId || !normalizedSystemAccountId) {
+    return { locations: [], hasMore: false }
+  }
+  return listUsageRecordShardLocationsByScopeCatalog({
+    tableName: 'usage_record_api_key_shards',
+    whereClause: 'c.api_key_id = ? AND c.system_account_id = ?',
+    params: [normalizedApiKeyId, normalizedSystemAccountId],
+    limit
+  })
+}
+
 function listUsageRecordShardLocationsForDateWindow(startDateKey?: string, endDateKey?: string): UsageRecordShardLocation[] {
   const endKey = endDateKey ?? startDateKey ?? bucketDateKeyFromDate(new Date())
   const startKey = startDateKey ?? endKey
@@ -149,6 +190,34 @@ function listRegisteredUsageRecordShardLocations(input: {
   return rows
     .map(usageRecordShardLocationFromRegistryRow)
     .filter((location): location is UsageRecordShardLocation => Boolean(location))
+}
+
+function listUsageRecordShardLocationsByScopeCatalog(input: {
+  tableName: 'usage_record_account_shards' | 'usage_record_api_key_shards'
+  whereClause: string
+  params: string[]
+  limit: number
+}): UsageRecordShardLocationWindow {
+  const normalizedLimit = Math.max(1, Math.trunc(input.limit))
+  const rows = getDatasetDatabase()
+    .prepare(`
+      SELECT s.shard_key, s.bucket_date, s.shard_id, s.file_path
+      FROM ${input.tableName} c
+      JOIN usage_record_shards s ON s.shard_key = c.shard_key
+      WHERE s.status = 'active'
+        AND ${input.whereClause}
+      ORDER BY c.first_created_at ASC, s.shard_id ASC
+      LIMIT ?
+    `)
+    .all(...input.params, normalizedLimit + 1) as Array<{ shard_key?: string; bucket_date?: string; shard_id?: number; file_path?: string }>
+  const locations = rows
+    .slice(0, normalizedLimit)
+    .map(usageRecordShardLocationFromRegistryRow)
+    .filter((location): location is UsageRecordShardLocation => Boolean(location))
+  return {
+    locations,
+    hasMore: rows.length > normalizedLimit
+  }
 }
 
 function usageRecordShardLocationFromRegistryRow(row: {
@@ -241,13 +310,14 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
   const database = getDatasetDatabase()
   const statement = database.prepare(`
     INSERT INTO usage_record_shard_entries (
-      usage_id, shard_key, system_account_id, account_id, group_id, model, traffic_source,
+      usage_id, shard_key, system_account_id, api_key_id, account_id, group_id, model, traffic_source,
       success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(usage_id) DO UPDATE SET
       shard_key = excluded.shard_key,
       system_account_id = excluded.system_account_id,
+      api_key_id = excluded.api_key_id,
       account_id = excluded.account_id,
       group_id = excluded.group_id,
       model = excluded.model,
@@ -266,6 +336,7 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
       entry.id,
       entry.shardKey,
       entry.systemAccountId,
+      entry.apiKeyId ?? null,
       entry.accountId ?? null,
       entry.groupId ?? null,
       entry.model ?? null,
@@ -280,6 +351,7 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
       timestamp
     )
   }
+  upsertUsageRecordScopeShardCatalog(entries)
 }
 
 export function deleteUsageRecordShardEntries(ids: string[]): void {
@@ -287,9 +359,151 @@ export function deleteUsageRecordShardEntries(ids: string[]): void {
   if (normalizedIds.length === 0) return
   const database = getDatasetDatabase()
   for (const chunk of chunkValues(normalizedIds, 900)) {
+    const scopes = listUsageRecordShardEntryScopes(database, chunk)
     database
       .prepare(`DELETE FROM usage_record_shard_entries WHERE usage_id IN (${sqlPlaceholders(chunk.length)})`)
       .run(...chunk)
+    cleanupUsageRecordScopeShardCatalog(database, scopes)
+  }
+}
+
+function upsertUsageRecordScopeShardCatalog(entries: UsageRecordShardEntryInput[]): void {
+  const database = getDatasetDatabase()
+  const accountRows = new Map<string, { accountId: string; shardKey: string; createdAt: string }>()
+  const apiKeyRows = new Map<string, { apiKeyId: string; systemAccountId: string; shardKey: string; createdAt: string }>()
+  for (const entry of entries) {
+    const accountId = entry.accountId?.trim()
+    if (accountId) {
+      const key = `${accountId}\u0000${entry.shardKey}`
+      const existing = accountRows.get(key)
+      if (!existing || entry.createdAt < existing.createdAt) {
+        accountRows.set(key, { accountId, shardKey: entry.shardKey, createdAt: entry.createdAt })
+      }
+    }
+    const apiKeyId = entry.apiKeyId?.trim()
+    const systemAccountId = entry.systemAccountId.trim()
+    if (apiKeyId && systemAccountId) {
+      const key = `${apiKeyId}\u0000${systemAccountId}\u0000${entry.shardKey}`
+      const existing = apiKeyRows.get(key)
+      if (!existing || entry.createdAt < existing.createdAt) {
+        apiKeyRows.set(key, { apiKeyId, systemAccountId, shardKey: entry.shardKey, createdAt: entry.createdAt })
+      }
+    }
+  }
+
+  const accountStatement = database.prepare(`
+    INSERT INTO usage_record_account_shards (account_id, shard_key, first_created_at, last_seen_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(account_id, shard_key) DO UPDATE SET
+      first_created_at = CASE
+        WHEN excluded.first_created_at < usage_record_account_shards.first_created_at THEN excluded.first_created_at
+        ELSE usage_record_account_shards.first_created_at
+      END,
+      last_seen_at = CASE
+        WHEN excluded.last_seen_at > usage_record_account_shards.last_seen_at THEN excluded.last_seen_at
+        ELSE usage_record_account_shards.last_seen_at
+      END
+  `)
+  for (const row of accountRows.values()) {
+    accountStatement.run(row.accountId, row.shardKey, row.createdAt, row.createdAt)
+  }
+
+  const apiKeyStatement = database.prepare(`
+    INSERT INTO usage_record_api_key_shards (api_key_id, system_account_id, shard_key, first_created_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(api_key_id, system_account_id, shard_key) DO UPDATE SET
+      first_created_at = CASE
+        WHEN excluded.first_created_at < usage_record_api_key_shards.first_created_at THEN excluded.first_created_at
+        ELSE usage_record_api_key_shards.first_created_at
+      END,
+      last_seen_at = CASE
+        WHEN excluded.last_seen_at > usage_record_api_key_shards.last_seen_at THEN excluded.last_seen_at
+        ELSE usage_record_api_key_shards.last_seen_at
+      END
+  `)
+  for (const row of apiKeyRows.values()) {
+    apiKeyStatement.run(row.apiKeyId, row.systemAccountId, row.shardKey, row.createdAt, row.createdAt)
+  }
+}
+
+function listUsageRecordShardEntryScopes(database: DatabaseSync, ids: string[]): UsageRecordShardEntryScope[] {
+  if (ids.length === 0) return []
+  const rows = database
+    .prepare(`
+      SELECT usage_id, shard_key, system_account_id, api_key_id, account_id
+      FROM usage_record_shard_entries
+      WHERE usage_id IN (${sqlPlaceholders(ids.length)})
+    `)
+    .all(...ids) as Array<{
+      usage_id?: string | null
+      shard_key?: string | null
+      system_account_id?: string | null
+      api_key_id?: string | null
+      account_id?: string | null
+    }>
+  return rows
+    .map((row) => ({
+      usageId: String(row.usage_id ?? ''),
+      shardKey: String(row.shard_key ?? ''),
+      systemAccountId: String(row.system_account_id ?? ''),
+      apiKeyId: typeof row.api_key_id === 'string' ? row.api_key_id : undefined,
+      accountId: typeof row.account_id === 'string' ? row.account_id : undefined
+    }))
+    .filter((row) => row.usageId && row.shardKey && row.systemAccountId)
+}
+
+function cleanupUsageRecordScopeShardCatalog(database: DatabaseSync, scopes: UsageRecordShardEntryScope[]): void {
+  const accountScopes = new Set<string>()
+  const apiKeyScopes = new Set<string>()
+  for (const scope of scopes) {
+    const accountId = scope.accountId?.trim()
+    if (accountId) {
+      accountScopes.add(`${accountId}\u0000${scope.shardKey}`)
+    }
+    const apiKeyId = scope.apiKeyId?.trim()
+    if (apiKeyId) {
+      apiKeyScopes.add(`${apiKeyId}\u0000${scope.systemAccountId}\u0000${scope.shardKey}`)
+    }
+  }
+
+  const deleteAccountScopeStatement = database.prepare(`
+    DELETE FROM usage_record_account_shards
+    WHERE account_id = ?
+      AND shard_key = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM usage_record_shard_entries
+        WHERE account_id = ?
+          AND shard_key = ?
+        LIMIT 1
+      )
+  `)
+  for (const key of accountScopes) {
+    const [accountId, shardKey] = key.split('\u0000')
+    if (accountId && shardKey) {
+      deleteAccountScopeStatement.run(accountId, shardKey, accountId, shardKey)
+    }
+  }
+
+  const deleteApiKeyScopeStatement = database.prepare(`
+    DELETE FROM usage_record_api_key_shards
+    WHERE api_key_id = ?
+      AND system_account_id = ?
+      AND shard_key = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM usage_record_shard_entries
+        WHERE api_key_id = ?
+          AND system_account_id = ?
+          AND shard_key = ?
+        LIMIT 1
+      )
+  `)
+  for (const key of apiKeyScopes) {
+    const [apiKeyId, systemAccountId, shardKey] = key.split('\u0000')
+    if (apiKeyId && systemAccountId && shardKey) {
+      deleteApiKeyScopeStatement.run(apiKeyId, systemAccountId, shardKey, apiKeyId, systemAccountId, shardKey)
+    }
   }
 }
 
@@ -411,9 +625,9 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS usage_records (
       id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      system_account_id TEXT NOT NULL,
       trace_id TEXT NOT NULL,
-      traffic_source TEXT NOT NULL DEFAULT 'gateway',
+      traffic_source TEXT NOT NULL,
       client_ip TEXT,
       api_key_id TEXT,
       group_id TEXT,

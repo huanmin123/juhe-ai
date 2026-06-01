@@ -128,6 +128,7 @@ type ModelCheckTarget = {
   targetId: string
   targetName?: string
   targetOwnerSystemAccountId: string
+  providerCode: string
   identity: OpenAIGatewayRequestIdentity
   candidateAccounts?: OpenAIAccountSecret[]
   accountId?: string
@@ -308,6 +309,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   const run = createModelCheckRun({
     systemAccountId: target.identity.systemAccountId,
     actorSystemAccountId,
+    providerCode: target.providerCode,
     targetType: target.targetType,
     targetId: target.targetId,
     targetName: target.targetName,
@@ -471,6 +473,7 @@ function resolveAccountTarget(accountId: string, access?: AccessScope): ModelChe
     targetId: account.id,
     targetName: account.name,
     targetOwnerSystemAccountId: account.ownerSystemAccountId ?? account.systemAccountId ?? candidate.accountOwnerSystemAccountId,
+    providerCode: account.providerCode,
     identity: {
       systemAccountId,
       groupId: account.boundGroupId
@@ -483,15 +486,26 @@ function resolveAccountTarget(accountId: string, access?: AccessScope): ModelChe
 
 function effectiveAccountTargetSystemAccountId(account: AccountSummary, access?: AccessScope): string {
   if (access?.role === 'admin') {
-    return access.systemAccountFilterId?.trim()
+    const systemAccountId = access.systemAccountFilterId?.trim()
       || account.systemAccountId
       || account.ownerSystemAccountId
-      || access.systemAccountId
+    if (!systemAccountId) {
+      throw new ModelCheckRequestError(400, '账户归属数据异常，无法执行模型检测')
+    }
+    return systemAccountId
   }
   if (account.accessType === 'authorized') {
-    return access?.systemAccountId ?? account.bindingSystemAccountId ?? 'sys_admin'
+    const systemAccountId = access?.systemAccountId ?? account.bindingSystemAccountId
+    if (!systemAccountId) {
+      throw new ModelCheckRequestError(400, '授权账户归属数据异常，无法执行模型检测')
+    }
+    return systemAccountId
   }
-  return access?.systemAccountId ?? account.systemAccountId ?? account.ownerSystemAccountId ?? 'sys_admin'
+  const systemAccountId = access?.systemAccountId ?? account.systemAccountId ?? account.ownerSystemAccountId
+  if (!systemAccountId) {
+    throw new ModelCheckRequestError(400, '账户归属数据异常，无法执行模型检测')
+  }
+  return systemAccountId
 }
 
 function resolveTrustedComparisonTarget(accountId: string, access?: AccessScope): ModelCheckTarget {

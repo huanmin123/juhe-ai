@@ -134,7 +134,8 @@ try {
     providerCode: 'openai',
     name: '管理员代归还授权账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-admin-authorization-return', base_url: 'http://127.0.0.1:9/v1' }
+    credentials: { api_key: 'sk-admin-authorization-return', base_url: 'http://127.0.0.1:9/v1' },
+    groupId: seed.ownerGroupId
   }, { systemAccountId: seed.ownerId, role: 'user' as const })
   const adminManagedGrant = repositories.createResourceAuthorization({
     resourceType: 'account',

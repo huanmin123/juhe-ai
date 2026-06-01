@@ -50,6 +50,14 @@ try {
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const otherGranteeAccess = { systemAccountId: otherGrantee.id, role: 'user' as const }
+  const ownerSourceGroup = repositories.createGroup({
+    name: '授权调度来源分组',
+    providerCode: 'openai'
+  }, ownerAccess)
+  const granteeOwnedGroup = repositories.createGroup({
+    name: '被授权人自有账户分组',
+    providerCode: 'openai'
+  }, granteeAccess)
 
   const superAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -57,14 +65,16 @@ try {
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-super', base_url: 'https://api.openai.com/v1' },
     superPriorityEnabled: true,
-    priority: 10
+    priority: 10,
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   const normalAccount = repositories.createAccount({
     providerCode: 'openai',
     name: 'A 授权普通账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-normal', base_url: 'https://api.openai.com/v1' },
-    priority: 0
+    priority: 0,
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   const fallbackAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -72,14 +82,16 @@ try {
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-fallback', base_url: 'https://api.openai.com/v1' },
     fallbackEnabled: true,
-    priority: 0
+    priority: 0,
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   const granteeOwnedAccount = repositories.createAccount({
     providerCode: 'openai',
     name: 'D 被授权人自有账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-owned-target', base_url: 'https://api.openai.com/v1' },
-    priority: 0
+    priority: 0,
+    groupId: granteeOwnedGroup.id
   }, granteeAccess)
   const granteeGroup = repositories.createGroup({
     name: '被授权人调度分组',

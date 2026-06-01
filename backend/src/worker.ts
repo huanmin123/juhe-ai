@@ -226,7 +226,7 @@ async function exitAfterWorkerQueueFlush(exitCode: number): Promise<never> {
 async function flushWorkerQueuesForShutdown(): Promise<void> {
   flushUsageRecordQueueForShutdown()
   flushOperationLogQueueForShutdown()
-  flushRecordMaintenanceQueueForShutdown()
+  await flushRecordMaintenanceQueueForShutdown()
   flushRuntimeLogIndexQueueForShutdown()
   await flushAuditLogQueueForShutdown()
 }

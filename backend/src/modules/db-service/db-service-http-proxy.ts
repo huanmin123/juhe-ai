@@ -7,6 +7,14 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { getTraceId, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { getDbServiceState } from './db-service-ipc.js'
 
+export const dbServiceHttpProxyMaxInFlight = 256
+export const dbServiceHttpProxyTimeoutMs = 30_000
+
+export interface DbServiceHttpProxyOptions {
+  maxInFlight?: number
+  timeoutMs?: number
+}
+
 const hopByHopHeaders = new Set([
   'connection',
   'keep-alive',
@@ -18,12 +26,37 @@ const hopByHopHeaders = new Set([
   'upgrade'
 ])
 
-export function createDbServiceHttpProxy(): (req: Request, res: Response, next: NextFunction) => void {
+export function createDbServiceHttpProxy(options: DbServiceHttpProxyOptions = {}): (req: Request, res: Response, next: NextFunction) => void {
+  const maxInFlight = positiveIntegerOrDefault(options.maxInFlight, dbServiceHttpProxyMaxInFlight)
+  const timeoutMs = positiveIntegerOrDefault(options.timeoutMs, dbServiceHttpProxyTimeoutMs)
+  let inFlight = 0
+
   return (req, res, _next) => {
     const endpoint = resolveDbServiceHttpEndpoint()
     if (!endpoint) {
       sendDbServiceUnavailable(res)
       return
+    }
+    if (inFlight >= maxInFlight) {
+      logger.warn({
+        event: 'db_service_http_proxy_overloaded',
+        method: req.method,
+        path: req.path,
+        originalUrl: sanitizeUrlForLog(req.originalUrl),
+        inFlight,
+        maxInFlight
+      }, 'DB service 内部 HTTP 代理并发已满')
+      sendDbServiceProxyOverloaded(res)
+      return
+    }
+
+    inFlight += 1
+    let released = false
+    let timedOut = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      inFlight = Math.max(0, inFlight - 1)
     }
 
     const upstream = http.request({
@@ -42,8 +75,34 @@ export function createDbServiceHttpProxy(): (req: Request, res: Response, next: 
       }
       upstreamResponse.pipe(res)
     })
+    upstream.setTimeout(timeoutMs, () => {
+      timedOut = true
+      logger.warn({
+        event: 'db_service_http_proxy_timeout',
+        method: req.method,
+        path: req.path,
+        originalUrl: sanitizeUrlForLog(req.originalUrl),
+        dbServiceHost: endpoint.host,
+        dbServicePort: endpoint.port,
+        timeoutMs
+      }, 'DB service 内部 HTTP 代理超时')
+      upstream.destroy()
+      if (!res.headersSent) {
+        sendDbServiceProxyTimedOut(res)
+        return
+      }
+      res.end()
+    })
 
     upstream.on('error', (error) => {
+      if (timedOut) {
+        if (!res.headersSent) {
+          sendDbServiceProxyTimedOut(res)
+          return
+        }
+        res.end()
+        return
+      }
       logger.warn(errorLogFields(error, {
         event: 'db_service_http_proxy_failed',
         method: req.method,
@@ -66,6 +125,7 @@ export function createDbServiceHttpProxy(): (req: Request, res: Response, next: 
       if (!res.writableEnded) {
         upstream.destroy()
       }
+      release()
     })
 
     req.pipe(upstream)
@@ -119,8 +179,25 @@ function headerText(value: string | string[] | undefined): string | undefined {
   return value
 }
 
+function positiveIntegerOrDefault(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback
+}
+
 function sendDbServiceUnavailable(res: Response): void {
   res.status(503).json({
     message: '本地数据库服务未就绪或内部系统接口不可用，请稍后重试'
+  })
+}
+
+function sendDbServiceProxyOverloaded(res: Response): void {
+  res.setHeader('Retry-After', '1')
+  res.status(503).json({
+    message: '本地数据库服务繁忙，请稍后重试'
+  })
+}
+
+function sendDbServiceProxyTimedOut(res: Response): void {
+  res.status(504).json({
+    message: '本地数据库服务响应超时，请稍后重试'
   })
 }

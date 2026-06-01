@@ -286,9 +286,9 @@ function seedActiveGroupAuthorization(resourceId: string, ownerSystemAccountId: 
       INSERT INTO resource_authorizations (
         id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
         scope, status, effective_source_type, effective_source_team_id, activated_at, last_source_changed_at,
-        remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at,
+        remark, expires_at, limits_json, created_by, created_at, revoked_by, revoked_at,
         revoked_reason, updated_at
-      ) VALUES (?, 'group', ?, ?, ?, 'use', 'active', 'manual', NULL, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL, ?)
+      ) VALUES (?, 'group', ?, ?, ?, 'use', 'active', 'manual', NULL, ?, ?, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL, ?)
     `)
     .run(`ra_group_options_${resourceId}`, resourceId, ownerSystemAccountId, granteeSystemAccountId, now, now, ownerSystemAccountId, now, now)
 }

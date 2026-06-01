@@ -77,7 +77,7 @@ export function matchRuntimeStreamInterceptPolicy(
 }
 
 function policyMatchesProvider(policy: StreamInterceptPolicySummary, input: ResolveStreamInterceptPoliciesInput): boolean {
-  return normalizeComparable(policy.providerCode) === normalizeComparable(input.account.providerCode ?? 'openai')
+  return normalizeComparable(policy.providerCode) === normalizeComparable(input.account.providerCode)
 }
 
 function runtimePolicyFromSummary(policy: StreamInterceptPolicySummary): RuntimeStreamInterceptPolicy {

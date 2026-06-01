@@ -273,7 +273,7 @@ const accountFilterItems = computed(() => {
         id: series.accountId,
         name: series.accountName,
         status: 'active' as AccountStatus,
-        providerCode: 'openai',
+        providerCode: series.providerCode,
         systemAccountId: series.systemAccountId,
         requestCountLast7d: 0,
         selected: false,
@@ -648,12 +648,12 @@ function placeholderPerformanceAccount(id: string): AiPerformanceAccountRow | un
   const option = accountOptionById.value.get(id)
   const selection = addedAccountSelectionById.value.get(id)
   const name = option?.name?.trim() || selection?.name?.trim()
-  if (!name) return undefined
+  if (!name || !option?.providerCode) return undefined
   return {
     id,
     name,
     status: option?.status ?? 'active',
-    providerCode: option?.providerCode ?? 'openai',
+    providerCode: option.providerCode,
     systemAccountId: option?.systemAccountId ?? selectedPerformanceSystemAccountId() ?? '',
     systemAccountName: option?.systemAccountName,
     ownerSystemAccountId: option?.ownerSystemAccountId,
@@ -689,6 +689,7 @@ function placeholderPerformanceSeries(id: string): AiPerformanceSeriesRow | unde
   return {
     accountId: id,
     accountName: account.name,
+    providerCode: account.providerCode,
     systemAccountId: account.systemAccountId,
     points: []
   }

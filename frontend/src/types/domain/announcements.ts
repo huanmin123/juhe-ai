@@ -17,6 +17,10 @@ export interface AnnouncementSummary {
   updatedAt: string
 }
 
+export type PublishedAnnouncementSummary = AnnouncementSummary & {
+  publishedAt: string
+}
+
 export interface AnnouncementListResult {
   items: AnnouncementSummary[]
   total: number

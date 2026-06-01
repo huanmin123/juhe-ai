@@ -8,6 +8,7 @@ import {
   cleanupCreatedAuditBlobFiles,
   cleanupCreatedAuditBlobFilesAsync,
   cleanupUnreferencedAuditPayloadBlobs,
+  cleanupUnreferencedAuditPayloadBlobsAsync,
   persistAuditPayloadBlob,
   persistAuditPayloadBlobAsync,
   prepareAuditPayloadBlobStatements,
@@ -32,7 +33,7 @@ import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
-export { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
+export { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
 
 export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'client_aborted'
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
@@ -846,6 +847,12 @@ export function cleanupAuditLogsBefore(cutoffCreatedAt: string, limit = 1000): n
   return deleted
 }
 
+export async function cleanupAuditLogsBeforeAsync(cutoffCreatedAt: string, limit = 1000): Promise<number> {
+  const deleted = deleteAuditLogsByWhere('created_at < ?', [cutoffCreatedAt], limit)
+  await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
+  return deleted
+}
+
 export function cleanupAuditLogsByRetention(input: {
   successCutoffCreatedAt: string
   failureCutoffCreatedAt: string
@@ -860,6 +867,23 @@ export function cleanupAuditLogsByRetention(input: {
   )
   const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
   const deletedBlobs = cleanupUnreferencedAuditPayloadBlobs(limit)
+  return deletedLogs + deletedGroups + deletedBlobs
+}
+
+export async function cleanupAuditLogsByRetentionAsync(input: {
+  successCutoffCreatedAt: string
+  failureCutoffCreatedAt: string
+  errorGroupCutoffUpdatedAt: string
+  limit?: number
+}): Promise<number> {
+  const limit = input.limit ?? 1000
+  const deletedLogs = deleteAuditLogsByWhere(
+    "((audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))",
+    [input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
+    limit
+  )
+  const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
+  const deletedBlobs = await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
   return deletedLogs + deletedGroups + deletedBlobs
 }
 

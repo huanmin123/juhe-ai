@@ -5,7 +5,9 @@ import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { createProxy, deleteProxy, findProxy, listProxiesPage, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
+import { getRequestAccessScope } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
+import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
 import { testProxyById } from './proxy-test.service.js'
 
@@ -68,8 +70,13 @@ proxiesRouter.post('/', requireAdmin, mutationGuard({
     return
   }
   try {
+    const requestAccess = getRequestAccessScope()
+    if (!requestAccess) {
+      res.status(401).json(badRequest('缺少系统账户上下文'))
+      return
+    }
     const proxy = runLoggedOperation(() => {
-      const proxy = createProxy(parsed.data)
+      const proxy = createProxy(parsed.data, requestAccess)
       return {
         result: proxy,
         log: {
@@ -156,8 +163,18 @@ proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
 })
 
 proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
+  const before = findProxy(req.params.id)
+  if (!before) {
+    res.status(404).json({ message: '代理不存在' })
+    return
+  }
+  const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
+  if (!releaseDiagnosticSlot) {
+    res.setHeader('Retry-After', String(diagnosticTaskRetryAfterSeconds))
+    res.status(503).json({ message: diagnosticTaskBusyMessage })
+    return
+  }
   try {
-    const before = findProxy(req.params.id)
     const report = await testProxyById(req.params.id, { persist: false })
     if (!report) {
       res.status(404).json({ message: '代理不存在' })
@@ -205,6 +222,8 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
       return
     }
     res.status(502).json({ message: error instanceof Error ? error.message : '代理检测失败' })
+  } finally {
+    releaseDiagnosticSlot()
   }
 })
 

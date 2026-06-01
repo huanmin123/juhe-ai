@@ -2,6 +2,7 @@ import { Router, type Request } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import {
   createExternalIntegrationSource,
   createExternalIntegrationSourceToken,
@@ -23,12 +24,17 @@ const rateLimitRuleSchema = z.object({
   maxRequests: z.number().int().min(1, '限频次数不能小于 1').max(100000, '限频次数不能超过 100000')
 }).strict()
 
+const expiresAtSchema = z.union([
+  z.string().trim().min(1, '过期时间无效').refine((value) => Boolean(optionalServerDateTimeIso(value)), '过期时间无效'),
+  z.null()
+]).optional()
+
 const sourceBodySchema = z.object({
   name: z.string().trim().min(1, '来源系统名称不能为空').max(80, '来源系统名称不能超过 80 个字符'),
   status: z.enum(['active', 'disabled']).optional(),
   scopes: z.array(z.string().trim().min(1)).optional(),
   rateLimits: z.array(rateLimitRuleSchema).max(8, '限频规则最多 8 条').optional(),
-  expiresAt: z.string().trim().nullable().optional(),
+  expiresAt: expiresAtSchema,
   notes: z.string().trim().max(500, '备注不能超过 500 个字符').nullable().optional()
 }).strict()
 
@@ -38,7 +44,7 @@ const tokenBodySchema = z.object({
   name: z.string().trim().min(1, 'Token 名称不能为空').max(80, 'Token 名称不能超过 80 个字符'),
   status: z.enum(['active', 'disabled', 'revoked']).optional(),
   scopes: z.array(z.string().trim().min(1)).optional(),
-  expiresAt: z.string().trim().nullable().optional()
+  expiresAt: expiresAtSchema
 }).strict()
 
 const tokenUpdateBodySchema = tokenBodySchema.partial()

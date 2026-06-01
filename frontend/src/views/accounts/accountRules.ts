@@ -1,4 +1,5 @@
 import type { AccountSummary, ResourcePermissions } from '@/types/domain'
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import type { AccountMenuItem } from './accountActionTypes'
@@ -100,8 +101,8 @@ function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
 
 function isAuthorizationExpiringSoon(account: AccountSummary): boolean {
   if (!account.authorizationExpiresAt) return false
-  const timestamp = Date.parse(account.authorizationExpiresAt)
-  if (!Number.isFinite(timestamp)) return false
+  const timestamp = serverDateTimeTimestamp(account.authorizationExpiresAt)
+  if (timestamp === undefined) return false
   const remainingMs = timestamp - Date.now()
   return remainingMs > 0 && remainingMs <= 3 * 24 * 60 * 60 * 1000
 }
@@ -162,8 +163,8 @@ export function authorizedAccountUnavailableText(account: AccountSummary): strin
 
 function isFutureTime(value?: string): boolean {
   if (!value) return false
-  const time = Date.parse(value)
-  return Number.isFinite(time) && time > Date.now()
+  const time = serverDateTimeTimestamp(value)
+  return time !== undefined && time > Date.now()
 }
 
 export function canUseAuthorizedAccount(account: AccountSummary): boolean {

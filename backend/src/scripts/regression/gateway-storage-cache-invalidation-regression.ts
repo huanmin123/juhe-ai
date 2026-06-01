@@ -51,6 +51,10 @@ try {
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const ownerGroup = repositories.createGroup({
+    name: '缓存失效所有者分组',
+    providerCode: 'openai'
+  }, ownerAccess)
 
   const proxy = repositories.createProxy({
     name: '缓存失效代理',
@@ -58,16 +62,16 @@ try {
     host: '127.0.0.1',
     port: 18_180,
     enabled: true
-  })
+  }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '缓存失效主账户',
     type: 'api_key',
+    groupId: ownerGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-owner', base_url: 'https://api.openai.com/v1' },
     proxyProfileId: proxy.id
   }, ownerAccess)
-  assert(account.boundGroupId, '新建账户应绑定默认分组')
-  const ownerGroupId = account.boundGroupId
+  const ownerGroupId = ownerGroup.id
   const apiKey = repositories.createApiKeyRecord({
     name: '缓存失效 API Key',
     groupBindings: [{ groupId: ownerGroupId, priority: 1, status: 'active' }],
@@ -86,7 +90,7 @@ try {
       host: '127.0.0.1',
       port: 18_183,
       enabled: true
-    })
+    }, ownerAccess)
     repositories.updateAccount(account.id, { proxyProfileId: transactionalProxy.id }, ownerAccess)
     assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(ownerGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18180', '事务提交前不应提前清理分组账号缓存')
     databaseModule.commitDatabaseTransaction(databaseModule.getBusinessDatabase(), transactionStarted)
@@ -125,7 +129,7 @@ try {
     host: '127.0.0.1',
     port: 18_182,
     enabled: true
-  })
+  }, ownerAccess)
   repositories.updateAccount(account.id, { proxyProfileId: lateProxy.id }, ownerAccess)
   const afterLateProxyBinding = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert.equal(afterLateProxyBinding.accounts[0]?.proxyUrl, 'http://127.0.0.1:18182', '直接新建代理并绑定账号后运行配置应立即包含新代理')
@@ -151,6 +155,7 @@ try {
     providerCode: 'openai',
     name: '缓存失效共享账户',
     type: 'api_key',
+    groupId: ownerGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-shared', base_url: 'https://api.openai.com/v1' }
   }, ownerAccess)
   const accountAuthorization = repositories.createResourceAuthorization({
@@ -193,21 +198,23 @@ try {
     status: 'active'
   }, adminAccess)
   assert(repositories.addSystemTeamMembers(team.id, { systemAccountIds: [helperMember.id] }, adminAccess), '添加团队初始成员失败')
+  const sourceGroupId = account.boundGroupId
+  assert(sourceGroupId, '源账号应包含绑定分组')
   repositories.createResourceAuthorization({
     resourceType: 'group',
-    resourceId: account.boundGroupId,
+    resourceId: sourceGroupId,
     granteeType: 'team',
     granteeId: team.id,
     remark: '缓存失效团队分组授权'
   }, ownerAccess)
-  assert.equal(gatewayCache.resolveCachedGroupUsageAccessMetadata(account.boundGroupId, grantee.id), undefined, '加入团队前应没有分组访问权限')
+  assert.equal(gatewayCache.resolveCachedGroupUsageAccessMetadata(sourceGroupId, grantee.id), undefined, '加入团队前应没有分组访问权限')
   const teamAfterAdd = repositories.addSystemTeamMembers(team.id, { systemAccountIds: [grantee.id] }, adminAccess)
   assert(teamAfterAdd, '添加目标团队成员失败')
-  assert.equal(gatewayCache.resolveCachedGroupUsageAccessMetadata(account.boundGroupId, grantee.id)?.groupAuthorizationSourceTeamId, team.id, '直接添加团队成员后分组访问缓存应立即生效')
+  assert.equal(gatewayCache.resolveCachedGroupUsageAccessMetadata(sourceGroupId, grantee.id)?.groupAuthorizationSourceTeamId, team.id, '直接添加团队成员后分组访问缓存应立即生效')
   const granteeMember = teamAfterAdd.members?.find((member) => member.systemAccountId === grantee.id)
   assert(granteeMember?.id, '团队成员记录应包含被授权人')
   assert(repositories.removeSystemTeamMember(team.id, granteeMember.id, adminAccess), '移除目标团队成员失败')
-  assert.equal(gatewayCache.resolveCachedGroupUsageAccessMetadata(account.boundGroupId, grantee.id), undefined, '直接移除团队成员后分组访问缓存应立即失效')
+  assert.equal(gatewayCache.resolveCachedGroupUsageAccessMetadata(sourceGroupId, grantee.id), undefined, '直接移除团队成员后分组访问缓存应立即失效')
 
   const statusOwner = repositories.createSystemAccount({
     username: 'cache_invalidation_status_owner',
@@ -218,14 +225,18 @@ try {
     mustChangePassword: false
   })
   const statusOwnerAccess = { systemAccountId: statusOwner.id, role: 'user' as const }
+  const statusGroup = repositories.createGroup({
+    name: '缓存失效状态分组',
+    providerCode: 'openai'
+  }, statusOwnerAccess)
   const statusAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '缓存失效状态账户',
     type: 'api_key',
+    groupId: statusGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-status', base_url: 'https://api.openai.com/v1' }
   }, statusOwnerAccess)
-  assert(statusAccount.boundGroupId, '状态账户应绑定默认分组')
-  const statusGroupId = statusAccount.boundGroupId
+  const statusGroupId = statusGroup.id
   const statusApiKey = repositories.createApiKeyRecord({
     name: '缓存失效状态 API Key',
     groupBindings: [{ groupId: statusGroupId, priority: 1, status: 'active' }],

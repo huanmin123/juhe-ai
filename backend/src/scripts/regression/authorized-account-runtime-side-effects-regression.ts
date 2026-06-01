@@ -68,14 +68,16 @@ try {
   const cooldownAccount = createAuthorizedAccount('授权副作用临时不可调用账户', 'sk-runtime-side-effect-cooldown', [{
     name: '授权副本 500 临时不可调用',
     enabled: true,
-    status_codes: '500',
+    priority: 1,
+    status_codes: [500],
     action: 'temp_unschedulable',
     durationMinutes: 5
   }], ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
   const disableAccount = createAuthorizedAccount('授权副作用异常账户', 'sk-runtime-side-effect-disable', [{
     name: '授权副本 503 标记异常',
     enabled: true,
-    status_codes: '503',
+    priority: 1,
+    status_codes: [503],
     action: 'error_disabled'
   }], ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
   const streamAccount = createAuthorizedAccount('授权副作用流式失败账户', 'sk-runtime-side-effect-stream', [], ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
@@ -144,6 +146,10 @@ function createAuthorizedAccount(
   granteeGroupId: string,
   granteeAccess: { systemAccountId: string; role: 'user' }
 ) {
+  const ownerSourceGroup = repositories.createGroup({
+    name: `${name} 来源分组`,
+    providerCode: 'openai'
+  }, ownerAccess)
   const account = repositories.createAccount({
     providerCode: 'openai',
     name,
@@ -152,7 +158,8 @@ function createAuthorizedAccount(
       api_key: apiKey,
       base_url: 'https://example.invalid/v1',
       error_handling_rules: errorHandlingRules
-    }
+    },
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

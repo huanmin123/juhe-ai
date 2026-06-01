@@ -98,7 +98,6 @@ export interface ResourceAuthorizationRow {
   remark: string | null
   expires_at: string | null
   limits_json: string | null
-  model_policy_json: string | null
   created_by: string
   created_at: string
   revoked_by: string | null
@@ -136,7 +135,6 @@ export interface ResourceAuthorizationGrantRow {
   remark: string | null
   expires_at: string | null
   limits_json: string | null
-  model_policy_json: string | null
   created_by: string
   created_at: string
   revoked_by: string | null

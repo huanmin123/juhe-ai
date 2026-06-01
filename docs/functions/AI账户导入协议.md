@@ -8,8 +8,8 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 
 - `type`: `juhe-ai-account-import`
 - `version`: `1`
-- 单次请求受系统 API JSON 请求体上限约束，当前接口按小批量导入设计。
-- 单次最多导入 500 个账户、200 个代理。
+- 单次请求受系统 API `256KB` JSON 请求体上限约束，当前接口按小批量导入设计。
+- 单次最多导入 50 个账户、20 个代理，避免 DB service 在一次管理请求内长时间同步解析和校验大数组。
 
 ## 导入流程
 
@@ -33,15 +33,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
   "version": 1,
   "metadata": {
     "source": "用户自定义",
-    "generatedAt": "2026-05-22T12:00:00+08:00"
-  },
-  "defaults": {
-    "providerCode": "openai",
-    "type": "api_key",
-    "status": "active",
-    "groupName": "默认 OpenAI 分组",
-    "concurrencyLimit": 3,
-    "priority": 50
+    "generatedAt": "2026-05-22T04:00:00.000Z"
   },
   "proxies": [
     {
@@ -59,8 +51,12 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
     {
       "ref": "openai-key-001",
       "name": "OpenAI API Key 账号 1",
+      "providerCode": "openai",
       "type": "api_key",
+      "status": "active",
       "groupName": "默认 OpenAI 分组",
+      "concurrencyLimit": 3,
+      "priority": 50,
       "proxyRef": "proxy-hk-1",
       "credentials": {
         "api_key": "sk-xxx",
@@ -71,8 +67,12 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
     {
       "ref": "openai-oauth-001",
       "name": "OpenAI OAuth 账号 1",
+      "providerCode": "openai",
       "type": "oauth",
+      "status": "active",
       "groupName": "默认 OpenAI 分组",
+      "concurrencyLimit": 3,
+      "priority": 50,
       "credentials": {
         "refresh_token": "refresh-token-xxx",
         "access_token": "access-token-xxx",
@@ -94,25 +94,8 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `type` | 是 | 固定为 `juhe-ai-account-import`。 |
 | `version` | 是 | 当前固定为 `1`。 |
 | `metadata` | 否 | 来源、生成时间、备注等说明信息，仅用于人工识别。 |
-| `defaults` | 否 | 账户默认值；单个账户未填写时继承。 |
 | `proxies` | 否 | 代理数组；账户通过 `proxyRef` 引用代理 `ref`。 |
 | `accounts` | 是 | 账户数组，至少 1 条。 |
-
-## defaults 字段
-
-| 字段 | 默认值 | 说明 |
-| --- | --- | --- |
-| `providerCode` | `openai` | 当前主要使用 OpenAI 供应商。 |
-| `type` | `api_key` | 账户类型，支持 `api_key`、`oauth`。 |
-| `status` | `active` | 账户状态，导入协议仅支持 `active`、`disabled`。 |
-| `groupId` | 无 | 目标分组 ID；优先级高于 `groupName`。 |
-| `groupName` | 无 | 目标分组名称；可按导入选项自动创建。 |
-| `proxyRef` | 无 | 默认代理引用。 |
-| `proxyProfileId` | 无 | 已存在的代理配置 ID。 |
-| `concurrencyLimit` | 系统默认 | 账户并发上限，必须大于 0。 |
-| `priority` | `0` | 调度优先级。 |
-| `accountExpiresAt` | 无 | 账户过期时间，使用可解析时间字符串。 |
-| `availabilitySchedule` | 无 | 自动启停计划；结构同账户接口，启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`，未填写表示不限制时段。 |
 
 ## accounts 字段
 
@@ -120,18 +103,18 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | --- | --- | --- |
 | `ref` | 否 | 导入预览和错误定位用，不写入数据库。 |
 | `name` | 是 | 账户名称，同一系统账户、供应商下不能重复。 |
-| `providerCode` | 否 | 未填时继承 `defaults.providerCode`。 |
-| `type` | 否 | 未填时继承 `defaults.type`。 |
-| `status` | 否 | `active` 或 `disabled`。 |
-| `groupId` | 否 | 绑定已有分组 ID。 |
-| `groupName` | 否 | 绑定或自动创建同名分组。 |
+| `providerCode` | 是 | 当前支持 `openai`。 |
+| `type` | 是 | `api_key` 或 `oauth`。 |
+| `status` | 是 | `active` 或 `disabled`。 |
+| `groupId` | 二选一 | 绑定已有分组 ID；优先级高于 `groupName`。 |
+| `groupName` | 二选一 | 绑定或自动创建同名分组。 |
 | `proxyRef` | 否 | 引用 `proxies[].ref` 或已有代理 ID。 |
 | `proxyProfileId` | 否 | 直接引用已有代理 ID；不能和 `proxyRef` 同时填写。 |
 | `concurrencyLimit` | 否 | 账户并发上限。 |
 | `priority` | 否 | 调度优先级。 |
 | `supportedModels` | 否 | 支持模型列表。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
-| `availabilitySchedule` | 否 | 自动启停计划；启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`，`null` 表示不继承默认计划。 |
+| `availabilitySchedule` | 否 | 自动启停计划；启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`。 |
 | `credentials` | 是 | 凭据对象。 |
 | `notes` | 否 | 备注。 |
 
@@ -163,7 +146,7 @@ OAuth 账户：
 
 - `api_key` 账户必须有 `credentials.api_key`。
 - `oauth` 账户必须有 `credentials.refresh_token` 或 `credentials.access_token`。
-- `credentials.base_url` 必须显式填写，不从 `defaults` 或供应商配置自动补值。
+- `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。
 
@@ -188,7 +171,7 @@ OAuth 账户：
 要求：
 1. 只输出合法 JSON，不要输出解释。
 2. 顶层 type 固定为 juhe-ai-account-import，version 固定为 1。
-3. providerCode 默认 openai。
+3. 每个账户必须显式填写 providerCode、type、status，以及 groupName 或 groupId。
 4. API Key 账号使用 type: api_key，credentials.api_key 和 credentials.base_url 必须显式填写。
 5. OAuth 账号使用 type: oauth，credentials.refresh_token / access_token / id_token 按原数据填写，并显式填写 credentials.base_url。
 6. 不要补写来源数据里不存在的凭据字段，也不要把字段改成 camelCase。

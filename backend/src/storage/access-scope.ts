@@ -13,12 +13,16 @@ export function resolveAccessScope(access?: AccessScope): AccessScope | undefine
 }
 
 export function currentSystemAccountId(access?: AccessScope): string {
-  return resolveAccessScope(access)?.systemAccountId ?? 'sys_admin'
+  const systemAccountId = resolveAccessScope(access)?.systemAccountId?.trim()
+  if (!systemAccountId) {
+    throw new Error('缺少系统账户上下文')
+  }
+  return systemAccountId
 }
 
 export function canAccessAll(access?: AccessScope): boolean {
   const scope = resolveAccessScope(access)
-  return !scope || scope.role === 'admin'
+  return scope?.role === 'admin'
 }
 
 export function scopedSystemAccountId(access?: AccessScope): string | undefined {

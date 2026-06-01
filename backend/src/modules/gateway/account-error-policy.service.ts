@@ -33,7 +33,7 @@ export interface GatewaySettings {
 
 export interface AccountErrorPolicyAccount {
   id: string
-  providerCode?: string
+  providerCode: string
   type?: string
   credentials: Record<string, unknown>
   accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
@@ -225,7 +225,7 @@ function authorizedAccountBindingRuntimeTarget(account: AccountErrorPolicyAccoun
   if (account.accountAccessType !== 'account_authorized') {
     return undefined
   }
-  const systemAccountId = account.bindingSystemAccountId ?? account.groupOwnerSystemAccountId
+  const systemAccountId = account.bindingSystemAccountId
   if (!systemAccountId || !account.boundGroupId || !account.accountAuthorizationId) {
     return undefined
   }
@@ -285,7 +285,7 @@ function accountErrorRules(credentials: Record<string, unknown>): AccountErrorHa
 function openAIOAuthCodexResetAt(account: AccountErrorPolicyAccount, statusCode: number, headers: Headers, bodyText: string): string | undefined {
   // OpenAI OAuth 是官方接入路径，Codex 限额会返回可解析的 reset 信息。
   // 这属于供应商官方账号语义，不依赖每个账号的 error_handling_rules 默认配置。
-  if ((account.providerCode ?? 'openai') !== 'openai' || statusCode !== 429 || account.type !== 'oauth') return undefined
+  if (account.providerCode !== 'openai' || statusCode !== 429 || account.type !== 'oauth') return undefined
   return calculateOpenAICodexRateLimitResetAt(headers, bodyText)
 }
 

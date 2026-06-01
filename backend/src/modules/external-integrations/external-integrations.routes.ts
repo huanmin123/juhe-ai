@@ -78,13 +78,18 @@ const consumptionRankingQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
   metric: z.enum(['totalTokens', 'totalCost', 'requestCount']).optional()
 })
+const providerCodeSchema = z.string({ required_error: '供应商编码不能为空' }).trim().min(1, '供应商编码不能为空').max(60)
+const publicAccountTypeSchema = z.enum(['api_key'], {
+  required_error: '账号类型不能为空',
+  invalid_type_error: '公开账号接口仅支持 API Key 账户'
+})
 const accountPushSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetDisplayName: z.string().trim().min(1).max(80).optional(),
   targetGroupName: z.string().trim().min(1).max(80),
-  providerCode: z.string().trim().min(1).max(60).optional(),
+  providerCode: providerCodeSchema,
   name: z.string().trim().min(1).max(120),
-  type: z.string().trim().optional().refine((value) => value === undefined || value === 'api_key', '账号新增仅支持 API Key 账户'),
+  type: publicAccountTypeSchema,
   baseUrl: z.string().trim().min(1).max(500),
   apiKey: z.string().trim().min(1).max(1000),
   supportedModels: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
@@ -98,7 +103,7 @@ const accountPushSchema = z.object({
 const accountDeleteSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetGroupName: z.string().trim().min(1).max(80),
-  providerCode: z.string().trim().min(1).max(60).optional(),
+  providerCode: providerCodeSchema,
   accountId: z.string().trim().min(1).max(120).optional(),
   name: z.string().trim().min(1).max(120).optional(),
   externalId: z.string().trim().min(1).max(200).optional()
@@ -114,7 +119,7 @@ const groupAddSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetDisplayName: z.string().trim().min(1).max(80).optional(),
   name: z.string().trim().min(1).max(80),
-  providerCode: z.string().trim().min(1).max(60).optional(),
+  providerCode: providerCodeSchema,
   description: z.string().trim().max(500).optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
@@ -138,6 +143,12 @@ const groupDeleteSchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: '删除分组时必须提供 groupId 或 name'
+    })
+  }
+  if (!value.groupId && !value.providerCode) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '按名称删除分组时必须提供 providerCode'
     })
   }
 })

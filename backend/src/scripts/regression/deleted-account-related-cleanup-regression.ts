@@ -139,7 +139,7 @@ try {
   assert.equal(accountQualityScoreCount(authorizedInstance.id), 1, '提交清理时不应同步删除授权实例质量快照')
   assert.equal(accountUsageSnapshotCount(account.id), 1, '提交清理时不应同步删除账户外部用量快照')
   assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 1, '提交清理时不应同步删除授权实例外部用量快照')
-  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
 
   assert.equal(usageRecordExists(ownerUsageId), false, '后台清理应删除原账户关联使用记录')
   assert.equal(usageRecordExists(instanceUsageId), true, '后台清理不应删除授权实例使用记录')
@@ -198,12 +198,29 @@ function seedOwnerUsageRecord(id: string, accountId: string, ownerSystemAccountI
   usageRecordShards.getUsageRecordShardDatabase(location)
     .prepare(`
       INSERT INTO usage_records (
-        id, system_account_id, trace_id, account_id, endpoint, provider_code, model,
+        id, system_account_id, trace_id, traffic_source, account_id, endpoint, provider_code, model,
         stream, success, input_tokens, output_tokens, cost_usd,
         created_at
-      ) VALUES (?, ?, ?, ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?)
+      ) VALUES (?, ?, ?, 'gateway', ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?)
     `)
     .run(id, ownerSystemAccountId, `trace_${id}`, accountId, createdAt)
+  usageRecordShards.recordUsageRecordShardEntries([{
+    id,
+    shardKey: location.shardKey,
+    systemAccountId: ownerSystemAccountId,
+    apiKeyId: null,
+    accountId,
+    groupId: null,
+    model: 'gpt-regression',
+    trafficSource: 'gateway',
+    success: true,
+    statusCode: 200,
+    clientIp: null,
+    firstTokenMs: null,
+    durationMs: null,
+    costUsd: 0.12,
+    createdAt
+  }])
 }
 
 function seedAuthorizedUsageRecord(id: string, accountId: string, ownerSystemAccountId: string, callerSystemAccountId: string, authorizationId: string, teamId: string): void {
@@ -211,14 +228,31 @@ function seedAuthorizedUsageRecord(id: string, accountId: string, ownerSystemAcc
   usageRecordShards.getUsageRecordShardDatabase(location)
     .prepare(`
       INSERT INTO usage_records (
-        id, system_account_id, trace_id, account_id, endpoint, provider_code, model,
+        id, system_account_id, trace_id, traffic_source, account_id, endpoint, provider_code, model,
         stream, success, input_tokens, output_tokens, cost_usd,
         account_owner_system_account_id, account_access_type,
         account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
         created_at
-      ) VALUES (?, ?, ?, ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?, 'account_authorized', ?, 'team', ?, ?)
+      ) VALUES (?, ?, ?, 'gateway', ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?, 'account_authorized', ?, 'team', ?, ?)
     `)
     .run(id, callerSystemAccountId, `trace_${id}`, accountId, ownerSystemAccountId, authorizationId, teamId, createdAt)
+  usageRecordShards.recordUsageRecordShardEntries([{
+    id,
+    shardKey: location.shardKey,
+    systemAccountId: callerSystemAccountId,
+    apiKeyId: null,
+    accountId,
+    groupId: null,
+    model: 'gpt-regression',
+    trafficSource: 'gateway',
+    success: true,
+    statusCode: 200,
+    clientIp: null,
+    firstTokenMs: null,
+    durationMs: null,
+    costUsd: 0.12,
+    createdAt
+  }])
 }
 
 function seedAuditData(accountId: string, suffix: string): void {
@@ -226,9 +260,9 @@ function seedAuditData(accountId: string, suffix: string): void {
   datasetDatabase
     .prepare(`
       INSERT INTO audit_logs (
-        id, trace_id, system_account_id, account_id, method, path, audit_outcome,
+        id, trace_id, traffic_source, system_account_id, account_id, method, path, audit_outcome,
         success, sample_bucket, sample_reason, started_at, ended_at, created_at
-      ) VALUES (?, ?, 'sys_admin', ?, 'POST', '/v1/chat/completions', 'success', 1, 0, 'regression', ?, ?, ?)
+      ) VALUES (?, ?, 'gateway', 'sys_admin', ?, 'POST', '/v1/chat/completions', 'success', 1, 0, 'regression', ?, ?, ?)
     `)
     .run(`audit_deleted_account_related_cleanup_${suffix}`, `trace_audit_deleted_account_related_cleanup_${suffix}`, accountId, createdAt, createdAt, createdAt)
   datasetDatabase

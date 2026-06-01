@@ -133,8 +133,8 @@ function seedUsageStatsRows(): void {
 function seedModelCheckHistory(): void {
   const datasetDatabase = databaseModule.getDatasetDatabase()
   datasetDatabase.prepare(`
-    INSERT INTO model_check_runs (id, target_type, target_id, model, started_at, created_at, updated_at)
-    VALUES ('mcr_retention_old', 'account', 'acct_retention_old', 'gpt-5.5', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
+    INSERT INTO model_check_runs (id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, model, started_at, created_at, updated_at)
+    VALUES ('mcr_retention_old', 'sys_admin', 'sys_admin', 'openai', 'account', 'acct_retention_old', 'gpt-5.5', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
   `).run()
   datasetDatabase.prepare(`
     INSERT INTO model_check_items (id, run_id, item_key, item_type, status, created_at, updated_at)

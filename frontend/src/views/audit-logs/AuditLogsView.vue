@@ -388,6 +388,7 @@ import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQ
 import { accountSelectionForId, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -1024,7 +1025,9 @@ function runtimeReadyText(value: boolean | null): string {
 
 function remainingDurationMinutes(expiresAt?: string): number | undefined {
   if (!expiresAt) return undefined
-  const remainingMs = Date.parse(expiresAt) - Date.now()
+  const timestamp = serverDateTimeTimestamp(expiresAt)
+  if (timestamp === undefined) return undefined
+  const remainingMs = timestamp - Date.now()
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) return undefined
   return Math.min(Math.max(Math.ceil(remainingMs / 60_000), 1), 1440)
 }

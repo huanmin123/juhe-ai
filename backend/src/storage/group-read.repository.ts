@@ -108,10 +108,7 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
     return { rows }
   }
   if (!viewerSystemAccountId) {
-    const rows = getBusinessDatabase()
-      .prepare(`SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()} FROM groups${whereClause(directFilter.clauses)}${orderClause}${pageClause}`)
-      .all(...directFilter.params, ...pageParams) as unknown as GroupListRow[]
-    return { rows }
+    throw new Error('缺少系统账户上下文')
   }
   if (options.manageableOnly) {
     const ownerFilter = buildGroupFilter('groups', options, ['groups.system_account_id = ?'], [ownerSystemAccountId ?? viewerSystemAccountId])
@@ -153,9 +150,7 @@ export function findGroupRowForAccess(access: AccessScope | undefined, groupId: 
       .get(groupId) as unknown as GroupListRow | undefined
   }
   if (!viewerSystemAccountId) {
-    return getBusinessDatabase()
-      .prepare(`SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()} FROM groups WHERE groups.id = ?`)
-      .get(groupId) as unknown as GroupListRow | undefined
+    throw new Error('缺少系统账户上下文')
   }
   return getBusinessDatabase()
     .prepare(`

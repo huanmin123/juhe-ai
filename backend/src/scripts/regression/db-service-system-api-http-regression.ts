@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
-import { createSystemApiApp } from '../../modules/system-api/system-api-app.js'
+import { createSystemApiApp, systemApiJsonBodyLimit } from '../../modules/system-api/system-api-app.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-system-api-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'system-api.sqlite3')
@@ -35,7 +35,17 @@ try {
   const publicSettings = await getJson<{ data: { appName?: string } }>(`${baseUrl}/__aisys__/api/settings/public`)
   assert.equal(publicSettings.data.appName, '聚合 AI', '公开设置应由 DB service system API 直接读取')
 
-  console.log('DB service system API HTTP 回归通过：内部 health 与公开设置接口可用')
+  assert.equal(systemApiJsonBodyLimit, '256kb', 'DB service system API JSON 请求体上限应保持 256KB')
+  const largeBodyResponse = await fetch(`${baseUrl}/__aisys__/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'secret', padding: 'x'.repeat(280 * 1024) })
+  })
+  assert.equal(largeBodyResponse.status, 413, 'DB service system API 应拒绝超过 256KB 的 JSON 请求体')
+  const largeBodyError = await largeBodyResponse.json() as { message?: string }
+  assert.equal(largeBodyError.message, '请求体过大', '超限 JSON 应返回中文请求体过大错误')
+
+  console.log('DB service system API HTTP 回归通过：内部 health、公开设置与 256KB JSON 请求体上限可用')
 } finally {
   await closeServer(server)
   try {

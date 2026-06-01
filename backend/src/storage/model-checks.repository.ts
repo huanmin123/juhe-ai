@@ -26,7 +26,7 @@ export interface ModelCheckRunCreateInput {
   id?: string
   systemAccountId: string
   actorSystemAccountId: string
-  providerCode?: string
+  providerCode: string
   targetType: ModelCheckTargetType
   targetId: string
   targetName?: string
@@ -153,7 +153,7 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
     id: input.id ?? newId('mcr'),
     system_account_id: input.systemAccountId,
     actor_system_account_id: input.actorSystemAccountId,
-    provider_code: input.providerCode ?? 'openai',
+    provider_code: input.providerCode,
     target_type: input.targetType,
     target_id: input.targetId,
     target_name: input.targetName ?? null,

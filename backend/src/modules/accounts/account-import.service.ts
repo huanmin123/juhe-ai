@@ -1,6 +1,7 @@
 import type { AccountAvailabilitySchedule, AccountType, ProviderDefinition } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
+import { accountIdentityFingerprint } from '../../storage/account-identity.js'
 import {
   DuplicateAccountCredentialError,
   createAccount,
@@ -20,9 +21,8 @@ import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 
 export const accountImportProtocolType = 'juhe-ai-account-import'
 export const accountImportProtocolVersion = 1
-
-const maxImportAccounts = 500
-const maxImportProxies = 200
+export const accountImportMaxAccounts = 50
+export const accountImportMaxProxies = 20
 
 type ImportAction = 'create' | 'reuse' | 'skip' | 'failed'
 type AccountImportStatus = 'active' | 'disabled'
@@ -91,20 +91,6 @@ export interface AccountImportResult {
   messages: string[]
 }
 
-interface ImportDefaults {
-  providerCode: string
-  type: AccountType
-  status: AccountImportStatus
-  groupId?: string
-  groupName?: string
-  proxyRef?: string
-  proxyProfileId?: string
-  concurrencyLimit?: number
-  priority?: number
-  accountExpiresAt?: string
-  availabilitySchedule?: AccountAvailabilitySchedule
-}
-
 interface NormalizedImportAccount {
   index: number
   ref?: string
@@ -164,6 +150,7 @@ interface ImportPlan {
   groupIdsByKey: Map<string, string>
   groupNamesToCreate: Map<string, { providerCode: string; name: string }>
   options: Required<AccountImportOptions>
+  access?: AccessScope
 }
 
 interface ImportContext {
@@ -175,20 +162,7 @@ interface ImportContext {
   proxyLookup: Map<string, ProxyProfileOptionSummary | undefined>
 }
 
-const importRootKeys = new Set(['type', 'version', 'defaults', 'proxies', 'accounts'])
-const importDefaultKeys = new Set([
-  'providerCode',
-  'type',
-  'status',
-  'groupId',
-  'groupName',
-  'proxyRef',
-  'proxyProfileId',
-  'concurrencyLimit',
-  'priority',
-  'accountExpiresAt',
-  'availabilitySchedule'
-])
+const importRootKeys = new Set(['type', 'version', 'proxies', 'accounts'])
 const importProxyKeys = new Set([
   'ref',
   'name',
@@ -225,7 +199,7 @@ export function previewAccountImport(data: unknown, options: AccountImportOption
   return buildImportPlan(data, options, access).result
 }
 
-export function executeAccountImport(data: unknown, options: AccountImportOptions = {}, access?: AccessScope): AccountImportResult {
+export function executeAccountImport(data: unknown, options: AccountImportOptions = {}, access: AccessScope): AccountImportResult {
   const plan = buildImportPlan(data, options, access)
   const result = plan.result
   result.mode = 'import'
@@ -233,7 +207,7 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
     return result
   }
 
-  const createdProxyIds = createPlannedProxies(plan)
+  const createdProxyIds = createPlannedProxies(plan, access)
   for (const [ref, proxyId] of createdProxyIds) {
     for (const account of plan.accounts) {
       if (account.source.proxyRef === ref && !account.proxyProfileId) {
@@ -324,10 +298,6 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
     return emptyPlan(result)
   }
 
-  const defaults = normalizeDefaults(data.defaults, result.messages)
-  if (result.messages.length > 0) {
-    return emptyPlan(result)
-  }
   const rawProxies = Array.isArray(data.proxies) ? data.proxies : []
   if (hasOwnField(data, 'proxies') && !Array.isArray(data.proxies)) {
     result.messages.push('proxies 必须是数组')
@@ -343,12 +313,12 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
     result.messages.push('accounts 至少需要 1 条账户')
     return emptyPlan(result)
   }
-  if (rawAccounts.length > maxImportAccounts) {
-    result.messages.push(`accounts 单次最多导入 ${maxImportAccounts} 条`)
+  if (rawAccounts.length > accountImportMaxAccounts) {
+    result.messages.push(`accounts 单次最多导入 ${accountImportMaxAccounts} 条`)
     return emptyPlan(result)
   }
-  if (rawProxies.length > maxImportProxies) {
-    result.messages.push(`proxies 单次最多导入 ${maxImportProxies} 条`)
+  if (rawProxies.length > accountImportMaxProxies) {
+    result.messages.push(`proxies 单次最多导入 ${accountImportMaxProxies} 条`)
     return emptyPlan(result)
   }
 
@@ -365,7 +335,7 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
 
   const groupIdsByKey = new Map<string, string>()
   const groupNamesToCreate = new Map<string, { providerCode: string; name: string }>()
-  const accounts = rawAccounts.map((item, index) => planAccount(item, index + 1, defaults, context, proxyByRef, groupIdsByKey, groupNamesToCreate))
+  const accounts = rawAccounts.map((item, index) => planAccount(item, index + 1, context, proxyByRef, groupIdsByKey, groupNamesToCreate))
   markDuplicateAccounts(accounts, context.options.skipDuplicates)
 
   result.proxies = proxyPlans.map((plan) => plan.item)
@@ -381,7 +351,8 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
     proxies: proxyPlans,
     groupIdsByKey,
     groupNamesToCreate,
-    options
+    options,
+    access
   }
 }
 
@@ -411,34 +382,6 @@ function emptyResult(mode: AccountImportResult['mode']): AccountImportResult {
     accounts: [],
     proxies: [],
     messages: []
-  }
-}
-
-function normalizeDefaults(value: unknown, messages: string[]): ImportDefaults {
-  if (value !== undefined && !isRecord(value)) {
-    messages.push('defaults 必须是对象')
-  }
-  const record = isRecord(value) ? value : {}
-  appendUnknownFieldMessages(record, importDefaultKeys, 'defaults', messages)
-  const providerCode = optionalTextField(record, 'providerCode', 'defaults.providerCode', messages) ?? 'openai'
-  const type = optionalTextField(record, 'type', 'defaults.type', messages) ?? 'api_key'
-  const statusInput = optionalTextField(record, 'status', 'defaults.status', messages)
-  const status = statusInput === undefined ? 'active' : normalizeStatus(statusInput)
-  if (statusInput !== undefined && !status) {
-    messages.push(`defaults.status 不支持：${statusInput}`)
-  }
-  return {
-    providerCode,
-    type,
-    status: status ?? 'active',
-    groupId: optionalTextField(record, 'groupId', 'defaults.groupId', messages),
-    groupName: optionalTextField(record, 'groupName', 'defaults.groupName', messages),
-    proxyRef: optionalTextField(record, 'proxyRef', 'defaults.proxyRef', messages),
-    proxyProfileId: optionalTextField(record, 'proxyProfileId', 'defaults.proxyProfileId', messages),
-    concurrencyLimit: optionalPositiveIntegerField(record, 'concurrencyLimit', 'defaults.concurrencyLimit', messages),
-    priority: optionalNonNegativeIntegerField(record, 'priority', 'defaults.priority', messages),
-    accountExpiresAt: optionalDateTimeField(record, 'accountExpiresAt', 'defaults.accountExpiresAt', messages),
-    availabilitySchedule: normalizeImportAvailabilitySchedule(importAvailabilityScheduleInput(record).value, messages)
   }
 }
 
@@ -514,7 +457,6 @@ function planProxy(value: unknown, index: number, context: ImportContext): Proxy
 function planAccount(
   value: unknown,
   index: number,
-  defaults: ImportDefaults,
   context: ImportContext,
   proxyByRef: Map<string, ProxyPlan>,
   groupIdsByKey: Map<string, string>,
@@ -524,17 +466,10 @@ function planAccount(
   const source: NormalizedImportAccount = {
     index,
     name: '',
-    providerCode: defaults.providerCode,
-    type: defaults.type,
-    status: defaults.status,
+    providerCode: '',
+    type: 'api_key',
+    status: 'active',
     credentials: {},
-    groupId: defaults.groupId,
-    groupName: defaults.groupName,
-    proxyRef: defaults.proxyRef,
-    proxyProfileId: defaults.proxyProfileId,
-    concurrencyLimit: defaults.concurrencyLimit,
-    priority: defaults.priority,
-    accountExpiresAt: defaults.accountExpiresAt,
     messages: item.messages,
     warnings: item.warnings
   }
@@ -546,8 +481,16 @@ function planAccount(
   appendUnknownFieldMessages(value, importAccountKeys, '账户配置', item.messages)
   source.ref = optionalTextField(value, 'ref', '账户 ref', item.messages)
   source.name = optionalTextField(value, 'name', '账户名称', item.messages) ?? ''
-  source.providerCode = optionalTextField(value, 'providerCode', '账户 providerCode', item.messages) ?? defaults.providerCode
-  source.type = optionalTextField(value, 'type', '账户 type', item.messages) ?? defaults.type
+  source.providerCode = optionalTextField(value, 'providerCode', '账户 providerCode', item.messages) ?? ''
+  if (!source.providerCode) {
+    item.messages.push('账户 providerCode 不能为空')
+  }
+  const typeInput = optionalTextField(value, 'type', '账户 type', item.messages)
+  if (typeInput) {
+    source.type = typeInput
+  } else {
+    item.messages.push('账户 type 不能为空')
+  }
   const rawStatus = optionalTextField(value, 'status', '账户 status', item.messages)
   if (rawStatus !== undefined) {
     const normalizedStatus = normalizeStatus(rawStatus)
@@ -556,27 +499,23 @@ function planAccount(
     } else {
       item.messages.push(`账户状态不支持：${rawStatus}`)
     }
+  } else {
+    item.messages.push('账户 status 不能为空')
   }
-  source.groupId = optionalTextField(value, 'groupId', '账户 groupId', item.messages) ?? defaults.groupId
-  source.groupName = optionalTextField(value, 'groupName', '账户 groupName', item.messages) ?? defaults.groupName
-  source.proxyRef = optionalTextField(value, 'proxyRef', '账户 proxyRef', item.messages) ?? defaults.proxyRef
-  source.proxyProfileId = optionalTextField(value, 'proxyProfileId', '账户 proxyProfileId', item.messages) ?? defaults.proxyProfileId
-  source.concurrencyLimit = hasOwnField(value, 'concurrencyLimit')
-    ? optionalPositiveIntegerField(value, 'concurrencyLimit', '账户 concurrencyLimit', item.messages)
-    : defaults.concurrencyLimit
-  source.priority = hasOwnField(value, 'priority')
-    ? optionalNonNegativeIntegerField(value, 'priority', '账户 priority', item.messages)
-    : defaults.priority
+  source.groupId = optionalTextField(value, 'groupId', '账户 groupId', item.messages)
+  source.groupName = optionalTextField(value, 'groupName', '账户 groupName', item.messages)
+  source.proxyRef = optionalTextField(value, 'proxyRef', '账户 proxyRef', item.messages)
+  source.proxyProfileId = optionalTextField(value, 'proxyProfileId', '账户 proxyProfileId', item.messages)
+  source.concurrencyLimit = optionalPositiveIntegerField(value, 'concurrencyLimit', '账户 concurrencyLimit', item.messages)
+  source.priority = optionalNonNegativeIntegerField(value, 'priority', '账户 priority', item.messages)
   source.superPriorityEnabled = optionalBooleanField(value, 'superPriorityEnabled', '账户 superPriorityEnabled', item.messages)
   source.fallbackEnabled = optionalBooleanField(value, 'fallbackEnabled', '账户 fallbackEnabled', item.messages)
   source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
-  source.accountExpiresAt = hasOwnField(value, 'accountExpiresAt')
-    ? optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)
-    : defaults.accountExpiresAt
+  source.accountExpiresAt = optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)
   const availabilityScheduleInput = importAvailabilityScheduleInput(value)
   source.availabilitySchedule = availabilityScheduleInput.present
     ? normalizeImportAvailabilitySchedule(availabilityScheduleInput.value, item.messages)
-    : defaults.availabilitySchedule
+    : undefined
   source.notes = optionalTextField(value, 'notes', '账户 notes', item.messages)
   try {
     source.credentials = normalizeAccountCredentialsForWrite(source.type, value.credentials)
@@ -667,6 +606,7 @@ function resolveAccountGroup(
     return group.id
   }
   if (!account.groupName) {
+    item.messages.push('账户 groupId 或 groupName 必填')
     return undefined
   }
   const key = groupKey(account.providerCode, account.groupName)
@@ -757,15 +697,21 @@ function accountCredentialKey(account: NormalizedImportAccount): string | undefi
     ? text(account.credentials.refresh_token) || text(account.credentials.access_token)
     : text(account.credentials.api_key)
   if (!secret) return undefined
-  return [
-    account.providerCode,
-    account.type,
-    text(account.credentials.base_url),
-    secret
-  ].join('|')
+  const baseUrl = text(account.credentials.base_url)
+  if (!baseUrl) return undefined
+  try {
+    return accountIdentityFingerprint({
+      providerCode: account.providerCode,
+      type: account.type,
+      baseUrl,
+      secret
+    })
+  } catch {
+    return undefined
+  }
 }
 
-function createPlannedProxies(plan: ImportPlan): Map<string, string> {
+function createPlannedProxies(plan: ImportPlan, access: AccessScope): Map<string, string> {
   const created = new Map<string, string>()
   for (const proxy of plan.proxies) {
     if (proxy.item.action === 'reuse' && proxy.proxyProfileId) {
@@ -783,7 +729,7 @@ function createPlannedProxies(plan: ImportPlan): Map<string, string> {
         username: proxy.source.username,
         password: proxy.source.password,
         enabled: proxy.source.enabled
-      })
+      }, access)
       proxy.proxyProfileId = createdProxy.id
       proxy.item.proxyProfileId = createdProxy.id
       proxy.item.messages = ['已创建代理']
@@ -823,7 +769,7 @@ function failAccountsWithUnresolvedProxy(plan: ImportPlan): void {
   }
 }
 
-function createPlannedGroups(plan: ImportPlan, access?: AccessScope): void {
+function createPlannedGroups(plan: ImportPlan, access: AccessScope): void {
   for (const [key, group] of plan.groupNamesToCreate) {
     try {
       const created = createGroup({

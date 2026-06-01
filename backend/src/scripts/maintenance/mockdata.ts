@@ -251,7 +251,7 @@ function printHelp(): void {
 function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): CreatedMockdata {
   const users = createMockUsers(admin)
   const policies = createErrorPolicies(admin.id)
-  const proxies = createProxies()
+  const proxies = createProxies(adminAccess)
   const groups = createGroups(adminAccess, users)
   const accounts = createAccounts(adminAccess, groups, policies, proxies)
   const teams = createTeams(adminAccess, users)
@@ -431,7 +431,7 @@ function createErrorPolicies(adminId: string): { quota: string; strict: string; 
   }
 }
 
-function createProxies(): { http: string; socks: string; disabled: string } {
+function createProxies(adminAccess: AccessScope): { http: string; socks: string; disabled: string } {
   const http = repositories.createProxy({
     name: `${namePrefix}HTTP 代理`,
     description: 'Mockdata HTTP 代理，绑定到主力 API Key 账户',
@@ -441,7 +441,7 @@ function createProxies(): { http: string; socks: string; disabled: string } {
     username: 'mock_proxy',
     password: 'mock_proxy_password',
     enabled: true
-  })
+  }, adminAccess)
   repositories.updateProxyTestState(http.id, {
     testStatus: 'success',
     latencyMs: 82,
@@ -457,7 +457,7 @@ function createProxies(): { http: string; socks: string; disabled: string } {
     host: '127.0.0.1',
     port: 1080,
     enabled: true
-  })
+  }, adminAccess)
   repositories.updateProxyTestState(socks.id, {
     testStatus: 'success',
     latencyMs: 118,
@@ -473,7 +473,7 @@ function createProxies(): { http: string; socks: string; disabled: string } {
     host: '127.0.0.1',
     port: 18080,
     enabled: false
-  })
+  }, adminAccess)
 
   return { http: http.id, socks: socks.id, disabled: disabled.id }
 }
@@ -791,8 +791,7 @@ function createAuthorizations(
     granteeType: 'system_account',
     granteeId: users.dev.id,
     remark: `${namePrefix}研发用户可调用主力分组`,
-    limits: quotaLimits(25, 200, 800),
-    modelPolicy: { allowedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'] }
+    limits: quotaLimits(25, 200, 800)
   }, adminAccess))
   result.push(repositories.createResourceAuthorization({
     resourceType: 'group',
@@ -800,8 +799,7 @@ function createAuthorizations(
     granteeType: 'team',
     granteeId: teams.devTeam.id,
     remark: `${namePrefix}研发团队可调用备用分组`,
-    limits: quotaLimits(18, 120, 500),
-    modelPolicy: { allowedModels: ['gpt-5.4-mini'] }
+    limits: quotaLimits(18, 120, 500)
   }, adminAccess))
   result.push(repositories.createResourceAuthorization({
     resourceType: 'group',
@@ -809,8 +807,7 @@ function createAuthorizations(
     granteeType: 'team',
     granteeId: teams.opsTeam.id,
     remark: `${namePrefix}运维团队可调用 OAuth 分组`,
-    limits: quotaLimits(12, 80, 300),
-    modelPolicy: { allowedModels: ['gpt-5.4-mini', 'gpt-5.4'] }
+    limits: quotaLimits(12, 80, 300)
   }, adminAccess))
   result.push(repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -836,8 +833,7 @@ function createAuthorizations(
     granteeType: 'team',
     granteeId: teams.opsTeam.id,
     remark: `${namePrefix}运维团队暂停实验分组授权`,
-    limits: quotaLimits(6, 36, 120),
-    modelPolicy: { allowedModels: ['gpt-4.1-mini'] }
+    limits: quotaLimits(6, 36, 120)
   }, adminAccess)
   repositories.updateResourceAuthorization(pausedTeam.id, { status: 'paused' }, adminAccess)
   result.push(refreshAuthorization(pausedTeam.id, adminAccess))

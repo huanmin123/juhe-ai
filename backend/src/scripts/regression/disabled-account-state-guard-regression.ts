@@ -73,6 +73,8 @@ interface AccountTestResult {
   message: string
 }
 
+const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
+
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
   try {
@@ -81,11 +83,15 @@ async function main(): Promise<void> {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
     const adminCookie = await login(baseUrl)
 
-    const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+    const access = adminAccess
     repositories.updateSettings({
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
     })
+    const group = repositories.createGroup({
+      name: '停用账户状态保护回归分组',
+      providerCode: 'openai'
+    }, access)
     const account = repositories.createAccount({
       providerCode: 'openai',
       name: '停用账户状态保护回归',
@@ -96,14 +102,10 @@ async function main(): Promise<void> {
       },
       status: 'active',
       schedulable: true,
-      superPriorityEnabled: true
+      superPriorityEnabled: true,
+      groupId: group.id
     }, access)
-    const group = repositories.createGroup({
-      name: '停用账户状态保护回归分组',
-      providerCode: 'openai'
-    }, access)
-    const bound = repositories.setAccountGroup(account.id, group.id, access)
-    assert(bound?.boundGroupId === group.id, '测试账户未绑定分组')
+    assert(account.boundGroupId === group.id, '测试账户未绑定分组')
 
     const staleGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, account.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleGatewayAccount?.status === 'active', '停用前应能读取到完整网关账号对象')
@@ -148,6 +150,8 @@ async function main(): Promise<void> {
 
     const errorHandlingResult = applyAccountErrorHandling({
       id: account.id,
+      providerCode: 'openai',
+      type: 'api_key',
       status: 'disabled',
       credentials: {}
     }, {
@@ -202,10 +206,10 @@ async function main(): Promise<void> {
       },
       status: 'active',
       schedulable: true,
-      fallbackEnabled: true
+      fallbackEnabled: true,
+      groupId: group.id
     }, access)
-    const errorBound = repositories.setAccountGroup(errorAccount.id, group.id, access)
-    assert(errorBound?.boundGroupId === group.id, '异常测试账户未绑定分组')
+    assert(errorAccount.boundGroupId === group.id, '异常测试账户未绑定分组')
     const staleActiveErrorGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, errorAccount.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleActiveErrorGatewayAccount?.status === 'active', '异常前应能读取到完整网关账号对象')
     const markedError = repositories.markAccountException(errorAccount.id, 'oauth_token_refresh_failed', '模拟异常')
@@ -236,10 +240,10 @@ async function main(): Promise<void> {
         base_url: 'http://127.0.0.1:9/v1'
       },
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      groupId: group.id
     }, access)
-    const errorRaceBound = repositories.setAccountGroup(errorRaceAccount.id, group.id, access)
-    assert(errorRaceBound?.boundGroupId === group.id, '异常竞态测试账户未绑定分组')
+    assert(errorRaceAccount.boundGroupId === group.id, '异常竞态测试账户未绑定分组')
     repositories.markAccountCooldown(errorRaceAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟过期冷却状态')
     const staleCooldownGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, errorRaceAccount.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleCooldownGatewayAccount?.status === 'temporary_unavailable', '异常竞态前应能读取到过期冷却网关账号对象')
@@ -313,7 +317,8 @@ async function main(): Promise<void> {
         base_url: 'http://127.0.0.1:9/v1'
       },
       status: 'error',
-      schedulable: true
+      schedulable: true,
+      groupId: group.id
     }, access)
     assert(createdError.status === 'error' && createdError.schedulable === false, '创建异常账户时应强制不可调度')
 
@@ -330,21 +335,21 @@ async function main(): Promise<void> {
 }
 
 function assertAccountStatus(accountId: string, status: string, schedulable: boolean, message: string): void {
-  const account = repositories.listAccounts().find((item: AccountSummary) => item.id === accountId)
+  const account = repositories.listAccounts(adminAccess).find((item: AccountSummary) => item.id === accountId)
   assert(account, `${message}：账户不存在`)
   assert(account.status === status, `${message}：实际状态 ${account.status}`)
   assert(account.schedulable === schedulable, `${message}：实际调度标记 ${account.schedulable}`)
 }
 
 function assertAccountDispatchFlags(accountId: string, superPriorityEnabled: boolean, fallbackEnabled: boolean, message: string): void {
-  const account = repositories.listAccounts().find((item: AccountSummary) => item.id === accountId)
+  const account = repositories.listAccounts(adminAccess).find((item: AccountSummary) => item.id === accountId)
   assert(account, `${message}：账户不存在`)
   assert(account.superPriorityEnabled === superPriorityEnabled, `${message}：实际超级优先 ${account.superPriorityEnabled}`)
   assert(account.fallbackEnabled === fallbackEnabled, `${message}：实际降级备用 ${account.fallbackEnabled}`)
 }
 
 function assertAccountErrorCode(accountId: string, code: string, message: string): void {
-  const account = repositories.listAccounts().find((item: AccountSummary) => item.id === accountId)
+  const account = repositories.listAccounts(adminAccess).find((item: AccountSummary) => item.id === accountId)
   assert(account, `${message}：账户不存在`)
   assert(account.lastErrorCode === code, `${message}：实际异常类型 ${account.lastErrorCode}`)
 }

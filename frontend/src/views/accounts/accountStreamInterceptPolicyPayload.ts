@@ -12,7 +12,13 @@ import type { StreamInterceptPolicyAction } from '@/types/domain'
 const listSeparators = /[,;，；\n]/
 
 export function loadAccountStreamInterceptRules(credentials?: Record<string, unknown>): AccountStreamInterceptRuleForm[] {
-  const source = Array.isArray(credentials?.stream_intercept_rules) ? credentials.stream_intercept_rules : []
+  if (!credentials || !Object.prototype.hasOwnProperty.call(credentials, 'stream_intercept_rules')) {
+    return []
+  }
+  if (!Array.isArray(credentials.stream_intercept_rules)) {
+    throw new Error('账户流式拦截规则必须是数组')
+  }
+  const source = credentials.stream_intercept_rules
   return source.map(ruleFromPayload)
 }
 

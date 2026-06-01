@@ -67,6 +67,10 @@ try {
     name: '实时并发快照被授权目标分组',
     providerCode: 'openai'
   }, granteeAccess)
+  const group = repositories.createGroup({
+    name: '实时并发快照分组',
+    providerCode: 'openai'
+  }, access)
   const accountA = repositories.createAccount({
     providerCode: 'openai',
     name: '实时并发快照账号 A',
@@ -77,7 +81,8 @@ try {
     },
     status: 'active',
     concurrencyLimit: 10,
-    schedulable: true
+    schedulable: true,
+    groupId: group.id
   }, access)
   const accountB = repositories.createAccount({
     providerCode: 'openai',
@@ -89,11 +94,8 @@ try {
     },
     status: 'active',
     concurrencyLimit: 10,
-    schedulable: true
-  }, access)
-  const group = repositories.createGroup({
-    name: '实时并发快照分组',
-    providerCode: 'openai'
+    schedulable: true,
+    groupId: group.id
   }, access)
   repositories.setAccountGroup(accountA.id, group.id, access)
   repositories.setAccountGroup(accountB.id, group.id, access)

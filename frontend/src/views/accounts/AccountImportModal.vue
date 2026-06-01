@@ -58,10 +58,6 @@
               <dd>当前固定为 1</dd>
             </div>
             <div>
-              <dt>defaults</dt>
-              <dd>给账户提供 providerCode、type、groupName 等默认值</dd>
-            </div>
-            <div>
               <dt>proxies</dt>
               <dd>可选代理数组，账户通过 proxyRef 引用代理 ref</dd>
             </div>
@@ -71,7 +67,7 @@
             </div>
           </dl>
           <a-typography-paragraph class="ai-prompt" copyable>
-            请把我提供的账号数据转换为 juhe-ai-account-import v1 JSON。只输出合法 JSON，不要解释；providerCode 默认 openai；API Key 账号使用 type 为 api_key 并写入 credentials.api_key 和 credentials.base_url；OAuth 账号使用 type 为 oauth 并保留 refresh_token、access_token、id_token、account_id、email 和 credentials.base_url；每个 credentials 都必须显式写 base_url；代理放入 proxies 并用 proxyRef 引用；不确定的信息写入 notes。
+            请把我提供的账号数据转换为 juhe-ai-account-import v1 JSON。只输出合法 JSON，不要解释；每个账户都必须显式写 providerCode、type、status 和 groupName 或 groupId；API Key 账号写入 credentials.api_key 和 credentials.base_url；OAuth 账号保留 refresh_token、access_token、id_token、account_id、email 和 credentials.base_url；代理放入 proxies 并用 proxyRef 引用；不确定的信息写入 notes。
           </a-typography-paragraph>
         </section>
       </div>
@@ -202,15 +198,7 @@ const importTemplate = JSON.stringify({
   version: 1,
   metadata: {
     source: '用户自定义',
-    generatedAt: '2026-05-22T12:00:00+08:00'
-  },
-  defaults: {
-    providerCode: 'openai',
-    type: 'api_key',
-    status: 'active',
-    groupName: '默认 OpenAI 分组',
-    concurrencyLimit: 3,
-    priority: 50
+    generatedAt: '2026-05-22T04:00:00.000Z'
   },
   proxies: [
     {
@@ -228,8 +216,12 @@ const importTemplate = JSON.stringify({
     {
       ref: 'openai-key-001',
       name: 'OpenAI API Key 账号 1',
+      providerCode: 'openai',
       type: 'api_key',
+      status: 'active',
       groupName: '默认 OpenAI 分组',
+      concurrencyLimit: 3,
+      priority: 50,
       proxyRef: 'proxy-hk-1',
       credentials: {
         api_key: 'sk-xxx',
@@ -240,8 +232,12 @@ const importTemplate = JSON.stringify({
     {
       ref: 'openai-oauth-001',
       name: 'OpenAI OAuth 账号 1',
+      providerCode: 'openai',
       type: 'oauth',
+      status: 'active',
       groupName: '默认 OpenAI 分组',
+      concurrencyLimit: 3,
+      priority: 50,
       credentials: {
         refresh_token: 'refresh-token-xxx',
         access_token: 'access-token-xxx',

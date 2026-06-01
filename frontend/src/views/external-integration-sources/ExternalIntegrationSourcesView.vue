@@ -343,7 +343,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
-import dayjs from 'dayjs'
 import { BookOutlined, CopyOutlined } from '@ant-design/icons-vue'
 
 import { api, type ExternalIntegrationSourceListParams } from '@/api/client'
@@ -354,7 +353,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import { formatDateTime } from '@/shared/formatters'
+import { formatDateTime, formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
 import type {
   ExternalIntegrationRateLimitRule,
   ExternalIntegrationScopeOption,
@@ -688,13 +687,22 @@ function openCreateSource(): void {
 }
 
 function openEditSource(record: ExternalIntegrationSourceSummary): void {
+  let rateLimits: ExternalIntegrationRateLimitRule[]
+  let expiresAt: Dayjs | null
+  try {
+    rateLimits = normalizeRateLimits(record.rateLimits)
+    expiresAt = parseStrictDatePickerValue(record.expiresAt, '来源系统过期时间') ?? null
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '来源系统数据异常，请清理后再编辑'))
+    return
+  }
   editingSourceId.value = record.id
   Object.assign(sourceForm, {
     name: record.name,
     status: record.status,
     scopes: [...record.scopes],
-    rateLimits: record.rateLimits.map((rule) => ({ ...rule })),
-    expiresAt: record.expiresAt ? dayjs(record.expiresAt) : null,
+    rateLimits,
+    expiresAt,
     notes: record.notes ?? ''
   })
   sourceModalOpen.value = true
@@ -712,7 +720,7 @@ async function saveSource(): Promise<void> {
       status: sourceForm.status,
       scopes: [...sourceForm.scopes],
       rateLimits: normalizeRateLimits(sourceForm.rateLimits),
-      expiresAt: sourceForm.expiresAt?.toISOString() ?? null,
+      expiresAt: formatServerDateTimeInput(sourceForm.expiresAt),
       notes: sourceForm.notes.trim() || null
     }
     if (editingSourceId.value) {
@@ -780,25 +788,39 @@ function openTokenList(record: ExternalIntegrationSourceSummary): void {
 
 function openCreateToken(): void {
   if (!selectedSource.value) return
+  let expiresAt: Dayjs | null
+  try {
+    expiresAt = parseStrictDatePickerValue(selectedSource.value.expiresAt, '来源系统过期时间') ?? null
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '来源系统数据异常，请清理后再创建 Token'))
+    return
+  }
   editingTokenId.value = undefined
   createdTokenPlain.value = ''
   Object.assign(tokenForm, {
     name: '',
     status: 'active',
     scopes: [...selectedSource.value.scopes],
-    expiresAt: selectedSource.value.expiresAt ? dayjs(selectedSource.value.expiresAt) : null
+    expiresAt
   })
   tokenModalOpen.value = true
 }
 
 function openEditToken(record: ExternalIntegrationSourceTokenSummary): void {
+  let expiresAt: Dayjs | null
+  try {
+    expiresAt = parseStrictDatePickerValue(record.expiresAt, 'Token 过期时间') ?? null
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, 'Token 数据异常，请清理后再编辑'))
+    return
+  }
   editingTokenId.value = record.id
   createdTokenPlain.value = ''
   Object.assign(tokenForm, {
     name: record.name,
     status: record.status,
     scopes: [...record.scopes],
-    expiresAt: record.expiresAt ? dayjs(record.expiresAt) : null
+    expiresAt
   })
   tokenModalOpen.value = true
 }
@@ -814,7 +836,7 @@ async function saveToken(): Promise<void> {
       name: tokenForm.name.trim(),
       status: tokenForm.status,
       scopes: [...tokenForm.scopes],
-      expiresAt: tokenForm.expiresAt?.toISOString() ?? null
+      expiresAt: formatServerDateTimeInput(tokenForm.expiresAt)
     }
     if (editingTokenId.value) {
       await api.externalIntegrationSources.updateToken(selectedSource.value.id, editingTokenId.value, payload)
@@ -873,12 +895,20 @@ function copyCreatedToken(): void {
 }
 
 function normalizeRateLimits(rules: ExternalIntegrationRateLimitRule[]): ExternalIntegrationRateLimitRule[] {
-  return rules
-    .map((rule) => ({
-      windowSeconds: Math.trunc(Number(rule.windowSeconds)),
-      maxRequests: Math.trunc(Number(rule.maxRequests))
-    }))
-    .filter((rule) => rule.windowSeconds >= 1 && rule.maxRequests >= 1)
+  return rules.map((rule, index) => ({
+    windowSeconds: normalizeRateLimitInteger(rule.windowSeconds, 1, 86400, `第 ${index + 1} 条限频窗口`),
+    maxRequests: normalizeRateLimitInteger(rule.maxRequests, 1, 100000, `第 ${index + 1} 条限频次数`)
+  }))
+}
+
+function normalizeRateLimitInteger(value: unknown, min: number, max: number, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error(`${label}必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
 }
 
 function formatRateLimits(rules: ExternalIntegrationRateLimitRule[]): string {

@@ -130,6 +130,7 @@ import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { accountSelectionForId, rememberAccountLabels, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
 import { mergeSelectedGroupOptions, rememberGroupLabels, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, systemAccountPrincipalName, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -144,7 +145,7 @@ import {
   extractApiErrorMessage,
   formatDateTime,
   formatServerDateTimeInput,
-  parseDatePickerValue
+  parseStrictDatePickerValue
 } from './authorizationFormatters'
 import {
   type AuthorizationDirectionFilter,
@@ -467,8 +468,15 @@ function validateAuthorizationExpiresAt(expiresAt: Dayjs | undefined, accountExp
     return false
   }
   if (!accountExpiresAt) return true
-  const maxExpiresAt = dayjs(accountExpiresAt)
-  if (!maxExpiresAt.isValid()) return true
+  let maxExpiresAt: Dayjs
+  try {
+    const parsed = parseStrictDatePickerValue(accountExpiresAt, '账户到期时间')
+    if (!parsed) return true
+    maxExpiresAt = parsed
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '账户到期时间数据异常，请清理后再配置授权'))
+    return false
+  }
   if (expiresAt.isAfter(maxExpiresAt)) {
     message.warning(`授权到期时间不能晚于账户到期时间：${formatDateTime(accountExpiresAt)}`)
     return false
@@ -1523,8 +1531,11 @@ function handleActionMenuClick(event: { key: string | number }, item: ResourceAu
 async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, status: 'active' | 'paused') {
   try {
     const payload: { status: 'active' | 'paused'; expiresAt?: string | null } = { status }
-    if (status === 'active' && item.expiresAt && Date.parse(item.expiresAt) <= Date.now()) {
-      payload.expiresAt = null
+    if (status === 'active' && item.expiresAt) {
+      const expiresAtTimestamp = serverDateTimeTimestamp(item.expiresAt)
+      if (expiresAtTimestamp === undefined || expiresAtTimestamp <= Date.now()) {
+        payload.expiresAt = null
+      }
     }
     if (isManagementView.value) {
       const updated = await api.authorizations.update(item.id, payload, authorizationScopeParams.value)
@@ -1542,9 +1553,18 @@ async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, sta
 }
 
 function openExpireModal(item: ResourceAuthorizationSummary) {
+  let expiresAt: Dayjs | undefined
+  let quotaLimits: ReturnType<typeof createQuotaLimitForm>
+  try {
+    expiresAt = parseStrictDatePickerValue(item.expiresAt, '授权过期时间')
+    quotaLimits = createQuotaLimitForm(item.limits)
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '授权数据结构异常，请清理后再编辑'))
+    return
+  }
   expireAuthorization.value = item
-  expireForm.expiresAt = parseDatePickerValue(item.expiresAt)
-  expireForm.quotaLimits = createQuotaLimitForm(item.limits)
+  expireForm.expiresAt = expiresAt
+  expireForm.quotaLimits = quotaLimits
   expireModalOpen.value = true
 }
 

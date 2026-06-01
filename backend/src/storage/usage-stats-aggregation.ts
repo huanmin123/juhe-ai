@@ -13,37 +13,65 @@ export interface UsageStatsAuthorizationLookup {
 export function usageStatsEntries(row: UsageStatsRecordRow, lookup?: UsageStatsAuthorizationLookup): UsageStatsEntry[] {
   const accumulator = usageStatsAccumulatorFromRecord(row)
   const callerSystemAccountId = row.system_account_id
-  const accountOwnerSystemAccountId = row.account_owner_system_account_id ?? callerSystemAccountId
-  const accountStatsSystemAccountId = row.account_access_type === 'account_authorized'
+  const accountMetadata = usageStatsAccountMetadata(row)
+  const groupMetadata = usageStatsGroupMetadata(row)
+  const accountStatsSystemAccountId = accountMetadata?.accessType === 'account_authorized'
     ? callerSystemAccountId
-    : accountOwnerSystemAccountId
-  const skipOwnerAccountStats = row.account_access_type !== 'account_authorized'
-    && row.group_access_type === 'authorized'
-    && accountOwnerSystemAccountId !== callerSystemAccountId
-  const groupOwnerSystemAccountId = row.group_owner_system_account_id ?? callerSystemAccountId
-  const skipOwnerGroupStats = row.group_access_type === 'authorized'
-    && groupOwnerSystemAccountId !== callerSystemAccountId
+    : accountMetadata?.ownerSystemAccountId
+  const skipOwnerAccountStats = accountMetadata?.accessType !== 'account_authorized'
+    && groupMetadata?.accessType === 'authorized'
+    && accountMetadata?.ownerSystemAccountId !== callerSystemAccountId
+  const skipOwnerGroupStats = groupMetadata?.accessType === 'authorized'
+    && groupMetadata.ownerSystemAccountId !== callerSystemAccountId
   const entries = [
     { systemAccountId: callerSystemAccountId, scopeType: 'system_account', scopeId: callerSystemAccountId, accumulator },
     { systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'system_account', scopeId: GLOBAL_STATS_SCOPE_ID, accumulator }
   ]
   if (row.provider_code) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'provider', scopeId: row.provider_code, accumulator })
-  if (row.group_id && !skipOwnerGroupStats) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
+  if (row.group_id && groupMetadata && !skipOwnerGroupStats) entries.push({ systemAccountId: groupMetadata.ownerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'caller_account', scopeId: row.account_id, accumulator })
-  if (row.account_id && !skipOwnerAccountStats) entries.push({ systemAccountId: accountStatsSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
+  if (row.account_id && accountStatsSystemAccountId && !skipOwnerAccountStats) entries.push({ systemAccountId: accountStatsSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'account', scopeId: row.account_id, accumulator })
-  if (row.account_authorization_id && accountOwnerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'account_authorization', scopeId: row.account_authorization_id, accumulator })
-  if (row.account_id && row.account_authorization_source_team_id && accountOwnerSystemAccountId !== callerSystemAccountId) {
+  if (row.account_authorization_id && accountMetadata?.ownerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'account_authorization', scopeId: row.account_authorization_id, accumulator })
+  if (row.account_id && row.account_authorization_source_team_id && accountMetadata?.ownerSystemAccountId !== callerSystemAccountId) {
     entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'account_authorization_team', scopeId: `${accountAuthorizationTeamAccountId(row, lookup)}:${row.account_authorization_source_team_id}`, accumulator })
   }
-  if (row.group_authorization_id && groupOwnerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group_authorization', scopeId: row.group_authorization_id, accumulator })
-  if (row.group_id && row.group_authorization_source_team_id && groupOwnerSystemAccountId !== callerSystemAccountId) {
-    entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group_authorization_team', scopeId: `${row.group_id}:${row.group_authorization_source_team_id}`, accumulator })
+  if (row.group_authorization_id && groupMetadata && groupMetadata.ownerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: groupMetadata.ownerSystemAccountId, scopeType: 'group_authorization', scopeId: row.group_authorization_id, accumulator })
+  if (row.group_id && row.group_authorization_source_team_id && groupMetadata && groupMetadata.ownerSystemAccountId !== callerSystemAccountId) {
+    entries.push({ systemAccountId: groupMetadata.ownerSystemAccountId, scopeType: 'group_authorization_team', scopeId: `${row.group_id}:${row.group_authorization_source_team_id}`, accumulator })
   }
   if (row.api_key_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'api_key', scopeId: row.api_key_id, accumulator })
   if (row.model) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'model', scopeId: row.model, accumulator })
   if (row.endpoint) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'endpoint', scopeId: row.endpoint, accumulator })
   return entries
+}
+
+function usageStatsAccountMetadata(row: UsageStatsRecordRow): { ownerSystemAccountId: string; accessType: string } | undefined {
+  if (!row.account_id) return undefined
+  if (!row.account_owner_system_account_id) {
+    throw new Error(`使用记录 ${row.id} 缺少账户归属字段 account_owner_system_account_id`)
+  }
+  if (!row.account_access_type) {
+    throw new Error(`使用记录 ${row.id} 缺少账户访问类型字段 account_access_type`)
+  }
+  return {
+    ownerSystemAccountId: row.account_owner_system_account_id,
+    accessType: row.account_access_type
+  }
+}
+
+function usageStatsGroupMetadata(row: UsageStatsRecordRow): { ownerSystemAccountId: string; accessType: string } | undefined {
+  if (!row.group_id) return undefined
+  if (!row.group_owner_system_account_id) {
+    throw new Error(`使用记录 ${row.id} 缺少分组归属字段 group_owner_system_account_id`)
+  }
+  if (!row.group_access_type) {
+    throw new Error(`使用记录 ${row.id} 缺少分组访问类型字段 group_access_type`)
+  }
+  return {
+    ownerSystemAccountId: row.group_owner_system_account_id,
+    accessType: row.group_access_type
+  }
 }
 
 function accountAuthorizationTeamAccountId(row: UsageStatsRecordRow, lookup?: UsageStatsAuthorizationLookup): string {

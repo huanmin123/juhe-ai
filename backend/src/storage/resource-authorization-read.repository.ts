@@ -20,7 +20,7 @@ import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
-import { optionalString, parseOptionalJsonObject } from './value-utils.js'
+import { optionalString } from './value-utils.js'
 
 const RUNTIME_AUTHORIZATION_BATCH_SIZE = 200
 const defaultResourceAuthorizationPageSize = 50
@@ -215,7 +215,6 @@ function resourceAuthorizationGrantSelectColumns(alias: string): string {
     'remark',
     'expires_at',
     'limits_json',
-    'model_policy_json',
     'created_by',
     'created_at',
     'revoked_by',
@@ -274,7 +273,6 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
       expiresAt: row.expires_at ?? undefined,
       limits: parseRequestQuotaLimitsJson(row.limits_json),
       resourceAccountExpiresAt: account?.accountExpiresAt,
-      modelPolicy: parseOptionalJsonObject(row.model_policy_json ?? undefined),
       effectiveSourceType: row.grantee_type === 'team' ? 'team' : 'manual',
       effectiveSourceTeamId: row.grantee_team_id ?? undefined,
       effectiveSourceTeamName: teamName,

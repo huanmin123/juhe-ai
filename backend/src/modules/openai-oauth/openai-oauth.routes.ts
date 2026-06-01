@@ -32,7 +32,7 @@ const oauthCredentialsPatchSchema = z.object({
 const createFromCodeSchema = z.object({
   sessionId: z.string().min(1),
   callbackUrl: z.string().min(1),
-  name: z.string().optional(),
+  name: z.string().trim().min(1).optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
@@ -48,7 +48,7 @@ const createFromCodeSchema = z.object({
 
 const createFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1),
-  name: z.string().optional(),
+  name: z.string().trim().min(1).optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
@@ -122,7 +122,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
     const account = runLoggedOperation(() => {
       const account = createAccount({
         providerCode: 'openai',
-        name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
+        name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
         status: 'active',
@@ -195,7 +195,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     const account = runLoggedOperation(() => {
       const account = createAccount({
         providerCode: 'openai',
-        name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
+        name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
         status: 'active',

@@ -48,6 +48,7 @@ export interface RefreshedOpenAIOAuthAccount {
 const oauthTokenRefreshFailureThreshold = 3
 export const OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE = 'oauth_token_refresh_failed'
 const openAIOAuthRefreshRaceRetryPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_race', 0, 1)
+const internalOpenAIOAuthRefreshAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin' }
 const refreshFailureStateByAccountId = new Map<string, { count: number; backoffUntil: number }>()
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
 const recentRefreshTtlMs = 30_000
@@ -58,7 +59,7 @@ const recentRefreshByAccountId = createAppCache<string, OpenAIOAuthRefreshAccoun
 })
 let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
 
-type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerCode' | 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode'>> & {
+type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode'>> & {
   proxyUrl?: string
 }
 type OpenAIOAuthRefreshAccount = RefreshableOpenAIOAuthAccount & Partial<Pick<AccountSummary, 'systemAccountId' | 'concurrencyLimit' | 'currentConcurrency' | 'priority' | 'superPriorityEnabled' | 'fallbackEnabled' | 'schedulable' | 'todayUsage' | 'usage' | 'permissions'>> & {
@@ -86,7 +87,7 @@ export async function refreshOpenAIOAuthAccountAccessToken(
   account: RefreshableOpenAIOAuthAccount,
   options: OpenAIOAuthAccountRefreshCallOptions = {}
 ): Promise<AccountSummary | RefreshedOpenAIOAuthAccount> {
-  if ((account.providerCode !== undefined && account.providerCode !== 'openai') || account.type !== 'oauth') {
+  if (account.providerCode !== 'openai' || account.type !== 'oauth') {
     throw new Error('仅支持刷新 OpenAI OAuth 账户')
   }
   return runWithAccountRefreshLock(account.id, () => refreshOpenAIOAuthAccountAccessTokenLocked(account, options))
@@ -150,7 +151,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
       }
       const updated = updateAccount(current.id, {
         credentials: nextCredentials
-      }, options.access)
+      }, options.access ?? internalOpenAIOAuthRefreshAccess)
       if (!updated) {
         throw new Error('OpenAI OAuth 账户不存在或无法更新')
       }

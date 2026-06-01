@@ -56,6 +56,10 @@ try {
   const afterInvalidTargetRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
   assert.equal(afterInvalidTargetRuns, beforeInvalidTargetRuns, '无效目标类型被拒绝时不应创建模型检测报告')
 
+  const temporaryGroup = repositories.createGroup({
+    name: '模型检测未绑定分组边界临时分组',
+    providerCode: 'openai'
+  }, access)
   const unboundAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '模型检测未绑定分组边界账户',
@@ -65,7 +69,8 @@ try {
       base_url: `http://127.0.0.1:${serverPort(upstream)}/v1`
     },
     status: 'active',
-    schedulable: true
+    schedulable: true,
+    groupId: temporaryGroup.id
   }, access)
   getBusinessDatabase().prepare('DELETE FROM group_accounts WHERE account_id = ?').run(unboundAccount.id)
   const beforeUnboundRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
@@ -133,7 +138,7 @@ try {
     host: '127.0.0.1',
     port: 9,
     enabled: true
-  })
+  }, access)
   assert(repositories.updateAccount(proxyAccount.id, { proxyProfileId: proxy.id }, access), '代理失败边界账户应能绑定启用代理')
   assert(repositories.updateProxy(proxy.id, { enabled: false }), '代理失败边界代理应能被停用')
 

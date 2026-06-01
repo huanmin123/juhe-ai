@@ -1,10 +1,12 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+
+assertDeletedRecordCleanupUsesShardCatalog()
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-deleted-api-key-aggregation-cleanup-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -230,11 +232,50 @@ function seedUsageRecord(id: string, apiKeyIdInput: string, createdAtInput: stri
   usageRecordShards.getUsageRecordShardDatabase(location)
     .prepare(`
       INSERT INTO usage_records (
-        id, system_account_id, trace_id, api_key_id, endpoint, provider_code, model,
+        id, system_account_id, trace_id, traffic_source, api_key_id, endpoint, provider_code, model,
         stream, success, input_tokens, output_tokens, cost_usd, created_at
-      ) VALUES (?, 'sys_admin', ?, ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?)
+      ) VALUES (?, 'sys_admin', ?, 'gateway', ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?)
     `)
     .run(id, `trace_${id}`, apiKeyIdInput, createdAtInput)
+  usageRecordShards.recordUsageRecordShardEntries([{
+    id,
+    shardKey: location.shardKey,
+    systemAccountId: 'sys_admin',
+    apiKeyId: apiKeyIdInput,
+    accountId: null,
+    groupId: null,
+    model: 'gpt-regression',
+    trafficSource: 'gateway',
+    success: true,
+    statusCode: 200,
+    clientIp: null,
+    firstTokenMs: null,
+    durationMs: null,
+    costUsd: 0.12,
+    createdAt: createdAtInput
+  }])
+}
+
+function assertDeletedRecordCleanupUsesShardCatalog(): void {
+  const apiKeyCleanupSource = readFileSync(new URL('../../storage/api-key-record-cleanup.ts', import.meta.url), 'utf8')
+  const accountCleanupSource = readFileSync(new URL('../../storage/account-record-cleanup.ts', import.meta.url), 'utf8')
+  const shardSource = readFileSync(new URL('../../storage/usage-record-shards.ts', import.meta.url), 'utf8')
+  const datasetSchemaSource = readFileSync(new URL('../../storage/schema/dataset-schema.ts', import.meta.url), 'utf8')
+
+  assert(apiKeyCleanupSource.includes('listUsageRecordShardLocationsForApiKey'), 'API Key 删除清理应通过 usage shard 目录索引定位相关 shard')
+  assert(accountCleanupSource.includes('listUsageRecordShardLocationsForAccount'), 'AI 账户删除清理应通过 usage shard 目录索引定位相关 shard')
+  assert(!apiKeyCleanupSource.includes('for (const location of listUsageRecordShardLocations())'), 'API Key 删除清理不应枚举全部 usage shard')
+  assert(!accountCleanupSource.includes('for (const location of listUsageRecordShardLocations())'), 'AI 账户删除清理不应枚举全部 usage shard')
+  assert(shardSource.includes('apiKeyId?: string | null'), 'usage shard 目录条目应记录 API Key 维度')
+  assert(shardSource.includes('usage_record_account_shards'), 'usage shard 应维护账号到 shard 的去重目录')
+  assert(shardSource.includes('usage_record_api_key_shards'), 'usage shard 应维护 API Key 到 shard 的去重目录')
+  assert(!/FROM usage_record_shard_entries[\s\S]{0,260}GROUP BY shard_key/.test(shardSource), '删除清理定位 shard 不应从明细目录 GROUP BY 聚合')
+  assert(datasetSchemaSource.includes('api_key_id TEXT'), 'usage shard 目录表应有 api_key_id 字段')
+  assert(datasetSchemaSource.includes('usage_record_account_shards'), '数据集目录库应声明账号 shard 去重目录表')
+  assert(datasetSchemaSource.includes('usage_record_api_key_shards'), '数据集目录库应声明 API Key shard 去重目录表')
+  assert(datasetSchemaSource.includes('idx_usage_record_shard_entries_api_key_created_sort'), 'usage shard 目录应有 API Key 定位索引')
+  assert(datasetSchemaSource.includes('idx_usage_record_account_shards_account_created'), '账号 shard 去重目录应有定位索引')
+  assert(datasetSchemaSource.includes('idx_usage_record_api_key_shards_key_created'), 'API Key shard 去重目录应有定位索引')
 }
 
 function seedAuthorizationUsageRangeWindow(systemAccountId: string): void {
@@ -264,9 +305,9 @@ function seedAuditLog(id: string, apiKeyIdInput: string, createdAtInput: string)
   databaseModule.getDatasetDatabase()
     .prepare(`
       INSERT INTO audit_logs (
-        id, trace_id, system_account_id, api_key_id, method, path, audit_outcome,
+        id, trace_id, traffic_source, system_account_id, api_key_id, method, path, audit_outcome,
         success, sample_bucket, sample_reason, started_at, ended_at, created_at
-      ) VALUES (?, ?, 'sys_admin', ?, 'POST', '/v1/chat/completions', 'success', 1, 0, 'regression', ?, ?, ?)
+      ) VALUES (?, ?, 'gateway', 'sys_admin', ?, 'POST', '/v1/chat/completions', 'success', 1, 0, 'regression', ?, ?, ?)
     `)
     .run(id, `trace_${id}`, apiKeyIdInput, createdAtInput, createdAtInput, createdAtInput)
 }

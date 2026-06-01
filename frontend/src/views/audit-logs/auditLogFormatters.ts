@@ -1,6 +1,8 @@
 import type { AuditOutcome, AuditPayloadPartType, AuditTrafficSource } from '@/types/domain'
 import { displayGroupName } from '@/shared/groupLabelCache'
 
+export { formatDateTime } from '@/shared/formatters'
+
 export function outcomeText(value: AuditOutcome): string {
   return {
     success: '成功',
@@ -67,11 +69,6 @@ export function formatBytes(value: number): string {
   if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${value} B`
-}
-
-export function formatDateTime(value?: string): string {
-  if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
 export function prettyJson(value: unknown): string {

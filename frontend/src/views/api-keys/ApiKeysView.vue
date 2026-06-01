@@ -363,7 +363,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd, parseDatePickerValue } from '@/shared/formatters'
+import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd, parseStrictDatePickerValue } from '@/shared/formatters'
 import { displayGroupName, rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
@@ -641,9 +641,12 @@ function apiKeyGroupBindingTagText(apiKey: ApiKeySummary, binding: ApiKeyGroupBi
     : binding.groupEnabled ? undefined : '分组停用'
   const routeLabel = groupBindingLabelByStrategy(apiKey.groupRouteStrategy, binding, index)
   const text = suffix ? `${routeLabel}：${name}（${suffix}）` : `${routeLabel}：${name}`
-  return apiKey.groupRouteStrategy === 'weighted_round_robin' && binding.status === 'active'
-    ? `${text} 权重 ${binding.weight || 1}`
-    : text
+  if (apiKey.groupRouteStrategy !== 'weighted_round_robin' || binding.status !== 'active') {
+    return text
+  }
+  return typeof binding.weight === 'number' && Number.isInteger(binding.weight) && binding.weight > 0
+    ? `${text} 权重 ${binding.weight}`
+    : `${text}（权重数据异常）`
 }
 
 function apiKeyGroupRouteText(apiKey: ApiKeySummary): string {
@@ -660,6 +663,11 @@ function groupBindingLabelByStrategy(strategy: ApiKeyGroupRouteStrategy | undefi
 
 function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {
   if (!schedule?.enabled || !schedule.windows.length) return '未设置'
+  try {
+    assertApiKeyAvailabilitySchedule(schedule)
+  } catch {
+    return '计划数据异常'
+  }
   const windows = schedule.windows
     .slice(0, 2)
     .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
@@ -670,7 +678,12 @@ function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {
 
 function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
   if (!apiKey.availabilitySchedule?.enabled) return 'default'
-  return isScheduleCurrentlyAllowed(apiKey.availabilitySchedule) ? 'green' : 'orange'
+  try {
+    assertApiKeyAvailabilitySchedule(apiKey.availabilitySchedule)
+    return isScheduleCurrentlyAllowed(apiKey.availabilitySchedule) ? 'green' : 'orange'
+  } catch {
+    return 'red'
+  }
 }
 
 function scheduleWindowText(start: string, end: string): string {
@@ -694,7 +707,7 @@ function isScheduleCurrentlyAllowed(schedule: ApiKeyAvailabilitySchedule): boole
   const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
   if (exception?.action === 'deny') return false
   if (exception?.action === 'allow') {
-    return (exception.windows ?? []).some((window) => isCurrentMinuteInScheduleWindow(current, { ...window, daysOfWeek: [current.dayOfWeek] }))
+    return (exception.windows ?? []).some((window) => isCurrentMinuteInScheduleWindow(current, { daysOfWeek: [current.dayOfWeek], start: window.start, end: window.end }))
   }
   return schedule.windows.some((window) => isCurrentMinuteInScheduleWindow(current, window))
 }
@@ -723,37 +736,27 @@ function previousScheduleDayOfWeek(dayOfWeek: number): number {
 }
 
 function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; dayOfWeek: number; minuteOfDay: number } {
-  try {
-    const formatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone: timezone || defaultScheduleTimezone(),
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23'
-    })
-    const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
-    const year = Number(parts.year)
-    const month = Number(parts.month)
-    const day = Number(parts.day)
-    const hour = Number(parts.hour)
-    const minute = Number(parts.minute)
-    const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    const utcDay = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
-    return {
-      dateKey,
-      dayOfWeek: utcDay === 0 ? 7 : utcDay,
-      minuteOfDay: hour * 60 + minute
-    }
-  } catch {
-    const day = date.getDay()
-    const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-    return {
-      dateKey,
-      dayOfWeek: day === 0 ? 7 : day,
-      minuteOfDay: date.getHours() * 60 + date.getMinutes()
-    }
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  })
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
+  const year = Number(parts.year)
+  const month = Number(parts.month)
+  const day = Number(parts.day)
+  const hour = Number(parts.hour)
+  const minute = Number(parts.minute)
+  const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  const utcDay = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
+  return {
+    dateKey,
+    dayOfWeek: utcDay === 0 ? 7 : utcDay,
+    minuteOfDay: hour * 60 + minute
   }
 }
 
@@ -1105,13 +1108,25 @@ async function openCreate() {
 
 async function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
-  const bindings = apiKeyGroupBindings(apiKey).map((binding) => {
-    rememberGroupLabel(binding.groupId, binding.groupName)
-    return createGroupBindingFormRow({
-      id: binding.groupId,
-      name: displayGroupName(binding.groupName, binding.groupId)
-    }, binding.status, binding.weight)
-  })
+  let bindings: ApiKeyGroupBindingFormRow[]
+  let quotaLimits: ReturnType<typeof createQuotaLimitForm>
+  let expiresAt: Dayjs | undefined
+  let availabilitySchedule: ApiKeyAvailabilityScheduleForm
+  try {
+    bindings = apiKeyGroupBindings(apiKey).map((binding) => {
+      rememberGroupLabel(binding.groupId, binding.groupName)
+      return createExistingGroupBindingFormRow({
+        id: binding.groupId,
+        name: displayGroupName(binding.groupName, binding.groupId)
+      }, binding.status, binding.weight)
+    })
+    quotaLimits = createQuotaLimitForm(apiKey.quotaLimits)
+    expiresAt = parseStrictDatePickerValue(apiKey.expiresAt, 'API Key 过期时间')
+    availabilitySchedule = createAvailabilityScheduleForm(apiKey.availabilitySchedule)
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, 'API Key 数据结构异常，请清理后再编辑'))
+    return
+  }
   if (!bindings.length) {
     message.error('API Key 分组绑定数据异常，请刷新后重试')
     return
@@ -1121,19 +1136,34 @@ async function openEdit(apiKey: ApiKeySummary) {
     groupRouteStrategy: apiKey.groupRouteStrategy,
     groupBindings: bindings,
     status: apiKey.status,
-    expiresAt: parseDatePickerValue(apiKey.expiresAt),
+    expiresAt,
     description: apiKey.description ?? '',
-    quotaLimits: createQuotaLimitForm(apiKey.quotaLimits),
-    availabilitySchedule: createAvailabilityScheduleForm(apiKey.availabilitySchedule)
+    quotaLimits,
+    availabilitySchedule
   })
   resetGroupOptionsSearch()
   await loadGroupOptions()
   modalOpen.value = true
 }
 
-function normalizeGroupBindingWeight(value: number): number {
-  if (!Number.isFinite(value)) return 1
-  return Math.min(100, Math.max(1, Math.trunc(value)))
+function normalizeGroupBindingWeight(value: unknown): number {
+  if (value === undefined || value === null) return 1
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100) {
+    throw new Error('API Key 分组权重必须是 1-100 之间的整数')
+  }
+  return value
+}
+
+function normalizeExistingGroupBindingWeight(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100) {
+    throw new Error('API Key 分组权重必须是 1-100 之间的整数')
+  }
+  return value
+}
+
+function normalizeGroupBindingStatus(value: unknown): ApiKeyGroupBindingFormStatus {
+  if (value === 'active' || value === 'disabled') return value
+  throw new Error('API Key 分组绑定状态异常，请清理后再编辑')
 }
 
 function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBindingFormStatus = 'active', weight = 1): ApiKeyGroupBindingFormRow {
@@ -1142,19 +1172,35 @@ function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBi
     groupId: group?.id ?? '',
     group,
     weight: normalizeGroupBindingWeight(weight),
-    status
+    status: normalizeGroupBindingStatus(status)
+  }
+}
+
+function createExistingGroupBindingFormRow(group: GroupSelection, status: unknown, weight: unknown): ApiKeyGroupBindingFormRow {
+  return {
+    key: `binding_${Date.now()}_${groupBindingFormKeySeed += 1}`,
+    groupId: group.id,
+    group,
+    weight: normalizeExistingGroupBindingWeight(weight),
+    status: normalizeGroupBindingStatus(status)
   }
 }
 
 function createAvailabilityScheduleForm(schedule?: ApiKeyAvailabilitySchedule): ApiKeyAvailabilityScheduleForm {
+  if (!schedule) {
+    return {
+      enabled: false,
+      timezone: defaultScheduleTimezone(),
+      windows: [createScheduleWindowFormRow()]
+    }
+  }
+  assertApiKeyAvailabilitySchedule(schedule)
   return {
-    enabled: schedule?.enabled === true,
-    timezone: schedule?.timezone ?? defaultScheduleTimezone(),
-    windows: schedule?.windows?.length
-      ? schedule.windows.map((window) => createScheduleWindowFormRow(window.daysOfWeek, window.start, window.end))
-      : [createScheduleWindowFormRow()],
-    dateRange: cloneScheduleDateRange(schedule?.dateRange),
-    exceptions: cloneScheduleExceptions(schedule?.exceptions)
+    enabled: true,
+    timezone: schedule.timezone,
+    windows: schedule.windows.map((window) => createScheduleWindowFormRow(window.daysOfWeek, window.start, window.end)),
+    dateRange: cloneScheduleDateRange(schedule.dateRange),
+    exceptions: cloneScheduleExceptions(schedule.exceptions)
   }
 }
 
@@ -1170,6 +1216,83 @@ function createScheduleWindowFormRow(daysOfWeek = [1, 2, 3, 4, 5, 6, 7], start =
 function defaultScheduleTimezone(): string {
   if (typeof Intl === 'undefined') return 'Asia/Shanghai'
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
+}
+
+function assertApiKeyAvailabilitySchedule(schedule: ApiKeyAvailabilitySchedule): void {
+  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], 'API Key 自动启停计划')
+  if (schedule.enabled !== true) throw new Error('API Key 自动启停计划启用状态异常，请清理后再编辑')
+  if (schedule.mode !== 'allow_windows') throw new Error('API Key 自动启停计划模式异常，请清理后再编辑')
+  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('API Key 自动启停计划时区异常，请清理后再编辑')
+  assertScheduleTimezone(schedule.timezone, 'API Key 自动启停计划时区')
+  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('API Key 自动启停计划时段异常，请清理后再编辑')
+  for (const window of schedule.windows) {
+    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], 'API Key 自动启停计划时段')
+    assertScheduleDays(window.daysOfWeek, 'API Key 自动启停计划重复日期')
+    assertScheduleTime(window.start, 'API Key 自动启停计划开始时间')
+    assertScheduleTime(window.end, 'API Key 自动启停计划停止时间')
+    if (window.start === window.end) throw new Error('API Key 自动启停计划开始时间和停止时间不能相同')
+  }
+  if (schedule.dateRange) {
+    assertScheduleDateRange(schedule.dateRange)
+  }
+  if (schedule.exceptions !== undefined) {
+    if (!Array.isArray(schedule.exceptions)) throw new Error('API Key 自动启停计划例外日期异常，请清理后再编辑')
+    for (const exception of schedule.exceptions) {
+      assertObjectKeys(exception, ['date', 'action', 'windows'], 'API Key 自动启停计划例外日期')
+      assertScheduleDate(exception.date, 'API Key 自动启停计划例外日期')
+      if (exception.action === 'allow') {
+        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('API Key 自动启停计划允许例外时段异常，请清理后再编辑')
+        for (const window of exception.windows) {
+          assertObjectKeys(window, ['start', 'end'], 'API Key 自动启停计划例外时段')
+          assertScheduleTime(window.start, 'API Key 自动启停计划例外开始时间')
+          assertScheduleTime(window.end, 'API Key 自动启停计划例外停止时间')
+          if (window.start === window.end) throw new Error('API Key 自动启停计划例外开始时间和停止时间不能相同')
+        }
+      } else if (exception.action === 'deny') {
+        if ('windows' in exception) throw new Error('API Key 自动启停计划拒绝例外不能带允许时段')
+      } else {
+        throw new Error('API Key 自动启停计划例外动作异常，请清理后再编辑')
+      }
+    }
+  }
+}
+
+function assertScheduleDateRange(dateRange: NonNullable<ApiKeyAvailabilitySchedule['dateRange']>): void {
+  assertObjectKeys(dateRange, ['startDate', 'endDate'], 'API Key 自动启停计划日期范围')
+  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, 'API Key 自动启停计划开始日期')
+  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, 'API Key 自动启停计划结束日期')
+  if (dateRange.startDate && dateRange.endDate && dateRange.startDate > dateRange.endDate) {
+    throw new Error('API Key 自动启停计划开始日期不能晚于结束日期')
+  }
+}
+
+function assertScheduleDays(days: unknown, label: string): void {
+  if (!Array.isArray(days) || hasInvalidScheduleDays(days as number[])) throw new Error(`${label}异常，请清理后再编辑`)
+}
+
+function assertScheduleTime(value: unknown, label: string): void {
+  if (typeof value !== 'string' || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(value)) throw new Error(`${label}异常，请清理后再编辑`)
+}
+
+function assertScheduleDate(value: unknown, label: string): void {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`${label}异常，请清理后再编辑`)
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) throw new Error(`${label}无效，请清理后再编辑`)
+}
+
+function assertScheduleTimezone(value: string, label: string): void {
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: value }).format(new Date(0))
+  } catch {
+    throw new Error(`${label}无效，请清理后再编辑`)
+  }
+}
+
+function assertObjectKeys(value: unknown, allowedKeys: string[], label: string): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}必须是对象`)
+  const allowed = new Set(allowedKeys)
+  const unknownKeys = Object.keys(value).filter((key) => !allowed.has(key))
+  if (unknownKeys.length) throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
 }
 
 function addScheduleWindow(): void {
@@ -1230,7 +1353,7 @@ function normalizedGroupBindingPayload(): Array<{ groupId: string; priority: num
     groupId: binding.groupId.trim(),
     priority: index + 1,
     weight: normalizeGroupBindingWeight(binding.weight),
-    status: binding.status
+    status: normalizeGroupBindingStatus(binding.status)
   }))
 }
 
@@ -1319,54 +1442,54 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     message.warning('请填写名称')
     return
   }
-  const groupBindings = normalizedGroupBindingPayload()
-  if (!groupBindings.length) {
-    message.warning('请至少选择一个绑定分组')
-    return
-  }
-  const emptyBindingIndex = groupBindings.findIndex((binding) => !binding.groupId)
-  if (emptyBindingIndex >= 0) {
-    message.warning(`请先选择第 ${emptyBindingIndex + 1} 个绑定分组`)
-    return
-  }
-  if (!groupBindings.some((binding) => binding.status === 'active')) {
-    message.warning('至少需要一个启用分组')
-    return
-  }
-  if (new Set(groupBindings.map((binding) => binding.groupId)).size !== groupBindings.length) {
-    message.warning('绑定分组不能重复')
-    return
-  }
-  const providerCodes = new Set(groupBindings.map((binding) => groupOptionForId(binding.groupId)?.providerCode).filter(Boolean))
-  if (providerCodes.size > 1) {
-    message.warning('同一个 API Key 的绑定号池必须属于同一供应商')
-    return
-  }
-  const disabledActiveGroups = groupBindings
-    .filter((binding) => binding.status === 'active')
-    .map((binding) => groupOptionForId(binding.groupId))
-    .filter((group): group is GroupOptionSummary => Boolean(group && !group.enabled))
-  if (disabledActiveGroups.length) {
-    message.warning(`已停用分组不能作为启用号池：${disabledActiveGroups.map((group) => group.name).join('、')}`)
-    return
-  }
-  const availabilitySchedule = availabilitySchedulePayload()
-  if (availabilitySchedule === false) {
-    return
-  }
-  const targetId = editingId.value
-  const expiresAt = formatServerDateTimeInput(form.expiresAt)
-  const payload = {
-    name: form.name,
-    groupRouteStrategy: form.groupRouteStrategy,
-    groupBindings,
-    status: form.status,
-    expiresAt: targetId ? expiresAt : expiresAt ?? undefined,
-    description: form.description,
-    quotaLimits: quotaLimitsPayload(),
-    availabilitySchedule
-  }
   try {
+    const groupBindings = normalizedGroupBindingPayload()
+    if (!groupBindings.length) {
+      message.warning('请至少选择一个绑定分组')
+      return
+    }
+    const emptyBindingIndex = groupBindings.findIndex((binding) => !binding.groupId)
+    if (emptyBindingIndex >= 0) {
+      message.warning(`请先选择第 ${emptyBindingIndex + 1} 个绑定分组`)
+      return
+    }
+    if (!groupBindings.some((binding) => binding.status === 'active')) {
+      message.warning('至少需要一个启用分组')
+      return
+    }
+    if (new Set(groupBindings.map((binding) => binding.groupId)).size !== groupBindings.length) {
+      message.warning('绑定分组不能重复')
+      return
+    }
+    const providerCodes = new Set(groupBindings.map((binding) => groupOptionForId(binding.groupId)?.providerCode).filter(Boolean))
+    if (providerCodes.size > 1) {
+      message.warning('同一个 API Key 的绑定号池必须属于同一供应商')
+      return
+    }
+    const disabledActiveGroups = groupBindings
+      .filter((binding) => binding.status === 'active')
+      .map((binding) => groupOptionForId(binding.groupId))
+      .filter((group): group is GroupOptionSummary => Boolean(group && !group.enabled))
+    if (disabledActiveGroups.length) {
+      message.warning(`已停用分组不能作为启用号池：${disabledActiveGroups.map((group) => group.name).join('、')}`)
+      return
+    }
+    const availabilitySchedule = availabilitySchedulePayload()
+    if (availabilitySchedule === false) {
+      return
+    }
+    const targetId = editingId.value
+    const expiresAt = formatServerDateTimeInput(form.expiresAt)
+    const payload = {
+      name: form.name,
+      groupRouteStrategy: form.groupRouteStrategy,
+      groupBindings,
+      status: form.status,
+      expiresAt: targetId ? expiresAt : expiresAt ?? undefined,
+      description: form.description,
+      quotaLimits: quotaLimitsPayload(),
+      availabilitySchedule
+    }
     if (targetId) {
       const updated = await apiKeysApi.update(targetId, payload, apiKeyScopeParams.value)
       updateApiKeyItems((item) => item.id === targetId, () => updated)
@@ -1452,7 +1575,12 @@ function normalizeGatewayBaseUrl(value: string) {
 }
 
 function cloneScheduleDateRange(dateRange: ApiKeyAvailabilitySchedule['dateRange']): ApiKeyAvailabilitySchedule['dateRange'] {
-  return dateRange ? { ...dateRange } : undefined
+  return dateRange
+    ? {
+        ...(dateRange.startDate !== undefined ? { startDate: dateRange.startDate } : {}),
+        ...(dateRange.endDate !== undefined ? { endDate: dateRange.endDate } : {})
+      }
+    : undefined
 }
 
 function cloneScheduleExceptions(exceptions: ApiKeyAvailabilitySchedule['exceptions']): ApiKeyAvailabilitySchedule['exceptions'] {
@@ -1461,7 +1589,7 @@ function cloneScheduleExceptions(exceptions: ApiKeyAvailabilitySchedule['excepti
       return {
         date: exception.date,
         action: 'allow',
-        windows: exception.windows.map((window) => ({ ...window }))
+        windows: exception.windows.map((window) => ({ start: window.start, end: window.end }))
       }
     }
     return {

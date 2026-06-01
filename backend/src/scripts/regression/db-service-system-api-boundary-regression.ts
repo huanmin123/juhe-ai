@@ -6,6 +6,7 @@ import { backendRoot } from '../../config/runtime.js'
 
 const serverSource = readFileSync(resolve(backendRoot, 'src/server.ts'), 'utf8')
 const systemApiSource = readFileSync(resolve(backendRoot, 'src/modules/system-api/system-api-app.ts'), 'utf8')
+const proxySource = readFileSync(resolve(backendRoot, 'src/modules/db-service/db-service-http-proxy.ts'), 'utf8')
 
 const forbiddenServerImports = [
   'modules/accounts/',
@@ -46,9 +47,15 @@ assert(serverSource.includes('createDbServiceHttpProxy'), 'server.ts 必须通�
 assert(systemApiSource.includes('listPublicGlobalSettings'), '公开全局设置应在 DB service system API 内直接读取')
 
 const proxyIndex = serverSource.indexOf('app.use(systemApiPrefix, dbServiceHttpProxy)')
+const publicProxyIndex = serverSource.indexOf('app.use(publicApiPrefix, dbServiceHttpProxy)')
 const gatewayRawIndex = serverSource.indexOf('express.raw({ type: () => true')
 assert(proxyIndex >= 0, 'server.ts 必须挂载 DB service HTTP proxy')
+assert(publicProxyIndex >= 0, 'server.ts 必须通过 DB service HTTP proxy 承接公开系统 API')
 assert(gatewayRawIndex >= 0, 'server.ts 必须保留网关 raw body 解析')
 assert(proxyIndex < gatewayRawIndex, '系统管理 API 代理必须早于网关 raw body 解析，避免主进程消费管理 API 请求体')
+assert(publicProxyIndex < gatewayRawIndex, '公开系统 API 代理必须早于网关 raw body 解析，避免主进程消费公开 API 请求体')
+assert(systemApiSource.includes("systemApiJsonBodyLimit = '256kb'"), 'DB service system API JSON 请求体上限必须保持 256KB')
+assert(proxySource.includes('dbServiceHttpProxyMaxInFlight'), 'DB service HTTP proxy 必须保留最大并发保护')
+assert(proxySource.includes('dbServiceHttpProxyTimeoutMs'), 'DB service HTTP proxy 必须保留内部超时保护')
 
-console.log('DB service system API 边界回归通过：主进程不再直接挂载管理 API / storage，系统 API 由 DB service 承载')
+console.log('DB service system API 边界回归通过：主进程不直接挂载管理 API / storage，系统 API 由 DB service 承载且代理具备并发与超时边界')

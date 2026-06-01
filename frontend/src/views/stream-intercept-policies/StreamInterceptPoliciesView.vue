@@ -446,7 +446,7 @@ function openCreate(): void {
 }
 
 function openView(policy: StreamInterceptPolicySummary): void {
-  fillForm(policy)
+  if (!fillForm(policy)) return
   editingId.value = undefined
   modalReadonly.value = true
   modalOpen.value = true
@@ -457,7 +457,7 @@ function openEdit(policy: StreamInterceptPolicySummary): void {
     openView(policy)
     return
   }
-  fillForm(policy)
+  if (!fillForm(policy)) return
   editingId.value = policy.id
   modalReadonly.value = false
   modalOpen.value = true
@@ -533,7 +533,13 @@ function actionsFor(policy: StreamInterceptPolicySummary): RowActionItem[] {
   ]
 }
 
-function fillForm(policy: StreamInterceptPolicySummary): void {
+function fillForm(policy: StreamInterceptPolicySummary): boolean {
+  const usesTtl = streamInterceptActionUsesTtl(policy.action)
+  const avoidanceTtlSeconds = usesTtl ? positiveInt(policy.avoidanceTtlSeconds, 86400) : null
+  if (usesTtl && !avoidanceTtlSeconds) {
+    message.error('流式拦截策略缺少避让秒数，请清理数据后再查看或编辑')
+    return false
+  }
   Object.assign(form, {
     name: policy.name,
     enabled: policy.enabled,
@@ -546,9 +552,10 @@ function fillForm(policy: StreamInterceptPolicySummary): void {
     textExcludes: formatList(policy.match.textExcludes),
     jsonPathsExists: formatList(policy.match.jsonPathsExists),
     action: policy.action,
-    avoidanceTtlSeconds: policy.avoidanceTtlSeconds ?? (streamInterceptActionUsesTtl(policy.action) ? defaultAvoidanceTtlSeconds : null),
+    avoidanceTtlSeconds,
     notes: policy.notes ?? ''
   })
+  return true
 }
 
 function buildPayload(): StreamInterceptPolicyPayload {

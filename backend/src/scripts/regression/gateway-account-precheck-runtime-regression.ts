@@ -138,6 +138,7 @@ function testRuntimePrecheckPendingAndSuccessRecovery(): void {
 async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<void> {
   const { account, gatewayAccount } = createGatewayAccount('落库错误清理运行态', {
     error_handling_rules: [{
+      enabled: true,
       name: '测试 529 冷却',
       status_codes: '529',
       action: 'temp_unschedulable',
@@ -280,6 +281,7 @@ function assertActiveAccount(accountId: string, message: string): void {
 function createRuntimeAccount(id: string): OpenAIAccountSecret {
   return {
     id,
+    providerCode: 'openai',
     systemAccountId: 'sys_admin',
     accountOwnerSystemAccountId: 'sys_admin',
     groupOwnerSystemAccountId: 'sys_admin',

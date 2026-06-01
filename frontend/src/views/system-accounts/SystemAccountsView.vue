@@ -114,7 +114,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatNumber } from '@/shared/formatters'
+import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
 const pageSize = 20
@@ -284,10 +284,6 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
   } finally {
   }
 })
-
-function formatDateTime(value?: string): string {
-  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
-}
 
 function searchAccounts() {
   resetPagination()

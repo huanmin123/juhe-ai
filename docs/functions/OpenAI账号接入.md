@@ -182,7 +182,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户，作为请求前懒刷新兜底。
 - OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。刷新成功后 server 进程会短 TTL 记住最近新凭据，同一波临期请求复用该结果，不再逐个重复读写 DB service。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
 - 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 OpenAI OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做 token 保活，成功时不恢复普通冷却状态、不清理无关错误；失败时按退避等待并累计连续失败次数，连续 3 次失败后把非停用账户写入 `status = error`，`last_error_code = oauth_token_refresh_failed`，`last_error_message` 记录最近失败摘要，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
-- 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求或账户测试返回的 Codex rate-limit 响应头被动更新。access token 即将过期时，真实网关请求仍会按正常规则做请求前懒刷新。
+- 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求或账户测试返回的 Codex rate-limit 响应头被动更新。账户测试和模型检测展示用上游响应体只保留 `256KB` 有界预览，避免 DB service 在诊断请求内同步解析大文本。OpenAI OAuth token endpoint 的响应体同样只允许收集 `256KB`，异常大响应会主动中断并返回错误，避免刷新 token 时无界占用内存。access token 即将过期时，真实网关请求仍会按正常规则做请求前懒刷新。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
 - 账户自动启停计划只作为网关候选过滤条件，不改变手动启用/停用、异常、冷却和到期状态。账号池运行缓存按分钟边界刷新，避免计划切换时间点继续使用旧候选。

@@ -197,6 +197,7 @@ function sourceFunctionBlock(source: string, marker: string): string {
 function passiveAccount(id: string, accountAuthorizationId?: string): OpenAIAccountSecret {
   return {
     id,
+    providerCode: 'openai',
     systemAccountId: 'sys_passive_quota',
     accountOwnerSystemAccountId: 'sys_passive_quota',
     groupOwnerSystemAccountId: 'sys_passive_quota',

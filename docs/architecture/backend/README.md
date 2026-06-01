@@ -94,8 +94,9 @@ flowchart LR
 ```
 
 - 未登录只允许访问登录、公开设置和健康检查等明确入口。
-- `/__aisys__/api/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 API JSON body，不直接导入管理路由或 repository。
+- `/__aisys__/api/*` 和 `/__aipublic__/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 / 公开系统 API JSON body，不直接导入管理路由或 repository。代理层只做流式转发，并保留最大 in-flight 请求数和内部超时，避免慢 DB service 把主进程 socket 无限堆积。
 - DB service 内部系统 API 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
+- 账户测试、模型检测和代理检测会在 DB service 进程内发起外部网络探测；这些诊断入口共享固定 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
 - 同一 router 如果同时承载管理列表和登录用户可用的轻量辅助接口，不要把 `requireAdmin` 直接挂在整段 mount 上，应把管理员校验下沉到具体管理路由。例如供应商列表需要管理员权限，但供应商模型目录用于普通用户账户表单，必须允许登录用户读取。
 - 新增普通用户可见页面调用的接口时，必须在 `backend/src/scripts/regression/scope-boundary-regression.ts` 补普通用户可访问断言；新增 `my-*` 命名空间下仍属于管理员能力的例外时，也要补普通用户 403 断言，避免前端误暴露后才发现。
 - routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。
@@ -128,9 +129,9 @@ flowchart LR
 客户端一次请求从进入网关到返回响应的性能边界：
 
 - 主 Web/网关进程只做内存级保护、运行时快照读取、候选过滤、上游转发、响应透传和异步副作用投递；不得在 server 角色直接同步读取或写入 SQLite。
-- API Key 校验、系统账户状态、分组路由绑定、分组访问元数据、候选账号和网关设置先命中网关运行时缓存；缓存 miss 只能通过 DB service 读取，不能回退到本进程 repository。同一个无效 Bearer token 的认证失败结果需要短 TTL 负缓存，避免在来源熔断阈值前把重复坏 token 放大成重复 DB service 请求。server 到 DB service 的 pending 请求必须有上限，达到上限时快速返回本地不可用错误，不能让慢 DB service 把 Web 进程 Promise 和 IPC 消息无限堆积。
+- API Key 校验、系统账户状态、分组路由绑定、分组访问元数据、候选账号和网关设置先命中网关运行时缓存；缓存 miss 只能通过 DB service 读取，不能回退到本进程 repository。同一个无效 Bearer token 的认证失败结果需要短 TTL 负缓存，避免在来源熔断阈值前把重复坏 token 放大成重复 DB service 请求。IP 封禁策略 cache miss 也必须有 server 本地 pending-load 上限，不能只依赖 DB service 总 pending 上限兜底。server 到 DB service 的 IPC pending 请求和 HTTP 代理 in-flight 请求必须有上限，达到上限时快速返回本地不可用或繁忙错误，不能让慢 DB service 把 Web 进程 Promise、socket 和 IPC 消息无限堆积。
 - API Key 额度和统一授权额度先查本进程短 TTL 决策缓存；决策缓存 miss 只读取 background worker 被动推送到 server 内存的有界额度快照。请求链路不能主动通过 DB service 查询统计额度窗口，也不能扫描 `usage_records`、usage shard、审计表或授权明细后现场汇总；快照缺失或超出固定窗口时按现有轻微超额口径短时放行。
-- OAuth Access Token 请求前懒刷新是正确性兜底，只允许在命中已选 OAuth 账号且 token 缺失 / 临期时发生；同账号刷新在进程内串行，成功后写入短 TTL 最近刷新缓存，后续同一波请求复用新凭据，不能把每个并发请求都放大成重复的 DB service 重读和写回。
+- OAuth Access Token 请求前懒刷新是正确性兜底，只允许在命中已选 OAuth 账号且 token 缺失 / 临期时发生；同账号刷新在进程内串行，成功后写入短 TTL 最近刷新缓存，后续同一波请求复用新凭据，不能把每个并发请求都放大成重复的 DB service 重读和写回。OAuth token endpoint 响应体必须有固定字节上限，超限主动中断，不能在刷新路径无界累积 chunk 或拼接完整异常响应。
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
 - 使用记录、原始审计、操作日志、运行日志索引和账号状态副作用都必须异步投递到 worker 或 DB service；server 到 worker 的 IPC、worker 本地落库队列、运行日志索引队列和账号状态副作用本地队列都必须有数量或字节上限。投递失败或队列满时按各自策略降级、合并或丢弃新副作用，不能反向阻塞已经可返回的网关响应，也不能在 worker / DB service 慢或不可用时无限堆积内存。

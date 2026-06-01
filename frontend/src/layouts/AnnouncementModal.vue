@@ -21,7 +21,7 @@
                 <a-tag :color="levelColor(item.level)">{{ levelText(item.level) }}</a-tag>
                 <h3>{{ item.title }}</h3>
               </div>
-              <time>{{ formatRelativeDateTime(item.publishedAt || item.createdAt) }}</time>
+              <time>{{ formatRelativeDateTime(item.publishedAt) }}</time>
             </header>
             <p :class="{ expanded: expandedIds.has(item.id) }">{{ item.content }}</p>
             <a-button v-if="isLongContent(item.content)" type="link" size="small" class="expand-button" @click="toggleExpand(item.id)">
@@ -39,7 +39,7 @@ import { CloseOutlined } from '@ant-design/icons-vue'
 import { ref, watch } from 'vue'
 
 import { formatRelativeDateTime } from '@/shared/formatters'
-import type { AnnouncementSummary } from '@/types/domain'
+import type { PublishedAnnouncementSummary } from '@/types/domain'
 import {
   announcementLevelColor as levelColor,
   announcementLevelText as levelText,
@@ -47,7 +47,7 @@ import {
 } from '@/views/announcements/announcementFormatters'
 
 const props = defineProps<{
-  announcements: AnnouncementSummary[]
+  announcements: PublishedAnnouncementSummary[]
   loading: boolean
   open: boolean
 }>()

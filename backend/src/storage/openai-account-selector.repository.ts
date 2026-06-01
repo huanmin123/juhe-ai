@@ -2,7 +2,6 @@ import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/gr
 import type { AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ResourceAuthorizationSourceType } from '../domain/types.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
-import { currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
@@ -13,7 +12,7 @@ import { getSettings } from './settings.repository.js'
 
 export interface OpenAIAccountSecret {
   id: string
-  providerCode?: 'openai'
+  providerCode: 'openai'
   systemAccountId: string
   accountOwnerSystemAccountId: string
   groupOwnerSystemAccountId: string
@@ -110,14 +109,14 @@ const gatewayDispatchAccountCandidateLimit = 256
 
 type AccountAvailabilityScheduleCandidateFilter = 'without_schedule' | 'with_schedule'
 
-export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
+export function selectOpenAIAccountForGroup(groupId: string, systemAccountId: string): OpenAIAccountSecret | undefined {
   return listOpenAIAccountsForGroup(groupId, systemAccountId)[0]
 }
 
 export function findOpenAIAccountForGroup(
   groupId: string,
   accountId: string,
-  systemAccountId = currentSystemAccountId(),
+  systemAccountId: string,
   options: { includeUnavailable?: boolean; ignoreAvailability?: boolean } = {}
 ): OpenAIAccountSecret | undefined {
   const now = nowIso()
@@ -210,7 +209,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
 
 export function listOpenAIAccountsForGroup(
   groupId: string,
-  systemAccountId = currentSystemAccountId(),
+  systemAccountId: string,
   options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
 ): OpenAIAccountSecret[] {
   return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options).accounts
@@ -223,7 +222,7 @@ export interface OpenAIAccountsForGroupResult {
 
 export function listOpenAIAccountsForGroupResult(
   groupId: string,
-  systemAccountId = currentSystemAccountId(),
+  systemAccountId: string,
   options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
 ): OpenAIAccountsForGroupResult {
   const database = getBusinessDatabase()
@@ -396,7 +395,7 @@ function listOpenAIGroupAccountSelectionRows(
 
 export function hasOpenAIAccountAvailabilityScheduleForGroup(
   groupId: string,
-  systemAccountId = currentSystemAccountId(),
+  systemAccountId: string,
   options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
 ): boolean {
   const groupAccess = options.preResolvedGroupAccess ?? resolveGroupUsageAccessMetadata(groupId, systemAccountId)
@@ -509,6 +508,10 @@ function openAIAccountSecretFromRow(
   const proxyProfile = resolveOpenAIAccountProxyUrl(resourceProxyProfileId, options.proxyProfilesById)
   const isAccountAuthorized = accountAccess.accountAccessType === 'account_authorized'
   const isLocalAccountAuthorized = isAccountAuthorized && Boolean(groupAccount?.account_authorization_id)
+  const bindingSystemAccountId = isLocalAccountAuthorized ? groupAccount?.binding_system_account_id?.trim() : undefined
+  if (isLocalAccountAuthorized && !bindingSystemAccountId) {
+    throw new Error('授权账户绑定缺少系统账户上下文')
+  }
   const runtimeStatus = row.status
   const dispatchPriority = Number(groupAccount?.local_priority ?? row.priority ?? 0)
   const dispatchSuperPriorityEnabled = groupAccount?.local_super_priority_enabled === 1
@@ -528,7 +531,7 @@ function openAIAccountSecretFromRow(
     accountAuthorizationExpiresAt: accountAccess.accountAuthorizationExpiresAt,
     accountAuthorizationSourceType: accountAccess.accountAuthorizationSourceType,
     accountAuthorizationSourceTeamId: accountAccess.accountAuthorizationSourceTeamId,
-    bindingSystemAccountId: isLocalAccountAuthorized ? groupAccount?.binding_system_account_id ?? groupAccess.groupOwnerSystemAccountId : undefined,
+    bindingSystemAccountId,
     boundGroupId: isLocalAccountAuthorized ? groupAccount?.group_id ?? undefined : undefined,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
     groupAuthorizationExpiresAt: groupAccess.groupAuthorizationExpiresAt,

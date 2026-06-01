@@ -411,29 +411,37 @@ function seedData(mockBaseUrl: string): SeedState {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeDefaultGroup = repositories.listGroups(granteeAccess).find((group) => group.providerCode === 'openai' && group.isDefault)
   assert(granteeDefaultGroup, '被授权用户默认 OpenAI 分组不存在')
+  const ownerSourceGroup = repositories.createGroup({
+    name: '管理员代操作授权来源分组',
+    providerCode: 'openai'
+  }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '管理员代操作授权账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-admin-authorized-dispatch', base_url: mockBaseUrl }
+    credentials: { api_key: 'sk-admin-authorized-dispatch', base_url: mockBaseUrl },
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   const ownerErrorAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '管理员代操作授权错误脱敏账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-admin-authorized-dispatch-error', base_url: mockBaseUrl }
+    credentials: { api_key: 'sk-admin-authorized-dispatch-error', base_url: mockBaseUrl },
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   const ownerPausedAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '管理员代操作归属人停用账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-admin-authorized-dispatch-owner-disabled', base_url: mockBaseUrl }
+    credentials: { api_key: 'sk-admin-authorized-dispatch-owner-disabled', base_url: mockBaseUrl },
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   const granteeTargetAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '管理员代操作迁移目标账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-admin-authorized-dispatch-target', base_url: mockBaseUrl }
+    credentials: { api_key: 'sk-admin-authorized-dispatch-target', base_url: mockBaseUrl },
+    groupId: granteeDefaultGroup.id
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

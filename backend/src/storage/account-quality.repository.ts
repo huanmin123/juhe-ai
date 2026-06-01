@@ -35,13 +35,27 @@ interface AccountQualityRow {
   updated_at: string
 }
 
+interface AccountQualityAggregateRow {
+  account_id: string
+  recent_request_count: number
+  recent_success_count: number
+  recent_error_count: number
+  recent_first_token_sample_count: number
+  recent_avg_first_token_ms: number | null
+  last_sample_at: string | null
+  last_success_at: string | null
+  last_error_at: string | null
+  last_error_message: string | null
+}
+
 const unknownQualityScore = 1_000_000
 const failurePenaltyMs = 60_000
 const stalePenaltyMs = 5_000
 const qualityCleanupBatchLimit = 1000
 const qualityLookupChunkSize = 500
+const accountQualityDirtyAccountBatchLimit = 500
 
-export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQualityRealtimeRefreshResult {
+export function refreshAccountQualityFromUsage(windowMinutes = 10, dirtyAccountLimit = accountQualityDirtyAccountBatchLimit): AccountQualityRealtimeRefreshResult {
   const database = getStatsDatabase()
   const now = new Date()
   const timezone = usageStatsTimezone()
@@ -52,48 +66,8 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
   const retentionCutoffMinute = minuteKey(new Date(now.getTime() - 24 * 60 * 60 * 1000), timezone)
   const updatedAt = nowIso()
 
-  const rows = database
-    .prepare(`
-      SELECT
-        quality_stats.account_id,
-        SUM(quality_stats.request_count) AS recent_request_count,
-        SUM(quality_stats.success_count) AS recent_success_count,
-        SUM(quality_stats.error_count) AS recent_error_count,
-        SUM(quality_stats.first_token_ms_count) AS recent_first_token_sample_count,
-        CASE
-          WHEN SUM(quality_stats.first_token_ms_count) > 0
-          THEN SUM(quality_stats.first_token_ms_sum) * 1.0 / SUM(quality_stats.first_token_ms_count)
-          ELSE NULL
-        END AS recent_avg_first_token_ms,
-        MAX(quality_stats.last_sample_at) AS last_sample_at,
-        MAX(quality_stats.last_success_at) AS last_success_at,
-        MAX(quality_stats.last_error_at) AS last_error_at,
-        (
-          SELECT latest_error.last_error_message
-          FROM account_quality_minute_stats latest_error
-          WHERE latest_error.account_id = quality_stats.account_id
-            AND latest_error.stat_minute >= ?
-            AND latest_error.last_error_at IS NOT NULL
-          ORDER BY latest_error.last_error_at DESC, latest_error.stat_minute DESC
-          LIMIT 1
-        ) AS last_error_message
-      FROM account_quality_minute_stats quality_stats
-      WHERE quality_stats.stat_minute >= ?
-      GROUP BY quality_stats.account_id
-    `)
-    .all(windowStartedMinute, windowStartedMinute) as unknown as Array<{
-      account_id: string
-      recent_request_count: number
-      recent_success_count: number
-      recent_error_count: number
-      recent_first_token_sample_count: number
-      recent_avg_first_token_ms: number | null
-      last_sample_at: string | null
-      last_success_at: string | null
-      last_error_at: string | null
-      last_error_message: string | null
-    }>
-
+  const dirtyAccountIds = loadDirtyAccountQualityIds(database, dirtyAccountLimit)
+  const rows = loadAccountQualityAggregates(database, dirtyAccountIds, windowStartedMinute)
   const sampledAccountIds = uniqueAccountQualityIds(rows.map((row) => row.account_id))
   const activeAccounts = loadQualityAccountMetadataByIds(sampledAccountIds)
   const previousQualityByAccount = loadAccountQualityRowsByAccountIds(sampledAccountIds)
@@ -150,6 +124,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
         updatedAt
       })
     }
+    deleteDirtyAccountQualityRows(database, dirtyAccountIds)
 
     commitDatabaseTransaction(database, transactionStarted)
     return { refreshed: rows.length, removed: Number(deleteResult.changes ?? 0), windowStartedAt, windowEndedAt }
@@ -159,6 +134,69 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
     } catch {
     }
     throw error
+  }
+}
+
+function loadDirtyAccountQualityIds(database: ReturnType<typeof getStatsDatabase>, limit: number): string[] {
+  const rows = database
+    .prepare(`
+      SELECT account_id
+      FROM account_quality_dirty_accounts INDEXED BY idx_account_quality_dirty_accounts_updated
+      ORDER BY updated_at ASC, account_id ASC
+      LIMIT ?
+    `)
+    .all(Math.max(1, Math.trunc(limit))) as unknown as Array<{ account_id?: string | null }>
+  return uniqueAccountQualityIds(rows.map((row) => row.account_id))
+}
+
+function loadAccountQualityAggregates(
+  database: ReturnType<typeof getStatsDatabase>,
+  accountIds: string[],
+  windowStartedMinute: string
+): AccountQualityAggregateRow[] {
+  const rows: AccountQualityAggregateRow[] = []
+  for (const chunk of chunkValues(accountIds, qualityLookupChunkSize)) {
+    rows.push(...database
+      .prepare(`
+        SELECT
+          quality_stats.account_id,
+          SUM(quality_stats.request_count) AS recent_request_count,
+          SUM(quality_stats.success_count) AS recent_success_count,
+          SUM(quality_stats.error_count) AS recent_error_count,
+          SUM(quality_stats.first_token_ms_count) AS recent_first_token_sample_count,
+          CASE
+            WHEN SUM(quality_stats.first_token_ms_count) > 0
+            THEN SUM(quality_stats.first_token_ms_sum) * 1.0 / SUM(quality_stats.first_token_ms_count)
+            ELSE NULL
+          END AS recent_avg_first_token_ms,
+          MAX(quality_stats.last_sample_at) AS last_sample_at,
+          MAX(quality_stats.last_success_at) AS last_success_at,
+          MAX(quality_stats.last_error_at) AS last_error_at,
+          (
+            SELECT latest_error.last_error_message
+            FROM account_quality_minute_stats latest_error
+            WHERE latest_error.account_id = quality_stats.account_id
+              AND latest_error.stat_minute >= ?
+              AND latest_error.last_error_at IS NOT NULL
+            ORDER BY latest_error.last_error_at DESC, latest_error.stat_minute DESC
+            LIMIT 1
+          ) AS last_error_message
+        FROM account_quality_minute_stats quality_stats
+        WHERE quality_stats.account_id IN (${chunk.map(() => '?').join(',')})
+          AND quality_stats.stat_minute >= ?
+        GROUP BY quality_stats.account_id
+        ORDER BY quality_stats.account_id ASC
+      `)
+      .all(windowStartedMinute, ...chunk, windowStartedMinute) as unknown as AccountQualityAggregateRow[])
+  }
+  return rows
+}
+
+function deleteDirtyAccountQualityRows(database: ReturnType<typeof getStatsDatabase>, accountIds: string[]): void {
+  for (const chunk of chunkValues(accountIds, qualityLookupChunkSize)) {
+    database
+      .prepare(`DELETE FROM account_quality_dirty_accounts WHERE account_id IN (${chunk.map(() => '?').join(',')})`)
+      .run(...chunk)
   }
 }
 

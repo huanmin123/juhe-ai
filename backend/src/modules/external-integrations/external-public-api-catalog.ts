@@ -407,7 +407,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           fields: [
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
             { name: 'name', type: 'string', required: true, description: '分组名称。', example: '福利' },
-            { name: 'providerCode', type: 'string', required: false, description: '供应商编码，默认 openai。', example: 'openai' },
+            { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: 'openai' },
             { name: 'description', type: 'string', required: false, description: '分组说明。' },
             { name: 'enabled', type: 'boolean', required: false, description: '是否启用，默认 true。', example: true }
           ],
@@ -659,8 +659,8 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             {
               name: 'providerCode',
               type: 'string',
-              required: false,
-              description: '供应商编码，默认 openai。',
+              required: true,
+              description: '供应商编码。',
               example: 'openai'
             },
             {
@@ -673,7 +673,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             {
               name: 'type',
               type: 'string',
-              required: false,
+              required: true,
               description: '账号类型；当前公开新增只支持 api_key。',
               example: 'api_key'
             },
@@ -788,7 +788,9 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           fields: [
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
             { name: 'targetGroupName', type: 'string', required: true, description: '目标账号分组名称。', example: '福利' },
+            { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: 'openai' },
             { name: 'name', type: 'string', required: true, description: '账号名称。', example: '公益站-青芽主通道' },
+            { name: 'type', type: 'string', required: true, description: '账号类型；当前公开修改只支持 api_key。', example: 'api_key' },
             { name: 'baseUrl', type: 'string', required: true, description: 'OpenAI 兼容 Base URL。', example: 'https://api.openai.com/v1' },
             { name: 'apiKey', type: 'string', required: true, description: '上游 API Key；响应不会回显。', example: 'sk-...' },
             { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled。', example: 'disabled' },
@@ -798,7 +800,9 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           example: {
             targetUsername: 'huanmin',
             targetGroupName: '福利',
+            providerCode: 'openai',
             name: '公益站-青芽主通道',
+            type: 'api_key',
             baseUrl: 'https://api.openai.com/v1',
             apiKey: 'sk-...',
             status: 'disabled',
@@ -863,8 +867,8 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             {
               name: 'providerCode',
               type: 'string',
-              required: false,
-              description: '供应商编码，默认 openai。',
+              required: true,
+              description: '供应商编码。',
               example: 'openai'
             },
             {

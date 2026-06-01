@@ -27,7 +27,6 @@ import type {
   SystemTeamMemberRow
 } from './repository-row-types.js'
 import { markAllGroupAccountStatsDirty } from './usage-stats.repository.js'
-import { jsonObjectOrNull, parseOptionalJsonObject } from './value-utils.js'
 
 interface RefreshEffectiveSourceOptions {
   noActiveSourceReason?: string
@@ -113,7 +112,7 @@ function activeTeamGrantRows(teamId: string, database = getBusinessDatabase()): 
   return rows
 }
 
-export function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; targetGroupId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
+export function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; targetGroupId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
   if (input.granteeSystemAccountId === input.ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
   const existing = input.database.prepare('SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1').get(input.resourceType, input.resourceId, input.granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
   const authorizationId = existing?.id ?? newId('rauth')
@@ -142,23 +141,22 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
           last_source_changed_at = ?,
           remark = COALESCE(?, remark),
           expires_at = ?,
-          limits_json = ?,
-          model_policy_json = COALESCE(?, model_policy_json),
-          revoked_by = ?,
+           limits_json = ?,
+           revoked_by = ?,
           revoked_at = ?,
           revoked_reason = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now, authorizationId)
+    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now, authorizationId)
   } else {
     input.database.prepare(`
       INSERT INTO resource_authorizations (
         id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
         effective_source_type, effective_source_team_id, activated_at, last_source_changed_at,
-        remark, expires_at, limits_json, model_policy_json,
+        remark, expires_at, limits_json,
         created_by, created_at, revoked_by, revoked_at, revoked_reason, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'use', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), input.actor, input.now, nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now)
+      ) VALUES (?, ?, ?, ?, ?, 'use', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, input.actor, input.now, nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now)
   }
   rememberRequestQuotaHourlyWindowsFromJson(nextLimitsJson, input.database, input.now)
   upsertResourceAuthorizationSource(input.database, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
@@ -269,13 +267,13 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
   database
     .prepare(`
       INSERT INTO accounts (
-        id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+        id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, account_identity_fingerprint, credential_mask,
         proxy_profile_id, concurrency_limit, error_policy_id,
         priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
         cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
         authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
     `)
     .run(
       id,
@@ -578,7 +576,7 @@ export function cleanupInactiveAuthorizationBindings(database = getBusinessDatab
   invalidateAuthorizationLookupCaches()
 }
 
-export function upsertResourceAuthorizationGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeType: 'system_account' | 'team'; granteeId: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationGrantRow {
+export function upsertResourceAuthorizationGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeType: 'system_account' | 'team'; granteeId: string; remark?: string; expiresAt?: string | null; limits?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationGrantRow {
   if (input.granteeType === 'system_account' && input.granteeId === input.ownerSystemAccountId) {
     throw new Error('不能授权给资源所有者自己')
   }
@@ -628,10 +626,10 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
     : existing?.expires_at ?? null
   const nextLimitsJson = requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
   if (existing) {
-    input.database.prepare("UPDATE resource_authorization_grants SET status = 'active', remark = COALESCE(?, remark), expires_at = ?, limits_json = ?, model_policy_json = COALESCE(?, model_policy_json), revoked_by = NULL, revoked_at = NULL, updated_at = ? WHERE id = ?")
-      .run(input.remark ?? null, nextExpiresAt, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), input.now, id)
+    input.database.prepare("UPDATE resource_authorization_grants SET status = 'active', remark = COALESCE(?, remark), expires_at = ?, limits_json = ?, revoked_by = NULL, revoked_at = NULL, updated_at = ? WHERE id = ?")
+      .run(input.remark ?? null, nextExpiresAt, nextLimitsJson, input.now, id)
   } else {
-    input.database.prepare("INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
+    input.database.prepare("INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at, limits_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, NULL, NULL, ?)")
       .run(
         id,
         input.resourceType,
@@ -643,7 +641,6 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
         input.remark ?? null,
         nextExpiresAt,
         nextLimitsJson,
-        jsonObjectOrNull(input.modelPolicy),
         input.actor,
         input.now,
         input.now
@@ -694,7 +691,6 @@ function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: strin
       remark: grant.remark ?? undefined,
       expiresAt: grant.expires_at,
       limits: parseRequestQuotaLimitsJson(grant.limits_json),
-      modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined),
       actor,
       now,
       database
@@ -771,12 +767,12 @@ function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow,
         UPDATE resource_authorizations
         SET expires_at = ?,
             revoked_by = CASE WHEN ? = 'expired' THEN COALESCE(revoked_by, ?) ELSE NULL END,
-            revoked_at = CASE WHEN ? = 'expired' THEN COALESCE(revoked_at, ?) ELSE NULL END,
-            revoked_reason = CASE WHEN ? = 'expired' THEN 'authorization_expired' WHEN ? = 'paused' THEN 'authorization_paused' ELSE revoked_reason END,
-            limits_json = ?,
-            updated_at = ?
-        WHERE id = ?
-      `).run(grant.expires_at, grant.status, actor, grant.status, now, grant.status, grant.status, grant.limits_json, now, sourceRow.authorization_id)
+             revoked_at = CASE WHEN ? = 'expired' THEN COALESCE(revoked_at, ?) ELSE NULL END,
+             revoked_reason = CASE WHEN ? = 'expired' THEN 'authorization_expired' WHEN ? = 'paused' THEN 'authorization_paused' ELSE revoked_reason END,
+             limits_json = ?,
+             updated_at = ?
+          WHERE id = ?
+       `).run(grant.expires_at, grant.status, actor, grant.status, now, grant.status, grant.status, grant.limits_json, now, sourceRow.authorization_id)
       refreshResourceAuthorizationEffectiveSource(sourceRow.authorization_id, actor, now, database)
     }
     return
@@ -784,7 +780,7 @@ function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow,
   if (grant.status === 'active') {
     const members = activeTeamMemberRows(teamId, database).filter((member) => member.system_account_id !== grant.resource_owner_system_account_id)
     for (const member of members) {
-      upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseRequestQuotaLimitsJson(grant.limits_json), modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined), actor, now, database })
+      upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseRequestQuotaLimitsJson(grant.limits_json), actor, now, database })
     }
   }
   const rows = database.prepare(`
@@ -842,7 +838,7 @@ export function applyActiveTeamGrantsToMember(teamId: string, systemAccountId: s
   const actor = currentSystemAccountId(access)
   for (const grant of grants) {
     if (grant.resource_owner_system_account_id === systemAccountId) continue
-    upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: systemAccountId, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseRequestQuotaLimitsJson(grant.limits_json), modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined), actor, now, database })
+    upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: systemAccountId, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseRequestQuotaLimitsJson(grant.limits_json), actor, now, database })
   }
 }
 

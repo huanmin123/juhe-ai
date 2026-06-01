@@ -7,23 +7,23 @@ export function parseJsonArray(value: string): string[] {
 }
 
 export function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw new Error('文本字段必须是字符串')
+  return value.length > 0 ? value : undefined
 }
 
 export function optionalNullableString(value: unknown): string | null {
   if (value === undefined || value === null) return null
-  if (typeof value !== 'string') return null
+  if (typeof value !== 'string') throw new Error('文本字段必须是字符串')
   return value.trim().length > 0 ? value : null
 }
 
 export function optionalServerDateTimeIso(value: unknown): string | undefined {
   const text = optionalString(value)?.trim()
   if (!text) return undefined
-  const normalizedText = text.includes(' ') ? text.replace(' ', 'T') : text
-  const match = serverDateTimePattern.exec(normalizedText)
+  const match = serverDateTimePattern.exec(text)
   if (!match || !isValidServerDateTimeMatch(match)) return undefined
-  const hasTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalizedText)
-  const timestamp = hasTimeZone ? Date.parse(normalizedText) : serverLocalDateTimeMs(normalizedText)
+  const timestamp = Date.parse(text)
   if (!Number.isFinite(timestamp)) return undefined
   return new Date(timestamp).toISOString()
 }
@@ -45,23 +45,7 @@ export function nullableServerDateTimeIso(value: unknown, label = '时间'): str
   return normalized
 }
 
-export function serverLocalDateTimeMs(value: string): number {
-  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) return NaN
-  const match = serverDateTimePattern.exec(value)
-  if (!match || !isValidServerDateTimeMatch(match)) return NaN
-  const [, year, month, day, hour = '0', minute = '0', second = '0', millisecond = '0'] = match
-  return new Date(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hour),
-    Number(minute),
-    Number(second),
-    Number(millisecond.padEnd(3, '0'))
-  ).getTime()
-}
-
-const serverDateTimePattern = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?)?(?:Z|[+-]\d{2}:?\d{2})?$/i
+const serverDateTimePattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z$/
 
 function isValidServerDateTimeMatch(match: RegExpExecArray): boolean {
   const [, year, month, day, hour = '0', minute = '0', second = '0', millisecond = '0'] = match
@@ -107,9 +91,4 @@ export function parseJsonRules(value: string): Array<Record<string, unknown>> {
     }
     return item as Record<string, unknown>
   })
-}
-
-export function jsonObjectOrNull(value: unknown): string | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-  return JSON.stringify(value)
 }

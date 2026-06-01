@@ -118,11 +118,16 @@ try {
     name: '授权测试本地恢复分组',
     providerCode: 'openai'
   }, granteeAccess)
+  const ownerSourceGroup = repositories.createGroup({
+    name: '授权测试本地恢复来源分组',
+    providerCode: 'openai'
+  }, ownerAccess)
   const ownerAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '授权测试本地恢复账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-authorized-local-restore', base_url: mockBaseUrl }
+    credentials: { api_key: 'sk-authorized-local-restore', base_url: mockBaseUrl },
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -195,7 +200,8 @@ try {
     providerCode: 'openai',
     name: '授权测试本地失败账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-authorized-local-failure', base_url: mockBaseUrl }
+    credentials: { api_key: 'sk-authorized-local-failure', base_url: mockBaseUrl },
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

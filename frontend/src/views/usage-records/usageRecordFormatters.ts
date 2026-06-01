@@ -2,6 +2,8 @@ import type { UsageRecordSummary } from '@/types/domain'
 import { displayGroupName } from '@/shared/groupLabelCache'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
+export { formatDateTime } from '@/shared/formatters'
+
 export function displayName(name?: string, id?: string): string {
   if (name) return name
   return id ? '已删除或未知' : '-'
@@ -84,11 +86,6 @@ export function errorText(record: UsageRecordSummary): string {
   if (record.responseSnapshot) return JSON.stringify(record.responseSnapshot, null, 2)
   if (!record.accountId && !record.success) return '没有可调度的上游账号'
   return '-'
-}
-
-export function formatDateTime(value?: string): string {
-  if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
 export function usageRecordSystemAccountText(record: UsageRecordSummary): string {

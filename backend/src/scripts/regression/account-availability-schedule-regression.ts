@@ -39,23 +39,29 @@ const futureSchedule = {
 }
 
 try {
+  const group = repositories.createGroup({
+    name: '账户计划回归分组',
+    providerCode: 'openai'
+  }, access)
   const allowed = repositories.createAccount({
     providerCode: 'openai',
     name: '账户计划允许回归',
     type: 'api_key',
     credentials: { api_key: 'sk-account-schedule-allow', base_url: 'https://api.openai.com/v1' },
-    availabilitySchedule: allDaySchedule
+    availabilitySchedule: allDaySchedule,
+    groupId: group.id
   }, access)
   const denied = repositories.createAccount({
     providerCode: 'openai',
     name: '账户计划停用回归',
     type: 'api_key',
     credentials: { api_key: 'sk-account-schedule-deny', base_url: 'https://api.openai.com/v1' },
-    availabilitySchedule: futureSchedule
+    availabilitySchedule: futureSchedule,
+    groupId: group.id
   }, access)
 
   const groupId = allowed.boundGroupId
-  assert(groupId, '测试账户应自动加入默认分组')
+  assert.equal(groupId, group.id, '测试账户应加入指定分组')
   const runtimeAccounts = repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId)
   assert.equal(runtimeAccounts.some((account) => account.id === allowed.id), true, '计划允许时账户应进入网关候选')
   assert.equal(runtimeAccounts.some((account) => account.id === denied.id), false, '计划停用时账户不应进入网关候选')

@@ -44,7 +44,7 @@ export interface StreamInterceptPolicyInput {
   name?: string
   enabled?: boolean
   priority?: number
-  providerCode?: string
+  providerCode: string
   match?: StreamInterceptPolicyMatch
   action?: StreamInterceptPolicyAction
   avoidanceTtlSeconds?: number | null
@@ -305,11 +305,10 @@ function findStreamInterceptPolicyRow(id: string): StreamInterceptPolicyRow | un
 }
 
 function assertManagementPolicyCapacity(): void {
-  const row = getBusinessDatabase()
-    .prepare('SELECT COUNT(*) AS total FROM stream_intercept_policies')
-    .get() as { total?: number } | undefined
-  const total = Number(row?.total ?? 0)
-  if (total >= maxManagementStreamInterceptPolicies) {
+  const rows = getBusinessDatabase()
+    .prepare('SELECT id FROM stream_intercept_policies LIMIT ?')
+    .all(maxManagementStreamInterceptPolicies) as Array<{ id: string }>
+  if (rows.length >= maxManagementStreamInterceptPolicies) {
     throw new Error(`管理端流式拦截策略不能超过 ${maxManagementStreamInterceptPolicies} 条`)
   }
 }
@@ -334,7 +333,7 @@ function normalizePolicyInput(
     name: normalizePolicyName(input.name, fallback?.name),
     enabled: normalizeBooleanInput(input.enabled, fallback?.enabled ?? true, '启用状态'),
     priority: normalizePriority(input.priority, fallback?.priority),
-    providerCode: normalizeProviderCode(input.providerCode, fallback?.providerCode),
+    providerCode: normalizeProviderCode(input.providerCode),
     match: normalizeMatch(input.match === undefined ? fallback?.match : input.match),
     action,
     avoidanceTtlSeconds: normalizePolicyTtl(input.avoidanceTtlSeconds, action, fallback?.avoidanceTtlSeconds),
@@ -353,7 +352,7 @@ function policyFromRow(row: StreamInterceptPolicyRow): StreamInterceptPolicySumm
     name: row.name,
     enabled: row.enabled === 1,
     priority: normalizePriority(row.priority, 100),
-    providerCode: normalizeProviderCode(row.provider_code, 'openai'),
+    providerCode: normalizeProviderCode(row.provider_code),
     match: normalizeMatch(parseJsonObject(row.match_json)),
     action,
     avoidanceTtlSeconds: normalizePolicyTtl(row.avoidance_ttl_seconds, action, undefined),
@@ -392,8 +391,10 @@ function normalizeMatch(value: unknown): StreamInterceptPolicyMatch {
   return match
 }
 
-function normalizeProviderCode(value: unknown, fallback = 'openai'): string {
-  if (value === undefined) return fallback
+function normalizeProviderCode(value: unknown): string {
+  if (value === undefined) {
+    throw new Error('流式拦截策略供应商编码不能为空')
+  }
   if (typeof value !== 'string') {
     throw new Error('流式拦截策略供应商编码必须是字符串')
   }
@@ -618,7 +619,7 @@ function clonePolicy(policy: StreamInterceptPolicySummary): StreamInterceptPolic
 }
 
 function assertKnownInputKeys(input: StreamInterceptPolicyInput, allowedKeys: ReadonlySet<string>, label: string): void {
-  const unknownKeys = Object.keys(input as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
+  const unknownKeys = Object.keys(input as unknown as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
   if (unknownKeys.length) {
     throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
   }

@@ -46,6 +46,11 @@ try {
     providerCode: 'openai',
     enabled: true
   }, granteeAccess)
+  const ownerSourceGroup = repositories.createGroup({
+    name: '授权名称同步来源分组',
+    providerCode: 'openai',
+    enabled: true
+  }, ownerAccess)
   const sourceAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '授权名称同步初始名',
@@ -53,7 +58,8 @@ try {
     credentials: {
       api_key: 'sk-authorized-name-sync-source',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: ownerSourceGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

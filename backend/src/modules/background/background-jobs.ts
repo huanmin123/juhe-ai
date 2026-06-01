@@ -35,8 +35,8 @@ import { flushUsageRecordQueue, pendingUsageRecordCount } from '../gateway/usage
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
-import { cleanupPendingDeletedAccountRecordTargets } from '../../storage/account-record-cleanup.js'
-import { cleanupPendingDeletedApiKeyRecordTargets } from '../../storage/api-key-record-cleanup.js'
+import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
+import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { requestServerProcessEventLoopSamples, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
 import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
@@ -182,7 +182,7 @@ async function runResourceAuthorizationExpirySweep(): Promise<void> {
 
 async function runApiKeyRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = cleanupPendingDeletedApiKeyRecordTargets(1)
+    const summary = await cleanupPendingDeletedApiKeyRecordTargetsAsync(1)
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_api_key_record_cleanup_retry_completed',
@@ -197,7 +197,7 @@ async function runApiKeyRecordCleanupRetry(): Promise<void> {
 
 async function runAccountRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = cleanupPendingDeletedAccountRecordTargets(1)
+    const summary = await cleanupPendingDeletedAccountRecordTargetsAsync(1)
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_account_record_cleanup_retry_completed',

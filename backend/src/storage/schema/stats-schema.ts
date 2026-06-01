@@ -61,8 +61,14 @@ export function applyStatsSchema(database: DatabaseSync): void {
           updated_at TEXT NOT NULL
         );
 
+    CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts (
+          account_id TEXT PRIMARY KEY,
+          first_dirty_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
     CREATE TABLE IF NOT EXISTS account_usage_snapshots (
-          system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+          system_account_id TEXT NOT NULL,
           account_id TEXT NOT NULL,
           kind TEXT NOT NULL,
           source TEXT,
@@ -944,6 +950,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_group ON group_account_stats(group_id);
 
     CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);
+
+    CREATE INDEX IF NOT EXISTS idx_account_quality_dirty_accounts_updated ON account_quality_dirty_accounts(updated_at, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);
 

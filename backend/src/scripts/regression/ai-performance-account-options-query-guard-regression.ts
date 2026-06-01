@@ -40,6 +40,16 @@ try {
     mustChangePassword: false
   })
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerGroup = repositories.createGroup({
+    name: 'AI 性能账号选项拥有者分组',
+    providerCode: 'openai',
+    enabled: true
+  }, ownerAccess)
+  const adminGroup = repositories.createGroup({
+    name: 'AI 性能账号选项管理员分组',
+    providerCode: 'openai',
+    enabled: true
+  }, adminAccess)
   const matchedAccount = repositories.createAccount({
     providerCode: 'openai',
     name: 'perfneedle 主账号',
@@ -47,7 +57,8 @@ try {
     credentials: {
       api_key: 'sk-ai-performance-options-query-guard-matched',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: ownerGroup.id
   }, ownerAccess)
   const granteeTargetGroup = repositories.createGroup({
     name: 'AI 性能授权目标分组',
@@ -61,7 +72,8 @@ try {
     credentials: {
       api_key: 'sk-ai-performance-authorized-source',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: ownerGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -84,7 +96,8 @@ try {
     credentials: {
       api_key: 'sk-ai-performance-options-query-guard-other',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: ownerGroup.id
   }, ownerAccess)
   const adminAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -93,7 +106,8 @@ try {
     credentials: {
       api_key: 'sk-ai-performance-options-query-guard-admin',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: adminGroup.id
   }, adminAccess)
   const wildcardAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -102,7 +116,8 @@ try {
     credentials: {
       api_key: 'sk-ai-performance-options-query-guard-wildcard-literal',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: ownerGroup.id
   }, ownerAccess)
   const wildcardNeighborAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -111,7 +126,8 @@ try {
     credentials: {
       api_key: 'sk-ai-performance-options-query-guard-wildcard-neighbor',
       base_url: 'https://api.openai.com/v1'
-    }
+    },
+    groupId: ownerGroup.id
   }, ownerAccess)
 
   const database = databaseModule.getBusinessDatabase()

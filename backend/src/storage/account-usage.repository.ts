@@ -37,7 +37,7 @@ export function getAccountUsageStatsOverview(input: {
       id: account.id,
       systemAccountId: account.systemAccountId,
       systemAccountName: account.systemAccountName,
-      ownerSystemAccountId: account.ownerSystemAccountId ?? account.systemAccountId ?? currentSystemAccountId(input.access),
+      ownerSystemAccountId: requiredAccountUsageOwnerSystemAccountId(account),
       ownerSystemAccountName: account.ownerSystemAccountName,
       providerCode: account.providerCode,
       name: account.name,
@@ -317,14 +317,30 @@ function accountUsageScope(account: AccountSummary, access?: AccessScope): Usage
   }
 
   const systemAccountId = account.accessType === 'authorized' && account.accountAuthorizationId
-    ? account.systemAccountId ?? currentSystemAccountId(access)
-    : account.ownerSystemAccountId ?? account.systemAccountId ?? currentSystemAccountId(access)
+    ? requiredAuthorizedAccountUsageSystemAccountId(account)
+    : requiredAccountUsageOwnerSystemAccountId(account)
   return {
     rowKey: accountUsageStatsRowKey(account),
     systemAccountId,
     scopeType: account.accessType === 'authorized' && account.accountAuthorizationId ? 'account_authorization' : 'account',
     scopeId: account.accessType === 'authorized' && account.accountAuthorizationId ? account.accountAuthorizationId : account.id
   }
+}
+
+function requiredAccountUsageOwnerSystemAccountId(account: AccountSummary): string {
+  const ownerSystemAccountId = account.ownerSystemAccountId?.trim()
+  if (ownerSystemAccountId) return ownerSystemAccountId
+  if (account.accessType !== 'authorized') {
+    const systemAccountId = account.systemAccountId?.trim()
+    if (systemAccountId) return systemAccountId
+  }
+  throw new Error('账户归属数据异常，无法统计用量')
+}
+
+function requiredAuthorizedAccountUsageSystemAccountId(account: AccountSummary): string {
+  const systemAccountId = account.systemAccountId?.trim()
+  if (systemAccountId) return systemAccountId
+  throw new Error('授权账户归属数据异常，无法统计用量')
 }
 
 function accountUsageListScope(access?: AccessScope): { systemAccountId: string; scopeType: AccountUsageScopeType } {

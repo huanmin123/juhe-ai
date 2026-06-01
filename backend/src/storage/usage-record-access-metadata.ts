@@ -1,4 +1,3 @@
-import { currentSystemAccountId } from './access-scope.js'
 import { getBusinessDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { accountSystemAccountId, activeResourceAuthorization, groupSystemAccountId, resourceAuthorizationSelectColumns } from './resource-authorization-helpers.js'
@@ -93,7 +92,7 @@ export function systemAccountIdForUsage(input: UsageAccessLookupInput, context?:
       ?? accountSystemAccountId(input.accountId)
     if (systemAccountId) return systemAccountId
   }
-  return currentSystemAccountId()
+  throw new Error('使用记录缺少系统账户归属，请在写入前提供 API Key、分组、账户或 systemAccountId')
 }
 
 export function usageAccessMetadata(input: UsageAccessMetadataInput, context?: UsageAccessLookupContext): UsageAccessMetadata {

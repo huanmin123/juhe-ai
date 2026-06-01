@@ -5,8 +5,8 @@ import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { cleanupProcessedUsageRecordsBeforeWithResult } from '../../storage/data-retention.repository.js'
 import { newId, nowIso } from '../../storage/database.js'
 import {
-  cleanupDeletedAccountRelatedRecordData,
-  cleanupDeletedApiKeyRelatedRecordData,
+  cleanupDeletedAccountRelatedRecordDataAsync,
+  cleanupDeletedApiKeyRelatedRecordDataAsync,
   upsertAccountUsageSnapshots,
   type AccountUsageSnapshotUpsertInput
 } from '../../storage/repositories.js'
@@ -139,7 +139,7 @@ export function enqueueRecordMaintenanceJobsLocal(inputs: RecordMaintenanceJob[]
   }
 }
 
-export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptions = {}): void {
+export async function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptions = {}): Promise<void> {
   if (runtimeConfig.processRole !== 'worker') {
     return
   }
@@ -176,7 +176,7 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
             completedCount += snapshotJobs.length
             index += snapshotJobs.length - 1
           } else {
-            processRecordMaintenanceJob(job)
+            await processRecordMaintenanceJob(job)
             removeRecordMaintenanceJobsFromHead(1)
             completedCount += 1
           }
@@ -204,12 +204,12 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
   }
 }
 
-export function flushAllRecordMaintenanceQueue(): void {
-  flushRecordMaintenanceQueue({ drain: true, retryOnFailure: false })
+export async function flushAllRecordMaintenanceQueue(): Promise<void> {
+  await flushRecordMaintenanceQueue({ drain: true, retryOnFailure: false })
 }
 
-export function flushRecordMaintenanceQueueForShutdown(): void {
-  flushRecordMaintenanceQueue({ drain: true, retryOnFailure: false, maxBatches: recordMaintenanceShutdownFlushMaxBatches })
+export async function flushRecordMaintenanceQueueForShutdown(): Promise<void> {
+  await flushRecordMaintenanceQueue({ drain: true, retryOnFailure: false, maxBatches: recordMaintenanceShutdownFlushMaxBatches })
 }
 
 export function getRecordMaintenanceQueueRuntime(): {
@@ -240,7 +240,9 @@ export function installRecordMaintenanceQueueShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('beforeExit', flushRecordMaintenanceQueueForShutdown)
+  process.once('beforeExit', () => {
+    void flushRecordMaintenanceQueueForShutdown()
+  })
 }
 
 function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): boolean {
@@ -271,10 +273,10 @@ function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): boolean {
   return true
 }
 
-function processRecordMaintenanceJob(job: RecordMaintenanceJob): void {
+async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<void> {
   switch (job.type) {
     case 'api_key_related_cleanup': {
-      const result = cleanupDeletedApiKeyRelatedRecordData({
+      const result = await cleanupDeletedApiKeyRelatedRecordDataAsync({
         apiKeyId: job.apiKeyId,
         systemAccountId: job.systemAccountId
       })
@@ -287,7 +289,7 @@ function processRecordMaintenanceJob(job: RecordMaintenanceJob): void {
       return
     }
     case 'account_related_cleanup': {
-      const result = cleanupDeletedAccountRelatedRecordData({
+      const result = await cleanupDeletedAccountRelatedRecordDataAsync({
         accountId: job.accountId,
         systemAccountId: job.systemAccountId,
         authorizationIds: job.authorizationIds,
@@ -471,7 +473,7 @@ function scheduleRecordMaintenanceFlush(delayMs: number): void {
   }
   flushTimer = setTimeout(() => {
     flushTimer = undefined
-    flushRecordMaintenanceQueue()
+    void flushRecordMaintenanceQueue()
   }, delayMs)
   flushTimer.unref()
 }

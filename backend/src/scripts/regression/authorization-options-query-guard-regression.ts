@@ -24,6 +24,7 @@ const [databaseModule, repositories] = await Promise.all([
 ])
 
 try {
+  const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const matchedAccount = repositories.createSystemAccount({
     username: 'grant-target',
     displayName: '候选目标用户',
@@ -55,11 +56,11 @@ try {
     mustChangePassword: false
   })
 
-  const matchedTeam = repositories.createSystemTeam({ name: '候选目标团队' })
-  const prefixTeam = repositories.createSystemTeam({ name: '候选目标团队扩展' })
-  const middleTeam = repositories.createSystemTeam({ name: '普通候选目标团队' })
-  const wildcardTeam = repositories.createSystemTeam({ name: 'percent%literal 团队' })
-  const wildcardNeighborTeam = repositories.createSystemTeam({ name: 'percentXliteral 团队' })
+  const matchedTeam = repositories.createSystemTeam({ name: '候选目标团队' }, adminAccess)
+  const prefixTeam = repositories.createSystemTeam({ name: '候选目标团队扩展' }, adminAccess)
+  const middleTeam = repositories.createSystemTeam({ name: '普通候选目标团队' }, adminAccess)
+  const wildcardTeam = repositories.createSystemTeam({ name: 'percent%literal 团队' }, adminAccess)
+  const wildcardNeighborTeam = repositories.createSystemTeam({ name: 'percentXliteral 团队' }, adminAccess)
   const missingDefaultGroupAccount = repositories.createSystemAccount({
     username: 'grant-target-missing-default',
     displayName: '缺失默认分组目标用户',

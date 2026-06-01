@@ -2,9 +2,11 @@ import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import type { SQLInputValue } from 'node:sqlite'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { maxGroupDeleteAffectedApiKeyRoutes } from '../../storage/api-key-group-binding-limits.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-multi-group-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -42,7 +44,7 @@ try {
     host: '127.0.0.1',
     port: 19_080,
     enabled: true
-  })
+  }, access)
   const primaryBlockedAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '多分组回归主池不可派发账号',
@@ -428,10 +430,29 @@ try {
     repositories.deleteGroup(deleteFallbackGroup.id, access)
   }, /添加或启用其他分组/, '不能删除 API Key 的最后一个启用分组')
 
+  assertGroupDeleteAffectedApiKeyWindowQueryPlan()
+  const overLimitDeleteGroup = repositories.createGroup({
+    name: '多分组删除超限保护池',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  for (let index = 0; index <= maxGroupDeleteAffectedApiKeyRoutes; index += 1) {
+    repositories.createApiKeyRecord({
+      name: `多分组删除超限保护 Key ${String(index + 1).padStart(3, '0')}`,
+      groupBindings: [
+        { groupId: overLimitDeleteGroup.id, priority: 1, status: 'active' }
+      ]
+    }, access)
+  }
+  assert.throws(() => {
+    repositories.deleteGroup(overLimitDeleteGroup.id, access)
+  }, new RegExp(`关联的 API Key 超过 ${maxGroupDeleteAffectedApiKeyRoutes}`), '删除影响 API Key 过多的分组应被固定窗口保护拦截')
+
   assertBusinessIndexExists('idx_api_key_group_bindings_key_group_unique')
+  assertBusinessIndexExists('idx_api_key_group_bindings_owner_group_key')
   assertSqlUniqueIndexRejectsDuplicateBinding(apiKey.id, fallbackGroup.id)
 
-  console.log('API Key 多分组绑定回归通过：创建、筛选、优先级更新、优先级/轮询/权重策略、删除优先分组保留后备、最后启用分组删除保护、未绑定拦截、空绑定拦截、重复绑定拦截、唯一索引拒绝重复写入、不可派发优先分组切后备和恢复正常')
+  console.log('API Key 多分组绑定回归通过：创建、筛选、优先级更新、优先级/轮询/权重策略、删除优先分组保留后备、最后启用分组删除保护、删除影响 API Key 固定窗口保护、未绑定拦截、空绑定拦截、重复绑定拦截、唯一索引拒绝重复写入、不可派发优先分组切后备和恢复正常')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -446,6 +467,34 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
+}
+
+function assertGroupDeleteAffectedApiKeyWindowQueryPlan(): void {
+  const details = explainBusinessQuery(`
+    SELECT
+      api_key_group_bindings.api_key_id AS id,
+      api_keys.name,
+      api_key_group_bindings.status AS targetBindingStatus
+    FROM api_key_group_bindings
+    INNER JOIN api_keys
+      ON api_keys.id = api_key_group_bindings.api_key_id
+      AND api_keys.system_account_id = api_key_group_bindings.system_account_id
+    WHERE api_key_group_bindings.system_account_id = ?
+      AND api_key_group_bindings.group_id = ?
+    ORDER BY api_key_group_bindings.api_key_id ASC
+    LIMIT ?
+  `, ['sys_admin', 'group_delete_query_plan_guard', maxGroupDeleteAffectedApiKeyRoutes + 1])
+  assert(details.includes('idx_api_key_group_bindings_owner_group_key'), `分组删除影响 API Key 预检应命中固定窗口索引，实际计划：${details}`)
+  assert(!details.includes('SCAN api_key_group_bindings'), `分组删除影响 API Key 预检不能扫描绑定表，实际计划：${details}`)
+  assert(!details.includes('USE TEMP B-TREE FOR ORDER BY'), `分组删除影响 API Key 预检不应为排序创建临时 B-TREE，实际计划：${details}`)
+}
+
+function explainBusinessQuery(sql: string, params: SQLInputValue[]): string {
+  return databaseModule.getBusinessDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
 }
 
 function assertSqlUniqueIndexRejectsDuplicateBinding(apiKeyId: string, groupId: string): void {

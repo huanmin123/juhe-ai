@@ -102,7 +102,6 @@ export function resourceAuthorizationSelectColumns(alias?: string): string {
     'remark',
     'expires_at',
     'limits_json',
-    'model_policy_json',
     'created_by',
     'created_at',
     'revoked_by',

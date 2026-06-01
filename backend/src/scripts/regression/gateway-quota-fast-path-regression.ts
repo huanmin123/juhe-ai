@@ -70,6 +70,7 @@ function groupAccessWithoutAuthorizationQuota(): GroupUsageAccessMetadata {
 function upstreamAccountWithoutAuthorizationQuota(id: string): OpenAIAccountSecret {
   return {
     id,
+    providerCode: 'openai',
     systemAccountId: 'sys_fast_path',
     accountOwnerSystemAccountId: 'sys_fast_path',
     groupOwnerSystemAccountId: 'sys_fast_path',

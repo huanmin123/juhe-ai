@@ -12,7 +12,7 @@ import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
-import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDER } from './accountOptions'
+import { ACCOUNT_PAGE_SIZE, OPENAI_PROVIDER } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canBatchManageAccount } from './accountRules'
@@ -206,7 +206,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
         return
       }
-      providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
+      providers.value = providerList.length ? providerList : [OPENAI_PROVIDER]
       proxies.value = proxyList
       accountOptionsLoaded.value = true
       accountOptionsScopeKey.value = scopeKey

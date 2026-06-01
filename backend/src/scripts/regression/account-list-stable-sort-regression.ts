@@ -23,8 +23,14 @@ const [databaseModule, repositories] = await Promise.all([
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+let testGroupId = ''
 
 try {
+  const group = repositories.createGroup({
+    name: '列表稳定排序分组',
+    providerCode: 'openai'
+  }, access)
+  testGroupId = group.id
   const accounts = [
     createStableAccount('列表稳定排序-A', 'sk-list-stable-a', '2026-01-01T00:00:00.000Z'),
     createStableAccount('列表稳定排序-B', 'sk-list-stable-b', '2026-01-01T00:00:01.000Z'),
@@ -71,7 +77,8 @@ function createStableAccount(name: string, apiKey: string, createdAt: string): {
     },
     status: 'active',
     priority: 10,
-    schedulable: true
+    schedulable: true,
+    groupId: testGroupId
   }, access)
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET created_at = ?, updated_at = ? WHERE id = ?')

@@ -17,6 +17,7 @@ import type {
   AnnouncementListResult,
   AnnouncementStatus,
   AnnouncementSummary,
+  PublishedAnnouncementSummary,
   AuditLogDetail,
   AuditLogListResult,
   AuditLogPayloadDetail,
@@ -567,7 +568,7 @@ export const api = {
     granteeGroups: (params: AuthorizationGranteeGroupOptionsParams) => unwrap<GroupOptionSummary[]>(http.get('/authorization-options/grantee-groups', { params: authorizationGranteeGroupOptionsParams(params) }))
   },
   announcements: {
-    publicList: (params?: AnnouncementListParams) => unwrap<AnnouncementSummary[]>(http.get('/announcements/public', { params })),
+    publicList: (params?: AnnouncementListParams) => unwrap<PublishedAnnouncementSummary[]>(http.get('/announcements/public', { params })),
     markRead: (payload: { announcementIds: string[] }) => unwrap<AnnouncementReadResult>(http.post('/announcements/public/read', payload)),
     list: async () => (await unwrap<AnnouncementListResult>(http.get('/announcements', { params: { page: 1, pageSize: 100 } }))).items,
     listPage: (params?: { page?: number; pageSize?: number }) => unwrap<AnnouncementListResult>(http.get('/announcements', { params })),

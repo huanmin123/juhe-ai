@@ -1,9 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
+import { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
-import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
+import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocationsForApiKey, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
 import { subtractUsageStatsRecord } from './usage-stats-writers.js'
@@ -111,6 +111,7 @@ const apiKeyScopeStatsTables = [
   'usage_scope_range_windows'
 ] as const
 const deletedApiKeyRecordCleanupBatchLimit = 100
+const deletedApiKeyRecordCleanupShardLimit = 16
 
 export function registerDeletedApiKeyRecordCleanupTarget(input: DeletedApiKeyRecordCleanupTarget): void {
   upsertDeletedApiKeyRecordCleanupTarget(getDatasetDatabase(), input, nowIso())
@@ -129,6 +130,33 @@ export function cleanupPendingDeletedApiKeyRecordTargets(limit = 50): PendingDel
     summary.attempted += 1
     try {
       const result = cleanupDeletedApiKeyRelatedRecordData(target)
+      summary.deletedRows += result.deletedRows
+      if (result.hasMore || result.blockedReason) {
+        summary.deferred += 1
+      } else {
+        summary.completed += 1
+      }
+    } catch (error) {
+      summary.failed += 1
+      markDeletedApiKeyRecordCleanupTargetError(getDatasetDatabase(), target, errorMessage(error), nowIso())
+    }
+  }
+  return summary
+}
+
+export async function cleanupPendingDeletedApiKeyRecordTargetsAsync(limit = 50): Promise<PendingDeletedApiKeyRecordCleanupSummary> {
+  const targets = listDeletedApiKeyRecordCleanupTargets(Math.max(1, Math.trunc(limit)))
+  const summary: PendingDeletedApiKeyRecordCleanupSummary = {
+    attempted: 0,
+    completed: 0,
+    deferred: 0,
+    failed: 0,
+    deletedRows: 0
+  }
+  for (const target of targets) {
+    summary.attempted += 1
+    try {
+      const result = await cleanupDeletedApiKeyRelatedRecordDataAsync(target)
       summary.deletedRows += result.deletedRows
       if (result.hasMore || result.blockedReason) {
         summary.deferred += 1
@@ -221,6 +249,21 @@ export function listDeletedApiKeyRecordCleanupQueueTargets(limit = 50): DeletedA
 }
 
 export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecordCleanupTarget): DeletedApiKeyRecordCleanupResult {
+  const cleanup = cleanupDeletedApiKeyRelatedRecordDataCore(input)
+  cleanupAuditPayloadBlobsBestEffort(cleanup.batchLimit)
+  return cleanup.result
+}
+
+export async function cleanupDeletedApiKeyRelatedRecordDataAsync(input: DeletedApiKeyRecordCleanupTarget): Promise<DeletedApiKeyRecordCleanupResult> {
+  const cleanup = cleanupDeletedApiKeyRelatedRecordDataCore(input)
+  await cleanupAuditPayloadBlobsBestEffortAsync(cleanup.batchLimit)
+  return cleanup.result
+}
+
+function cleanupDeletedApiKeyRelatedRecordDataCore(input: DeletedApiKeyRecordCleanupTarget): {
+  result: DeletedApiKeyRecordCleanupResult
+  batchLimit: number
+} {
   const database = getDatasetDatabase()
   const statsDatabase = getStatsDatabase()
   const updatedAt = nowIso()
@@ -271,8 +314,7 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
     } else {
       clearDeletedApiKeyRecordCleanupTarget(database, input)
     }
-    cleanupAuditPayloadBlobsBestEffort(batchLimit)
-    return result
+    return { result, batchLimit }
   } catch (error) {
     markDeletedApiKeyRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
     throw error
@@ -411,13 +453,7 @@ function clearDeletedApiKeyRecordCleanupTarget(database: DatabaseSync, input: De
 }
 
 function hasApiKeyUsageRecords(input: DeletedApiKeyRecordCleanupTarget): boolean {
-  for (const location of listUsageRecordShardLocations()) {
-    const row = getUsageRecordShardDatabase(location)
-      .prepare('SELECT id FROM usage_records WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
-      .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
-    if (row?.id) return true
-  }
-  return false
+  return listUsageRecordShardLocationsForApiKey(input.apiKeyId, input.systemAccountId, 1).locations.length > 0
 }
 
 function selectApiKeyUsageRowsCoveredByShardCursors(
@@ -429,12 +465,9 @@ function selectApiKeyUsageRowsCoveredByShardCursors(
   const queryLimit = batchLimit + 1
   const rows: ApiKeyUsageShardRow[] = []
   let hasUncoveredRows = false
-  for (const location of listUsageRecordShardLocations()) {
+  const shardWindow = listUsageRecordShardLocationsForApiKey(input.apiKeyId, input.systemAccountId, deletedApiKeyRecordCleanupShardLimit)
+  for (const location of shardWindow.locations) {
     const shardDatabase = getUsageRecordShardDatabase(location)
-    const anyUsage = shardDatabase
-      .prepare('SELECT id FROM usage_records WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
-      .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
-    if (!anyUsage?.id) continue
     const cursor = usageStatsShardCursor(statsDatabase, location.shardKey)
     if (!cursor) {
       hasUncoveredRows = true
@@ -472,7 +505,7 @@ function selectApiKeyUsageRowsCoveredByShardCursors(
     .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))
   return {
     rows: sortedRows.slice(0, queryLimit),
-    hasMoreCoveredRows: sortedRows.length > batchLimit,
+    hasMoreCoveredRows: sortedRows.length > batchLimit || shardWindow.hasMore,
     hasUncoveredRows
   }
 }
@@ -680,6 +713,13 @@ function refreshDeletedApiKeyDerivedWindowsIfNeeded(input: DeletedApiKeyRecordCl
 function cleanupAuditPayloadBlobsBestEffort(limit: number): void {
   try {
     cleanupUnreferencedAuditPayloadBlobs(limit)
+  } catch {
+  }
+}
+
+async function cleanupAuditPayloadBlobsBestEffortAsync(limit: number): Promise<void> {
+  try {
+    await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
   } catch {
   }
 }

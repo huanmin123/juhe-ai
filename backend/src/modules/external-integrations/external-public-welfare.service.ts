@@ -5,7 +5,7 @@ import {
   type ClientIpUsageSummary
 } from '../../storage/client-ip-stats.repository.js'
 import { getBusinessDatabase, getStatsDatabase } from '../../storage/database.js'
-import { chunkValues, pagedTotalUpperBound, sqlPlaceholders } from '../../storage/query-utils.js'
+import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders } from '../../storage/query-utils.js'
 import {
   dateKey,
   normalizeAccountUsageStatsRange,
@@ -549,7 +549,7 @@ function listPublicAccountUsageStats(input: {
 }): Pick<PublicAccountUsageResponse, 'items' | 'page' | 'pageSize' | 'pageUpperBound' | 'hasMore' | 'rangeReady'> {
   const database = getStatsDatabase()
   const pageSize = boundedInteger(input.pageSize, 1, 100, 20)
-  const page = boundedInteger(input.page, 1, 1000, 1)
+  const page = normalizeListPage(input.page, pageSize)
   const rangeReady = publicAccountUsageRangeReady(database, input.range)
   if (!rangeReady) {
     return {

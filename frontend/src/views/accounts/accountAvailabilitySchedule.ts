@@ -30,14 +30,20 @@ export const weekdayOptions = [
 ]
 
 export function createAccountAvailabilityScheduleForm(schedule?: AccountAvailabilitySchedule): AccountAvailabilityScheduleForm {
+  if (!schedule) {
+    return {
+      enabled: false,
+      timezone: defaultScheduleTimezone(),
+      windows: [createAccountScheduleWindowFormRow()]
+    }
+  }
+  assertAccountAvailabilitySchedule(schedule)
   return {
-    enabled: schedule?.enabled === true,
-    timezone: schedule?.timezone ?? defaultScheduleTimezone(),
-    windows: schedule?.windows?.length
-      ? schedule.windows.map((window) => createAccountScheduleWindowFormRow(window.daysOfWeek, window.start, window.end))
-      : [createAccountScheduleWindowFormRow()],
-    dateRange: cloneScheduleDateRange(schedule?.dateRange),
-    exceptions: cloneScheduleExceptions(schedule?.exceptions)
+    enabled: true,
+    timezone: schedule.timezone,
+    windows: schedule.windows.map((window) => createAccountScheduleWindowFormRow(window.daysOfWeek, window.start, window.end)),
+    dateRange: cloneScheduleDateRange(schedule.dateRange),
+    exceptions: cloneScheduleExceptions(schedule.exceptions)
   }
 }
 
@@ -89,6 +95,11 @@ export function accountAvailabilityScheduleFormFingerprint(schedule: AccountAvai
 
 export function accountScheduleSummary(schedule?: AccountAvailabilitySchedule): string {
   if (!schedule?.enabled || !schedule.windows.length) return '未设置'
+  try {
+    assertAccountAvailabilitySchedule(schedule)
+  } catch {
+    return '计划数据异常'
+  }
   const windows = schedule.windows
     .slice(0, 2)
     .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
@@ -99,7 +110,12 @@ export function accountScheduleSummary(schedule?: AccountAvailabilitySchedule): 
 
 export function accountScheduleTagColor(schedule?: AccountAvailabilitySchedule): string {
   if (!schedule?.enabled) return 'default'
-  return isScheduleCurrentlyAllowed(schedule) ? 'green' : 'orange'
+  try {
+    assertAccountAvailabilitySchedule(schedule)
+    return isScheduleCurrentlyAllowed(schedule) ? 'green' : 'orange'
+  } catch {
+    return 'red'
+  }
 }
 
 function normalizedScheduleWindows(schedule: AccountAvailabilityScheduleForm): Array<{ daysOfWeek: number[]; start?: string; end?: string }> {
@@ -112,6 +128,83 @@ function normalizedScheduleWindows(schedule: AccountAvailabilityScheduleForm): A
 
 function normalizedScheduleDays(days: number[]): number[] {
   return [...new Set(days.map((day) => typeof day === 'number' ? day : Number.NaN))].sort((left, right) => left - right)
+}
+
+function assertAccountAvailabilitySchedule(schedule: AccountAvailabilitySchedule): void {
+  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], '账户自动启停计划')
+  if (schedule.enabled !== true) throw new Error('账户自动启停计划启用状态异常，请清理后再编辑')
+  if (schedule.mode !== 'allow_windows') throw new Error('账户自动启停计划模式异常，请清理后再编辑')
+  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('账户自动启停计划时区异常，请清理后再编辑')
+  assertScheduleTimezone(schedule.timezone, '账户自动启停计划时区')
+  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('账户自动启停计划时段异常，请清理后再编辑')
+  for (const window of schedule.windows) {
+    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], '账户自动启停计划时段')
+    assertScheduleDays(window.daysOfWeek, '账户自动启停计划重复日期')
+    assertScheduleTime(window.start, '账户自动启停计划开始时间')
+    assertScheduleTime(window.end, '账户自动启停计划停止时间')
+    if (window.start === window.end) throw new Error('账户自动启停计划开始时间和停止时间不能相同')
+  }
+  if (schedule.dateRange) {
+    assertScheduleDateRange(schedule.dateRange)
+  }
+  if (schedule.exceptions !== undefined) {
+    if (!Array.isArray(schedule.exceptions)) throw new Error('账户自动启停计划例外日期异常，请清理后再编辑')
+    for (const exception of schedule.exceptions) {
+      assertObjectKeys(exception, ['date', 'action', 'windows'], '账户自动启停计划例外日期')
+      assertScheduleDate(exception.date, '账户自动启停计划例外日期')
+      if (exception.action === 'allow') {
+        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('账户自动启停计划允许例外时段异常，请清理后再编辑')
+        for (const window of exception.windows) {
+          assertObjectKeys(window, ['start', 'end'], '账户自动启停计划例外时段')
+          assertScheduleTime(window.start, '账户自动启停计划例外开始时间')
+          assertScheduleTime(window.end, '账户自动启停计划例外停止时间')
+          if (window.start === window.end) throw new Error('账户自动启停计划例外开始时间和停止时间不能相同')
+        }
+      } else if (exception.action === 'deny') {
+        if ('windows' in exception) throw new Error('账户自动启停计划拒绝例外不能带允许时段')
+      } else {
+        throw new Error('账户自动启停计划例外动作异常，请清理后再编辑')
+      }
+    }
+  }
+}
+
+function assertScheduleDateRange(dateRange: NonNullable<AccountAvailabilitySchedule['dateRange']>): void {
+  assertObjectKeys(dateRange, ['startDate', 'endDate'], '账户自动启停计划日期范围')
+  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, '账户自动启停计划开始日期')
+  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, '账户自动启停计划结束日期')
+  if (dateRange.startDate && dateRange.endDate && dateRange.startDate > dateRange.endDate) {
+    throw new Error('账户自动启停计划开始日期不能晚于结束日期')
+  }
+}
+
+function assertScheduleDays(days: unknown, label: string): void {
+  if (!Array.isArray(days) || hasInvalidScheduleDays(days as number[])) throw new Error(`${label}异常，请清理后再编辑`)
+}
+
+function assertScheduleTime(value: unknown, label: string): void {
+  if (typeof value !== 'string' || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(value)) throw new Error(`${label}异常，请清理后再编辑`)
+}
+
+function assertScheduleDate(value: unknown, label: string): void {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`${label}异常，请清理后再编辑`)
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) throw new Error(`${label}无效，请清理后再编辑`)
+}
+
+function assertScheduleTimezone(value: string, label: string): void {
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: value }).format(new Date(0))
+  } catch {
+    throw new Error(`${label}无效，请清理后再编辑`)
+  }
+}
+
+function assertObjectKeys(value: unknown, allowedKeys: string[], label: string): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}必须是对象`)
+  const allowed = new Set(allowedKeys)
+  const unknownKeys = Object.keys(value).filter((key) => !allowed.has(key))
+  if (unknownKeys.length) throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
 }
 
 function hasInvalidScheduleDays(days: number[]): boolean {
@@ -139,7 +232,7 @@ function isScheduleCurrentlyAllowed(schedule: AccountAvailabilitySchedule): bool
   const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
   if (exception?.action === 'deny') return false
   if (exception?.action === 'allow') {
-    return (exception.windows ?? []).some((window) => isCurrentMinuteInScheduleWindow(current, { ...window, daysOfWeek: [current.dayOfWeek] }))
+    return (exception.windows ?? []).some((window) => isCurrentMinuteInScheduleWindow(current, { daysOfWeek: [current.dayOfWeek], start: window.start, end: window.end }))
   }
   return schedule.windows.some((window) => isCurrentMinuteInScheduleWindow(current, window))
 }
@@ -168,37 +261,27 @@ function previousScheduleDayOfWeek(dayOfWeek: number): number {
 }
 
 function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; dayOfWeek: number; minuteOfDay: number } {
-  try {
-    const formatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone: timezone || defaultScheduleTimezone(),
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23'
-    })
-    const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
-    const year = Number(parts.year)
-    const month = Number(parts.month)
-    const day = Number(parts.day)
-    const hour = Number(parts.hour)
-    const minute = Number(parts.minute)
-    const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    const utcDay = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
-    return {
-      dateKey,
-      dayOfWeek: utcDay === 0 ? 7 : utcDay,
-      minuteOfDay: hour * 60 + minute
-    }
-  } catch {
-    const day = date.getDay()
-    const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-    return {
-      dateKey,
-      dayOfWeek: day === 0 ? 7 : day,
-      minuteOfDay: date.getHours() * 60 + date.getMinutes()
-    }
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  })
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
+  const year = Number(parts.year)
+  const month = Number(parts.month)
+  const day = Number(parts.day)
+  const hour = Number(parts.hour)
+  const minute = Number(parts.minute)
+  const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  const utcDay = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
+  return {
+    dateKey,
+    dayOfWeek: utcDay === 0 ? 7 : utcDay,
+    minuteOfDay: hour * 60 + minute
   }
 }
 
@@ -208,7 +291,12 @@ function defaultScheduleTimezone(): string {
 }
 
 function cloneScheduleDateRange(dateRange: AccountAvailabilitySchedule['dateRange']): AccountAvailabilitySchedule['dateRange'] {
-  return dateRange ? { ...dateRange } : undefined
+  return dateRange
+    ? {
+        ...(dateRange.startDate !== undefined ? { startDate: dateRange.startDate } : {}),
+        ...(dateRange.endDate !== undefined ? { endDate: dateRange.endDate } : {})
+      }
+    : undefined
 }
 
 function cloneScheduleExceptions(exceptions: AccountAvailabilitySchedule['exceptions']): AccountAvailabilitySchedule['exceptions'] {
@@ -217,7 +305,7 @@ function cloneScheduleExceptions(exceptions: AccountAvailabilitySchedule['except
       return {
         date: exception.date,
         action: 'allow',
-        windows: exception.windows.map((window) => ({ ...window }))
+        windows: exception.windows.map((window) => ({ start: window.start, end: window.end }))
       }
     }
     return {

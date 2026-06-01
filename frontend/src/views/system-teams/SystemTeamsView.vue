@@ -119,7 +119,7 @@
               {{ memberDisplayName(record) }}
             </template>
             <template v-else-if="column.key === 'joinedAt'">
-              {{ formatDateTime(record.joinedAt || record.createdAt) }}
+              {{ formatDateTime(record.joinedAt) }}
             </template>
             <template v-else-if="column.key === 'actions'">
               <RowActions v-if="isManagementView" :actions="memberActions" @action-click="handleMemberAction($event, record)" />
@@ -129,7 +129,7 @@
             <article class="team-member-card">
               <div>
                 <strong>{{ memberDisplayName(record) }}</strong>
-                <span>{{ formatDateTime(record.joinedAt || record.createdAt) }}</span>
+                <span>{{ formatDateTime(record.joinedAt) }}</span>
               </div>
               <RowActions v-if="isManagementView" :actions="memberActions" variant="button" @action-click="handleMemberAction($event, record)" />
             </article>
@@ -156,7 +156,7 @@ import { useScopedSystemTeamsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatNumber } from '@/shared/formatters'
+import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
@@ -276,13 +276,6 @@ function activeMembers(team: SystemTeamSummary): SystemTeamMemberSummary[] {
 
 function memberDisplayName(member: SystemTeamMemberSummary): string {
   return member.systemAccountName || '未命名成员'
-}
-
-function formatDateTime(value?: string): string {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
 }
 
 function refreshTeams() {

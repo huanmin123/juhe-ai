@@ -84,6 +84,10 @@ class FakeDbServiceChild extends EventEmitter {
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const group = repositories.createGroup({
+    name: '请求链路 OAuth 热路径刷新分组',
+    providerCode: 'openai'
+  }, access)
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '请求链路 OAuth 临期刷新账号',
@@ -96,7 +100,8 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
-    schedulable: true
+    schedulable: true,
+    groupId: group.id
   }, access)
 
   let refreshCallCount = 0

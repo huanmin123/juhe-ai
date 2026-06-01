@@ -433,6 +433,8 @@ function assertStreamInterceptPolicyRepositoryGuards(): void {
   assert(!repositorySource.includes('normalizeSetValue('), '流式拦截策略不应再用旧动作兜底模板吞掉非法 action')
   assert(!repositorySource.includes('Number(value)'), '流式拦截策略写入路径不应接收数字字符串')
   assert(!repositorySource.includes('value.split(/[,;'), '流式拦截策略匹配条件不应接收旧字符串列表格式')
+  assert(!repositorySource.includes("fallback = 'openai'"), '流式拦截策略不应缺省回填 OpenAI 供应商')
+  assert(!repositorySource.includes("normalizeProviderCode(row.provider_code, 'openai')"), '流式拦截策略读取不应缺省回填 OpenAI 供应商')
   assert(repositorySource.includes('normalizePolicyAction'), '流式拦截策略必须显式校验 action 模板')
   assert(repositorySource.includes('短期避让模板需要配置避让秒数'), '短期避让策略必须显式要求 TTL')
   assert(gatewayListBody.includes('provider_code = ?'), '网关运行态读取流式拦截策略必须按供应商收窄')
@@ -440,6 +442,8 @@ function assertStreamInterceptPolicyRepositoryGuards(): void {
   assert(gatewayListBody.includes('maxManagementStreamInterceptPolicies'), '网关运行态读取流式拦截策略必须复用管理端数量上限')
   assert(listBody.includes('LIMIT ?'), '管理端策略列表不能无上限读取策略表')
   assert(createBody.includes('assertManagementPolicyCapacity()'), '创建管理端流式拦截策略前必须校验总量上限')
+  assert(!repositorySource.includes('COUNT(*) AS total FROM stream_intercept_policies'), '创建管理端流式拦截策略不能用 COUNT(*) 容量预检')
+  assert(repositorySource.includes('SELECT id FROM stream_intercept_policies LIMIT ?'), '创建管理端流式拦截策略容量预检必须使用固定窗口')
 }
 
 function sourceFunctionBlock(source: string, marker: string): string {

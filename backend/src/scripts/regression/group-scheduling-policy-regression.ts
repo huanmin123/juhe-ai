@@ -93,6 +93,27 @@ try {
   assert.equal(storedPolicy.clientIpConcurrencyLimit, 4, '单 IP 并发上限应写入 JSON 配置')
   assert.equal(storedPolicy.clientIpConcurrencyOverflowMode, 'queue', '单 IP 超限模式应写入 JSON 配置')
   assert.equal(storedPolicy.imageLaneMaxConcurrency, 0, '图像通道上限 0 应按自动策略写入 JSON 配置')
+  assert(stored.scheduling_policy_json, '高并发分组应写入完整调度策略 JSON')
+
+  database
+    .prepare('UPDATE groups SET scheduling_policy_json = NULL WHERE id = ?')
+    .run(highConcurrencyGroup.id)
+  assert.throws(
+    () => repositories.findGroupSummary(highConcurrencyGroup.id, access),
+    /高并发分组调度策略缺失/,
+    '读取已存储高并发分组时不应把缺失策略静默补成默认值'
+  )
+  database
+    .prepare('UPDATE groups SET scheduling_policy_json = ? WHERE id = ?')
+    .run(JSON.stringify({ defaultSoftConcurrency: 3 }), highConcurrencyGroup.id)
+  assert.throws(
+    () => repositories.findGroupSummary(highConcurrencyGroup.id, access),
+    /分组调度策略缺少字段/,
+    '读取已存储高并发分组时不应把缺字段策略静默补成默认值'
+  )
+  database
+    .prepare('UPDATE groups SET scheduling_policy_json = ? WHERE id = ?')
+    .run(stored.scheduling_policy_json, highConcurrencyGroup.id)
 
   const runtimeAccess = repositories.resolveGroupUsageAccessMetadata(highConcurrencyGroup.id, 'sys_admin')
   assert.equal(runtimeAccess?.groupType, 'high_concurrency')
@@ -115,7 +136,8 @@ try {
       api_key: 'sk-group-scheduling-policy',
       base_url: 'http://127.0.0.1:9/v1'
     },
-    concurrencyLimit: 10
+    concurrencyLimit: 10,
+    groupId: highConcurrencyGroup.id
   }, access)
   const boundAccount = repositories.setAccountGroup(account.id, highConcurrencyGroup.id, access)
   assert.equal(boundAccount?.boundGroupId, highConcurrencyGroup.id, '账户绑定应只记录目标分组')

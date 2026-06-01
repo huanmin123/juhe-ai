@@ -193,30 +193,7 @@ function queryAccountRowsForAccess(
       `)
   }
   if (!viewerSystemAccountId) {
-    return queryRows(`
-        SELECT ${accountListOuterSelectColumns()}, ${groupBindingSelectColumns()},
-          COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
-          ${accountQualitySelectColumns(includeQualityInQuery)}
-        FROM (
-          SELECT ${accountSelectColumns}, CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
-            ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
-            ra.limits_json AS authorization_limits_json, ra.effective_source_type AS authorization_effective_source_type,
-            ra.effective_source_team_id AS authorization_effective_source_team_id,
-            ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
-            ra.resource_id AS authorization_resource_id
-          FROM accounts
-          LEFT JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
-          WHERE accounts.authorization_instance_authorization_id IS NULL
-            OR ra.status IN ('active', 'paused', 'expired')
-        ) account_rows
-        ${accountQualityJoinClause(includeQualityInQuery)}
-        LEFT JOIN ${accountBindingSubquery()} group_bindings
-          ON group_bindings.account_id = account_rows.id
-          AND group_bindings.system_account_id = account_rows.system_account_id
-          AND group_bindings.enabled = 1
-        LEFT JOIN groups bound_groups ON bound_groups.id = group_bindings.group_id
-        LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
-      `)
+    throw new Error('缺少系统账户上下文')
   }
   return queryRows(`
       SELECT ${accountListOuterSelectColumns()}, ${groupBindingSelectColumns()},

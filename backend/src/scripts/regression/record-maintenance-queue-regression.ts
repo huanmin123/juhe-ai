@@ -1,10 +1,12 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+
+assertRecordMaintenanceCleanupRunsAsync()
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-record-maintenance-queue-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -32,7 +34,7 @@ try {
   const completedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildUsageRecordsCleanupJob('worker_local'))
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 1, 'worker 角色应进入本地数据维护队列')
-  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'worker flush 后数据维护队列应清空')
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount, completedBefore + 1, 'worker flush 应执行数据维护任务')
 
@@ -44,7 +46,7 @@ try {
     batchSize: 100,
     maxBatches: 1
   })
-  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(usageRecordCount('usage_cleanup_regression'), 1, '统计安全游标未就绪时不应删除使用记录')
 
   seedUsageStatsCleanupCursors('2000-01-01T00:00:00.000Z', 'usage_cleanup_regression')
@@ -55,7 +57,7 @@ try {
     batchSize: 100,
     maxBatches: 1
   })
-  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(usageRecordCount('usage_cleanup_regression'), 0, '统计安全游标就绪后才允许删除已聚合使用记录')
 
   seedUsageRecord('usage_cleanup_recent_protected', new Date().toISOString())
@@ -66,7 +68,7 @@ try {
     batchSize: 100,
     maxBatches: 1
   })
-  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(usageRecordCount('usage_cleanup_recent_protected'), 1, 'worker 数据维护任务应强制保留最近 1 天的使用记录')
 
   seedAccount('acct_codex_snapshot', 'sys_admin')
@@ -82,7 +84,7 @@ try {
     },
     updatedAt: '2000-01-01T00:00:00.000Z'
   })
-  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(accountUsageSnapshotCount('acct_codex_snapshot'), 1, 'worker 应能通过数据维护队列写入账号用量快照')
 
   for (let index = 0; index < 5; index += 1) {
@@ -123,7 +125,7 @@ try {
       },
       updatedAt: '2000-01-01T00:00:00.000Z'
     })))
-    recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+    await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   } finally {
     businessDatabase.prepare = originalBusinessPrepare
     statsDatabase.prepare = originalStatsPrepare
@@ -161,7 +163,7 @@ try {
         maxBatches: 1
       }
     ])
-    recordMaintenanceQueue.flushRecordMaintenanceQueue({ retryOnFailure: false })
+    await recordMaintenanceQueue.flushRecordMaintenanceQueue({ retryOnFailure: false })
     assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().flushFailureCount, failuresBefore + 1, '批量快照写入失败应记录 flush 失败')
     assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 3, 'retryOnFailure=false 时失败任务和同批后续任务应保留在队列')
     await waitForImmediate()
@@ -174,7 +176,7 @@ try {
   } finally {
     statsDatabase.prepare = originalStatsPrepare
   }
-  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, '恢复后保留任务应可继续 flush 完成')
   assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_0'), 1, '恢复后应写入失败前的第一个快照任务')
   assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_1'), 1, '恢复后应写入失败前的第二个快照任务')
@@ -252,6 +254,17 @@ function buildAccountUsageSnapshotJob(id: string, accountId: string, usedPercent
   }
 }
 
+function assertRecordMaintenanceCleanupRunsAsync(): void {
+  const queueSource = readFileSync(new URL('../../modules/record-maintenance/record-maintenance-queue.service.ts', import.meta.url), 'utf8')
+  assert(queueSource.includes('cleanupDeletedApiKeyRelatedRecordDataAsync'), '数据维护队列应使用 API Key 异步清理入口')
+  assert(queueSource.includes('cleanupDeletedAccountRelatedRecordDataAsync'), '数据维护队列应使用 AI 账户异步清理入口')
+  assert(!/cleanupDeleted(ApiKey|Account)RelatedRecordData\(\{/.test(queueSource), '数据维护队列不应回退到同步已删除记录清理入口')
+
+  const backgroundSource = readFileSync(new URL('../../modules/background/background-jobs.ts', import.meta.url), 'utf8')
+  assert(backgroundSource.includes('cleanupPendingDeletedApiKeyRecordTargetsAsync'), '后台 API Key 清理重试应使用异步入口')
+  assert(backgroundSource.includes('cleanupPendingDeletedAccountRecordTargetsAsync'), '后台 AI 账户清理重试应使用异步入口')
+}
+
 function seedAccount(accountId: string, systemAccountId: string): void {
   databaseModule.getBusinessDatabase()
     .prepare(`
@@ -271,8 +284,8 @@ function seedUsageRecord(id: string, createdAt: string): void {
   const location = usageRecordShards.usageRecordShardLocationForRecord(id, createdAt)
   usageRecordShards.getUsageRecordShardDatabase(location)
     .prepare(`
-      INSERT INTO usage_records (id, system_account_id, trace_id, stream, success, created_at)
-      VALUES (?, 'sys_admin', ?, 0, 1, ?)
+      INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, stream, success, created_at)
+      VALUES (?, 'sys_admin', ?, 'gateway', 0, 1, ?)
     `)
     .run(id, `trace_${id}`, createdAt)
 }

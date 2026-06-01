@@ -34,6 +34,8 @@ const auditCapture = await import('../../modules/gateway/audit-capture.service.j
 const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
 const auditSettings = await import('../../modules/audit-logs/audit-log-settings.js')
 
+assertAuditPayloadCleanupUsesAsyncFiles()
+
 const now = '2026-05-11T00:00:00.000Z'
 const repeatedBody = JSON.stringify({
   error: 'rate limited',
@@ -437,7 +439,7 @@ try {
 
   const retainedErrorGroupId = groups.items[0].id
   datasetDatabase.prepare('UPDATE audit_error_groups SET updated_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', retainedErrorGroupId)
-  repositories.cleanupAuditLogsByRetention({
+  await repositories.cleanupAuditLogsByRetentionAsync({
     successCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
     failureCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
     errorGroupCutoffUpdatedAt: '2001-01-01T00:00:00.000Z',
@@ -454,7 +456,7 @@ try {
   })
   assert.equal(payloadDetail?.bodyText, repeatedBody, 'payload 读取接口应透明解压并返回正文')
 
-  const deleted = repositories.cleanupAuditLogsByRetention({
+  const deleted = await repositories.cleanupAuditLogsByRetentionAsync({
     successCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
     failureCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
     errorGroupCutoffUpdatedAt: '2999-01-01T00:00:00.000Z',
@@ -489,6 +491,17 @@ function cleanupTemporaryAuditBlobs(): void {
     }
   } catch {
   }
+}
+
+function assertAuditPayloadCleanupUsesAsyncFiles(): void {
+  const payloadBlobSource = readFileSync(new URL('../../storage/audit-log-payload-blobs.ts', import.meta.url), 'utf8')
+  const auditRepositorySource = readFileSync(new URL('../../storage/audit-logs.repository.ts', import.meta.url), 'utf8')
+  const dataRetentionSource = readFileSync(new URL('../../modules/background/data-retention-cleanup.service.ts', import.meta.url), 'utf8')
+  assert(payloadBlobSource.includes('cleanupUnreferencedAuditPayloadBlobsAsync'), '审计 payload blob 应提供异步清理入口')
+  assert(payloadBlobSource.includes('auditBlobCleanupDeleteConcurrency'), '审计 payload blob 异步清理应限制单轮文件删除并发')
+  assert(payloadBlobSource.includes('await Promise.all(chunk.map((storageKey) => deleteBlobFileAsync(storageKey)))'), '审计 payload blob 异步清理应使用异步文件删除，不能批量 unlinkSync')
+  assert(auditRepositorySource.includes('cleanupAuditLogsByRetentionAsync'), '审计日志保留清理应提供异步入口')
+  assert(dataRetentionSource.includes('cleanupAuditLogsByRetentionAsync'), '数据保留 worker 应调用审计日志异步保留清理入口')
 }
 
 function finalizeSuccessfulRequest(traceId: string): void {
