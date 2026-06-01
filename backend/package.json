@@ -37,6 +37,7 @@
     "test:account-priority-field-contract": "tsx src/scripts/regression/account-priority-field-contract-regression.ts",
     "test:account-list-visible": "tsx src/scripts/regression/account-list-visible-regression.ts",
     "test:account-options-lightweight": "tsx src/scripts/regression/account-options-lightweight-regression.ts",
+    "test:account-identity-fingerprint": "tsx src/scripts/regression/account-identity-fingerprint-regression.ts",
     "test:group-options-lightweight": "tsx src/scripts/regression/group-options-lightweight-regression.ts",
     "test:default-group-current-contract": "tsx src/scripts/regression/default-group-current-contract-regression.ts",
     "test:group-scheduling-policy": "tsx src/scripts/regression/group-scheduling-policy-regression.ts",

@@ -449,6 +449,11 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
         description: '读取公开接口接入边界和可用指标。'
       },
       {
+        method: 'GET',
+        path: '/__aipublic__/account/list',
+        description: '分页读取指定系统用户下的账号脱敏摘要。'
+      },
+      {
         method: 'POST',
         path: '/__aipublic__/account/add',
         description: '新增账号到指定系统用户和分组。'
@@ -464,6 +469,11 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
         description: '删除指定系统用户和分组内的账号。'
       },
       {
+        method: 'GET',
+        path: '/__aipublic__/group/list',
+        description: '分页读取指定系统用户下的分组脱敏摘要。'
+      },
+      {
         method: 'POST',
         path: '/__aipublic__/group/add',
         description: '新增指定系统用户下的分组。'
@@ -477,6 +487,11 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
         method: 'POST',
         path: '/__aipublic__/group/del',
         description: '删除指定系统用户下的分组。'
+      },
+      {
+        method: 'GET',
+        path: '/__aipublic__/api-key/list',
+        description: '分页读取指定系统用户下的 API Key 脱敏摘要。'
       },
       {
         method: 'POST',
@@ -500,7 +515,7 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
         'IP 维度请求数、Token、缓存、成本、活跃天数和速度指标聚合',
         '账号维度实际请求数、Token、缓存、成本、活跃天数和速度指标聚合',
         '基于 IP 聚合表的消耗排行便利视图',
-        '分组、API Key 和账号的受控新增、修改与删除入口'
+        '分组、API Key 和账号的受控脱敏列表、新增、修改与删除入口'
       ],
       notProvided: [
         '公益站用户维度排行榜快照',

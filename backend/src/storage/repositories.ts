@@ -161,7 +161,7 @@ export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulab
 
 export class DuplicateAccountCredentialError extends Error {
   constructor() {
-    super('账户凭据已被其他账户使用，不能重复添加')
+    super('同一上游站点下账户凭据已被其他账户使用，不能重复添加')
     this.name = 'DuplicateAccountCredentialError'
   }
 }

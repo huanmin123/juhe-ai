@@ -55,6 +55,7 @@ async function runChild(): Promise<void> {
   } = await import('../../storage/external-integration-source.repository.js')
   const {
     createAccount,
+    createGroup,
     findSystemAccountByUsername,
     getOperationLogDetail,
     listOperationLogs,
@@ -136,7 +137,7 @@ async function runChild(): Promise<void> {
     scopes: [externalIntegrationAccountPushScope]
   })
   seedClientIpUsageWindow(clientIpStats, usageStatsHelpers, getStatsDatabase)
-  const seededUsageAccount = seedAccountUsageWindow(createAccount, usageStatsHelpers, getStatsDatabase)
+  const seededUsageAccount = seedAccountUsageWindow(createAccount, createGroup, usageStatsHelpers, getStatsDatabase)
 
   const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' })
   const server = await listen(app)
@@ -276,7 +277,12 @@ async function runChild(): Promise<void> {
     assert.equal(accessInfo.body.data.dataDimension, 'client_ip')
     assert.deepEqual(accessInfo.body.data.supportedDimensions, ['client_ip', 'account'])
     assert.deepEqual(accessInfo.body.data.supportedRanges, ['today', 'last7d', 'last31d'], '接入信息只能声明后台已维护的固定窗口')
+    const accessInfoPaths = accessInfo.body.data.endpoints.map((endpoint: any) => endpoint.path)
+    assert(accessInfoPaths.includes('/__aipublic__/group/list'), '接入信息应声明公开分组列表接口')
+    assert(accessInfoPaths.includes('/__aipublic__/api-key/list'), '接入信息应声明公开 API Key 列表接口')
+    assert(accessInfoPaths.includes('/__aipublic__/account/list'), '接入信息应声明公开账号列表接口')
     assert(accessInfo.body.data.boundary.provides.includes('账号维度实际请求数、Token、缓存、成本、活跃天数和速度指标聚合'), '接入信息应声明账号实际用量事实')
+    assert(accessInfo.body.data.boundary.provides.includes('分组、API Key 和账号的受控脱敏列表、新增、修改与删除入口'), '接入信息应声明资源列表和写入入口')
     assert(accessInfo.body.data.boundary.notProvided.includes('公益站用户维度排行榜快照'), '接入信息应明确公益站业务快照不由 sub2api-lite 提供')
 
     const accountAddNoScope = await requestJson(baseUrl, '/__aipublic__/account/add', {
@@ -306,7 +312,9 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
+      providerCode: 'openai',
       name: '公益站测试账号',
+      type: 'api_key',
       baseUrl: 'https://push.example/v1',
       apiKey: 'sk-public-push-regression-mock',
       supportedModels: ['gpt-5.5']
@@ -320,6 +328,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
+      providerCode: 'openai',
       accountId: 'acc_mock_delete',
       name: '公益站测试账号',
       externalId: 'account-registration:mock-delete'
@@ -467,6 +476,16 @@ async function runChild(): Promise<void> {
     assert.equal(addLogDetail.metadata?.sourceRefId, accountWriteSource.id, '操作日志详情应记录来源系统 ID')
     assert.equal(addLogDetail.metadata?.tokenPrefix, accountWriteToken.slice(0, 12), '操作日志详情应记录来源 token 前缀')
 
+    const accountList = await requestJson(baseUrl, `/__aipublic__/account/list?targetUsername=huanmin&targetGroupName=${encodeURIComponent('福利')}&providerCode=openai&pageSize=10`, {
+      Authorization: `Bearer ${accountWriteToken}`
+    })
+    assert.equal(accountList.status, 200)
+    assert.equal(accountList.body.data.source, 'stats')
+    const listedAccount = accountList.body.data.items.find((item: any) => item.id === accountAdd.body.data.account.id)
+    assert(listedAccount, '公开账号列表应能按目标用户和分组返回刚新增的账号')
+    assert.equal(listedAccount.externalId, 'account-registration:1001', '公开账号列表应返回结构化 externalId 便于外部系统对账')
+    assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'credentials'), false, '公开账号列表不能返回上游凭据')
+
     const accountUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
@@ -583,6 +602,12 @@ async function runChild(): Promise<void> {
     assert.equal(publicGroupAdd.body.data.action, 'created')
     const publicGroupId = publicGroupAdd.body.data.group.id as string
 
+    const publicGroupList = await requestJson(baseUrl, `/__aipublic__/group/list?targetUsername=public_control_user&providerCode=openai&keyword=${encodeURIComponent('公开接口控制')}`, {
+      Authorization: `Bearer ${accountWriteToken}`
+    })
+    assert.equal(publicGroupList.status, 200)
+    assert(publicGroupList.body.data.items.some((item: any) => item.id === publicGroupId), '公开分组列表应返回刚新增的分组')
+
     const publicGroupUpdate = await requestJson(baseUrl, '/__aipublic__/group/update', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
@@ -616,6 +641,14 @@ async function runChild(): Promise<void> {
     assert.equal(typeof publicApiKeyAdd.body.data.apiKey.key, 'string', 'API Key 新增响应应只在创建时返回明文密钥')
     assert.equal(publicApiKeyAdd.body.data.apiKey.availabilitySchedule?.enabled, true, '公开 API Key 新增应写入并回显自动启停计划')
     const publicApiKeyId = publicApiKeyAdd.body.data.apiKey.id as string
+
+    const publicApiKeyList = await requestJson(baseUrl, `/__aipublic__/api-key/list?targetUsername=public_control_user&groupId=${encodeURIComponent(publicGroupId)}`, {
+      Authorization: `Bearer ${accountWriteToken}`
+    })
+    assert.equal(publicApiKeyList.status, 200)
+    const listedApiKey = publicApiKeyList.body.data.items.find((item: any) => item.id === publicApiKeyId)
+    assert(listedApiKey, '公开 API Key 列表应按绑定分组返回刚新增的 Key')
+    assert.equal(Object.prototype.hasOwnProperty.call(listedApiKey, 'key'), false, '公开 API Key 列表不能返回明文密钥')
 
     const publicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -681,18 +714,25 @@ async function runChild(): Promise<void> {
     closeStorageDatabases()
   }
 
-  console.log('外部来源系统鉴权和公开接口回归通过：公开前缀、Bearer token、测试 token mock、权限校验、停用来源、限频、后台登录边界、IP 聚合读取、账号新增/修改/删除、分组和 API Key 新增/修改/删除均符合预期')
+  console.log('外部来源系统鉴权和公开接口回归通过：公开前缀、Bearer token、测试 token mock、权限校验、停用来源、限频、后台登录边界、IP 聚合读取、账号新增/列表/修改/删除、分组和 API Key 新增/列表/修改/删除均符合预期')
 }
 
 function seedAccountUsageWindow(
   createAccount: typeof import('../../storage/repositories.js')['createAccount'],
+  createGroup: typeof import('../../storage/repositories.js')['createGroup'],
   usageStatsHelpers: typeof import('../../storage/usage-stats-helpers.js'),
   getStatsDatabase: typeof import('../../storage/database.js')['getStatsDatabase']
 ): ReturnType<typeof createAccount> {
+  const group = createGroup({
+    providerCode: 'openai',
+    name: '公益站贡献统计分组',
+    enabled: true
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
   const account = createAccount({
     providerCode: 'openai',
     name: '公益站贡献统计账号',
     type: 'api_key',
+    groupId: group.id,
     credentials: {
       base_url: 'https://usage.example/v1',
       api_key: 'sk-public-account-usage-regression'

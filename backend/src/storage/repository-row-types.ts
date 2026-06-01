@@ -22,6 +22,8 @@ export interface AccountRow {
   notes: string | null
   type: AccountType
   status: AccountStatus
+  credential_fingerprint: string | null
+  account_identity_fingerprint: string | null
   credential_mask: string
   credentials_encrypted: string
   oauth_access_token_expires_at?: string | null

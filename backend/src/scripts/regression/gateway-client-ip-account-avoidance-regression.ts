@@ -396,7 +396,7 @@ async function requestChatCompletion(baseUrl: string, apiKey: string, clientIp: 
 }
 
 function assertAccountsStillActive(seeded: SeededGateway): void {
-  const accounts = repositories.listAccounts()
+  const accounts = repositories.listAccounts(access)
   for (const accountId of [seeded.firstAccountId, seeded.secondAccountId]) {
     const account = accounts.find((item) => item.id === accountId)
     assert(account, `账号 ${accountId} 不存在`)

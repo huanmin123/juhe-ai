@@ -22,12 +22,18 @@ import {
   deletePublicGroup,
   mockPublicApiKeyAdd,
   mockPublicApiKeyDelete,
+  mockPublicApiKeyList,
   mockPublicApiKeyUpdate,
   mockPublicGroupAdd,
   mockPublicGroupDelete,
+  mockPublicGroupList,
   mockPublicGroupUpdate,
   mockPublicWelfareAccountDelete,
+  mockPublicWelfareAccountList,
   mockPublicWelfareAccountPush,
+  listPublicApiKeys,
+  listPublicGroups,
+  listPublicWelfareAccounts,
   updatePublicWelfareAccount,
   updatePublicApiKey,
   updatePublicGroup,
@@ -79,9 +85,8 @@ const consumptionRankingQuerySchema = z.object({
   metric: z.enum(['totalTokens', 'totalCost', 'requestCount']).optional()
 })
 const providerCodeSchema = z.string({ required_error: '供应商编码不能为空' }).trim().min(1, '供应商编码不能为空').max(60)
-const publicAccountTypeSchema = z.enum(['api_key'], {
-  required_error: '账号类型不能为空',
-  invalid_type_error: '公开账号接口仅支持 API Key 账户'
+const publicAccountTypeSchema = z.custom<'api_key'>((value) => value === 'api_key', {
+  message: '公开账号接口仅支持 API Key 账户'
 })
 const accountPushSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
@@ -115,6 +120,18 @@ const accountDeleteSchema = z.object({
     })
   }
 })
+const accountListQuerySchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  targetGroupName: z.string().trim().min(1).max(80).optional(),
+  providerCode: z.string().trim().min(1).max(60).optional(),
+  groupId: z.string().trim().min(1).max(120).optional(),
+  keyword: z.string().trim().max(120).optional(),
+  type: z.string().trim().max(60).optional(),
+  status: z.string().trim().max(200).optional(),
+  schedulable: z.enum(['all', 'enabled', 'disabled', 'cooling']).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional()
+}).strict()
 const groupAddSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetDisplayName: z.string().trim().min(1).max(80).optional(),
@@ -152,6 +169,13 @@ const groupDeleteSchema = z.object({
     })
   }
 })
+const groupListQuerySchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  providerCode: z.string().trim().min(1).max(60).optional(),
+  keyword: z.string().trim().max(80).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional()
+}).strict()
 const apiKeyGroupBindingSchema = z.object({
   groupId: z.string().trim().min(1).max(120),
   priority: z.number().int().positive().optional(),
@@ -193,6 +217,14 @@ const apiKeyDeleteSchema = z.object({
     })
   }
 })
+const apiKeyListQuerySchema = z.object({
+  targetUsername: z.string().trim().min(2).max(80),
+  keyword: z.string().trim().max(120).optional(),
+  status: z.enum(['active', 'disabled', 'all']).optional(),
+  groupId: z.string().trim().min(1).max(120).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional()
+}).strict()
 
 externalIntegrationsRouter.get(
   '/demo/source-auth',
@@ -276,6 +308,75 @@ externalIntegrationsRouter.get(
   (_req, res) => {
     const context = getExternalIntegrationSourceContext(res)
     res.json(ok(getPublicAccessInfo({ mock: context.isTestToken })))
+  }
+)
+
+externalIntegrationsRouter.get(
+  '/group/list',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = groupListQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '分组列表参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicGroupList(parsed.data)))
+      return
+    }
+    try {
+      res.json(ok(listPublicGroups(parsed.data)))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '分组列表读取失败'
+      res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.get(
+  '/api-key/list',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = apiKeyListQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 列表参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicApiKeyList(parsed.data)))
+      return
+    }
+    try {
+      res.json(ok(listPublicApiKeys(parsed.data)))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'API Key 列表读取失败'
+      res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
+    }
+  }
+)
+
+externalIntegrationsRouter.get(
+  '/account/list',
+  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  (req, res) => {
+    const parsed = accountListQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号列表参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    if (context.isTestToken) {
+      res.json(ok(mockPublicWelfareAccountList(parsed.data)))
+      return
+    }
+    try {
+      res.json(ok(listPublicWelfareAccounts(parsed.data)))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '账号列表读取失败'
+      res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
+    }
   }
 )
 

@@ -15,11 +15,10 @@ import {
   findGroupSummary,
   findSystemAccountByUsername,
   listAccountsPage,
-  listApiKeys,
   listApiKeysPage,
+  listGroupsPage,
   listGroupOptions,
   listProviders,
-  setAccountGroup,
   updateAccount,
   updateApiKey,
   updateGroup
@@ -92,6 +91,36 @@ export interface PublicAccountDeleteResponse {
   externalId?: string
 }
 
+export interface PublicAccountListInput {
+  targetUsername: string
+  targetGroupName?: string
+  providerCode?: string
+  groupId?: string
+  keyword?: string
+  type?: string
+  status?: string
+  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+  page?: number
+  pageSize?: number
+}
+
+export type PublicAccountListItem = PublicAccountPushResponse['account'] & {
+  concurrencyLimit: number
+  priority: number
+  externalId?: string
+}
+
+export interface PublicAccountListResponse {
+  source: 'stats' | 'mock'
+  generatedAt: string
+  target: Omit<PublicAccountPushResponse['target'], 'groupId' | 'groupName' | 'groupCreated'>
+  page: number
+  pageSize: number
+  pageUpperBound: number
+  hasMore: boolean
+  items: PublicAccountListItem[]
+}
+
 export interface PublicGroupAddInput {
   targetUsername: string
   targetDisplayName?: string
@@ -125,6 +154,25 @@ export interface PublicGroupResponse {
   action: 'created' | 'existing' | 'updated' | 'deleted' | 'not_found' | 'mock'
   target: Omit<PublicAccountPushResponse['target'], 'groupId' | 'groupName' | 'groupCreated'>
   group: PublicGroupSummary | null
+}
+
+export interface PublicGroupListInput {
+  targetUsername: string
+  keyword?: string
+  providerCode?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface PublicGroupListResponse {
+  source: 'stats' | 'mock'
+  generatedAt: string
+  target: PublicGroupResponse['target']
+  page: number
+  pageSize: number
+  pageUpperBound: number
+  hasMore: boolean
+  items: PublicGroupSummary[]
 }
 
 export interface PublicApiKeyAddInput {
@@ -164,6 +212,26 @@ export interface PublicApiKeyResponse {
   action: 'created' | 'updated' | 'deleted' | 'not_found' | 'mock'
   target: Omit<PublicAccountPushResponse['target'], 'groupId' | 'groupName' | 'groupCreated'>
   apiKey: PublicApiKeySummary | null
+}
+
+export interface PublicApiKeyListInput {
+  targetUsername: string
+  keyword?: string
+  status?: 'active' | 'disabled' | 'all'
+  groupId?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface PublicApiKeyListResponse {
+  source: 'stats' | 'mock'
+  generatedAt: string
+  target: PublicApiKeyResponse['target']
+  page: number
+  pageSize: number
+  pageUpperBound: number
+  hasMore: boolean
+  items: PublicApiKeySummary[]
 }
 
 interface PublicGroupSummary {
@@ -374,6 +442,41 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
   }
 }
 
+export function listPublicWelfareAccounts(input: PublicAccountListInput): PublicAccountListResponse {
+  const target = requirePublicTarget(input.targetUsername)
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const providerCode = normalizedText(input.providerCode)
+  const groupId = resolveAccountListGroupId(access, {
+    providerCode,
+    groupId: input.groupId,
+    targetGroupName: input.targetGroupName
+  })
+  const page = listAccountsPage(access, {
+    page: input.page,
+    pageSize: input.pageSize,
+    keyword: normalizedText(input.keyword),
+    providerCode,
+    groupId,
+    type: normalizedText(input.type),
+    status: normalizedText(input.status),
+    schedulable: input.schedulable
+  })
+  const externalIdsByAccountId = loadExternalIdsByAccountIds(target.account.id, page.items.map((item) => item.id))
+  return publicAccountListResponse(target, {
+    page: page.page,
+    pageSize: page.pageSize,
+    pageUpperBound: page.total,
+    hasMore: page.hasMore,
+    items: page.items.map((account) => ({
+      ...sanitizeAccount(account),
+      concurrencyLimit: account.concurrencyLimit,
+      priority: account.priority,
+      externalId: externalIdsByAccountId.get(account.id)
+    }))
+  })
+}
+
 export async function addPublicGroup(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
   const providerCode = requiredProviderCode(input.providerCode)
   assertProviderEnabled(providerCode)
@@ -436,6 +539,25 @@ export function deletePublicGroup(input: PublicGroupDeleteInput): PublicGroupRes
   return publicGroupResponse(result.deleted ? 'deleted' : 'not_found', target, result.deleted ? deletedGroup : null)
 }
 
+export function listPublicGroups(input: PublicGroupListInput): PublicGroupListResponse {
+  const target = requirePublicTarget(input.targetUsername)
+  assertTargetActive(target.account)
+  const page = listGroupsPage(targetAccess(target.account.id), {
+    page: input.page,
+    pageSize: input.pageSize,
+    keyword: normalizedText(input.keyword),
+    providerCode: normalizedText(input.providerCode),
+    manageableOnly: true
+  })
+  return publicGroupListResponse(target, {
+    page: page.page,
+    pageSize: page.pageSize,
+    pageUpperBound: page.total,
+    hasMore: page.hasMore,
+    items: page.items.map(sanitizeGroup)
+  })
+}
+
 export function addPublicApiKey(input: PublicApiKeyAddInput): PublicApiKeyResponse {
   const target = findPublicTarget(input.targetUsername)
   if (!target) {
@@ -480,6 +602,25 @@ export function deletePublicApiKey(input: PublicApiKeyDeleteInput): PublicApiKey
   return publicApiKeyResponse(result.deleted ? 'deleted' : 'not_found', target, result.deleted ? deletedApiKey : null)
 }
 
+export function listPublicApiKeys(input: PublicApiKeyListInput): PublicApiKeyListResponse {
+  const target = requirePublicTarget(input.targetUsername)
+  assertTargetActive(target.account)
+  const page = listApiKeysPage(targetAccess(target.account.id), {
+    page: input.page,
+    pageSize: input.pageSize,
+    keyword: normalizedText(input.keyword),
+    status: input.status,
+    groupId: normalizedText(input.groupId)
+  })
+  return publicApiKeyListResponse(target, {
+    page: page.page,
+    pageSize: page.pageSize,
+    pageUpperBound: page.total,
+    hasMore: page.hasMore,
+    items: page.items.map((apiKey) => sanitizeApiKey(apiKey))
+  })
+}
+
 export function mockPublicWelfareAccountPush(input: PublicAccountPushInput): PublicAccountPushResponse {
   const generatedAt = new Date().toISOString()
   const username = normalizedText(input.targetUsername) || 'huanmin'
@@ -510,6 +651,42 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput): Pub
       schedulable: input.status !== 'disabled'
     },
     externalId: normalizedText(input.externalId)
+  }
+}
+
+export function mockPublicWelfareAccountList(input: PublicAccountListInput): PublicAccountListResponse {
+  const username = normalizedText(input.targetUsername) || 'huanmin'
+  const groupName = normalizedText(input.targetGroupName) || '福利'
+  const providerCode = normalizedText(input.providerCode) || 'mock_provider'
+  return {
+    source: 'mock',
+    generatedAt: new Date().toISOString(),
+    target: {
+      username,
+      displayName: username,
+      systemAccountId: 'mock_system_account_huanmin',
+      created: false
+    },
+    page: input.page ?? 1,
+    pageSize: input.pageSize ?? 20,
+    pageUpperBound: 1,
+    hasMore: false,
+    items: [
+      {
+        id: 'mock_account_public_welfare',
+        name: normalizedText(input.keyword) || '公益站测试账号',
+        providerCode,
+        type: 'api_key',
+        status: 'active',
+        supportedModels: ['gpt-5.5'],
+        boundGroupId: normalizedText(input.groupId) || 'mock_group_welfare',
+        boundGroupName: groupName,
+        schedulable: true,
+        concurrencyLimit: 20,
+        priority: 0,
+        externalId: 'account-registration:mock'
+      }
+    ]
   }
 }
 
@@ -581,6 +758,34 @@ export function mockPublicGroupDelete(input: PublicGroupDeleteInput): PublicGrou
   })
 }
 
+export function mockPublicGroupList(input: PublicGroupListInput): PublicGroupListResponse {
+  const username = normalizedText(input.targetUsername) || 'huanmin'
+  return {
+    source: 'mock',
+    generatedAt: new Date().toISOString(),
+    target: {
+      username,
+      displayName: username,
+      systemAccountId: 'mock_system_account_huanmin',
+      created: false
+    },
+    page: input.page ?? 1,
+    pageSize: input.pageSize ?? 20,
+    pageUpperBound: 1,
+    hasMore: false,
+    items: [
+      {
+        id: 'mock_group_public',
+        name: normalizedText(input.keyword) || '公开接口分组',
+        providerCode: normalizedText(input.providerCode) || 'mock_provider',
+        enabled: true,
+        groupType: 'personal',
+        isDefault: false
+      }
+    ]
+  }
+}
+
 export function mockPublicApiKeyAdd(input: PublicApiKeyAddInput): PublicApiKeyResponse {
   const groupBindings = mockPublicApiKeyGroupBindings(input.groupBindings)
   return publicMockApiKeyResponse('mock', input.targetUsername, {
@@ -593,6 +798,34 @@ export function mockPublicApiKeyAdd(input: PublicApiKeyAddInput): PublicApiKeyRe
     groupBindings,
     expiresAt: normalizedText(input.expiresAt)
   })
+}
+
+export function mockPublicApiKeyList(input: PublicApiKeyListInput): PublicApiKeyListResponse {
+  const username = normalizedText(input.targetUsername) || 'huanmin'
+  return {
+    source: 'mock',
+    generatedAt: new Date().toISOString(),
+    target: {
+      username,
+      displayName: username,
+      systemAccountId: 'mock_system_account_huanmin',
+      created: false
+    },
+    page: input.page ?? 1,
+    pageSize: input.pageSize ?? 20,
+    pageUpperBound: 1,
+    hasMore: false,
+    items: [
+      {
+        id: normalizedText(input.groupId) ? 'mock_api_key_public_bound' : 'mock_api_key_public',
+        name: normalizedText(input.keyword) || '公开接口 API Key',
+        keyPrefix: 'juis_mock',
+        status: input.status === 'disabled' ? 'disabled' : 'active',
+        groupRouteStrategy: 'priority_failover',
+        groupBindings: mockPublicApiKeyGroupBindings(input.groupId ? [{ groupId: input.groupId }] : undefined)
+      }
+    ]
+  }
 }
 
 export function mockPublicApiKeyUpdate(input: PublicApiKeyUpdateInput): PublicApiKeyResponse {
@@ -661,12 +894,32 @@ function findPublicTarget(usernameInput: string): ResolvedTarget | undefined {
   return account ? { account, created: false } : undefined
 }
 
+function requirePublicTarget(usernameInput: string): ResolvedTarget {
+  const target = findPublicTarget(usernameInput)
+  if (!target) {
+    throw new Error(`目标用户不存在：${normalizedText(usernameInput) ?? ''}`)
+  }
+  return target
+}
+
 function publicTargetSummary(target: ResolvedTarget): PublicGroupResponse['target'] {
   return {
     username: target.account.username,
     displayName: target.account.displayName,
     systemAccountId: target.account.id,
     created: target.created
+  }
+}
+
+function publicAccountListResponse(
+  target: ResolvedTarget,
+  page: Pick<PublicAccountListResponse, 'page' | 'pageSize' | 'pageUpperBound' | 'hasMore' | 'items'>
+): PublicAccountListResponse {
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    target: publicTargetSummary(target),
+    ...page
   }
 }
 
@@ -677,6 +930,18 @@ function publicGroupResponse(action: PublicGroupResponse['action'], target: Reso
     action,
     target: publicTargetSummary(target),
     group
+  }
+}
+
+function publicGroupListResponse(
+  target: ResolvedTarget,
+  page: Pick<PublicGroupListResponse, 'page' | 'pageSize' | 'pageUpperBound' | 'hasMore' | 'items'>
+): PublicGroupListResponse {
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    target: publicTargetSummary(target),
+    ...page
   }
 }
 
@@ -693,6 +958,18 @@ function publicGroupNotFoundResponse(usernameInput: string): PublicGroupResponse
       created: false
     },
     group: null
+  }
+}
+
+function publicApiKeyListResponse(
+  target: ResolvedTarget,
+  page: Pick<PublicApiKeyListResponse, 'page' | 'pageSize' | 'pageUpperBound' | 'hasMore' | 'items'>
+): PublicApiKeyListResponse {
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    target: publicTargetSummary(target),
+    ...page
   }
 }
 
@@ -768,6 +1045,25 @@ function resolvePublicGroup(access: TargetAccess, input: { groupId?: string; nam
     return undefined
   }
   return findExistingTargetGroup({ access, providerCode, groupName: name })
+}
+
+function resolveAccountListGroupId(
+  access: TargetAccess,
+  input: { providerCode?: string; groupId?: string; targetGroupName?: string }
+): string | undefined {
+  const groupId = normalizedText(input.groupId)
+  if (groupId) {
+    return groupId
+  }
+  const groupName = normalizedText(input.targetGroupName)
+  if (!groupName) {
+    return undefined
+  }
+  const providerCode = normalizedText(input.providerCode)
+  if (!providerCode) {
+    throw new Error('按目标分组名称查询账号时必须提供 providerCode')
+  }
+  return findExistingTargetGroup({ access, providerCode, groupName })?.id ?? '__public_group_not_found__'
 }
 
 function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUpdateInput, partial = false): Record<string, unknown> {
@@ -968,6 +1264,28 @@ function findTargetAccountById(input: {
     input.groupId
   ) as { id?: string } | undefined
   return row?.id ? findAccountSummary(row.id, input.access) : undefined
+}
+
+function loadExternalIdsByAccountIds(systemAccountId: string, accountIds: string[]): Map<string, string> {
+  const ids = [...new Set(accountIds.filter(Boolean))]
+  const result = new Map<string, string>()
+  if (!ids.length) {
+    return result
+  }
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = getBusinessDatabase().prepare(`
+    SELECT account_id, external_id
+    FROM external_integration_account_push_records
+    WHERE system_account_id = ?
+      AND account_id IN (${placeholders})
+    ORDER BY updated_at DESC, id DESC
+  `).all(systemAccountId, ...ids) as Array<{ account_id: string; external_id: string }>
+  for (const row of rows) {
+    if (!result.has(row.account_id)) {
+      result.set(row.account_id, row.external_id)
+    }
+  }
+  return result
 }
 
 function upsertExternalAccountPushRecord(input: {

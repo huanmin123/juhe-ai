@@ -140,7 +140,8 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
     error_handling_rules: [{
       enabled: true,
       name: '测试 529 冷却',
-      status_codes: '529',
+      priority: 1,
+      status_codes: [529],
       action: 'temp_unschedulable',
       durationMinutes: 1
     }]

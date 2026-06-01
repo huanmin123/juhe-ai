@@ -394,6 +394,114 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         }
       },
       {
+        id: 'group-list',
+        name: '分组列表',
+        summary: '分页读取指定系统用户名下的分组，用于外部来源系统对账和找回分组 ID。',
+        status: 'available',
+        method: 'GET',
+        path: '/__aipublic__/group/list',
+        headers: [authHeader],
+        query: [
+          { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+          { name: 'providerCode', type: 'string', required: false, description: '供应商编码筛选。', example: 'openai' },
+          { name: 'keyword', type: 'string', required: false, description: '按分组名称或供应商编码精确 / 前缀筛选。', example: '福利' },
+          { name: 'page', type: 'number', required: false, description: '分页页码，默认 1。', example: 1 },
+          { name: 'pageSize', type: 'number', required: false, description: '每页数量，范围 1 到 100。', example: 20 }
+        ],
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            page: 1,
+            pageSize: 20,
+            pageUpperBound: 1,
+            hasMore: false,
+            items: [{ id: 'grp_xxx', name: '福利', providerCode: 'openai', enabled: true, groupType: 'personal', isDefault: false }]
+          }
+        }
+      },
+      {
+        id: 'api-key-list',
+        name: 'API Key 列表',
+        summary: '分页读取指定系统用户名下的 API Key 摘要和分组绑定；不会返回 API Key 明文。',
+        status: 'available',
+        method: 'GET',
+        path: '/__aipublic__/api-key/list',
+        headers: [authHeader],
+        query: [
+          { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+          { name: 'keyword', type: 'string', required: false, description: '按 API Key 名称精确 / 前缀筛选。', example: '公益站访问密钥' },
+          { name: 'status', type: 'string', required: false, description: '状态筛选：active、disabled 或 all。', example: 'active' },
+          { name: 'groupId', type: 'string', required: false, description: '按任意绑定分组筛选。', example: 'grp_xxx' },
+          { name: 'page', type: 'number', required: false, description: '分页页码，默认 1。', example: 1 },
+          { name: 'pageSize', type: 'number', required: false, description: '每页数量，范围 1 到 100。', example: 20 }
+        ],
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            page: 1,
+            pageSize: 20,
+            pageUpperBound: 1,
+            hasMore: false,
+            items: [{
+              id: 'key_xxx',
+              name: '公益站访问密钥',
+              keyPrefix: 'juis_xxx',
+              status: 'active',
+              groupRouteStrategy: 'priority_failover',
+              groupBindings: [{ groupId: 'grp_xxx', groupName: '福利', priority: 1, weight: 1, status: 'active' }]
+            }]
+          }
+        }
+      },
+      {
+        id: 'account-list',
+        name: '账号列表',
+        summary: '分页读取指定系统用户名下的 AI 账户脱敏摘要，支持按分组、供应商、状态和名称筛选。',
+        status: 'available',
+        method: 'GET',
+        path: '/__aipublic__/account/list',
+        headers: [authHeader],
+        query: [
+          { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+          { name: 'targetGroupName', type: 'string', required: false, description: '目标分组名称；提供该字段时必须同时提供 providerCode。', example: '福利' },
+          { name: 'providerCode', type: 'string', required: false, description: '供应商编码筛选。', example: 'openai' },
+          { name: 'groupId', type: 'string', required: false, description: '目标分组 ID；优先于 targetGroupName。', example: 'grp_xxx' },
+          { name: 'keyword', type: 'string', required: false, description: '按账号名称精确 / 前缀筛选。', example: '公益站' },
+          { name: 'status', type: 'string', required: false, description: '账号状态，支持逗号分隔多个状态。', example: 'active,disabled' },
+          { name: 'page', type: 'number', required: false, description: '分页页码，默认 1。', example: 1 },
+          { name: 'pageSize', type: 'number', required: false, description: '每页数量，范围 1 到 100。', example: 20 }
+        ],
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
+            page: 1,
+            pageSize: 20,
+            pageUpperBound: 1,
+            hasMore: false,
+            items: [{
+              id: 'acc_xxx',
+              name: '公益站-青芽主通道',
+              providerCode: 'openai',
+              type: 'api_key',
+              status: 'active',
+              supportedModels: ['gpt-5.5'],
+              boundGroupId: 'grp_xxx',
+              boundGroupName: '福利',
+              schedulable: true,
+              concurrencyLimit: 20,
+              priority: 0,
+              externalId: 'account-registration:12'
+            }]
+          }
+        }
+      },
+      {
         id: 'group-add',
         name: '分组新增',
         summary: '在指定系统用户下新增账号分组；同名分组已存在时按幂等成功返回既有分组。',
