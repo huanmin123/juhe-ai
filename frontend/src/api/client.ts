@@ -48,6 +48,7 @@ import type {
   ExternalIntegrationSourceTokenSummary,
   CreatedExternalIntegrationSourceToken,
   GlobalSettings,
+  SystemSettingsPatch,
   GroupListResult,
   GroupOptionSummary,
   GroupSummary,
@@ -266,7 +267,6 @@ export interface AuditFullBodyCaptureUpdatePayload {
 }
 
 export interface RuntimeLogGrepParams {
-  keyword?: string[]
   keywords?: string
   startAt?: string
   endAt?: string
@@ -812,7 +812,7 @@ export const api = {
     global: () => unwrap<GlobalSettings>(http.get('/settings/global')),
     updateGlobal: (payload: GlobalSettings) => unwrap<GlobalSettings>(http.patch('/settings/global', payload)),
     get: () => unwrap<SystemSettings>(http.get('/settings')),
-    update: (payload: SystemSettings) => unwrap<SystemSettings>(http.patch('/settings', payload))
+    update: (payload: SystemSettingsPatch) => unwrap<SystemSettings>(http.patch('/settings', payload))
   }
 }
 

@@ -10,6 +10,7 @@ import { readAuditLogSettings } from './audit-log-settings.js'
 
 const auditLogRetryPolicy = fixedRetryPolicy('audit_log_queue_flush', 5000)
 const auditLogFlushBatchMaxBytes = 8 * 1024 * 1024
+const auditLogShutdownFlushMaxBatches = 1
 const auditLogEstimateMaxBytes = 64 * 1024 * 1024 + 1
 const auditLogEstimateMaxStringChars = 16 * 1024
 
@@ -23,6 +24,8 @@ let droppedOversizeCount = 0
 let pendingBytes = 0
 let lastFlushSuccessAt: string | undefined
 let lastFlushError: string | undefined
+let asyncFlushPromise: Promise<void> | undefined
+let shutdownHooksInstalled = false
 
 interface QueuedAuditLog {
   input: AuditLogInput
@@ -33,6 +36,7 @@ interface QueuedAuditLog {
 interface AuditLogFlushOptions {
   drain?: boolean
   retryOnFailure?: boolean
+  maxBatches?: number
 }
 
 export interface AuditLogQueueRuntime {
@@ -153,21 +157,22 @@ export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
   flushing = true
   let shouldRetry = false
   let failed = false
+  let flushedBatches = 0
+  const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     const settings = readAuditLogSettings()
     do {
-      const batch = takeAuditLogFlushBatch(settings.batchSize, auditLogFlushBatchMaxBytes)
+      const { batch, bytes: batchBytes } = peekAuditLogFlushBatch(settings.batchSize, auditLogFlushBatchMaxBytes)
       if (batch.length === 0) break
+      flushedBatches += 1
 
       try {
         createAuditLogsBatch(batch.map((item) => item.input))
+        removeAuditLogFlushBatch(batch.length, batchBytes)
         lastFlushSuccessAt = nowIso()
         lastFlushError = undefined
       } catch (error) {
         failed = true
-        pendingAuditLogs = [...batch, ...pendingAuditLogs]
-        pendingBytes += sumQueuedBytes(batch)
-        enforceAuditQueueLimits(settings)
         lastFlushError = error instanceof Error ? error.message : String(error)
         logger.error(errorLogFields(error, {
           event: 'audit_log_queue_flush_failed',
@@ -178,7 +183,7 @@ export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
         shouldRetry = options.retryOnFailure !== false
         break
       }
-    } while (options.drain && pendingAuditLogs.length > 0)
+    } while (options.drain && pendingAuditLogs.length > 0 && flushedBatches < maxBatches)
   } finally {
     flushing = false
   }
@@ -189,6 +194,24 @@ export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
 }
 
 export async function flushAuditLogQueueAsync(options: AuditLogFlushOptions = {}): Promise<void> {
+  if (asyncFlushPromise) {
+    await asyncFlushPromise
+    if (!options.drain || pendingAuditLogs.length === 0) {
+      return
+    }
+  }
+  const promise = flushAuditLogQueueAsyncInner(options)
+  asyncFlushPromise = promise
+  try {
+    await promise
+  } finally {
+    if (asyncFlushPromise === promise) {
+      asyncFlushPromise = undefined
+    }
+  }
+}
+
+async function flushAuditLogQueueAsyncInner(options: AuditLogFlushOptions = {}): Promise<void> {
   if (runtimeConfig.processRole === 'server') {
     return
   }
@@ -202,21 +225,22 @@ export async function flushAuditLogQueueAsync(options: AuditLogFlushOptions = {}
   flushing = true
   let shouldRetry = false
   let failed = false
+  let flushedBatches = 0
+  const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     const settings = readAuditLogSettings()
     do {
-      const batch = takeAuditLogFlushBatch(settings.batchSize, auditLogFlushBatchMaxBytes)
+      const { batch, bytes: batchBytes } = peekAuditLogFlushBatch(settings.batchSize, auditLogFlushBatchMaxBytes)
       if (batch.length === 0) break
+      flushedBatches += 1
 
       try {
         await createAuditLogsBatchAsync(batch.map((item) => item.input))
+        removeAuditLogFlushBatch(batch.length, batchBytes)
         lastFlushSuccessAt = nowIso()
         lastFlushError = undefined
       } catch (error) {
         failed = true
-        pendingAuditLogs = [...batch, ...pendingAuditLogs]
-        pendingBytes += sumQueuedBytes(batch)
-        enforceAuditQueueLimits(settings)
         lastFlushError = error instanceof Error ? error.message : String(error)
         logger.error(errorLogFields(error, {
           event: 'audit_log_queue_flush_failed',
@@ -227,7 +251,7 @@ export async function flushAuditLogQueueAsync(options: AuditLogFlushOptions = {}
         shouldRetry = options.retryOnFailure !== false
         break
       }
-    } while (options.drain && pendingAuditLogs.length > 0)
+    } while (options.drain && pendingAuditLogs.length > 0 && flushedBatches < maxBatches)
   } finally {
     flushing = false
   }
@@ -239,6 +263,21 @@ export async function flushAuditLogQueueAsync(options: AuditLogFlushOptions = {}
 
 export function flushAllAuditLogQueue(): void {
   flushAuditLogQueue({ drain: true, retryOnFailure: false })
+}
+
+export async function flushAllAuditLogQueueAsync(): Promise<void> {
+  await flushAuditLogQueueAsync({ drain: true, retryOnFailure: false })
+}
+
+export function installAuditLogQueueShutdownHooks(): void {
+  if (shutdownHooksInstalled) {
+    return
+  }
+  shutdownHooksInstalled = true
+
+  process.once('beforeExit', () => {
+    void flushAuditLogQueueForShutdown()
+  })
 }
 
 export function getAuditLogQueueRuntime(): AuditLogQueueRuntime {
@@ -272,6 +311,20 @@ export function clearAuditLogQueueForTest(): void {
   droppedOversizeCount = 0
   lastFlushSuccessAt = undefined
   lastFlushError = undefined
+  asyncFlushPromise = undefined
+  shutdownHooksInstalled = false
+}
+
+export async function flushAuditLogQueueForShutdown(): Promise<void> {
+  try {
+    await flushAuditLogQueueAsync({ drain: true, retryOnFailure: false, maxBatches: auditLogShutdownFlushMaxBatches })
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'audit_log_queue_shutdown_flush_failed',
+      pendingCount: pendingAuditLogs.length,
+      pendingBytes
+    }), '审计日志队列退出前异步 flush 失败')
+  }
 }
 
 function enforceAuditQueueLimits(settings = readAuditLogSettings()): void {
@@ -285,7 +338,7 @@ function enforceAuditQueueLimits(settings = readAuditLogSettings()): void {
   }
 }
 
-function takeAuditLogFlushBatch(maxItems: number, maxBytes: number): QueuedAuditLog[] {
+function peekAuditLogFlushBatch(maxItems: number, maxBytes: number): { batch: QueuedAuditLog[]; bytes: number } {
   const itemLimit = Math.max(1, Math.trunc(maxItems))
   const byteLimit = Math.max(1, Math.trunc(maxBytes))
   let count = 0
@@ -299,9 +352,13 @@ function takeAuditLogFlushBatch(maxItems: number, maxBytes: number): QueuedAudit
     bytes += next.bytes
     count += 1
   }
-  const batch = pendingAuditLogs.splice(0, count)
+  const batch = pendingAuditLogs.slice(0, count)
+  return { batch, bytes }
+}
+
+function removeAuditLogFlushBatch(count: number, bytes: number): void {
+  pendingAuditLogs.splice(0, count)
   pendingBytes = Math.max(0, pendingBytes - bytes)
-  return batch
 }
 
 function recordDrop(item: QueuedAuditLog, reason: 'overflow' | 'oversize'): void {
@@ -397,8 +454,8 @@ function boundedStringBytes(value: string, maxBytes: number): number {
   return Math.min(maxBytes, value.length * 4)
 }
 
-function sumQueuedBytes(items: QueuedAuditLog[]): number {
-  return items.reduce((sum, item) => sum + item.bytes, 0)
+function normalizeMaxBatches(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
 }
 
 function normalizeAuditLogInput(input: AuditLogInput): AuditLogInput {

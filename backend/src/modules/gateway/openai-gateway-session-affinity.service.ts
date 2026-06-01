@@ -33,8 +33,18 @@ const sessionAffinityCache = createAppCache<string, SessionBinding>({
   name: 'gateway:openai-session-affinity',
   max: 5000,
   ttlMs: sessionAffinityTtlMs,
-  updateAgeOnGet: true
+  updateAgeOnGet: true,
+  dispose: (binding, key) => {
+    removeSessionAffinityIndex(key, binding)
+  },
+  onClear: () => {
+    clearSessionAffinityIndexes()
+  }
 })
+const sessionAffinityBindingByKey = new Map<string, SessionBinding>()
+const sessionAffinityKeysByAccountId = new Map<string, Set<string>>()
+const sessionAffinityKeysByAccountSystemScope = new Map<string, Set<string>>()
+const sessionAffinityKeysByAccountSystemApiKeyScope = new Map<string, Set<string>>()
 
 export interface OpenAIGatewaySessionAffinityScope {
   systemAccountId: string
@@ -230,7 +240,7 @@ export function rememberOpenAIAccountForSession(sessionAffinityKey: string | und
   if (!sessionAffinityKey) {
     return
   }
-  sessionAffinityCache.set(sessionAffinityKey, { accountId, scope })
+  setSessionAffinityBinding(sessionAffinityKey, { accountId, scope })
 }
 
 export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undefined, accountId?: string): void {
@@ -249,17 +259,102 @@ export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undef
 
 export function migrateOpenAIAccountSessionAffinity(sourceAccountId: string, targetAccountId: string, scope?: Partial<OpenAIGatewaySessionAffinityScope>): { migratedSessionCount: number } {
   let migratedSessionCount = 0
-  for (const [key, binding] of sessionAffinityCache.entries()) {
+  for (const key of sessionAffinityMigrationCandidateKeys(sourceAccountId, scope)) {
+    const binding = sessionAffinityCache.get(key)
+    if (!binding) {
+      continue
+    }
     if (binding.accountId !== sourceAccountId) {
       continue
     }
     if (scope && !sessionBindingMatchesScope(binding, scope)) {
       continue
     }
-    sessionAffinityCache.set(key, { accountId: targetAccountId, scope: binding.scope })
+    setSessionAffinityBinding(key, { accountId: targetAccountId, scope: binding.scope })
     migratedSessionCount += 1
   }
   return { migratedSessionCount }
+}
+
+function setSessionAffinityBinding(key: string, binding: SessionBinding): void {
+  const previous = sessionAffinityBindingByKey.get(key)
+  if (previous) {
+    removeSessionAffinityIndex(key, previous)
+  }
+  sessionAffinityCache.set(key, binding)
+  addSessionAffinityIndex(key, binding)
+}
+
+function addSessionAffinityIndex(key: string, binding: SessionBinding): void {
+  sessionAffinityBindingByKey.set(key, binding)
+  addSetValue(sessionAffinityKeysByAccountId, binding.accountId, key)
+  if (binding.scope?.systemAccountId) {
+    addSetValue(sessionAffinityKeysByAccountSystemScope, accountSystemScopeIndexKey(binding.accountId, binding.scope.systemAccountId), key)
+    if (binding.scope.apiKeyId) {
+      addSetValue(sessionAffinityKeysByAccountSystemApiKeyScope, accountSystemApiKeyScopeIndexKey(binding.accountId, binding.scope.systemAccountId, binding.scope.apiKeyId), key)
+    }
+  }
+}
+
+function removeSessionAffinityIndex(key: string, binding: SessionBinding): void {
+  if (sessionAffinityBindingByKey.get(key) !== binding) {
+    return
+  }
+  sessionAffinityBindingByKey.delete(key)
+  deleteSetValue(sessionAffinityKeysByAccountId, binding.accountId, key)
+  if (binding.scope?.systemAccountId) {
+    deleteSetValue(sessionAffinityKeysByAccountSystemScope, accountSystemScopeIndexKey(binding.accountId, binding.scope.systemAccountId), key)
+    if (binding.scope.apiKeyId) {
+      deleteSetValue(sessionAffinityKeysByAccountSystemApiKeyScope, accountSystemApiKeyScopeIndexKey(binding.accountId, binding.scope.systemAccountId, binding.scope.apiKeyId), key)
+    }
+  }
+}
+
+function clearSessionAffinityIndexes(): void {
+  sessionAffinityBindingByKey.clear()
+  sessionAffinityKeysByAccountId.clear()
+  sessionAffinityKeysByAccountSystemScope.clear()
+  sessionAffinityKeysByAccountSystemApiKeyScope.clear()
+}
+
+function sessionAffinityMigrationCandidateKeys(sourceAccountId: string, scope?: Partial<OpenAIGatewaySessionAffinityScope>): string[] {
+  const systemAccountId = scope?.systemAccountId
+  const apiKeyId = scope?.apiKeyId
+  if (systemAccountId && apiKeyId) {
+    return [...(sessionAffinityKeysByAccountSystemApiKeyScope.get(accountSystemApiKeyScopeIndexKey(sourceAccountId, systemAccountId, apiKeyId)) ?? [])]
+  }
+  if (systemAccountId) {
+    return [...(sessionAffinityKeysByAccountSystemScope.get(accountSystemScopeIndexKey(sourceAccountId, systemAccountId)) ?? [])]
+  }
+  return [...(sessionAffinityKeysByAccountId.get(sourceAccountId) ?? [])]
+}
+
+function addSetValue(map: Map<string, Set<string>>, key: string, value: string): void {
+  let values = map.get(key)
+  if (!values) {
+    values = new Set<string>()
+    map.set(key, values)
+  }
+  values.add(value)
+}
+
+function deleteSetValue(map: Map<string, Set<string>>, key: string, value: string): void {
+  const values = map.get(key)
+  if (!values) {
+    return
+  }
+  values.delete(value)
+  if (values.size === 0) {
+    map.delete(key)
+  }
+}
+
+function accountSystemScopeIndexKey(accountId: string, systemAccountId: string): string {
+  return `${accountId}:${systemAccountId}`
+}
+
+function accountSystemApiKeyScopeIndexKey(accountId: string, systemAccountId: string, apiKeyId: string): string {
+  return `${accountId}:${systemAccountId}:${apiKeyId}`
 }
 
 function sessionBindingMatchesScope(binding: SessionBinding, scope: Partial<OpenAIGatewaySessionAffinityScope>): boolean {

@@ -34,6 +34,7 @@ try {
   const allowedSchedule = {
     enabled: true,
     timezone: 'UTC',
+    mode: 'allow_windows',
     windows: [
       { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '23:59' },
       { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '23:59', end: '00:00' }
@@ -55,7 +56,7 @@ try {
         base_url: 'https://api.openai.com/v1'
       },
       groupId: group.id,
-      priority: index
+      priority: index + 10
     }, access)
     if (index < dispatchCandidateLimit) {
       expectedAlwaysAvailableIds.push(account.id)
@@ -71,7 +72,7 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
-    priority: -100
+    priority: 1
   }, access)
   const scheduledAllowedAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -82,7 +83,7 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
-    priority: -50,
+    priority: 3,
     availabilitySchedule: allowedSchedule
   }, access)
   const scheduledDeniedAccount = repositories.createAccount({
@@ -94,7 +95,7 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
-    priority: -75,
+    priority: 2,
     availabilitySchedule: futureSchedule
   }, access)
 
@@ -197,7 +198,10 @@ function explainDispatchCandidateWindowQuery(
         AND accounts.schedulable = 1
         AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         ${scheduleClause}
-        AND COALESCE(source_accounts.type, accounts.type) IN ('api_key', 'oauth')
+        AND (
+          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.type IN ('api_key', 'oauth'))
+        )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       ORDER BY
         group_accounts.local_fallback_enabled ASC,

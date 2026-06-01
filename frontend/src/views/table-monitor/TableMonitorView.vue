@@ -325,7 +325,7 @@ const cleanupResultDescription = computed(() => {
       result.eligibleRows !== undefined ? `首批可清理：${formatInteger(result.eligibleRows)} 条` : undefined,
       result.submittedAt ? `提交时间：${formatDateTime(result.submittedAt)}` : undefined,
       result.jobId ? `任务：${result.jobId}` : undefined,
-      'worker 会在后台分批清理，稍后刷新表监控可查看数据集库变化。'
+      'worker 会在后台分批清理，稍后刷新表监控可查看数据集目录库变化。'
     ].filter((item): item is string => Boolean(item))
     return details.join('；')
   }
@@ -543,7 +543,7 @@ function tableKey(row: TableStorageSnapshotSummary) {
 function databaseRoleLabel(role: MonitoredDatabaseRole) {
   return {
     business: '业务库',
-    dataset: '数据集库',
+    dataset: '数据集目录库',
     stats: '统计结果库'
   }[role]
 }

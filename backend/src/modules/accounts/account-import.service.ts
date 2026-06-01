@@ -11,17 +11,18 @@ import {
   listGroupOptions,
   listProviders,
   listProxyOptions,
+  normalizeAccountCredentialsForWrite,
   type GroupOptionSummary,
   type ProxyProfileOptionSummary,
   type ProxyProfileSummary
 } from '../../storage/repositories.js'
+import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 
 export const accountImportProtocolType = 'juhe-ai-account-import'
 export const accountImportProtocolVersion = 1
 
 const maxImportAccounts = 500
 const maxImportProxies = 200
-const defaultBaseUrl = 'https://api.openai.com/v1'
 
 type ImportAction = 'create' | 'reuse' | 'skip' | 'failed'
 type AccountImportStatus = 'active' | 'disabled'
@@ -94,7 +95,6 @@ interface ImportDefaults {
   providerCode: string
   type: AccountType
   status: AccountImportStatus
-  baseUrl: string
   groupId?: string
   groupName?: string
   proxyRef?: string
@@ -175,6 +175,52 @@ interface ImportContext {
   proxyLookup: Map<string, ProxyProfileOptionSummary | undefined>
 }
 
+const importRootKeys = new Set(['type', 'version', 'defaults', 'proxies', 'accounts'])
+const importDefaultKeys = new Set([
+  'providerCode',
+  'type',
+  'status',
+  'groupId',
+  'groupName',
+  'proxyRef',
+  'proxyProfileId',
+  'concurrencyLimit',
+  'priority',
+  'accountExpiresAt',
+  'availabilitySchedule'
+])
+const importProxyKeys = new Set([
+  'ref',
+  'name',
+  'type',
+  'host',
+  'port',
+  'username',
+  'password',
+  'description',
+  'enabled'
+])
+const importAccountKeys = new Set([
+  'ref',
+  'name',
+  'providerCode',
+  'type',
+  'status',
+  'credentials',
+  'groupId',
+  'groupName',
+  'proxyRef',
+  'proxyProfileId',
+  'concurrencyLimit',
+  'priority',
+  'superPriorityEnabled',
+  'fallbackEnabled',
+  'supportedModels',
+  'accountExpiresAt',
+  'availabilitySchedule',
+  'notes'
+])
+
 export function previewAccountImport(data: unknown, options: AccountImportOptions = {}, access?: AccessScope): AccountImportResult {
   return buildImportPlan(data, options, access).result
 }
@@ -203,23 +249,24 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
     const groupId = account.groupId ?? groupIdForAccount(plan, account.source)
     const proxyProfileId = account.proxyProfileId
     try {
-      const created = createAccount({
+      const accountInput: Record<string, unknown> = {
         providerCode: account.source.providerCode,
         name: account.source.name,
         type: account.source.type,
         status: account.source.status,
-        credentials: account.source.credentials,
-        groupId,
-        proxyProfileId,
-        concurrencyLimit: account.source.concurrencyLimit,
-        priority: account.source.priority,
-        superPriorityEnabled: account.source.superPriorityEnabled,
-        fallbackEnabled: account.source.fallbackEnabled,
-        supportedModels: account.source.supportedModels,
-        accountExpiresAt: account.source.accountExpiresAt,
-        availabilitySchedule: account.source.availabilitySchedule,
-        notes: account.source.notes
-      }, access)
+        credentials: account.source.credentials
+      }
+      if (groupId !== undefined) accountInput.groupId = groupId
+      if (proxyProfileId !== undefined) accountInput.proxyProfileId = proxyProfileId
+      if (account.source.concurrencyLimit !== undefined) accountInput.concurrencyLimit = account.source.concurrencyLimit
+      if (account.source.priority !== undefined) accountInput.priority = account.source.priority
+      if (account.source.superPriorityEnabled !== undefined) accountInput.superPriorityEnabled = account.source.superPriorityEnabled
+      if (account.source.fallbackEnabled !== undefined) accountInput.fallbackEnabled = account.source.fallbackEnabled
+      if (account.source.supportedModels !== undefined) accountInput.supportedModels = account.source.supportedModels
+      if (account.source.accountExpiresAt !== undefined) accountInput.accountExpiresAt = account.source.accountExpiresAt
+      if (account.source.availabilitySchedule !== undefined) accountInput.availabilitySchedule = account.source.availabilitySchedule
+      if (account.source.notes !== undefined) accountInput.notes = account.source.notes
+      const created = createAccount(accountInput, access)
       account.item.accountId = created.id
       account.item.messages = ['已创建账户']
     } catch (error) {
@@ -266,6 +313,7 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
     result.messages.push('导入内容必须是 JSON 对象')
     return emptyPlan(result)
   }
+  appendUnknownFieldMessages(data, importRootKeys, '导入内容', result.messages)
   if (data.type !== accountImportProtocolType) {
     result.messages.push(`type 必须是 ${accountImportProtocolType}`)
   }
@@ -276,12 +324,21 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
     return emptyPlan(result)
   }
 
-  const defaults = normalizeDefaults(data.defaults, context, result.messages)
+  const defaults = normalizeDefaults(data.defaults, result.messages)
   if (result.messages.length > 0) {
     return emptyPlan(result)
   }
   const rawProxies = Array.isArray(data.proxies) ? data.proxies : []
+  if (hasOwnField(data, 'proxies') && !Array.isArray(data.proxies)) {
+    result.messages.push('proxies 必须是数组')
+  }
   const rawAccounts = Array.isArray(data.accounts) ? data.accounts : undefined
+  if (hasOwnField(data, 'accounts') && !Array.isArray(data.accounts)) {
+    result.messages.push('accounts 必须是数组')
+  }
+  if (result.messages.length > 0) {
+    return emptyPlan(result)
+  }
   if (!rawAccounts || rawAccounts.length === 0) {
     result.messages.push('accounts 至少需要 1 条账户')
     return emptyPlan(result)
@@ -357,22 +414,30 @@ function emptyResult(mode: AccountImportResult['mode']): AccountImportResult {
   }
 }
 
-function normalizeDefaults(value: unknown, context: ImportContext, messages: string[]): ImportDefaults {
+function normalizeDefaults(value: unknown, messages: string[]): ImportDefaults {
+  if (value !== undefined && !isRecord(value)) {
+    messages.push('defaults 必须是对象')
+  }
   const record = isRecord(value) ? value : {}
-  const providerCode = text(record.providerCode) || 'openai'
-  const provider = context.providerByCode.get(providerCode)
+  appendUnknownFieldMessages(record, importDefaultKeys, 'defaults', messages)
+  const providerCode = optionalTextField(record, 'providerCode', 'defaults.providerCode', messages) ?? 'openai'
+  const type = optionalTextField(record, 'type', 'defaults.type', messages) ?? 'api_key'
+  const statusInput = optionalTextField(record, 'status', 'defaults.status', messages)
+  const status = statusInput === undefined ? 'active' : normalizeStatus(statusInput)
+  if (statusInput !== undefined && !status) {
+    messages.push(`defaults.status 不支持：${statusInput}`)
+  }
   return {
     providerCode,
-    type: text(record.type) || 'api_key',
-    status: normalizeStatus(record.status) ?? 'active',
-    baseUrl: text(record.baseUrl) || provider?.baseUrl || defaultBaseUrl,
-    groupId: text(record.groupId),
-    groupName: text(record.groupName),
-    proxyRef: text(record.proxyRef),
-    proxyProfileId: text(record.proxyProfileId),
-    concurrencyLimit: positiveInteger(record.concurrencyLimit),
-    priority: integer(record.priority),
-    accountExpiresAt: dateTimeString(record.accountExpiresAt),
+    type,
+    status: status ?? 'active',
+    groupId: optionalTextField(record, 'groupId', 'defaults.groupId', messages),
+    groupName: optionalTextField(record, 'groupName', 'defaults.groupName', messages),
+    proxyRef: optionalTextField(record, 'proxyRef', 'defaults.proxyRef', messages),
+    proxyProfileId: optionalTextField(record, 'proxyProfileId', 'defaults.proxyProfileId', messages),
+    concurrencyLimit: optionalPositiveIntegerField(record, 'concurrencyLimit', 'defaults.concurrencyLimit', messages),
+    priority: optionalNonNegativeIntegerField(record, 'priority', 'defaults.priority', messages),
+    accountExpiresAt: optionalDateTimeField(record, 'accountExpiresAt', 'defaults.accountExpiresAt', messages),
     availabilitySchedule: normalizeImportAvailabilitySchedule(importAvailabilityScheduleInput(record).value, messages)
   }
 }
@@ -395,22 +460,32 @@ function planProxy(value: unknown, index: number, context: ImportContext): Proxy
     item.messages.push('代理配置必须是对象')
     return { source, item }
   }
-  source.ref = text(value.ref)
-  source.name = text(value.name)
-  const rawProxyType = text(value.type)
-  source.type = normalizeProxyType(value.type)
-  source.host = text(value.host)
-  source.port = positiveInteger(value.port) ?? 0
-  source.username = text(value.username)
-  source.password = text(value.password)
-  source.description = text(value.description)
-  source.enabled = normalizeProxyEnabled(value.enabled)
+  appendUnknownFieldMessages(value, importProxyKeys, '代理配置', item.messages)
+  source.ref = optionalTextField(value, 'ref', '代理 ref', item.messages) ?? ''
+  source.name = optionalTextField(value, 'name', '代理名称', item.messages) ?? ''
+  const proxyTypeInput = optionalTextField(value, 'type', '代理 type', item.messages)
+  if (proxyTypeInput) {
+    try {
+      source.type = normalizeProxyType(proxyTypeInput)
+    } catch (error) {
+      item.messages.push(errorMessage(error))
+    }
+  }
+  source.host = optionalTextField(value, 'host', '代理 host', item.messages) ?? ''
+  source.port = optionalPositiveIntegerField(value, 'port', '代理 port', item.messages) ?? 0
+  source.username = optionalTextField(value, 'username', '代理 username', item.messages)
+  source.password = optionalTextField(value, 'password', '代理 password', item.messages)
+  source.description = optionalTextField(value, 'description', '代理 description', item.messages)
+  const proxyEnabled = optionalBooleanField(value, 'enabled', '代理 enabled', item.messages)
+  if (proxyEnabled !== undefined) {
+    source.enabled = proxyEnabled
+  }
   item.ref = source.ref
   item.name = source.name
 
   if (!source.ref) item.messages.push('代理 ref 不能为空')
   if (!source.name) item.messages.push('代理名称不能为空')
-  if (rawProxyType && !isProxyType(rawProxyType)) item.messages.push(`代理 type 不支持：${rawProxyType}`)
+  if (!proxyTypeInput) item.messages.push('代理 type 不能为空')
   if (!source.host) item.messages.push('代理 host 不能为空')
   if (source.port < 1 || source.port > 65535) item.messages.push('代理 port 必须是 1 到 65535 的整数')
   if (!context.options.createMissingProxies) {
@@ -468,29 +543,46 @@ function planAccount(
     item.messages.push('账户配置必须是对象')
     return { source, item }
   }
-  source.ref = text(value.ref)
-  source.name = text(value.name)
-  source.providerCode = text(value.providerCode) || defaults.providerCode
-  source.type = text(value.type) || defaults.type
-  const rawStatus = text(value.status)
-  source.status = normalizeStatus(value.status) ?? defaults.status
-  source.groupId = text(value.groupId) || defaults.groupId
-  source.groupName = text(value.groupName) || defaults.groupName
-  source.proxyRef = text(value.proxyRef) || defaults.proxyRef
-  source.proxyProfileId = text(value.proxyProfileId) || defaults.proxyProfileId
-  source.concurrencyLimit = positiveInteger(value.concurrencyLimit) ?? defaults.concurrencyLimit
-  source.priority = integer(value.priority) ?? defaults.priority
-  source.superPriorityEnabled = booleanValue(value.superPriorityEnabled)
-  source.fallbackEnabled = booleanValue(value.fallbackEnabled)
-  source.supportedModels = stringArray(value.supportedModels)
-  const rawAccountExpiresAt = text(value.accountExpiresAt)
-  source.accountExpiresAt = dateTimeString(value.accountExpiresAt) ?? defaults.accountExpiresAt
+  appendUnknownFieldMessages(value, importAccountKeys, '账户配置', item.messages)
+  source.ref = optionalTextField(value, 'ref', '账户 ref', item.messages)
+  source.name = optionalTextField(value, 'name', '账户名称', item.messages) ?? ''
+  source.providerCode = optionalTextField(value, 'providerCode', '账户 providerCode', item.messages) ?? defaults.providerCode
+  source.type = optionalTextField(value, 'type', '账户 type', item.messages) ?? defaults.type
+  const rawStatus = optionalTextField(value, 'status', '账户 status', item.messages)
+  if (rawStatus !== undefined) {
+    const normalizedStatus = normalizeStatus(rawStatus)
+    if (normalizedStatus) {
+      source.status = normalizedStatus
+    } else {
+      item.messages.push(`账户状态不支持：${rawStatus}`)
+    }
+  }
+  source.groupId = optionalTextField(value, 'groupId', '账户 groupId', item.messages) ?? defaults.groupId
+  source.groupName = optionalTextField(value, 'groupName', '账户 groupName', item.messages) ?? defaults.groupName
+  source.proxyRef = optionalTextField(value, 'proxyRef', '账户 proxyRef', item.messages) ?? defaults.proxyRef
+  source.proxyProfileId = optionalTextField(value, 'proxyProfileId', '账户 proxyProfileId', item.messages) ?? defaults.proxyProfileId
+  source.concurrencyLimit = hasOwnField(value, 'concurrencyLimit')
+    ? optionalPositiveIntegerField(value, 'concurrencyLimit', '账户 concurrencyLimit', item.messages)
+    : defaults.concurrencyLimit
+  source.priority = hasOwnField(value, 'priority')
+    ? optionalNonNegativeIntegerField(value, 'priority', '账户 priority', item.messages)
+    : defaults.priority
+  source.superPriorityEnabled = optionalBooleanField(value, 'superPriorityEnabled', '账户 superPriorityEnabled', item.messages)
+  source.fallbackEnabled = optionalBooleanField(value, 'fallbackEnabled', '账户 fallbackEnabled', item.messages)
+  source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
+  source.accountExpiresAt = hasOwnField(value, 'accountExpiresAt')
+    ? optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)
+    : defaults.accountExpiresAt
   const availabilityScheduleInput = importAvailabilityScheduleInput(value)
   source.availabilitySchedule = availabilityScheduleInput.present
     ? normalizeImportAvailabilitySchedule(availabilityScheduleInput.value, item.messages)
     : defaults.availabilitySchedule
-  source.notes = text(value.notes)
-  source.credentials = normalizeCredentials(value.credentials, defaults, source.providerCode)
+  source.notes = optionalTextField(value, 'notes', '账户 notes', item.messages)
+  try {
+    source.credentials = normalizeAccountCredentialsForWrite(source.type, value.credentials)
+  } catch (error) {
+    item.messages.push(errorMessage(error))
+  }
 
   item.ref = source.ref
   item.name = source.name
@@ -500,12 +592,6 @@ function planAccount(
   item.groupId = source.groupId
   item.proxyRef = source.proxyRef
 
-  if (rawStatus && !normalizeStatus(rawStatus)) {
-    item.messages.push(`账户状态不支持：${rawStatus}`)
-  }
-  if (rawAccountExpiresAt && !dateTimeString(rawAccountExpiresAt)) {
-    item.messages.push('accountExpiresAt 必须是有效时间字符串')
-  }
   validateAccountBasics(source, context)
   const groupId = resolveAccountGroup(source, context, groupIdsByKey, groupNamesToCreate, item)
   const proxyProfileId = resolveAccountProxy(source, proxyByRef, item)
@@ -533,16 +619,10 @@ function validateAccountBasics(account: NormalizedImportAccount, context: Import
   if (account.status !== 'active' && account.status !== 'disabled') {
     account.messages.push('账户状态仅支持 active 或 disabled')
   }
-  if (account.type === 'api_key' && !text(account.credentials.api_key)) {
-    account.messages.push('API Key 账户必须填写密钥')
-  }
-  if (account.type === 'oauth' && !text(account.credentials.refresh_token) && !text(account.credentials.access_token)) {
-    account.messages.push('OAuth 账户必须填写刷新令牌或访问令牌')
-  }
   if (account.concurrencyLimit !== undefined && account.concurrencyLimit < 1) {
     account.messages.push('concurrencyLimit 必须大于 0')
   }
-  if (account.accountExpiresAt && !dateTimeString(account.accountExpiresAt)) {
+  if (account.accountExpiresAt && !optionalServerDateTimeIso(account.accountExpiresAt)) {
     account.messages.push('accountExpiresAt 必须是有效时间字符串')
   }
 }
@@ -680,7 +760,7 @@ function accountCredentialKey(account: NormalizedImportAccount): string | undefi
   return [
     account.providerCode,
     account.type,
-    text(account.credentials.base_url) || defaultBaseUrl,
+    text(account.credentials.base_url),
     secret
   ].join('|')
 }
@@ -823,20 +903,6 @@ function buildSummary(
   }
 }
 
-function normalizeCredentials(value: unknown, defaults: ImportDefaults, providerCode: string): Record<string, unknown> {
-  const input = isRecord(value) ? value : {}
-  const output: Record<string, unknown> = {}
-  for (const [key, rawValue] of Object.entries(input)) {
-    if (!key.trim() || rawValue === undefined || rawValue === null || rawValue === '') continue
-    output[key.trim()] = typeof rawValue === 'string' ? rawValue.trim() : rawValue
-  }
-  if (!text(output.base_url)) {
-    const providerBaseUrl = providerCode === defaults.providerCode ? defaults.baseUrl : undefined
-    output.base_url = providerBaseUrl || defaultBaseUrl
-  }
-  return output
-}
-
 function findGroupOptionByName(providerCode: string, name: string, context: ImportContext): GroupOptionSummary | undefined {
   const key = groupKey(providerCode, name)
   if (context.groupLookup.has(key)) {
@@ -880,46 +946,17 @@ function normalizeStatus(value: unknown): AccountImportStatus | undefined {
 
 function normalizeProxyType(value: unknown): NormalizedImportProxy['type'] {
   const input = text(value)
-  return isProxyType(input) ? input : 'socks5h'
+  if (!input) {
+    throw new Error('代理 type 不能为空')
+  }
+  if (!isProxyType(input)) {
+    throw new Error(`代理 type 不支持：${input}`)
+  }
+  return input
 }
 
 function isProxyType(value: string): value is NormalizedImportProxy['type'] {
   return value === 'http' || value === 'https' || value === 'socks5' || value === 'socks5h'
-}
-
-function normalizeProxyEnabled(value: unknown): boolean {
-  if (typeof value === 'boolean') return value
-  const input = text(value)
-  if (!input) return true
-  return input !== 'disabled' && input !== 'inactive'
-}
-
-function stringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const items = value.map((item) => text(item)).filter(Boolean)
-  return items.length ? [...new Set(items)] : undefined
-}
-
-function positiveInteger(value: unknown): number | undefined {
-  const number = integer(value)
-  return number !== undefined && number > 0 ? number : undefined
-}
-
-function integer(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isInteger(value)) return value
-  if (typeof value !== 'string' || !value.trim()) return undefined
-  const parsed = Number(value)
-  return Number.isInteger(parsed) ? parsed : undefined
-}
-
-function booleanValue(value: unknown): boolean | undefined {
-  return typeof value === 'boolean' ? value : undefined
-}
-
-function dateTimeString(value: unknown): string | undefined {
-  const input = text(value)
-  if (!input) return undefined
-  return Number.isFinite(Date.parse(input)) ? input : undefined
 }
 
 function isDuplicateAccountError(error: unknown): boolean {
@@ -933,6 +970,106 @@ function errorMessage(error: unknown): string {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function hasOwnField(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key)
+}
+
+function appendUnknownFieldMessages(
+  record: Record<string, unknown>,
+  allowedKeys: ReadonlySet<string>,
+  label: string,
+  messages: string[]
+): void {
+  const unknownKeys = Object.keys(record).filter((key) => !allowedKeys.has(key))
+  if (unknownKeys.length) {
+    messages.push(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
+}
+
+function optionalTextField(record: Record<string, unknown>, key: string, label: string, messages: string[]): string | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (typeof value !== 'string') {
+    messages.push(`${label}必须是字符串`)
+    return undefined
+  }
+  const input = value.trim()
+  return input || undefined
+}
+
+function optionalBooleanField(record: Record<string, unknown>, key: string, label: string, messages: string[]): boolean | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (typeof value !== 'boolean') {
+    messages.push(`${label}必须是布尔值`)
+    return undefined
+  }
+  return value
+}
+
+function optionalIntegerField(record: Record<string, unknown>, key: string, label: string, messages: string[]): number | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    messages.push(`${label}必须是整数`)
+    return undefined
+  }
+  return value
+}
+
+function optionalPositiveIntegerField(record: Record<string, unknown>, key: string, label: string, messages: string[]): number | undefined {
+  const value = optionalIntegerField(record, key, label, messages)
+  if (value === undefined) return undefined
+  if (value <= 0) {
+    messages.push(`${label}必须是大于 0 的整数`)
+    return undefined
+  }
+  return value
+}
+
+function optionalNonNegativeIntegerField(record: Record<string, unknown>, key: string, label: string, messages: string[]): number | undefined {
+  const value = optionalIntegerField(record, key, label, messages)
+  if (value === undefined) return undefined
+  if (value < 0) {
+    messages.push(`${label}必须是大于等于 0 的整数`)
+    return undefined
+  }
+  return value
+}
+
+function optionalStringArrayField(record: Record<string, unknown>, key: string, label: string, messages: string[]): string[] | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (!Array.isArray(value)) {
+    messages.push(`${label}必须是非空字符串数组`)
+    return undefined
+  }
+  const items: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string' || !item.trim()) {
+      messages.push(`${label}必须是非空字符串数组`)
+      return undefined
+    }
+    items.push(item.trim())
+  }
+  return items
+}
+
+function optionalDateTimeField(record: Record<string, unknown>, key: string, label: string, messages: string[]): string | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (typeof value !== 'string' || !value.trim()) {
+    messages.push(`${label}必须是有效时间字符串`)
+    return undefined
+  }
+  const normalized = optionalServerDateTimeIso(value)
+  if (!normalized) {
+    messages.push(`${label}必须是有效时间字符串`)
+    return undefined
+  }
+  return normalized
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -51,6 +51,7 @@ try {
   const createdAtBase = Date.now() - 60_000
   const records = Array.from({ length: 20 }, (_, index) => ({
     traceId: `trace-usage-stats-rebuild-shard-cursor-${index}`,
+    trafficSource: 'gateway' as const,
     apiKeyId: apiKey.id,
     groupId: group.id,
     accountId: account.id,

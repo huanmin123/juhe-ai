@@ -42,6 +42,20 @@ try {
   ])
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  assert.throws(
+    () => repositories.createGroup({
+      name: '高并发调度策略旧字段回归分组',
+      providerCode: 'openai',
+      groupType: 'high_concurrency',
+      schedulingPolicy: {
+        defaultSoftConcurrency: 3,
+        fastFirstEnabled: false
+      }
+    }, access),
+    /分组调度策略包含未知字段/,
+    '分组调度策略不应再静默丢弃旧字段或不可配置字段'
+  )
+
   const highConcurrencyGroup = repositories.createGroup({
     name: '高并发调度策略回归分组',
     providerCode: 'openai',
@@ -49,13 +63,9 @@ try {
     schedulingPolicy: {
       defaultSoftConcurrency: 3,
       maxQueueWaitMs: 45000,
-      maxQueueSize: 50,
-      perApiKeyQueueLimit: 10,
       clientIpConcurrencyLimit: 4,
       clientIpConcurrencyOverflowMode: 'queue',
-      imageLaneMaxConcurrency: 0,
-      breakAffinityOnSoftLimit: false,
-      fastFirstEnabled: false
+      imageLaneMaxConcurrency: 0
     }
   }, access)
 

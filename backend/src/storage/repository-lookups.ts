@@ -123,16 +123,6 @@ function invalidateLookupCache<T extends { id: string }>(cache: AppCache<string,
   cache.clear()
 }
 
-export function loadSystemAccountNameMap(): Map<string, string> {
-  const rows = getBusinessDatabase()
-    .prepare('SELECT id, username, display_name FROM system_accounts ORDER BY created_at ASC, id ASC')
-    .all() as unknown as Array<{ id: string; username: string; display_name: string }>
-  for (const row of rows) {
-    systemAccountPrincipalCache.set(row.id, { id: row.id, username: row.username, displayName: row.display_name })
-  }
-  return new Map(rows.map((row) => [row.id, row.display_name]))
-}
-
 export function loadSystemAccountsByIds(systemAccountIds: Array<string | undefined>): Map<string, SystemAccountSummary> {
   const ids = uniqueIds(systemAccountIds)
   if (!ids.length) return new Map()

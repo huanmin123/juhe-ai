@@ -15,7 +15,6 @@ import { availabilityScheduleCacheTtlMs } from '../../storage/availability-sched
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
-import { primeClientIpPolicyCacheLocal } from './client-ip-policy-cache.service.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 
 const gatewayRuntimeTtlMs = 60_000
@@ -53,6 +52,9 @@ const openAIAccountsCache = createAppCache<string, OpenAIAccountSecret[]>({
   max: 1000,
   ttlMs: openAIAccountsTtlMs
 })
+
+const pendingGatewayRuntimeLoads = new Map<string, Promise<DbServiceGatewayRuntime>>()
+let gatewayRuntimeCacheGeneration = 0
 
 export function readCachedGatewaySettings(): GatewaySettings {
   assertLocalGatewayDatabaseAccess('readCachedGatewaySettings')
@@ -143,38 +145,8 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
     gatewayRuntimeCache.delete(cacheKey)
   }
 
-  const runtime = await requestDbService({
-    type: 'read_gateway_runtime',
-    key: apiKey
-  })
-  primeClientIpPoliciesFromRuntime(runtime)
-  if (!runtime.apiKey) {
-    gatewayRuntimeCache.set(cacheKey, {
-      runtime: cloneStaticGatewayRuntime(runtime),
-      revalidateAtMs: Date.now() + invalidGatewayRuntimeTtlMs
-    }, { ttlMs: invalidGatewayRuntimeTtlMs })
-    gatewaySettingsCache.set('current', runtime.settings)
-    return cloneStaticGatewayRuntime(runtime)
-  }
-
-  const nowMs = Date.now()
-  if (!isDynamicApiKeyGroupRouteStrategy(runtime.apiKey.group_route_strategy)) {
-    const runtimeTtlMs = gatewayRuntimeCacheTtlMs(runtime, nowMs)
-    gatewayRuntimeCache.set(cacheKey, {
-      runtime: cloneStaticGatewayRuntime(runtime),
-      revalidateAtMs: nowMs + runtimeTtlMs
-    }, { ttlMs: runtimeTtlMs })
-  }
-  gatewaySettingsCache.set('current', runtime.settings)
-  if (runtime.groupAccess) {
-    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), cloneGroupUsageAccessMetadata(runtime.groupAccess))
-  }
-  if (runtime.groupAccess && !isRuntimeApiKeyScheduleInactive(runtime)) {
-    openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), runtime.accounts.map(cloneStaticOpenAIAccountSecret), {
-      ttlMs: openAIAccountsCacheTtlMs(runtime.hasAccountAvailabilitySchedule === true)
-    })
-  }
-  return cloneGatewayRuntimeForDispatch(runtime)
+  const runtime = await loadGatewayRuntimeOnce(apiKey, cacheKey)
+  return runtime.apiKey ? cloneGatewayRuntimeForDispatch(runtime) : cloneStaticGatewayRuntime(runtime)
 }
 
 export function clearGatewayRuntimeCache(): void {
@@ -193,6 +165,8 @@ export function clearGatewayRuntimeCache(): void {
 }
 
 export function clearGatewayRuntimeCacheLocal(): void {
+  gatewayRuntimeCacheGeneration += 1
+  pendingGatewayRuntimeLoads.clear()
   gatewayRuntimeCache.clear()
   gatewaySettingsCache.clear()
   groupUsageAccessCache.clear()
@@ -207,6 +181,68 @@ function gatewayCacheKey(groupId: string, systemAccountId: string): string {
 function assertLocalGatewayDatabaseAccess(operation: string): void {
   if (runtimeConfig.processRole === 'server') {
     throw new Error(`server 角色禁止直接同步读取 SQLite：${operation} 必须通过 DB service`)
+  }
+}
+
+async function loadGatewayRuntimeOnce(apiKey: string, cacheKey: string): Promise<DbServiceGatewayRuntime> {
+  const pending = pendingGatewayRuntimeLoads.get(cacheKey)
+  if (pending) {
+    return await pending
+  }
+
+  const generation = gatewayRuntimeCacheGeneration
+  const load = loadGatewayRuntimeAndPopulateCaches(apiKey, cacheKey, generation)
+  pendingGatewayRuntimeLoads.set(cacheKey, load)
+  try {
+    return await load
+  } finally {
+    if (pendingGatewayRuntimeLoads.get(cacheKey) === load) {
+      pendingGatewayRuntimeLoads.delete(cacheKey)
+    }
+  }
+}
+
+async function loadGatewayRuntimeAndPopulateCaches(
+  apiKey: string,
+  cacheKey: string,
+  generation: number
+): Promise<DbServiceGatewayRuntime> {
+  const runtime = await requestDbService({
+    type: 'read_gateway_runtime',
+    key: apiKey
+  })
+  if (gatewayRuntimeCacheGeneration === generation) {
+    populateGatewayRuntimeCaches(cacheKey, runtime)
+  }
+  return runtime
+}
+
+function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewayRuntime): void {
+  if (!runtime.apiKey) {
+    gatewayRuntimeCache.set(cacheKey, {
+      runtime: cloneStaticGatewayRuntime(runtime),
+      revalidateAtMs: Date.now() + invalidGatewayRuntimeTtlMs
+    }, { ttlMs: invalidGatewayRuntimeTtlMs })
+    gatewaySettingsCache.set('current', runtime.settings)
+    return
+  }
+
+  const nowMs = Date.now()
+  if (!isDynamicApiKeyGroupRouteStrategy(runtime.apiKey.group_route_strategy)) {
+    const runtimeTtlMs = gatewayRuntimeCacheTtlMs(runtime, nowMs)
+    gatewayRuntimeCache.set(cacheKey, {
+      runtime: cloneStaticGatewayRuntime(runtime),
+      revalidateAtMs: nowMs + runtimeTtlMs
+    }, { ttlMs: runtimeTtlMs })
+  }
+  gatewaySettingsCache.set('current', runtime.settings)
+  if (runtime.groupAccess) {
+    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), cloneGroupUsageAccessMetadata(runtime.groupAccess))
+  }
+  if (runtime.groupAccess && !isRuntimeApiKeyScheduleInactive(runtime)) {
+    openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), runtime.accounts.map(cloneStaticOpenAIAccountSecret), {
+      ttlMs: openAIAccountsCacheTtlMs(runtime.hasAccountAvailabilitySchedule === true)
+    })
   }
 }
 
@@ -248,16 +284,8 @@ function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceG
     settings: { ...runtime.settings },
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
     accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret),
-    clientIpPolicies: runtime.clientIpPolicies ? runtime.clientIpPolicies.map((policy) => ({ ...policy })) : undefined,
     streamInterceptPolicies: runtime.streamInterceptPolicies ? runtime.streamInterceptPolicies.map(cloneStreamInterceptPolicy) : undefined
   }
-}
-
-function primeClientIpPoliciesFromRuntime(runtime: DbServiceGatewayRuntime): void {
-  if (!runtime.clientIpPolicies) {
-    return
-  }
-  primeClientIpPolicyCacheLocal(runtime.clientIpPolicies)
 }
 
 function cloneGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {

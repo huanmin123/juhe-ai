@@ -1,4 +1,4 @@
-import type { GlobalSettings, SystemSettings } from '@/types/domain'
+import type { GlobalSettings, SystemSettings, SystemSettingsPatch } from '@/types/domain'
 import { defaultAppBrand } from '@/composables/useAppBrand'
 
 export interface GlobalForm {
@@ -37,35 +37,53 @@ export const defaultSystemSettings: SystemForm = {
 
 export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalForm {
   return {
-    appName: stringValue(settings.appName, defaultGlobalSettings.appName),
-    appIcon: stringValue(settings.appIcon, defaultGlobalSettings.appIcon)
+    appName: requiredStringValue(settings.appName, '系统名称'),
+    appIcon: requiredStringValue(settings.appIcon, '系统图标路径')
   }
 }
 
 export function normalizeSystemSettings(settings: SystemSettings | SystemForm): SystemForm {
   return {
-    defaultTemporaryUnschedulableMinutes: numberValue(settings.defaultTemporaryUnschedulableMinutes, defaultSystemSettings.defaultTemporaryUnschedulableMinutes, 1, 1440),
-    temporaryUnschedulableRetryIntervalSeconds: numberValue(settings.temporaryUnschedulableRetryIntervalSeconds, defaultSystemSettings.temporaryUnschedulableRetryIntervalSeconds, 0, 3600),
-    temporaryUnschedulableRetryAttempts: numberValue(settings.temporaryUnschedulableRetryAttempts, defaultSystemSettings.temporaryUnschedulableRetryAttempts, 0, 10),
-    streamCircuitBreakerEnabled: booleanValue(settings.streamCircuitBreakerEnabled, defaultSystemSettings.streamCircuitBreakerEnabled),
-    streamRequestTimeoutSeconds: numberValue(settings.streamRequestTimeoutSeconds, defaultSystemSettings.streamRequestTimeoutSeconds, 10, 3600),
-    streamIdleTimeoutSeconds: numberValue(settings.streamIdleTimeoutSeconds, defaultSystemSettings.streamIdleTimeoutSeconds, 1, 3600),
-    streamFailureThresholdCount: numberValue(settings.streamFailureThresholdCount, defaultSystemSettings.streamFailureThresholdCount, 1, 100),
-    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSystemSettings.streamFailureThresholdWindowMinutes, 1, 1440),
-    cooldownAccountRetestMaxBackoffHours: numberValue(settings.cooldownAccountRetestMaxBackoffHours, defaultSystemSettings.cooldownAccountRetestMaxBackoffHours, 1, 720)
+    defaultTemporaryUnschedulableMinutes: integerValue(settings.defaultTemporaryUnschedulableMinutes, '临时不可调用最大暂停时间', 1, 1440),
+    temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '临时状态重试间隔', 0, 3600),
+    temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '临时状态重试次数', 0, 10),
+    streamCircuitBreakerEnabled: booleanValue(settings.streamCircuitBreakerEnabled, '流式熔断开关'),
+    streamRequestTimeoutSeconds: integerValue(settings.streamRequestTimeoutSeconds, '首包等待上限', 10, 3600),
+    streamIdleTimeoutSeconds: integerValue(settings.streamIdleTimeoutSeconds, '输出停顿上限', 1, 3600),
+    streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '失败触发次数', 1, 100),
+    streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '失败统计窗口', 1, 1440),
+    cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '最长自动恢复观察', 1, 720)
   }
 }
 
-function numberValue(value: unknown, fallback: number, min: number, max: number): number {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return fallback
-  return Math.min(Math.max(Math.trunc(number), min), max)
+export function buildGlobalSettingsPayload(form: GlobalForm): GlobalSettings {
+  return normalizeGlobalSettings(form)
 }
 
-function booleanValue(value: unknown, fallback: boolean): boolean {
-  return typeof value === 'boolean' ? value : fallback
+export function buildSystemSettingsPayload(form: SystemForm): SystemSettingsPatch {
+  return normalizeSystemSettings(form)
 }
 
-function stringValue(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+function integerValue(value: unknown, label: string, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error(`${label}必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
+}
+
+function booleanValue(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`${label}必须是布尔值`)
+  }
+  return value
+}
+
+function requiredStringValue(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label}不能为空`)
+  }
+  return value.trim()
 }

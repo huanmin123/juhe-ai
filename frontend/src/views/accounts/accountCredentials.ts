@@ -10,6 +10,17 @@ import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPol
 import type { AccountFormModel } from './accountFormTypes'
 import { compactAccountCredentials } from './accountFormDefaults'
 
+const oauthCredentialMetadataKeys = [
+  'expires_at',
+  'client_id',
+  'id_token',
+  'email',
+  'account_id',
+  'chatgpt_user_id',
+  'plan_type',
+  'base_url'
+] as const
+
 export function buildAccountCredentials(input: {
   currentCredentials?: Record<string, unknown>
   errorPolicyRules: AccountErrorPolicyRuleForm[]
@@ -38,10 +49,18 @@ function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown>
 
 function buildOAuthCredentials(form: AccountFormModel, currentCredentials: Record<string, unknown>): Record<string, unknown> {
   return compactAccountCredentials({
-    ...currentCredentials,
+    ...pickOAuthCredentialMetadata(currentCredentials),
     access_token: form.accessToken,
-    refresh_token: form.refreshToken,
-    expires_at: currentCredentials.expires_at,
-    base_url: currentCredentials.base_url ?? 'https://api.openai.com/v1'
+    refresh_token: form.refreshToken
   })
+}
+
+function pickOAuthCredentialMetadata(currentCredentials: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {}
+  for (const key of oauthCredentialMetadataKeys) {
+    if (Object.prototype.hasOwnProperty.call(currentCredentials, key)) {
+      output[key] = currentCredentials[key]
+    }
+  }
+  return output
 }

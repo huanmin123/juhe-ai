@@ -71,7 +71,10 @@ export function usageRecordSummaryFromRow(
 }
 
 function usageRecordTrafficSource(value: unknown): UsageRecordSummary['trafficSource'] {
-  return value === 'manual_account_test' || value === 'cooldown_retest' ? value : 'gateway'
+  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest') {
+    return value
+  }
+  throw new Error('使用记录来源无效')
 }
 
 function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | undefined {

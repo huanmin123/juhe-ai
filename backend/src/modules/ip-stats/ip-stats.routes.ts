@@ -32,8 +32,8 @@ const ipHashParamSchema = z.object({
 
 const policyBodySchema = z.object({
   reason: z.string().trim().max(500, '原因不能超过 500 个字符').optional(),
-  durationMinutes: z.coerce.number().int().min(1, '封禁分钟数不能小于 1').max(525600, '封禁分钟数不能超过 525600').optional(),
-  durationDays: z.coerce.number().int().min(1, '封禁天数不能小于 1').max(3650, '封禁天数不能超过 3650').optional()
+  durationMinutes: z.number().int().min(1, '封禁分钟数不能小于 1').max(525600, '封禁分钟数不能超过 525600').optional(),
+  durationDays: z.number().int().min(1, '封禁天数不能小于 1').max(3650, '封禁天数不能超过 3650').optional()
 }).strict('IP 策略参数包含未知字段')
 
 ipStatsRouter.get('/', (req, res) => {

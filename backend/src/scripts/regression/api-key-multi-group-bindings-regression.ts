@@ -72,6 +72,14 @@ try {
 
   assert.throws(() => {
     repositories.createApiKeyRecord({
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'active' }
+      ]
+    }, access)
+  }, /API Key 名称不能为空/, '创建 API Key 必须显式提供名称')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
       name: '多分组未绑定创建回归 Key'
     }, access)
   }, /至少需要绑定一个分组/, '创建 API Key 时必须显式绑定至少一个分组')
@@ -85,6 +93,82 @@ try {
       ]
     }, access)
   }, /不能重复/, '创建时重复绑定同一分组应被数据层拒绝')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
+      name: '多分组非法状态创建回归 Key',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'paused' }
+      ]
+    }, access)
+  }, /分组绑定状态无效/, '创建时非法分组绑定状态应被数据层拒绝')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
+      name: '多分组字符串优先级创建回归 Key',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: '1', status: 'active' }
+      ]
+    }, access)
+  }, /分组优先级必须是大于 0 的整数/, '创建时数字字符串形式的分组优先级应被数据层拒绝')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
+      name: '多分组字符串权重创建回归 Key',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, weight: '10', status: 'active' }
+      ]
+    }, access)
+  }, /分组权重必须是 1-100 之间的整数/, '创建时数字字符串形式的分组权重应被数据层拒绝')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
+      name: '多分组未知字段创建回归 Key',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'active' }
+      ],
+      scopes: ['legacy_scope']
+    }, access)
+  }, /API Key 创建参数包含未知字段：scopes/, '创建 API Key 不应接收当前契约外的保留/旧字段')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
+      name: '多分组绑定未知字段创建回归 Key',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'active', groupName: '旧字段' }
+      ]
+    }, access)
+  }, /API Key 分组绑定参数包含未知字段：groupName/, '创建 API Key 分组绑定不应静默忽略未知字段')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
+      name: '多分组非法路由策略创建回归 Key',
+      groupRouteStrategy: 'legacy_primary',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'active' }
+      ]
+    }, access)
+  }, /分组路由策略无效/, '创建时非法分组路由策略应被数据层拒绝')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
+      name: '多分组非法说明创建回归 Key',
+      description: 123,
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'active' }
+      ]
+    }, access)
+  }, /API Key 说明必须是字符串/, '创建时非字符串说明不应被数据层静默忽略')
+
+  assert.throws(() => {
+    repositories.createApiKeyRecord({
+      name: '多分组非法过期时间创建回归 Key',
+      expiresAt: 'not-a-date',
+      groupBindings: [
+        { groupId: primaryGroup.id, priority: 1, status: 'active' }
+      ]
+    }, access)
+  }, /API Key 过期时间必须是有效时间字符串/, '创建时非法过期时间不应被数据层当成未填写')
 
   assert.throws(() => {
     repositories.createApiKeyRecord({
@@ -114,6 +198,18 @@ try {
     ],
     '详情应返回完整分组路由和默认权重'
   )
+
+  assert.throws(() => {
+    repositories.updateApiKey(apiKey.id, { name: '' }, access)
+  }, /API Key 名称不能为空/, '更新时空名称不应被数据层静默忽略')
+
+  assert.throws(() => {
+    repositories.updateApiKey(apiKey.id, { description: 123 }, access)
+  }, /API Key 说明必须是字符串/, '更新时非字符串说明不应被数据层静默忽略')
+
+  assert.throws(() => {
+    repositories.updateApiKey(apiKey.id, { expiresAt: 'not-a-date' }, access)
+  }, /API Key 过期时间必须是有效时间字符串/, '更新时非法过期时间不应被数据层当成清空')
 
   const filteredByFallback = repositories.listApiKeysPage(access, {
     groupId: fallbackGroup.id,

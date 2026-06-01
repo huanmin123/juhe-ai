@@ -60,6 +60,15 @@ try {
   const middleTeam = repositories.createSystemTeam({ name: '普通候选目标团队' })
   const wildcardTeam = repositories.createSystemTeam({ name: 'percent%literal 团队' })
   const wildcardNeighborTeam = repositories.createSystemTeam({ name: 'percentXliteral 团队' })
+  const missingDefaultGroupAccount = repositories.createSystemAccount({
+    username: 'grant-target-missing-default',
+    displayName: '缺失默认分组目标用户',
+    password: 'Password-123456',
+    mustChangePassword: false
+  })
+  databaseModule.getBusinessDatabase()
+    .prepare("DELETE FROM groups WHERE system_account_id = ? AND provider_code = 'openai'")
+    .run(missingDefaultGroupAccount.id)
 
   const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
@@ -101,6 +110,14 @@ try {
     const teamWildcardIds = repositories.listAuthorizationGranteeTeams(undefined, { keyword: 'percent%', limit: 20 }).map((team) => team.id)
     assert(teamWildcardIds.includes(wildcardTeam.id), '授权候选团队搜索应把 % 当作字面量前缀处理')
     assert(!teamWildcardIds.includes(wildcardNeighborTeam.id), '授权候选团队搜索不应把用户输入的 % 当作 LIKE 通配符')
+
+    const missingDefaultGroups = repositories.listAuthorizationGranteeGroups(undefined, {
+      granteeSystemAccountId: missingDefaultGroupAccount.id,
+      providerCode: 'openai',
+      limit: 20
+    })
+    assert.equal(missingDefaultGroups.length, 0, '授权目标分组选项读取路径不应自动补建缺失默认分组')
+    assert.equal(openAIGroupCountForSystemAccount(missingDefaultGroupAccount.id), 0, '缺失默认分组属于数据异常，options 读取不能写 groups 修复')
   } finally {
     database.prepare = originalPrepare
   }
@@ -117,7 +134,7 @@ try {
   assertBusinessIndexExists('idx_system_accounts_display_name_lookup')
   assertBusinessIndexExists('idx_system_teams_name_lookup')
 
-  console.log('授权候选项查询防护回归通过：用户/团队 options 支持精确/前缀搜索、limit 和通配符转义')
+  console.log('授权候选项查询防护回归通过：用户/团队 options 支持精确/前缀搜索、limit 和通配符转义，目标分组选项读取不补建默认分组')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -132,4 +149,11 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
+}
+
+function openAIGroupCountForSystemAccount(systemAccountId: string): number {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare("SELECT COUNT(*) AS total FROM groups WHERE system_account_id = ? AND provider_code = 'openai'")
+    .get(systemAccountId) as unknown as { total?: number } | undefined
+  return Number(row?.total ?? 0)
 }

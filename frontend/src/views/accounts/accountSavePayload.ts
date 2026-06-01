@@ -27,6 +27,8 @@ export type AccountSavePayload = {
   notes: string
 }
 
+export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'type'>
+
 export type AccountOAuthCreateCommonPayload = {
   name?: string
   groupId?: string
@@ -90,6 +92,21 @@ export function buildAccountSavePayload(input: {
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
     groupId: input.form.groupId,
     notes: input.form.notes
+  }
+}
+
+export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountUpdatePayload {
+  return {
+    name: payload.name,
+    credentials: payload.credentials,
+    concurrencyLimit: payload.concurrencyLimit,
+    priority: payload.priority,
+    supportedModels: payload.supportedModels,
+    proxyProfileId: payload.proxyProfileId,
+    accountExpiresAt: payload.accountExpiresAt,
+    availabilitySchedule: payload.availabilitySchedule,
+    groupId: payload.groupId,
+    notes: payload.notes
   }
 }
 

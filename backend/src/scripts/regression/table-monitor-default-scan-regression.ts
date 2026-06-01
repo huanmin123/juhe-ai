@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
@@ -88,17 +89,42 @@ try {
   }
   assert(capturedSql.length > 0, '表监控概览应查询统计结果库采样表')
   assert(capturedSql.every((sql) => !/\bJOIN\b/i.test(sql)), '表监控概览不应使用关联查询拼接采样结果')
+  const overviewDatabaseSql = capturedSql.find((sql) => sql.includes('FROM database_storage_snapshots'))
+  const overviewTableSql = capturedSql.find((sql) => sql.includes('FROM table_storage_snapshots') && sql.includes('ROW_NUMBER() OVER'))
+  assert(overviewDatabaseSql, '表监控概览应按库角色读取最新数据库快照')
+  assert(overviewTableSql, '表监控概览应读取每张表的最新采样')
+  const overviewDatabasePlan = explainQueryPlan(statsDatabase, overviewDatabaseSql, ['business', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'])
+  assertNoTempBtree(overviewDatabasePlan, '表监控概览数据库快照查询')
+  assert(overviewDatabasePlan.includes('idx_database_storage_snapshots_role_time_id'), `表监控概览数据库快照应使用 role+time+id 索引，实际计划：${overviewDatabasePlan}`)
+  const overviewTablePlan = explainQueryPlan(statsDatabase, overviewTableSql, ['2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'])
+  assertNoTempBtree(overviewTablePlan, '表监控概览表快照查询')
+  assert(overviewTablePlan.includes('idx_table_storage_snapshots_latest_id'), `表监控概览表快照应使用 latest+id 索引，实际计划：${overviewTablePlan}`)
 
-  const databaseHistory = tableMonitorRepository.listDatabaseStorageHistory({
-    startAt: '2026-01-01T00:00:00.000Z',
-    endAt: '2026-01-01T00:00:00.000Z',
-    limit: 720
-  })
+  const capturedHistorySql: string[] = []
+  statsDatabase.prepare = ((sql: string) => {
+    capturedHistorySql.push(sql)
+    return originalPrepare(sql)
+  }) as typeof statsDatabase.prepare
+  let databaseHistory: ReturnType<typeof tableMonitorRepository.listDatabaseStorageHistory>
+  try {
+    databaseHistory = tableMonitorRepository.listDatabaseStorageHistory({
+      startAt: '2026-01-01T00:00:00.000Z',
+      endAt: '2026-01-01T00:00:00.000Z',
+      limit: 720
+    })
+  } finally {
+    statsDatabase.prepare = originalPrepare as typeof statsDatabase.prepare
+  }
   const databaseHistoryRoles = new Set(databaseHistory.map((row) => row.databaseRole))
-  assert.equal(databaseHistory.length, 3, '三库增长趋势应一次返回业务库、数据集库和统计结果库历史点')
+  assert.equal(databaseHistory.length, 3, '三库增长趋势应一次返回业务库、数据集目录库和统计结果库历史点')
   assert(databaseHistoryRoles.has('business'), '三库增长趋势应包含业务库')
-  assert(databaseHistoryRoles.has('dataset'), '三库增长趋势应包含数据集库')
+  assert(databaseHistoryRoles.has('dataset'), '三库增长趋势应包含数据集目录库')
   assert(databaseHistoryRoles.has('stats'), '三库增长趋势应包含统计结果库')
+  const databaseHistorySql = capturedHistorySql.find((sql) => sql.includes('FROM database_storage_snapshots'))
+  assert(databaseHistorySql, '三库增长趋势应按库角色读取历史快照')
+  const databaseHistoryPlan = explainQueryPlan(statsDatabase, databaseHistorySql, ['business', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 720])
+  assertNoTempBtree(databaseHistoryPlan, '三库增长趋势查询')
+  assert(databaseHistoryPlan.includes('idx_database_storage_snapshots_role_time_id'), `三库增长趋势应使用 role+time+id 索引，实际计划：${databaseHistoryPlan}`)
 
   console.log('表监控默认采样回归通过：默认 cursor，滚动写入行数且不做全表扫描和精确 COUNT(*)')
 } finally {
@@ -108,4 +134,15 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function explainQueryPlan(database: DatabaseSync, sql: string, params: SQLInputValue[]): string {
+  const rows = database
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params) as Array<{ detail?: string }>
+  return rows.map((row) => row.detail ?? '').filter(Boolean).join('\n')
+}
+
+function assertNoTempBtree(details: string, label: string): void {
+  assert(!/USE TEMP B-TREE/i.test(details), `${label}不应创建临时排序树，实际计划：${details}`)
 }

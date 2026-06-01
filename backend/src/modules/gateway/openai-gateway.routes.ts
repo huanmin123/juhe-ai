@@ -47,6 +47,7 @@ import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.
 import type { GatewaySettings } from './account-error-policy.service.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import { recordClientIpErrorCircuitSample } from './openai-gateway-client-ip-error-circuit.service.js'
+import { transferClientIpAccountPendingFailures } from './openai-gateway-client-ip-account-avoidance.service.js'
 import type { GatewayFailureUsageContext } from './openai-gateway-usage-records.js'
 import {
   normalizeOpenAIGatewayTrafficSource,
@@ -159,7 +160,6 @@ export async function handleOpenAIGatewayRequest(
     input: { allowCandidateWrap?: boolean } = {}
   ): Promise<'none' | 'switched' | 'completed'> => {
     const gatewayUsageContext = currentPreflight.usageContext
-    const pendingClientIpAccountFailures = [...currentPreflight.clientIpAccountAvoidanceTracker.pendingFailures]
     const fallback = await prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
@@ -193,9 +193,10 @@ export async function handleOpenAIGatewayRequest(
     if (!fallback.context) {
       return 'completed'
     }
-    if (pendingClientIpAccountFailures.length > 0) {
-      fallback.context.clientIpAccountAvoidanceTracker.pendingFailures.unshift(...pendingClientIpAccountFailures)
-    }
+    transferClientIpAccountPendingFailures(
+      currentPreflight.clientIpAccountAvoidanceTracker,
+      fallback.context.clientIpAccountAvoidanceTracker
+    )
     releaseClientIpSlot()
     currentPreflight = fallback.context
     releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)

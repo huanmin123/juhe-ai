@@ -30,9 +30,6 @@ const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
 const modelCheckRetentionMaxDays = 365
-const defaultCleanupBatchSize = 1000
-const defaultCleanupMaxBatchesPerRun = 2
-
 let cleanupRunning = false
 
 export interface DataRetentionCleanupResult {
@@ -99,25 +96,25 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
   try {
     const settings = getSettings()
     const timezone = usageStatsTimezone()
-    const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', defaultCleanupBatchSize, 100, 1000)
-    const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', defaultCleanupMaxBatchesPerRun, 1, 2)
+    const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', 100, 1000)
+    const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', 1, 2)
     const now = Date.now()
     const retention = {
       auditLogSuccessDays: readAuditLogSettings().successRetentionDays,
       auditLogFailureDays: readAuditLogSettings().failureRetentionDays,
       auditErrorGroupDays: readAuditLogSettings().errorGroupRetentionDays,
-      operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 365, 1, operationLogRetentionMaxDays),
+      operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
       runtimeLogDays: runtimeLogIndexRetentionDays,
-      modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 30, 1, modelCheckRetentionMaxDays),
-      usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 7, 1, usageRecordRetentionMaxDays),
-      statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 48, 1, statsMinuteRetentionMaxHours),
-      statsHourlyDays: settingNumber(settings, 'usageStatsHourlyRetentionDays', 60, 1, statsHourlyRetentionMaxDays),
-      statsDailyDays: settingNumber(settings, 'usageStatsDailyRetentionDays', 400, 1, statsDailyRetentionMaxDays),
-      statsWeeklyWeeks: settingNumber(settings, 'usageStatsWeeklyRetentionWeeks', 104, 1, statsWeeklyRetentionMaxWeeks),
-      statsMonthlyMonths: settingNumber(settings, 'usageStatsMonthlyRetentionMonths', 24, 1, statsMonthlyRetentionMaxMonths),
-      rankSnapshotDays: settingNumber(settings, 'usageRankSnapshotRetentionDays', 30, 1, rankSnapshotRetentionMaxDays),
-      systemMetricsSampleDays: settingNumber(settings, 'systemMetricsRetentionDays', 7, 1, systemMetricsRawRetentionMaxDays),
-      systemMetricsHourlyDays: settingNumber(settings, 'systemMetricsHourlyRetentionDays', 30, 1, statsRetentionMaxDays),
+      modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
+      usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays),
+      statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 1, statsMinuteRetentionMaxHours),
+      statsHourlyDays: settingNumber(settings, 'usageStatsHourlyRetentionDays', 1, statsHourlyRetentionMaxDays),
+      statsDailyDays: settingNumber(settings, 'usageStatsDailyRetentionDays', 1, statsDailyRetentionMaxDays),
+      statsWeeklyWeeks: settingNumber(settings, 'usageStatsWeeklyRetentionWeeks', 1, statsWeeklyRetentionMaxWeeks),
+      statsMonthlyMonths: settingNumber(settings, 'usageStatsMonthlyRetentionMonths', 1, statsMonthlyRetentionMaxMonths),
+      rankSnapshotDays: settingNumber(settings, 'usageRankSnapshotRetentionDays', 1, rankSnapshotRetentionMaxDays),
+      systemMetricsSampleDays: settingNumber(settings, 'systemMetricsRetentionDays', 1, systemMetricsRawRetentionMaxDays),
+      systemMetricsHourlyDays: settingNumber(settings, 'systemMetricsHourlyRetentionDays', 1, statsRetentionMaxDays),
       accountUsageSnapshotDays: snapshotRetentionMaxDays,
       fixedWindowDays: statsRetentionMaxDays,
       tableStorageSnapshotDays: tableMonitorSampleRetentionDays
@@ -304,10 +301,15 @@ function cutoffMonthKey(now: number, retentionMonths: number, timezone: string):
   return monthKey(date, timezone)
 }
 
-function settingNumber(settings: Record<string, unknown>, key: string, fallback: number, min: number, max: number): number {
+function settingNumber(settings: Record<string, unknown>, key: string, min: number, max: number): number {
   const value = settings[key]
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error(`系统设置 ${key} 必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
 }
 
 function emptyCleanupResult(): DataRetentionCleanupResult {

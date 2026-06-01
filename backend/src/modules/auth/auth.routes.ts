@@ -17,12 +17,12 @@ const loginSchema = z.object({
   password: z.string().min(1),
   captchaId: z.string().trim().min(1),
   captchaCode: z.string().trim().min(1)
-})
+}).strict()
 
 const passwordSchema = z.object({
   oldPassword: z.string().min(1).optional(),
   newPassword: z.string().min(4)
-})
+}).strict()
 
 authRouter.get('/captcha', (_req, res) => {
   res.json(ok(createCaptchaChallenge()))

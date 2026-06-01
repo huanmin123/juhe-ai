@@ -211,14 +211,14 @@ try {
     assert.equal(batchProxyProfileSelects, 1, '授权账户调度应批量读取代理配置')
     assert.equal(proxyProfileSelects, 1, '授权账户调度代理查询数应保持常量')
     assert.equal(batchResourceAuthorizationSelects, 1, '授权账户调度应批量读取账号授权')
-    assert.equal(singleResourceAuthorizationSelects, 1, '授权实例同步只允许一次固定授权扫描，不应逐账号读取账号授权')
-    assert.equal(resourceAuthorizationSelects, 2, '授权账户调度授权查询数应保持常量')
+    assert.equal(singleResourceAuthorizationSelects, 0, '授权账户调度读取路径不应按被授权人扫描授权并回填实例')
+    assert.equal(resourceAuthorizationSelects, 1, '授权账户调度授权查询数应保持常量')
     assert.equal(accountUpdateStatements, 0, '授权账户调度读路径不应写 accounts 或刷新统计')
   } finally {
     database.prepare = originalPrepare
   }
 
-  console.log('授权账户调度授权批量查询回归通过')
+  console.log('授权账户调度授权批量查询回归通过：读取路径不做授权实例回填')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

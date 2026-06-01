@@ -287,13 +287,12 @@ function loadAiPerformanceHourlyRows(database: DatabaseSync, scope: AiPerformanc
       first_token_ms_sum,
       first_token_ms_count,
       first_token_ms_max
-    FROM usage_stats_hourly
+    FROM usage_stats_hourly INDEXED BY idx_usage_stats_hourly_scope_hour
     WHERE system_account_id = ?
       AND scope_type = ?
       AND scope_id IN (${placeholders})
       AND stat_hour >= ?
       AND stat_hour <= ?
-    ORDER BY stat_hour ASC
   `).all(scope.systemAccountId, scope.scopeType, ...accountIds, sinceHour, endHour) as unknown as AiPerformanceHourlyRow[]
 }
 

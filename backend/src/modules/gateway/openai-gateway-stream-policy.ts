@@ -200,34 +200,41 @@ function stringPath(value: unknown, path: string[]): string | undefined {
 }
 
 function accountStreamInterceptRules(credentials: Record<string, unknown>): RuntimeStreamInterceptPolicy[] {
-  const source = Array.isArray(credentials.stream_intercept_rules) ? credentials.stream_intercept_rules : []
-  return source
-    .map((item, index) => accountStreamInterceptRule(item, index))
-    .filter((item): item is RuntimeStreamInterceptPolicy => Boolean(item))
+  if (credentials.stream_intercept_rules === undefined) return []
+  if (!Array.isArray(credentials.stream_intercept_rules)) {
+    throw new Error('账户流式拦截规则格式无效')
+  }
+  return credentials.stream_intercept_rules.map((item, index) => accountStreamInterceptRule(item, index))
 }
 
-function accountStreamInterceptRule(value: unknown, index: number): RuntimeStreamInterceptPolicy | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+function accountStreamInterceptRule(value: unknown, index: number): RuntimeStreamInterceptPolicy {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`第 ${index + 1} 条账户流式拦截规则格式无效`)
+  }
   const record = value as Record<string, unknown>
   const action = normalizeAction(record.action)
-  if (!action) return undefined
+  if (!action) throw new Error(`第 ${index + 1} 条账户流式拦截规则动作无效`)
   const match = normalizeMatch(record.match)
   const runtime = streamInterceptPolicyActionRuntime(action)
   return {
     id: stringValue(record.id) || `account_rule_${index + 1}`,
     source: 'account',
-    name: stringValue(record.name) || `账户追加规则 ${index + 1}`,
-    enabled: record.enabled !== false,
+    name: requiredString(record.name, `第 ${index + 1} 条账户流式拦截规则名称`),
+    enabled: requiredBoolean(record.enabled, `第 ${index + 1} 条账户流式拦截规则启用状态`),
     action,
-    priority: positiveInt(record.priority, (index + 1) * 10),
+    priority: requiredPositiveInt(record.priority, `第 ${index + 1} 条账户流式拦截规则优先级`),
     match,
     ...runtime,
-    avoidanceTtlSeconds: actionUsesTtl(action) ? optionalPositiveInt(record.avoidanceTtlSeconds) : undefined
+    avoidanceTtlSeconds: actionUsesTtl(action) ? requiredPositiveInt(record.avoidanceTtlSeconds, `第 ${index + 1} 条账户流式拦截规则避让秒数`) : undefined
   }
 }
 
 function normalizeMatch(value: unknown): StreamInterceptPolicyMatch {
-  const record = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('账户流式拦截规则匹配条件无效')
+  }
+  const record = value as Record<string, unknown>
+  assertOnlyKeys(record, ['eventTypes', 'dataTypes', 'errorCodes', 'errorTypes', 'textIncludes', 'textExcludes', 'jsonPathsExists'], '账户流式拦截规则匹配条件')
   return {
     eventTypes: textList(record.eventTypes),
     dataTypes: textList(record.dataTypes),
@@ -255,13 +262,21 @@ function normalizeAction(value: unknown): StreamInterceptPolicyAction | undefine
 }
 
 function textList(value: unknown): string[] | undefined {
-  const source = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? value.split(/[,;，；\n]/)
-      : []
-  const output = [...new Set(source.map((item) => String(item).trim()).filter(Boolean))]
-  return output.length ? output.slice(0, 50) : undefined
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new Error('账户流式拦截规则匹配条件必须是字符串数组')
+  }
+  if (value.length > 50) {
+    throw new Error('账户流式拦截规则匹配条件不能超过 50 项')
+  }
+  const output = value.map((item) => {
+    const text = requiredString(item, '账户流式拦截规则匹配条件')
+    if (text.length > 200) {
+      throw new Error('账户流式拦截规则匹配条件不能超过 200 个字符')
+    }
+    return text
+  })
+  return output.length ? output : undefined
 }
 
 function sourceOrder(source: StreamInterceptPolicySource): number {
@@ -280,12 +295,29 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-function positiveInt(value: unknown, fallback: number): number {
-  const numberValue = Number(value)
-  return Number.isFinite(numberValue) && numberValue > 0 ? Math.trunc(numberValue) : fallback
+function requiredBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${label}必须是布尔值`)
+  return value
 }
 
-function optionalPositiveInt(value: unknown): number | undefined {
-  const numberValue = Number(value)
-  return Number.isFinite(numberValue) && numberValue > 0 ? Math.trunc(numberValue) : undefined
+function requiredPositiveInt(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label}必须是大于 0 的整数`)
+  }
+  return value
+}
+
+function requiredString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label}不能为空`)
+  }
+  return value.trim()
+}
+
+function assertOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[], label: string): void {
+  const allowed = new Set(allowedKeys)
+  const unexpected = Object.keys(value).find((key) => !allowed.has(key))
+  if (unexpected) {
+    throw new Error(`${label}包含不支持字段：${unexpected}`)
+  }
 }

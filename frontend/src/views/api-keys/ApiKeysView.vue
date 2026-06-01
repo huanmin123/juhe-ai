@@ -413,9 +413,12 @@ interface ApiKeyScheduleWindowFormRow {
 }
 interface ApiKeyAvailabilityScheduleForm {
   enabled: boolean
+  timezone: string
   windows: ApiKeyScheduleWindowFormRow[]
+  dateRange?: ApiKeyAvailabilitySchedule['dateRange']
+  exceptions?: ApiKeyAvailabilitySchedule['exceptions']
 }
-type ApiKeyAvailabilitySchedulePayload = Pick<ApiKeyAvailabilitySchedule, 'enabled' | 'mode' | 'windows'>
+type ApiKeyAvailabilitySchedulePayload = ApiKeyAvailabilitySchedule
 const defaultApiKeysPageState = (): ApiKeysPageState => ({
   groupFilter: undefined,
   keywordFilter: '',
@@ -622,7 +625,7 @@ function selectedGroupSelection(id: string | undefined): GroupSelection | undefi
 }
 
 function apiKeyGroupBindings(apiKey: ApiKeySummary): ApiKeyGroupBindingSummary[] {
-  return apiKey.groupBindings ?? []
+  return apiKey.groupBindings
 }
 
 function apiKeyGroupBindingTagColor(binding: ApiKeyGroupBindingSummary): string {
@@ -1109,10 +1112,14 @@ async function openEdit(apiKey: ApiKeySummary) {
       name: displayGroupName(binding.groupName, binding.groupId)
     }, binding.status, binding.weight)
   })
+  if (!bindings.length) {
+    message.error('API Key 分组绑定数据异常，请刷新后重试')
+    return
+  }
   Object.assign(form, {
     name: apiKey.name,
-    groupRouteStrategy: apiKey.groupRouteStrategy ?? 'priority_failover',
-    groupBindings: bindings.length ? bindings : [createGroupBindingFormRow()],
+    groupRouteStrategy: apiKey.groupRouteStrategy,
+    groupBindings: bindings,
     status: apiKey.status,
     expiresAt: parseDatePickerValue(apiKey.expiresAt),
     description: apiKey.description ?? '',
@@ -1124,10 +1131,9 @@ async function openEdit(apiKey: ApiKeySummary) {
   modalOpen.value = true
 }
 
-function normalizeGroupBindingWeight(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(numeric)) return 1
-  return Math.min(100, Math.max(1, Math.trunc(numeric)))
+function normalizeGroupBindingWeight(value: number): number {
+  if (!Number.isFinite(value)) return 1
+  return Math.min(100, Math.max(1, Math.trunc(value)))
 }
 
 function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBindingFormStatus = 'active', weight = 1): ApiKeyGroupBindingFormRow {
@@ -1143,9 +1149,12 @@ function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBi
 function createAvailabilityScheduleForm(schedule?: ApiKeyAvailabilitySchedule): ApiKeyAvailabilityScheduleForm {
   return {
     enabled: schedule?.enabled === true,
+    timezone: schedule?.timezone ?? defaultScheduleTimezone(),
     windows: schedule?.windows?.length
       ? schedule.windows.map((window) => createScheduleWindowFormRow(window.daysOfWeek, window.start, window.end))
-      : [createScheduleWindowFormRow()]
+      : [createScheduleWindowFormRow()],
+    dateRange: cloneScheduleDateRange(schedule?.dateRange),
+    exceptions: cloneScheduleExceptions(schedule?.exceptions)
   }
 }
 
@@ -1386,24 +1395,35 @@ function availabilitySchedulePayload(): ApiKeyAvailabilitySchedulePayload | null
     return null
   }
   const windows = form.availabilitySchedule.windows.map((window) => ({
-    daysOfWeek: [...new Set(window.daysOfWeek.map((day) => Number(day)))].filter((day) => Number.isInteger(day) && day >= 1 && day <= 7).sort((left, right) => left - right),
+    daysOfWeek: normalizedScheduleDays(window.daysOfWeek),
     start: window.start,
     end: window.end
   }))
-  const invalidIndex = windows.findIndex((window) => !window.daysOfWeek.length || !window.start || !window.end || window.start === window.end)
+  const invalidIndex = windows.findIndex((window) => hasInvalidScheduleDays(window.daysOfWeek) || !window.start || !window.end || window.start === window.end)
   if (invalidIndex >= 0) {
     message.warning(`请完整填写第 ${invalidIndex + 1} 个自动启停时段`)
     return false
   }
   return {
     enabled: true,
+    timezone: form.availabilitySchedule.timezone,
     mode: 'allow_windows',
     windows: windows.map((window) => ({
       daysOfWeek: window.daysOfWeek,
       start: window.start as string,
       end: window.end as string
-    }))
+    })),
+    ...(form.availabilitySchedule.dateRange ? { dateRange: cloneScheduleDateRange(form.availabilitySchedule.dateRange) } : {}),
+    ...(form.availabilitySchedule.exceptions?.length ? { exceptions: cloneScheduleExceptions(form.availabilitySchedule.exceptions) } : {})
   }
+}
+
+function normalizedScheduleDays(days: number[]): number[] {
+  return [...new Set(days.map((day) => typeof day === 'number' ? day : Number.NaN))].sort((left, right) => left - right)
+}
+
+function hasInvalidScheduleDays(days: number[]): boolean {
+  return !days.length || days.some((day) => !Number.isInteger(day) || day < 1 || day > 7)
 }
 
 async function copyText(value: string) {
@@ -1429,6 +1449,26 @@ function inferGatewayBaseUrl() {
 function normalizeGatewayBaseUrl(value: string) {
   const trimmed = value.trim().replace(/\/+$/, '')
   return trimmed || inferGatewayBaseUrl()
+}
+
+function cloneScheduleDateRange(dateRange: ApiKeyAvailabilitySchedule['dateRange']): ApiKeyAvailabilitySchedule['dateRange'] {
+  return dateRange ? { ...dateRange } : undefined
+}
+
+function cloneScheduleExceptions(exceptions: ApiKeyAvailabilitySchedule['exceptions']): ApiKeyAvailabilitySchedule['exceptions'] {
+  return exceptions?.map((exception) => {
+    if (exception.action === 'allow') {
+      return {
+        date: exception.date,
+        action: 'allow',
+        windows: exception.windows.map((window) => ({ ...window }))
+      }
+    }
+    return {
+      date: exception.date,
+      action: 'deny'
+    }
+  })
 }
 
 async function removeApiKey(id: string) {

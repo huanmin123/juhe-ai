@@ -9,10 +9,13 @@ export interface AccountScheduleWindowFormRow {
 
 export interface AccountAvailabilityScheduleForm {
   enabled: boolean
+  timezone: string
   windows: AccountScheduleWindowFormRow[]
+  dateRange?: AccountAvailabilitySchedule['dateRange']
+  exceptions?: AccountAvailabilitySchedule['exceptions']
 }
 
-export type AccountAvailabilitySchedulePayload = Pick<AccountAvailabilitySchedule, 'enabled' | 'mode' | 'windows'>
+export type AccountAvailabilitySchedulePayload = AccountAvailabilitySchedule
 
 let scheduleWindowFormKeySeed = 0
 
@@ -29,9 +32,12 @@ export const weekdayOptions = [
 export function createAccountAvailabilityScheduleForm(schedule?: AccountAvailabilitySchedule): AccountAvailabilityScheduleForm {
   return {
     enabled: schedule?.enabled === true,
+    timezone: schedule?.timezone ?? defaultScheduleTimezone(),
     windows: schedule?.windows?.length
       ? schedule.windows.map((window) => createAccountScheduleWindowFormRow(window.daysOfWeek, window.start, window.end))
-      : [createAccountScheduleWindowFormRow()]
+      : [createAccountScheduleWindowFormRow()],
+    dateRange: cloneScheduleDateRange(schedule?.dateRange),
+    exceptions: cloneScheduleExceptions(schedule?.exceptions)
   }
 }
 
@@ -46,7 +52,7 @@ export function createAccountScheduleWindowFormRow(daysOfWeek = [1, 2, 3, 4, 5, 
 
 export function validateAccountAvailabilityScheduleForm(schedule: AccountAvailabilityScheduleForm): string | undefined {
   if (!schedule.enabled) return undefined
-  const invalidIndex = normalizedScheduleWindows(schedule).findIndex((window) => !window.daysOfWeek.length || !window.start || !window.end || window.start === window.end)
+  const invalidIndex = normalizedScheduleWindows(schedule).findIndex((window) => hasInvalidScheduleDays(window.daysOfWeek) || !window.start || !window.end || window.start === window.end)
   return invalidIndex >= 0 ? `请完整填写第 ${invalidIndex + 1} 个自动启停时段` : undefined
 }
 
@@ -54,12 +60,15 @@ export function buildAccountAvailabilitySchedulePayload(schedule: AccountAvailab
   if (!schedule.enabled) return null
   return {
     enabled: true,
+    timezone: schedule.timezone,
     mode: 'allow_windows',
     windows: normalizedScheduleWindows(schedule).map((window) => ({
       daysOfWeek: window.daysOfWeek,
       start: window.start as string,
       end: window.end as string
-    }))
+    })),
+    ...(schedule.dateRange ? { dateRange: cloneScheduleDateRange(schedule.dateRange) } : {}),
+    ...(schedule.exceptions?.length ? { exceptions: cloneScheduleExceptions(schedule.exceptions) } : {})
   }
 }
 
@@ -67,11 +76,14 @@ export function accountAvailabilityScheduleFormFingerprint(schedule: AccountAvai
   if (!schedule.enabled) return JSON.stringify({ enabled: false })
   return JSON.stringify({
     enabled: true,
+    timezone: schedule.timezone,
     windows: normalizedScheduleWindows(schedule).map((window) => ({
       daysOfWeek: window.daysOfWeek,
       start: window.start,
       end: window.end
-    }))
+    })),
+    dateRange: cloneScheduleDateRange(schedule.dateRange),
+    exceptions: cloneScheduleExceptions(schedule.exceptions)
   })
 }
 
@@ -92,10 +104,18 @@ export function accountScheduleTagColor(schedule?: AccountAvailabilitySchedule):
 
 function normalizedScheduleWindows(schedule: AccountAvailabilityScheduleForm): Array<{ daysOfWeek: number[]; start?: string; end?: string }> {
   return schedule.windows.map((window) => ({
-    daysOfWeek: [...new Set(window.daysOfWeek.map((day) => Number(day)))].filter((day) => Number.isInteger(day) && day >= 1 && day <= 7).sort((left, right) => left - right),
+    daysOfWeek: normalizedScheduleDays(window.daysOfWeek),
     start: window.start,
     end: window.end
   }))
+}
+
+function normalizedScheduleDays(days: number[]): number[] {
+  return [...new Set(days.map((day) => typeof day === 'number' ? day : Number.NaN))].sort((left, right) => left - right)
+}
+
+function hasInvalidScheduleDays(days: number[]): boolean {
+  return !days.length || days.some((day) => !Number.isInteger(day) || day < 1 || day > 7)
 }
 
 function scheduleWindowText(start: string, end: string): string {
@@ -185,4 +205,24 @@ function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; da
 function defaultScheduleTimezone(): string {
   if (typeof Intl === 'undefined') return 'Asia/Shanghai'
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
+}
+
+function cloneScheduleDateRange(dateRange: AccountAvailabilitySchedule['dateRange']): AccountAvailabilitySchedule['dateRange'] {
+  return dateRange ? { ...dateRange } : undefined
+}
+
+function cloneScheduleExceptions(exceptions: AccountAvailabilitySchedule['exceptions']): AccountAvailabilitySchedule['exceptions'] {
+  return exceptions?.map((exception) => {
+    if (exception.action === 'allow') {
+      return {
+        date: exception.date,
+        action: 'allow',
+        windows: exception.windows.map((window) => ({ ...window }))
+      }
+    }
+    return {
+      date: exception.date,
+      action: 'deny'
+    }
+  })
 }

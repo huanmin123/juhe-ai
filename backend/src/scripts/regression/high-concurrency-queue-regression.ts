@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import {
@@ -6,6 +7,18 @@ import {
   highConcurrencyGroupQueueSnapshot,
   waitForHighConcurrencyGroupCapacity
 } from '../../modules/gateway/openai-gateway-high-concurrency-queue.service.js'
+
+const highConcurrencyQueueSource = readFileSync(new URL('../../modules/gateway/openai-gateway-high-concurrency-queue.service.ts', import.meta.url), 'utf8')
+assert(
+  highConcurrencyQueueSource.includes('const candidates = queueItemsByAccountLane.get(accountLaneIndexKey(accountId, lane))'),
+  '账号释放唤醒必须通过账号+通道反向索引定位等待项'
+)
+assert(
+  !/for \(const state of queues\.values\(\)\)\s*{\s*if \(state\.lane !== lane\)/.test(highConcurrencyQueueSource),
+  '账号释放唤醒不应扫描全部分组队列'
+)
+assert(highConcurrencyQueueSource.includes('indexQueueItem(item)'), '短队列入队时应写入账号+通道反向索引')
+assert(highConcurrencyQueueSource.includes('unindexQueueItem(item)'), '短队列完成、取消或超时时应清理账号+通道反向索引')
 
 try {
   clearAccountConcurrency()

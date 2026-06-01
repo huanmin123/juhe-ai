@@ -2,7 +2,12 @@ import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { optionalNullableString, optionalString } from './value-utils.js'
+import { optionalString } from './value-utils.js'
+
+const proxyTypeValues = ['http', 'https', 'socks5', 'socks5h'] as const
+const proxyTestStatusValues = ['unknown', 'passed', 'warning', 'failed'] as const
+const proxyInputKeys = new Set(['name', 'description', 'type', 'host', 'port', 'username', 'password', 'enabled'])
+export type ProxyProfileTestStatus = typeof proxyTestStatusValues[number]
 
 interface ProxyRow {
   id: string
@@ -31,7 +36,7 @@ export interface ProxyProfileSummary {
   port: number
   username?: string
   enabled: boolean
-  testStatus: string
+  testStatus: ProxyProfileTestStatus
   latencyMs?: number
   outboundIp?: string
   outboundRegion?: string
@@ -174,7 +179,7 @@ function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
     port: row.port,
     username: row.username ?? undefined,
     enabled: row.enabled === 1,
-    testStatus: row.test_status,
+    testStatus: normalizeProxyTestStatus(row.test_status),
     latencyMs: row.latency_ms ?? undefined,
     outboundIp: row.outbound_ip ?? undefined,
     outboundRegion: row.outbound_region ?? undefined,
@@ -223,16 +228,19 @@ function proxyTestConfigSelectColumns(): string {
 }
 
 export function createProxy(input: Record<string, unknown>): ProxyProfileSummary {
+  assertKnownInputKeys(input, proxyInputKeys, '代理')
   const now = nowIso()
+  const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
+  const password = normalizeProxyPassword(input.password, hasPasswordInput)
   const proxy: ProxyProfileSummary = {
     id: newId('proxy'),
-    name: normalizedProxyName(input.name, '未命名代理'),
-    description: optionalString(input.description),
-    type: String(input.type ?? 'socks5h'),
-    host: String(input.host ?? ''),
-    port: Number(input.port ?? 0),
-    username: optionalNullableString(input.username) ?? undefined,
-    enabled: input.enabled !== false,
+    name: normalizedRequiredProxyName(input.name),
+    description: normalizeOptionalText(input.description, '代理描述'),
+    type: normalizedProxyType(input.type),
+    host: normalizedRequiredProxyHost(input.host),
+    port: normalizedProxyPort(input.port),
+    username: normalizeOptionalText(input.username, '代理用户名'),
+    enabled: normalizeOptionalBoolean(input.enabled, true, '代理启用状态'),
     testStatus: 'unknown',
     latencyMs: undefined,
     outboundIp: undefined,
@@ -246,7 +254,7 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
         INSERT INTO proxy_profiles (id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(proxy.id, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, input.password ? encryptJson({ password: input.password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
+      .run(proxy.id, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, password ? encryptJson({ password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
   } catch (error) {
     if (isDuplicateProxyNameError(error)) {
       throw new Error(`代理名称已存在：${proxy.name}`)
@@ -258,6 +266,7 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
 }
 
 export function updateProxy(id: string, input: Record<string, unknown>): ProxyProfileSummary | undefined {
+  assertKnownInputKeys(input, proxyInputKeys, '代理')
   const current = findProxy(id)
   if (!current) {
     return undefined
@@ -265,17 +274,19 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   const currentSecret = getBusinessDatabase()
     .prepare('SELECT password_encrypted FROM proxy_profiles WHERE id = ?')
     .get(id) as unknown as { password_encrypted?: string | null } | undefined
-  const shouldUpdatePassword = typeof input.password === 'string' && input.password.trim() !== ''
+  const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
+  const nextPassword = normalizeProxyPassword(input.password, hasPasswordInput)
+  const shouldUpdatePassword = hasPasswordInput
   const hasUsernameInput = Object.prototype.hasOwnProperty.call(input, 'username')
   const next: ProxyProfileSummary = {
     ...current,
-    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
-    description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
-    type: typeof input.type === 'string' ? input.type : current.type,
-    host: typeof input.host === 'string' ? input.host : current.host,
-    port: Number(input.port ?? current.port),
-    username: hasUsernameInput ? optionalNullableString(input.username) ?? undefined : current.username,
-    enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled
+    name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedRequiredProxyName(input.name) : current.name,
+    description: input.description === undefined ? current.description : normalizeOptionalText(input.description, '代理描述'),
+    type: Object.prototype.hasOwnProperty.call(input, 'type') ? normalizedProxyType(input.type) : current.type,
+    host: Object.prototype.hasOwnProperty.call(input, 'host') ? normalizedRequiredProxyHost(input.host) : current.host,
+    port: Object.prototype.hasOwnProperty.call(input, 'port') ? normalizedProxyPort(input.port) : current.port,
+    username: hasUsernameInput ? normalizeOptionalText(input.username, '代理用户名') : current.username,
+    enabled: input.enabled === undefined ? current.enabled : normalizeOptionalBoolean(input.enabled, true, '代理启用状态')
   }
   const shouldResetTestState = next.type !== current.type ||
     next.host !== current.host ||
@@ -283,7 +294,7 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
     next.username !== current.username ||
     shouldUpdatePassword
   const nextPasswordEncrypted = shouldUpdatePassword
-    ? encryptJson({ password: String(input.password) })
+    ? encryptJson({ password: nextPassword })
     : currentSecret?.password_encrypted ?? null
   assertProxyNameAvailable(next.name, id)
   try {
@@ -342,14 +353,13 @@ export function listEnabledProxyTestConfigs(limit = 20): ProxyProfileTestConfig[
 
 export function updateProxyTestState(
   id: string,
-  input: { testStatus: string; latencyMs?: number; outboundIp?: string | null; outboundRegion?: string | null; lastTestMessage?: string; lastTestedAt?: string }
+  input: { testStatus: string; latencyMs?: number | null; outboundIp?: string | null; outboundRegion?: string | null; lastTestMessage?: string | null; lastTestedAt?: string }
 ): ProxyProfileSummary | undefined {
   const testedAt = input.lastTestedAt ?? nowIso()
-  const latencyMs = typeof input.latencyMs === 'number' && Number.isFinite(input.latencyMs)
-    ? Math.max(0, Math.trunc(input.latencyMs))
-    : null
-  const outboundIp = input.outboundIp === undefined ? undefined : optionalString(input.outboundIp) ?? null
-  const outboundRegion = input.outboundRegion === undefined ? undefined : optionalString(input.outboundRegion) ?? null
+  const testStatus = normalizeProxyTestStatus(input.testStatus)
+  const latencyMs = normalizeProxyTestLatencyMs(input.latencyMs)
+  const outboundIp = input.outboundIp === undefined ? undefined : normalizeProxyTestText(input.outboundIp, '代理出口 IP')
+  const outboundRegion = input.outboundRegion === undefined ? undefined : normalizeProxyTestText(input.outboundRegion, '代理出口地区')
   const outboundUpdateSql = [
     outboundIp !== undefined ? 'outbound_ip = ?' : '',
     outboundRegion !== undefined ? 'outbound_region = ?' : ''
@@ -360,11 +370,11 @@ export function updateProxyTestState(
       WHERE id = ?
     `
   const params = [
-    input.testStatus,
+    testStatus,
     latencyMs,
     ...(outboundIp !== undefined ? [outboundIp] : []),
     ...(outboundRegion !== undefined ? [outboundRegion] : []),
-    optionalString(input.lastTestMessage) ?? null,
+    normalizeProxyTestText(input.lastTestMessage, '代理检测消息'),
     testedAt,
     nowIso(),
     id
@@ -478,8 +488,94 @@ function proxyPassword(row: Pick<ProxyRow, 'password_encrypted'>): string | unde
   return typeof decrypted.password === 'string' ? decrypted.password : undefined
 }
 
-function normalizedProxyName(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+function normalizedRequiredProxyName(value: unknown): string {
+  if (typeof value === 'string' && value.trim()) return value.trim()
+  throw new Error('代理名称不能为空')
+}
+
+function normalizedRequiredProxyHost(value: unknown): string {
+  if (typeof value === 'string' && value.trim()) return value.trim()
+  throw new Error('代理主机不能为空')
+}
+
+function normalizedProxyType(value: unknown): string {
+  if (typeof value === 'string' && proxyTypeValues.includes(value as typeof proxyTypeValues[number])) {
+    return value
+  }
+  throw new Error('代理类型无效')
+}
+
+function normalizedProxyPort(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error('代理端口必须是 1-65535 的整数')
+  }
+  return value
+}
+
+function normalizeOptionalText(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${label}必须是字符串`)
+  }
+  const text = value.trim()
+  return text || undefined
+}
+
+function normalizeOptionalBoolean(value: unknown, fallback: boolean, label: string): boolean {
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') {
+    throw new Error(`${label}必须是布尔值`)
+  }
+  return value
+}
+
+function normalizeProxyPassword(value: unknown, requiredWhenPresent: boolean): string | undefined {
+  if (value === undefined) {
+    if (requiredWhenPresent) {
+      throw new Error('代理密码不能为空')
+    }
+    return undefined
+  }
+  if (typeof value !== 'string') {
+    throw new Error('代理密码必须是字符串')
+  }
+  if (value.trim().length === 0 && requiredWhenPresent) {
+    throw new Error('代理密码不能为空')
+  }
+  return value
+}
+
+function normalizeProxyTestStatus(value: string): ProxyProfileTestStatus {
+  if (proxyTestStatusValues.includes(value as ProxyProfileTestStatus)) {
+    return value as ProxyProfileTestStatus
+  }
+  throw new Error('代理检测状态无效')
+}
+
+function normalizeProxyTestLatencyMs(value: unknown): number | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    throw new Error('代理检测延迟必须是非负整数')
+  }
+  return value
+}
+
+function normalizeProxyTestText(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string') {
+    throw new Error(`${label}必须是字符串`)
+  }
+  const text = value.trim()
+  return text || null
+}
+
+function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {
+  const unknownKeys = Object.keys(input).filter((key) => !allowedKeys.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
 }
 
 function assertProxyNameAvailable(name: string, excludeId?: string): void {

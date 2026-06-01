@@ -415,9 +415,11 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
 
 export function accountCredentialsForList(row: AccountListRow, includeCredentials = true): Record<string, unknown> {
   if (!includeCredentials) return {}
-  const credentialsEncrypted = row.access_type === 'authorized' && row.source_credentials_encrypted
+  if (row.access_type === 'authorized' && !row.source_credentials_encrypted) return {}
+  const credentialsEncrypted = row.access_type === 'authorized'
     ? row.source_credentials_encrypted
     : row.credentials_encrypted
+  if (!credentialsEncrypted) return {}
   const credentials = decryptJson<Record<string, unknown>>(credentialsEncrypted)
   if (row.access_type !== 'authorized') {
     return credentials
@@ -474,9 +476,10 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
 }
 
 function supportedModelAccountIdForRow(row: AccountListRow): string {
-  return row.access_type === 'authorized' && row.authorization_instance_source_account_id && row.source_provider_code
+  if (row.access_type !== 'authorized') return row.id
+  return row.authorization_instance_source_account_id && row.source_provider_code
     ? row.authorization_instance_source_account_id
-    : row.id
+    : ''
 }
 
 export function loadAccountAuthorizationUsageSummaries(

@@ -39,7 +39,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
     "providerCode": "openai",
     "type": "api_key",
     "status": "active",
-    "baseUrl": "https://api.openai.com/v1",
     "groupName": "默认 OpenAI 分组",
     "concurrencyLimit": 3,
     "priority": 50
@@ -106,7 +105,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `providerCode` | `openai` | 当前主要使用 OpenAI 供应商。 |
 | `type` | `api_key` | 账户类型，支持 `api_key`、`oauth`。 |
 | `status` | `active` | 账户状态，导入协议仅支持 `active`、`disabled`。 |
-| `baseUrl` | 供应商默认 Base URL | 写入 `credentials.base_url` 的默认值。 |
 | `groupId` | 无 | 目标分组 ID；优先级高于 `groupName`。 |
 | `groupName` | 无 | 目标分组名称；可按导入选项自动创建。 |
 | `proxyRef` | 无 | 默认代理引用。 |
@@ -114,7 +112,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `concurrencyLimit` | 系统默认 | 账户并发上限，必须大于 0。 |
 | `priority` | `0` | 调度优先级。 |
 | `accountExpiresAt` | 无 | 账户过期时间，使用可解析时间字符串。 |
-| `availabilitySchedule` | 无 | 自动启停计划；结构同账户接口，未填写表示不限制时段。 |
+| `availabilitySchedule` | 无 | 自动启停计划；结构同账户接口，启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`，未填写表示不限制时段。 |
 
 ## accounts 字段
 
@@ -133,7 +131,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `priority` | 否 | 调度优先级。 |
 | `supportedModels` | 否 | 支持模型列表。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
-| `availabilitySchedule` | 否 | 自动启停计划；`null` 表示不继承默认计划。 |
+| `availabilitySchedule` | 否 | 自动启停计划；启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`，`null` 表示不继承默认计划。 |
 | `credentials` | 是 | 凭据对象。 |
 | `notes` | 否 | 备注。 |
 
@@ -165,7 +163,8 @@ OAuth 账户：
 
 - `api_key` 账户必须有 `credentials.api_key`。
 - `oauth` 账户必须有 `credentials.refresh_token` 或 `credentials.access_token`。
-- `base_url` 未填时使用 `defaults.baseUrl` 或供应商默认 Base URL。
+- `credentials.base_url` 必须显式填写，不从 `defaults` 或供应商配置自动补值。
+- `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。
 
 ## proxies 字段
@@ -190,9 +189,9 @@ OAuth 账户：
 1. 只输出合法 JSON，不要输出解释。
 2. 顶层 type 固定为 juhe-ai-account-import，version 固定为 1。
 3. providerCode 默认 openai。
-4. API Key 账号使用 type: api_key，credentials.api_key 保存密钥。
-5. OAuth 账号使用 type: oauth，credentials.refresh_token / access_token / id_token 按原数据填写。
-6. 如果没有 base_url，使用 https://api.openai.com/v1。
+4. API Key 账号使用 type: api_key，credentials.api_key 和 credentials.base_url 必须显式填写。
+5. OAuth 账号使用 type: oauth，credentials.refresh_token / access_token / id_token 按原数据填写，并显式填写 credentials.base_url。
+6. 不要补写来源数据里不存在的凭据字段，也不要把字段改成 camelCase。
 7. 如果有代理，请放到 proxies 数组，并用账号的 proxyRef 引用。
 8. 不确定的信息放到 notes，不要自造凭据字段。
 ```

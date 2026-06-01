@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -30,11 +30,18 @@ type PageLike = {
 }
 
 try {
+  const lookupSource = readFileSync(new URL('../../storage/repository-lookups.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(
+    lookupSource,
+    /SELECT id, username, display_name FROM system_accounts ORDER BY created_at ASC, id ASC/,
+    '系统账户名称 lookup 不能保留无条件读取全部 system_accounts 的辅助函数'
+  )
+
   const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const teamAuthorizationId = seedTeamAuthorization(adminAccess)
   const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
-  const capturedOffsets: Array<{ sql: string; offset: number }> = []
+  const capturedOffsets: Array<{ sql: string; offset: number; params: SQLInputValue[] }> = []
 
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
@@ -43,7 +50,7 @@ try {
       statement.all = ((...params: SQLInputValue[]) => {
         const offsetParam = params[params.length - 1]
         if (typeof offsetParam === 'number') {
-          capturedOffsets.push({ sql, offset: offsetParam })
+          capturedOffsets.push({ sql, offset: offsetParam, params })
         }
         return originalAll(...params)
       }) as typeof statement.all
@@ -59,6 +66,7 @@ try {
     assertPageWindow('代理列表', repositories.listProxiesPage({ page: 999999, pageSize: 100 }))
     assertPageWindow('公告列表', repositories.listAnnouncementsPage({ page: 999999, pageSize: 100 }))
     assertPageWindow('外部来源系统列表', externalIntegrationSources.listExternalIntegrationSources({ page: 999999, pageSize: 100 }))
+    assertPageWindow('外部来源系统状态列表', externalIntegrationSources.listExternalIntegrationSources({ status: 'active', page: 999999, pageSize: 100 }))
     assertPageWindow('系统团队列表', repositories.listSystemTeamsPage(adminAccess, { page: 999999, pageSize: 100 }))
     assertPageWindow('统一授权列表', repositories.listResourceAuthorizationsPage({ status: 'all' }, adminAccess, { page: 999999, pageSize: 100 }))
 
@@ -75,6 +83,17 @@ try {
   assert(capturedOffsets.length >= 10, '回归应捕获基础管理列表和授权用量详情的分页 SQL')
   for (const captured of capturedOffsets) {
     assert(captured.offset <= 1000, `分页 SQL offset 不应超过 1000，实际为 ${captured.offset}：${compactSql(captured.sql)}`)
+  }
+  const externalSourceCalls = capturedOffsets.filter((captured) => /\bFROM\s+external_integration_sources\s+AS\s+sources\b/i.test(captured.sql))
+  assert(externalSourceCalls.length > 0, '回归应捕获外部来源系统列表 SQL')
+  for (const captured of externalSourceCalls) {
+    assert(!/\bexternal_integration_source_tokens\b/i.test(captured.sql), `外部来源系统列表不应在分页前 JOIN token 表：${compactSql(captured.sql)}`)
+    assert(!/\bGROUP\s+BY\b/i.test(captured.sql), `外部来源系统列表不应在分页前聚合 token 表：${compactSql(captured.sql)}`)
+    const plan = explainQueryPlan(database, captured.sql, captured.params)
+    const expectedIndex = /\bsources\.status\s+=\s+\?/i.test(captured.sql)
+      ? 'idx_external_integration_sources_status_updated'
+      : 'idx_external_integration_sources_updated'
+    assert(plan.some((detail) => detail.includes(expectedIndex)), `外部来源系统列表应使用 ${expectedIndex}：${plan.join(' | ')}`)
   }
 
   console.log('基础管理列表页码窗口回归通过：API Key、账户、分组、用户、代理、公告、外部来源、团队、统一授权和授权用量详情 offset 均限制在 1000 行内')
@@ -122,4 +141,9 @@ function seedTeamAuthorization(access: { systemAccountId: string; role: 'admin' 
 
 function compactSql(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim().slice(0, 240)
+}
+
+function explainQueryPlan(database: ReturnType<typeof databaseModule.getBusinessDatabase>, sql: string, params: SQLInputValue[]): string[] {
+  const rows = database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail?: string }>
+  return rows.map((row) => String(row.detail ?? ''))
 }

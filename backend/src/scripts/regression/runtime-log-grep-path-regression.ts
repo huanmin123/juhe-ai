@@ -19,7 +19,7 @@ try {
       level: 30,
       event: 'http_request_completed',
       path: '/__aisys__/api/runtime-logs/grep',
-      originalUrl: '/__aisys__/api/runtime-logs/grep?keyword=needle',
+      originalUrl: '/__aisys__/api/runtime-logs/grep?keywords=needle',
       msg: '日志搜索请求 needle'
     }),
     JSON.stringify({

@@ -10,7 +10,7 @@ export interface ExternalPublicApiField {
   type: string
   required: boolean
   description: string
-  example?: string | number | boolean
+  example?: unknown
 }
 
 export interface ExternalPublicApiHeader {
@@ -279,6 +279,95 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         }
       },
       {
+        id: 'account-usage',
+        name: '账号维度实际消耗聚合',
+        summary: '读取 sub2api-lite 已预聚合的账号维度实际用量事实。公益站用 accountId 映射本地登记的 sub2apiAccountId，生成贡献榜快照。',
+        status: 'available',
+        method: 'GET',
+        path: '/__aipublic__/account/usage',
+        headers: [authHeader],
+        query: [
+          {
+            name: 'range',
+            type: 'string',
+            required: false,
+            description: '快捷范围：today、last7d、last31d。公开接口只读取后台已维护的固定窗口。',
+            example: 'last7d'
+          },
+          {
+            name: 'page',
+            type: 'number',
+            required: false,
+            description: '分页页码，默认 1。',
+            example: 1
+          },
+          {
+            name: 'pageSize',
+            type: 'number',
+            required: false,
+            description: '每页数量，范围 1 到 100，默认 20。',
+            example: 20
+          },
+          {
+            name: 'keyword',
+            type: 'string',
+            required: false,
+            description: '按账号 ID、账号名称、供应商或账号类型做精确或前缀筛选。',
+            example: '公益站'
+          },
+          {
+            name: 'sortField',
+            type: 'string',
+            required: false,
+            description: '排序字段：requestCount、successCount、errorCount、errorRate、totalTokens、totalCost、activeDays、lastUsedAt。',
+            example: 'totalTokens'
+          },
+          {
+            name: 'sortOrder',
+            type: 'string',
+            required: false,
+            description: '排序方向：desc 或 asc，默认 desc。',
+            example: 'desc'
+          }
+        ],
+        responseExample: {
+          data: {
+            source: 'stats',
+            generatedAt: '2026-05-30T00:00:00.000Z',
+            statsLagSeconds: 60,
+            range: {
+              preset: 'last7d',
+              label: '最近7天',
+              startDate: '2026-05-24',
+              endDate: '2026-05-30',
+              days: 7,
+              maxDays: 31
+            },
+            rangeReady: true,
+            page: 1,
+            pageSize: 20,
+            pageUpperBound: 1,
+            hasMore: false,
+            items: [
+              {
+                rank: 1,
+                dimension: 'account',
+                accountId: 'acc_xxx',
+                accountName: '公益站-青芽主通道',
+                providerCode: 'openai',
+                requestCount: 1280,
+                totalTokens: 842000,
+                cacheReadTokens: 126000,
+                cacheRate: 0.2442,
+                totalCost: 12.36,
+                activeDays: 7,
+                lastUsedAt: '2026-05-30T00:00:00.000Z'
+              }
+            ]
+          }
+        }
+      },
+      {
         id: 'access-info',
         name: '公益接入信息',
         summary: '返回公开接口可用范围和边界说明，不返回普通 API Key、上游账号凭据或公益站业务配置。',
@@ -293,12 +382,13 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             generatedAt: '2026-05-30T00:00:00.000Z',
             publicApiPrefix: '/__aipublic__',
             dataDimension: 'client_ip',
+            supportedDimensions: ['client_ip', 'account'],
             authType: 'Bearer',
             supportedRanges: ['today', 'last7d', 'last31d'],
             supportedMetrics: ['totalTokens', 'totalCost', 'requestCount'],
             boundary: {
-              provides: ['来源系统 Bearer token 鉴权', 'IP 维度聚合事实'],
-              notProvided: ['公益站用户维度排行榜快照', 'IP 到公益站用户的业务归属']
+              provides: ['来源系统 Bearer token 鉴权', 'IP 维度聚合事实', '账号维度实际消耗聚合事实'],
+              notProvided: ['公益站用户维度排行榜快照', 'IP 或账号到公益站业务身份的归属']
             }
           }
         }
@@ -419,18 +509,20 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           fields: [
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
             { name: 'name', type: 'string', required: true, description: 'API Key 名称。', example: '公益站访问密钥' },
-            { name: 'groupId', type: 'string', required: false, description: '绑定分组 ID；与 groupName、groupBindings 至少提供一个。', example: 'grp_xxx' },
-            { name: 'groupName', type: 'string', required: false, description: '绑定分组名称；与 groupId、groupBindings 至少提供一个。', example: '福利' },
+            { name: 'groupBindings', type: 'array', required: true, description: 'API Key 分组绑定数组，1 到 20 项；每项包含 groupId，可选 priority、weight 和 status。', example: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }] },
+            { name: 'groupRouteStrategy', type: 'string', required: false, description: '分组路由策略：priority_failover、round_robin 或 weighted_round_robin，默认 priority_failover。', example: 'priority_failover' },
             { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled，默认 active。', example: 'active' },
             { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示不限制。' }
           ],
           example: {
             targetUsername: 'huanmin',
             name: '公益站访问密钥',
-            groupId: 'grp_xxx',
+            groupBindings: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }],
+            groupRouteStrategy: 'priority_failover',
             status: 'active',
             availabilitySchedule: {
               enabled: true,
+              mode: 'allow_windows',
               windows: [{ daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }]
             }
           }
@@ -441,7 +533,16 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             generatedAt: '2026-05-30T00:00:00.000Z',
             action: 'created',
             target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
-            apiKey: { id: 'key_xxx', name: '公益站访问密钥', keyPrefix: 'juis_xxx', key: 'juis_xxx_plain_once', status: 'active', groupId: 'grp_xxx', groupName: '福利', availabilitySchedule: { enabled: true } }
+            apiKey: {
+              id: 'key_xxx',
+              name: '公益站访问密钥',
+              keyPrefix: 'juis_xxx',
+              key: 'juis_xxx_plain_once',
+              status: 'active',
+              groupRouteStrategy: 'priority_failover',
+              groupBindings: [{ groupId: 'grp_xxx', groupName: '福利', priority: 1, weight: 1, status: 'active' }],
+              availabilitySchedule: { enabled: true, mode: 'allow_windows' }
+            }
           }
         }
       },
@@ -461,13 +562,16 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'apiKeyId', type: 'string', required: true, description: 'API Key ID。', example: 'key_xxx' },
             { name: 'name', type: 'string', required: false, description: '新的 API Key 名称。' },
             { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled。', example: 'disabled' },
-            { name: 'groupId', type: 'string', required: false, description: '新的主绑定分组 ID。', example: 'grp_xxx' },
+            { name: 'groupBindings', type: 'array', required: false, description: '新的 API Key 分组绑定数组；提供时按当前数组替换绑定关系，1 到 20 项。', example: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }] },
+            { name: 'groupRouteStrategy', type: 'string', required: false, description: '分组路由策略：priority_failover、round_robin 或 weighted_round_robin。', example: 'round_robin' },
             { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示保留。' }
           ],
           example: {
             targetUsername: 'huanmin',
             apiKeyId: 'key_xxx',
             status: 'disabled',
+            groupBindings: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }],
+            groupRouteStrategy: 'round_robin',
             availabilitySchedule: null
           }
         },
@@ -477,7 +581,14 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             generatedAt: '2026-05-30T00:00:00.000Z',
             action: 'updated',
             target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
-            apiKey: { id: 'key_xxx', name: '公益站访问密钥', keyPrefix: 'juis_xxx', status: 'disabled', groupId: 'grp_xxx', groupName: '福利' }
+            apiKey: {
+              id: 'key_xxx',
+              name: '公益站访问密钥',
+              keyPrefix: 'juis_xxx',
+              status: 'disabled',
+              groupRouteStrategy: 'round_robin',
+              groupBindings: [{ groupId: 'grp_xxx', groupName: '福利', priority: 1, weight: 1, status: 'active' }]
+            }
           }
         }
       },
@@ -508,7 +619,14 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             generatedAt: '2026-05-30T00:00:00.000Z',
             action: 'deleted',
             target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
-            apiKey: { id: 'key_xxx', name: '公益站访问密钥', keyPrefix: 'juis_xxx', status: 'active', groupId: 'grp_xxx', groupName: '福利' }
+            apiKey: {
+              id: 'key_xxx',
+              name: '公益站访问密钥',
+              keyPrefix: 'juis_xxx',
+              status: 'active',
+              groupRouteStrategy: 'priority_failover',
+              groupBindings: [{ groupId: 'grp_xxx', groupName: '福利', priority: 1, weight: 1, status: 'active' }]
+            }
           }
         }
       },
@@ -620,6 +738,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             status: 'active',
             availabilitySchedule: {
               enabled: true,
+              mode: 'allow_windows',
               windows: [{ daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }]
             },
             externalId: 'account-registration:12'
@@ -649,7 +768,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               boundGroupId: 'grp_xxx',
               boundGroupName: '福利',
               schedulable: true,
-              availabilitySchedule: { enabled: true }
+              availabilitySchedule: { enabled: true, mode: 'allow_windows' }
             },
             externalId: 'account-registration:12'
           }

@@ -20,7 +20,7 @@ const createSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional()
-})
+}).strict()
 
 const updateSchema = z.object({
   displayName: z.string().trim().min(1).optional(),
@@ -30,7 +30,7 @@ const updateSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional()
-})
+}).strict()
 
 systemAccountsRouter.get('/', requireAdmin, (req, res) => {
   res.json(ok(listSystemAccountsPage(parseSystemAccountListOptions(req.query))))

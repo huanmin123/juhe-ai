@@ -20,7 +20,9 @@ const proxySchema = z.object({
   username: z.string().optional(),
   password: z.string().optional(),
   enabled: z.boolean().optional()
-})
+}).strict()
+
+const proxyUpdateSchema = proxySchema.partial().strict()
 
 proxiesRouter.get('/options', (req, res) => {
   res.json(ok(listProxyOptions(parseProxyOptionListOptions(req.query))))
@@ -101,7 +103,12 @@ proxiesRouter.post('/', requireAdmin, mutationGuard({
 
 proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
   try {
-    const body = req.body as Record<string, unknown>
+    const parsed = proxyUpdateSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('代理参数无效'))
+      return
+    }
+    const body = parsed.data as Record<string, unknown>
     const proxy = runLoggedOperation(() => {
       const before = findProxy(req.params.id)
       const proxy = updateProxy(req.params.id, body)

@@ -1,11 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { getBusinessDatabase } from './database.js'
-import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
+import { listRequestQuotaHourlyWindowHours } from './request-quota-hourly-windows.repository.js'
 import { dateKey, hourKey, monthKey } from './usage-stats-helpers.js'
 import { DAY_MS, HOUR_MS } from './usage-stats-window-helpers.js'
-
-const QUOTA_HOURLY_WINDOW_HOURS = [1, 3, 6, 12, 24, 72, 168, 720] as const
 
 export function refreshUsageQuotaHourlyWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
   const windows = usageQuotaHourlyWindows()
@@ -92,23 +89,7 @@ export function refreshAuthorizationCurrentMonthCostRankSnapshot(
 }
 
 function usageQuotaHourlyWindows(): number[] {
-  const windows = new Set<number>(QUOTA_HOURLY_WINDOW_HOURS)
-  for (const row of quotaLimitRows()) {
-    const limits = parseRequestQuotaLimitsJson(row.limits_json)
-    if (limits.hourly?.enabled) {
-      windows.add(limits.hourly.hours)
-    }
-  }
-  return [...windows].filter((value) => Number.isInteger(value) && value > 0).sort((left, right) => left - right)
-}
-
-function quotaLimitRows(): Array<{ limits_json: string | null }> {
-  const database = getBusinessDatabase()
-  return [
-    ...database.prepare('SELECT quota_limits_json AS limits_json FROM api_keys WHERE quota_limits_json IS NOT NULL').all(),
-    ...database.prepare('SELECT limits_json FROM resource_authorizations WHERE limits_json IS NOT NULL').all(),
-    ...database.prepare('SELECT limits_json FROM resource_authorization_grants WHERE limits_json IS NOT NULL').all()
-  ] as unknown as Array<{ limits_json: string | null }>
+  return listRequestQuotaHourlyWindowHours()
 }
 
 function refreshUsageRankSnapshotFromStats(database: DatabaseSync, input: {

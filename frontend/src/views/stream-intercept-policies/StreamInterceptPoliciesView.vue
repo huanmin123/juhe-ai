@@ -555,7 +555,7 @@ function buildPayload(): StreamInterceptPolicyPayload {
   const payload: StreamInterceptPolicyPayload = {
     name: form.name.trim(),
     enabled: form.enabled,
-    priority: form.priority,
+    priority: requiredPositiveInt(form.priority, '优先级', 9999),
     match: compactObject({
       eventTypes: splitList(form.eventTypes),
       dataTypes: splitList(form.dataTypes),
@@ -568,15 +568,19 @@ function buildPayload(): StreamInterceptPolicyPayload {
     action: form.action,
     notes: form.notes.trim() || undefined
   }
-  const ttl = positiveInt(form.avoidanceTtlSeconds)
-  if (streamInterceptActionUsesTtl(form.action) && ttl) payload.avoidanceTtlSeconds = ttl
+  if (streamInterceptActionUsesTtl(form.action)) {
+    payload.avoidanceTtlSeconds = requiredPositiveInt(form.avoidanceTtlSeconds, '避让秒数', 86400)
+  }
   return payload
 }
 
 function validateForm(): string | undefined {
   if (!form.name.trim()) return '请填写策略名称'
+  if (!positiveInt(form.priority, 9999)) return '优先级必须是 1-9999 的整数'
+  const listValidation = validateMatchLists()
+  if (listValidation) return listValidation
   if (!hasAnyMatcher()) return '至少需要填写一个匹配条件'
-  if (streamInterceptActionUsesTtl(form.action) && !positiveInt(form.avoidanceTtlSeconds)) return '请填写避让秒数'
+  if (streamInterceptActionUsesTtl(form.action) && !positiveInt(form.avoidanceTtlSeconds, 86400)) return '避让秒数必须是 1-86400 的整数'
   return undefined
 }
 
@@ -620,25 +624,12 @@ function hasAnyMatcher(): boolean {
 
 function splitList(value: unknown): string[] | undefined {
   if (Array.isArray(value)) {
-    const items = uniqueList(value.map((item) => String(item)))
+    const items = value.map((item) => String(item).trim()).filter(Boolean)
     return items.length ? items : undefined
   }
   if (typeof value !== 'string') return undefined
-  const items = uniqueList(value.split(listSeparators))
+  const items = value.split(listSeparators).map((item) => item.trim()).filter(Boolean)
   return items.length ? items : undefined
-}
-
-function uniqueList(values: string[]): string[] {
-  const seen = new Set<string>()
-  const output: string[] = []
-  for (const value of values) {
-    const item = value.trim()
-    if (!item || seen.has(item)) continue
-    seen.add(item)
-    output.push(item)
-    if (output.length >= 50) break
-  }
-  return output
 }
 
 function formatList(values?: string[]): string {
@@ -655,9 +646,32 @@ function compactObject<T extends Record<string, string[] | undefined>>(value: T)
   return output
 }
 
-function positiveInt(value: unknown): number | undefined {
-  const numberValue = Number(value)
-  return Number.isFinite(numberValue) && numberValue > 0 ? Math.trunc(numberValue) : undefined
+function positiveInt(value: unknown, max = Number.POSITIVE_INFINITY): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value > 0 && value <= max ? value : undefined
+}
+
+function requiredPositiveInt(value: unknown, label: string, max = Number.POSITIVE_INFINITY): number {
+  const numberValue = positiveInt(value, max)
+  if (!numberValue) throw new Error(`${label}无效`)
+  return numberValue
+}
+
+function validateMatchLists(): string | undefined {
+  const fields: Array<[unknown, string]> = [
+    [form.eventTypes, '事件类型'],
+    [form.dataTypes, '数据类型'],
+    [form.errorCodes, '错误码'],
+    [form.errorTypes, '错误类型'],
+    [form.textIncludes, '包含文本'],
+    [form.textExcludes, '排除文本'],
+    [form.jsonPathsExists, 'JSON 路径']
+  ]
+  for (const [value, label] of fields) {
+    const items = splitList(value) ?? []
+    if (items.length > 50) return `${label}不能超过 50 项`
+    if (items.some((item) => item.length > 200)) return `${label}单项不能超过 200 个字符`
+  }
+  return undefined
 }
 
 function searchableText(policy: StreamInterceptPolicySummary): string {

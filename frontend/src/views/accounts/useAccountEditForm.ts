@@ -43,7 +43,7 @@ import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDER } from './accountOptions'
 import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
-import { buildAccountSavePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm } from './accountSavePayload'
+import { buildAccountSavePayload, buildAccountUpdatePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm } from './accountSavePayload'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -235,6 +235,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function openEdit(account: AccountSummary) {
     const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+    const defaults = defaultForm(account.providerCode, account.type)
+    const baseUrl = isAuthorizedAccount(account)
+      ? defaults.baseUrl
+      : credentialBaseUrlForForm(account.credentials, '账户凭据')
+    const policyRules = loadCredentialPolicyRules(account.credentials, '账户策略')
+    if (!baseUrl || !policyRules) return
     editingId.value = account.id
     editingAccountDetail.value = account
     cloningSourceId.value = undefined
@@ -243,7 +249,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const selectedGroup = account.boundGroupId
       ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
       : undefined
-    Object.assign(form, defaultForm(account.providerCode, account.type), {
+    Object.assign(form, defaults, {
       providerCode: account.providerCode,
       name: account.name,
       type: account.type,
@@ -254,7 +260,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
       group: selectedGroup,
       apiKey: isAuthorizedAccount(account) ? '' : asString(account.credentials.api_key),
-      baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
+      baseUrl,
       accessToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.access_token),
       refreshToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.refresh_token),
       supportedModels: [...(account.supportedModels ?? [])],
@@ -263,8 +269,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
     cloningScheduleFingerprint.value = undefined
-    accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
-    accountStreamInterceptRules.value = loadAccountStreamInterceptRules(account.credentials)
+    accountErrorPolicyRules.value = policyRules.error
+    accountStreamInterceptRules.value = policyRules.stream
     authResult.value = undefined
     modalOpen.value = true
     void options.loadGroupOptions('', true, {
@@ -290,7 +296,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = account.id
     creatingAccountScopeParams.value = cloneScopeParams
     void options.loadAccountOptions(cloneScopeParams?.systemAccountId)
-    fillCloneForm(account, account.credentials)
+    if (!fillCloneForm(account, account.credentials)) return
     modalOpen.value = true
     void options.loadGroupOptions('', true, {
       providerCode: account.providerCode,
@@ -343,9 +349,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         : await api.myAccounts.detail(accountId)
       if (editingId.value !== accountId) return
       editingAccountDetail.value = detail
+      const baseUrl = credentialBaseUrlForForm(detail.credentials, '账户详情凭据')
+      const policyRules = loadCredentialPolicyRules(detail.credentials, '账户详情策略')
+      if (!baseUrl || !policyRules) return
       const nextDetailPatch: Partial<AccountFormModel> = {
         apiKey: asString(detail.credentials.api_key),
-        baseUrl: asString(detail.credentials.base_url) || form.baseUrl || 'https://api.openai.com/v1',
+        baseUrl,
         accessToken: asString(detail.credentials.access_token),
         refreshToken: asString(detail.credentials.refresh_token),
         supportedModels: [...(detail.supportedModels ?? [])]
@@ -358,8 +367,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       if (detail.boundGroupId || detail.boundGroupName) {
         setFormGroup(groupSelectionForId(detail.boundGroupId, detail.boundGroupName))
       }
-      accountErrorPolicyRules.value = loadAccountErrorPolicyRules(detail.credentials)
-      accountStreamInterceptRules.value = loadAccountStreamInterceptRules(detail.credentials)
+      accountErrorPolicyRules.value = policyRules.error
+      accountStreamInterceptRules.value = policyRules.stream
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '加载账户详情失败'))
@@ -413,10 +422,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
     try {
       if (editingId.value) {
+        const updatePayload = buildAccountUpdatePayload(payload)
         if (options.isManagementView.value) {
-          await api.accounts.update(editingId.value, payload, editingAccountScopeParams())
+          await api.accounts.update(editingId.value, updatePayload, editingAccountScopeParams())
         } else {
-          await api.myAccounts.update(editingId.value, payload)
+          await api.myAccounts.update(editingId.value, updatePayload)
         }
         message.success('账户已更新')
       } else if (form.type === 'oauth') {
@@ -578,7 +588,31 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return { id: normalizedId, name: normalizedName }
   }
 
-  function fillCloneForm(account: AccountSummary, credentials: Record<string, unknown>): void {
+  function credentialBaseUrlForForm(credentials: Record<string, unknown>, label: string): string | undefined {
+    const baseUrl = asString(credentials.base_url)
+    if (!baseUrl) {
+      message.error(`${label}缺少 Base URL，请先修正账户凭据`)
+      return undefined
+    }
+    return baseUrl
+  }
+
+  function loadCredentialPolicyRules(credentials: Record<string, unknown>, label: string): { error: AccountErrorPolicyRuleForm[]; stream: AccountStreamInterceptRuleForm[] } | undefined {
+    try {
+      return {
+        error: loadAccountErrorPolicyRules(credentials),
+        stream: loadAccountStreamInterceptRules(credentials)
+      }
+    } catch (error) {
+      console.error(error)
+      message.error(`${label}配置异常，请先修正已保存的账户凭据`)
+      return undefined
+    }
+  }
+
+  function fillCloneForm(account: AccountSummary, credentials: Record<string, unknown>): boolean {
+    const policyRules = loadCredentialPolicyRules(credentials, '克隆来源策略')
+    if (!policyRules) return false
     const selectedGroup = account.boundGroupId
       ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
       : undefined
@@ -594,7 +628,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
       group: selectedGroup,
       apiKey: '',
-      baseUrl: asString(credentials.base_url) || defaults.baseUrl || 'https://api.openai.com/v1',
+      baseUrl: asString(credentials.base_url),
       accessToken: '',
       refreshToken: '',
       callbackUrl: '',
@@ -604,9 +638,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       notes: account.notes ?? ''
     })
     cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
-    accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)
-    accountStreamInterceptRules.value = loadAccountStreamInterceptRules(credentials)
+    accountErrorPolicyRules.value = policyRules.error
+    accountStreamInterceptRules.value = policyRules.stream
     authResult.value = undefined
+    return true
   }
 
   function applyCloneCredentialDetails(account: AccountSummary, credentials: Record<string, unknown>): void {
@@ -623,10 +658,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
     }
     if (accountErrorPolicyRules.value.length === 0) {
-      accountErrorPolicyRules.value = loadAccountErrorPolicyRules(credentials)
+      const policyRules = loadCredentialPolicyRules(credentials, '克隆来源策略')
+      if (policyRules) accountErrorPolicyRules.value = policyRules.error
     }
     if (accountStreamInterceptRules.value.length === 0) {
-      accountStreamInterceptRules.value = loadAccountStreamInterceptRules(credentials)
+      const policyRules = loadCredentialPolicyRules(credentials, '克隆来源策略')
+      if (policyRules) accountStreamInterceptRules.value = policyRules.stream
     }
   }
 

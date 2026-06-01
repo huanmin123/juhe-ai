@@ -266,6 +266,14 @@ const DEFAULT_PROXY_TYPE = 'socks5h'
 
 const form = reactive({ name: '', description: '', type: DEFAULT_PROXY_TYPE, host: '', port: 7890, username: '', password: '', enabled: true })
 
+function proxySavePayload(): Record<string, unknown> {
+  const payload: Record<string, unknown> = { ...form }
+  if (!form.password.trim()) {
+    delete payload.password
+  }
+  return payload
+}
+
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 180, fixed: 'left' },
   { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
@@ -416,13 +424,14 @@ const saveProxy = submitAction('proxies.save', async () => {
   }
   try {
     const targetId = editingId.value
+    const payload = proxySavePayload()
     if (targetId) {
-      const updated = await api.proxies.update(targetId, { ...form })
+      const updated = await api.proxies.update(targetId, payload)
       updateProxyItems((item) => item.id === targetId, () => updated)
       message.success('代理已更新')
       void loadData({ quiet: true })
     } else {
-      await api.proxies.create({ ...form })
+      await api.proxies.create(payload)
       message.success('代理已创建')
       resetPagination()
       await loadData()

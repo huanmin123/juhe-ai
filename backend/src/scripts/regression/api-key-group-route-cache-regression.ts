@@ -328,7 +328,8 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
     type: 'oauth',
     credentials: {
       access_token: 'access-route-cache-primary',
-      refresh_token: 'refresh-route-cache-primary'
+      refresh_token: 'refresh-route-cache-primary',
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: primaryGroup.id,
     status: 'active',

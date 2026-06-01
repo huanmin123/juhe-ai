@@ -13,6 +13,7 @@ import {
   apiKeyAvailabilityScheduleJson,
   isApiKeyAvailabilityScheduleInputPresent
 } from './api-key-availability-schedule.js'
+import { maxApiKeyGroupBindings } from './api-key-group-binding-limits.js'
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
 import { apiKeySummariesFromRows, type ApiKeyRow } from './api-key-mappers.js'
@@ -20,13 +21,29 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
+import { rememberRequestQuotaHourlyWindowsFromJson } from './request-quota-hourly-windows.repository.js'
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
-import { optionalNullableServerDateTimeIso, optionalNullableString, optionalServerDateTimeIso, optionalString } from './value-utils.js'
+import { optionalServerDateTimeIso, optionalString } from './value-utils.js'
 
 const API_KEY_GROUP_BOUNDARY_ERROR = 'API Key 只能绑定自己的分组'
 const API_KEY_GROUP_PROVIDER_ERROR = 'API Key 不能绑定不同供应商的分组'
-const MAX_API_KEY_GROUP_BINDINGS = 20
+const apiKeyMutationInputKeys = new Set([
+  'name',
+  'description',
+  'groupBindings',
+  'groupRouteStrategy',
+  'status',
+  'expiresAt',
+  'quotaLimits',
+  'availabilitySchedule'
+])
+const apiKeyGroupBindingInputKeys = new Set([
+  'groupId',
+  'priority',
+  'weight',
+  'status'
+])
 
 export interface ApiKeyListOptions {
   page?: number
@@ -126,6 +143,7 @@ function apiKeyListColumns(): string {
 }
 
 export function createApiKeyRecord(input: Record<string, unknown>, access?: AccessScope): ApiKeySummary & { key: string } {
+  assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 创建参数')
   const now = nowIso()
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
@@ -149,13 +167,13 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     id: newId('key'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
-    name: normalizedApiKeyName(input.name, '未命名 API Key'),
-    description: optionalString(input.description),
+    name: normalizedApiKeyName(input.name),
+    description: normalizeOptionalApiKeyDescription(input.description),
     keyPrefix,
-    status: input.status === 'disabled' ? 'disabled' : 'active',
+    status: normalizeApiKeyStatus(input.status, 'active'),
     groupRouteStrategy,
     groupBindings,
-    expiresAt: optionalServerDateTimeIso(input.expiresAt),
+    expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
     availabilitySchedule,
     usage: emptyAccountUsageSummary(),
@@ -165,6 +183,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
     const insertColumns = [
       'id',
       'system_account_id',
@@ -193,9 +212,9 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       record.status,
       record.groupRouteStrategy,
       record.expiresAt ?? null,
-      requestQuotaLimitsJson(record.quotaLimits),
+      quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
-      JSON.stringify(input.scopes ?? []),
+      JSON.stringify([]),
       now,
       now
     ]
@@ -205,6 +224,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
         VALUES (${insertColumns.map(() => '?').join(', ')})
       `)
       .run(...insertValues)
+    rememberRequestQuotaHourlyWindowsFromJson(quotaLimitsJson, database, now)
     replaceApiKeyGroupBindings(database, record.id, systemAccountId, bindings, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -227,6 +247,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
 }
 
 export function updateApiKey(id: string, input: Record<string, unknown>, access?: AccessScope): ApiKeySummary | undefined {
+  assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 更新参数')
   const systemAccountId = apiKeySystemAccountId(id)
   if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
     return undefined
@@ -245,7 +266,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     : undefined
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
   const nextExpiresAt = hasExpiresAtInput
-    ? optionalNullableServerDateTimeIso(input.expiresAt) ?? undefined
+    ? normalizeOptionalApiKeyExpiresAt(input.expiresAt)
     : current.expiresAt
   const hasAvailabilityScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
   const nextAvailabilitySchedule = hasAvailabilityScheduleInput
@@ -257,9 +278,11 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     : current.groupRouteStrategy
   const next: ApiKeySummary = {
     ...current,
-    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
-    description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
-    status: input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : current.status,
+    name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
+    description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
+    status: Object.prototype.hasOwnProperty.call(input, 'status')
+      ? normalizeApiKeyStatus(input.status, current.status)
+      : current.status,
     groupRouteStrategy: nextGroupRouteStrategy,
     groupBindings: nextBindings ? apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), nextBindings) : current.groupBindings,
     expiresAt: nextExpiresAt,
@@ -271,6 +294,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   const now = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const quotaLimitsJson = requestQuotaLimitsJson(next.quotaLimits)
     const updates = [
       'name = ?',
       'description = ?',
@@ -287,7 +311,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       next.status,
       next.groupRouteStrategy,
       next.expiresAt ?? null,
-      requestQuotaLimitsJson(next.quotaLimits),
+      quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
       now
     ]
@@ -295,6 +319,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     database
       .prepare(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ? AND system_account_id = ?`)
       .run(...updateValues)
+    rememberRequestQuotaHourlyWindowsFromJson(quotaLimitsJson, database, now)
     if (nextBindings) {
       replaceApiKeyGroupBindings(database, id, systemAccountId, nextBindings, now)
     }
@@ -386,16 +411,17 @@ function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiK
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('API Key 分组绑定参数无效')
   }
-  const item = value as { groupId?: unknown; priority?: unknown; weight?: unknown; status?: unknown }
+  const item = value as Record<string, unknown> & { groupId?: unknown; priority?: unknown; weight?: unknown; status?: unknown }
+  assertKnownInputKeys(item, apiKeyGroupBindingInputKeys, 'API Key 分组绑定参数')
   const groupId = optionalString(item.groupId)?.trim()
   if (!groupId) {
     throw new Error('API Key 分组无效')
   }
   const rawPriority = item.priority
-  const priority = typeof rawPriority === 'number' && Number.isInteger(rawPriority) && rawPriority > 0
-    ? rawPriority
-    : index + 1
-  const status = item.status === 'disabled' ? 'disabled' : 'active'
+  const priority = rawPriority === undefined
+    ? index + 1
+    : normalizeApiKeyGroupBindingPriority(rawPriority)
+  const status = normalizeApiKeyGroupBindingStatus(item.status)
   return { groupId, priority, weight: normalizeApiKeyGroupBindingWeight(item.weight), status }
 }
 
@@ -403,8 +429,8 @@ function normalizeApiKeyGroupBindings(inputs: ApiKeyGroupBindingInput[], systemA
   if (!inputs.length) {
     throw new Error('API Key 至少需要绑定一个分组')
   }
-  if (inputs.length > MAX_API_KEY_GROUP_BINDINGS) {
-    throw new Error(`API Key 最多绑定 ${MAX_API_KEY_GROUP_BINDINGS} 个分组`)
+  if (inputs.length > maxApiKeyGroupBindings) {
+    throw new Error(`API Key 最多绑定 ${maxApiKeyGroupBindings} 个分组`)
   }
   const seenGroupIds = new Set<string>()
   const activePriorities = new Set<number>()
@@ -510,8 +536,62 @@ function recordlessBindingPrefix(): string {
   return 'pending:'
 }
 
-function normalizedApiKeyName(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+function normalizedApiKeyName(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('API Key 名称不能为空')
+  }
+  return value.trim()
+}
+
+function normalizeOptionalApiKeyDescription(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') {
+    throw new Error('API Key 说明必须是字符串')
+  }
+  const description = value.trim()
+  if (!description) return undefined
+  if (description.length > 200) {
+    throw new Error('API Key 说明不能超过 200 个字符')
+  }
+  return description
+}
+
+function normalizeOptionalApiKeyExpiresAt(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('API Key 过期时间必须是有效时间字符串')
+  }
+  const normalized = optionalServerDateTimeIso(value)
+  if (!normalized) {
+    throw new Error('API Key 过期时间必须是有效时间字符串')
+  }
+  return normalized
+}
+
+function normalizeApiKeyStatus(value: unknown, fallback: 'active' | 'disabled'): 'active' | 'disabled' {
+  if (value === undefined) return fallback
+  if (value === 'active' || value === 'disabled') return value
+  throw new Error('API Key 状态无效')
+}
+
+function normalizeApiKeyGroupBindingPriority(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new Error('API Key 分组优先级必须是大于 0 的整数')
+  }
+  return value
+}
+
+function normalizeApiKeyGroupBindingStatus(value: unknown): 'active' | 'disabled' {
+  if (value === undefined) return 'active'
+  if (value === 'active' || value === 'disabled') return value
+  throw new Error('API Key 分组绑定状态无效')
+}
+
+function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {
+  const unknownKeys = Object.keys(input).filter((key) => !allowedKeys.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
 }
 
 function assertApiKeyNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {

@@ -214,9 +214,17 @@ try {
     assert(!/\busername\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '代理关键词搜索不应把 username 放进 WHERE')
   }
   assertBusinessIndexExists('idx_system_teams_name_lookup')
+  assertBusinessIndexExists('idx_proxy_profiles_updated')
+  assertBusinessIndexExists('idx_proxy_profiles_enabled_name_lookup')
   assertBusinessIndexExists('idx_proxy_profiles_name_lookup')
+  assertBusinessIndexExists('idx_accounts_proxy_profile')
   assertBusinessIndexMissing('idx_proxy_profiles_host_lookup')
   assertBusinessIndexMissing('idx_proxy_profiles_type_lookup')
+  assertQueryPlanUsesIndex(
+    'SELECT COUNT(*) AS account_count FROM accounts WHERE proxy_profile_id = ?',
+    [proxyMatched.id],
+    'idx_accounts_proxy_profile'
+  )
 
   console.log('系统团队和代理分页搜索回归通过：分页使用 pageSize+1，关键词仅按名称精确/前缀匹配并转义通配符')
 } finally {
@@ -240,4 +248,13 @@ function assertBusinessIndexMissing(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, undefined, `业务库不应创建代理长文本搜索索引 ${indexName}`)
+}
+
+function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
+  const rows = databaseModule.getBusinessDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params) as unknown as Array<{ detail?: string }>
+  const plan = rows.map((row) => row.detail ?? '').join('\n')
+  assert(plan.includes(indexName), `查询应使用索引 ${indexName}，实际计划：${plan}`)
+  assert(!/SCAN\s+accounts\b/i.test(plan), `代理占用检查不应全表扫描 accounts，实际计划：${plan}`)
 }

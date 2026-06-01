@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -70,6 +70,7 @@ async function main(): Promise<void> {
   const upstreamState: MockUpstreamState = { requests: [] }
 
   try {
+    assertSourceAvoidsPendingFailureArrayRebuilds()
     clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
     settingsRepository.updateSettings({
       temporaryUnschedulableRetryAttempts: 0,
@@ -90,6 +91,7 @@ async function main(): Promise<void> {
     await assertClientIpAvoidsFailedAccountAfterSwitch(baseUrl, seeded, upstreamState)
     assertServiceBypassesWhenAllCandidatesAvoided()
     assertServiceSharesAvoidanceAcrossGroupsForSameApiKey()
+    assertPendingFailureTrackerIsBoundedAndTransferSafe()
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -111,6 +113,17 @@ async function main(): Promise<void> {
     }
     rmSync(tempRoot, { recursive: true, force: true })
   }
+}
+
+function assertSourceAvoidsPendingFailureArrayRebuilds(): void {
+  const routesSource = readFileSync(new URL('../../modules/gateway/openai-gateway.routes.ts', import.meta.url), 'utf8')
+  assert(!routesSource.includes('[...currentPreflight.clientIpAccountAvoidanceTracker.pendingFailures]'), 'fallback 切组不能复制待确认账号失败数组')
+  assert(!routesSource.includes('pendingFailures.unshift(...'), 'fallback 切组不能通过 unshift 搬移待确认账号失败数组')
+  assert(routesSource.includes('transferClientIpAccountPendingFailures('), 'fallback 切组应使用有界转移函数传递待确认账号失败')
+
+  const serviceSource = readFileSync(new URL('../../modules/gateway/openai-gateway-client-ip-account-avoidance.service.ts', import.meta.url), 'utf8')
+  assert(serviceSource.includes('pendingFailureIndexByAccountId'), '待确认账号失败应维护按账号去重索引')
+  assert(serviceSource.includes('clientIpAccountAvoidanceMaxPendingFailures = 256'), '待确认账号失败应有固定上限')
 }
 
 async function assertClientIpAvoidsFailedAccountAfterSwitch(
@@ -205,6 +218,69 @@ function assertServiceSharesAvoidanceAcrossGroupsForSameApiKey(): void {
   assert.equal(otherApiKeyOrder.applied, false, '不同 API Key 不应共享来源账号回避状态')
   assert.deepEqual(otherApiKeyOrder.accounts.map((account) => account.id), accounts.map((account) => account.id))
   clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+}
+
+function assertPendingFailureTrackerIsBoundedAndTransferSafe(): void {
+  const scope = {
+    systemAccountId: 'sys_pending_boundary',
+    groupId: 'grp_pending_boundary',
+    apiKeyId: 'key_pending_boundary',
+    clientIp: '203.0.113.29'
+  }
+  const tracker = clientIpAvoidance.createClientIpAccountAvoidanceTracker(scope)
+  const repeated = createTestAccount('repeat-pending')
+  clientIpAvoidance.rememberClientIpAccountPendingFailure(tracker, repeated, {
+    errorPhase: 'upstream_response',
+    statusCode: 502,
+    errorCode: 'stale'
+  })
+  clientIpAvoidance.rememberClientIpAccountPendingFailure(tracker, repeated, {
+    errorPhase: 'upstream_response',
+    statusCode: 503,
+    errorCode: 'latest'
+  })
+  assert.equal(tracker.pendingFailures.length, 1, '同一请求内同账号失败应按账号去重')
+  assert.equal(tracker.pendingFailures[0]?.statusCode, 503, '重复账号失败应保留最新失败信息')
+  assert.equal(tracker.pendingFailureIndexByAccountId.size, 1, '待确认失败索引应同步去重')
+
+  for (let index = 0; index < 300; index += 1) {
+    clientIpAvoidance.rememberClientIpAccountPendingFailure(tracker, createTestAccount(`overflow-${index}`), {
+      errorPhase: 'upstream_request',
+      errorMessage: `overflow-${index}`
+    })
+  }
+  assert.equal(tracker.pendingFailures.length, 256, '单请求待确认账号失败数量应固定封顶')
+  assert.equal(tracker.pendingFailureIndexByAccountId.size, 256, '待确认失败索引大小应跟随固定上限')
+  assert(!tracker.pendingFailureIndexByAccountId.has('overflow-299'), '超过上限的待确认失败不应继续扩容')
+
+  const source = clientIpAvoidance.createClientIpAccountAvoidanceTracker(scope)
+  const target = clientIpAvoidance.createClientIpAccountAvoidanceTracker(scope)
+  const shared = createTestAccount('transfer-shared')
+  clientIpAvoidance.rememberClientIpAccountPendingFailure(target, shared, {
+    errorPhase: 'upstream_response',
+    statusCode: 500,
+    errorCode: 'target-old'
+  })
+  clientIpAvoidance.rememberClientIpAccountPendingFailure(source, shared, {
+    errorPhase: 'upstream_response',
+    statusCode: 502,
+    errorCode: 'source-new'
+  })
+  clientIpAvoidance.rememberClientIpAccountPendingFailure(source, createTestAccount('transfer-a'), {
+    errorPhase: 'upstream_request',
+    errorMessage: 'transfer-a'
+  })
+  clientIpAvoidance.rememberClientIpAccountPendingFailure(source, createTestAccount('transfer-b'), {
+    errorPhase: 'upstream_request',
+    errorMessage: 'transfer-b'
+  })
+  clientIpAvoidance.transferClientIpAccountPendingFailures(source, target)
+  assert.equal(source.pendingFailures.length, 0, '转移后来源 tracker 应清空待确认失败')
+  assert.equal(source.pendingFailureIndexByAccountId.size, 0, '转移后来源 tracker 索引应同步清空')
+  assert.equal(target.pendingFailures.length, 3, '转移到目标 tracker 时应去重追加而不是数组头插')
+  const sharedIndex = target.pendingFailureIndexByAccountId.get(shared.id)
+  assert.notEqual(sharedIndex, undefined, '目标 tracker 应保留共享账号索引')
+  assert.equal(target.pendingFailures[sharedIndex ?? -1]?.errorCode, 'source-new', '转移时同账号失败应更新为来源最新信息')
 }
 
 function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {

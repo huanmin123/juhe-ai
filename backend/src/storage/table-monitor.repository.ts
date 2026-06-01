@@ -123,6 +123,7 @@ interface LatestDatabaseSnapshotRow {
 
 export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
+const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'stats']
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
@@ -170,24 +171,20 @@ export function collectTableStorageSnapshot(sampledAt = nowIso(), options: Colle
 export function getTableStorageOverview(input: { startAt?: string; endAt?: string; limit?: number } = {}): TableStorageOverview {
   const database = getStatsDatabase()
   const range = normalizeDateRange(input.startAt, input.endAt)
-  const databases = database
+  const databaseSnapshotStatement = database
     .prepare(`
       SELECT ${databaseStorageSnapshotSelectColumns()}
-      FROM (
-        SELECT
-          ${databaseStorageSnapshotSelectColumns()},
-          ROW_NUMBER() OVER (
-            PARTITION BY database_role
-            ORDER BY sampled_at DESC, id DESC
-          ) AS rank
-        FROM database_storage_snapshots
-        WHERE sampled_at >= ?
-          AND sampled_at <= ?
-      )
-      WHERE rank = 1
-      ORDER BY database_role ASC
+      FROM database_storage_snapshots
+      WHERE database_role = ?
+        AND sampled_at >= ?
+        AND sampled_at <= ?
+      ORDER BY sampled_at DESC, id DESC
+      LIMIT 1
     `)
-    .all(range.startAt, range.endAt) as unknown as LatestDatabaseSnapshotRow[]
+  const databases = monitoredDatabaseRoles
+    .map((databaseRole) => databaseSnapshotStatement.get(databaseRole, range.startAt, range.endAt) as unknown as LatestDatabaseSnapshotRow | undefined)
+    .filter((row): row is LatestDatabaseSnapshotRow => Boolean(row))
+    .sort(compareDatabaseSnapshotsByRole)
   const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
   const tables = database
     .prepare(`
@@ -199,19 +196,20 @@ export function getTableStorageOverview(input: { startAt?: string; endAt?: strin
             PARTITION BY database_role, table_name
             ORDER BY sampled_at DESC, id DESC
           ) AS rank
-        FROM table_storage_snapshots
+        FROM table_storage_snapshots INDEXED BY idx_table_storage_snapshots_latest_id
         WHERE sampled_at >= ?
           AND sampled_at <= ?
       )
       WHERE rank = 1
-      ORDER BY total_bytes DESC, row_count DESC, table_name ASC
-      LIMIT ?
     `)
-    .all(range.startAt, range.endAt, normalizeLimit(input.limit ?? 200)) as unknown as LatestTableSnapshotRow[]
+    .all(range.startAt, range.endAt) as unknown as LatestTableSnapshotRow[]
   return {
     sampledAt,
     databases: databases.map(databaseSnapshotFromRow),
-    tables: tables.map(tableSnapshotFromRow)
+    tables: tables
+      .sort(compareTableSnapshotsForOverview)
+      .slice(0, normalizeLimit(input.limit ?? 200))
+      .map(tableSnapshotFromRow)
   }
 }
 
@@ -250,29 +248,24 @@ export function listDatabaseStorageHistory(input: {
   limit?: number
 } = {}): DatabaseStorageSnapshotSummary[] {
   const range = normalizeDateRange(input.startAt, input.endAt)
-  const rows = getStatsDatabase()
+  const database = getStatsDatabase()
+  const limit = normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
+  const statement = database
     .prepare(`
       SELECT ${databaseStorageSnapshotSelectColumns()}
-      FROM (
-        SELECT
-          ${databaseStorageSnapshotSelectColumns()},
-          ROW_NUMBER() OVER (
-            PARTITION BY database_role
-            ORDER BY sampled_at DESC, id DESC
-          ) AS rank
-        FROM database_storage_snapshots
-        WHERE sampled_at >= ?
-          AND sampled_at <= ?
-      )
-      WHERE rank <= ?
-      ORDER BY sampled_at ASC, database_role ASC
+      FROM database_storage_snapshots
+      WHERE database_role = ?
+        AND sampled_at >= ?
+        AND sampled_at <= ?
+      ORDER BY sampled_at DESC, id DESC
+      LIMIT ?
     `)
-    .all(
-      range.startAt,
-      range.endAt,
-      normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
-    ) as unknown as LatestDatabaseSnapshotRow[]
-  return rows.map(databaseSnapshotFromRow)
+  const rows = monitoredDatabaseRoles.flatMap((databaseRole) => (
+    statement.all(databaseRole, range.startAt, range.endAt, limit) as unknown as LatestDatabaseSnapshotRow[]
+  ))
+  return rows
+    .sort(compareDatabaseSnapshotsByTimeAsc)
+    .map(databaseSnapshotFromRow)
 }
 
 export function cleanupTableStorageSnapshotsBefore(cutoffIso: string, limit = 10000): number {
@@ -589,6 +582,36 @@ function tableStorageSnapshotSelectColumns(alias?: string): string {
     'growth_bytes_24h',
     'growth_rows_24h'
   ].map((column) => `${prefix}${column}`).join(', ')
+}
+
+function compareDatabaseSnapshotsByRole(left: LatestDatabaseSnapshotRow, right: LatestDatabaseSnapshotRow): number {
+  return databaseRoleSortRank(left.database_role) - databaseRoleSortRank(right.database_role)
+}
+
+function compareDatabaseSnapshotsByTimeAsc(left: LatestDatabaseSnapshotRow, right: LatestDatabaseSnapshotRow): number {
+  const sampledAt = left.sampled_at.localeCompare(right.sampled_at)
+  return sampledAt !== 0 ? sampledAt : compareDatabaseSnapshotsByRole(left, right)
+}
+
+function compareTableSnapshotsForOverview(left: LatestTableSnapshotRow, right: LatestTableSnapshotRow): number {
+  const totalBytes = compareNullableNumberDesc(left.total_bytes, right.total_bytes)
+  if (totalBytes !== 0) return totalBytes
+  const rowCount = compareNullableNumberDesc(left.row_count, right.row_count)
+  if (rowCount !== 0) return rowCount
+  const tableName = left.table_name.localeCompare(right.table_name)
+  return tableName !== 0 ? tableName : left.database_role.localeCompare(right.database_role)
+}
+
+function compareNullableNumberDesc(left: number | null | undefined, right: number | null | undefined): number {
+  const leftNumber = typeof left === 'number' ? left : Number.NEGATIVE_INFINITY
+  const rightNumber = typeof right === 'number' ? right : Number.NEGATIVE_INFINITY
+  if (leftNumber === rightNumber) return 0
+  return leftNumber > rightNumber ? -1 : 1
+}
+
+function databaseRoleSortRank(databaseRole: MonitoredDatabaseRole): number {
+  const index = monitoredDatabaseRoles.indexOf(databaseRole)
+  return index >= 0 ? index : monitoredDatabaseRoles.length
 }
 
 function cleanupOldTableStorageSnapshots(database: DatabaseSync, sampledAt: string): void {

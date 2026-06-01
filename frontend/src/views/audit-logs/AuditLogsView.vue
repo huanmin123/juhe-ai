@@ -698,7 +698,7 @@ async function submitFullBodyCaptureConfig(): Promise<void> {
     message.warning('请选择要定向捕获的 AI 账户')
     return
   }
-  if (!Number.isFinite(form.durationMinutes) || form.durationMinutes < 1) {
+  if (!Number.isInteger(form.durationMinutes) || form.durationMinutes < 1 || form.durationMinutes > 1440) {
     message.warning('请填写有效期')
     return
   }
@@ -707,7 +707,7 @@ async function submitFullBodyCaptureConfig(): Promise<void> {
     scope: form.scope,
     accountId: form.scope === 'account' ? form.accountId : undefined,
     includeSuccess: form.includeSuccess,
-    durationMinutes: Math.trunc(form.durationMinutes)
+    durationMinutes: form.durationMinutes
   }, '临时全量捕获配置已保存')
   fullBodyCaptureModalOpen.value = false
 }

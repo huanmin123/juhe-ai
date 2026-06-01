@@ -17,11 +17,12 @@ runtimeConfig.processRole = 'server'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [backgroundIpc, recordMaintenanceQueue, operationLogQueue, auditLogQueue, databaseModule] = await Promise.all([
+const [backgroundIpc, recordMaintenanceQueue, operationLogQueue, auditLogQueue, runtimeLogIndexQueue, databaseModule] = await Promise.all([
   import('../../modules/background/background-ipc.js'),
   import('../../modules/record-maintenance/record-maintenance-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../modules/runtime-logs/runtime-log-index-queue.service.js'),
   import('../../storage/database.js')
 ])
 
@@ -45,6 +46,9 @@ try {
   assert.equal(runtimeLogAccepted, false, '超过 regular IPC 队列上限后低优先级运行日志应快速拒绝')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '低优先级消息不应挤掉维护任务')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.runtimeLogLines.rejectedCount, 1, 'server IPC runtime 应记录运行日志拒绝次数')
+  runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
+  runtimeLogIndexQueue.enqueueRuntimeLogLine('{"level":"info","event":"runtime_log_server_fallback_blocked"}')
+  assert.equal(runtimeLogIndexQueue.getRuntimeLogIndexRuntime().queueLength, 0, 'server worker IPC 拒绝时不应回退到本地运行日志 SQLite 队列')
 
   const operationDroppedBefore = operationLogQueue.getOperationLogQueueRuntime().droppedCount
   operationLogQueue.enqueueOperationLog({

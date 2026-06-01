@@ -65,6 +65,8 @@ interface StreamInterceptPolicyRow {
   updated_at: string
 }
 
+export const maxManagementStreamInterceptPolicies = 100
+
 const policyActions = new Set<StreamInterceptPolicyAction>([
   'observe',
   'drop_event',
@@ -74,6 +76,25 @@ const policyActions = new Set<StreamInterceptPolicyAction>([
   'avoid_account_ttl',
   'avoid_upstream_bucket_ttl'
 ])
+const streamInterceptPolicyInputKeys = new Set([
+  'name',
+  'enabled',
+  'priority',
+  'providerCode',
+  'match',
+  'action',
+  'avoidanceTtlSeconds',
+  'notes'
+])
+const streamInterceptPolicyMatchKeys = [
+  'eventTypes',
+  'dataTypes',
+  'errorCodes',
+  'errorTypes',
+  'textIncludes',
+  'textExcludes',
+  'jsonPathsExists'
+] as const
 
 const systemDefaultRules: StreamInterceptPolicySummary[] = [
   {
@@ -170,9 +191,11 @@ export function listActiveStreamInterceptPoliciesForGateway(): StreamInterceptPo
       SELECT *
       FROM stream_intercept_policies
       WHERE enabled = 1
+        AND provider_code = ?
       ORDER BY priority ASC, updated_at DESC, id ASC
+      LIMIT ?
     `)
-    .all() as unknown as StreamInterceptPolicyRow[]
+    .all('openai', maxManagementStreamInterceptPolicies) as unknown as StreamInterceptPolicyRow[]
   return [
     ...listStreamInterceptPolicyDefaultRules().filter((policy) => policy.enabled),
     ...rows.map(policyFromRow)
@@ -180,6 +203,8 @@ export function listActiveStreamInterceptPoliciesForGateway(): StreamInterceptPo
 }
 
 export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): StreamInterceptPolicySummary {
+  assertKnownInputKeys(input, streamInterceptPolicyInputKeys, '流式拦截策略')
+  assertManagementPolicyCapacity()
   const now = nowIso()
   const policy = normalizePolicyInput(input, {
     id: newId('sip'),
@@ -211,6 +236,7 @@ export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): 
 }
 
 export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPolicyInput): StreamInterceptPolicySummary | undefined {
+  assertKnownInputKeys(input, streamInterceptPolicyInputKeys, '流式拦截策略')
   const current = findStreamInterceptPolicyRow(id)
   if (!current) return undefined
   const now = nowIso()
@@ -267,14 +293,25 @@ function listStreamInterceptPolicyRows(): StreamInterceptPolicyRow[] {
       SELECT *
       FROM stream_intercept_policies
       ORDER BY priority ASC, updated_at DESC, id ASC
+      LIMIT ?
     `)
-    .all() as unknown as StreamInterceptPolicyRow[]
+    .all(maxManagementStreamInterceptPolicies) as unknown as StreamInterceptPolicyRow[]
 }
 
 function findStreamInterceptPolicyRow(id: string): StreamInterceptPolicyRow | undefined {
   return getBusinessDatabase()
     .prepare('SELECT * FROM stream_intercept_policies WHERE id = ?')
     .get(id) as unknown as StreamInterceptPolicyRow | undefined
+}
+
+function assertManagementPolicyCapacity(): void {
+  const row = getBusinessDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM stream_intercept_policies')
+    .get() as { total?: number } | undefined
+  const total = Number(row?.total ?? 0)
+  if (total >= maxManagementStreamInterceptPolicies) {
+    throw new Error(`管理端流式拦截策略不能超过 ${maxManagementStreamInterceptPolicies} 条`)
+  }
 }
 
 function normalizePolicyInput(
@@ -287,26 +324,28 @@ function normalizePolicyInput(
   }
 ): StreamInterceptPolicySummary {
   const fallback = metadata.fallback
-  const action = normalizeSetValue(input.action, policyActions, fallback?.action, 'avoid_account_ttl')
+  const action = input.action === undefined && fallback
+    ? fallback.action
+    : normalizePolicyAction(input.action)
   return {
     id: metadata.id,
     defaultRule: false,
     editable: true,
-    name: stringValue(input.name) || fallback?.name || '未命名流式拦截策略',
-    enabled: typeof input.enabled === 'boolean' ? input.enabled : fallback?.enabled ?? true,
+    name: normalizePolicyName(input.name, fallback?.name),
+    enabled: normalizeBooleanInput(input.enabled, fallback?.enabled ?? true, '启用状态'),
     priority: normalizePriority(input.priority, fallback?.priority),
     providerCode: normalizeProviderCode(input.providerCode, fallback?.providerCode),
-    match: normalizeMatch(input.match ?? fallback?.match),
+    match: normalizeMatch(input.match === undefined ? fallback?.match : input.match),
     action,
     avoidanceTtlSeconds: normalizePolicyTtl(input.avoidanceTtlSeconds, action, fallback?.avoidanceTtlSeconds),
-    notes: optionalString(input.notes) ?? fallback?.notes,
+    notes: normalizeOptionalTextInput(input.notes, fallback?.notes, 1000, '备注'),
     createdAt: metadata.createdAt,
     updatedAt: metadata.updatedAt
   }
 }
 
 function policyFromRow(row: StreamInterceptPolicyRow): StreamInterceptPolicySummary {
-  const action = normalizeSetValue(row.action, policyActions, undefined, 'avoid_account_ttl')
+  const action = normalizePolicyAction(row.action)
   return {
     id: row.id,
     defaultRule: false,
@@ -326,8 +365,11 @@ function policyFromRow(row: StreamInterceptPolicyRow): StreamInterceptPolicySumm
 
 function normalizeMatch(value: unknown): StreamInterceptPolicyMatch {
   const record = objectValue(value)
-  if (!record) return {}
-  return {
+  if (!record) {
+    throw new Error('流式拦截策略匹配条件必须是对象')
+  }
+  assertOnlyKeys(record, streamInterceptPolicyMatchKeys, '流式拦截策略匹配条件')
+  const match = {
     eventTypes: normalizeTextList(record.eventTypes, 50, 120),
     dataTypes: normalizeTextList(record.dataTypes, 50, 120),
     errorCodes: normalizeTextList(record.errorCodes, 50, 120),
@@ -336,27 +378,68 @@ function normalizeMatch(value: unknown): StreamInterceptPolicyMatch {
     textExcludes: normalizeTextList(record.textExcludes, 50, 200),
     jsonPathsExists: normalizeTextList(record.jsonPathsExists, 50, 120)
   }
+  const hasMatcher = [
+    match.eventTypes,
+    match.dataTypes,
+    match.errorCodes,
+    match.errorTypes,
+    match.textIncludes,
+    match.jsonPathsExists
+  ].some((items) => Array.isArray(items) && items.length > 0)
+  if (!hasMatcher) {
+    throw new Error('至少需要填写一个匹配条件')
+  }
+  return match
 }
 
 function normalizeProviderCode(value: unknown, fallback = 'openai'): string {
-  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : fallback
+  if (value === undefined) return fallback
+  if (typeof value !== 'string') {
+    throw new Error('流式拦截策略供应商编码必须是字符串')
+  }
+  const text = value.trim()
+  if (!text) {
+    throw new Error('流式拦截策略供应商编码不能为空')
+  }
+  if (text.length > 80) {
+    throw new Error('流式拦截策略供应商编码不能超过 80 个字符')
+  }
+  return text
 }
 
 function normalizePriority(value: unknown, fallback = 100): number {
-  const numberValue = Number(value)
-  return Number.isFinite(numberValue) ? Math.max(1, Math.min(9999, Math.trunc(numberValue))) : fallback
+  if (value === undefined) return fallback
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error('流式拦截策略优先级必须是整数')
+  }
+  if (value < 1 || value > 9999) {
+    throw new Error('流式拦截策略优先级必须在 1 到 9999 之间')
+  }
+  return value
 }
 
-function normalizeTtl(value: unknown, fallback: number | undefined): number | undefined {
+function normalizeTtl(value: unknown): number | undefined {
   if (value === null) return undefined
-  const numberValue = Number(value)
-  if (!Number.isFinite(numberValue)) return fallback
-  return Math.max(1, Math.min(86_400, Math.trunc(numberValue)))
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error('流式拦截策略避让秒数必须是整数')
+  }
+  if (value < 1 || value > 86_400) {
+    throw new Error('流式拦截策略避让秒数必须在 1 到 86400 之间')
+  }
+  return value
 }
 
 function normalizePolicyTtl(value: unknown, action: StreamInterceptPolicyAction, fallback: number | undefined): number | undefined {
   if (!actionUsesTtl(action)) return undefined
-  return normalizeTtl(value, fallback ?? 300)
+  if (value === undefined) {
+    if (fallback !== undefined) return fallback
+    throw new Error('短期避让模板需要配置避让秒数')
+  }
+  const ttl = normalizeTtl(value)
+  if (ttl === undefined) {
+    throw new Error('短期避让模板需要配置避让秒数')
+  }
+  return ttl
 }
 
 export function actionUsesTtl(action: StreamInterceptPolicyAction): boolean {
@@ -431,33 +514,94 @@ export function streamInterceptPolicyActionRuntime(action: StreamInterceptPolicy
 }
 
 function normalizeTextList(value: unknown, maxItems: number, maxLength: number): string[] | undefined {
-  const source = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? value.split(/[,;，；\n]/)
-      : []
+  if (value === undefined) {
+    return undefined
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('流式拦截策略匹配条件必须是字符串数组')
+  }
+  if (value.length > maxItems) {
+    throw new Error(`流式拦截策略匹配条件不能超过 ${maxItems} 条`)
+  }
   const seen = new Set<string>()
   const output: string[] = []
-  for (const item of source) {
-    const text = String(item).trim().slice(0, maxLength)
-    if (!text || seen.has(text)) continue
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      throw new Error('流式拦截策略匹配条件必须是字符串数组')
+    }
+    const text = item.trim()
+    if (!text) {
+      throw new Error('流式拦截策略匹配条件不能为空')
+    }
+    if (text.length > maxLength) {
+      throw new Error(`流式拦截策略匹配条件不能超过 ${maxLength} 个字符`)
+    }
+    if (seen.has(text)) {
+      throw new Error('流式拦截策略匹配条件不能重复')
+    }
     seen.add(text)
     output.push(text)
-    if (output.length >= maxItems) break
   }
   return output.length ? output : undefined
 }
 
-function normalizeSetValue<T extends string>(value: unknown, values: Set<T>, fallback: T | undefined, defaultValue: T): T {
-  return values.has(value as T) ? value as T : fallback ?? defaultValue
+function normalizePolicyAction(value: unknown): StreamInterceptPolicyAction {
+  if (policyActions.has(value as StreamInterceptPolicyAction)) {
+    return value as StreamInterceptPolicyAction
+  }
+  throw new Error('流式拦截策略动作无效')
+}
+
+function missingPolicyField(label: string): never {
+  throw new Error(`${label}不能为空`)
+}
+
+function normalizePolicyName(value: unknown, fallback?: string): string {
+  if (value === undefined) {
+    return fallback ?? missingPolicyField('规则名称')
+  }
+  if (typeof value !== 'string') {
+    throw new Error('规则名称必须是字符串')
+  }
+  const text = value.trim()
+  if (!text) {
+    throw new Error('规则名称不能为空')
+  }
+  if (text.length > 100) {
+    throw new Error('规则名称不能超过 100 个字符')
+  }
+  return text
+}
+
+function normalizeBooleanInput(value: unknown, fallback: boolean, label: string): boolean {
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') {
+    throw new Error(`${label}必须是布尔值`)
+  }
+  return value
+}
+
+function normalizeOptionalTextInput(value: unknown, fallback: string | undefined, maxLength: number, label: string): string | undefined {
+  if (value === undefined) return fallback
+  if (value === null) return undefined
+  if (typeof value !== 'string') {
+    throw new Error(`${label}必须是字符串`)
+  }
+  const text = value.trim()
+  if (!text) return undefined
+  if (text.length > maxLength) {
+    throw new Error(`${label}不能超过 ${maxLength} 个字符`)
+  }
+  return text
 }
 
 function parseJsonObject(value: string): Record<string, unknown> | undefined {
-  try {
-    return objectValue(JSON.parse(value) as unknown)
-  } catch {
-    return undefined
+  const parsed = JSON.parse(value) as unknown
+  const object = objectValue(parsed)
+  if (!object) {
+    throw new Error('流式拦截策略 match_json 必须是对象')
   }
+  return object
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -466,18 +610,24 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
-function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 100) : undefined
-}
-
-function optionalString(value: unknown): string | undefined {
-  if (value === null) return undefined
-  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 1000) : undefined
-}
-
 function clonePolicy(policy: StreamInterceptPolicySummary): StreamInterceptPolicySummary {
   return {
     ...policy,
     match: { ...policy.match }
+  }
+}
+
+function assertKnownInputKeys(input: StreamInterceptPolicyInput, allowedKeys: ReadonlySet<string>, label: string): void {
+  const unknownKeys = Object.keys(input as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
+}
+
+function assertOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[], label: string): void {
+  const allowed = new Set(allowedKeys)
+  const unknownKeys = Object.keys(value).filter((key) => !allowed.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
   }
 }

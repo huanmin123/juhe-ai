@@ -1,6 +1,11 @@
 import type { AccountStatus } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  normalizeAccountErrorHandlingRules,
+  type AccountErrorHandlingRule,
+  type AccountErrorHandlingRuleAction
+} from '../accounts/account-error-policy-validation.js'
+import {
   clearAccountFailureStateResult,
   clearAuthorizedAccountBindingFailureStateByContext,
   getSettings,
@@ -62,14 +67,14 @@ export function readGatewaySettings(): GatewaySettings {
   assertLocalGatewayDatabaseAccess('readGatewaySettings')
   const settings = getSettings()
   return {
-    defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 5, 1, 1440),
-    temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 3, 0, 3600),
-    temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 3, 0, 10),
-    streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, true),
-    streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 180, 10, 3600),
-    streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 60, 1, 3600),
-    streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 3, 1, 100),
-    streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 10, 1, 1440)
+    defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
+    temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
+    temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
+    streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, 'streamCircuitBreakerEnabled'),
+    streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
+    streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
+    streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
+    streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
   }
 }
 
@@ -164,18 +169,18 @@ export function decideAccountErrorPolicy(
   const rules = accountErrorRules(account.credentials)
 
   for (const rule of rules
-    .filter((item) => item.enabled !== false)
-    .sort((left, right) => numericRuleValue(left.priority, Number.MAX_SAFE_INTEGER) - numericRuleValue(right.priority, Number.MAX_SAFE_INTEGER))) {
+    .filter((item) => item.enabled)
+    .sort((left, right) => left.priority - right.priority)) {
     if (!hasErrorPolicyRuleMatcher(rule) || !matchesErrorPolicyRule(rule, statusCode, bodyText, errorPayload)) {
       continue
     }
     const action = normalizePolicyAction(rule.action)
-    const ruleName = typeof rule.name === 'string' ? rule.name : '账号错误处理规则'
+    const ruleName = rule.name
     if (action === 'cooldown') {
       return {
         action,
         ruleName,
-        cooldownMinutes: numericRuleValue(rule.durationMinutes, settings.defaultTemporaryUnschedulableMinutes),
+        cooldownMinutes: rule.durationMinutes ?? settings.defaultTemporaryUnschedulableMinutes,
         cooldownUntil: resolveAccountErrorRuleCooldownUntil(rule),
         cooldownStatus: policyCooldownStatus(rule.action)
       }
@@ -273,10 +278,8 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : ''
 }
 
-function accountErrorRules(credentials: Record<string, unknown>): Array<Record<string, unknown>> {
-  return Array.isArray(credentials.error_handling_rules)
-    ? credentials.error_handling_rules.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
-    : []
+function accountErrorRules(credentials: Record<string, unknown>): AccountErrorHandlingRule[] {
+  return normalizeAccountErrorHandlingRules(credentials.error_handling_rules)
 }
 
 function openAIOAuthCodexResetAt(account: AccountErrorPolicyAccount, statusCode: number, headers: Headers, bodyText: string): string | undefined {
@@ -286,21 +289,16 @@ function openAIOAuthCodexResetAt(account: AccountErrorPolicyAccount, statusCode:
   return calculateOpenAICodexRateLimitResetAt(headers, bodyText)
 }
 
-function resolveAccountErrorRuleCooldownUntil(rule: Record<string, unknown>): string | undefined {
+function resolveAccountErrorRuleCooldownUntil(rule: AccountErrorHandlingRule): string | undefined {
   if (policyCooldownStatus(rule.action) !== 'rate_limited') return undefined
   const now = new Date()
-  const strategy = String(rule.reset_strategy ?? 'daily')
-  if (strategy === 'duration') {
-    const hours = Math.max(1, numericRuleValue(rule.duration_hours, 5))
-    return new Date(now.getTime() + hours * 60 * 60_000).toISOString()
+  if (rule.reset_strategy === 'duration') {
+    return new Date(now.getTime() + rule.duration_hours! * 60 * 60_000).toISOString()
   }
-  if (strategy === 'weekly') {
-    const weekday = Math.min(Math.max(numericRuleValue(rule.weekly_reset_day, 1), 0), 6)
-    const hour = Math.min(Math.max(numericRuleValue(rule.weekly_reset_hour, 0), 0), 23)
-    return nextWeeklyReset(now, weekday, hour).toISOString()
+  if (rule.reset_strategy === 'weekly') {
+    return nextWeeklyReset(now, rule.weekly_reset_day!, rule.weekly_reset_hour!).toISOString()
   }
-  const hour = Math.min(Math.max(numericRuleValue(rule.daily_reset_hour, 0), 0), 23)
-  return nextDailyReset(now, hour).toISOString()
+  return nextDailyReset(now, rule.daily_reset_hour!).toISOString()
 }
 
 function nextDailyReset(now: Date, hour: number): Date {
@@ -319,11 +317,11 @@ function nextWeeklyReset(now: Date, weekday: number, hour: number): Date {
   return next
 }
 
-function errorPolicyRuleSpecs(rule: Record<string, unknown>): {
-  statusSpec: unknown
-  keywordSpec: unknown
-  codeSpec: unknown
-  typeSpec: unknown
+function errorPolicyRuleSpecs(rule: AccountErrorHandlingRule): {
+  statusSpec: number[] | undefined
+  keywordSpec: string[] | undefined
+  codeSpec: string[] | undefined
+  typeSpec: string[] | undefined
 } {
   return {
     statusSpec: rule.status_codes,
@@ -333,15 +331,12 @@ function errorPolicyRuleSpecs(rule: Record<string, unknown>): {
   }
 }
 
-function hasErrorPolicyRuleMatcher(rule: Record<string, unknown>): boolean {
+function hasErrorPolicyRuleMatcher(rule: AccountErrorHandlingRule): boolean {
   const { statusSpec, keywordSpec, codeSpec, typeSpec } = errorPolicyRuleSpecs(rule)
-  return listRuleValues(statusSpec).length > 0
-    || listRuleValues(keywordSpec).length > 0
-    || listRuleValues(codeSpec).length > 0
-    || listRuleValues(typeSpec).length > 0
+  return Boolean(statusSpec?.length || keywordSpec?.length || codeSpec?.length || typeSpec?.length)
 }
 
-function matchesErrorPolicyRule(rule: Record<string, unknown>, statusCode: number, bodyText: string, errorPayload: Record<string, unknown>): boolean {
+function matchesErrorPolicyRule(rule: AccountErrorHandlingRule, statusCode: number, bodyText: string, errorPayload: Record<string, unknown>): boolean {
   const { statusSpec, keywordSpec, codeSpec, typeSpec } = errorPolicyRuleSpecs(rule)
 
   if (statusSpec !== undefined && !matchesStatusList(statusCode, statusSpec)) return false
@@ -351,58 +346,31 @@ function matchesErrorPolicyRule(rule: Record<string, unknown>, statusCode: numbe
   return true
 }
 
-function matchesStatusList(statusCode: number, spec: unknown): boolean {
-  const items = listRuleValues(spec)
-  if (!items.length) return true
-  return items.some((item) => {
-    const token = item.toLowerCase()
-    if (token === '*' || token === 'all') return true
-    const range = token.match(/^(\d{3})\s*-\s*(\d{3})$/)
-    if (range) return statusCode >= Number(range[1]) && statusCode <= Number(range[2])
-    const family = token.match(/^([1-5])xx$/)
-    if (family) return Math.floor(statusCode / 100) === Number(family[1])
-    return Number(token) === statusCode
-  })
+function matchesStatusList(statusCode: number, spec: number[]): boolean {
+  return spec.length ? spec.includes(statusCode) : true
 }
 
-function matchesTextList(text: string, spec: unknown): boolean {
-  const items = listRuleValues(spec)
+function matchesTextList(text: string, items: string[]): boolean {
   if (!items.length) return true
   const normalized = text.toLowerCase()
   return items.some((item) => normalized.includes(item.toLowerCase()))
 }
 
-function matchesValueList(value: unknown, spec: unknown): boolean {
-  const items = listRuleValues(spec)
+function matchesValueList(value: unknown, items: string[]): boolean {
   if (!items.length) return true
   const normalized = String(value ?? '').toLowerCase()
   return Boolean(normalized) && items.some((item) => normalized === item.toLowerCase())
 }
 
-function listRuleValues(spec: unknown): string[] {
-  if (Array.isArray(spec)) {
-    return spec.flatMap((item) => listRuleValues(item))
-  }
-  if (typeof spec === 'number') {
-    return [String(spec)]
-  }
-  if (typeof spec !== 'string') {
-    return []
-  }
-  return spec
-    .split(/[,;，；\n\/]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function normalizePolicyAction(value: unknown): AccountErrorPolicyDecision['action'] {
+function normalizePolicyAction(value: AccountErrorHandlingRuleAction): AccountErrorPolicyDecision['action'] {
   if (value === 'retry_next') return 'retry_next'
   if (value === 'temp_unschedulable' || value === 'rate_limited') return 'cooldown'
   if (value === 'error_disabled') return 'disable'
-  return 'cooldown'
+  const exhaustive: never = value
+  return exhaustive
 }
 
-function policyCooldownStatus(value: unknown): CooldownAccountStatus {
+function policyCooldownStatus(value: AccountErrorHandlingRuleAction): CooldownAccountStatus {
   return value === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
 }
 
@@ -416,19 +384,21 @@ function normalizeHeadersInput(headers?: Headers | Record<string, string | strin
   return output
 }
 
-function booleanSetting(value: unknown, fallback: boolean): boolean {
-  return typeof value === 'boolean' ? value : fallback
+function booleanSetting(value: unknown, key: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`系统设置 ${key} 必须是布尔值`)
+  }
+  return value
 }
 
-function numericRuleValue(value: unknown, fallback: number): number {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return Number.isFinite(number) ? number : fallback
-}
-
-function numberSetting(value: unknown, fallback: number, min: number, max: number): number {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return fallback
-  return Math.min(Math.max(Math.trunc(number), min), max)
+function numberSetting(value: unknown, key: string, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error(`系统设置 ${key} 必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
 }
 
 function assertLocalGatewayDatabaseAccess(operation: string): void {

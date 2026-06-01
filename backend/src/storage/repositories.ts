@@ -1,8 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
+import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
+import { normalizeAccountStreamInterceptRules } from '../modules/accounts/account-stream-intercept-policy-validation.js'
 import { listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
@@ -18,6 +20,7 @@ import {
   parseAccountAvailabilityScheduleJson
 } from './account-availability-schedule.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
+import { maxAccountExpirySweepBatchSize } from './account-sweep-limits.js'
 import {
   getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
   getAccountUsageStatsOverviewPageFromWindows as buildAccountUsageStatsOverviewPageFromWindows
@@ -27,7 +30,7 @@ import { createApiKeyRecord, deleteApiKey, findApiKeySummary, listApiKeys, listA
 import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { defaultGroupIdForSystemAccount, ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
+import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
 import { findGroupRowForAccess, listGroupOptionRowsForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions, type GroupOptionListOptions } from './group-read.repository.js'
@@ -60,7 +63,6 @@ import {
   assertActiveTeamGrantFanoutWithinLimit,
   cleanupInactiveAuthorizationBindings,
   deactivateAuthorizationIfNoActiveSources,
-  ensureAccountAuthorizationInstancesForGrantee,
   expireDueResourceAuthorizations,
   reactivateTeamGrantSources,
   revokeAllTeamSources,
@@ -94,6 +96,7 @@ import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, l
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
   jsonObjectOrNull,
+  nullableServerDateTimeIso,
   optionalNullableServerDateTimeIso,
   optionalNullableString,
   optionalServerDateTimeIso,
@@ -559,9 +562,10 @@ function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: strin
 }
 
 function accountResourceFactAccountId(row: AccountListRow): string {
-  return row.access_type === 'authorized' && row.authorization_instance_source_account_id && row.source_provider_code
+  if (row.access_type !== 'authorized') return row.id
+  return row.authorization_instance_source_account_id && row.source_provider_code
     ? row.authorization_instance_source_account_id
-    : row.id
+    : ''
 }
 
 function accountResourceProviderCode(row: AccountListRow): AccountListRow['provider_code'] {
@@ -577,28 +581,23 @@ function accountResourceType(row: AccountListRow): AccountListRow['type'] {
 }
 
 function accountResourceConcurrencyLimit(row: AccountListRow): number {
-  return Number(row.access_type === 'authorized' && row.source_concurrency_limit !== null && row.source_concurrency_limit !== undefined
-    ? row.source_concurrency_limit
-    : row.concurrency_limit)
+  if (row.access_type !== 'authorized') return Number(row.concurrency_limit)
+  return Number(row.source_concurrency_limit ?? 0)
 }
 
 function accountResourceProxyProfileId(row: AccountListRow): string | null {
-  return row.access_type === 'authorized' && row.source_proxy_profile_id !== undefined
-    ? row.source_proxy_profile_id ?? null
-    : row.proxy_profile_id
+  return row.access_type === 'authorized' ? row.source_proxy_profile_id ?? null : row.proxy_profile_id
 }
 
 function accountResourceErrorPolicyId(row: AccountListRow): string | null {
-  return row.access_type === 'authorized' && row.source_error_policy_id !== undefined
-    ? row.source_error_policy_id ?? null
-    : row.error_policy_id
+  return row.access_type === 'authorized' ? row.source_error_policy_id ?? null : row.error_policy_id
 }
 
 function accountRuntimeCredentialsFromRow(row: AccountListRow): Record<string, unknown> {
-  const encrypted = row.access_type === 'authorized' && row.source_credentials_encrypted
-    ? row.source_credentials_encrypted
-    : row.credentials_encrypted
-  return decryptJson<Record<string, unknown>>(encrypted)
+  if (row.access_type === 'authorized') {
+    return row.source_credentials_encrypted ? decryptJson<Record<string, unknown>>(row.source_credentials_encrypted) : {}
+  }
+  return decryptJson<Record<string, unknown>>(row.credentials_encrypted)
 }
 
 function canScheduleAuthorizedAccount(input: {
@@ -677,10 +676,35 @@ function canTestAuthorizedInstanceFailureState(account: AccountSummary): boolean
   return isAuthorizedInstanceAvailable(account)
 }
 
-function disableExpiredAccounts(access?: AccessScope): void {
+function disableExpiredAccounts(access?: AccessScope, limit = maxAccountExpirySweepBatchSize): number {
   const scope = buildSystemAccountScopeClause(access)
   const now = nowIso()
-  const result = getBusinessDatabase()
+  const requestedBatchSize = Math.trunc(limit)
+  const batchSize = Number.isFinite(requestedBatchSize)
+    ? Math.max(1, Math.min(requestedBatchSize, maxAccountExpirySweepBatchSize))
+    : maxAccountExpirySweepBatchSize
+  const database = getBusinessDatabase()
+  const rows = database
+    .prepare(`
+      SELECT id
+      FROM accounts
+      WHERE account_expires_at IS NOT NULL
+        AND account_expires_at <= ?
+        AND (
+          status <> 'disabled'
+          OR schedulable <> 0
+          OR cooldown_until IS NOT NULL
+          OR last_error_code IS NOT NULL
+          OR last_error_message IS NULL
+        )${scope.clause}
+      ORDER BY account_expires_at ASC, updated_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(now, ...scope.params, batchSize) as unknown as Array<{ id: string }>
+  const expiredIds = rows.map((row) => row.id).filter(Boolean)
+  if (!expiredIds.length) return 0
+
+  const result = database
     .prepare(`
       UPDATE accounts
       SET status = 'disabled',
@@ -693,30 +717,33 @@ function disableExpiredAccounts(access?: AccessScope): void {
           cooldown_retest_last_at = NULL,
           cooldown_retest_last_status_code = NULL,
           updated_at = ?
-      WHERE account_expires_at IS NOT NULL
-        AND account_expires_at <= ?
-        AND (
-          status <> 'disabled'
-          OR schedulable <> 0
-          OR cooldown_until IS NOT NULL
-          OR last_error_code IS NOT NULL
-          OR last_error_message IS NULL
-        )${scope.clause}
+      WHERE id IN (${sqlPlaceholders(expiredIds.length)})
     `)
-    .run('账户套餐已过期，已自动停用', now, now, ...scope.params)
-  if (Number(result.changes ?? 0) > 0) {
+    .run('账户套餐已过期，已自动停用', now, ...expiredIds)
+  const changed = Number(result.changes ?? 0)
+  if (changed > 0) {
     refreshGroupAccountStatsAfterWrite({ all: true, reason: 'account_expired' })
     invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
   }
+  return changed
 }
 
 const accountStatusValues: readonly AccountStatus[] = ['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 const coolingAccountStatusValues: readonly AccountStatus[] = ['rate_limited', 'temporary_unavailable']
 
-function normalizeAccountStatus(value: unknown, fallback: AccountStatus): AccountStatus {
-  return typeof value === 'string' && accountStatusValues.includes(value as AccountStatus)
-    ? value as AccountStatus
-    : fallback
+function normalizeAccountStatus(value: unknown): AccountStatus {
+  if (typeof value === 'string' && accountStatusValues.includes(value as AccountStatus)) {
+    return value as AccountStatus
+  }
+  throw new Error('账户状态无效')
+}
+
+function normalizedAccountStatusInput(value: unknown, fallback: AccountStatus): AccountStatus {
+  if (value === undefined) return fallback
+  if (typeof value === 'string' && accountStatusValues.includes(value as AccountStatus)) {
+    return value as AccountStatus
+  }
+  throw new Error('账户状态无效')
 }
 
 function isCoolingAccountStatus(status: AccountStatus): boolean {
@@ -727,39 +754,75 @@ function isHardUnavailableAccountStatus(status: AccountStatus): boolean {
   return status === 'disabled' || status === 'error'
 }
 
-function boolInt(value: unknown, fallback: boolean): number {
-  return typeof value === 'boolean' ? (value ? 1 : 0) : fallback ? 1 : 0
-}
-
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-function positiveOptionalInteger(value: unknown): number | undefined {
-  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return undefined
+function normalizedAccountType(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error('账户类型不能为空')
   }
-  return Math.trunc(numeric)
+  const accountType = value.trim()
+  if (!accountType) {
+    throw new Error('账户类型不能为空')
+  }
+  return accountType
 }
 
 function normalizedDispatchPriority(value: unknown): number {
-  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
-  if (!Number.isFinite(numeric) || numeric < 0) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
     throw new Error('优先级必须是大于等于 0 的整数')
   }
-  return Math.trunc(numeric)
+  return value
+}
+
+function normalizedOptionalDispatchPriority(value: unknown, fallback: number): number {
+  return value === undefined ? fallback : normalizedDispatchPriority(value)
+}
+
+function normalizedPositiveIntegerInput(value: unknown, fallback: number, label: string): number {
+  if (value === undefined) return fallback
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error(`${label}必须是大于 0 的整数`)
+  }
+  return value
+}
+
+function normalizeBooleanDispatchInput(value: unknown, fallback: boolean, label: string): boolean {
+  if (value === undefined) return fallback
+  if (typeof value === 'boolean') return value
+  throw new Error(`${label}必须是布尔值`)
+}
+
+function hasOwnInput(input: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(input, key)
+}
+
+function normalizeOptionalBooleanInput(input: Record<string, unknown>, key: string, fallback: boolean, label: string): boolean {
+  if (!hasOwnInput(input, key)) return fallback
+  const value = input[key]
+  if (typeof value === 'boolean') return value
+  throw new Error(`${label}必须是布尔值`)
+}
+
+function normalizeOptionalRequiredTextInput(input: Record<string, unknown>, key: string, fallback: string, label: string): string {
+  if (!hasOwnInput(input, key)) return fallback
+  return requiredTextInput(input[key], label)
+}
+
+function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {
+  const unknownKeys = Object.keys(input).filter((key) => !allowedKeys.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
 }
 
 function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean {
-  if (typeof value === 'boolean') return value
-  if (value === 1 || value === '1') return true
-  if (value === 0 || value === '0') return false
-  return fallback
+  return normalizeBooleanDispatchInput(value, fallback, '超级优先')
 }
 
 function normalizeFallbackInput(value: unknown, fallback: boolean): boolean {
-  return normalizeSuperPriorityInput(value, fallback)
+  return normalizeBooleanDispatchInput(value, fallback, '降级备用')
 }
 
 function authorizationRuntimeBlockingStatus(status?: AuthorizationStatus | null, expiresAt?: string | null): AccountStatus | undefined {
@@ -836,8 +899,123 @@ function runDelete(sql: string, id: string): boolean {
   return result.changes > 0
 }
 
-function normalizedEntityName(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+function requiredTextInput(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label}不能为空`)
+  }
+  return value.trim()
+}
+
+const apiKeyAccountCredentialKeys = new Set([
+  'api_key',
+  'base_url',
+  'error_handling_rules',
+  'stream_intercept_rules'
+])
+
+const oauthAccountCredentialKeys = new Set([
+  'access_token',
+  'refresh_token',
+  'expires_at',
+  'client_id',
+  'id_token',
+  'email',
+  'account_id',
+  'chatgpt_user_id',
+  'plan_type',
+  'base_url',
+  'error_handling_rules',
+  'stream_intercept_rules'
+])
+
+export function normalizeAccountCredentialsForWrite(accountType: string, value: unknown): Record<string, unknown> {
+  const input = accountCredentialsRecord(value)
+  assertKnownInputKeys(input, accountCredentialAllowedKeys(accountType), '账户凭据')
+  if (accountType === 'api_key') {
+    return normalizeApiKeyAccountCredentials(input)
+  }
+  if (accountType === 'oauth') {
+    return normalizeOAuthAccountCredentials(input)
+  }
+  throw new Error(`账户类型 ${accountType} 不支持凭据写入`)
+}
+
+function accountCredentialsRecord(value: unknown): Record<string, unknown> {
+  if (value === undefined) return {}
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('账户凭据必须是对象')
+  }
+  return value as Record<string, unknown>
+}
+
+function accountCredentialAllowedKeys(accountType: string): ReadonlySet<string> {
+  if (accountType === 'api_key') return apiKeyAccountCredentialKeys
+  if (accountType === 'oauth') return oauthAccountCredentialKeys
+  throw new Error(`账户类型 ${accountType} 不支持凭据写入`)
+}
+
+function normalizeApiKeyAccountCredentials(input: Record<string, unknown>): Record<string, unknown> {
+  const credentials: Record<string, unknown> = {
+    api_key: requiredTextInput(input.api_key, 'API Key'),
+    base_url: requiredTextInput(input.base_url, 'Base URL')
+  }
+  normalizeAccountCredentialPolicies(input, credentials)
+  return credentials
+}
+
+function normalizeOAuthAccountCredentials(input: Record<string, unknown>): Record<string, unknown> {
+  const accessToken = optionalCredentialText(input.access_token, 'Access Token')
+  const refreshToken = optionalCredentialText(input.refresh_token, 'Refresh Token')
+  if (!refreshToken && !accessToken) {
+    throw new Error('OAuth 凭据不能为空')
+  }
+
+  const credentials: Record<string, unknown> = {
+    base_url: requiredTextInput(input.base_url, 'Base URL')
+  }
+  if (accessToken) credentials.access_token = accessToken
+  if (refreshToken) credentials.refresh_token = refreshToken
+  const expiresAt = optionalCredentialDateTime(input.expires_at, 'Access Token 到期时间')
+  if (expiresAt) credentials.expires_at = expiresAt
+  copyOptionalCredentialText(input, credentials, 'client_id', 'OAuth client_id')
+  copyOptionalCredentialText(input, credentials, 'id_token', 'OAuth id_token')
+  copyOptionalCredentialText(input, credentials, 'email', 'OAuth email')
+  copyOptionalCredentialText(input, credentials, 'account_id', 'OpenAI account_id')
+  copyOptionalCredentialText(input, credentials, 'chatgpt_user_id', 'OpenAI chatgpt_user_id')
+  copyOptionalCredentialText(input, credentials, 'plan_type', 'OpenAI plan_type')
+  normalizeAccountCredentialPolicies(input, credentials)
+  return credentials
+}
+
+function normalizeAccountCredentialPolicies(input: Record<string, unknown>, credentials: Record<string, unknown>): void {
+  if (Object.prototype.hasOwnProperty.call(input, 'error_handling_rules')) {
+    credentials.error_handling_rules = normalizeAccountErrorHandlingRules(input.error_handling_rules)
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'stream_intercept_rules')) {
+    credentials.stream_intercept_rules = normalizeAccountStreamInterceptRules(input.stream_intercept_rules)
+  }
+}
+
+function optionalCredentialText(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label}不能为空`)
+  }
+  return value.trim()
+}
+
+function optionalCredentialDateTime(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined
+  const normalized = optionalServerDateTimeIso(value)
+  if (!normalized) {
+    throw new Error(`${label}必须是有效时间字符串`)
+  }
+  return normalized
+}
+
+function copyOptionalCredentialText(input: Record<string, unknown>, output: Record<string, unknown>, key: string, label: string): void {
+  const value = optionalCredentialText(input[key], label)
+  if (value) output[key] = value
 }
 
 function accountFingerprint(providerCode: string, type: string, baseUrl: string, secret: string): string {
@@ -845,6 +1023,16 @@ function accountFingerprint(providerCode: string, type: string, baseUrl: string,
   void type
   void baseUrl
   return hashSecret(secret.trim())
+}
+
+function requiredAccountCredentialSource(accountType: string, credentials: Record<string, unknown>): string {
+  if (accountType === 'oauth') {
+    return requiredTextInput(credentials.refresh_token ?? credentials.access_token, 'OAuth 凭据')
+  }
+  if (accountType === 'api_key') {
+    return requiredTextInput(credentials.api_key, 'API Key')
+  }
+  return requiredTextInput(credentials.api_key ?? credentials.refresh_token ?? credentials.access_token, '账户凭据')
 }
 
 function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string): string[] | undefined {
@@ -909,9 +1097,13 @@ function assertGroupNameAvailable(systemAccountId: string, providerCode: string,
 
 function defaultTemporaryUnschedulableMinutes(): number {
   const value = getSettings().defaultTemporaryUnschedulableMinutes
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return 5
-  return Math.min(Math.max(Math.trunc(number), 1), 1440)
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error('defaultTemporaryUnschedulableMinutes 必须是整数')
+  }
+  if (value < 1 || value > 1440) {
+    throw new Error('defaultTemporaryUnschedulableMinutes 必须在 1 到 1440 之间')
+  }
+  return value
 }
 
 function defaultTemporaryUnschedulableMaxPauseSeconds(): number {
@@ -979,17 +1171,9 @@ interface AccountSummaryBuildOptions {
   includeCredentials?: boolean
 }
 
-function ensureVisibleAuthorizationInstances(access?: AccessScope): void {
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  if (viewerSystemAccountId) {
-    ensureAccountAuthorizationInstancesForGrantee(viewerSystemAccountId)
-  }
-}
-
 export function listAccounts(access?: AccessScope, options?: AccountListOptions): AccountSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
-  ensureVisibleAuthorizationInstances(access)
   const listOptions = normalizeAccountListOptions(options)
   const rows = hydrateAccountRowsWithRuntimeState(listAccountRowsForAccess(access, listOptions), { includeCredentials: true })
   return accountSummariesFromRows(rows, access, viewerSystemAccountId)
@@ -998,7 +1182,6 @@ export function listAccounts(access?: AccessScope, options?: AccountListOptions)
 export function listAccountsPage(access?: AccessScope, options?: AccountListOptions): AccountListResult {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
-  ensureVisibleAuthorizationInstances(access)
   const listOptions = normalizeAccountListOptions(options)
   const databasePage = listAccountRowsPageForAccess(access, listOptions, { includeCredentials: false })
   const page = {
@@ -1018,7 +1201,6 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
 export function listAccountOptions(access?: AccessScope, options?: AccountOptionListOptions): AccountOptionSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
-  ensureVisibleAuthorizationInstances(access)
   const listOptions = normalizeAccountOptionListOptions(options)
   const rows = queryAccountOptionRowsForAccess(access, listOptions)
   return accountOptionSummariesFromRows(rows, access, viewerSystemAccountId)
@@ -1027,7 +1209,6 @@ export function listAccountOptions(access?: AccessScope, options?: AccountOption
 export function findAccountSummary(accountId: string, access?: AccessScope): AccountSummary | undefined {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
-  ensureVisibleAuthorizationInstances(access)
   const listOptions = normalizeAccountListOptions({ page: 1, pageSize: 1 })
   const row = findAccountRowForAccess(access, accountId, listOptions)
   if (!row) return undefined
@@ -1313,6 +1494,7 @@ function accountSummariesFromRows(
     const effectiveAuthorizedSchedulable = isAuthorizedView
       ? Boolean(groupBinding && groupBinding.groupBindStatus === 'bound')
         && authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) === undefined
+        && Boolean(accountResourceFactAccountId(row))
         && row.status === 'active'
         && row.schedulable === 1
         && !isLaterIso(row.cooldown_until ?? undefined, nowIso())
@@ -1558,6 +1740,9 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
   const resourceRow = row.authorization_instance_source_account_id
     ? getBusinessDatabase().prepare('SELECT * FROM accounts WHERE id = ?').get(row.authorization_instance_source_account_id) as unknown as AccountRow | undefined
     : undefined
+  if (row.authorization_instance_authorization_id && !resourceRow) {
+    return undefined
+  }
   const credentialsRow = resourceRow ?? row
   return {
     ...visibleAccount,
@@ -1595,6 +1780,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
     .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
   const scheduledRows = rows.filter((row) => isAccountAvailabilityScheduleAllowed(row.availability_schedule_json))
   const hydratedRows = hydrateAccountRowsWithRuntimeState(scheduledRows, { includeCredentials: true })
+    .filter((row) => row.access_type !== 'authorized' || Boolean(row.source_provider_code))
   const accountNames = loadSystemAccountNameMapByIds(hydratedRows.map((row) => row.system_account_id))
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(hydratedRows.map((row) => row.id))
   const supportedModelsByAccountId = loadSupportedModelsByAccountIds(hydratedRows.map((row) => accountResourceFactAccountId(row)))
@@ -1740,31 +1926,74 @@ function openAIOAuthRefreshMetadata(accountType: string, credentials: Record<str
   }
 }
 
+const accountCreateInputKeys = new Set([
+  'providerCode',
+  'name',
+  'type',
+  'credentials',
+  'supportedModels',
+  'status',
+  'concurrencyLimit',
+  'priority',
+  'superPriorityEnabled',
+  'fallbackEnabled',
+  'proxyProfileId',
+  'errorPolicyId',
+  'schedulable',
+  'groupId',
+  'accountExpiresAt',
+  'availabilitySchedule',
+  'notes'
+])
+
+const accountUpdateInputKeys = new Set([
+  'name',
+  'credentials',
+  'supportedModels',
+  'status',
+  'concurrencyLimit',
+  'priority',
+  'superPriorityEnabled',
+  'fallbackEnabled',
+  'proxyProfileId',
+  'errorPolicyId',
+  'schedulable',
+  'accountExpiresAt',
+  'availabilitySchedule',
+  'notes'
+])
+
 export function createAccount(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
+  assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
   const id = newId('acc')
-  const providerCode = String(input.providerCode ?? 'openai').trim() || 'openai'
+  const providerCode = requiredTextInput(input.providerCode, '供应商')
   const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : undefined
   const explicitGroup = explicitGroupId ? groupOwnerAndProvider(explicitGroupId) : undefined
   const requestedSystemAccountId = writeSystemAccountId(access)
   const systemAccountId = explicitGroup && canManageResourceOwner(explicitGroup.systemAccountId, access) ? explicitGroup.systemAccountId : requestedSystemAccountId
   const provider = listProviders().find((item) => item.code === providerCode)
-  const credentials = typeof input.credentials === 'object' && input.credentials !== null ? input.credentials as Record<string, unknown> : {}
-  const credentialMap = credentials as Record<string, unknown>
-  const accountType = String(input.type ?? 'api_key').trim() || 'api_key'
-  const credentialSource = accountType === 'oauth'
-    ? credentialMap.refresh_token ?? credentialMap.access_token ?? ''
-    : credentialMap.api_key ?? ''
-  const baseUrl = String(credentialMap.base_url ?? provider?.baseUrl ?? 'https://api.openai.com/v1')
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  const accountType = normalizedAccountType(input.type)
+  if (!provider.accountTypes.includes(accountType as AccountType)) {
+    throw new Error(`供应商 ${providerCode} 不支持账户类型 ${accountType}`)
+  }
+  const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials)
+  const credentialSource = requiredAccountCredentialSource(accountType, credentials)
+  const baseUrl = requiredTextInput(credentials.base_url, 'Base URL')
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
     : null
   const oauthRefreshMetadata = openAIOAuthRefreshMetadata(accountType, credentials)
-  const accountExpiresAt = optionalNullableServerDateTimeIso(input.accountExpiresAt)
+  const accountExpiresAt = hasOwnInput(input, 'accountExpiresAt')
+    ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
+    : null
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode) ?? []
-  const initialStatus = normalizeAccountStatus(input.status, 'active')
+  const initialStatus = normalizedAccountStatusInput(input.status, 'active')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : initialStatus
   const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
@@ -1786,25 +2015,26 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   if (createSuperPriorityEnabled && createFallbackEnabled) {
     throw new Error('超级优先和降级备用不能同时开启')
   }
+  const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
   const account: AccountSummary = {
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     providerCode,
-    name: normalizedEntityName(input.name, `未命名 ${provider?.name ?? providerCode.toUpperCase()} 账户`),
+    name: requiredTextInput(input.name, '账户名称'),
     notes: optionalString(input.notes),
     type: accountType,
     credentials,
     status: nextStatus,
-    concurrencyLimit: Number(input.concurrencyLimit ?? DEFAULT_ACCOUNT_CONCURRENCY_LIMIT),
+    concurrencyLimit: normalizedPositiveIntegerInput(input.concurrencyLimit, DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, '并发限制'),
     currentConcurrency: 0,
-    priority: Number(input.priority ?? 0),
+    priority: normalizedOptionalDispatchPriority(input.priority, 0),
     superPriorityEnabled: createSuperPriorityEnabled,
     fallbackEnabled: createFallbackEnabled,
     supportedModels,
     proxyProfileId,
     errorPolicyId: optionalString(input.errorPolicyId),
-    schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : input.schedulable !== false,
+    schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
@@ -1905,6 +2135,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
 }
 
 export function updateAccount(id: string, input: Record<string, unknown>, access?: AccessScope): AccountSummary | undefined {
+  assertKnownInputKeys(input, accountUpdateInputKeys, '账户更新参数')
   const current = findAccountSummary(id, access)
   if (!current) {
     return undefined
@@ -1916,24 +2147,22 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
-  const credentials = typeof input.credentials === 'object' && input.credentials !== null
-    ? input.credentials as Record<string, unknown>
-    : current.credentials
-  const credentialSource = current.type === 'oauth'
-    ? credentials.refresh_token ?? credentials.access_token ?? ''
-    : credentials.api_key ?? ''
-  const baseUrl = String(credentials.base_url ?? 'https://api.openai.com/v1')
+  const credentials = hasOwnInput(input, 'credentials')
+    ? normalizeAccountCredentialsForWrite(current.type, input.credentials)
+    : normalizeAccountCredentialsForWrite(current.type, current.credentials)
+  const credentialSource = requiredAccountCredentialSource(current.type, credentials)
+  const baseUrl = requiredTextInput(credentials.base_url, 'Base URL')
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountFingerprint(current.providerCode, current.type, baseUrl, credentialSource)
     : null
   const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials)
-  const hasAccountExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'accountExpiresAt')
+  const hasAccountExpiresAtInput = hasOwnInput(input, 'accountExpiresAt')
   const nextAccountExpiresAt = hasAccountExpiresAtInput
-    ? optionalNullableServerDateTimeIso(input.accountExpiresAt)
+    ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
     : current.accountExpiresAt ?? null
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
-  const hasSupportedModelsInput = Object.prototype.hasOwnProperty.call(input, 'supportedModels')
+  const hasSupportedModelsInput = hasOwnInput(input, 'supportedModels')
   const nextSupportedModels = hasSupportedModelsInput
     ? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode) ?? []
     : current.supportedModels ?? []
@@ -1941,14 +2170,14 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const nextAvailabilitySchedule = hasAvailabilityScheduleInput
     ? accountAvailabilityScheduleFromRequest(input)
     : current.availabilitySchedule
-  const hasPriorityInput = Object.prototype.hasOwnProperty.call(input, 'priority')
-  const hasNotesInput = Object.prototype.hasOwnProperty.call(input, 'notes')
-  const rawErrorPolicyId = Object.prototype.hasOwnProperty.call(input, 'errorPolicyId')
+  const hasPriorityInput = hasOwnInput(input, 'priority')
+  const hasNotesInput = hasOwnInput(input, 'notes')
+  const rawErrorPolicyId = hasOwnInput(input, 'errorPolicyId')
     ? input.errorPolicyId
     : undefined
 
-  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
-  const requestedStatus = hasStatusInput ? normalizeAccountStatus(input.status, current.status) : current.status
+  const hasStatusInput = hasOwnInput(input, 'status')
+  const requestedStatus = hasStatusInput ? normalizedAccountStatusInput(input.status, current.status) : current.status
   if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
     throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
   }
@@ -1992,7 +2221,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     nextCooldownRetestObservationStartedAt = undefined
     clearCooldownRetestState = true
   }
-  const hasSuperPriorityInput = Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled')
+  const hasSuperPriorityInput = hasOwnInput(input, 'superPriorityEnabled')
   const requestedSuperPriority = normalizeSuperPriorityInput(
     input.superPriorityEnabled,
     current.superPriorityEnabled
@@ -2001,7 +2230,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     throw new Error('只有正常状态的账户可以设置超级优先')
   }
   let nextSuperPriorityEnabled = requestedSuperPriority
-  const hasFallbackInput = Object.prototype.hasOwnProperty.call(input, 'fallbackEnabled')
+  const hasFallbackInput = hasOwnInput(input, 'fallbackEnabled')
   const requestedFallback = normalizeFallbackInput(
     input.fallbackEnabled,
     current.fallbackEnabled
@@ -2020,18 +2249,19 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     nextSuperPriorityEnabled = false
   }
 
+  const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
   const next: AccountSummary = {
     ...current,
-    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
+    name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '账户名称'),
     notes: hasNotesInput ? optionalNullableString(input.notes) ?? undefined : current.notes,
     credentials,
     status: nextStatus,
-    concurrencyLimit: Number(input.concurrencyLimit ?? current.concurrencyLimit),
-    priority: Number(input.priority ?? current.priority),
+    concurrencyLimit: normalizedPositiveIntegerInput(input.concurrencyLimit, current.concurrencyLimit, '并发限制'),
+    priority: normalizedOptionalDispatchPriority(input.priority, current.priority),
     superPriorityEnabled: nextSuperPriorityEnabled,
     fallbackEnabled: nextFallbackEnabled,
     supportedModels: nextSupportedModels,
-    proxyProfileId: Object.prototype.hasOwnProperty.call(input, 'proxyProfileId')
+    proxyProfileId: hasOwnInput(input, 'proxyProfileId')
       ? globalProxyProfileId(optionalString(input.proxyProfileId))
       : current.proxyProfileId,
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
@@ -2039,9 +2269,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       ? false
       : hasStatusInput
         ? true
-        : typeof input.schedulable === 'boolean'
-          ? input.schedulable
-          : current.schedulable,
+        : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
@@ -2210,51 +2438,7 @@ function buildDeletedAccountCleanupTarget(database: DatabaseSync, row: AccountDe
 }
 
 function detachAuthorizationInstancesFromDeletedSourceAccount(database: DatabaseSync, sourceAccountId: string): void {
-  const source = database
-    .prepare(`
-      SELECT provider_code, type, credentials_encrypted, credential_mask, proxy_profile_id,
-        concurrency_limit, error_policy_id
-      FROM accounts
-      WHERE id = ?
-      LIMIT 1
-    `)
-    .get(sourceAccountId) as unknown as Pick<AccountRow, 'provider_code' | 'type' | 'credentials_encrypted' | 'credential_mask' | 'proxy_profile_id' | 'concurrency_limit' | 'error_policy_id'> | undefined
-  const instances = database
-    .prepare('SELECT id FROM accounts WHERE authorization_instance_source_account_id = ?')
-    .all(sourceAccountId) as unknown as Array<{ id?: string }>
   const updatedAt = nowIso()
-  if (source && instances.length > 0) {
-    const supportedModels = loadSupportedModelsByAccountIds([sourceAccountId]).get(sourceAccountId) ?? []
-    const updateInstance = database.prepare(`
-      UPDATE accounts
-      SET type = ?,
-          credentials_encrypted = ?,
-          credential_mask = ?,
-          proxy_profile_id = ?,
-          concurrency_limit = ?,
-          error_policy_id = ?,
-          authorization_instance_source_account_id = NULL,
-          updated_at = ?
-      WHERE id = ?
-        AND authorization_instance_source_account_id = ?
-    `)
-    for (const instance of instances) {
-      if (!instance.id) continue
-      updateInstance.run(
-        source.type,
-        source.credentials_encrypted,
-        source.credential_mask ?? '',
-        source.proxy_profile_id ?? null,
-        source.concurrency_limit,
-        source.error_policy_id ?? null,
-        updatedAt,
-        instance.id,
-        sourceAccountId
-      )
-      replaceAccountSupportedModels(instance.id, source.provider_code, supportedModels)
-    }
-    return
-  }
   database
     .prepare(`
       UPDATE accounts
@@ -2479,7 +2663,7 @@ export function getAccountPrecheckMutationState(input: {
       return undefined
     }
     return {
-      status: normalizeAccountStatus(row.status, 'active'),
+      status: normalizeAccountStatus(row.status),
       updatedAt: row.updated_at ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined
     }
@@ -2496,7 +2680,7 @@ export function getAccountPrecheckMutationState(input: {
     return undefined
   }
   return {
-    status: normalizeAccountStatus(row.status, 'active'),
+    status: normalizeAccountStatus(row.status),
     updatedAt: row.updated_at ?? undefined,
     lastUsedAt: row.last_used_at ?? undefined
   }
@@ -2993,7 +3177,7 @@ function formatDurationSeconds(seconds: number): string {
 }
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
-  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  const parsed = typeof value === 'number' ? value : NaN
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(Math.max(Math.trunc(parsed), min), max)
 }
@@ -3671,20 +3855,40 @@ function groupSchedulingPolicyFromRow(row: Pick<GroupListRow, 'group_type' | 'sc
 }
 
 function hasGroupSchedulingPolicyInput(input: Record<string, unknown>): boolean {
-  return Object.prototype.hasOwnProperty.call(input, 'schedulingPolicy')
+  return hasOwnInput(input, 'schedulingPolicy')
 }
 
 function groupSchedulingPolicyInput(input: Record<string, unknown>): unknown {
   return input.schedulingPolicy
 }
 
+const groupCreateInputKeys = new Set([
+  'name',
+  'providerCode',
+  'description',
+  'enabled',
+  'groupType',
+  'schedulingPolicy'
+])
+
+const groupUpdateInputKeys = new Set([
+  'name',
+  'providerCode',
+  'description',
+  'enabled',
+  'groupType',
+  'schedulingPolicy'
+])
+
 export function createGroup(input: Record<string, unknown>, access?: AccessScope): GroupSummary {
+  assertKnownInputKeys(input, groupCreateInputKeys, '分组创建参数')
   const now = nowIso()
   const systemAccountId = writeSystemAccountId(access)
-  const providerCode = String(input.providerCode ?? 'openai').trim() || 'openai'
+  const providerCode = requiredTextInput(input.providerCode, '供应商')
   const groupType = normalizeGroupType(input.groupType)
   const schedulingPolicyJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), groupType)
-  const name = normalizedEntityName(input.name, '未命名分组')
+  const name = requiredTextInput(input.name, '分组名称')
+  const enabled = normalizeOptionalBooleanInput(input, 'enabled', true, '分组启用状态')
   assertGroupNameAvailable(systemAccountId, providerCode, name)
   const group: GroupSummary = {
     id: newId('grp'),
@@ -3693,7 +3897,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
     name,
     providerCode,
     description: optionalString(input.description),
-    enabled: input.enabled !== false,
+    enabled,
     isDefault: false,
     groupType,
     schedulingPolicy: parseGroupSchedulingPolicyJson(schedulingPolicyJson, groupType),
@@ -3716,6 +3920,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
 }
 
 export function updateGroup(id: string, input: Record<string, unknown>, access?: AccessScope): GroupSummary | undefined {
+  assertKnownInputKeys(input, groupUpdateInputKeys, '分组更新参数')
   const current = findGroupSummary(id, access)
   if (!current) {
     return undefined
@@ -3727,19 +3932,17 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
-  const hasDescriptionInput = Object.prototype.hasOwnProperty.call(input, 'description')
-  const hasGroupTypeInput = Object.prototype.hasOwnProperty.call(input, 'groupType')
+  const hasDescriptionInput = hasOwnInput(input, 'description')
+  const hasGroupTypeInput = hasOwnInput(input, 'groupType')
   const hasSchedulingPolicyInput = hasGroupSchedulingPolicyInput(input)
   const nextGroupType = hasGroupTypeInput ? normalizeGroupType(input.groupType) : current.groupType
   const nextSchedulingPolicyInput = hasSchedulingPolicyInput ? groupSchedulingPolicyInput(input) : current.schedulingPolicy
   const next: GroupSummary = {
     ...current,
-    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
-    providerCode: typeof input.providerCode === 'string' && input.providerCode.trim()
-      ? input.providerCode.trim()
-      : current.providerCode,
+    name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '分组名称'),
+    providerCode: normalizeOptionalRequiredTextInput(input, 'providerCode', current.providerCode, '供应商'),
     description: hasDescriptionInput ? optionalNullableString(input.description) ?? undefined : current.description,
-    enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled,
+    enabled: normalizeOptionalBooleanInput(input, 'enabled', current.enabled, '分组启用状态'),
     groupType: nextGroupType,
     schedulingPolicy: parseGroupSchedulingPolicyJson(groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nextGroupType)
   }
@@ -4174,10 +4377,6 @@ export function listAuthorizationGranteeGroups(access?: AccessScope, options: Au
   if (!granteeSystemAccountId) return []
   const grantee = findSystemAccountById(granteeSystemAccountId)
   if (!grantee || grantee.status !== 'active') return []
-  const providerCode = optionalString(options.providerCode)
-  if (providerCode === 'openai' && options.preferDefault !== false) {
-    ensureDefaultOpenAIGroupForSystemAccount(granteeSystemAccountId)
-  }
   const filter = buildAuthorizationGranteeGroupFilter(options, granteeSystemAccountId)
   const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
   const rows = getBusinessDatabase()
@@ -4315,16 +4514,19 @@ function escapeLikePrefix(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
+const systemTeamInputKeys = new Set(['name', 'description', 'status'])
+const systemTeamMembersInputKeys = new Set(['systemAccountIds'])
+
 export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {
-  const name = optionalString(input.name)
-  if (!name) throw new Error('团队名称不能为空')
+  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
+  const name = normalizeSystemTeamName(input.name)
   const database = getBusinessDatabase()
   ensureSystemTeamNameUnique(name, undefined, database)
   const now = nowIso()
   const id = newId('team')
   database
     .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(id, name, optionalString(input.description) ?? null, input.status === 'disabled' ? 'disabled' : 'active', currentSystemAccountId(access), now, now)
+    .run(id, name, normalizeSystemTeamDescription(input.description), normalizeSystemTeamStatus(input.status, 'active'), currentSystemAccountId(access), now, now)
   const created = findSystemTeamSummary(id, access)
   if (!created) throw new Error('创建团队失败')
   invalidateSystemTeamLookupCache(id)
@@ -4332,19 +4534,20 @@ export function createSystemTeam(input: Record<string, unknown>, access?: Access
 }
 
 export function updateSystemTeam(id: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
+  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
   const database = getBusinessDatabase()
   const row = database.prepare('SELECT * FROM system_teams WHERE id = ?').get(id) as unknown as SystemTeamRow | undefined
   if (!row) return undefined
-  const name = optionalString(input.name) ?? row.name
+  const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
   ensureSystemTeamNameUnique(name, id, database)
-  const status = input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : row.status
+  const status = normalizeSystemTeamStatus(input.status, row.status)
   const now = nowIso()
   let authorizationChanged = false
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
       .prepare('UPDATE system_teams SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?')
-      .run(name, input.description === undefined ? row.description : optionalNullableString(input.description), status, now, id)
+      .run(name, input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description), status, now, id)
     if (row.status !== 'disabled' && status === 'disabled') {
       revokeAllTeamSources(id, currentSystemAccountId(access), database, now, 'team_disabled')
       authorizationChanged = true
@@ -4369,6 +4572,7 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
 }
 
 export function addSystemTeamMembers(teamId: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
+  assertKnownInputKeys(input, systemTeamMembersInputKeys, '团队成员')
   const team = getBusinessDatabase().prepare("SELECT * FROM system_teams WHERE id = ? AND status = 'active'").get(teamId) as unknown as SystemTeamRow | undefined
   if (!team) return undefined
   const systemAccountIds = normalizeSystemAccountIds(input.systemAccountIds)
@@ -4463,21 +4667,26 @@ export function findResourceAuthorization(authorizationId: string, access?: Acce
   return findResourceAuthorizationSummary(authorizationId, access, options)
 }
 
+const resourceAuthorizationCreateInputKeys = new Set(['resourceType', 'resourceId', 'granteeType', 'granteeId', 'targetGroupId', 'remark', 'expiresAt', 'limits', 'modelPolicy'])
+const resourceAuthorizationUpdateInputKeys = new Set(['status', 'expiresAt', 'limits'])
+
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
+  assertKnownInputKeys(input, resourceAuthorizationCreateInputKeys, '资源授权')
   const resourceType = normalizeResourceType(input.resourceType)
-  const resourceId = optionalString(input.resourceId)
+  const resourceId = normalizeRequiredTextInput(input.resourceId, '授权资源')
   if (!resourceType || !resourceId) throw new Error('请选择授权资源')
   const ownerSystemAccountId = resourceOwnerSystemAccountId(resourceType, resourceId)
   if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) throw new Error('授权资源不存在')
-  const granteeType = input.granteeType === 'team' ? 'team' : 'system_account'
-  const granteeId = optionalString(input.granteeId)
+  const granteeType = normalizeResourceAuthorizationGranteeType(input.granteeType)
+  const granteeId = normalizeRequiredTextInput(input.granteeId, '被授权对象')
   if (!granteeId) throw new Error('请选择被授权对象')
   const database = getBusinessDatabase()
   const now = nowIso()
-  const expiresAt = optionalNullableServerDateTimeIso(input.expiresAt)
+  const expiresAt = normalizeResourceAuthorizationExpiresAtInput(input.expiresAt)
   validateResourceAuthorizationExpiresAt(resourceType, resourceId, expiresAt, Date.parse(now))
   const actor = currentSystemAccountId(access)
-  const targetGroupId = optionalString(input.targetGroupId)
+  const targetGroupId = normalizeOptionalTextInput(input.targetGroupId, '目标分组')
+  const remark = normalizeOptionalTextInput(input.remark, '授权备注', { allowBlank: true })
   if (!targetGroupId && resourceType === 'account' && granteeType === 'system_account') {
     throw new Error('授权 AI 账户给个人时必须选择目标分组')
   }
@@ -4492,19 +4701,19 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
       if (!team) throw new Error('团队不存在或已停用')
       const members = activeTeamMemberRows(granteeId, database).filter((member) => member.system_account_id !== ownerSystemAccountId)
       if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
       assertActiveTeamGrantFanoutWithinLimit(granteeId, database)
       createdGrantId = grant.id
       for (const member of members) {
-        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
+        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark, expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
       }
     } else {
       const grantee = findSystemAccountById(granteeId)
       if (!grantee || grantee.status !== 'active') throw new Error('被授权用户不存在或已停用')
       if (granteeId === ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
       createdGrantId = grant.id
-      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
+      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark, expiresAt, limits: input.limits, modelPolicy: input.modelPolicy, actor, now, database })
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -4640,6 +4849,7 @@ function findReturnableRuntimeAuthorizationForGrant(authorizationId: string, gra
 }
 
 export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
+  assertKnownInputKeys(input, resourceAuthorizationUpdateInputKeys, '资源授权')
   expireDueResourceAuthorizations()
   const database = getBusinessDatabase()
   const grant = database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationGrantRow | undefined
@@ -4648,14 +4858,13 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
   const hasLimitsInput = Object.prototype.hasOwnProperty.call(input, 'limits')
   const nextExpiresAt = hasExpiresAtInput
-    ? optionalNullableServerDateTimeIso(input.expiresAt)
+    ? normalizeResourceAuthorizationExpiresAtInput(input.expiresAt)
     : grant.expires_at
   const nextLimits = hasLimitsInput
     ? requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
     : grant.limits_json
-  const rawStatus = optionalString(input.status)
-  const requestedStatus = rawStatus === 'active' || rawStatus === 'paused' || rawStatus === 'expired' || rawStatus === 'revoked' || rawStatus === 'returned'
-    ? rawStatus
+  const requestedStatus = Object.prototype.hasOwnProperty.call(input, 'status')
+    ? normalizeResourceAuthorizationStatus(input.status)
     : undefined
   validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, nextExpiresAt, Date.parse(now), { allowExpired: requestedStatus === 'expired' })
   if (grant.status === 'expired' && requestedStatus === 'active' && !hasExpiresAtInput) {
@@ -4747,9 +4956,8 @@ function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false):
         WHERE system_team_members.team_id IN (${sqlPlaceholders(chunk.length)})${statusClause}
       )
       WHERE team_member_rank <= ?
-      ORDER BY team_id ASC, status ASC, joined_at ASC, id ASC
     `).all(...chunk, maxSystemTeamMembersPerTeam) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>
-    rows.push(...teamRows)
+    rows.push(...teamRows.sort(compareSystemTeamMembersForList))
   }
   const result = new Map<string, SystemTeamMemberSummary[]>()
   for (const row of rows) {
@@ -4757,6 +4965,15 @@ function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false):
     result.set(row.team_id, [...(result.get(row.team_id) ?? []), member])
   }
   return result
+}
+
+function compareSystemTeamMembersForList(left: SystemTeamMemberRow, right: SystemTeamMemberRow): number {
+  const team = left.team_id.localeCompare(right.team_id)
+  if (team !== 0) return team
+  const status = left.status.localeCompare(right.status)
+  if (status !== 0) return status
+  const joinedAt = left.joined_at.localeCompare(right.joined_at)
+  return joinedAt !== 0 ? joinedAt : left.id.localeCompare(right.id)
 }
 
 function systemTeamMemberSelectColumns(alias: string): string {
@@ -4781,9 +4998,121 @@ function ensureSystemTeamNameUnique(name: string, excludeId?: string, database =
   if (row?.id) throw new Error('团队名称已存在')
 }
 
+function normalizeSystemTeamName(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error('团队名称不能为空')
+  }
+  const name = value.trim()
+  if (!name) {
+    throw new Error('团队名称不能为空')
+  }
+  return name
+}
+
+function normalizeSystemTeamDescription(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+  if (typeof value !== 'string') {
+    throw new Error('团队说明必须是字符串')
+  }
+  const description = value.trim()
+  return description || null
+}
+
+function normalizeSystemTeamStatus(value: unknown, fallback: string): 'active' | 'disabled' {
+  if (value === undefined) {
+    if (fallback === 'active' || fallback === 'disabled') return fallback
+    throw new Error('团队状态无效')
+  }
+  if (value === 'active' || value === 'disabled') {
+    return value
+  }
+  throw new Error('团队状态无效')
+}
+
 function normalizeSystemAccountIds(value: unknown): string[] {
-  if (Array.isArray(value)) return [...new Set(value.map((item) => typeof item === 'string' ? item.trim() : '').filter(Boolean))]
-  return typeof value === 'string' && value.trim() ? [value.trim()] : []
+  if (!Array.isArray(value)) {
+    throw new Error('团队成员必须是系统账户 ID 数组')
+  }
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      throw new Error('团队成员必须是系统账户 ID 数组')
+    }
+    const id = item.trim()
+    if (!id) {
+      throw new Error('团队成员 ID 不能为空')
+    }
+    if (seen.has(id)) {
+      throw new Error('团队成员不能重复')
+    }
+    seen.add(id)
+    ids.push(id)
+  }
+  return ids
+}
+
+function normalizeRequiredTextInput(value: unknown, label: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${label}不能为空`)
+  }
+  const text = value.trim()
+  if (!text) {
+    throw new Error(`${label}不能为空`)
+  }
+  return text
+}
+
+function normalizeOptionalTextInput(value: unknown, label: string, options: { allowBlank?: boolean } = {}): string | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (value === null) {
+    throw new Error(`${label}不能为空`)
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${label}必须是字符串`)
+  }
+  const text = value.trim()
+  if (!text) {
+    if (options.allowBlank) return undefined
+    throw new Error(`${label}不能为空`)
+  }
+  return text
+}
+
+function normalizeResourceAuthorizationGranteeType(value: unknown): 'team' | 'system_account' {
+  if (value === 'team' || value === 'system_account') {
+    return value
+  }
+  throw new Error('被授权对象类型无效')
+}
+
+function normalizeResourceAuthorizationStatus(value: unknown): AuthorizationStatus {
+  if (value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked' || value === 'returned') {
+    return value
+  }
+  throw new Error('授权状态无效')
+}
+
+function normalizeResourceAuthorizationExpiresAtInput(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+  if (typeof value !== 'string') {
+    throw new Error('过期时间格式不正确')
+  }
+  const text = value.trim()
+  if (!text) {
+    throw new Error('过期时间格式不正确')
+  }
+  const normalized = optionalNullableServerDateTimeIso(text)
+  if (!normalized) {
+    throw new Error('过期时间格式不正确')
+  }
+  return normalized
 }
 
 function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {
@@ -4992,7 +5321,7 @@ function loadAuthorizationTeamUsageRangeSummary(
 ): AccountUsageSummary | undefined {
   const row = getStatsDatabase().prepare(`
     SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd AS cache_read_cost, total_cost_usd AS total_cost, last_used_at
+      cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
     FROM authorization_team_usage_range_windows
     WHERE system_account_id = ?
       AND start_date = ?

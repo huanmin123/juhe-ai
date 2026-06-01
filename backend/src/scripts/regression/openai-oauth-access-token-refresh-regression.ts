@@ -133,8 +133,9 @@ async function main(): Promise<void> {
       )
       assertAccountState(failedDisabled.id, 'disabled', false)
     }
-    assertAccountState(stoppedRefresh.id, 'error', false, 'oauth_token_refresh_failed', '已停止自动刷新')
+    assertAccountState(stoppedRefresh.id, 'error', false, 'oauth_token_refresh_failed', '连续 432 次')
     assertAccountLastErrorMessageIncludes(stoppedRefresh.id, '连续 432 次')
+    assertAccountLastErrorMessageDoesNotInclude(stoppedRefresh.id, '已停止自动刷新')
 
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => ({
       accessToken: `access-recovered-${refreshToken}`,
@@ -223,6 +224,15 @@ function assertAccountLastErrorMessageIncludes(accountId: string, expected: stri
   assert(
     typeof latest.lastErrorMessage === 'string' && latest.lastErrorMessage.includes(expected),
     `账户异常信息缺少 ${expected}：${latest.lastErrorMessage ?? ''}`
+  )
+}
+
+function assertAccountLastErrorMessageDoesNotInclude(accountId: string, unexpected: string): void {
+  const latest = repositories.findAccountForTest(accountId, access)
+  assert(latest, '账户不存在')
+  assert(
+    typeof latest.lastErrorMessage !== 'string' || !latest.lastErrorMessage.includes(unexpected),
+    `账户异常信息不应被历史兼容归一化为 ${unexpected}：${latest.lastErrorMessage ?? ''}`
   )
 }
 

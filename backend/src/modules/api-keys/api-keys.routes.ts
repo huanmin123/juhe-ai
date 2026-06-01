@@ -7,6 +7,8 @@ import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySummary, 
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
+import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
+import { apiKeyAvailabilityScheduleSchema } from './api-key-availability-schedule.schema.js'
 import { submitApiKeyRelatedCleanup } from './api-key-cleanup.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
@@ -20,17 +22,19 @@ const apiKeyMutationSchema = z.object({
     priority: z.number().int().positive().optional(),
     weight: z.number({ invalid_type_error: '分组权重必须是数字' }).int('分组权重必须是整数').min(1, '分组权重必须在 1-100 之间').max(100, '分组权重必须在 1-100 之间').optional(),
     status: z.enum(['active', 'disabled']).optional()
-  })).min(1, 'API Key 至少需要绑定一个分组').max(20).optional(),
+  }).strict()).min(1, 'API Key 至少需要绑定一个分组').max(20).optional(),
   groupRouteStrategy: z.string().optional().refine((value) => value === undefined || value === 'priority_failover' || value === 'round_robin' || value === 'weighted_round_robin', '分组路由策略无效'),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().nullable().optional(),
-  quotaLimits: z.record(z.string(), z.unknown()).nullable().optional(),
-  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional()
-})
+  quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
+  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
+}).strict()
 const apiKeyCreateSchema = apiKeyMutationSchema.refine((value) => Boolean(value.groupBindings?.length), {
   message: 'API Key 至少需要绑定一个分组'
 })
-const apiKeyUpdateSchema = apiKeyMutationSchema.partial()
+const apiKeyUpdateSchema = apiKeyMutationSchema.partial().refine((value) => Object.keys(value).length > 0, {
+  message: '请提供要修改的 API Key 内容'
+})
 
 apiKeysRouter.get('/', (req, res) => {
   res.json(ok(listApiKeysPage(getRequestAccessScope(req.query.systemAccountId), parseApiKeyListOptions(req.query))))

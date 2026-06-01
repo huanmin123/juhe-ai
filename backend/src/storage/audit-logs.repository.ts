@@ -1090,7 +1090,11 @@ function auditErrorFingerprint(input: AuditLogInput): string {
 }
 
 function normalizeAuditTrafficSource(value: unknown): AuditTrafficSource {
-  return value === 'manual_account_test' || value === 'cooldown_retest' ? value : 'gateway'
+  if (value === undefined) return 'gateway'
+  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest') {
+    return value
+  }
+  throw new Error(`非法审计流量来源：${String(value)}`)
 }
 
 function normalizeErrorMessage(value: string): string {
@@ -1129,7 +1133,7 @@ function buildAuditLogFilters(options: AuditLogListOptions): { clause: string; p
     params.push(options.statusCode)
   }
   if (options.trafficSource) {
-    clauses.push("COALESCE(al.traffic_source, 'gateway') = ?")
+    clauses.push('al.traffic_source = ?')
     params.push(options.trafficSource)
   }
   for (const [column, value] of [

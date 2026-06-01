@@ -181,6 +181,10 @@ const generatedTokenPrefix = 'juis_'
 const touchLastUsedIntervalMs = 60_000
 const defaultPageSize = 20
 const maxPageSize = 100
+const externalIntegrationSourceInputKeys = new Set(['name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes'])
+const externalIntegrationSourceTokenInputKeys = new Set(['sourceRefId', 'name', 'token', 'status', 'scopes', 'expiresAt'])
+const externalIntegrationSourceTokenUpdateInputKeys = new Set(['name', 'status', 'scopes', 'expiresAt'])
+const externalIntegrationRateLimitRuleKeys = ['windowSeconds', 'maxRequests'] as const
 
 export function listExternalIntegrationSources(options: ExternalIntegrationSourceListOptions = {}): ExternalIntegrationSourceListResult {
   const pageSize = Math.max(1, Math.min(Math.trunc(options.pageSize ?? defaultPageSize), maxPageSize))
@@ -201,12 +205,10 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   const rows = getBusinessDatabase().prepare(`
     SELECT
       sources.*,
-      COUNT(tokens.id) AS token_count,
-      SUM(CASE WHEN tokens.status = 'active' THEN 1 ELSE 0 END) AS active_token_count
+      0 AS token_count,
+      0 AS active_token_count
     FROM external_integration_sources AS sources
-    LEFT JOIN external_integration_source_tokens AS tokens ON tokens.source_ref_id = sources.id
     ${whereSql}
-    GROUP BY sources.id
     ORDER BY sources.updated_at DESC, sources.id DESC
     LIMIT ? OFFSET ?
   `).all(...params, pageSize + 1, offset) as unknown as ExternalIntegrationSourceListRow[]
@@ -214,7 +216,14 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   const pageRows = rows.slice(0, pageSize)
   const tokensBySourceId = loadTokensBySourceIds(pageRows.map((row) => row.id))
   return {
-    items: pageRows.map((row) => mapSourceSummary(row, tokensBySourceId.get(row.id) ?? [])),
+    items: pageRows.map((row) => {
+      const tokens = tokensBySourceId.get(row.id) ?? []
+      return mapSourceSummary({
+        ...row,
+        token_count: tokens.length,
+        active_token_count: tokens.filter((token) => token.status === 'active').length
+      }, tokens)
+    }),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),
@@ -238,6 +247,7 @@ export function findExternalIntegrationSource(id: string): ExternalIntegrationSo
 }
 
 export function createExternalIntegrationSource(input: ExternalIntegrationSourceInput): ExternalIntegrationSourceSummary {
+  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
   const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
   const now = nowIso()
   const id = newId('extsrc')
@@ -250,7 +260,7 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
     `).run(
       id,
       name,
-      normalizeSourceStatus(input.status),
+      normalizeSourceStatusInput(input.status),
       encodeScopes(input.scopes),
       encodeRateLimits(input.rateLimits),
       normalizeNullableIso(input.expiresAt),
@@ -268,6 +278,7 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
 }
 
 export function upsertExternalIntegrationSource(input: ExternalIntegrationSourceInput): { id: string; name: string } {
+  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
   const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
   const database = getBusinessDatabase()
   const existing = database
@@ -282,7 +293,7 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
       WHERE id = ?
     `).run(
       name,
-      normalizeSourceStatus(input.status),
+      normalizeSourceStatusInput(input.status),
       encodeScopes(input.scopes),
       encodeRateLimits(input.rateLimits),
       normalizeNullableIso(input.expiresAt),
@@ -299,7 +310,7 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
   `).run(
     id,
     name,
-    normalizeSourceStatus(input.status),
+    normalizeSourceStatusInput(input.status),
     encodeScopes(input.scopes),
     encodeRateLimits(input.rateLimits),
     normalizeNullableIso(input.expiresAt),
@@ -311,6 +322,7 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
 }
 
 export function updateExternalIntegrationSource(id: string, input: ExternalIntegrationSourceUpdateInput): ExternalIntegrationSourceSummary | undefined {
+  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
   const existing = findSourceRow(id)
   if (!existing) {
     return undefined
@@ -319,7 +331,7 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
   if (nextName !== existing.name) {
     ensureSourceNameAvailable(nextName, id)
   }
-  const nextStatus = input.status === undefined ? normalizeSourceStatus(existing.status as ExternalIntegrationSourceStatus) : normalizeSourceStatus(input.status)
+  const nextStatus = input.status === undefined ? normalizeSourceStatus(existing.status) : normalizeSourceStatusInput(input.status)
   const nextScopes = input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes)
   const nextRateLimits = input.rateLimits === undefined ? existing.rate_limits_json : encodeRateLimits(input.rateLimits)
   const nextExpiresAt = input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt)
@@ -333,9 +345,10 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
 }
 
 export function createExternalIntegrationSourceToken(input: ExternalIntegrationSourceTokenInput): CreatedExternalIntegrationSourceToken {
-  const name = normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空')
+  assertKnownInputKeys(input, externalIntegrationSourceTokenInputKeys, '来源系统 token')
+  const name = normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符')
   const source = resolveSourceForToken(input)
-  const token = input.token?.trim() || createExternalIntegrationSourceTokenValue()
+  const token = normalizeTokenValue(input.token)
   const scopes = normalizeScopes(input.scopes)
   const now = nowIso()
   const id = newId('exttok')
@@ -351,7 +364,7 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
       name,
       hashExternalIntegrationSourceToken(token),
       tokenPrefix,
-      normalizeTokenStatus(input.status),
+      normalizeTokenStatusInput(input.status),
       JSON.stringify(scopes),
       normalizeNullableIso(input.expiresAt),
       now,
@@ -375,6 +388,7 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
 }
 
 export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenId: string, input: ExternalIntegrationSourceTokenUpdateInput): ExternalIntegrationSourceTokenSummary | undefined {
+  assertKnownInputKeys(input, externalIntegrationSourceTokenUpdateInputKeys, '来源系统 token')
   const existing = getBusinessDatabase().prepare(`
     SELECT tokens.*
     FROM external_integration_source_tokens AS tokens
@@ -384,7 +398,7 @@ export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenI
   if (!existing) {
     return undefined
   }
-  const nextStatus = input.status === undefined ? normalizeTokenStatus(existing.status as ExternalIntegrationSourceTokenStatus) : normalizeTokenStatus(input.status)
+  const nextStatus = input.status === undefined ? normalizeTokenStatus(existing.status) : normalizeTokenStatusInput(input.status)
   const revokedAt = nextStatus === 'revoked' && existing.status !== 'revoked'
     ? nowIso()
     : nextStatus === 'revoked'
@@ -395,7 +409,7 @@ export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenI
     SET name = ?, status = ?, scopes_json = ?, expires_at = ?, revoked_at = ?, updated_at = ?
     WHERE id = ?
   `).run(
-    input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空'),
+    input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符'),
     nextStatus,
     input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes),
     input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt),
@@ -457,7 +471,9 @@ export function validateExternalIntegrationSourceToken(input: {
   }
 
   const now = nowIso()
-  if (row.source_status !== 'active') {
+  const sourceStatus = normalizeSourceStatus(row.source_status)
+  const tokenStatus = normalizeTokenStatus(row.token_status)
+  if (sourceStatus !== 'active') {
     return {
       ok: false,
       statusCode: 403,
@@ -473,7 +489,7 @@ export function validateExternalIntegrationSourceToken(input: {
       message: '来源系统已过期'
     }
   }
-  if (row.token_status !== 'active' || (row.token_expires_at && row.token_expires_at <= now)) {
+  if (tokenStatus !== 'active' || (row.token_expires_at && row.token_expires_at <= now)) {
     return {
       ok: false,
       statusCode: 401,
@@ -555,10 +571,14 @@ function findSourceRow(id: string): ExternalIntegrationSourceRow | undefined {
 }
 
 function resolveSourceForToken(input: ExternalIntegrationSourceTokenInput): Pick<ExternalIntegrationSourceRow, 'id'> {
-  if (input.sourceRefId) {
+  if (input.sourceRefId !== undefined && typeof input.sourceRefId !== 'string') {
+    throw new Error('来源系统不存在')
+  }
+  const sourceRefId = input.sourceRefId?.trim()
+  if (sourceRefId) {
     const source = getBusinessDatabase()
       .prepare('SELECT id FROM external_integration_sources WHERE id = ?')
-      .get(input.sourceRefId) as Pick<ExternalIntegrationSourceRow, 'id'> | undefined
+      .get(sourceRefId) as Pick<ExternalIntegrationSourceRow, 'id'> | undefined
     if (!source) {
       throw new Error('来源系统不存在')
     }
@@ -595,7 +615,7 @@ function mapSourceSummary(row: ExternalIntegrationSourceListRow, tokens: Externa
   return {
     id: row.id,
     name: row.name,
-    status: normalizeSourceStatus(row.status as ExternalIntegrationSourceStatus),
+    status: normalizeSourceStatus(row.status),
     scopes: decodeScopes(row.scopes_json),
     rateLimits: decodeRateLimits(row.rate_limits_json),
     expiresAt: row.expires_at ?? undefined,
@@ -614,7 +634,7 @@ function mapTokenSummary(row: ExternalIntegrationSourceTokenListRow): ExternalIn
     id: row.id,
     name: row.name,
     tokenPrefix: row.token_prefix,
-    status: normalizeTokenStatus(row.status as ExternalIntegrationSourceTokenStatus),
+    status: normalizeTokenStatus(row.status),
     scopes: decodeScopes(row.scopes_json),
     expiresAt: row.expires_at ?? undefined,
     lastUsedAt: row.last_used_at ?? undefined,
@@ -624,10 +644,16 @@ function mapTokenSummary(row: ExternalIntegrationSourceTokenListRow): ExternalIn
   }
 }
 
-function normalizeNameOrThrow(value: string, message: string): string {
+function normalizeNameOrThrow(value: unknown, message: string, maxLengthMessage = '来源系统名称不能超过 80 个字符'): string {
+  if (typeof value !== 'string') {
+    throw new Error(message)
+  }
   const name = value.trim()
   if (!name) {
     throw new Error(message)
+  }
+  if (name.length > 80) {
+    throw new Error(maxLengthMessage)
   }
   return name
 }
@@ -649,45 +675,73 @@ function createExternalIntegrationSourceTokenValue(): string {
   return `${generatedTokenPrefix}${randomBytes(32).toString('base64url')}`
 }
 
-function normalizeSourceStatus(status: ExternalIntegrationSourceStatus | undefined): ExternalIntegrationSourceStatus {
-  return status === 'disabled' ? 'disabled' : 'active'
+function normalizeTokenValue(value: unknown): string {
+  if (value === undefined) {
+    return createExternalIntegrationSourceTokenValue()
+  }
+  if (typeof value !== 'string') {
+    throw new Error('来源系统 token 必须是字符串')
+  }
+  const token = value.trim()
+  if (!token) {
+    throw new Error('来源系统 token 不能为空')
+  }
+  return token
 }
 
-function normalizeTokenStatus(status: ExternalIntegrationSourceTokenStatus | undefined): ExternalIntegrationSourceTokenStatus {
-  if (status === 'disabled' || status === 'revoked') {
+function normalizeSourceStatusInput(status: ExternalIntegrationSourceStatus | undefined): ExternalIntegrationSourceStatus {
+  return status === undefined ? 'active' : normalizeSourceStatus(status)
+}
+
+function normalizeSourceStatus(status: unknown): ExternalIntegrationSourceStatus {
+  if (status === 'active' || status === 'disabled') {
     return status
   }
-  return 'active'
+  throw new Error('来源系统状态无效')
 }
 
-function encodeScopes(scopes: string[] | undefined): string {
+function normalizeTokenStatusInput(status: ExternalIntegrationSourceTokenStatus | undefined): ExternalIntegrationSourceTokenStatus {
+  return status === undefined ? 'active' : normalizeTokenStatus(status)
+}
+
+function normalizeTokenStatus(status: unknown): ExternalIntegrationSourceTokenStatus {
+  if (status === 'active' || status === 'disabled' || status === 'revoked') {
+    return status
+  }
+  throw new Error('来源系统 token 状态无效')
+}
+
+function encodeScopes(scopes: unknown): string {
   return JSON.stringify(normalizeScopes(scopes))
 }
 
-function normalizeScopes(scopes: string[] | undefined): string[] {
+function normalizeScopes(scopes: unknown): string[] {
+  if (scopes === undefined) {
+    return []
+  }
+  if (!Array.isArray(scopes)) {
+    throw new Error('来源系统 scopes 必须是字符串数组')
+  }
   const values = new Set<string>()
-  for (const scope of scopes ?? []) {
-    const value = scope.trim()
-    if (value) {
-      values.add(value)
+  for (const scope of scopes) {
+    if (typeof scope !== 'string') {
+      throw new Error('来源系统 scopes 必须是字符串数组')
     }
+    const value = scope.trim()
+    if (!value) {
+      throw new Error('来源系统 scopes 不能为空')
+    }
+    values.add(value)
   }
   return [...values].sort()
 }
 
 function decodeScopes(value: string): string[] {
-  try {
-    const parsed = JSON.parse(value)
-    if (!Array.isArray(parsed)) {
-      return []
-    }
-    return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0)
-  } catch {
-    return []
-  }
+  const parsed = JSON.parse(value) as unknown
+  return normalizeScopes(parsed)
 }
 
-function encodeRateLimits(rules: ExternalIntegrationRateLimitRule[] | undefined): string {
+function encodeRateLimits(rules: unknown): string {
   return JSON.stringify(normalizeRateLimits(rules))
 }
 
@@ -695,28 +749,35 @@ function decodeRateLimits(value: string | null | undefined): ExternalIntegration
   if (!value) {
     return []
   }
-  try {
-    const parsed = JSON.parse(value)
-    return normalizeRateLimits(Array.isArray(parsed) ? parsed : [])
-  } catch {
-    return []
+  const parsed = JSON.parse(value) as unknown
+  if (!Array.isArray(parsed)) {
+    throw new Error('来源系统 rate_limits_json 必须是数组')
   }
+  return normalizeRateLimits(parsed)
 }
 
-function normalizeRateLimits(rules: ExternalIntegrationRateLimitRule[] | undefined): ExternalIntegrationRateLimitRule[] {
+function normalizeRateLimits(rules: unknown): ExternalIntegrationRateLimitRule[] {
+  if (rules === undefined) {
+    return []
+  }
+  if (!Array.isArray(rules)) {
+    throw new Error('来源系统限频规则必须是数组')
+  }
+  if (rules.length > 8) {
+    throw new Error('来源系统限频规则最多 8 条')
+  }
   const normalized: ExternalIntegrationRateLimitRule[] = []
   const seen = new Set<number>()
-  for (const rule of rules ?? []) {
-    const windowSeconds = Math.trunc(Number(rule.windowSeconds))
-    const maxRequests = Math.trunc(Number(rule.maxRequests))
-    if (!Number.isFinite(windowSeconds) || !Number.isFinite(maxRequests)) {
-      continue
+  for (const rule of rules) {
+    if (typeof rule !== 'object' || rule === null || Array.isArray(rule)) {
+      throw new Error('来源系统限频规则必须是对象')
     }
-    if (windowSeconds < 1 || windowSeconds > 86_400 || maxRequests < 1 || maxRequests > 100_000) {
-      continue
-    }
+    const record = rule as Record<string, unknown>
+    assertOnlyKeys(record, externalIntegrationRateLimitRuleKeys, '来源系统限频规则')
+    const windowSeconds = normalizeRateLimitInteger(record.windowSeconds, 1, 86_400, '来源系统限频窗口')
+    const maxRequests = normalizeRateLimitInteger(record.maxRequests, 1, 100_000, '来源系统限频次数')
     if (seen.has(windowSeconds)) {
-      continue
+      throw new Error('来源系统限频窗口不能重复')
     }
     seen.add(windowSeconds)
     normalized.push({ windowSeconds, maxRequests })
@@ -724,8 +785,25 @@ function normalizeRateLimits(rules: ExternalIntegrationRateLimitRule[] | undefin
   return normalized.sort((a, b) => a.windowSeconds - b.windowSeconds)
 }
 
-function normalizeNullableIso(value: string | null | undefined): string | null {
-  const text = value?.trim()
+function normalizeRateLimitInteger(value: unknown, min: number, max: number, label: string): number {
+  if (!Number.isInteger(value)) {
+    throw new Error(`${label}必须是整数`)
+  }
+  const numeric = value as number
+  if (numeric < min || numeric > max) {
+    throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)
+  }
+  return numeric
+}
+
+function normalizeNullableIso(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+  if (typeof value !== 'string') {
+    throw new Error('过期时间无效')
+  }
+  const text = value.trim()
   if (!text) {
     return null
   }
@@ -736,8 +814,18 @@ function normalizeNullableIso(value: string | null | undefined): string | null {
   return new Date(time).toISOString()
 }
 
-function normalizeNullableText(value: string | null | undefined): string | null {
-  return value?.trim() || null
+function normalizeNullableText(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+  if (typeof value !== 'string') {
+    throw new Error('备注必须是字符串')
+  }
+  const text = value.trim()
+  if (text.length > 500) {
+    throw new Error('备注不能超过 500 个字符')
+  }
+  return text || null
 }
 
 function touchExternalIntegrationSourceLastUsed(row: ExternalIntegrationSourceTokenRow, now: string): void {
@@ -768,4 +856,19 @@ function shouldTouchLastUsed(previous: string | null, now: string): boolean {
 
 function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('UNIQUE constraint failed')
+}
+
+function assertKnownInputKeys(input: object, allowedKeys: ReadonlySet<string>, label: string): void {
+  const unknownKeys = Object.keys(input as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
+}
+
+function assertOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[], label: string): void {
+  const allowed = new Set(allowedKeys)
+  const unknownKeys = Object.keys(value).filter((key) => !allowed.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
 }

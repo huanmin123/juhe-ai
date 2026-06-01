@@ -13,6 +13,10 @@ import {
 
 try {
   clearGatewayClientIpErrorCircuitForTest()
+  const circuitSource = readFileSync(new URL('../../modules/gateway/openai-gateway-client-ip-error-circuit.service.ts', import.meta.url), 'utf8')
+  assert.equal(circuitSource.includes('[...entry.samples'), false, '认证失败样本维护不能展开复制整个 samples 数组')
+  assert.equal(circuitSource.includes('[...existing[1]'), false, '认证后签名样本维护不能展开复制整个 samples 数组')
+  assert.equal(circuitSource.includes('sample) => now - sample'), false, '认证失败样本维护不能在热路径 filter 扫描样本数组')
 
   assert.equal(inspectGatewayPreAuthCircuit({
     clientIp: undefined,
@@ -73,6 +77,20 @@ try {
     clientIp: sprayIp,
     authorization: 'Bearer sk-valid-after-spray'
   }).blocked, false, '随机无效 token 探测不应在认证前挡住同 IP 的有效 Bearer 请求')
+  for (let index = 120; index < 5000; index += 1) {
+    sprayDecision = recordGatewayPreAuthFailure({
+      clientIp: sprayIp,
+      authorization: `Bearer sk-random-invalid-${index}`,
+      reason: 'invalid_api_key'
+    })
+    assert.equal(sprayDecision.blocked, true, 'spray 熔断打开后新的随机无效 token 应直接短路')
+  }
+  const spraySnapshot = getGatewayClientIpSecuritySnapshotForTest()
+  assert(spraySnapshot.preAuth.length <= 121, 'spray 熔断打开后不应继续为每个随机无效 token 创建认证前缓存项')
+  assert(
+    spraySnapshot.preAuth.every((entry) => entry.failureCount <= 120),
+    '认证前样本窗口必须按阈值固定上限保存'
+  )
 
   clearGatewayClientIpErrorCircuitForTest()
 

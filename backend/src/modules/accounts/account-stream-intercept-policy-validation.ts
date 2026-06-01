@@ -17,9 +17,9 @@ const actionSchema = z.enum([
 ])
 
 const accountStreamInterceptRuleSchema = z.object({
-  enabled: z.boolean().optional(),
-  name: z.string().trim().min(1).max(100).optional(),
-  priority: z.coerce.number().int().min(1).max(9999).optional(),
+  enabled: z.boolean(),
+  name: z.string().trim().min(1).max(100),
+  priority: z.number().int().min(1).max(9999),
   match: z.object({
     eventTypes: textListSchema,
     dataTypes: textListSchema,
@@ -28,9 +28,9 @@ const accountStreamInterceptRuleSchema = z.object({
     textIncludes: textListSchema,
     textExcludes: textListSchema,
     jsonPathsExists: textListSchema
-  }).partial().optional(),
+  }).strict(),
   action: actionSchema,
-  avoidanceTtlSeconds: z.coerce.number().int().min(1).max(86400).optional(),
+  avoidanceTtlSeconds: z.number().int().min(1).max(86400).optional(),
   notes: z.string().trim().max(1000).optional()
 }).strict().superRefine((value, context) => {
   if ((value.action === 'avoid_account_ttl' || value.action === 'avoid_upstream_bucket_ttl') && value.avoidanceTtlSeconds === undefined) {
@@ -42,27 +42,37 @@ const accountStreamInterceptRuleSchema = z.object({
   }
 })
 
-export function validateAccountStreamInterceptRules(value: unknown): AccountStreamInterceptPolicyValidationResult {
+export type AccountStreamInterceptRule = z.infer<typeof accountStreamInterceptRuleSchema>
+
+export function normalizeAccountStreamInterceptRules(value: unknown): AccountStreamInterceptRule[] {
   if (value === undefined) {
-    return { valid: true }
+    return []
   }
   if (!Array.isArray(value)) {
-    return { valid: false, message: '账户流式拦截规则必须是数组' }
+    throw new Error('账户流式拦截规则必须是数组')
   }
   if (value.length > 20) {
-    return { valid: false, message: '账户流式拦截规则不能超过 20 条' }
+    throw new Error('账户流式拦截规则不能超过 20 条')
   }
-  for (const [index, item] of value.entries()) {
+  return value.map((item, index) => {
     const parsed = accountStreamInterceptRuleSchema.safeParse(item)
     const ruleIndex = index + 1
     if (!parsed.success) {
-      return { valid: false, message: `第 ${ruleIndex} 条流式拦截规则参数无效` }
+      throw new Error(`第 ${ruleIndex} 条流式拦截规则参数无效`)
     }
     const rule = parsed.data
-    if (rule.enabled === false) continue
-    if (!hasMatcher(rule.match)) {
-      return { valid: false, message: `第 ${ruleIndex} 条流式拦截规则至少需要一个匹配条件` }
+    if (rule.enabled !== false && !hasMatcher(rule.match)) {
+      throw new Error(`第 ${ruleIndex} 条流式拦截规则至少需要一个匹配条件`)
     }
+    return rule
+  })
+}
+
+export function validateAccountStreamInterceptRules(value: unknown): AccountStreamInterceptPolicyValidationResult {
+  try {
+    normalizeAccountStreamInterceptRules(value)
+  } catch (error) {
+    return { valid: false, message: error instanceof Error ? error.message : '账户流式拦截规则配置不完整' }
   }
   return { valid: true }
 }

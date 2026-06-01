@@ -129,7 +129,7 @@ flowchart LR
 
 - 主 Web/网关进程只做内存级保护、运行时快照读取、候选过滤、上游转发、响应透传和异步副作用投递；不得在 server 角色直接同步读取或写入 SQLite。
 - API Key 校验、系统账户状态、分组路由绑定、分组访问元数据、候选账号和网关设置先命中网关运行时缓存；缓存 miss 只能通过 DB service 读取，不能回退到本进程 repository。同一个无效 Bearer token 的认证失败结果需要短 TTL 负缓存，避免在来源熔断阈值前把重复坏 token 放大成重复 DB service 请求。server 到 DB service 的 pending 请求必须有上限，达到上限时快速返回本地不可用错误，不能让慢 DB service 把 Web 进程 Promise 和 IPC 消息无限堆积。
-- API Key 额度和统一授权额度先查本进程短 TTL 决策缓存；决策缓存 miss 只读取 background worker 被动推送到 server 内存的额度快照。请求链路不能主动通过 DB service 查询统计额度窗口，也不能扫描 `usage_records`、usage shard、审计表或授权明细后现场汇总。
+- API Key 额度和统一授权额度先查本进程短 TTL 决策缓存；决策缓存 miss 只读取 background worker 被动推送到 server 内存的有界额度快照。请求链路不能主动通过 DB service 查询统计额度窗口，也不能扫描 `usage_records`、usage shard、审计表或授权明细后现场汇总；快照缺失或超出固定窗口时按现有轻微超额口径短时放行。
 - OAuth Access Token 请求前懒刷新是正确性兜底，只允许在命中已选 OAuth 账号且 token 缺失 / 临期时发生；同账号刷新在进程内串行，成功后写入短 TTL 最近刷新缓存，后续同一波请求复用新凭据，不能把每个并发请求都放大成重复的 DB service 重读和写回。
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。

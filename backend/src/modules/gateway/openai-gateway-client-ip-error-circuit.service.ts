@@ -102,6 +102,15 @@ export function recordGatewayPreAuthFailure(input: GatewayPreAuthFailureInput): 
   if (!specificKey) {
     return { blocked: false }
   }
+  const sprayKey = input.reason === 'invalid_api_key' && input.clientIp?.trim()
+    ? preAuthSprayKey(input.clientIp)
+    : undefined
+  if (sprayKey) {
+    const activeSprayDecision = entryDecision(preAuthCache.get(sprayKey))
+    if (activeSprayDecision.blocked) {
+      return activeSprayDecision
+    }
+  }
   const now = Date.now()
   const threshold = input.reason === 'missing_bearer_token'
     ? preAuthMissingThreshold
@@ -111,10 +120,10 @@ export function recordGatewayPreAuthFailure(input: GatewayPreAuthFailureInput): 
     return specificDecision
   }
 
-  if (input.reason !== 'invalid_api_key' || !input.clientIp?.trim()) {
+  if (!sprayKey) {
     return specificDecision
   }
-  const sprayDecision = recordPreAuthEntry(preAuthSprayKey(input.clientIp), 'invalid_api_key_spray', preAuthInvalidTokenSprayThreshold, now)
+  const sprayDecision = recordPreAuthEntry(sprayKey, 'invalid_api_key_spray', preAuthInvalidTokenSprayThreshold, now)
   return sprayDecision.blocked ? sprayDecision : specificDecision
 }
 
@@ -138,12 +147,15 @@ export function recordClientIpErrorCircuitSample(input: GatewayClientIpErrorCirc
     signatures: [],
     blockCount: 0
   }
-  entry.samples = pruneSamples([...entry.samples, now], now, clientIpTotalWindowMs)
+  const activeDecision = entryDecision(entry)
+  if (activeDecision.blocked) {
+    return activeDecision
+  }
+  appendSample(entry.samples, now, clientIpTotalWindowMs, clientIpTotalThreshold)
   const signature = sampleSignature(input)
-  upsertSignatureSample(entry, signature, now)
+  const signatureCount = upsertSignatureSample(entry, signature, now)
   entry.lastReason = input.reason
 
-  const signatureCount = signatureSampleCount(entry, signature, now)
   const shouldBlock = signatureCount >= clientIpSignatureThreshold || entry.samples.length >= clientIpTotalThreshold
   if (shouldBlock) {
     openBlock(entry, now, clientIpInitialBlockMs, clientIpMaxBlockMs)
@@ -198,7 +210,11 @@ function recordPreAuthEntry(
     samples: [],
     blockCount: 0
   }
-  entry.samples = pruneSamples([...entry.samples, now], now, preAuthWindowMs)
+  const activeDecision = entryDecision(entry)
+  if (activeDecision.blocked) {
+    return activeDecision
+  }
+  appendSample(entry.samples, now, preAuthWindowMs, threshold)
   entry.lastReason = reason
   if (entry.samples.length >= threshold) {
     openBlock(entry, now, preAuthInitialBlockMs, preAuthMaxBlockMs)
@@ -270,26 +286,50 @@ function sampleSignature(input: GatewayClientIpErrorCircuitSampleInput): string 
   ].join('|')
 }
 
-function upsertSignatureSample(entry: ClientIpErrorEntry, signature: string, now: number): void {
+function upsertSignatureSample(entry: ClientIpErrorEntry, signature: string, now: number): number {
+  pruneSignatureSamples(entry, now)
   const existing = entry.signatures.find((item) => item[0] === signature)
   if (existing) {
-    existing[1] = pruneSamples([...existing[1], now], now, clientIpSignatureWindowMs)
+    appendSample(existing[1], now, clientIpSignatureWindowMs, clientIpSignatureThreshold)
+    return existing[1].length
   } else {
     entry.signatures.push([signature, [now]])
+    if (entry.signatures.length > maxSignaturesPerScope) {
+      entry.signatures.splice(0, entry.signatures.length - maxSignaturesPerScope)
+    }
+    return 1
   }
-  entry.signatures = entry.signatures
-    .map(([key, samples]) => [key, pruneSamples(samples, now, clientIpSignatureWindowMs)] as [string, number[]])
-    .filter(([, samples]) => samples.length > 0)
-    .slice(-maxSignaturesPerScope)
 }
 
-function signatureSampleCount(entry: ClientIpErrorEntry, signature: string, now: number): number {
-  const samples = entry.signatures.find((item) => item[0] === signature)?.[1] ?? []
-  return samples.filter((sample) => now - sample <= clientIpSignatureWindowMs).length
+function pruneSignatureSamples(entry: ClientIpErrorEntry, now: number): void {
+  let writeIndex = 0
+  for (const item of entry.signatures) {
+    pruneSamplesInPlace(item[1], now, clientIpSignatureWindowMs)
+    if (item[1].length > 0) {
+      entry.signatures[writeIndex] = item
+      writeIndex += 1
+    }
+  }
+  entry.signatures.length = writeIndex
 }
 
-function pruneSamples(samples: number[], now: number, windowMs: number): number[] {
-  return samples.filter((sample) => now - sample <= windowMs)
+function appendSample(samples: number[], now: number, windowMs: number, maxSamples: number): void {
+  pruneSamplesInPlace(samples, now, windowMs)
+  samples.push(now)
+  if (samples.length > maxSamples) {
+    samples.splice(0, samples.length - maxSamples)
+  }
+}
+
+function pruneSamplesInPlace(samples: number[], now: number, windowMs: number): void {
+  let writeIndex = 0
+  for (const sample of samples) {
+    if (now - sample <= windowMs) {
+      samples[writeIndex] = sample
+      writeIndex += 1
+    }
+  }
+  samples.length = writeIndex
 }
 
 function bearerToken(authorization?: string): string | undefined {

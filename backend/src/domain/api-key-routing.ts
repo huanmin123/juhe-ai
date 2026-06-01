@@ -8,9 +8,11 @@ const dynamicStrategies = new Set<ApiKeyGroupRouteStrategy>([
 ])
 
 export function normalizeApiKeyGroupRouteStrategy(value: unknown): ApiKeyGroupRouteStrategy {
-  return value === 'round_robin' || value === 'weighted_round_robin'
-    ? value
-    : DEFAULT_API_KEY_GROUP_ROUTE_STRATEGY
+  if (value === undefined) return DEFAULT_API_KEY_GROUP_ROUTE_STRATEGY
+  if (value === 'priority_failover' || value === 'round_robin' || value === 'weighted_round_robin') {
+    return value
+  }
+  throw new Error('API Key 分组路由策略无效')
 }
 
 export function isDynamicApiKeyGroupRouteStrategy(value: unknown): boolean {
@@ -18,13 +20,11 @@ export function isDynamicApiKeyGroupRouteStrategy(value: unknown): boolean {
 }
 
 export function normalizeApiKeyGroupBindingWeight(value: unknown): number {
-  const numeric = typeof value === 'number'
-    ? value
-    : typeof value === 'string'
-      ? Number(value)
-      : Number.NaN
-  if (!Number.isFinite(numeric)) {
+  if (value === undefined || value === null) {
     return 1
   }
-  return Math.min(100, Math.max(1, Math.trunc(numeric)))
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100) {
+    throw new Error('API Key 分组权重必须是 1-100 之间的整数')
+  }
+  return value
 }

@@ -62,6 +62,7 @@ try {
     ...Array.from({ length: 8 }, (_, index) => ({
       id: `usage_stats_batch_statement_${index}`,
       traceId: `trace-usage-stats-batch-statement-${index}`,
+      trafficSource: 'gateway' as const,
       systemAccountId: 'sys_admin',
       apiKeyId: apiKey.id,
       groupId: group.id,
@@ -81,7 +82,7 @@ try {
     {
       id: 'usage_stats_cooldown_retest_ignored',
       traceId: 'trace-usage-stats-cooldown-retest-ignored',
-      trafficSource: 'cooldown_retest',
+      trafficSource: 'cooldown_retest' as const,
       systemAccountId: 'sys_admin',
       apiKeyId: apiKey.id,
       groupId: group.id,
@@ -99,6 +100,7 @@ try {
     {
       id: 'usage_stats_mixed_oauth_account',
       traceId: 'trace-usage-stats-mixed-oauth-account',
+      trafficSource: 'gateway' as const,
       systemAccountId: 'sys_admin',
       apiKeyId: mixedApiKey.id,
       groupId: mixedGroup.id,
@@ -119,6 +121,7 @@ try {
     {
       id: 'usage_stats_mixed_api_key_account',
       traceId: 'trace-usage-stats-mixed-api-key-account',
+      trafficSource: 'gateway' as const,
       systemAccountId: 'sys_admin',
       apiKeyId: mixedApiKey.id,
       groupId: mixedGroup.id,

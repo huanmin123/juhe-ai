@@ -233,6 +233,14 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE
         );
 
+    CREATE TABLE IF NOT EXISTS operation_log_search_terms (
+          operation_log_id TEXT NOT NULL,
+          term TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (term, operation_log_id),
+          FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE
+        );
+
     CREATE TABLE IF NOT EXISTS runtime_logs (
           id TEXT PRIMARY KEY,
           log_file TEXT,
@@ -450,6 +458,10 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_account_log ON operation_log_viewers(system_account_id, operation_log_id);
 
     CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_log_account ON operation_log_viewers(operation_log_id, system_account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_operation_log_search_terms_term_created ON operation_log_search_terms(term, created_at DESC, operation_log_id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_operation_log_search_terms_log ON operation_log_search_terms(operation_log_id);
 
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_time ON runtime_logs(time DESC, id DESC);
 

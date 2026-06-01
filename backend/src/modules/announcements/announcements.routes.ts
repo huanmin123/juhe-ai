@@ -31,21 +31,21 @@ const adminListQuerySchema = z.object({
 
 const readAnnouncementsSchema = z.object({
   announcementIds: z.array(z.string().trim().min(1)).max(30)
-})
+}).strict()
 
 const createAnnouncementSchema = z.object({
   title: z.string().trim().min(1).max(120),
   content: z.string().trim().min(1).max(5000),
   level: z.enum(['critical', 'warning', 'info', 'normal']).optional(),
   status: z.enum(['draft', 'published', 'archived']).optional()
-})
+}).strict()
 
 const updateAnnouncementSchema = z.object({
   title: z.string().trim().min(1).max(120).optional(),
   content: z.string().trim().min(1).max(5000).optional(),
   level: z.enum(['critical', 'warning', 'info', 'normal']).optional(),
   status: z.enum(['draft', 'published', 'archived']).optional()
-})
+}).strict()
 
 announcementsRouter.get('/public', (req, res) => {
   const parsed = publicListQuerySchema.safeParse(req.query)

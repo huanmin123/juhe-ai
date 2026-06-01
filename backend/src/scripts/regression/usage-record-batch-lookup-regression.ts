@@ -132,6 +132,7 @@ function buildUsageRecord(index: number, apiKeyId: string, groupId: string, acco
   return {
     id: usageRecordShards.generateUsageRecordId(createdAt, `batch-lookup-${index}`),
     traceId: `trace-usage-batch-lookup-${index}`,
+    trafficSource: 'gateway',
     apiKeyId,
     groupId,
     accountId,

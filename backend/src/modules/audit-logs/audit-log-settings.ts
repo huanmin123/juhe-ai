@@ -1,4 +1,5 @@
 import { runtimeConfig, type AuditFullBodyCaptureRuntimeConfig, type AuditFullBodyCaptureScope } from '../../config/runtime.js'
+import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 
 export type AuditFullBodyCaptureConfig = AuditFullBodyCaptureRuntimeConfig
 
@@ -76,15 +77,6 @@ export function setAuditLogFullBodyCaptureConfig(input: AuditFullBodyCaptureConf
 }
 
 export function readAuditFullBodyCaptureConfig(nowMs = Date.now()): AuditFullBodyCaptureConfig {
-  if (runtimeConfig.audit.fullBodyCaptureEnabled !== runtimeConfig.audit.fullBodyCapture.enabled) {
-    runtimeConfig.audit.fullBodyCapture = {
-      enabled: runtimeConfig.audit.fullBodyCaptureEnabled,
-      scope: 'global',
-      includeSuccess: false,
-      updatedAt: new Date(nowMs).toISOString()
-    }
-  }
-
   const normalized = normalizeAuditFullBodyCaptureConfig(runtimeConfig.audit.fullBodyCapture, nowMs)
   if (!sameAuditFullBodyCaptureConfig(runtimeConfig.audit.fullBodyCapture, normalized)) {
     runtimeConfig.audit.fullBodyCapture = normalized
@@ -94,10 +86,13 @@ export function readAuditFullBodyCaptureConfig(nowMs = Date.now()): AuditFullBod
 }
 
 export function normalizeAuditFullBodyCaptureConfig(input: AuditFullBodyCaptureConfigInput, nowMs = Date.now()): AuditFullBodyCaptureConfig {
-  const enabled = input.enabled === true
-  const scope = input.scope === 'account' ? 'account' : 'global'
-  const accountId = typeof input.accountId === 'string' ? input.accountId.trim() : ''
-  const includeSuccess = input.includeSuccess === true
+  if (typeof input.enabled !== 'boolean') {
+    throw new Error('临时全量捕获 enabled 必须是布尔值')
+  }
+  const enabled = input.enabled
+  const scope = normalizeAuditFullBodyCaptureScope(input.scope)
+  const accountId = normalizeAuditFullBodyCaptureAccountId(input.accountId, scope)
+  const includeSuccess = normalizeAuditFullBodyCaptureIncludeSuccess(input.includeSuccess)
   const updatedAt = new Date(nowMs).toISOString()
   const expiresAt = normalizeAuditFullBodyCaptureExpiresAt(input, nowMs)
 
@@ -131,18 +126,48 @@ export function normalizeAuditFullBodyCaptureConfig(input: AuditFullBodyCaptureC
 }
 
 function normalizeAuditFullBodyCaptureExpiresAt(input: AuditFullBodyCaptureConfigInput, nowMs: number): string | undefined {
-  if (typeof input.durationMinutes === 'number' && Number.isFinite(input.durationMinutes)) {
-    const durationMinutes = Math.min(Math.max(Math.trunc(input.durationMinutes), 1), 24 * 60)
+  if (input.durationMinutes !== undefined) {
+    if (typeof input.durationMinutes !== 'number' || !Number.isInteger(input.durationMinutes) || input.durationMinutes < 1 || input.durationMinutes > 24 * 60) {
+      throw new Error('临时全量捕获 durationMinutes 必须是 1 到 1440 的整数')
+    }
+    const durationMinutes = input.durationMinutes
     return new Date(nowMs + durationMinutes * 60 * 1000).toISOString()
   }
-  if (typeof input.expiresAt !== 'string') {
+  if (input.expiresAt === undefined) {
     return undefined
   }
-  const timestamp = Date.parse(input.expiresAt)
-  if (!Number.isFinite(timestamp)) {
-    return undefined
+  if (typeof input.expiresAt !== 'string' || !input.expiresAt.trim()) {
+    throw new Error('临时全量捕获过期时间无效')
   }
-  return new Date(timestamp).toISOString()
+  const normalized = optionalServerDateTimeIso(input.expiresAt)
+  if (!normalized) {
+    throw new Error('临时全量捕获过期时间无效')
+  }
+  return normalized
+}
+
+function normalizeAuditFullBodyCaptureScope(value: unknown): AuditFullBodyCaptureScope {
+  if (value === undefined || value === 'global') return 'global'
+  if (value === 'account') return 'account'
+  throw new Error('临时全量捕获 scope 无效')
+}
+
+function normalizeAuditFullBodyCaptureAccountId(value: unknown, scope: AuditFullBodyCaptureScope): string {
+  if (value === undefined) return ''
+  if (typeof value !== 'string') {
+    throw new Error('临时全量捕获 accountId 必须是字符串')
+  }
+  const accountId = value.trim()
+  if (scope === 'account' && !accountId) {
+    throw new Error('请选择要定向捕获的 AI 账户')
+  }
+  return accountId
+}
+
+function normalizeAuditFullBodyCaptureIncludeSuccess(value: unknown): boolean {
+  if (value === undefined) return false
+  if (typeof value === 'boolean') return value
+  throw new Error('临时全量捕获 includeSuccess 必须是布尔值')
 }
 
 function sameAuditFullBodyCaptureConfig(a: AuditFullBodyCaptureConfig, b: AuditFullBodyCaptureConfig): boolean {

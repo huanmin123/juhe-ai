@@ -12,6 +12,7 @@ export interface ClientIpAccountAvoidanceScopeInput {
 export interface ClientIpAccountAvoidanceTracker {
   scope?: ClientIpAccountAvoidanceScope
   pendingFailures: ClientIpAccountFailure[]
+  pendingFailureIndexByAccountId: Map<string, number>
 }
 
 export interface ClientIpAccountAvoidanceOrderResult {
@@ -54,6 +55,7 @@ interface ClientIpAccountAvoidanceEntry extends ClientIpAccountFailure {
 }
 
 const clientIpAccountAvoidanceMaxEntries = 5_000
+const clientIpAccountAvoidanceMaxPendingFailures = 256
 const clientIpAccountAvoidanceMaxTtlMs = 10 * 60_000
 const clientIpAccountAvoidanceDefaultTtlMs = 5 * 60_000
 
@@ -69,7 +71,8 @@ export function createClientIpAccountAvoidanceTracker(
 ): ClientIpAccountAvoidanceTracker {
   return {
     scope: normalizeScope(input),
-    pendingFailures: []
+    pendingFailures: [],
+    pendingFailureIndexByAccountId: new Map<string, number>()
   }
 }
 
@@ -132,11 +135,44 @@ export function rememberClientIpAccountPendingFailure(
   if (!tracker?.scope) {
     return
   }
-  tracker.pendingFailures.push({
+  const pendingFailure = {
     ...input,
     accountId: account.id,
     accountName: account.name
-  })
+  }
+  const currentIndex = tracker.pendingFailureIndexByAccountId.get(account.id)
+  if (currentIndex !== undefined) {
+    tracker.pendingFailures[currentIndex] = pendingFailure
+    return
+  }
+  if (tracker.pendingFailures.length >= clientIpAccountAvoidanceMaxPendingFailures) {
+    return
+  }
+  tracker.pendingFailureIndexByAccountId.set(account.id, tracker.pendingFailures.length)
+  tracker.pendingFailures.push(pendingFailure)
+}
+
+export function transferClientIpAccountPendingFailures(
+  source: ClientIpAccountAvoidanceTracker | undefined,
+  target: ClientIpAccountAvoidanceTracker | undefined
+): void {
+  if (!source?.scope || !target?.scope || source.pendingFailures.length === 0) {
+    return
+  }
+  for (const failure of source.pendingFailures) {
+    rememberClientIpAccountPendingFailure(target, {
+      id: failure.accountId,
+      name: failure.accountName ?? failure.accountId
+    }, {
+      statusCode: failure.statusCode,
+      errorCode: failure.errorCode,
+      errorType: failure.errorType,
+      errorPhase: failure.errorPhase,
+      errorMessage: failure.errorMessage,
+      endpoint: failure.endpoint
+    })
+  }
+  clearTrackerPendingFailures(source)
 }
 
 export function confirmClientIpAccountAvoidanceAfterSuccess(
@@ -170,13 +206,18 @@ export function confirmClientIpAccountAvoidanceAfterSuccess(
     clientIpAccountAvoidanceCache.set(key, entry, { ttlMs })
     confirmedAccountIds.push(failure.accountId)
   }
-  tracker.pendingFailures = []
+  clearTrackerPendingFailures(tracker)
 
   return {
     confirmedAccountIds: [...new Set(confirmedAccountIds)],
     clearedAccountId: successAccountId,
     cleared
   }
+}
+
+function clearTrackerPendingFailures(tracker: ClientIpAccountAvoidanceTracker): void {
+  tracker.pendingFailures = []
+  tracker.pendingFailureIndexByAccountId.clear()
 }
 
 export function clearClientIpAccountAvoidanceForAccount(

@@ -157,16 +157,19 @@ interface OperationLogInsertStatements {
   insertLog: OperationLogInsertStatement
   insertTarget: OperationLogInsertStatement
   insertViewer: OperationLogInsertStatement
+  insertSearchTerm: OperationLogInsertStatement
 }
 
 interface OperationLogSqlFilters {
   clauses: string[]
   params: OperationLogFilterValue[]
+  searchTerm?: string
 }
 
 interface OperationLogWhereFilters {
-  clause: string
+  clauses: string[]
   params: OperationLogFilterValue[]
+  searchTerm?: string
 }
 
 interface PreparedOperationLogInput {
@@ -184,16 +187,10 @@ interface PreparedOperationLogInput {
 const operationLogDefaultPageSize = 100
 const operationLogMaxPageSize = 100
 const operationLogMaxListWindowRows = 1001
-const operationLogKeywordColumns = [
-  'ol.summary',
-  'ol.resource_name',
-  'ol.resource_id',
-  'ol.actor_display_name',
-  'ol.actor_username',
-  'ol.operation_key',
-  'ol.module',
-  'ol.action'
-] as const
+const operationLogSearchMinTermLength = 2
+const operationLogSearchMaxTermLength = 128
+const operationLogSearchMaxFieldChars = 256
+const operationLogSearchMaxTermsPerLog = 1500
 
 export function createOperationLog(input: OperationLogInput): OperationLogSummary {
   const database = getDatasetDatabase()
@@ -295,15 +292,29 @@ function listOperationLogsWithFilters(filters: OperationLogWhereFilters, options
   const page = normalizeOperationLogPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const database = getDatasetDatabase()
-  const rows = database
-    .prepare(`
-      SELECT ${operationLogListSelectColumns('ol')}
-      FROM operation_logs ol
-      ${filters.clause}
-      ORDER BY ol.created_at DESC, ol.id DESC
-      LIMIT ? OFFSET ?
-    `)
-    .all(...filters.params, pageSize + 1, offset) as OperationLogRow[]
+  const whereClause = filters.clauses.length ? `WHERE ${filters.clauses.join(' AND ')}` : ''
+  const searchWhereClause = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : ''
+  const rows = filters.searchTerm
+    ? database
+      .prepare(`
+        SELECT ${operationLogListSelectColumns('ol')}
+        FROM operation_log_search_terms search INDEXED BY idx_operation_log_search_terms_term_created
+        INNER JOIN operation_logs ol ON ol.id = search.operation_log_id
+        WHERE search.term = ?
+        ${searchWhereClause}
+        ORDER BY search.created_at DESC, search.operation_log_id DESC
+        LIMIT ? OFFSET ?
+      `)
+      .all(filters.searchTerm, ...filters.params, pageSize + 1, offset) as OperationLogRow[]
+    : database
+      .prepare(`
+        SELECT ${operationLogListSelectColumns('ol')}
+        FROM operation_logs ol
+        ${whereClause}
+        ORDER BY ol.created_at DESC, ol.id DESC
+        LIMIT ? OFFSET ?
+      `)
+      .all(...filters.params, pageSize + 1, offset) as OperationLogRow[]
   const pageRows = takePageRows(rows, pageSize)
   const systemAccountNames = loadSystemAccountNames(pageRows.rows.flatMap((row) => [
     optionalString(row.actor_system_account_id),
@@ -392,36 +403,11 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
   const offset = (page - 1) * pageSize
   const database = getDatasetDatabase()
   const commonFilters = buildCommonOperationLogFilters(options)
-  const targetedClause = ['ol.visibility_scope = \'targeted\'', ...commonFilters.clauses].join(' AND ')
-  const allUsersClause = ['ol.visibility_scope = \'all_users\'', ...commonFilters.clauses].join(' AND ')
-  const targetedParams: OperationLogFilterValue[] = [systemAccountId, ...commonFilters.params]
-  const allUsersParams = commonFilters.params
-
-  const targetedVisibleJoin = `
-    INNER JOIN (
-      SELECT DISTINCT operation_log_id
-      FROM operation_log_viewers
-      WHERE system_account_id = ?
-    ) visible ON visible.operation_log_id = ol.id
-  `
-  const rows = database
-    .prepare(`
-      SELECT ${operationLogOuterListSelectColumns()}
-      FROM (
-        SELECT ${operationLogListSelectColumns('ol')}
-        FROM operation_logs ol
-        ${targetedVisibleJoin}
-        WHERE ${targetedClause}
-        UNION ALL
-        SELECT ${operationLogListSelectColumns('ol')}
-        FROM operation_logs ol
-        WHERE ${allUsersClause}
-      ) visible_logs
-      ORDER BY created_at DESC, id DESC
-      LIMIT ? OFFSET ?
-    `)
-    .all(...targetedParams, ...allUsersParams, pageSize + 1, offset) as OperationLogRow[]
-  const pageRows = takePageRows(rows, pageSize)
+  const rowWindowSize = offset + pageSize + 1
+  const targetedRows = loadVisibleTargetedOperationLogRows(database, systemAccountId, commonFilters, rowWindowSize)
+  const allUsersRows = loadVisibleAllUsersOperationLogRows(database, commonFilters, rowWindowSize)
+  const rows = mergeOperationLogRowsByCreatedAt(targetedRows, allUsersRows, rowWindowSize)
+  const pageRows = takePageRows(rows.slice(offset), pageSize)
   const systemAccountNames = loadSystemAccountNames(pageRows.rows.flatMap((row) => [
     optionalString(row.actor_system_account_id),
     optionalString(row.operation_scope_system_account_id)
@@ -438,6 +424,119 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
     page,
     pageSize
   }
+}
+
+function loadVisibleTargetedOperationLogRows(
+  database: ReturnType<typeof getDatasetDatabase>,
+  systemAccountId: string,
+  filters: OperationLogSqlFilters,
+  limit: number
+): OperationLogRow[] {
+  const filterClause = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : ''
+  if (filters.searchTerm) {
+    return database
+      .prepare(`
+        SELECT ${operationLogListSelectColumns('ol')}
+        FROM operation_log_search_terms search INDEXED BY idx_operation_log_search_terms_term_created
+        INNER JOIN operation_logs ol ON ol.id = search.operation_log_id AND search.term = ?
+        INNER JOIN operation_log_viewers visible INDEXED BY idx_operation_log_viewers_log_account
+          ON visible.operation_log_id = ol.id AND visible.system_account_id = ?
+        WHERE ol.visibility_scope = 'targeted'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM operation_log_viewers previous
+          WHERE previous.operation_log_id = visible.operation_log_id
+          AND previous.system_account_id = visible.system_account_id
+          AND previous.visibility_reason < visible.visibility_reason
+        )
+        ${filterClause}
+        ORDER BY search.created_at DESC, search.operation_log_id DESC
+        LIMIT ?
+      `)
+      .all(filters.searchTerm, systemAccountId, ...filters.params, limit) as OperationLogRow[]
+  }
+
+  return database
+    .prepare(`
+      SELECT ${operationLogListSelectColumns('ol')}
+      FROM operation_log_viewers visible INDEXED BY idx_operation_log_viewers_account_created
+      INNER JOIN operation_logs ol ON ol.id = visible.operation_log_id
+      WHERE visible.system_account_id = ?
+      AND ol.visibility_scope = 'targeted'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM operation_log_viewers previous
+        WHERE previous.operation_log_id = visible.operation_log_id
+        AND previous.system_account_id = visible.system_account_id
+        AND previous.visibility_reason < visible.visibility_reason
+      )
+      ${filterClause}
+      ORDER BY visible.created_at DESC, visible.operation_log_id DESC
+      LIMIT ?
+    `)
+    .all(systemAccountId, ...filters.params, limit) as OperationLogRow[]
+}
+
+function loadVisibleAllUsersOperationLogRows(
+  database: ReturnType<typeof getDatasetDatabase>,
+  filters: OperationLogSqlFilters,
+  limit: number
+): OperationLogRow[] {
+  const filterClause = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : ''
+  if (filters.searchTerm) {
+    return database
+      .prepare(`
+        SELECT ${operationLogListSelectColumns('ol')}
+        FROM operation_log_search_terms search INDEXED BY idx_operation_log_search_terms_term_created
+        INNER JOIN operation_logs ol ON ol.id = search.operation_log_id AND search.term = ?
+        WHERE ol.visibility_scope = 'all_users'
+        ${filterClause}
+        ORDER BY search.created_at DESC, search.operation_log_id DESC
+        LIMIT ?
+      `)
+      .all(filters.searchTerm, ...filters.params, limit) as OperationLogRow[]
+  }
+
+  return database
+    .prepare(`
+      SELECT ${operationLogListSelectColumns('ol')}
+      FROM operation_logs ol INDEXED BY idx_operation_logs_visibility_created
+      WHERE ol.visibility_scope = 'all_users'
+      ${filterClause}
+      ORDER BY ol.created_at DESC, ol.id DESC
+      LIMIT ?
+    `)
+    .all(...filters.params, limit) as OperationLogRow[]
+}
+
+function mergeOperationLogRowsByCreatedAt(leftRows: OperationLogRow[], rightRows: OperationLogRow[], limit: number): OperationLogRow[] {
+  const output: OperationLogRow[] = []
+  let leftIndex = 0
+  let rightIndex = 0
+  while (output.length < limit && (leftIndex < leftRows.length || rightIndex < rightRows.length)) {
+    const left = leftRows[leftIndex]
+    const right = rightRows[rightIndex]
+    if (!right || (left && compareOperationLogRowsByCreatedAt(left, right) <= 0)) {
+      output.push(left)
+      leftIndex += 1
+    } else {
+      output.push(right)
+      rightIndex += 1
+    }
+  }
+  return output
+}
+
+function compareOperationLogRowsByCreatedAt(left: OperationLogRow, right: OperationLogRow): number {
+  const leftCreatedAt = String(left.created_at ?? '')
+  const rightCreatedAt = String(right.created_at ?? '')
+  if (leftCreatedAt !== rightCreatedAt) {
+    return leftCreatedAt > rightCreatedAt ? -1 : 1
+  }
+  const leftId = String(left.id ?? '')
+  const rightId = String(right.id ?? '')
+  if (leftId === rightId) return 0
+  return leftId > rightId ? -1 : 1
 }
 
 function getOperationLogDetailWithClause(whereClause: string, params: OperationLogFilterValue[]): OperationLogDetail | undefined {
@@ -469,23 +568,24 @@ function getOperationLogDetailWithClause(whereClause: string, params: OperationL
 function buildOperationLogFilters(options: OperationLogListOptions): OperationLogWhereFilters {
   const filters = buildCommonOperationLogFilters(options)
   return {
-    clause: filters.clauses.length ? `WHERE ${filters.clauses.join(' AND ')}` : '',
-    params: filters.params
+    clauses: filters.clauses,
+    params: filters.params,
+    searchTerm: filters.searchTerm
   }
 }
 
 function buildCommonOperationLogFilters(options: OperationLogListOptions): OperationLogSqlFilters {
   const clauses: string[] = []
   const params: OperationLogFilterValue[] = []
-  const keywordFilter = buildOperationLogKeywordFilter(options)
+  const searchTerm = operationLogSearchTermFromKeyword(options.keyword)
   pushCommonOperationLogFilters(clauses, params, options)
-  if (keywordFilter) {
-    clauses.push(keywordFilter.clause)
-    params.push(...keywordFilter.params)
+  if (options.keyword?.trim() && !searchTerm) {
+    clauses.push('0 = 1')
   }
   return {
     clauses,
-    params
+    params,
+    searchTerm
   }
 }
 
@@ -536,18 +636,100 @@ function pushPrefixFilter(clauses: string[], params: OperationLogFilterValue[], 
   params.push(text, `${text}\uffff`)
 }
 
-function buildOperationLogKeywordFilter(options: OperationLogListOptions): { clause: string; params: OperationLogFilterValue[] } | undefined {
-  const keyword = options.keyword?.trim()
-  if (!keyword) return undefined
-  const pattern = `%${escapeLikePattern(keyword)}%`
-  return {
-    clause: `(${operationLogKeywordColumns.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`,
-    params: operationLogKeywordColumns.map(() => pattern)
+function operationLogSearchTermFromKeyword(value?: string): string | undefined {
+  const normalized = normalizeOperationLogSearchText(value)
+  if (!normalized) return undefined
+  if (normalized.length >= operationLogSearchMinTermLength && normalized.length <= operationLogSearchMaxTermLength) {
+    return normalized
+  }
+
+  const compact = compactOperationLogSearchText(normalized)
+  if (compact.length >= operationLogSearchMinTermLength && compact.length <= operationLogSearchMaxTermLength) {
+    return compact
+  }
+  return undefined
+}
+
+function buildOperationLogSearchTerms(prepared: PreparedOperationLogInput): string[] {
+  const input = prepared.input
+  const terms = new Set<string>()
+  for (const value of [
+    input.summary,
+    input.resourceName,
+    input.resourceId,
+    input.actorDisplayName,
+    input.actorUsername,
+    input.operationKey,
+    input.module,
+    input.action
+  ]) {
+    collectOperationLogSearchTerms(terms, value)
+    if (terms.size >= operationLogSearchMaxTermsPerLog) break
+  }
+  return [...terms]
+}
+
+function collectOperationLogSearchTerms(terms: Set<string>, value: unknown): void {
+  const normalized = normalizeOperationLogSearchText(value)
+  if (!normalized) return
+
+  const compact = compactOperationLogSearchText(normalized)
+  addOperationLogSearchExactTerm(terms, normalized)
+  if (compact !== normalized) {
+    addOperationLogSearchExactTerm(terms, compact)
+  }
+  for (const part of normalized.split(' ')) {
+    addOperationLogSearchExactTerm(terms, part)
+  }
+  if (terms.size >= operationLogSearchMaxTermsPerLog) return
+
+  addOperationLogSearchSubstrings(terms, normalized)
+  if (terms.size >= operationLogSearchMaxTermsPerLog) return
+
+  for (const part of normalized.split(' ')) {
+    addOperationLogSearchSubstrings(terms, part)
+    if (terms.size >= operationLogSearchMaxTermsPerLog) return
+  }
+
+  if (compact !== normalized) {
+    addOperationLogSearchSubstrings(terms, compact)
   }
 }
 
-function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, (match) => `\\${match}`)
+function addOperationLogSearchExactTerm(terms: Set<string>, value: string): void {
+  const term = value.trim()
+  if (term.length >= operationLogSearchMinTermLength && term.length <= operationLogSearchMaxTermLength) {
+    terms.add(term)
+  }
+}
+
+function addOperationLogSearchSubstrings(terms: Set<string>, value: string): void {
+  if (terms.size >= operationLogSearchMaxTermsPerLog) return
+  const chars = [...value].slice(0, operationLogSearchMaxFieldChars)
+  const maxLength = Math.min(operationLogSearchMaxTermLength, chars.length)
+  for (let length = operationLogSearchMinTermLength; length <= maxLength; length += 1) {
+    for (let start = 0; start + length <= chars.length; start += 1) {
+      const term = chars.slice(start, start + length).join('').trim()
+      if (term.length >= operationLogSearchMinTermLength) {
+        terms.add(term)
+        if (terms.size >= operationLogSearchMaxTermsPerLog) return
+      }
+    }
+  }
+}
+
+function normalizeOperationLogSearchText(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  return value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function compactOperationLogSearchText(value: string): string {
+  return value.replace(/\s+/g, '')
 }
 
 function prepareOperationLogInput(input: OperationLogInput): PreparedOperationLogInput {
@@ -584,6 +766,11 @@ function prepareOperationLogInsertStatements(database: ReturnType<typeof getData
       INSERT OR IGNORE INTO operation_log_viewers (
         operation_log_id, system_account_id, visibility_reason, detail_level, created_at
       ) VALUES (?, ?, ?, ?, ?)
+    `),
+    insertSearchTerm: database.prepare(`
+      INSERT OR IGNORE INTO operation_log_search_terms (
+        operation_log_id, term, created_at
+      ) VALUES (?, ?, ?)
     `)
   }
 }
@@ -639,6 +826,10 @@ function insertPreparedOperationLog(statements: OperationLogInsertStatements, pr
       viewer.detailLevel ?? prepared.detailLevel,
       prepared.createdAt
     )
+  }
+
+  for (const term of buildOperationLogSearchTerms(prepared)) {
+    statements.insertSearchTerm.run(prepared.id, term, prepared.createdAt)
   }
 }
 
@@ -860,22 +1051,20 @@ function loadSystemAccountNames(ids: Array<string | undefined>): Map<string, str
 
 function parseJsonArray(value: unknown): OperationLogChange[] {
   if (typeof value !== 'string' || !value.trim()) return []
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return Array.isArray(parsed) ? parsed as OperationLogChange[] : []
-  } catch {
-    return []
+  const parsed = JSON.parse(value) as unknown
+  if (!Array.isArray(parsed)) {
+    throw new Error('操作日志 changes_json 必须是数组')
   }
+  return parsed as OperationLogChange[]
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
   if (typeof value !== 'string' || !value.trim()) return {}
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
+  const parsed = JSON.parse(value) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('操作日志 metadata_json 必须是对象')
   }
+  return parsed as Record<string, unknown>
 }
 
 function normalizeOperationLogPage(value: unknown, pageSize: number): number {

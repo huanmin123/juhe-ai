@@ -19,6 +19,7 @@ runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 runtimeConfig.audit.fullBodyCaptureEnabled = false
+runtimeConfig.audit.fullBodyCapture = { enabled: false, scope: 'global', includeSuccess: false }
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -85,6 +86,7 @@ try {
   usageRecordQueue.enqueueUsageRecord({
     id: sensitiveUsageRecordId,
     traceId: 'trace-usage-sensitive-headers',
+    trafficSource: 'gateway',
     systemAccountId: 'sys_admin',
     groupId: 'group_default',
     endpoint: '/v1/responses',
@@ -215,8 +217,13 @@ try {
     rawGreaterThan: largeSuccessRequestBody.byteLength
   })
 
+  const previousFullBodyCapture = { ...runtimeConfig.audit.fullBodyCapture }
   const previousFullBodyCaptureEnabled = runtimeConfig.audit.fullBodyCaptureEnabled
-  runtimeConfig.audit.fullBodyCaptureEnabled = true
+  auditSettings.setAuditLogFullBodyCaptureConfig({
+    enabled: true,
+    scope: 'global',
+    includeSuccess: false
+  })
   try {
     const fullBodyCaptureTraceId = 'trace-full-body-capture-large'
     finalizeFailedRequestWithBody(fullBodyCaptureTraceId, largeFailedRequestBody)
@@ -238,6 +245,7 @@ try {
     assert.equal(fullBodyPayloadDetail?.bodyTotalBytes, largeFailedRequestBody.byteLength, '临时全量捕获开启后应保存完整 body 原文大小')
     assert.equal(fullBodyPayloadDetail?.bodyTruncated, true, '完整大 body 读取接口仍应按窗口返回')
   } finally {
+    runtimeConfig.audit.fullBodyCapture = previousFullBodyCapture
     runtimeConfig.audit.fullBodyCaptureEnabled = previousFullBodyCaptureEnabled
   }
 
@@ -302,6 +310,7 @@ try {
   try {
     usageRecordQueue.enqueueUsageRecord({
       traceId: 'trace-usage-server-no-worker-ipc',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       groupId: 'group_default',
       endpoint: '/v1/responses',
@@ -323,6 +332,7 @@ try {
   usageRecordQueue.enqueueUsageRecord({
     id: truncatedUsageRecordId,
     traceId: 'trace-usage-snapshot-truncated',
+    trafficSource: 'gateway',
     systemAccountId: 'sys_admin',
     groupId: 'group_default',
     endpoint: '/v1/responses',

@@ -27,7 +27,7 @@ const [databaseModule, usageRecordShards] = await Promise.all([
 try {
   assert(sqliteBusyTimeoutMs <= 100, `SQLite busy_timeout 应保持在 100ms 以内，当前为 ${sqliteBusyTimeoutMs}ms`)
   assert.equal(readBusyTimeout(databaseModule.getBusinessDatabase()), sqliteBusyTimeoutMs, '业务库 busy_timeout 应使用统一低等待配置')
-  assert.equal(readBusyTimeout(databaseModule.getDatasetDatabase()), sqliteBusyTimeoutMs, '数据集库 busy_timeout 应使用统一低等待配置')
+  assert.equal(readBusyTimeout(databaseModule.getDatasetDatabase()), sqliteBusyTimeoutMs, '数据集目录库 busy_timeout 应使用统一低等待配置')
   assert.equal(readBusyTimeout(databaseModule.getStatsDatabase()), sqliteBusyTimeoutMs, '统计库 busy_timeout 应使用统一低等待配置')
 
   const shardLocation = usageRecordShards.usageRecordShardLocationForRecord('usage_20260101_s00_boundary', '2026-01-01T00:00:00.000Z')

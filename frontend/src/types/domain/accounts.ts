@@ -9,8 +9,14 @@ export interface AccountCredentials {
   access_token?: string
   refresh_token?: string
   client_id?: string
+  id_token?: string
+  email?: string
   expires_at?: string
   account_id?: string
+  chatgpt_user_id?: string
+  plan_type?: string
+  error_handling_rules?: unknown[]
+  stream_intercept_rules?: unknown[]
   [key: string]: unknown
 }
 
@@ -65,11 +71,17 @@ export interface AccountAvailabilityScheduleWindow {
   end: string
 }
 
-export interface AccountAvailabilityScheduleException {
-  date: string
-  action: AccountAvailabilityScheduleExceptionAction
-  windows?: Array<Pick<AccountAvailabilityScheduleWindow, 'start' | 'end'>>
-}
+export type AccountAvailabilityScheduleException =
+  | {
+    date: string
+    action: 'allow'
+    windows: Array<Pick<AccountAvailabilityScheduleWindow, 'start' | 'end'>>
+  }
+  | {
+    date: string
+    action: 'deny'
+    windows?: never
+  }
 
 export interface AccountAvailabilitySchedule {
   enabled: boolean

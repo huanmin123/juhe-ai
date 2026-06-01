@@ -122,8 +122,9 @@ try {
   const visibleAfterDelete = repositories.listAccounts(granteeAccess).find((item) => item.id === authorizedInstance.id)
   assert(visibleAfterDelete, '父账户删除后被授权用户打开账户列表不应触发来源回填外键失败')
   assert.equal(visibleAfterDelete.authorizationInstanceSourceAccountId, undefined, '父账户删除后授权实例来源账户应保持为空')
+  assert.equal(visibleAfterDelete.schedulable, false, '父账户删除后授权实例缺少来源资源事实，不应继续显示为可调度')
   const dispatchableAfterDelete = repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id)
-  assert(dispatchableAfterDelete.some((item) => item.id === authorizedInstance.id), '父账户删除后授权实例仍应可按自身状态参与调度')
+  assert.equal(dispatchableAfterDelete.some((item) => item.id === authorizedInstance.id), false, '父账户删除后授权实例不应使用快照凭据或自身字段继续参与调度')
 
   assert.ok(deleteResult.cleanupTarget, '删除成功后应返回后台清理目标')
   accountCleanupService.submitAccountRelatedCleanup(deleteResult.cleanupTarget)
@@ -161,7 +162,7 @@ try {
   assert.equal(authorizationUserUsageRangeWindowRequestCount(owner.id, account.id), 0, '后台清理后授权报表窗口不应残留账户过滤统计')
   assert.equal(cleanupTargetExists(account.id), false, '后台清理完成后应移除账户清理目标')
 
-  console.log('已删除 AI 账户关联清理回归通过：父账户记录清理不影响授权实例和授权列表')
+  console.log('已删除 AI 账户关联清理回归通过：父账户记录清理保留授权实例和授权列表，但缺少来源资源事实的实例不再参与调度')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -28,6 +28,8 @@ const [databaseModule, repositories, accountQualityRepository] = await Promise.a
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
+  assertSourceGuards()
+
   const statsDatabase = databaseModule.getStatsDatabase()
   const account = repositories.createAccount({
     providerCode: 'openai',
@@ -159,4 +161,13 @@ function inactiveQualityMinuteCount(accountId: string): number {
     .prepare('SELECT COUNT(*) AS total FROM account_quality_minute_stats WHERE account_id = ?')
     .get(accountId) as { total?: number } | undefined
   return Number(row?.total ?? 0)
+}
+
+function assertSourceGuards(): void {
+  const source = readFileSync(resolve('src/storage/account-quality.repository.ts'), 'utf8')
+  assert.doesNotMatch(source, /SELECT id, system_account_id, provider_code FROM accounts'\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部账号元数据')
+  assert.doesNotMatch(source, /SELECT \$\{accountQualitySelectColumns\(\)\} FROM account_quality_scores`\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部质量缓存')
+  assert.match(source, /loadQualityAccountMetadataByIds/, '账号质量刷新应按样本或固定候选账号批量补业务元数据')
+  assert.match(source, /ORDER BY updated_at ASC, account_id ASC\s+LIMIT \?/, '账号质量缓存清理和 stale 推进必须按固定批次')
+  assert.match(source, /temp_refreshed_quality_accounts/, '账号质量 stale 推进应避开本轮已刷新账号')
 }

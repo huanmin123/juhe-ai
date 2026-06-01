@@ -19,9 +19,9 @@ import { getExternalPublicApiCatalog } from './external-public-api-catalog.js'
 export const externalIntegrationSourcesRouter = Router()
 
 const rateLimitRuleSchema = z.object({
-  windowSeconds: z.coerce.number().int().min(1, '限频窗口不能小于 1 秒').max(86400, '限频窗口不能超过 86400 秒'),
-  maxRequests: z.coerce.number().int().min(1, '限频次数不能小于 1').max(100000, '限频次数不能超过 100000')
-})
+  windowSeconds: z.number().int().min(1, '限频窗口不能小于 1 秒').max(86400, '限频窗口不能超过 86400 秒'),
+  maxRequests: z.number().int().min(1, '限频次数不能小于 1').max(100000, '限频次数不能超过 100000')
+}).strict()
 
 const sourceBodySchema = z.object({
   name: z.string().trim().min(1, '来源系统名称不能为空').max(80, '来源系统名称不能超过 80 个字符'),
@@ -30,7 +30,7 @@ const sourceBodySchema = z.object({
   rateLimits: z.array(rateLimitRuleSchema).max(8, '限频规则最多 8 条').optional(),
   expiresAt: z.string().trim().nullable().optional(),
   notes: z.string().trim().max(500, '备注不能超过 500 个字符').nullable().optional()
-})
+}).strict()
 
 const sourceUpdateBodySchema = sourceBodySchema.partial()
 
@@ -39,7 +39,7 @@ const tokenBodySchema = z.object({
   status: z.enum(['active', 'disabled', 'revoked']).optional(),
   scopes: z.array(z.string().trim().min(1)).optional(),
   expiresAt: z.string().trim().nullable().optional()
-})
+}).strict()
 
 const tokenUpdateBodySchema = tokenBodySchema.partial()
 

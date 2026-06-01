@@ -39,12 +39,31 @@ const accountCreateSchema = z.object({
   accountExpiresAt: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   notes: z.string().optional()
-})
+}).strict()
+
+const accountUpdateSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  credentials: z.record(z.unknown()).optional(),
+  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
+  status: z.enum(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
+  concurrencyLimit: z.number().int().min(1).optional(),
+  priority: z.number().int().min(0).optional(),
+  superPriorityEnabled: z.boolean().optional(),
+  fallbackEnabled: z.boolean().optional(),
+  proxyProfileId: z.string().nullable().optional(),
+  errorPolicyId: z.string().nullable().optional(),
+  schedulable: z.boolean().optional(),
+  groupId: z.string().trim().min(1, '账户分组不能为空').optional(),
+  accountExpiresAt: z.string().nullable().optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  notes: z.string().optional(),
+  clearFailureState: z.boolean().optional()
+}).strict()
 
 const accountTestSchema = z.object({
   model: z.string().trim().optional(),
   prompt: z.string().trim().optional()
-}).optional()
+}).strict().optional()
 
 const accountGroupSchema = z.object({
   groupId: z.string().trim().min(1, '分组不能为空')
@@ -53,7 +72,7 @@ const accountGroupSchema = z.object({
 const accountTrafficMigrationSchema = z.object({
   targetAccountId: z.string().trim().min(1, '目标账户不能为空'),
   sourceStatus: z.enum(['temporary_unavailable', 'disabled']).optional()
-})
+}).strict()
 
 const authorizedAccountDispatchSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
@@ -61,7 +80,7 @@ const authorizedAccountDispatchSchema = z.object({
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   clearFailureState: z.boolean().optional()
-})
+}).strict()
 
 const accountImportRequestSchema = z.object({
   data: z.unknown(),
@@ -69,8 +88,8 @@ const accountImportRequestSchema = z.object({
     createMissingGroups: z.boolean().optional(),
     createMissingProxies: z.boolean().optional(),
     skipDuplicates: z.boolean().optional()
-  }).optional()
-})
+  }).strict().optional()
+}).strict()
 
 const accountListSortFields = new Set<AccountListSortField>([
   'priority',
@@ -596,19 +615,26 @@ accountsRouter.patch('/:id', async (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const body = req.body as Record<string, unknown>
+  const parsed = accountUpdateSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '账户更新参数无效'))
+    return
+  }
+  const body = parsed.data as Record<string, unknown>
+  const { groupId: requestedGroupId, clearFailureState: requestedClearFailureState, ...accountUpdateInput } = parsed.data
   const existingAccount = findAccountForTest(req.params.id, requestAccess)
   if (!existingAccount) {
     res.status(404).json({ message: '账户不存在' })
     return
   }
   const hasGroupId = Object.prototype.hasOwnProperty.call(body, 'groupId')
-  if (hasGroupId && (typeof body.groupId !== 'string' || !body.groupId)) {
+  const groupIdToBind = typeof requestedGroupId === 'string' ? requestedGroupId : undefined
+  if (hasGroupId && !groupIdToBind) {
     res.status(400).json(badRequest('账户分组不能为空'))
     return
   }
   if (hasGroupId) {
-    const group = findGroupSummary(String(body.groupId), requestAccess)
+    const group = findGroupSummary(groupIdToBind as string, requestAccess)
     if (!group || group.providerCode !== existingAccount.providerCode) {
       res.status(400).json(badRequest('账户分组无效'))
       return
@@ -626,18 +652,18 @@ accountsRouter.patch('/:id', async (req, res) => {
   }
   try {
     const account = runLoggedOperation(() => {
-      if (body.clearFailureState === true) {
+      if (requestedClearFailureState === true) {
         const restoredAccount = clearAccountFailureState(req.params.id, requestAccess)
         if (!restoredAccount) {
           throw new Error('账户不存在')
         }
       }
-      let account = updateAccount(req.params.id, body, requestAccess)
+      let account = updateAccount(req.params.id, accountUpdateInput, requestAccess)
       if (!account) {
         throw new Error('账户不存在')
       }
       if (hasGroupId) {
-        const nextAccount = setAccountGroup(account.id, body.groupId as string, requestAccess)
+        const nextAccount = setAccountGroup(account.id, groupIdToBind as string, requestAccess)
         if (!nextAccount) {
           throw new Error('账户分组无效')
         }
@@ -650,12 +676,12 @@ accountsRouter.patch('/:id', async (req, res) => {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
           module: 'accounts',
-          action: body.clearFailureState === true ? 'restore' : 'update',
-          operationKey: body.clearFailureState === true ? 'accounts.restore' : 'accounts.update',
+          action: requestedClearFailureState === true ? 'restore' : 'update',
+          operationKey: requestedClearFailureState === true ? 'accounts.restore' : 'accounts.update',
           resourceType: 'account',
           resourceId: account.id,
           resourceName: account.name,
-          summary: body.clearFailureState === true ? `恢复 AI 账户：${account.name}` : `更新 AI 账户：${account.name}`,
+          summary: requestedClearFailureState === true ? `恢复 AI 账户：${account.name}` : `更新 AI 账户：${account.name}`,
           changes: [
             ...diffSafeFields(existingAccount as unknown as Record<string, unknown>, account as unknown as Record<string, unknown>, {
               name: '名称',
@@ -677,13 +703,13 @@ accountsRouter.patch('/:id', async (req, res) => {
               lastErrorCode: '异常类型',
               lastErrorMessage: '错误信息'
             }),
-            ...(body.clearFailureState === true ? [safeChange('clearFailureState', '恢复异常状态', false, true)] : [])
+            ...(requestedClearFailureState === true ? [safeChange('clearFailureState', '恢复异常状态', false, true)] : [])
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }
       }
     }, req)
-    if (body.clearFailureState === true || body.status === 'active') {
+    if (requestedClearFailureState === true || body.status === 'active') {
       await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
     }
     res.json(ok(await applyServerAccountRuntimeToAccount(account)))

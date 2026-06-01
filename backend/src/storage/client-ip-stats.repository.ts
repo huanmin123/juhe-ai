@@ -208,7 +208,7 @@ export function aggregateClientIpStatsBatch(limit = 2000): number {
           SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
           FROM usage_records
           WHERE created_at <= ?
-            AND COALESCE(traffic_source, 'gateway') <> 'cooldown_retest'
+            AND traffic_source <> 'cooldown_retest'
             AND (created_at > ? OR (created_at = ? AND id > ?))
           ORDER BY created_at ASC, id ASC
           LIMIT ?
@@ -384,7 +384,7 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
     FROM client_ip_usage_range_windows range_stats
     INNER JOIN client_ip_registry registry ON registry.ip_hash = range_stats.ip_hash
     ${where.clause}
-    ORDER BY ${orderBy}, registry.ip_hash ASC
+    ORDER BY ${orderBy}, range_stats.ip_hash ASC
     LIMIT ? OFFSET ?
   `).all(policyNow, ...where.params, pageSize + 1, offset) as unknown as ClientIpStatsRangeRow[]
   const pageRows = rows.slice(0, pageSize)
@@ -491,14 +491,34 @@ export function listActiveClientIpPolicies(): ActiveClientIpPolicy[] {
     aggregate_ip_key: string
     client_ip: string
   }>
-  return rows.map((row) => ({
-    id: row.id,
-    ipHash: row.ip_hash,
-    aggregateIpKey: row.aggregate_ip_key,
-    clientIp: row.client_ip,
-    reason: row.reason ?? undefined,
-    expiresAt: row.expires_at ?? undefined
-  }))
+  return rows.map(mapActiveClientIpPolicyRow)
+}
+
+export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClientIpPolicy | undefined {
+  const ipHash = normalizeIpHash(inputIpHash)
+  if (!ipHash) {
+    return undefined
+  }
+  const now = nowIso()
+  const row = getStatsDatabase().prepare(`
+    SELECT policies.id, policies.ip_hash, policies.reason, policies.expires_at,
+      registry.aggregate_ip_key, registry.client_ip
+    FROM client_ip_policies policies
+    INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
+    WHERE policies.ip_hash = ?
+      AND policies.status = 'active'
+      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
+    ORDER BY policies.created_at DESC, policies.id DESC
+    LIMIT 1
+  `).get(ipHash, now) as unknown as {
+    id: string
+    ip_hash: string
+    reason: string | null
+    expires_at: string | null
+    aggregate_ip_key: string
+    client_ip: string
+  } | undefined
+  return row ? mapActiveClientIpPolicyRow(row) : undefined
 }
 
 export function recordClientIpPolicyHits(hits: ClientIpPolicyHitInput[]): { recorded: number } {
@@ -1029,6 +1049,24 @@ function mapClientIpStatsRangeRow(row: ClientIpStatsRangeRow): ClientIpStatsRow 
   }
 }
 
+function mapActiveClientIpPolicyRow(row: {
+  id: string
+  ip_hash: string
+  reason: string | null
+  expires_at: string | null
+  aggregate_ip_key: string
+  client_ip: string
+}): ActiveClientIpPolicy {
+  return {
+    id: row.id,
+    ipHash: row.ip_hash,
+    aggregateIpKey: row.aggregate_ip_key,
+    clientIp: row.client_ip,
+    reason: row.reason ?? undefined,
+    expiresAt: row.expires_at ?? undefined
+  }
+}
+
 function mapClientIpPolicyRow(row: ClientIpPolicyRow): ClientIpPolicySummary {
   return {
     id: row.id,
@@ -1174,7 +1212,7 @@ function latestIgnoredUsageRecordCursor(database: DatabaseSync, safeCreatedBefor
       SELECT created_at, id
       FROM usage_records
       WHERE created_at <= ?
-        AND COALESCE(traffic_source, 'gateway') = 'cooldown_retest'
+        AND traffic_source = 'cooldown_retest'
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at DESC, id DESC
       LIMIT 1
@@ -1189,7 +1227,7 @@ function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: 
       SELECT created_at
       FROM usage_records
       WHERE created_at <= ?
-        AND COALESCE(traffic_source, 'gateway') <> 'cooldown_retest'
+        AND traffic_source <> 'cooldown_retest'
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at DESC, id DESC
       LIMIT 1

@@ -40,11 +40,17 @@ export interface ApiKeyAvailabilityScheduleWindow {
   end: string
 }
 
-export interface ApiKeyAvailabilityScheduleException {
-  date: string
-  action: ApiKeyAvailabilityScheduleExceptionAction
-  windows?: Array<Pick<ApiKeyAvailabilityScheduleWindow, 'start' | 'end'>>
-}
+export type ApiKeyAvailabilityScheduleException =
+  | {
+    date: string
+    action: 'allow'
+    windows: Array<Pick<ApiKeyAvailabilityScheduleWindow, 'start' | 'end'>>
+  }
+  | {
+    date: string
+    action: 'deny'
+    windows?: never
+  }
 
 export interface ApiKeyAvailabilitySchedule {
   enabled: boolean

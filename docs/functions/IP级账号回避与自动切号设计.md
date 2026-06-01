@@ -39,7 +39,7 @@ IP 级账号回避只基于“失败账号被后续成功账号证明可以绕�
 
 ### 先救请求
 
-单个账号失败不是最终失败。网关应该继续在当前 API Key 绑定分组内尝试其他可调度账号，直到：
+单个账号失败不是最终失败。网关应该先在当前 API Key 已选分组内尝试其他可调度账号；如果当前号池在写下游前耗尽，再按 API Key 的 `groupBindings` 路由顺序尝试后续分组，直到：
 
 - 某个后续账号成功，直接把成功结果返回客户端。
 - 所有候选账号都失败或不可用，返回网关统一失败。
@@ -98,7 +98,9 @@ flowchart TD
 - 当前账号已因上游请求异常或非 2xx 响应决定 `skip_account`。
 - 失败不是客户端取消、本地认证、额度、授权、模型过滤、账号并发满、代理预检跳过或本地请求适配校验失败。
 
-待提交列表只存在于当前请求生命周期中，不立即写入长期或 TTL 回避状态。
+待提交列表只存在于当前请求生命周期中，不立即写入长期或 TTL 回避状态。列表必须按 `accountId` 去重，重复失败只保留同账号最新失败信息；单请求待提交失败上限固定为 `256`，超过上限的新账号失败不再扩容，避免一次异常请求链路在线性增长时阻塞 Node 主线程。
+
+API Key 绑定多个分组并触发 fallback 切组时，待提交列表只能通过有界转移函数传给新分组上下文。转移过程继续按目标 tracker 的 `accountId` 索引去重并受 `256` 上限约束，来源 tracker 转移后立即清空；路由层禁止展开复制待提交数组或使用 `unshift(...pendingFailures)` 头插搬移。
 
 ### 提交为 IP 级回避
 
@@ -153,6 +155,7 @@ flowchart TD
 | --- | --- | --- |
 | TTL | `defaultTemporaryUnschedulableMinutes`，上限 `10` 分钟 | 和本地账号短期屏蔽口径接近，避免长时间误伤 |
 | 容量 | `5000` 个 scope 或 entry 量级 | 防止大量 IP / 账号组合导致内存无界增长 |
+| 单请求待提交失败 | `256` 个账号 | 只在当前请求上下文内存在，按账号去重；fallback 切组有界转移 |
 | 触发阈值 | `1` 次已确认切号成功 | 因为提交条件已经需要后续账号成功确认，不再叠加复杂阈值 |
 | 缺失 IP | 关闭 | 不把未知来源混入全局状态 |
 | 全部候选命中回避 | 旁路回避 | 保证客户端仍有机会尝试 |
@@ -173,6 +176,7 @@ flowchart TD
 ## 实现落点
 
 - 新增 `backend/src/modules/gateway/openai-gateway-client-ip-account-avoidance.service.ts`：维护短 TTL 状态、候选排序、待提交失败提交和测试辅助清理。
+- `ClientIpAccountAvoidanceTracker`：维护 `pendingFailures` 和 `pendingFailureIndexByAccountId`，保证同请求失败按账号去重、固定上限和 fallback 切组有界转移。
 - `openai-gateway-request-preflight.ts`：在全局本地账号屏蔽后、Codex turn 避让前应用 IP 级账号回避排序，并写入审计 metadata。
 - `openai-gateway-upstream-dispatch.ts` / `openai-gateway-failure-dispatch.ts`：在上游失败并决定跳账号后登记本请求待提交 IP 失败；没有后续成功样本时不提交为 IP 回避。
 - `openai-gateway-response-finalization.ts`：只有完整成功后清理当前账号回避，并提交前序待确认 IP 失败；流式失败不提前清理。
@@ -185,4 +189,5 @@ flowchart TD
 - IP 级回避不写账号 `temporary_unavailable`、`rate_limited`、`error`、`cooldown_until` 或全局 `schedulable`。
 - 账号策略命中、客户端取消、本地校验失败和没有后续成功样本的全失败请求不记录 IP 级账号回避。
 - 所有候选账号都被当前 IP 回避时，系统旁路回避，仍尝试原候选列表。
+- 单请求待提交失败按账号去重且最多 `256` 条；fallback 切组不复制数组、不头插数组，转移后来源 tracker 清空。
 - 不新增请求链路数据库查询，不扫描使用记录、审计日志或统计缓存明细。

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -17,6 +17,8 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+assertAuditShutdownHookUsesAsyncFlush()
 
 const [databaseModule, repositories, auditQueue] = await Promise.all([
   import('../../storage/database.js'),
@@ -139,4 +141,16 @@ function cleanupTemporaryAuditBlobs(): void {
     }
   } catch {
   }
+}
+
+function assertAuditShutdownHookUsesAsyncFlush(): void {
+  const workerSource = readFileSync(new URL('../../worker.ts', import.meta.url), 'utf8')
+  const auditQueueSource = readFileSync(new URL('../../modules/audit-logs/audit-log-queue.service.ts', import.meta.url), 'utf8')
+
+  assert(workerSource.includes('installAuditLogQueueShutdownHooks()'), 'worker 应通过审计队列异步关闭钩子 flush 审计日志')
+  assert(!workerSource.includes('flushAllAuditLogQueue,'), 'worker 入口不应再导入同步 flushAllAuditLogQueue')
+  assert(!/process\.once\(\s*['"]exit['"]\s*,\s*flushAllAuditLogQueue\s*\)/.test(workerSource), 'worker 入口不应在 exit 钩子里同步写入审计日志')
+  assert(auditQueueSource.includes('flushAllAuditLogQueueAsync'), '审计队列应保留异步 drain flush')
+  assert(auditQueueSource.includes('void flushAuditLogQueueForShutdown()'), 'beforeExit 应触发异步审计 flush')
+  assert(!/process\.once\(\s*['"]exit['"]/.test(auditQueueSource), '审计队列不应注册 exit 同步钩子，避免退出路径同步写 SQLite / payload 文件')
 }

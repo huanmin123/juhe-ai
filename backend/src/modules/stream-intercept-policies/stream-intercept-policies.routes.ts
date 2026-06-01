@@ -30,7 +30,7 @@ const matchSchema = z.object({
 const policyBodySchema = z.object({
   name: z.string().trim().min(1, '规则名称不能为空').max(100, '规则名称不能超过 100 个字符'),
   enabled: z.boolean().optional(),
-  priority: z.coerce.number().int().min(1).max(9999).optional(),
+  priority: z.number().int().min(1).max(9999).optional(),
   match: matchSchema,
   action: z.enum([
     'observe',
@@ -41,7 +41,7 @@ const policyBodySchema = z.object({
     'avoid_account_ttl',
     'avoid_upstream_bucket_ttl'
   ]),
-  avoidanceTtlSeconds: z.coerce.number().int().min(1).max(86400).nullable().optional(),
+  avoidanceTtlSeconds: z.number().int().min(1).max(86400).nullable().optional(),
   notes: z.string().trim().max(1000, '备注不能超过 1000 个字符').nullable().optional()
 }).strict().superRefine((value, context) => {
   const matcher = value.match ?? {}
@@ -62,7 +62,7 @@ const policyBodySchema = z.object({
   }
   if (
     (value.action === 'avoid_account_ttl' || value.action === 'avoid_upstream_bucket_ttl')
-    && value.avoidanceTtlSeconds === null
+    && (value.avoidanceTtlSeconds === null || value.avoidanceTtlSeconds === undefined)
   ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -92,7 +92,13 @@ streamInterceptPoliciesRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '流式拦截策略参数无效')))
     return
   }
-  const policy = createStreamInterceptPolicy(parsed.data)
+  let policy: StreamInterceptPolicySummary
+  try {
+    policy = createStreamInterceptPolicy(parsed.data)
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '流式拦截策略创建失败'))
+    return
+  }
   recordPolicyOperation(req, 'create', policy.id, policy.name, [
     safeChange('name', '规则名称', undefined, policy.name),
     safeChange('enabled', '启用状态', undefined, policy.enabled),
@@ -116,7 +122,13 @@ streamInterceptPoliciesRouter.patch('/:id', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '流式拦截策略参数无效')))
     return
   }
-  const policy = updateStreamInterceptPolicy(req.params.id, parsed.data)
+  let policy: StreamInterceptPolicySummary | undefined
+  try {
+    policy = updateStreamInterceptPolicy(req.params.id, parsed.data)
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '流式拦截策略更新失败'))
+    return
+  }
   if (!policy) {
     res.status(404).json({ message: '流式拦截策略不存在' })
     return

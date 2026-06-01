@@ -10,7 +10,7 @@ export interface AccountUsageAggregateRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
-  cache_read_cost: number
+  cache_read_cost_usd: number
   total_cost: number
   last_used_at: string | null
 }
@@ -19,7 +19,7 @@ export interface UsageStatsRecordRow {
   id: string
   system_account_id: string
   trace_id: string
-  traffic_source: string | null
+  traffic_source: string
   client_ip: string | null
   api_key_id: string | null
   group_id: string | null

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -20,14 +20,16 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, clientIpStats, usageStatsHelpers] = await Promise.all([
+const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpPolicyCache] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/client-ip-stats.repository.js'),
-  import('../../storage/usage-stats-helpers.js')
+  import('../../storage/usage-stats-helpers.js'),
+  import('../../modules/gateway/client-ip-policy-cache.service.js')
 ])
 
 try {
+  assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot()
   const createdAtBase = Date.now() - 60_000
   const today = usageStatsHelpers.dateKey(new Date(createdAtBase), usageStatsHelpers.usageStatsTimezone())
   const emptyWindowBeforeBuild = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
@@ -41,6 +43,7 @@ try {
     {
       id: 'client_ip_stats_ipv4_success',
       traceId: 'trace-client-ip-stats-ipv4-success',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       clientIp: '203.0.113.10',
       endpoint: '/v1/responses',
@@ -60,6 +63,7 @@ try {
     {
       id: 'client_ip_stats_ipv4_error',
       traceId: 'trace-client-ip-stats-ipv4-error',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       clientIp: '203.0.113.10',
       endpoint: '/v1/responses',
@@ -78,6 +82,7 @@ try {
     {
       id: 'client_ip_stats_ipv4_secondary_a',
       traceId: 'trace-client-ip-stats-ipv4-secondary-a',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       clientIp: '198.51.100.25',
       endpoint: '/v1/responses',
@@ -93,6 +98,7 @@ try {
     {
       id: 'client_ip_stats_ipv4_secondary_b',
       traceId: 'trace-client-ip-stats-ipv4-secondary-b',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       clientIp: '198.51.100.25',
       endpoint: '/v1/responses',
@@ -108,6 +114,7 @@ try {
     {
       id: 'client_ip_stats_non_ipv4_ignored',
       traceId: 'trace-client-ip-stats-non-ipv4-ignored',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       clientIp: 'localhost',
       endpoint: '/v1/responses',
@@ -123,6 +130,7 @@ try {
     {
       id: 'client_ip_stats_v6_loopback_ignored',
       traceId: 'trace-client-ip-stats-v6-loopback-ignored',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       clientIp: '::1',
       endpoint: '/v1/responses',
@@ -154,6 +162,7 @@ try {
     {
       id: 'client_ip_stats_missing_ip_cursor',
       traceId: 'trace-client-ip-stats-missing-ip-cursor',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       endpoint: '/v1/responses',
       providerCode: 'openai',
@@ -236,6 +245,7 @@ try {
     {
       id: 'client_ip_stats_ipv4_late_success',
       traceId: 'trace-client-ip-stats-ipv4-late-success',
+      trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
       clientIp: '203.0.113.10',
       endpoint: '/v1/responses',
@@ -273,9 +283,17 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === policy.id), true, 'active 封禁策略应进入运行态列表')
+  assert.equal(clientIpStats.findActiveClientIpPolicyByHash(ipv4Identity.ipHash)?.id, policy.id, '运行态封禁检查应能按 ip_hash 精确读取 active 策略')
+  assertClientIpPolicyLookupQueryPlan(ipv4Identity.ipHash)
+  clientIpPolicyCache.clearClientIpPolicyCacheLocal()
+  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blocked, false, '来源级缓存未命中时不应在前置 cacheOnly 检查里查库')
+  const loadedPolicyDecision = await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)
+  assert.equal(loadedPolicyDecision.blacklistPolicy?.id, policy.id, '来源级缓存未命中后应按当前 IP 精确查询封禁策略')
+  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blacklistPolicy?.id, policy.id, '精确查询后应写入来源级短 TTL 缓存')
   const blacklistedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 })
   assert.deepEqual(blacklistedList.items.map((item) => item.ipHash), [ipv4Identity.ipHash], 'IP 列表封禁筛选应只返回 active 封禁 IP')
   assertClientIpListPolicyQueryPlan(today)
+  assertClientIpListSortQueryPlans(today)
   assert.equal(
     clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: policy.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
     1,
@@ -318,13 +336,95 @@ function assertClientIpListPolicyQueryPlan(today: string): void {
           AND (active_policies.expires_at IS NULL OR active_policies.expires_at > ?)
         LIMIT 1
       )
-    ORDER BY range_stats.request_count DESC, registry.ip_hash ASC
+    ORDER BY range_stats.request_count DESC, range_stats.ip_hash ASC
     LIMIT ? OFFSET ?
   `, [today, today, policyNow, 11, 0])
   assert(details.includes('idx_client_ip_range_requests'), `IP 列表应通过范围窗口排序索引读取当前页，实际计划：${details}`)
   assert(details.includes('idx_client_ip_policies_active'), `IP 封禁筛选应按 ip_hash 命中策略索引，实际计划：${details}`)
   assert(!details.includes('MATERIALIZE'), `IP 列表不应 materialize 封禁策略全集，实际计划：${details}`)
   assert(!details.includes('USE TEMP B-TREE FOR GROUP BY'), `IP 列表不应为封禁策略做临时 GROUP BY，实际计划：${details}`)
+}
+
+function assertClientIpListSortQueryPlans(today: string): void {
+  const sortIndexes = new Map([
+    ['requestCount', 'idx_client_ip_range_requests'],
+    ['successCount', 'idx_client_ip_range_success'],
+    ['errorCount', 'idx_client_ip_range_errors'],
+    ['errorRate', 'idx_client_ip_range_error_rate'],
+    ['totalTokens', 'idx_client_ip_range_total_tokens'],
+    ['totalCost', 'idx_client_ip_range_cost'],
+    ['activeDays', 'idx_client_ip_range_active_days'],
+    ['lastUsedAt', 'idx_client_ip_range_last_used']
+  ])
+  for (const [sortField, indexName] of sortIndexes) {
+    const orderBy = clientIpListOrderByForPlan(sortField)
+    const details = explainStatsQuery(`
+      SELECT registry.ip_hash
+      FROM client_ip_usage_range_windows range_stats
+      INNER JOIN client_ip_registry registry ON registry.ip_hash = range_stats.ip_hash
+      WHERE range_stats.start_date = ?
+        AND range_stats.end_date = ?
+      ORDER BY ${orderBy}, range_stats.ip_hash ASC
+      LIMIT ? OFFSET ?
+    `, [today, today, 11, 0])
+    assert(details.includes(indexName), `${sortField} 排序应使用 ${indexName}，实际计划：${details}`)
+    assert(!/USE TEMP B-TREE/i.test(details), `${sortField} 排序不应创建临时排序树，实际计划：${details}`)
+  }
+}
+
+function clientIpListOrderByForPlan(sortField: string): string {
+  switch (sortField) {
+    case 'successCount':
+      return 'range_stats.success_count DESC'
+    case 'errorCount':
+      return 'range_stats.error_count DESC'
+    case 'errorRate':
+      return 'CASE WHEN range_stats.request_count > 0 THEN CAST(range_stats.error_count AS REAL) / range_stats.request_count ELSE 0 END DESC'
+    case 'totalTokens':
+      return '(range_stats.input_tokens + range_stats.output_tokens) DESC'
+    case 'totalCost':
+      return 'range_stats.total_cost_usd DESC'
+    case 'activeDays':
+      return 'range_stats.active_days DESC'
+    case 'lastUsedAt':
+      return 'range_stats.last_used_at DESC'
+    case 'requestCount':
+    default:
+      return 'range_stats.request_count DESC'
+  }
+}
+
+function assertClientIpPolicyLookupQueryPlan(ipHash: string): void {
+  const policyNow = new Date().toISOString()
+  const details = explainStatsQuery(`
+    SELECT policies.id
+    FROM client_ip_policies policies
+    INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
+    WHERE policies.ip_hash = ?
+      AND policies.status = 'active'
+      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
+    ORDER BY policies.created_at DESC, policies.id DESC
+    LIMIT 1
+  `, [ipHash, policyNow])
+  assert(/idx_client_ip_policies_(active|ip)/.test(details), `IP 封禁运行态查询应按 ip_hash 命中策略索引，实际计划：${details}`)
+  assert(!/SCAN (client_ip_policies|policies)\b/.test(details), `IP 封禁运行态查询不应扫描策略表，实际计划：${details}`)
+}
+
+function assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot(): void {
+  const handlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
+  const readRuntimeBody = sourceFunctionBlock(handlersSource, 'function readGatewayRuntime')
+  assert(!readRuntimeBody.includes('listActiveClientIpPolicies'), '网关 runtime 读取不能携带全量 active IP 封禁策略')
+  assert(!readRuntimeBody.includes('clientIpPolicies'), '网关 runtime 响应不能携带全量 IP 封禁策略数组')
+  const cacheSource = readFileSync(new URL('../../modules/gateway/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
+  assert(cacheSource.includes("type: 'find_active_client_ip_policy'"), '网关 IP 封禁缓存未命中时应使用按 ip_hash 精确查询')
+  assert(!cacheSource.includes("type: 'list_active_client_ip_policies'"), '网关 IP 封禁请求路径不能加载全量 active IP 封禁策略')
+}
+
+function sourceFunctionBlock(source: string, marker: string): string {
+  const start = source.indexOf(marker)
+  assert(start >= 0, `未找到源码片段：${marker}`)
+  const nextFunction = source.indexOf('\nfunction ', start + marker.length)
+  return source.slice(start, nextFunction === -1 ? undefined : nextFunction)
 }
 
 function explainStatsQuery(sql: string, params: SQLInputValue[]): string {

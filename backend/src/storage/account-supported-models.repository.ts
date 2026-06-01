@@ -3,17 +3,15 @@ import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export function normalizeAccountSupportedModelsInput(value: unknown): string[] | undefined {
   if (value === undefined) return undefined
-  const values = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? value.split(',')
-      : undefined
-  if (!values) {
+  if (!Array.isArray(value)) {
     throw new Error('账户支持模型必须是字符串数组')
   }
-  const models = [...new Set(values
-    .map((item) => typeof item === 'string' ? item.trim() : '')
-    .filter(Boolean))]
+  const models = [...new Set(value.map((item) => {
+    if (typeof item !== 'string') {
+      throw new Error('账户支持模型必须是字符串数组')
+    }
+    return item.trim()
+  }).filter(Boolean))]
   return models
 }
 

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -78,6 +78,7 @@ class FakeDbServiceChild extends EventEmitter {
 }
 
 try {
+  assertReadGatewayRuntimeDefersPolicyLists()
   const apiKey = seedGatewayRuntime()
   const fakeChild = new FakeDbServiceChild()
   runtimeConfig.processRole = 'server'
@@ -209,7 +210,17 @@ try {
   assert.equal(expiringAfterBoundary.apiKey, undefined, 'API Key 过期后不应被高频缓存命中续命')
   assert.equal(fakeChild.sentOperationCount, expiringOperationCount + 2, 'API Key 过期后应重新请求 DB service')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，API Key 停用不污染分组账号缓存，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划边界和过期边界后重新计算运行态')
+  gatewayCache.clearGatewayRuntimeCacheLocal()
+  const coldConcurrentOperationCount = fakeChild.sentOperationCount
+  const concurrentRuntimeReads = await Promise.all([
+    gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key),
+    gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key),
+    gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
+  ])
+  assert(concurrentRuntimeReads.every((runtime) => runtime.apiKey?.id === apiKey.id), '冷缓存并发读取应全部返回同一个 API Key 运行配置')
+  assert.equal(fakeChild.sentOperationCount, coldConcurrentOperationCount + 1, '同一 API Key 冷缓存并发读取应合并为一次 DB service 请求')
+
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，API Key 停用不污染分组账号缓存，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划边界和过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -245,7 +256,7 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
     credentials: {
       refresh_token: 'refresh-runtime-cache-oauth',
       access_token: 'access-runtime-cache-oauth',
-      expires_at: '2026-06-01T01:00:00.000Z',
+      expires_at: '2099-01-01T00:00:00.000Z',
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
@@ -361,6 +372,23 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
 
 function sortedAccountTypes(accounts: Array<{ type: string }>): string[] {
   return accounts.map((account) => account.type).sort()
+}
+
+function assertReadGatewayRuntimeDefersPolicyLists(): void {
+  const handlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
+  const readRuntimeBody = sourceFunctionBlock(handlersSource, 'function readGatewayRuntime')
+  const validateIndex = readRuntimeBody.indexOf('validateGatewayApiKey')
+  const streamPolicyIndex = readRuntimeBody.indexOf('listActiveStreamInterceptPoliciesForGateway')
+  assert(validateIndex >= 0, 'read_gateway_runtime 应先验证 API Key')
+  assert(streamPolicyIndex > validateIndex, 'read_gateway_runtime 不能在验证 API Key 前加载全量流式拦截策略')
+  assert(!readRuntimeBody.includes('listActiveClientIpPolicies'), 'read_gateway_runtime 不能携带全量 active IP 封禁策略')
+}
+
+function sourceFunctionBlock(source: string, marker: string): string {
+  const start = source.indexOf(marker)
+  assert(start >= 0, `未找到源码片段：${marker}`)
+  const nextFunction = source.indexOf('\nfunction ', start + marker.length)
+  return source.slice(start, nextFunction === -1 ? undefined : nextFunction)
 }
 
 function accountById<T extends { id: string }>(accounts: T[], accountId: string): T | undefined {

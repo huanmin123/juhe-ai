@@ -23,7 +23,7 @@ import { OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE, refreshOpenAIOAuthAccount
 
 export const openAIOAuthRouter = Router()
 
-const authUrlSchema = z.object({}).passthrough()
+const authUrlSchema = z.object({}).strict()
 const oauthCredentialsPatchSchema = z.object({
   error_handling_rules: z.unknown().optional(),
   stream_intercept_rules: z.unknown().optional()
@@ -31,9 +31,7 @@ const oauthCredentialsPatchSchema = z.object({
 
 const createFromCodeSchema = z.object({
   sessionId: z.string().min(1),
-  callbackUrl: z.string().optional(),
-  code: z.string().optional(),
-  state: z.string().optional(),
+  callbackUrl: z.string().min(1),
   name: z.string().optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -46,7 +44,7 @@ const createFromCodeSchema = z.object({
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   credentialsPatch: oauthCredentialsPatchSchema.optional(),
   notes: z.string().optional()
-})
+}).strict()
 
 const createFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1),
@@ -62,18 +60,16 @@ const createFromRefreshTokenSchema = z.object({
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   credentialsPatch: oauthCredentialsPatchSchema.optional(),
   notes: z.string().optional()
-})
+}).strict()
 
 const reauthorizeFromCodeSchema = z.object({
   sessionId: z.string().min(1),
-  callbackUrl: z.string().optional(),
-  code: z.string().optional(),
-  state: z.string().optional()
-})
+  callbackUrl: z.string().min(1)
+}).strict()
 
 const reauthorizeFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1)
-})
+}).strict()
 
 openAIOAuthRouter.post('/auth-url', (req, res) => {
   const parsed = authUrlSchema.safeParse(req.body ?? {})
@@ -91,9 +87,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     sessionId: textValue(bodyField(req, 'sessionId')),
-    code: sensitiveFingerprint(bodyField(req, 'code')),
-    callbackUrl: sensitiveFingerprint(bodyField(req, 'callbackUrl')),
-    state: sensitiveFingerprint(bodyField(req, 'state'))
+    callbackUrl: sensitiveFingerprint(bodyField(req, 'callbackUrl'))
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -127,6 +121,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
     })
     const account = runLoggedOperation(() => {
       const account = createAccount({
+        providerCode: 'openai',
         name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
@@ -199,6 +194,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     })
     const account = runLoggedOperation(() => {
       const account = createAccount({
+        providerCode: 'openai',
         name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),

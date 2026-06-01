@@ -2,6 +2,7 @@ import { Router } from 'express'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import {
   getAuditLogDetail,
   getAuditLogPayload,
@@ -37,11 +38,9 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
   const workerSnapshotAvailable = Boolean(workerSnapshot)
   const auditLogQueueAvailable = Boolean(auditLogQueue)
   const settings = readAuditLogSettings()
-  if (typeof serverRuntime?.audit?.fullBodyCaptureEnabled === 'boolean') {
-    settings.fullBodyCaptureEnabled = serverRuntime.audit.fullBodyCaptureEnabled
-    if (serverRuntime.audit.fullBodyCapture) {
-      settings.fullBodyCapture = serverRuntime.audit.fullBodyCapture
-    }
+  if (serverRuntime?.audit?.fullBodyCapture) {
+    settings.fullBodyCapture = serverRuntime.audit.fullBodyCapture
+    settings.fullBodyCaptureEnabled = serverRuntime.audit.fullBodyCapture.enabled
   }
   res.json(ok({
     runtimeAvailable,
@@ -177,27 +176,49 @@ function isHttpStatusCode(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
 }
 
+const auditFullBodyCaptureUpdateKeys = new Set(['enabled', 'scope', 'accountId', 'includeSuccess', 'durationMinutes', 'expiresAt'])
+
 function parseAuditFullBodyCaptureUpdate(body: unknown): { success: true; data: AuditFullBodyCaptureConfigInput } | { success: false; message: string } {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     return { success: false, message: '临时全量捕获参数无效' }
   }
   const record = body as Record<string, unknown>
+  const unknownKeys = Object.keys(record).filter((key) => !auditFullBodyCaptureUpdateKeys.has(key))
+  if (unknownKeys.length > 0) {
+    return { success: false, message: `临时全量捕获包含未知字段：${unknownKeys.join('、')}` }
+  }
   if (typeof record.enabled !== 'boolean') {
     return { success: false, message: '临时全量捕获参数无效' }
   }
   const enabled = record.enabled
-  const scope = record.scope === 'account' ? 'account' : 'global'
+  const scope = record.scope === undefined || record.scope === 'global'
+    ? 'global'
+    : record.scope === 'account'
+      ? 'account'
+      : undefined
+  if (!scope) {
+    return { success: false, message: '临时全量捕获 scope 无效' }
+  }
+  if (record.accountId !== undefined && typeof record.accountId !== 'string') {
+    return { success: false, message: '临时全量捕获 accountId 必须是字符串' }
+  }
   const accountId = typeof record.accountId === 'string' ? record.accountId.trim() : ''
   if (enabled && scope === 'account' && !accountId) {
     return { success: false, message: '请选择要定向捕获的 AI 账户' }
   }
+  if (record.includeSuccess !== undefined && typeof record.includeSuccess !== 'boolean') {
+    return { success: false, message: '临时全量捕获 includeSuccess 必须是布尔值' }
+  }
 
-  const durationMinutes = typeof record.durationMinutes === 'number' && Number.isFinite(record.durationMinutes)
-    ? Math.min(Math.max(Math.trunc(record.durationMinutes), 1), 24 * 60)
-    : undefined
-  const expiresAt = typeof record.expiresAt === 'string' ? record.expiresAt : undefined
-  if (enabled && durationMinutes === undefined && expiresAt !== undefined && !Number.isFinite(Date.parse(expiresAt))) {
-    return { success: false, message: '临时全量捕获过期时间无效' }
+  const durationMinutes = record.durationMinutes
+  if (durationMinutes !== undefined && (typeof durationMinutes !== 'number' || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 24 * 60)) {
+    return { success: false, message: '临时全量捕获 durationMinutes 必须是 1 到 1440 的整数' }
+  }
+  const expiresAt = record.expiresAt
+  if (expiresAt !== undefined) {
+    if (typeof expiresAt !== 'string' || !expiresAt.trim() || !optionalServerDateTimeIso(expiresAt)) {
+      return { success: false, message: '临时全量捕获过期时间无效' }
+    }
   }
 
   return {
@@ -206,7 +227,7 @@ function parseAuditFullBodyCaptureUpdate(body: unknown): { success: true; data: 
       enabled,
       scope,
       accountId: scope === 'account' ? accountId : undefined,
-      includeSuccess: record.includeSuccess === true,
+      includeSuccess: record.includeSuccess,
       durationMinutes,
       expiresAt
     }

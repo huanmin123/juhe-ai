@@ -17,6 +17,7 @@ import { usageSummaryFromAggregate } from '../../storage/usage-stats-helpers.js'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const backendSrcDirectory = resolve(scriptDirectory, '../..')
+const projectRoot = resolve(backendSrcDirectory, '../..')
 
 function jsonBuffer(value: unknown): Buffer {
   return Buffer.from(JSON.stringify(value), 'utf8')
@@ -360,6 +361,7 @@ const cachedUsageSummary = usageSummaryFromAggregate({
   input_tokens: 1000,
   output_tokens: 200,
   cache_read_tokens: 300,
+  cache_read_cost_usd: 0,
   total_cost: 0.00315,
   last_used_at: null
 })
@@ -406,6 +408,26 @@ assert.doesNotMatch(gatewayUpstreamDispatchSource, /normalizeRetryCount\(setting
 const oauthAccessTokenRefreshSource = readSource('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')
 assert.match(oauthAccessTokenRefreshSource, /openAIOAuthRefreshRaceRetryPolicy/)
 assert.match(oauthAccessTokenRefreshSource, /shouldRetryPolicyAttempt\(attempt, openAIOAuthRefreshRaceRetryPolicy\)/)
+assert.doesNotMatch(oauthAccessTokenRefreshSource, /normalizeOpenAIOAuthStoppedRefreshExceptionMessages/)
+assert.doesNotMatch(oauthAccessTokenRefreshSource, /历史后台刷新失败/)
+
+const openAIOAuthRoutesSource = readSource('modules/openai-oauth/openai-oauth.routes.ts')
+assert.match(openAIOAuthRoutesSource, /callbackUrl:\s*z\.string\(\)\.min\(1\)/)
+assert.doesNotMatch(openAIOAuthRoutesSource, /code:\s*z\.string\(\)\.optional\(\)/)
+assert.doesNotMatch(openAIOAuthRoutesSource, /state:\s*z\.string\(\)\.optional\(\)/)
+
+const openAIOAuthServiceSource = readSource('modules/openai-oauth/openai-oauth.service.ts')
+assert.match(openAIOAuthServiceSource, /export function extractCodeAndState\(input:\s*\{\s*callbackUrl:\s*string\s*\}/)
+assert.doesNotMatch(openAIOAuthServiceSource, /input:\s*\{\s*callbackUrl\?:\s*string;\s*code\?:\s*string;\s*state\?:\s*string\s*\}/)
+assert.doesNotMatch(openAIOAuthServiceSource, /directCode|directState/)
+
+const idempotencyDesignSource = readProjectFile('docs/functions/幂等与唯一约束设计.md')
+assert.match(idempotencyDesignSource, /OAuth 授权回调创建账户 \| `openai_oauth\.create_from_code` \| `callbackUrl fingerprint`/)
+assert.doesNotMatch(idempotencyDesignSource, /state \+ code hash/)
+
+const frontendRouterSource = readProjectFile('frontend/src/router/index.ts')
+assert.match(frontendRouterSource, /管理自己的 API Key，绑定自己的分组。/)
+assert.doesNotMatch(frontendRouterSource, /绑定自有或授权给自己的分组/)
 
 const settingsRepositorySource = readSource('storage/settings.repository.ts')
 assert.match(settingsRepositorySource, /createAppCache/)
@@ -430,6 +452,7 @@ assert.match(accountErrorPolicySource, /accountErrorPolicyUpstreamSummary/)
 assert.match(accountErrorPolicySource, /accountErrorPolicyReason\(statusCode,\s*decision,\s*upstreamSummary\)/)
 
 const backgroundJobsSource = readSource('modules/background/background-jobs.ts')
+const backgroundSettingsNumberSource = sourceBetween(backgroundJobsSource, 'function settingsNumber', 'function settingsString')
 assert.match(backgroundJobsSource, /enqueueCooldownAccountRetest/)
 assert.match(backgroundJobsSource, /getCooldownAccountRetestQueueSnapshot/)
 assert.doesNotMatch(backgroundJobsSource, /prompt:\s*'hi'/)
@@ -445,9 +468,10 @@ assert.doesNotMatch(backgroundJobsSource, /temporaryUnschedulableRetryIntervalSe
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestAttemptTimeoutMs/)
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestRunBudgetMs/)
 assert.match(backgroundJobsSource, /flushUsageRecordQueue\(\{\s*drain:\s*true/)
-assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestIntervalSeconds', 3, 1, 3600\)/)
-assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestBatchSize', 10, 1, 100\)/)
-assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestMaxBackoffHours', 24, 1, 24 \* 30\)/)
+assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestIntervalSeconds', 1, 3600\)/)
+assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestBatchSize', 1, 100\)/)
+assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestMaxBackoffHours', 1, 24 \* 30\)/)
+assert.doesNotMatch(backgroundSettingsNumberSource, /typeof value === 'string' \? Number\(value\)/)
 
 const cooldownAccountRetestSource = readSource('modules/background/cooldown-account-retest.service.ts')
 assert.match(cooldownAccountRetestSource, /sequenceRetryPolicy\('cooldown_account_retest_revival', \[\], 0\)/)
@@ -471,10 +495,123 @@ assert.match(gatewayAccountSideEffectsSource, /errorCode\?:\s*string/)
 
 const usageRecordsRepositorySource = readSource('storage/usage-records.repository.ts')
 assert.match(usageRecordsRepositorySource, /traffic_source/)
-assert.match(usageRecordsRepositorySource, /COALESCE\(traffic_source, 'gateway'\) = 'gateway'/)
+assert.match(usageRecordsRepositorySource, /traffic_source = 'gateway'/)
+assert.doesNotMatch(usageRecordsRepositorySource, /COALESCE\(traffic_source, 'gateway'\)/)
+
+const usageRecordListQuerySource = readSource('storage/usage-record-list-query.ts')
+assert.match(usageRecordListQuerySource, /\$\{columns\.trafficSource\} = \?/)
+assert.doesNotMatch(usageRecordListQuerySource, /COALESCE\(\$\{columns\.trafficSource\}, 'gateway'\)/)
+
+const auditLogsRepositorySource = readSource('storage/audit-logs.repository.ts')
+assert.match(auditLogsRepositorySource, /al\.traffic_source = \?/)
+assert.doesNotMatch(auditLogsRepositorySource, /COALESCE\(al\.traffic_source, 'gateway'\)/)
+
+const clientIpStatsRepositorySource = readSource('storage/client-ip-stats.repository.ts')
+assert.match(clientIpStatsRepositorySource, /traffic_source <> 'cooldown_retest'/)
+assert.match(clientIpStatsRepositorySource, /traffic_source = 'cooldown_retest'/)
+assert.doesNotMatch(clientIpStatsRepositorySource, /COALESCE\(traffic_source, 'gateway'\)/)
 
 const usageStatsRepositorySource = readSource('storage/usage-stats.repository.ts')
-assert.match(usageStatsRepositorySource, /COALESCE\(traffic_source, 'gateway'\) <> 'cooldown_retest'/)
+assert.match(usageStatsRepositorySource, /traffic_source <> 'cooldown_retest'/)
+assert.doesNotMatch(usageStatsRepositorySource, /COALESCE\(traffic_source, 'gateway'\)/)
+
+const usageStatsAggregationSource = readSource('storage/usage-stats-aggregation.ts')
+assert.match(usageStatsAggregationSource, /row\.traffic_source !== 'cooldown_retest'/)
+assert.doesNotMatch(usageStatsAggregationSource, /traffic_source \?\? 'gateway'/)
+
+const usageStatsTypesSource = readSource('storage/usage-stats-types.ts')
+assert.match(usageStatsTypesSource, /traffic_source: string\r?\n/)
+assert.doesNotMatch(usageStatsTypesSource, /traffic_source: string \| null/)
+
+const openAIAccountSelectorSource = readSource('storage/openai-account-selector.repository.ts')
+assert.doesNotMatch(openAIAccountSelectorSource, /COALESCE\(source_accounts\.type, accounts\.type\)/)
+assert.match(openAIAccountSelectorSource, /accountAccess\.accountAccessType === 'account_authorized' && !row\.resource_account_id/)
+
+const accountsRoutesSource = readSource('modules/accounts/accounts.routes.ts')
+assert.match(accountsRoutesSource, /const accountUpdateSchema = z\.object/)
+assert.match(accountsRoutesSource, /concurrencyLimit:\s*z\.number\(\)\.int\(\)\.min\(1\)\.optional\(\)/)
+assert.match(accountsRoutesSource, /status:\s*z\.enum\(\['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'\]\)\.optional\(\)/)
+assert.match(accountsRoutesSource, /accountUpdateSchema\.safeParse\(req\.body\)/)
+assert.match(accountsRoutesSource, /\}\)\.strict\(\)/)
+
+const repositoriesSource = readSource('storage/repositories.ts')
+assert.doesNotMatch(repositoriesSource, /SET type = \?,\s*credentials_encrypted = \?/s)
+assert.match(repositoriesSource, /authorization_instance_source_account_id = NULL/)
+assert.match(repositoriesSource, /function normalizedAccountType\(value: unknown\): string/)
+assert.match(repositoriesSource, /function normalizedAccountStatusInput\(value: unknown, fallback: AccountStatus\): AccountStatus/)
+assert.match(repositoriesSource, /function normalizedPositiveIntegerInput\(value: unknown, fallback: number, label: string\): number/)
+assert.doesNotMatch(repositoriesSource, /String\(input\.type \?\? 'api_key'\)/)
+assert.doesNotMatch(repositoriesSource, /Number\(input\.concurrencyLimit \?\? current\.concurrencyLimit\)/)
+assert.doesNotMatch(repositoriesSource, /Number\(input\.priority \?\? current\.priority\)/)
+assert.doesNotMatch(repositoriesSource, /value === 1 \|\| value === '1'/)
+assert.doesNotMatch(repositoriesSource, /typeof value === 'string' \? Number\(value\)/)
+
+const frontendSettingsFormSource = readProjectFile('frontend/src/views/settings/settingsForm.ts')
+assert.doesNotMatch(frontendSettingsFormSource, /typeof value === 'string' \? Number\(value\)/)
+
+const proxyRepositorySource = readSource('storage/proxy.repository.ts')
+assert.match(proxyRepositorySource, /function normalizedProxyType\(value: unknown\): string/)
+assert.match(proxyRepositorySource, /function normalizedProxyPort\(value: unknown\): number/)
+assert.doesNotMatch(proxyRepositorySource, /input\.type \?\? 'socks5h'/)
+assert.doesNotMatch(proxyRepositorySource, /Number\(input\.port \?\? 0\)/)
+assert.doesNotMatch(proxyRepositorySource, /Number\(input\.port \?\? current\.port\)/)
+
+const proxiesRoutesSource = readSource('modules/proxies/proxies.routes.ts')
+assert.match(proxiesRoutesSource, /const proxyUpdateSchema = proxySchema\.partial\(\)\.strict\(\)/)
+assert.match(proxiesRoutesSource, /proxyUpdateSchema\.safeParse\(req\.body\)/)
+
+const externalPublicApiCatalogSource = readSource('modules/external-integrations/external-public-api-catalog.ts')
+assert.match(externalPublicApiCatalogSource, /id: 'api-key-delete'[\s\S]+groupRouteStrategy:\s*'priority_failover'[\s\S]+groupBindings: \[\{ groupId: 'grp_xxx'/)
+assert.doesNotMatch(externalPublicApiCatalogSource, /apiKey:\s*\{[^\n]*groupId:\s*'grp_xxx'/)
+assert.doesNotMatch(externalPublicApiCatalogSource, /新的主绑定分组 ID/)
+assert.doesNotMatch(externalPublicApiCatalogSource, /绑定分组 ID；与 groupName/)
+
+const externalIntegrationsRoutesSource = readSource('modules/external-integrations/external-integrations.routes.ts')
+const accountPushSchemaSource = sourceBetween(externalIntegrationsRoutesSource, 'const accountPushSchema', 'const accountDeleteSchema')
+assert.match(accountPushSchemaSource, /concurrencyLimit:\s*z\.number\(\)\.int\(\)\.min\(1\)/)
+assert.match(accountPushSchemaSource, /priority:\s*z\.number\(\)\.int\(\)\.min\(0\)/)
+assert.doesNotMatch(accountPushSchemaSource, /z\.coerce\.number/)
+const apiKeyGroupBindingSchemaSource = sourceBetween(externalIntegrationsRoutesSource, 'const apiKeyGroupBindingSchema', 'const apiKeyAddSchema')
+assert.match(apiKeyGroupBindingSchemaSource, /priority:\s*z\.number\(\)\.int\(\)\.positive\(\)\.optional\(\)/)
+assert.match(apiKeyGroupBindingSchemaSource, /weight:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(100\)\.optional\(\)/)
+assert.match(apiKeyGroupBindingSchemaSource, /\}\)\.strict\(\)/)
+assert.doesNotMatch(apiKeyGroupBindingSchemaSource, /z\.coerce\.number/)
+
+const externalPublicAccountPushSource = readSource('modules/external-integrations/external-public-account-push.service.ts')
+const externalPublicBoundedIntegerSource = sourceFunctionBlock(externalPublicAccountPushSource, 'function boundedInteger')
+assert.match(externalPublicBoundedIntegerSource, /typeof value !== 'number'/)
+assert.doesNotMatch(externalPublicBoundedIntegerSource, /Number\(value\)/)
+
+const streamInterceptPoliciesRoutesSource = readSource('modules/stream-intercept-policies/stream-intercept-policies.routes.ts')
+const streamInterceptPolicyBodySchemaSource = sourceBetween(streamInterceptPoliciesRoutesSource, 'const policyBodySchema', 'streamInterceptPoliciesRouter.get')
+assert.match(streamInterceptPolicyBodySchemaSource, /priority:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(9999\)\.optional\(\)/)
+assert.match(streamInterceptPolicyBodySchemaSource, /avoidanceTtlSeconds:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(86400\)\.nullable\(\)\.optional\(\)/)
+assert.doesNotMatch(streamInterceptPolicyBodySchemaSource, /z\.coerce\.number/)
+
+const accountStreamInterceptPolicyValidationSource = readSource('modules/accounts/account-stream-intercept-policy-validation.ts')
+assert.match(accountStreamInterceptPolicyValidationSource, /priority:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(9999\)\.optional\(\)/)
+assert.match(accountStreamInterceptPolicyValidationSource, /avoidanceTtlSeconds:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(86400\)\.optional\(\)/)
+assert.doesNotMatch(accountStreamInterceptPolicyValidationSource, /z\.coerce\.number/)
+
+const externalIntegrationSourcesRoutesSource = readSource('modules/external-integrations/external-integration-sources.routes.ts')
+const rateLimitRuleSchemaSource = sourceBetween(externalIntegrationSourcesRoutesSource, 'const rateLimitRuleSchema', 'const sourceBodySchema')
+assert.match(rateLimitRuleSchemaSource, /windowSeconds:\s*z\.number\(\)\.int\(\)\.min\(1/)
+assert.match(rateLimitRuleSchemaSource, /maxRequests:\s*z\.number\(\)\.int\(\)\.min\(1/)
+assert.match(rateLimitRuleSchemaSource, /\}\)\.strict\(\)/)
+assert.doesNotMatch(rateLimitRuleSchemaSource, /z\.coerce\.number/)
+
+const ipStatsRoutesSource = readSource('modules/ip-stats/ip-stats.routes.ts')
+const ipPolicyBodySchemaSource = sourceBetween(ipStatsRoutesSource, 'const policyBodySchema', 'ipStatsRouter.get')
+assert.match(ipPolicyBodySchemaSource, /durationMinutes:\s*z\.number\(\)\.int\(\)\.min\(1/)
+assert.match(ipPolicyBodySchemaSource, /durationDays:\s*z\.number\(\)\.int\(\)\.min\(1/)
+assert.doesNotMatch(ipPolicyBodySchemaSource, /z\.coerce\.number/)
+
+const tableMonitorRoutesSource = readSource('modules/table-monitor/table-monitor.routes.ts')
+const usageRecordsCleanupSchemaSource = sourceBetween(tableMonitorRoutesSource, 'const usageRecordsCleanupSchema', 'interface UsageRecordsCleanupResult')
+assert.match(usageRecordsCleanupSchemaSource, /batchSize:\s*z\.number\(\)\.int\(\)\.min\(100\)\.max\(10000\)\.optional\(\)/)
+assert.match(usageRecordsCleanupSchemaSource, /maxBatches:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(100\)\.optional\(\)/)
+assert.match(usageRecordsCleanupSchemaSource, /\}\)\.strict\(\)/)
+assert.doesNotMatch(usageRecordsCleanupSchemaSource, /z\.coerce\.number/)
 
 const gatewayBodySource = readSource('modules/gateway/openai-gateway-body.ts')
 assert.match(gatewayBodySource, /responseBackpressureWarnThresholdMs\s*=\s*50/)
@@ -497,7 +634,6 @@ const gatewayRoutesSource = readSource('modules/gateway/openai-gateway.routes.ts
 assert.match(gatewayRoutesSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*upstreamResponse\.headers,\s*gatewayUsageContext\.trafficSource\)/)
 assert.match(gatewayFailureDispatchSource, /usageContext\.trafficSource === 'gateway' \? 'gateway_error' : usageContext\.trafficSource/)
 
-const repositoriesSource = readSource('storage/repositories.ts')
 const cooldownRetestRepositorySource = sourceFunctionBlock(repositoriesSource, 'export function listAccountsDueForCooldownRetest')
 assert.match(cooldownRetestRepositorySource, /status IN \('temporary_unavailable', 'rate_limited'\)/)
 assert.match(cooldownRetestRepositorySource, /rate_limited/)
@@ -529,11 +665,23 @@ function readSource(path: string): string {
   return readFileSync(resolve(backendSrcDirectory, path), 'utf8')
 }
 
+function readProjectFile(path: string): string {
+  return readFileSync(resolve(projectRoot, path), 'utf8')
+}
+
 function sourceFunctionBlock(source: string, marker: string): string {
   const start = source.indexOf(marker)
   assert.notEqual(start, -1, `${marker} should exist`)
   const nextExport = source.indexOf('\nexport function ', start + marker.length)
   return source.slice(start, nextExport === -1 ? undefined : nextExport)
+}
+
+function sourceBetween(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker)
+  assert.notEqual(start, -1, `${startMarker} should exist`)
+  const end = source.indexOf(endMarker, start + startMarker.length)
+  assert.notEqual(end, -1, `${endMarker} should exist after ${startMarker}`)
+  return source.slice(start, end)
 }
 
 async function assertRetryQueueRetainsFailedItems(): Promise<void> {

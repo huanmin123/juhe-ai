@@ -15,6 +15,7 @@ const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
 const usageRecordBatchSize = 1000
 const usageRecordFlushBatchMaxBytes = 8 * 1024 * 1024
+const usageRecordShutdownFlushMaxBatches = 1
 const usageRecordQueueMaxItems = 10_000
 const usageRecordQueueMaxBytes = 64 * 1024 * 1024
 const usageRecordEstimateMaxBytes = usageRecordQueueMaxBytes + 1
@@ -100,7 +101,7 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
   const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     do {
-      const batch = takeUsageRecordFlushBatch(usageRecordBatchSize, usageRecordFlushBatchMaxBytes)
+      const { batch, bytes: batchBytes } = peekUsageRecordFlushBatch(usageRecordBatchSize, usageRecordFlushBatchMaxBytes)
       if (batch.length === 0) {
         break
       }
@@ -108,10 +109,9 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
 
       try {
         createUsageRecordsBatch(batch.map((item) => item.input))
+        removeUsageRecordFlushBatch(batch.length, batchBytes)
       } catch (error) {
         failed = true
-        pendingUsageRecords = [...batch, ...pendingUsageRecords]
-        pendingUsageRecordBytes = sumQueuedUsageRecordBytes(pendingUsageRecords)
         flushFailureCount += 1
         logger.error(errorLogFields(error, {
           event: 'usage_record_queue_flush_failed',
@@ -135,6 +135,10 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
 
 export function flushAllUsageRecordQueue(): void {
   flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+}
+
+export function flushUsageRecordQueueForShutdown(): void {
+  flushUsageRecordQueue({ drain: true, retryOnFailure: false, maxBatches: usageRecordShutdownFlushMaxBatches })
 }
 
 export function getUsageRecordQueueRuntime(): {
@@ -163,16 +167,7 @@ export function installUsageRecordQueueShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('beforeExit', flushAllUsageRecordQueue)
-  process.once('exit', flushAllUsageRecordQueue)
-
-  process.once('SIGINT', () => exitAfterUsageRecordFlush(0))
-  process.once('SIGTERM', () => exitAfterUsageRecordFlush(0))
-}
-
-function exitAfterUsageRecordFlush(exitCode: number): never {
-  flushAllUsageRecordQueue()
-  process.exit(exitCode)
+  process.once('beforeExit', flushUsageRecordQueueForShutdown)
 }
 
 function scheduleUsageRecordFlush(delayMs: number): void {
@@ -426,7 +421,7 @@ function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
 }
 
-function takeUsageRecordFlushBatch(maxItems: number, maxBytes: number): QueuedUsageRecord[] {
+function peekUsageRecordFlushBatch(maxItems: number, maxBytes: number): { batch: QueuedUsageRecord[]; bytes: number } {
   const itemLimit = Math.max(1, Math.trunc(maxItems))
   const byteLimit = Math.max(1, Math.trunc(maxBytes))
   let count = 0
@@ -440,17 +435,17 @@ function takeUsageRecordFlushBatch(maxItems: number, maxBytes: number): QueuedUs
     bytes += next.bytes
     count += 1
   }
-  const batch = pendingUsageRecords.splice(0, count)
+  const batch = pendingUsageRecords.slice(0, count)
+  return { batch, bytes }
+}
+
+function removeUsageRecordFlushBatch(count: number, bytes: number): void {
+  pendingUsageRecords.splice(0, count)
   pendingUsageRecordBytes = Math.max(0, pendingUsageRecordBytes - bytes)
-  return batch
 }
 
 function estimateUsageRecordBytes(input: UsageRecordInput): number {
   return estimateJsonLikeBytes(input, { maxBytes: usageRecordEstimateMaxBytes }) + 256
-}
-
-function sumQueuedUsageRecordBytes(items: QueuedUsageRecord[]): number {
-  return items.reduce((sum, item) => sum + item.bytes, 0)
 }
 
 function recordUsageRecordLocalDrop(item: QueuedUsageRecord, reason: 'overflow' | 'oversize'): void {

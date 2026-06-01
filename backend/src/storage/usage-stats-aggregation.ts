@@ -55,7 +55,7 @@ function accountAuthorizationTeamAccountId(row: UsageStatsRecordRow, lookup?: Us
 }
 
 export function shouldAggregateUsageStatsRecord(row: UsageStatsRecordRow): boolean {
-  return (row.traffic_source ?? 'gateway') !== 'cooldown_retest'
+  return row.traffic_source !== 'cooldown_retest'
 }
 
 export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): UsageStatsAccumulator {

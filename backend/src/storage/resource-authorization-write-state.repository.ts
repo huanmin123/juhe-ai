@@ -16,6 +16,7 @@ import { clearResourceAuthorizationLookupCaches } from './authorization-read-loa
 import { isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
 import { loadRuntimeAuthorizationForUserGrant } from './resource-authorization-read.repository.js'
 import { maxAuthorizationExpirySweepBatchSize } from './authorization-sweep-limits.js'
+import { rememberRequestQuotaHourlyWindowsFromJson } from './request-quota-hourly-windows.repository.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { maxSystemTeamActiveGrantCount, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
 import type {
@@ -159,6 +160,7 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
       ) VALUES (?, ?, ?, ?, ?, 'use', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), input.actor, input.now, nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now)
   }
+  rememberRequestQuotaHourlyWindowsFromJson(nextLimitsJson, input.database, input.now)
   upsertResourceAuthorizationSource(input.database, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
   if (isTeamSource) {
     input.database.prepare(`
@@ -196,7 +198,7 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
     `)
     .get(instance.id, authorization.grantee_system_account_id, authorization.id) as unknown as { group_id?: string } | undefined
   if (existingBinding?.group_id && (!requestedGroupId || existingBinding.group_id === requestedGroupId)) return
-  const bindGroupId = groupIdForAuthorizationBinding(database, instance.provider_code, authorization.grantee_system_account_id, now, requestedGroupId)
+  const bindGroupId = groupIdForAuthorizationBinding(database, instance.provider_code, authorization.grantee_system_account_id, requestedGroupId)
   if (!bindGroupId) return
   if (existingBinding?.group_id && existingBinding.group_id !== bindGroupId) {
     database
@@ -216,31 +218,6 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
     `)
     .run(authorization.grantee_system_account_id, bindGroupId, instance.id, authorization.id, now, now)
   invalidateGroupAccountIdsCache(bindGroupId)
-}
-
-export function ensureAccountAuthorizationInstancesForGrantee(granteeSystemAccountId: string, database = getBusinessDatabase(), now = nowIso()): number {
-  const granteeId = granteeSystemAccountId.trim()
-  if (!granteeId) return 0
-  const rows = database
-    .prepare(`
-      SELECT *
-      FROM resource_authorizations
-      WHERE resource_type = 'account'
-        AND grantee_system_account_id = ?
-        AND status IN ('active', 'paused', 'expired')
-      ORDER BY updated_at ASC, id ASC
-    `)
-    .all(granteeId) as unknown as ResourceAuthorizationRow[]
-  let changed = 0
-  for (const authorization of rows) {
-    const instance = ensureAccountAuthorizationInstance(database, authorization, now)
-    if (!instance?.id) continue
-    changed += 1
-    if (authorization.status === 'active' && !isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) {
-      bindActiveAccountAuthorizationToGranteeGroup(database, authorization, now)
-    }
-  }
-  return changed
 }
 
 export function syncAccountAuthorizationInstanceNamesForSourceAccount(database: DatabaseSync, sourceAccountId: string, sourceName: string, providerCode: string, now = nowIso()): string[] {
@@ -281,32 +258,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
     .prepare('SELECT * FROM accounts WHERE authorization_instance_authorization_id = ? LIMIT 1')
     .get(authorization.id) as unknown as AccountRow | undefined
   if (existing) {
-    const sourceExists = existing.authorization_instance_source_account_id
-      ? true
-      : Boolean(database.prepare('SELECT id FROM accounts WHERE id = ? LIMIT 1').get(authorization.resource_id))
-    const sourceAccountId = sourceExists ? authorization.resource_id : null
-    if (
-      (sourceAccountId && !existing.authorization_instance_source_account_id)
-      || !existing.authorization_instance_owner_system_account_id
-    ) {
-      database
-        .prepare(`
-          UPDATE accounts
-          SET authorization_instance_source_account_id = CASE
-                WHEN authorization_instance_source_account_id IS NULL AND ? IS NOT NULL THEN ?
-                ELSE authorization_instance_source_account_id
-              END,
-              authorization_instance_owner_system_account_id = COALESCE(authorization_instance_owner_system_account_id, ?),
-              updated_at = ?
-          WHERE id = ?
-        `)
-        .run(sourceAccountId, sourceAccountId, authorization.resource_owner_system_account_id, now, existing.id)
-    }
-    return {
-      ...existing,
-      authorization_instance_source_account_id: existing.authorization_instance_source_account_id ?? sourceAccountId,
-      authorization_instance_owner_system_account_id: existing.authorization_instance_owner_system_account_id ?? authorization.resource_owner_system_account_id
-    }
+    return existing
   }
   const source = database
     .prepare('SELECT * FROM accounts WHERE id = ? LIMIT 1')
@@ -373,7 +325,7 @@ function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string,
   return !row?.id || row.id === exceptAccountId
 }
 
-function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, now: string, targetGroupId?: string): string | undefined {
+function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, targetGroupId?: string): string {
   if (targetGroupId) {
     const group = database
       .prepare('SELECT id, system_account_id, provider_code, enabled FROM groups WHERE id = ? LIMIT 1')
@@ -389,20 +341,15 @@ function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: st
     }
     return group.id
   }
-  return defaultGroupIdForAuthorizationBinding(database, providerCode, systemAccountId, now)
+  return defaultGroupIdForAuthorizationBinding(database, providerCode, systemAccountId)
 }
 
-function defaultGroupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, now: string): string | undefined {
+function defaultGroupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string): string {
   const existing = database
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 AND enabled = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
     .get(systemAccountId, providerCode) as unknown as { id?: string } | undefined
   if (existing?.id) return existing.id
-  if (providerCode !== 'openai') return undefined
-  const id = newId('grp')
-  database
-    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)')
-    .run(id, systemAccountId, '默认 OpenAI 分组', 'openai', '', now, now)
-  return id
+  throw new Error('目标用户缺少启用的默认分组，请按当前数据契约修复目标用户分组后再授权')
 }
 
 function hasActiveTeamAuthorizationSource(database: DatabaseSync, authorizationId: string): boolean {
@@ -679,9 +626,10 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
   const nextExpiresAt = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
     ? input.expiresAt ?? null
     : existing?.expires_at ?? null
+  const nextLimitsJson = requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
   if (existing) {
     input.database.prepare("UPDATE resource_authorization_grants SET status = 'active', remark = COALESCE(?, remark), expires_at = ?, limits_json = ?, model_policy_json = COALESCE(?, model_policy_json), revoked_by = NULL, revoked_at = NULL, updated_at = ? WHERE id = ?")
-      .run(input.remark ?? null, nextExpiresAt, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, id)
+      .run(input.remark ?? null, nextExpiresAt, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), input.now, id)
   } else {
     input.database.prepare("INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
       .run(
@@ -694,13 +642,14 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
         input.granteeType === 'team' ? input.granteeId : null,
         input.remark ?? null,
         nextExpiresAt,
-        requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)),
+        nextLimitsJson,
         jsonObjectOrNull(input.modelPolicy),
         input.actor,
         input.now,
         input.now
       )
   }
+  rememberRequestQuotaHourlyWindowsFromJson(nextLimitsJson, input.database, input.now)
   const row = input.database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(id) as unknown as ResourceAuthorizationGrantRow | undefined
   if (!row) throw new Error('创建资源授权失败')
   invalidateAuthorizationLookupCaches()
@@ -724,6 +673,7 @@ export function returnResourceAuthorizationGrant(grant: ResourceAuthorizationGra
 }
 
 export function syncResourceAuthorizationGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
+  rememberRequestQuotaHourlyWindowsFromJson(grant.limits_json, database, now)
   if (grant.grantee_type === 'system_account') {
     syncUserGrantRuntime(grant, actor, database, now)
     return

@@ -121,7 +121,7 @@ function applyAccountRuntimeAvailability(
   if (!runtimeAvailability) {
     return account
   }
-  const runtimeStatus = runtimeAvailability[accountRuntimeAvailabilityKey(account)] ?? runtimeAvailability[account.id]
+  const runtimeStatus = runtimeAvailability[accountRuntimeAvailabilityKey(account)]
   return runtimeStatus
     ? {
         ...account,

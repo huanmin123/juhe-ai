@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { maxAccountExpirySweepBatchSize } from '../../storage/account-sweep-limits.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -46,6 +47,30 @@ try {
   const wildcardNeighbor = createGuardAccount('percentXliteral 账户', 'sk-account-list-query-guard-percent-neighbor', '通配符邻近值', matchedGroup.id)
   const disabledStatusAccount = createGuardAccount('多状态筛选停用账户', 'sk-account-list-query-guard-disabled-status', '停用状态筛选', matchedGroup.id, 'disabled')
   const errorStatusAccount = createGuardAccount('多状态筛选异常账户', 'sk-account-list-query-guard-error-status', '异常状态筛选', matchedGroup.id, 'error')
+  const grantee = repositories.createSystemAccount({
+    username: 'account_list_query_guard_grantee',
+    displayName: '账户列表防护被授权人',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const granteeTargetGroup = repositories.createGroup({
+    name: '账户列表防护被授权目标分组',
+    providerCode: 'openai'
+  }, granteeAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: matchedByName.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeTargetGroup.id
+  }, access)
+  const authorizedInstance = databaseModule.getBusinessDatabase()
+    .prepare('SELECT id FROM accounts WHERE authorization_instance_source_account_id = ? AND system_account_id = ? LIMIT 1')
+    .get(matchedByName.id, grantee.id) as unknown as { id?: string } | undefined
+  assert(authorizedInstance?.id, '账号授权应在创建授权时物化被授权实例')
 
   const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
@@ -158,7 +183,10 @@ try {
     assertBusinessIndexMissing(indexName)
   }
 
-  console.log('AI 账户列表查询防护回归通过：搜索仅按账户名称精确/前缀匹配，分组使用独立筛选')
+  assertNoAuthorizationInstanceBackfillScan(granteeAccess, authorizedInstance.id)
+  assertExpiredAccountCleanupIsBoundedAndIndexed(access)
+
+  console.log('AI 账户列表查询防护回归通过：搜索仅按账户名称精确/前缀匹配，分组使用独立筛选，请求路径不再按被授权人全量回扫授权实例或无界清理过期账号')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -201,4 +229,157 @@ function assertBusinessIndexMissing(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, undefined, `业务库不应创建长文本搜索索引 ${indexName}`)
+}
+
+function assertNoAuthorizationInstanceBackfillScan(access: { systemAccountId: string; role: 'user' }, accountId: string): void {
+  const database = databaseModule.getBusinessDatabase()
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const capturedSql: string[] = []
+  database.prepare = ((sql: string) => {
+    if (
+      /\bFROM\s+resource_authorizations\b/i.test(sql)
+      && /\bresource_type\s*=\s*'account'/i.test(sql)
+      && /\bgrantee_system_account_id\s*=\s*\?/i.test(sql)
+      && /\bORDER\s+BY\s+updated_at\s+ASC,\s+id\s+ASC\b/i.test(sql)
+    ) {
+      capturedSql.push(sql)
+    }
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+  try {
+    const page = repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
+    assert(page.items.some((item) => item.id === accountId), '账户列表仍应返回已物化的授权实例')
+    const options = repositories.listAccountOptions(access, { limit: 20 })
+    assert(options.some((item) => item.id === accountId), '账户 options 仍应返回已物化的授权实例')
+    const detail = repositories.findAccountSummary(accountId, access)
+    assert.equal(detail?.id, accountId, '账户详情仍应读取已物化的授权实例')
+  } finally {
+    database.prepare = originalPrepare
+  }
+  assert.equal(capturedSql.length, 0, `账户读取请求路径不应按被授权人全量扫描账号授权并补实例，实际 SQL：${capturedSql.join('\n')}`)
+}
+
+function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountId: string; role: 'admin' }): void {
+  assertAccountExpirySweepQueryPlan()
+  assertAccountExpirySweepQueryPlan(access.systemAccountId)
+
+  const group = repositories.createGroup({
+    name: '过期账号批量停用防护分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  const accountIds: string[] = []
+  for (let index = 0; index < maxAccountExpirySweepBatchSize + 1; index += 1) {
+    const account = repositories.createAccount({
+      providerCode: 'openai',
+      name: `过期账号批量停用防护 ${String(index).padStart(2, '0')}`,
+      type: 'api_key',
+      credentials: {
+        api_key: `sk-account-expiry-batch-guard-${index}`,
+        base_url: 'https://api.openai.com/v1'
+      },
+      groupId: group.id,
+      status: 'active'
+    }, access)
+    accountIds.push(account.id)
+  }
+  const expiredAt = new Date(Date.now() - 60_000).toISOString()
+  databaseModule.getBusinessDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET status = 'temporary_unavailable',
+          schedulable = 1,
+          cooldown_until = ?,
+          account_expires_at = ?,
+          updated_at = ?
+      WHERE id IN (${placeholders(accountIds.length)})
+    `)
+    .run(expiredAt, expiredAt, expiredAt, ...accountIds)
+
+  const database = databaseModule.getBusinessDatabase()
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const capturedUpdates: string[] = []
+  database.prepare = ((sql: string) => {
+    if (/\bUPDATE\s+accounts\b/i.test(sql)) {
+      capturedUpdates.push(sql)
+    }
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+  try {
+    repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
+  } finally {
+    database.prepare = originalPrepare
+  }
+
+  assert(capturedUpdates.length >= 1, '过期账号清理回归应捕获 accounts 更新 SQL')
+  for (const sql of capturedUpdates) {
+    assert(/\bWHERE\s+id\s+IN\s*\(/i.test(sql), `账户读取请求路径只能按已选 ID 小批量更新过期账号，实际 SQL：${sql}`)
+    assert(!/\bWHERE\s+account_expires_at\s+IS\s+NOT\s+NULL\b/i.test(sql), `账户读取请求路径不应直接执行按到期条件无界 UPDATE，实际 SQL：${sql}`)
+  }
+  assert.equal(expiredDisabledCount(accountIds), maxAccountExpirySweepBatchSize, '单次账户读取请求只应清理固定批量过期账号')
+  assert.equal(expiredPendingCount(accountIds), 1, '超过批量窗口的过期账号应留给后续请求或后台轮次继续处理')
+}
+
+function assertAccountExpirySweepQueryPlan(systemAccountId?: string): void {
+  const scoped = Boolean(systemAccountId)
+  const details = explainBusinessQuery(`
+    SELECT id
+    FROM accounts
+    WHERE account_expires_at IS NOT NULL
+      AND account_expires_at <= ?
+      AND (
+        status <> 'disabled'
+        OR schedulable <> 0
+        OR cooldown_until IS NOT NULL
+        OR last_error_code IS NOT NULL
+        OR last_error_message IS NULL
+      )${scoped ? ' AND system_account_id = ?' : ''}
+    ORDER BY account_expires_at ASC, updated_at ASC, id ASC
+    LIMIT ?
+  `, scoped
+    ? ['2026-01-01T00:00:00.000Z', systemAccountId as string, maxAccountExpirySweepBatchSize]
+    : ['2026-01-01T00:00:00.000Z', maxAccountExpirySweepBatchSize])
+  const indexName = scoped ? 'idx_accounts_owner_expiry_sweep' : 'idx_accounts_expiry_sweep'
+  assert(details.includes(indexName), `过期账号清理应走到期时间部分索引 ${indexName}，实际计划：${details}`)
+  assert(!details.includes('SCAN accounts'), `过期账号清理不能全表扫描 accounts，实际计划：${details}`)
+  assert(!details.includes('USE TEMP B-TREE FOR ORDER BY'), `过期账号清理不应为排序创建临时 B-TREE，实际计划：${details}`)
+}
+
+function expiredDisabledCount(accountIds: string[]): number {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare(`
+      SELECT COUNT(*) AS count
+      FROM accounts
+      WHERE id IN (${placeholders(accountIds.length)})
+        AND status = 'disabled'
+        AND schedulable = 0
+        AND last_error_code = 'account_expired'
+    `)
+    .get(...accountIds) as unknown as { count?: number } | undefined
+  return Number(row?.count ?? 0)
+}
+
+function expiredPendingCount(accountIds: string[]): number {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare(`
+      SELECT COUNT(*) AS count
+      FROM accounts
+      WHERE id IN (${placeholders(accountIds.length)})
+        AND status = 'temporary_unavailable'
+        AND account_expires_at IS NOT NULL
+    `)
+    .get(...accountIds) as unknown as { count?: number } | undefined
+  return Number(row?.count ?? 0)
+}
+
+function explainBusinessQuery(sql: string, params: SQLInputValue[]): string {
+  return databaseModule.getBusinessDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => '?').join(', ')
 }

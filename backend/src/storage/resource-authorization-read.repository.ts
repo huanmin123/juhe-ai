@@ -386,7 +386,7 @@ function loadResourceAuthorizationGrantTeamReportUsageSummaries(
   const statement = isRange
     ? database.prepare(`
       SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd AS cache_read_cost, total_cost_usd AS total_cost, last_used_at
+        cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
       FROM authorization_team_usage_range_windows
       WHERE system_account_id = ?
         AND start_date = ?
@@ -398,7 +398,7 @@ function loadResourceAuthorizationGrantTeamReportUsageSummaries(
     `)
     : database.prepare(`
       SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd AS cache_read_cost, total_cost_usd AS total_cost, last_used_at
+        cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
       FROM authorization_team_usage_summary_daily
       WHERE system_account_id = ?
         AND stat_date = ?

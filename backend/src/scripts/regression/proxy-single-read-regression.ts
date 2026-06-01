@@ -58,6 +58,57 @@ try {
   })
   assert.equal(tested?.testStatus, 'passed', '更新代理检测状态应通过单条读取返回目标代理摘要')
   assert.equal(tested?.latencyMs, 12, '更新代理检测状态应保留延迟')
+  assert.throws(
+    () => repositories.updateProxyTestState(targetId, { testStatus: 'ok', latencyMs: 15, lastTestMessage: '非法状态' }),
+    /代理检测状态无效/,
+    '代理检测状态不应接受历史宽松字符串'
+  )
+  assert.throws(
+    () => repositories.updateProxyTestState(targetId, { testStatus: 'passed', latencyMs: -1, lastTestMessage: '非法延迟' }),
+    /代理检测延迟必须是非负整数/,
+    '代理检测延迟不应把负数归零'
+  )
+  assert.throws(
+    () => repositories.updateProxyTestState(targetId, { testStatus: 'passed', latencyMs: 12.8, lastTestMessage: '非法延迟' }),
+    /代理检测延迟必须是非负整数/,
+    '代理检测延迟不应截断小数'
+  )
+  const afterInvalidTestState = repositories.findProxy(targetId)
+  assert.equal(afterInvalidTestState?.testStatus, 'passed', '非法检测状态不应改变已保存状态')
+  assert.equal(afterInvalidTestState?.latencyMs, 12, '非法检测延迟不应改变已保存延迟')
+
+  const blankTextTestState = repositories.updateProxyTestState(targetId, {
+    testStatus: 'warning',
+    latencyMs: 0,
+    outboundIp: '   ',
+    outboundRegion: '   ',
+    lastTestMessage: '   '
+  })
+  assert.equal(blankTextTestState?.outboundIp, undefined, '空白出口 IP 不应落库')
+  assert.equal(blankTextTestState?.outboundRegion, undefined, '空白出口地区不应落库')
+  assert.equal(blankTextTestState?.lastTestMessage, undefined, '空白检测消息不应落库')
+
+  repositories.updateProxy(targetId, { username: 'proxy-user', password: ' p@ss ' })
+  assert.equal(
+    repositories.getProxyTestConfig(targetId)?.proxyUrl,
+    'http://proxy-user:%20p%40ss%20@127.0.0.1:10000',
+    '代理密码作为凭据写入时应保留前后空格'
+  )
+  assert.throws(
+    () => repositories.updateProxy(targetId, { password: '   ' }),
+    /代理密码不能为空/,
+    '纯空白代理密码不应被当成清空或空对象写入'
+  )
+  assert.throws(
+    () => repositories.updateProxy(targetId, { password: undefined }),
+    /代理密码不能为空/,
+    '显式 undefined 代理密码不应写成空凭据对象'
+  )
+  assert.equal(
+    repositories.getProxyTestConfig(targetId)?.proxyUrl,
+    'http://proxy-user:%20p%40ss%20@127.0.0.1:10000',
+    '非法代理密码更新不应覆盖旧密码'
+  )
 
   assert.equal(repositories.deleteProxy(targetId), true, '删除代理应成功')
   assert.equal(repositories.findProxy(targetId), undefined, '删除后按 ID 单条读取应找不到代理')

@@ -154,6 +154,8 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import {
   defaultGlobalSettings,
   defaultSystemSettings,
+  buildGlobalSettingsPayload,
+  buildSystemSettingsPayload,
   normalizeGlobalSettings,
   normalizeSystemSettings,
   type GlobalForm,
@@ -183,7 +185,7 @@ async function loadSettings() {
 async function saveGlobalSettings() {
   savingGlobal.value = true
   try {
-    const next = await api.settings.updateGlobal({ ...normalizeGlobalSettings(globalForm) })
+    const next = await api.settings.updateGlobal(buildGlobalSettingsPayload(globalForm))
     Object.assign(globalForm, normalizeGlobalSettings(next))
     applyAppBrand(next)
     message.success('全局配置已保存')
@@ -198,7 +200,7 @@ async function saveGlobalSettings() {
 async function saveSystemSettings() {
   savingSystem.value = true
   try {
-    const next = await api.settings.update({ ...normalizeSystemSettings(systemForm) })
+    const next = await api.settings.update(buildSystemSettingsPayload(systemForm))
     Object.assign(systemForm, normalizeSystemSettings(next))
     message.success('系统设置已保存')
   } catch (error) {

@@ -24,7 +24,7 @@ import {
   listRuntimeLogs
 } from '../../storage/runtime-logs.repository.js'
 import {
-  listActiveClientIpPolicies,
+  findActiveClientIpPolicyByHash,
   recordClientIpPolicyHits
 } from '../../storage/client-ip-stats.repository.js'
 import { listActiveStreamInterceptPoliciesForGateway } from '../../storage/stream-intercept-policy.repository.js'
@@ -187,8 +187,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       clearApiKeyQuotaCache()
       clearAuthorizationQuotaCache()
       return { cleared: true }
-    case 'list_active_client_ip_policies':
-      return listActiveClientIpPolicies()
+    case 'find_active_client_ip_policy':
+      return findActiveClientIpPolicyByHash(operation.ipHash)
     case 'list_active_stream_intercept_policies':
       return listActiveStreamInterceptPoliciesForGateway()
     case 'record_client_ip_policy_hits':
@@ -271,27 +271,22 @@ function findOpenAIOAuthAccountForRefresh(accountId: string): unknown {
 
 function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read_gateway_runtime' }>): DbServiceGatewayRuntime {
   const settings = readCachedGatewaySettings()
-  const clientIpPolicies = listActiveClientIpPolicies()
-  const streamInterceptPolicies = listActiveStreamInterceptPoliciesForGateway()
   const apiKey = validateGatewayApiKey(operation.key)
   if (!apiKey) {
     return {
       settings,
-      accounts: [],
-      clientIpPolicies,
-      streamInterceptPolicies
+      accounts: []
     }
   }
   if (isGatewayApiKeyScheduleInactive(apiKey)) {
     return {
       apiKey,
       settings,
-      accounts: [],
-      clientIpPolicies,
-      streamInterceptPolicies
+      accounts: []
     }
   }
 
+  const streamInterceptPolicies = listActiveStreamInterceptPoliciesForGateway()
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
   const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
   apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id
@@ -324,7 +319,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       groupAccess,
       accounts,
       hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
-      clientIpPolicies,
       streamInterceptPolicies
     }
   }
@@ -334,7 +328,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     settings,
     accounts: [],
     hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
-    clientIpPolicies,
     streamInterceptPolicies
   }
 }

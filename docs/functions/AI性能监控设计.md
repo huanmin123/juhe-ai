@@ -19,8 +19,8 @@
 | --- | --- | --- | --- |
 | 用户侧 | `/my-ai-performance` | `GET /__aisys__/api/my-stats/ai-performance` | 当前登录系统账户可使用的 AI 账户：自有账户、账号授权实例、授权分组内来源账户 |
 | 用户侧账户选项 | `/my-ai-performance` | `GET /__aisys__/api/my-stats/ai-performance/accounts` | 当前登录系统账户可使用 AI 账户的基础选项 |
-| 管理侧 | `/ai-performance` | `GET /__aisys__/api/stats/ai-performance` | 全部用户或指定系统账户名下的 AI 账户行 |
-| 管理侧账户选项 | `/ai-performance` | `GET /__aisys__/api/stats/ai-performance/accounts` | 全部用户或指定系统账户名下的 AI 账户行基础选项 |
+| 管理侧 | `/ai-performance` | `GET /__aisys__/api/stats/ai-performance` | 全部用户全局账户缓存，或指定系统账户可使用的 AI 账户 |
+| 管理侧账户选项 | `/ai-performance` | `GET /__aisys__/api/stats/ai-performance/accounts` | 全部用户全局账户基础选项，或指定系统账户可使用 AI 账户的基础选项 |
 
 权限规则：
 

@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import type { SQLInputValue } from 'node:sqlite'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -51,6 +52,7 @@ try {
   databaseModule.getBusinessDatabase()
     .prepare("UPDATE resource_authorization_grants SET expires_at = '2026-01-01T00:00:00.000Z' WHERE status = 'active'")
     .run()
+  assertExpirySweepQueryPlan()
 
   const firstSweep = repositories.expireDueResourceAuthorizations()
   assert.equal(firstSweep, maxAuthorizationExpirySweepBatchSize, '授权过期扫描单次只处理固定批量')
@@ -75,4 +77,27 @@ function expiredGrantCount(): number {
     .prepare("SELECT COUNT(*) AS count FROM resource_authorization_grants WHERE status = 'expired'")
     .get() as unknown as { count?: number } | undefined
   return Number(row?.count ?? 0)
+}
+
+function assertExpirySweepQueryPlan(): void {
+  const details = explainBusinessQuery(`
+    SELECT *
+    FROM resource_authorization_grants
+    WHERE status IN ('active', 'paused')
+      AND expires_at IS NOT NULL
+      AND expires_at <= ?
+    ORDER BY expires_at ASC, updated_at ASC, id ASC
+    LIMIT ?
+  `, ['2026-01-01T00:00:00.000Z', maxAuthorizationExpirySweepBatchSize])
+  assert(details.includes('idx_resource_authorization_grants_expiry_sweep'), `授权过期扫描应走 expires_at 部分索引，实际计划：${details}`)
+  assert(!details.includes('SCAN resource_authorization_grants'), `授权过期扫描不能全表扫描 grant 表，实际计划：${details}`)
+  assert(!details.includes('USE TEMP B-TREE FOR ORDER BY'), `授权过期扫描不应为排序创建临时 B-TREE，实际计划：${details}`)
+}
+
+function explainBusinessQuery(sql: string, params: SQLInputValue[]): string {
+  return databaseModule.getBusinessDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
 }

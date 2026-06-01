@@ -30,7 +30,7 @@ export interface UsageRecordSummary {
   systemAccountId?: string
   systemAccountName?: string
   traceId: string
-  trafficSource: UsageRecordTrafficSource
+  trafficSource?: UsageRecordTrafficSource
   clientIp?: string
   apiKeyId?: string
   apiKeyName?: string
@@ -99,7 +99,7 @@ export interface UsageRecordInput {
   id?: string
   systemAccountId?: string
   traceId: string
-  trafficSource?: UsageRecordTrafficSource
+  trafficSource: UsageRecordTrafficSource
   clientIp?: string
   apiKeyId?: string
   groupId?: string
@@ -220,7 +220,7 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
       FROM usage_records
       WHERE ${clauses.join(' AND ')}
         AND api_key_id IS NOT NULL
-        AND COALESCE(traffic_source, 'gateway') = 'gateway'
+        AND traffic_source = 'gateway'
         AND provider_code = 'openai'
         AND endpoint IS NOT NULL
         AND TRIM(endpoint) <> ''
@@ -637,6 +637,9 @@ const accountLastUsedWriteCache = new Map<string, string>()
 const recentOpenAIRequestShapeLookbackDays = 7
 
 function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSource {
-  return value === 'manual_account_test' || value === 'cooldown_retest' ? value : 'gateway'
+  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest') {
+    return value
+  }
+  throw new Error('使用记录来源无效')
 }
 

@@ -4,6 +4,7 @@ import {
   evaluateApiKeyAvailabilitySchedule,
   parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
+import { maxApiKeyGroupBindings } from './api-key-group-binding-limits.js'
 import {
   normalizeApiKeyGroupBindingWeight,
   normalizeApiKeyGroupRouteStrategy
@@ -50,8 +51,15 @@ const gatewayApiKeyCache = createAppCache<string, GatewayApiKeyCacheEntry>({
   name: 'gateway:api-key-validation',
   max: 10000,
   ttlMs: GATEWAY_API_KEY_CACHE_TTL_MS,
-  updateAgeOnGet: true
+  updateAgeOnGet: true,
+  dispose: (entry, keyHash) => {
+    removeGatewayApiKeyCacheIndex(entry.row.id, keyHash)
+  },
+  onClear: () => {
+    gatewayApiKeyCacheKeysById.clear()
+  }
 })
+const gatewayApiKeyCacheKeysById = new Map<string, Set<string>>()
 
 export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined {
   if (!key.startsWith('sk-')) {
@@ -101,7 +109,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     return undefined
   }
   row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
-  gatewayApiKeyCache.set(keyHash, {
+  setGatewayApiKeyCacheEntry(keyHash, {
     row,
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS,
     scheduleRevalidateAtMs: row.availability_schedule_json
@@ -152,11 +160,12 @@ export function clearGatewayApiKeyValidationCache(): void {
 }
 
 export function invalidateGatewayApiKeyCacheById(id: string): void {
-  for (const [keyHash, entry] of gatewayApiKeyCache.entries()) {
-    if (entry.row.id === id) {
-      gatewayApiKeyCache.delete(keyHash)
-    }
+  const keyHashes = gatewayApiKeyCacheKeysById.get(id)
+  if (!keyHashes) return
+  for (const keyHash of [...keyHashes]) {
+    gatewayApiKeyCache.delete(keyHash)
   }
+  gatewayApiKeyCacheKeysById.delete(id)
 }
 
 function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boolean {
@@ -193,6 +202,30 @@ function applyGatewayApiKeyScheduleState(row: GatewayApiKeyRow, now = Date.now()
   row.availability_schedule_active = decision.allowed ? 1 : 0
 }
 
+function setGatewayApiKeyCacheEntry(keyHash: string, entry: GatewayApiKeyCacheEntry, options?: { ttlMs?: number }): void {
+  const previous = gatewayApiKeyCache.get(keyHash)
+  if (previous) {
+    removeGatewayApiKeyCacheIndex(previous.row.id, keyHash)
+  }
+  gatewayApiKeyCache.set(keyHash, entry, options)
+  addGatewayApiKeyCacheIndex(entry.row.id, keyHash)
+}
+
+function addGatewayApiKeyCacheIndex(apiKeyId: string, keyHash: string): void {
+  const keyHashes = gatewayApiKeyCacheKeysById.get(apiKeyId) ?? new Set<string>()
+  keyHashes.add(keyHash)
+  gatewayApiKeyCacheKeysById.set(apiKeyId, keyHashes)
+}
+
+function removeGatewayApiKeyCacheIndex(apiKeyId: string, keyHash: string): void {
+  const keyHashes = gatewayApiKeyCacheKeysById.get(apiKeyId)
+  if (!keyHashes) return
+  keyHashes.delete(keyHash)
+  if (!keyHashes.size) {
+    gatewayApiKeyCacheKeysById.delete(apiKeyId)
+  }
+}
+
 export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAccountId: string): GatewayApiKeyGroupBindingRow[] {
   return getBusinessDatabase().prepare(`
     SELECT
@@ -214,7 +247,8 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAcc
       AND api_key_group_bindings.status = 'active'
       AND groups.enabled = 1
     ORDER BY api_key_group_bindings.priority ASC, api_key_group_bindings.created_at ASC, api_key_group_bindings.id ASC
-  `).all(apiKeyId, systemAccountId)
+    LIMIT ?
+  `).all(apiKeyId, systemAccountId, maxApiKeyGroupBindings)
     .map((row) => ({
       ...(row as unknown as GatewayApiKeyGroupBindingRow),
       weight: normalizeApiKeyGroupBindingWeight((row as unknown as GatewayApiKeyGroupBindingRow).weight)

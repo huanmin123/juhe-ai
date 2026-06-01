@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -34,6 +34,8 @@ interface DirtyRow {
 }
 
 try {
+  assertSourceGuards()
+
   const owner = repositories.createSystemAccount({
     username: 'group_stats_dirty_owner',
     displayName: '分组统计脏缓存所有者',
@@ -172,8 +174,13 @@ try {
   }, ownerAccess)
 
   assert.deepEqual(dirtyRows(), [{ group_id: '__all__', reason: 'resource_authorization_created' }], '授权这类全量影响写路径只能写 1 条哨兵，不能按分组展开')
-  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应能消费全量哨兵刷新统计缓存')
-  assert.deepEqual(dirtyRows(), [], '全量哨兵刷新后应被清理')
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(10), 1, 'worker 应能按固定批次消费全量哨兵')
+  const cursorDirtyRows = dirtyRows()
+  assert.equal(cursorDirtyRows.length, 1, '全量哨兵未完成时应保留游标等待下一轮')
+  assert.equal(cursorDirtyRows[0].group_id, '__all__')
+  assert.match(cursorDirtyRows[0].reason ?? '', /^all_cursor:/, '全量哨兵应记录已处理分组游标')
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 下一轮应继续消费全量哨兵剩余分组')
+  assert.deepEqual(dirtyRows(), [], '全量哨兵全部刷新后应被清理')
 
   const expireLockGroup = repositories.createGroup({
     name: '脏缓存授权过期锁库分组',
@@ -239,6 +246,14 @@ function dirtyRows(): DirtyRow[] {
     .prepare('SELECT group_id, reason FROM group_account_stats_dirty ORDER BY group_id')
     .all() as unknown as DirtyRow[]
   return rows.map((row) => ({ group_id: row.group_id, reason: row.reason }))
+}
+
+function assertSourceGuards(): void {
+  const source = readFileSync(resolve('src/storage/usage-stats.repository.ts'), 'utf8')
+  assert.doesNotMatch(source, /SELECT id, system_account_id FROM groups'\)\.all\(\)/, '分组统计刷新不应一次性加载全部分组')
+  assert.match(source, /GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX/, '全量分组统计刷新应使用哨兵游标')
+  assert.match(source, /loadGroupAccountStatsGroupsPage/, '全量分组统计刷新应按固定页读取分组')
+  assert.match(source, /ORDER BY id ASC\s+LIMIT \?/, '全量分组统计刷新读取分组必须有固定 LIMIT')
 }
 
 function accountRow(accountId: string): { status: string } | undefined {

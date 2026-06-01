@@ -59,7 +59,7 @@
             </div>
             <div>
               <dt>defaults</dt>
-              <dd>给账户提供 providerCode、type、baseUrl、groupName 等默认值</dd>
+              <dd>给账户提供 providerCode、type、groupName 等默认值</dd>
             </div>
             <div>
               <dt>proxies</dt>
@@ -71,7 +71,7 @@
             </div>
           </dl>
           <a-typography-paragraph class="ai-prompt" copyable>
-            请把我提供的账号数据转换为 juhe-ai-account-import v1 JSON。只输出合法 JSON，不要解释；providerCode 默认 openai；API Key 账号使用 type 为 api_key 并写入 credentials.api_key；OAuth 账号使用 type 为 oauth 并保留 refresh_token、access_token、id_token；没有 base_url 时使用 https://api.openai.com/v1；代理放入 proxies 并用 proxyRef 引用；不确定的信息写入 notes。
+            请把我提供的账号数据转换为 juhe-ai-account-import v1 JSON。只输出合法 JSON，不要解释；providerCode 默认 openai；API Key 账号使用 type 为 api_key 并写入 credentials.api_key 和 credentials.base_url；OAuth 账号使用 type 为 oauth 并保留 refresh_token、access_token、id_token、account_id、email 和 credentials.base_url；每个 credentials 都必须显式写 base_url；代理放入 proxies 并用 proxyRef 引用；不确定的信息写入 notes。
           </a-typography-paragraph>
         </section>
       </div>
@@ -208,7 +208,6 @@ const importTemplate = JSON.stringify({
     providerCode: 'openai',
     type: 'api_key',
     status: 'active',
-    baseUrl: 'https://api.openai.com/v1',
     groupName: '默认 OpenAI 分组',
     concurrencyLimit: 3,
     priority: 50

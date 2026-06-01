@@ -153,7 +153,7 @@ function buildUsageRecordFiltersForColumns(access: AccessScope | undefined, opti
   }
   const trafficSource = options?.trafficSource
   if (trafficSource) {
-    clauses.push(`COALESCE(${columns.trafficSource}, 'gateway') = ?`)
+    clauses.push(`${columns.trafficSource} = ?`)
     params.push(trafficSource)
   }
   return {

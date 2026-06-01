@@ -114,6 +114,14 @@ async function main(): Promise<void> {
       expiresAt: '2026-06-01T00:01:00'
     })
     assert(Boolean(expiringApiKey.expiresAt), '创建 API Key 时应保存过期时间')
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '非法过期时间回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      expiresAt: 'not-a-date'
+    }, 'API Key 过期时间必须是有效时间字符串')
+    await assertPatchBadRequestMessage(baseUrl, adminCookie, expiringApiKey.id, {
+      expiresAt: 'not-a-date'
+    }, 'API Key 过期时间必须是有效时间字符串')
     const clearedExpiringApiKey = await patchEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys/${expiringApiKey.id}`, adminCookie, {
       expiresAt: null
     })
@@ -124,6 +132,7 @@ async function main(): Promise<void> {
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
+        mode: 'allow_windows',
         timezone: 'Asia/Shanghai',
         windows: [
           { daysOfWeek: [1], start: '22:00', end: '22:00' }
@@ -136,6 +145,7 @@ async function main(): Promise<void> {
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
+        mode: 'allow_windows',
         timezone: 'Asia/Shanghai',
         windows: [
           { daysOfWeek: [1, 9], start: '22:00', end: '23:55' }
@@ -143,11 +153,64 @@ async function main(): Promise<void> {
       }
     }, 'API Key 自动启停计划重复日期无效')
 
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '缺失自动启停模式回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      availabilitySchedule: {
+        enabled: true,
+        timezone: 'Asia/Shanghai',
+        windows: [
+          { daysOfWeek: [1], start: '22:00', end: '23:55' }
+        ]
+      }
+    }, 'API Key 自动启停计划模式必须为 allow_windows')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '非法自动启停模式回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      availabilitySchedule: {
+        enabled: true,
+        mode: 'legacy_windows',
+        timezone: 'Asia/Shanghai',
+        windows: [
+          { daysOfWeek: [1], start: '22:00', end: '23:55' }
+        ]
+      }
+    }, 'API Key 自动启停计划模式必须为 allow_windows')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '空时区自动启停回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      availabilitySchedule: {
+        enabled: true,
+        mode: 'allow_windows',
+        timezone: '',
+        windows: [
+          { daysOfWeek: [1], start: '22:00', end: '23:55' }
+        ]
+      }
+    }, 'API Key 自动启停计划时区不能为空')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '空允许例外自动启停回归 Key',
+      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      availabilitySchedule: {
+        enabled: true,
+        mode: 'allow_windows',
+        timezone: 'Asia/Shanghai',
+        windows: [
+          { daysOfWeek: [1], start: '22:00', end: '23:55' }
+        ],
+        exceptions: [{ date: '2026-06-01', action: 'allow' }]
+      }
+    }, 'API Key 自动启停计划允许例外至少需要一个允许时段')
+
     const scheduleApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '自动启停计划清空回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
+        mode: 'allow_windows',
         windows: [
           { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
         ]
@@ -160,7 +223,7 @@ async function main(): Promise<void> {
     })
     assert(!clearedScheduleApiKey.availabilitySchedule, '更新 API Key 应支持 availabilitySchedule: null 清空自动启停计划')
 
-    console.log('API Key 路由校验回归通过：创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法自动启停时段、非法星期、自动启停清空和清空过期时间均符合预期')
+    console.log('API Key 路由校验回归通过：创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法过期时间、非法自动启停模式、非法时段、非法星期、空时区、非法例外、自动启停清空和清空过期时间均符合预期')
   } finally {
     operationLogQueue.flushAllOperationLogQueue()
     await closeServer(appServer)

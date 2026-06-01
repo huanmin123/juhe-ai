@@ -32,6 +32,8 @@ const defaultProcessingTtlMs = 120_000
 const defaultSucceededTtlMs = 60_000
 const defaultFailedTtlMs = 10_000
 const maxEntries = 5_000
+const deduplicationCleanupIntervalMs = 30_000
+const deduplicationCleanupBatchSize = 128
 
 class OperationDeduplicationService {
   private readonly entries = new Map<string, DeduplicationEntry>()
@@ -53,8 +55,9 @@ class OperationDeduplicationService {
       startedAt: now,
       expiresAt: now + (input.processingTtlMs ?? defaultProcessingTtlMs)
     }
+    this.entries.delete(input.key)
     this.entries.set(input.key, entry)
-    this.trimIfNeeded(now)
+    this.trimIfNeeded(now, input.key)
     return { claimed: true, entry }
   }
 
@@ -77,40 +80,43 @@ class OperationDeduplicationService {
       return
     }
 
-    for (const [key, entry] of this.entries) {
-      if (entry.expiresAt <= now) {
-        this.entries.delete(key)
-      }
-    }
-    this.nextCleanupAt = now + 30_000
+    this.cleanupExpiredEntries(now, deduplicationCleanupBatchSize)
+    this.nextCleanupAt = now + deduplicationCleanupIntervalMs
   }
 
-  private trimIfNeeded(now: number): void {
+  private cleanupExpiredEntries(now: number, limit: number): void {
+    let inspected = 0
+    while (inspected < limit) {
+      const nextEntry = this.entries.entries().next()
+      if (nextEntry.done) break
+
+      const [key, entry] = nextEntry.value
+      this.entries.delete(key)
+      if (entry.expiresAt > now) {
+        this.entries.set(key, entry)
+      }
+      inspected += 1
+    }
+  }
+
+  private trimIfNeeded(now: number, protectedKey: string): void {
     if (this.entries.size <= maxEntries) {
       return
     }
 
-    const expiredKeys: string[] = []
-    for (const [key, entry] of this.entries) {
-      if (entry.expiresAt <= now) {
-        expiredKeys.push(key)
-      }
-    }
-    for (const key of expiredKeys) {
-      this.entries.delete(key)
-    }
+    this.cleanupExpiredEntries(now, deduplicationCleanupBatchSize)
 
     if (this.entries.size <= maxEntries) {
       return
     }
 
     const overflow = this.entries.size - maxEntries
-    const oldestKeys = [...this.entries.values()]
-      .sort((left, right) => left.expiresAt - right.expiresAt)
-      .slice(0, overflow)
-      .map((entry) => entry.key)
-    for (const key of oldestKeys) {
+    let removed = 0
+    for (const key of this.entries.keys()) {
+      if (key === protectedKey) continue
       this.entries.delete(key)
+      removed += 1
+      if (removed >= overflow) break
     }
   }
 }

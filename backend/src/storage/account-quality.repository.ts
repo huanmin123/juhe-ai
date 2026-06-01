@@ -39,6 +39,7 @@ const unknownQualityScore = 1_000_000
 const failurePenaltyMs = 60_000
 const stalePenaltyMs = 5_000
 const qualityCleanupBatchLimit = 1000
+const qualityLookupChunkSize = 500
 
 export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQualityRealtimeRefreshResult {
   const database = getStatsDatabase()
@@ -50,8 +51,6 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
   const windowStartedMinute = minuteKey(new Date(now.getTime() - windowMs), timezone)
   const retentionCutoffMinute = minuteKey(new Date(now.getTime() - 24 * 60 * 60 * 1000), timezone)
   const updatedAt = nowIso()
-  const activeAccounts = loadQualityAccountMetadata()
-  const previousQualityByAccount = loadAccountQualityRows()
 
   const rows = database
     .prepare(`
@@ -95,25 +94,22 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       last_error_message: string | null
     }>
 
-  const activeAccountIds = new Set(activeAccounts.keys())
-  const refreshedAccountIds = new Set<string>()
+  const sampledAccountIds = uniqueAccountQualityIds(rows.map((row) => row.account_id))
+  const activeAccounts = loadQualityAccountMetadataByIds(sampledAccountIds)
+  const previousQualityByAccount = loadAccountQualityRowsByAccountIds(sampledAccountIds)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     const upsertQuality = prepareAccountQualityUpsert(database)
-    const activeIds = [...activeAccountIds]
-    const deleteResult = activeIds.length > 0
-      ? cleanupInactiveQualityRows(database, activeIds)
-      : database.prepare('DELETE FROM account_quality_scores').run()
-    if (activeIds.length > 0) {
-      cleanupInactiveQualityMinuteRows(database, qualityCleanupBatchLimit)
-    } else {
-      cleanupAnyQualityMinuteRows(database, qualityCleanupBatchLimit)
-    }
+    const deleteResult = cleanupInactiveQualityRows(database, qualityCleanupBatchLimit)
+    cleanupInactiveQualityMinuteRows(database, qualityCleanupBatchLimit)
     cleanupOldQualityMinuteRows(database, retentionCutoffMinute, qualityCleanupBatchLimit)
+    createTempRefreshedQualityAccounts(database, sampledAccountIds)
+    for (const previous of loadStaleAccountQualityRows(database, qualityCleanupBatchLimit)) {
+      markAccountQualityStale(upsertQuality, previous, windowStartedAt, windowEndedAt, updatedAt)
+    }
     for (const row of rows) {
       const metadata = activeAccounts.get(row.account_id)
       if (!metadata) continue
-      refreshedAccountIds.add(row.account_id)
       const previous = previousQualityByAccount.get(row.account_id)
       const recentAvg = integerOrNull(row.recent_avg_first_token_ms)
       const previousEwma = previous?.ewma_first_token_ms ?? null
@@ -155,13 +151,6 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       })
     }
 
-    for (const [accountId, previous] of previousQualityByAccount) {
-      if (!activeAccountIds.has(accountId) || refreshedAccountIds.has(accountId)) {
-        continue
-      }
-      markAccountQualityStale(upsertQuality, previous, windowStartedAt, windowEndedAt, updatedAt)
-    }
-
     commitDatabaseTransaction(database, transactionStarted)
     return { refreshed: rows.length, removed: Number(deleteResult.changes ?? 0), windowStartedAt, windowEndedAt }
   } catch (error) {
@@ -173,17 +162,35 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
   }
 }
 
-function loadQualityAccountMetadata(): Map<string, { systemAccountId: string; providerCode: string }> {
-  const rows = getBusinessDatabase()
-    .prepare('SELECT id, system_account_id, provider_code FROM accounts')
-    .all() as unknown as Array<{ id: string; system_account_id: string; provider_code: string }>
+function loadQualityAccountMetadataByIds(accountIds: string[]): Map<string, { systemAccountId: string; providerCode: string }> {
+  if (accountIds.length === 0) return new Map()
+  const rows: Array<{ id: string; system_account_id: string; provider_code: string }> = []
+  const database = getBusinessDatabase()
+  for (const chunk of chunkValues(accountIds, qualityLookupChunkSize)) {
+    rows.push(...database
+      .prepare(`
+        SELECT id, system_account_id, provider_code
+        FROM accounts
+        WHERE id IN (${chunk.map(() => '?').join(',')})
+      `)
+      .all(...chunk) as unknown as Array<{ id: string; system_account_id: string; provider_code: string }>)
+  }
   return new Map(rows.map((row) => [row.id, { systemAccountId: row.system_account_id, providerCode: row.provider_code }]))
 }
 
-function loadAccountQualityRows(): Map<string, AccountQualityRow> {
-  const rows = getStatsDatabase()
-    .prepare(`SELECT ${accountQualitySelectColumns()} FROM account_quality_scores`)
-    .all() as unknown as AccountQualityRow[]
+function loadAccountQualityRowsByAccountIds(accountIds: string[]): Map<string, AccountQualityRow> {
+  if (accountIds.length === 0) return new Map()
+  const rows: AccountQualityRow[] = []
+  const database = getStatsDatabase()
+  for (const chunk of chunkValues(accountIds, qualityLookupChunkSize)) {
+    rows.push(...database
+      .prepare(`
+        SELECT ${accountQualitySelectColumns()}
+        FROM account_quality_scores
+        WHERE account_id IN (${chunk.map(() => '?').join(',')})
+      `)
+      .all(...chunk) as unknown as AccountQualityRow[])
+  }
   return new Map(rows.map((row) => [row.account_id, row]))
 }
 
@@ -211,51 +218,62 @@ function accountQualitySelectColumns(): string {
   ].join(', ')
 }
 
-function cleanupInactiveQualityRows(database: ReturnType<typeof getStatsDatabase>, activeIds: string[]): { changes?: number | bigint } {
-  database.prepare('DROP TABLE IF EXISTS temp_active_quality_accounts').run()
-  database.prepare('CREATE TEMP TABLE temp_active_quality_accounts (id TEXT PRIMARY KEY)').run()
-  for (const chunk of chunkValues(activeIds, 500)) {
-    database
-      .prepare(`INSERT INTO temp_active_quality_accounts (id) VALUES ${chunk.map(() => '(?)').join(',')}`)
-      .run(...chunk)
+function cleanupInactiveQualityRows(database: ReturnType<typeof getStatsDatabase>, limit: number): { changes?: number | bigint } {
+  const candidateRows = database
+    .prepare(`
+      SELECT account_id
+      FROM account_quality_scores
+      ORDER BY updated_at ASC, account_id ASC
+      LIMIT ?
+    `)
+    .all(Math.max(1, Math.trunc(limit))) as unknown as Array<{ account_id?: string | null }>
+  const candidateIds = uniqueAccountQualityIds(candidateRows.map((row) => row.account_id))
+  if (candidateIds.length === 0) {
+    return { changes: 0 }
   }
-  return database.prepare(`
-    DELETE FROM account_quality_scores
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM temp_active_quality_accounts active_accounts
-      WHERE active_accounts.id = account_quality_scores.account_id
-    )
-  `).run()
+  const activeIds = new Set(loadQualityAccountMetadataByIds(candidateIds).keys())
+  const inactiveIds = candidateIds.filter((accountId) => !activeIds.has(accountId))
+  if (inactiveIds.length === 0) {
+    return { changes: 0 }
+  }
+  let changes = 0
+  for (const chunk of chunkValues(inactiveIds, qualityLookupChunkSize)) {
+    const result = database
+      .prepare(`DELETE FROM account_quality_scores WHERE account_id IN (${chunk.map(() => '?').join(',')})`)
+      .run(...chunk)
+    changes += Number(result.changes ?? 0)
+  }
+  return { changes }
 }
 
 function cleanupInactiveQualityMinuteRows(database: ReturnType<typeof getStatsDatabase>, limit: number): { changes?: number | bigint } {
+  const candidateRows = database
+    .prepare(`
+      SELECT account_id
+      FROM account_quality_minute_stats
+      ORDER BY stat_minute ASC, rowid ASC
+      LIMIT ?
+    `)
+    .all(Math.max(1, Math.trunc(limit))) as unknown as Array<{ account_id?: string | null }>
+  const candidateIds = uniqueAccountQualityIds(candidateRows.map((row) => row.account_id))
+  if (candidateIds.length === 0) {
+    return { changes: 0 }
+  }
+  const activeIds = new Set(loadQualityAccountMetadataByIds(candidateIds).keys())
+  const inactiveIds = candidateIds.filter((accountId) => !activeIds.has(accountId))
+  if (inactiveIds.length === 0) {
+    return { changes: 0 }
+  }
   return database.prepare(`
     DELETE FROM account_quality_minute_stats
     WHERE rowid IN (
       SELECT rowid
       FROM account_quality_minute_stats
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM temp_active_quality_accounts active_accounts
-        WHERE active_accounts.id = account_quality_minute_stats.account_id
-      )
+      WHERE account_id IN (${inactiveIds.map(() => '?').join(',')})
       ORDER BY stat_minute ASC, rowid ASC
       LIMIT ?
     )
-  `).run(Math.max(1, Math.trunc(limit)))
-}
-
-function cleanupAnyQualityMinuteRows(database: ReturnType<typeof getStatsDatabase>, limit: number): { changes?: number | bigint } {
-  return database.prepare(`
-    DELETE FROM account_quality_minute_stats
-    WHERE rowid IN (
-      SELECT rowid
-      FROM account_quality_minute_stats
-      ORDER BY stat_minute ASC, rowid ASC
-      LIMIT ?
-    )
-  `).run(Math.max(1, Math.trunc(limit)))
+  `).run(...inactiveIds, Math.max(1, Math.trunc(limit)))
 }
 
 function cleanupOldQualityMinuteRows(database: ReturnType<typeof getStatsDatabase>, cutoffMinute: string, limit: number): { changes?: number | bigint } {
@@ -269,6 +287,37 @@ function cleanupOldQualityMinuteRows(database: ReturnType<typeof getStatsDatabas
       LIMIT ?
     )
   `).run(cutoffMinute, Math.max(1, Math.trunc(limit)))
+}
+
+function createTempRefreshedQualityAccounts(database: ReturnType<typeof getStatsDatabase>, accountIds: string[]): void {
+  database.prepare('DROP TABLE IF EXISTS temp_refreshed_quality_accounts').run()
+  database.prepare('CREATE TEMP TABLE temp_refreshed_quality_accounts (id TEXT PRIMARY KEY)').run()
+  for (const chunk of chunkValues(accountIds, qualityLookupChunkSize)) {
+    database
+      .prepare(`INSERT INTO temp_refreshed_quality_accounts (id) VALUES ${chunk.map(() => '(?)').join(',')}`)
+      .run(...chunk)
+  }
+}
+
+function loadStaleAccountQualityRows(database: ReturnType<typeof getStatsDatabase>, limit: number): AccountQualityRow[] {
+  return database
+    .prepare(`
+      SELECT ${accountQualitySelectColumns()}
+      FROM account_quality_scores
+      WHERE quality_state IN ('fresh', 'failed')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM temp_refreshed_quality_accounts refreshed_accounts
+          WHERE refreshed_accounts.id = account_quality_scores.account_id
+        )
+      ORDER BY updated_at ASC, account_id ASC
+      LIMIT ?
+    `)
+    .all(Math.max(1, Math.trunc(limit))) as unknown as AccountQualityRow[]
+}
+
+function uniqueAccountQualityIds(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
 }
 
 function markAccountQualityStale(upsertQuality: ReturnType<DatabaseSync['prepare']>, previous: AccountQualityRow, windowStartedAt: string, windowEndedAt: string, updatedAt: string): void {

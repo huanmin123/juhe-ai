@@ -75,9 +75,9 @@ export function startBackgroundJobs(): void {
   if (started) return
   started = true
 
-  scheduler.schedule({ name: 'usage-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * secondMs, task: runUsageStatsAggregation })
-  scheduler.schedule({ name: 'client-ip-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
-  scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
+  scheduler.schedule({ name: 'usage-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, task: runUsageStatsAggregation })
+  scheduler.schedule({ name: 'client-ip-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
+  scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
   scheduler.schedule({ name: 'usage-rank-snapshots-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh('usage-rank-snapshots-refresh', usageRankSnapshotCoreStageNames) })
   scheduler.schedule({ name: 'system-metrics-trend-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, task: () => runUsageRankSnapshotsRefresh('system-metrics-trend-windows-refresh', systemMetricsTrendStageNames) })
   scheduler.schedule({ name: 'usage-overview-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh('usage-overview-windows-refresh', usageOverviewWindowStageNames) })
@@ -87,12 +87,12 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'api-key-record-cleanup-retry', intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
   scheduler.schedule({ name: 'account-record-cleanup-retry', intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
-  scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
+  scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
   scheduler.schedule({ name: 'table-storage-monitor', intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runTableStorageMonitor })
   scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
-  scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 600, 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: runAccountQualityRefresh })
-  scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 60, 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
-  scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 3, 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: runCooldownAccountRetest })
+  scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: runAccountQualityRefresh })
+  scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
+  scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: runCooldownAccountRetest })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
   scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, initialDelayMs: 13 * minuteMs, task: runDataRetentionCleanup })
 }
@@ -107,8 +107,8 @@ async function runUsageStatsAggregation(): Promise<void> {
   try {
     flushUsageRecordsBeforeStatsAggregation()
     await yieldToEventLoop()
-    const batchSize = settingsNumber('statsAggregationBatchSize', 2000, 100, 10000)
-    const maxBatches = settingsNumber('statsAggregationMaxBatchesPerRun', 5, 1, 100)
+    const batchSize = settingsNumber('statsAggregationBatchSize', 100, 10000)
+    const maxBatches = settingsNumber('statsAggregationMaxBatchesPerRun', 1, 100)
     for (let index = 0; index < maxBatches; index += 1) {
       const processed = aggregateUsageStatsBatch(batchSize)
       if (processed < batchSize) break
@@ -131,8 +131,8 @@ async function runClientIpStatsAggregation(): Promise<void> {
   try {
     flushUsageRecordsBeforeStatsAggregation()
     await yieldToEventLoop()
-    const batchSize = Math.min(settingsNumber('statsAggregationBatchSize', 2000, 100, 10000), clientIpStatsAggregationBatchSizeCap)
-    const maxBatches = Math.min(settingsNumber('statsAggregationMaxBatchesPerRun', 5, 1, 100), clientIpStatsAggregationMaxBatchesCap)
+    const batchSize = Math.min(settingsNumber('statsAggregationBatchSize', 100, 10000), clientIpStatsAggregationBatchSizeCap)
+    const maxBatches = Math.min(settingsNumber('statsAggregationMaxBatchesPerRun', 1, 100), clientIpStatsAggregationMaxBatchesCap)
     const startedAtMs = Date.now()
     for (let index = 0; index < maxBatches; index += 1) {
       const processed = aggregateClientIpStatsBatch(batchSize)
@@ -367,7 +367,7 @@ async function runAccountQualityRefresh(): Promise<void> {
       maxBatches: usageRecordPreAggregationFlushMaxBatches
     })
     await yieldToEventLoop()
-    const windowMinutes = settingsNumber('accountQualityWindowMinutes', 10, 1, 60)
+    const windowMinutes = settingsNumber('accountQualityWindowMinutes', 1, 60)
     const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)
     if (realtimeResult.refreshed > 0 || realtimeResult.removed > 0) {
       clearGatewayRuntimeCache()
@@ -384,10 +384,10 @@ async function runAccountQualityRefresh(): Promise<void> {
 }
 
 async function runCooldownAccountRetest(): Promise<void> {
-  const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 10, 1, 100)
-  const model = settingsString('cooldownAccountRetestModel', 'gpt-5.5')
-  const maxPauseMinutes = settingsNumber('defaultTemporaryUnschedulableMinutes', 5, 1, 1440)
-  const maxRecoveryHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 24, 1, 24 * 30)
+  const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
+  const model = settingsString('cooldownAccountRetestModel')
+  const maxPauseMinutes = settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
+  const maxRecoveryHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const candidates = listAccountsDueForCooldownRetest(batchSize)
   const startedAtMs = Date.now()
   let enqueuedCount = 0
@@ -428,15 +428,23 @@ async function runDataRetentionCleanup(): Promise<void> {
   await cleanupExpiredRetainedData()
 }
 
-function settingsNumber(key: string, fallback: number, min: number, max: number): number {
+function settingsNumber(key: string, min: number, max: number): number {
   const value = getSettings()[key]
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error(`系统设置 ${key} 必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
 }
 
-function settingsString(key: string, fallback: string): string {
+function settingsString(key: string): string {
   const value = getSettings()[key]
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`系统设置 ${key} 必须是非空字符串`)
+  }
+  return value.trim()
 }
 
 async function databaseFileBytes(): Promise<number | undefined> {
@@ -464,7 +472,7 @@ async function runTableStorageMonitor(): Promise<void> {
   try {
     collectTableStorageSnapshot(nowIso(), {
       tableScanMode: 'cursor',
-      maxTablesPerDatabase: settingsNumber('tableMonitorMaxTablesPerRun', 4, 0, 100)
+      maxTablesPerDatabase: settingsNumber('tableMonitorMaxTablesPerRun', 0, 100)
     })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_table_storage_monitor_failed' }), '表数据监控采样失败')

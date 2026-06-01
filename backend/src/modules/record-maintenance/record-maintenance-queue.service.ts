@@ -51,6 +51,7 @@ export type RecordMaintenanceJob =
 const recordMaintenanceFlushIntervalMs = 100
 const recordMaintenanceRetryPolicy = fixedRetryPolicy('record_maintenance_queue_flush', 1000)
 const recordMaintenanceBatchSize = 10
+const recordMaintenanceShutdownFlushMaxBatches = 1
 const recordMaintenanceQueueMaxItems = 5_000
 const recordMaintenanceQueueMaxBytes = 32 * 1024 * 1024
 const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
@@ -158,11 +159,10 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
   const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     do {
-      const batch = pendingJobs.splice(0, recordMaintenanceBatchSize)
+      const batch = pendingJobs.slice(0, recordMaintenanceBatchSize)
       if (batch.length === 0) {
         break
       }
-      pendingJobBytes = Math.max(0, pendingJobBytes - sumQueuedRecordMaintenanceJobBytes(batch))
       const batchJobs = batch.map((item) => item.job)
       flushedBatches += 1
 
@@ -172,16 +172,16 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
         try {
           if (snapshotJobs.length > 0) {
             processAccountUsageSnapshotUpsertJobs(snapshotJobs)
+            removeRecordMaintenanceJobsFromHead(snapshotJobs.length)
             completedCount += snapshotJobs.length
             index += snapshotJobs.length - 1
           } else {
             processRecordMaintenanceJob(job)
+            removeRecordMaintenanceJobsFromHead(1)
             completedCount += 1
           }
         } catch (error) {
           failed = true
-          pendingJobs = [...batch.slice(index), ...pendingJobs]
-          pendingJobBytes = sumQueuedRecordMaintenanceJobBytes(pendingJobs)
           flushFailureCount += 1
           logger.error(errorLogFields(error, {
             event: 'record_maintenance_queue_flush_failed',
@@ -206,6 +206,10 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
 
 export function flushAllRecordMaintenanceQueue(): void {
   flushRecordMaintenanceQueue({ drain: true, retryOnFailure: false })
+}
+
+export function flushRecordMaintenanceQueueForShutdown(): void {
+  flushRecordMaintenanceQueue({ drain: true, retryOnFailure: false, maxBatches: recordMaintenanceShutdownFlushMaxBatches })
 }
 
 export function getRecordMaintenanceQueueRuntime(): {
@@ -236,11 +240,7 @@ export function installRecordMaintenanceQueueShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('beforeExit', flushAllRecordMaintenanceQueue)
-  process.once('exit', flushAllRecordMaintenanceQueue)
-
-  process.once('SIGINT', () => exitAfterRecordMaintenanceFlush(0))
-  process.once('SIGTERM', () => exitAfterRecordMaintenanceFlush(0))
+  process.once('beforeExit', flushRecordMaintenanceQueueForShutdown)
 }
 
 function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): boolean {
@@ -462,11 +462,6 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
   return false
 }
 
-function exitAfterRecordMaintenanceFlush(exitCode: number): never {
-  flushAllRecordMaintenanceQueue()
-  process.exit(exitCode)
-}
-
 function scheduleRecordMaintenanceFlush(delayMs: number): void {
   if (runtimeConfig.processRole !== 'worker') {
     return
@@ -522,6 +517,11 @@ function estimateRecordMaintenanceJobBytes(job: RecordMaintenanceJob): number {
 
 function sumQueuedRecordMaintenanceJobBytes(items: QueuedRecordMaintenanceJob[]): number {
   return items.reduce((sum, item) => sum + item.bytes, 0)
+}
+
+function removeRecordMaintenanceJobsFromHead(count: number): void {
+  const removed = pendingJobs.splice(0, count)
+  pendingJobBytes = Math.max(0, pendingJobBytes - sumQueuedRecordMaintenanceJobBytes(removed))
 }
 
 function mergeAccountUsageSnapshotJob(queued: QueuedRecordMaintenanceJob): 'not_found' | 'queued' | 'dropped' {

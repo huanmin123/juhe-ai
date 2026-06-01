@@ -5,6 +5,8 @@ export interface AppCacheOptions<K extends {}, V extends {}> {
   max: number
   ttlMs: number
   updateAgeOnGet?: boolean
+  dispose?: (value: V, key: K) => void
+  onClear?: () => void
 }
 
 export interface AppCache<K extends {}, V extends {}> {
@@ -20,11 +22,7 @@ export interface AppCache<K extends {}, V extends {}> {
 const caches = new Set<AppCache<{}, {}>>()
 
 export function createAppCache<K extends {}, V extends {}>(options: AppCacheOptions<K, V>): AppCache<K, V> {
-  const store = new LRUCache<K, V>({
-    max: options.max,
-    ttl: options.ttlMs,
-    updateAgeOnGet: options.updateAgeOnGet ?? false
-  })
+  let store = createStore(options)
   const cache: AppCache<K, V> = {
     name: options.name,
     get: (key) => store.get(key),
@@ -35,13 +33,27 @@ export function createAppCache<K extends {}, V extends {}>(options: AppCacheOpti
       store.delete(key)
     },
     clear: () => {
-      store.clear()
+      store = createStore(options)
+      options.onClear?.()
     },
     values: () => store.values(),
     entries: () => store.entries()
   }
   caches.add(cache as AppCache<{}, {}>)
   return cache
+}
+
+function createStore<K extends {}, V extends {}>(options: AppCacheOptions<K, V>): LRUCache<K, V> {
+  return new LRUCache<K, V>({
+    max: options.max,
+    ttl: options.ttlMs,
+    updateAgeOnGet: options.updateAgeOnGet ?? false,
+    dispose: options.dispose
+      ? (value, key) => {
+          options.dispose?.(value, key)
+        }
+      : undefined
+  })
 }
 
 export function clearAllAppCaches(): void {

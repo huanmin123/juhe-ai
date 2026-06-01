@@ -104,6 +104,7 @@ try {
   datasetDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     const shouldCapture = /\bFROM\s+(audit_logs|audit_error_groups|operation_logs)\s+(al|aeg|ol)\b/i.test(sql)
+      || /\bFROM\s+operation_log_search_terms\s+search\b/i.test(sql)
       || /\bFROM\s*\(\s*SELECT[\s\S]*\bFROM\s+operation_logs\s+ol\b/i.test(sql)
     if (shouldCapture) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
@@ -136,10 +137,10 @@ try {
     assert.equal(errorGroups.items.length, 1, '审计错误组 path/model/statusCode 应按结构化条件定位')
 
     const operationKeyword = repositories.listOperationLogs({ keyword: 'keywordguardneedle', pageSize: 10 })
-    assert.deepEqual(operationKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '操作日志长关键词应通过普通 SQL 模糊匹配命中自由文本')
+    assert.deepEqual(operationKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '操作日志长关键词应通过倒排词项命中自由文本')
 
     const viewerKeyword = repositories.listOperationLogsForViewer('sys_user', { keyword: 'keywordguardneedle', pageSize: 10 })
-    assert.deepEqual(viewerKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '用户侧操作日志关键词也应通过普通 SQL 模糊匹配保留可见性过滤')
+    assert.deepEqual(viewerKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '用户侧操作日志关键词也应通过倒排词项保留可见性过滤')
 
     const shortKeywordWithoutWindow = repositories.listOperationLogs({ keyword: '造数', pageSize: 10 })
     assert.deepEqual(
@@ -154,14 +155,21 @@ try {
   assert(capturedCalls.length >= 7, '回归应捕获日志列表 SQL')
   for (const call of capturedCalls) {
     assert(!/\b(?:al|aeg)\.[a-z_]+\s+LIKE\s+\?/i.test(call.sql), '审计日志和错误组列表不应使用 LIKE 扫描结构化字段')
+    assert(!/\bol\.[a-z_]+\s+LIKE\s+\?/i.test(call.sql), '操作日志列表不应使用主表 LIKE 扫描')
     assert(!/\bol\.trace_id\s+LIKE\s+\?/i.test(call.sql), '操作日志 traceId 不应使用 LIKE 扫描')
     assert(!/\bMATCH\s+\?/i.test(call.sql), '操作日志列表不应再使用 MATCH 查询')
-    if (/\bFROM\s+(audit_logs|audit_error_groups)\s+(al|aeg)\b/i.test(call.sql)) {
-      assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '审计日志和错误组列表不应传入前导通配符参数')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '日志列表不应传入前导通配符参数')
+  }
+  const keywordSearchCalls = capturedCalls.filter((call) => /\bFROM\s+operation_log_search_terms\s+search\b/i.test(call.sql))
+  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === 'keywordguardneedle')), '操作日志长关键词应使用倒排词项表定位')
+  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === '造数')), '操作日志短中文关键词应使用倒排词项表定位')
+  for (const call of keywordSearchCalls) {
+    const plan = explainQueryPlan(datasetDatabase, call.sql, call.params)
+    assertPlanUses(plan, 'idx_operation_log_search_terms_term_created', '操作日志关键词查询必须由 term + created_at 索引驱动')
+    if (!/\bUNION\s+ALL\b/i.test(call.sql)) {
+      assertNoTempBtree(plan, '操作日志管理员关键词列表不应为排序建立临时 B-tree')
     }
   }
-  assert(capturedCalls.some((call) => /\bol\.summary\s+LIKE\s+\?\s+ESCAPE/i.test(call.sql)
-    && call.params.some((param) => param === '%keywordguardneedle%')), '操作日志关键词应直接使用主表字段 LIKE 模糊匹配')
   assert(capturedCalls.some((call) => /\bal\.client_ip\s+>=\s+\?/i.test(call.sql)
     && /\bal\.client_ip\s+<\s+\?/i.test(call.sql)), '审计 clientIp 前缀检索应使用范围条件而不是 LIKE')
 
@@ -170,7 +178,7 @@ try {
   const boundedOriginalPrepare = boundedDatasetDatabase.prepare.bind(boundedDatasetDatabase) as typeof boundedDatasetDatabase.prepare
   boundedDatasetDatabase.prepare = ((sql: string) => {
     const statement = boundedOriginalPrepare(sql)
-    if (/\bFROM\s+operation_logs\s+ol\b/i.test(sql)) {
+    if (/\bFROM\s+operation_logs\s+ol\b/i.test(sql) || /\bFROM\s+operation_log_search_terms\s+search\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
         boundedCalls.push({ sql, params })
@@ -206,14 +214,16 @@ try {
   } finally {
     boundedDatasetDatabase.prepare = boundedOriginalPrepare
   }
-  assert(boundedCalls.some((call) => /\bol\.created_at\s+>=\s+\?/i.test(call.sql)
+  assert(boundedCalls.some((call) => /\boperation_log_search_terms\s+search\b/i.test(call.sql)
+    && /\bsearch\.term\s*=\s*\?/i.test(call.sql)
+    && /\bol\.created_at\s+>=\s+\?/i.test(call.sql)
     && /\bol\.created_at\s+<=\s+\?/i.test(call.sql)
-    && /\bol\.summary\s+LIKE\s+\?\s+ESCAPE/i.test(call.sql)), '短关键词带时间窗时应同时绑定时间条件和普通 SQL 模糊匹配')
+    && call.params.some((param) => param === '造数')), '短关键词带时间窗时应同时绑定时间条件和倒排词项')
   for (const call of boundedCalls) {
     assert(!/\bMATCH\s+\?/i.test(call.sql), '小时间窗操作日志关键词也不应使用 MATCH 查询')
   }
 
-  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志关键词不再走搜索影子表，改为主表字段普通 SQL 模糊匹配')
+  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志关键词使用倒排词项索引，避免主表 LIKE 扫描')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -221,6 +231,20 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function explainQueryPlan(database: ReturnType<typeof databaseModule.getDatasetDatabase>, sql: string, params: unknown[]): string[] {
+  const queryParams = params as SQLInputValue[]
+  const rows = database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...queryParams) as Array<{ detail?: string }>
+  return rows.map((row) => String(row.detail ?? ''))
+}
+
+function assertPlanUses(plan: string[], indexName: string, message: string): void {
+  assert(plan.some((detail) => detail.includes(indexName)), `${message}：${plan.join(' | ')}`)
+}
+
+function assertNoTempBtree(plan: string[], message: string): void {
+  assert(!plan.some((detail) => /USE TEMP B-TREE/i.test(detail)), `${message}：${plan.join(' | ')}`)
 }
 
 function auditLog(input: {

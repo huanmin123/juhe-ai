@@ -23,7 +23,7 @@ const modelCheckRunSchema = z.object({
   profile: z.enum(['full']).optional(),
   trustedComparison: z.boolean().optional(),
   trustedComparisonAccountId: z.string().trim().optional()
-})
+}).strict()
 
 modelChecksRouter.get('/options', (req, res, next) => {
   try {

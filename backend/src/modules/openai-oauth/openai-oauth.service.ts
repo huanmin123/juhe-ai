@@ -133,16 +133,10 @@ export function buildOpenAIOAuthCredentials(tokenInfo: OpenAITokenInfo, fallback
   return credentials
 }
 
-export function extractCodeAndState(input: { callbackUrl?: string; code?: string; state?: string }): { code: string; state: string } {
-  const directCode = normalizeString(input.code)
-  const directState = normalizeString(input.state)
-  if (directCode && directState) {
-    return { code: directCode, state: directState }
-  }
-
+export function extractCodeAndState(input: { callbackUrl: string }): { code: string; state: string } {
   const callbackUrl = normalizeString(input.callbackUrl)
   if (!callbackUrl) {
-    throw new Error('回调地址或授权码参数不能为空')
+    throw new Error('回调 URL 不能为空')
   }
   const url = new URL(callbackUrl)
   const code = normalizeString(url.searchParams.get('code'))

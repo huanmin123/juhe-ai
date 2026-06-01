@@ -34,7 +34,8 @@ try {
     name: '冷却复测观察窗口回归',
     type: 'api_key',
     credentials: {
-      api_key: 'sk-cooldown-retest-recovery'
+      api_key: 'sk-cooldown-retest-recovery',
+      base_url: 'http://127.0.0.1:9/v1'
     },
     status: 'active'
   }, access)
@@ -74,7 +75,8 @@ try {
     name: '冷却复测未超观察窗口回归',
     type: 'api_key',
     credentials: {
-      api_key: 'sk-cooldown-retest-recovery-fresh'
+      api_key: 'sk-cooldown-retest-recovery-fresh',
+      base_url: 'http://127.0.0.1:9/v1'
     },
     status: 'active'
   }, access)
@@ -112,7 +114,8 @@ try {
     name: '停用清理过期失败原因回归',
     type: 'api_key',
     credentials: {
-      api_key: 'sk-cooldown-disable-clear-expired-error'
+      api_key: 'sk-cooldown-disable-clear-expired-error',
+      base_url: 'http://127.0.0.1:9/v1'
     },
     status: 'active'
   }, access)
@@ -128,7 +131,8 @@ try {
     name: '限流后台复测回归',
     type: 'api_key',
     credentials: {
-      api_key: 'sk-cooldown-retest-rate-limited'
+      api_key: 'sk-cooldown-retest-rate-limited',
+      base_url: 'http://127.0.0.1:9/v1'
     },
     status: 'active'
   }, access)

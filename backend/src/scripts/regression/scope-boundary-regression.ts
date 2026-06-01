@@ -783,6 +783,7 @@ function usageRecord(
     id,
     systemAccountId,
     traceId: `${id}_trace`,
+    trafficSource: 'gateway' as const,
     clientIp: '127.0.0.1',
     groupId,
     accountId,

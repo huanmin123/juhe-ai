@@ -27,7 +27,6 @@ export function emptyStatsAggregateMathRow(): AccountUsageAggregateRow & StatsAg
     input_tokens: 0,
     output_tokens: 0,
     cache_read_tokens: 0,
-    cache_read_cost: 0,
     cache_read_cost_usd: 0,
     total_cost: 0,
     duration_ms_sum: 0,
@@ -86,21 +85,24 @@ export function mapSystemMetricsHourly(row: Record<string, unknown>): SystemMetr
 
 export function mapProcessEventLoopHourly(row: Record<string, unknown>): SystemMetricsOverview['processEventLoopTrend'][number] {
   const processRole = processRoleFromUnknown(row.process_role)
-  const statBucket = String(row.stat_minute ?? row.stat_hour)
+  if (typeof row.stat_hour !== 'string' || !row.stat_hour) {
+    throw new Error('进程事件循环统计缺少 stat_hour')
+  }
+  const statBucket = row.stat_hour
   return {
     statHour: statBucket,
     statMinute: statBucket,
-    processRole: processRole ?? 'worker',
+    processRole,
     sampleCount: Number(row.sample_count ?? 0),
     eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, row.sample_count),
     eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max)
   }
 }
 
-function processRoleFromUnknown(value: unknown): ProcessRole | undefined {
+function processRoleFromUnknown(value: unknown): ProcessRole {
   if (value === 'server' || value === 'worker' || value === 'db-service') {
     return value
   }
-  return undefined
+  throw new Error(`非法进程角色：${String(value)}`)
 }
 

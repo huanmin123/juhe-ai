@@ -69,10 +69,14 @@ const USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE = 'global'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID = ''
 export const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
+const GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX = 'all_cursor:'
+const groupAccountStatsFullRefreshBatchLimit = 1000
+const maxUsageOverviewSnapshotScopes = 5000
 let usageStatsShardScanOffset = 0
 
 interface GroupAccountStatsDirtyRow {
   groupId: string
+  reason: string | null
   updatedAt: string
 }
 
@@ -110,7 +114,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
           SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
           FROM usage_records
           WHERE created_at <= ?
-            AND COALESCE(traffic_source, 'gateway') <> 'cooldown_retest'
+            AND traffic_source <> 'cooldown_retest'
             AND (created_at > ? OR (created_at = ? AND id > ?))
           ORDER BY created_at ASC, id ASC
           LIMIT ?
@@ -236,18 +240,21 @@ export function markGroupAccountStatsDirtyByAccountIds(accountIds: Array<string 
 export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
   const businessDatabase = getBusinessDatabase()
   const statsDatabase = getStatsDatabase()
+  const normalizedLimit = Math.max(1, Math.min(groupAccountStatsFullRefreshBatchLimit, Math.trunc(limit)))
   const allDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase)
   if (allDirtyRows.length > 0) {
-    refreshGroupAccountStatsCache()
-    deleteGroupAccountStatsDirtyRows(businessDatabase, allDirtyRows)
-    return 1
+    return refreshAllDirtyGroupAccountStatsCacheBatch(businessDatabase, allDirtyRows[0], normalizedLimit)
   }
 
-  const rows = loadGroupAccountStatsDirtyRows(businessDatabase, limit)
+  const rows = loadGroupAccountStatsDirtyRows(businessDatabase, normalizedLimit)
   if (!rows.length) {
     const hasStats = statsDatabase.prepare('SELECT 1 FROM group_account_stats LIMIT 1').get()
     if (!hasStats) {
-      refreshGroupAccountStatsCache()
+      markAllGroupAccountStatsDirty('initial_cache_build')
+      const initialAllDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase)
+      return initialAllDirtyRows[0]
+        ? refreshAllDirtyGroupAccountStatsCacheBatch(businessDatabase, initialAllDirtyRows[0], normalizedLimit)
+        : 0
     }
     return 0
   }
@@ -259,9 +266,46 @@ export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
 
 function loadAllGroupAccountStatsDirtyRows(businessDatabase: DatabaseSync): GroupAccountStatsDirtyRow[] {
   const businessRow = businessDatabase
-    .prepare('SELECT group_id, updated_at FROM group_account_stats_dirty WHERE group_id = ? LIMIT 1')
-    .get(GROUP_ACCOUNT_STATS_DIRTY_ALL) as unknown as { group_id: string; updated_at: string } | undefined
+    .prepare('SELECT group_id, reason, updated_at FROM group_account_stats_dirty WHERE group_id = ? LIMIT 1')
+    .get(GROUP_ACCOUNT_STATS_DIRTY_ALL) as unknown as { group_id: string; reason: string | null; updated_at: string } | undefined
   return businessRow ? [mapGroupAccountStatsDirtyRow(businessRow)] : []
+}
+
+function refreshAllDirtyGroupAccountStatsCacheBatch(
+  businessDatabase: DatabaseSync,
+  dirtyRow: GroupAccountStatsDirtyRow,
+  limit: number
+): number {
+  const cursorGroupId = groupAccountStatsAllCursor(dirtyRow.reason)
+  const groups = loadGroupAccountStatsGroupsPage(businessDatabase, cursorGroupId, limit)
+  if (groups.length === 0) {
+    deleteGroupAccountStatsDirtyRows(businessDatabase, [dirtyRow])
+    return 1
+  }
+  refreshGroupAccountStatsCache(groups.map((group) => group.id))
+  if (groups.length < limit) {
+    deleteGroupAccountStatsDirtyRows(businessDatabase, [dirtyRow])
+    return 1
+  }
+  updateGroupAccountStatsAllCursor(businessDatabase, groups[groups.length - 1].id)
+  return 1
+}
+
+function groupAccountStatsAllCursor(reason: string | null | undefined): string | undefined {
+  return reason?.startsWith(GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX)
+    ? reason.slice(GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX.length)
+    : undefined
+}
+
+function updateGroupAccountStatsAllCursor(businessDatabase: DatabaseSync, cursorGroupId: string): void {
+  businessDatabase
+    .prepare(`
+      UPDATE group_account_stats_dirty
+      SET reason = ?,
+          updated_at = ?
+      WHERE group_id = ?
+    `)
+    .run(`${GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX}${cursorGroupId}`, nowIso(), GROUP_ACCOUNT_STATS_DIRTY_ALL)
 }
 
 function loadGroupAccountStatsDirtyRows(
@@ -270,17 +314,18 @@ function loadGroupAccountStatsDirtyRows(
 ): GroupAccountStatsDirtyRow[] {
   const normalizedLimit = Math.max(1, Math.trunc(limit))
   const businessRows = businessDatabase
-    .prepare('SELECT group_id, updated_at FROM group_account_stats_dirty WHERE group_id <> ? ORDER BY updated_at ASC, group_id ASC LIMIT ?')
-    .all(GROUP_ACCOUNT_STATS_DIRTY_ALL, normalizedLimit) as unknown as Array<{ group_id: string; updated_at: string }>
+    .prepare('SELECT group_id, reason, updated_at FROM group_account_stats_dirty WHERE group_id <> ? ORDER BY updated_at ASC, group_id ASC LIMIT ?')
+    .all(GROUP_ACCOUNT_STATS_DIRTY_ALL, normalizedLimit) as unknown as Array<{ group_id: string; reason: string | null; updated_at: string }>
   return businessRows
     .map((row) => mapGroupAccountStatsDirtyRow(row))
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.groupId.localeCompare(right.groupId))
     .slice(0, normalizedLimit)
 }
 
-function mapGroupAccountStatsDirtyRow(row: { group_id: string; updated_at: string }): GroupAccountStatsDirtyRow {
+function mapGroupAccountStatsDirtyRow(row: { group_id: string; reason?: string | null; updated_at: string }): GroupAccountStatsDirtyRow {
   return {
     groupId: row.group_id,
+    reason: row.reason ?? null,
     updatedAt: row.updated_at
   }
 }
@@ -302,7 +347,8 @@ export function refreshGroupAccountStatsCache(groupIds?: Array<string | null | u
   const targetGroupIds = groupIds === undefined ? undefined : uniqueGroupAccountStatsIds(groupIds)
   if (targetGroupIds && !targetGroupIds.length) return
   const groups = loadGroupAccountStatsGroups(businessDatabase, targetGroupIds)
-  const groupAccountRows = loadGroupAccountStatsRows(businessDatabase, targetGroupIds)
+  const refreshGroupIds = targetGroupIds ?? groups.map((group) => group.id)
+  const groupAccountRows = loadGroupAccountStatsRows(businessDatabase, refreshGroupIds)
   const statsByGroup = new Map<string, GroupAccountStatsAccumulator>()
   for (const group of groups) {
     statsByGroup.set(group.id, emptyGroupAccountStatsAccumulator(group.id, group.system_account_id))
@@ -334,11 +380,7 @@ export function refreshGroupAccountStatsCache(groupIds?: Array<string | null | u
   }
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    if (targetGroupIds) {
-      deleteGroupAccountStatsRows(database, targetGroupIds)
-    } else {
-      database.prepare('DELETE FROM group_account_stats').run()
-    }
+    deleteGroupAccountStatsRows(database, refreshGroupIds)
     const insert = database.prepare(`
       INSERT INTO group_account_stats (
         system_account_id, group_id, total, available, active, disabled, error,
@@ -371,7 +413,7 @@ function loadGroupAccountStatsGroups(
   groupIds?: string[]
 ): Array<{ id: string; system_account_id: string }> {
   if (!groupIds) {
-    return database.prepare('SELECT id, system_account_id FROM groups').all() as unknown as Array<{ id: string; system_account_id: string }>
+    return loadGroupAccountStatsGroupsPage(database, undefined, groupAccountStatsFullRefreshBatchLimit)
   }
   const rows: Array<{ id: string; system_account_id: string }> = []
   for (const chunk of chunkValues(groupIds, 900)) {
@@ -382,6 +424,22 @@ function loadGroupAccountStatsGroups(
     `).all(...chunk) as unknown as Array<{ id: string; system_account_id: string }>)
   }
   return rows
+}
+
+function loadGroupAccountStatsGroupsPage(
+  database: DatabaseSync,
+  cursorGroupId: string | undefined,
+  limit: number
+): Array<{ id: string; system_account_id: string }> {
+  const cursorClause = cursorGroupId ? 'WHERE id > ?' : ''
+  const params = cursorGroupId ? [cursorGroupId, Math.max(1, Math.trunc(limit))] : [Math.max(1, Math.trunc(limit))]
+  return database.prepare(`
+    SELECT id, system_account_id
+    FROM groups
+    ${cursorClause}
+    ORDER BY id ASC
+    LIMIT ?
+  `).all(...params) as unknown as Array<{ id: string; system_account_id: string }>
 }
 
 function loadGroupAccountStatsRows(
@@ -840,10 +898,12 @@ function defaultUsageSnapshotYield(): Promise<void> {
 
 function usageOverviewSnapshotScopes(database: DatabaseSync): Array<{ systemAccountId: string; scopeId: string }> {
   const rows = database.prepare(`
-    SELECT DISTINCT system_account_id, scope_id
+    SELECT system_account_id, scope_id
     FROM usage_stats_totals
     WHERE scope_type = 'system_account'
-  `).all() as unknown as Array<{ system_account_id?: string | null; scope_id?: string | null }>
+    ORDER BY updated_at DESC, system_account_id ASC, scope_id ASC
+    LIMIT ?
+  `).all(maxUsageOverviewSnapshotScopes) as unknown as Array<{ system_account_id?: string | null; scope_id?: string | null }>
   const scopes = rows
     .map((row) => ({ systemAccountId: row.system_account_id ?? '', scopeId: row.scope_id ?? '' }))
     .filter((row) => row.systemAccountId && row.scopeId)
@@ -1270,7 +1330,10 @@ function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt
   const insert = database.prepare(`
     INSERT INTO usage_scope_range_windows (
       system_account_id, scope_type, scope_id, start_date, end_date,
-      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+      cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+      last_used_at, last_error_at, updated_at
     )
     SELECT
       system_account_id,
@@ -1279,12 +1342,29 @@ function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt
       ?,
       ?,
       COALESCE(SUM(request_count), 0),
+      COALESCE(SUM(success_count), 0),
+      COALESCE(SUM(error_count), 0),
       COALESCE(SUM(input_tokens), 0),
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
       COALESCE(SUM(cache_read_cost_usd), 0),
       COALESCE(SUM(total_cost_usd), 0),
+      COALESCE(SUM(duration_ms_sum), 0),
+      COALESCE(SUM(duration_ms_count), 0),
+      COALESCE(MAX(duration_ms_max), 0),
+      COALESCE(SUM(first_token_ms_sum), 0),
+      COALESCE(SUM(first_token_ms_count), 0),
+      COALESCE(MAX(first_token_ms_max), 0),
+      COUNT(CASE
+        WHEN request_count > 0
+          OR input_tokens > 0
+          OR output_tokens > 0
+          OR cache_read_tokens > 0
+          OR total_cost_usd > 0
+        THEN 1
+      END),
       MAX(last_used_at),
+      MAX(last_error_at),
       ?
     FROM usage_stats_daily
     WHERE stat_date >= ?
@@ -1402,7 +1482,10 @@ async function refreshUsageScopeRangeWindowSnapshotsInStages(
     const insert = database.prepare(`
       INSERT INTO ${tempTableName} (
         system_account_id, scope_type, scope_id, start_date, end_date,
-        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+        request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+        cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+        last_used_at, last_error_at, updated_at
       )
       SELECT
         system_account_id,
@@ -1411,12 +1494,29 @@ async function refreshUsageScopeRangeWindowSnapshotsInStages(
         ?,
         ?,
         COALESCE(SUM(request_count), 0),
+        COALESCE(SUM(success_count), 0),
+        COALESCE(SUM(error_count), 0),
         COALESCE(SUM(input_tokens), 0),
         COALESCE(SUM(output_tokens), 0),
         COALESCE(SUM(cache_read_tokens), 0),
         COALESCE(SUM(cache_read_cost_usd), 0),
         COALESCE(SUM(total_cost_usd), 0),
+        COALESCE(SUM(duration_ms_sum), 0),
+        COALESCE(SUM(duration_ms_count), 0),
+        COALESCE(MAX(duration_ms_max), 0),
+        COALESCE(SUM(first_token_ms_sum), 0),
+        COALESCE(SUM(first_token_ms_count), 0),
+        COALESCE(MAX(first_token_ms_max), 0),
+        COUNT(CASE
+          WHEN request_count > 0
+            OR input_tokens > 0
+            OR output_tokens > 0
+            OR cache_read_tokens > 0
+            OR total_cost_usd > 0
+          THEN 1
+        END),
         MAX(last_used_at),
+        MAX(last_error_at),
         ?
       FROM usage_stats_daily
       WHERE stat_date >= ?
@@ -1555,12 +1655,22 @@ function prepareUsageScopeRangeWindowRefreshTempTable(database: DatabaseSync, ta
       start_date TEXT NOT NULL,
       end_date TEXT NOT NULL,
       request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      active_days INTEGER NOT NULL DEFAULT 0,
       last_used_at TEXT,
+      last_error_at TEXT,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, scope_type, scope_id, start_date, end_date)
     )
@@ -1616,7 +1726,10 @@ function publishUsageScopeRangeWindowSnapshots(database: DatabaseSync, startDate
     database.prepare(`
       INSERT INTO usage_scope_range_windows (
         system_account_id, scope_type, scope_id, start_date, end_date,
-        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+        request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+        cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+        last_used_at, last_error_at, updated_at
       )
       SELECT
         system_account_id,
@@ -1625,12 +1738,22 @@ function publishUsageScopeRangeWindowSnapshots(database: DatabaseSync, startDate
         start_date,
         end_date,
         request_count,
+        success_count,
+        error_count,
         input_tokens,
         output_tokens,
         cache_read_tokens,
         cache_read_cost_usd,
         total_cost_usd,
+        duration_ms_sum,
+        duration_ms_count,
+        duration_ms_max,
+        first_token_ms_sum,
+        first_token_ms_count,
+        first_token_ms_max,
+        active_days,
         last_used_at,
+        last_error_at,
         updated_at
       FROM ${tempTableName}
     `).run()
@@ -1844,7 +1967,7 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 
   const summaryRow = database.prepare(`
     SELECT ? AS account_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd AS cache_read_cost, cache_read_cost_usd, total_cost_usd AS total_cost,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost,
       duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
     FROM usage_overview_summary_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
@@ -1957,7 +2080,7 @@ function loadProcessEventLoopTrendWindowRows(database: DatabaseSync, range: Acco
 function processEventLoopPeakRows(database: DatabaseSync, startedAt: string): Array<Record<string, unknown>> {
   const peakStatement = database.prepare(`
     SELECT ${processEventLoopLatestSelectColumns()}
-    FROM process_event_loop_samples
+    FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_role_peak
     WHERE process_role = ?
       AND sampled_at >= ?
       AND event_loop_lag_ms IS NOT NULL
@@ -2076,7 +2199,7 @@ function latestIgnoredUsageRecordCursor(database: DatabaseSync, safeCreatedBefor
       SELECT created_at, id
       FROM usage_records
       WHERE created_at <= ?
-        AND COALESCE(traffic_source, 'gateway') = 'cooldown_retest'
+        AND traffic_source = 'cooldown_retest'
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at DESC, id DESC
       LIMIT 1
@@ -2091,7 +2214,7 @@ function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: 
       SELECT created_at
       FROM usage_records
       WHERE created_at <= ?
-        AND COALESCE(traffic_source, 'gateway') <> 'cooldown_retest'
+        AND traffic_source <> 'cooldown_retest'
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at DESC, id DESC
       LIMIT 1

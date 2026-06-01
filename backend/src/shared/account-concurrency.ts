@@ -1,4 +1,5 @@
 const currentConcurrencyByAccountId = new Map<string, number>()
+const currentConcurrencyByAccountLaneKey = new Map<string, number>()
 const inFlightSlotsByAccountId = new Map<string, Map<number, AccountInFlightSlot>>()
 const releaseListeners = new Set<(event: AccountConcurrencyReleaseEvent) => void>()
 let nextSlotId = 1
@@ -69,6 +70,7 @@ export function tryAcquireAccountConcurrency(
   const accountSlots = inFlightSlotsByAccountId.get(accountId) ?? new Map<number, AccountInFlightSlot>()
   accountSlots.set(slotId, { slotId, startedAtMs: Date.now(), lane })
   inFlightSlotsByAccountId.set(accountId, accountSlots)
+  incrementAccountConcurrencyLane(accountId, lane)
   let released = false
   return {
     acquired: true,
@@ -88,15 +90,7 @@ export function tryAcquireAccountConcurrency(
 
 export function getAccountCurrentConcurrency(accountId: string, lane?: AccountConcurrencyLane): number {
   if (lane) {
-    const slots = inFlightSlotsByAccountId.get(accountId)
-    if (!slots) return 0
-    let count = 0
-    for (const slot of slots.values()) {
-      if (slot.lane === lane) {
-        count += 1
-      }
-    }
-    return count
+    return Math.max(0, Math.trunc(currentConcurrencyByAccountLaneKey.get(accountLaneKey(accountId, lane)) ?? 0))
   }
   return Math.max(0, Math.trunc(currentConcurrencyByAccountId.get(accountId) ?? 0))
 }
@@ -172,6 +166,7 @@ export function sumAccountCurrentConcurrency(accountIds: string[], concurrencyBy
 
 export function clearAccountConcurrency(): void {
   currentConcurrencyByAccountId.clear()
+  currentConcurrencyByAccountLaneKey.clear()
   inFlightSlotsByAccountId.clear()
 }
 
@@ -187,7 +182,8 @@ function releaseAccountConcurrency(accountId: string, slotId: number): void {
   const slots = inFlightSlotsByAccountId.get(accountId)
   let releasedLane: AccountConcurrencyLane = 'text'
   if (slots) {
-    releasedLane = slots.get(slotId)?.lane ?? releasedLane
+    const releasedSlot = slots.get(slotId)
+    releasedLane = releasedSlot?.lane ?? releasedLane
     slots.delete(slotId)
     if (slots.size === 0) {
       inFlightSlotsByAccountId.delete(accountId)
@@ -199,6 +195,7 @@ function releaseAccountConcurrency(accountId: string, slotId: number): void {
   } else {
     currentConcurrencyByAccountId.set(accountId, current - 1)
   }
+  decrementAccountConcurrencyLane(accountId, releasedLane)
   notifyAccountConcurrencyReleased({ accountId, lane: releasedLane })
 }
 
@@ -233,6 +230,25 @@ function normalizeLaneLimit(value: unknown, concurrencyLimit: number, lane: Acco
 
 function normalizePositiveDuration(value: number, fallback: number): number {
   return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : fallback
+}
+
+function incrementAccountConcurrencyLane(accountId: string, lane: AccountConcurrencyLane): void {
+  const key = accountLaneKey(accountId, lane)
+  currentConcurrencyByAccountLaneKey.set(key, (currentConcurrencyByAccountLaneKey.get(key) ?? 0) + 1)
+}
+
+function decrementAccountConcurrencyLane(accountId: string, lane: AccountConcurrencyLane): void {
+  const key = accountLaneKey(accountId, lane)
+  const current = Math.max(0, Math.trunc(currentConcurrencyByAccountLaneKey.get(key) ?? 0))
+  if (current <= 1) {
+    currentConcurrencyByAccountLaneKey.delete(key)
+    return
+  }
+  currentConcurrencyByAccountLaneKey.set(key, current - 1)
+}
+
+function accountLaneKey(accountId: string, lane: AccountConcurrencyLane): string {
+  return `${accountId}:${lane}`
 }
 
 function noop(): void {}

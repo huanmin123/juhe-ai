@@ -17,12 +17,12 @@ const settings: GatewaySettings = {
   streamFailureThresholdWindowMinutes: 10
 }
 
-assert.equal(validateAccountErrorHandlingRules([{ name: '429', status_codes: [429], action: 'temp_unschedulable' }]).valid, true)
-assert.equal(validateAccountErrorHandlingRules([{ name: '200', status_codes: [200], action: 'temp_unschedulable' }]).valid, false)
-assert.equal(validateAccountErrorHandlingRules([{ name: 'error code 200', error_codes: ['200'], action: 'temp_unschedulable' }]).valid, false)
-assert.equal(validateAccountErrorHandlingRules([{ name: '2xx', status_codes: '2xx', action: 'temp_unschedulable' }]).valid, false)
-assert.equal(validateAccountErrorHandlingRules([{ name: 'range', status_codes: '200-299', action: 'temp_unschedulable' }]).valid, false)
-assert.equal(validateAccountErrorHandlingRules([{ enabled: false, name: 'disabled 200', status_codes: [200], action: 'temp_unschedulable' }]).valid, true)
+assert.equal(validateAccountErrorHandlingRules([tempRule({ name: '429', status_codes: [429] })]).valid, true)
+assert.equal(validateAccountErrorHandlingRules([tempRule({ name: '200', status_codes: [200] })]).valid, false)
+assert.equal(validateAccountErrorHandlingRules([tempRule({ name: 'error code 200', error_codes: ['200'] })]).valid, false)
+assert.equal(validateAccountErrorHandlingRules([tempRule({ name: '2xx', status_codes: '2xx' })]).valid, false)
+assert.equal(validateAccountErrorHandlingRules([tempRule({ name: 'range', status_codes: '200-299' })]).valid, false)
+assert.equal(validateAccountErrorHandlingRules([tempRule({ enabled: false, name: 'disabled 429', status_codes: [429] })]).valid, true)
 assert.equal(validateAccountCredentialsErrorHandlingRules({ error_handling_rules: [{ name: '201', status_codes: [201] }] }).valid, false)
 
 const decision = decideAccountErrorPolicy({
@@ -31,7 +31,7 @@ const decision = decideAccountErrorPolicy({
   type: 'api_key',
   credentials: {
     error_handling_rules: [
-      { name: 'manual 200', status_codes: [200], action: 'temp_unschedulable', durationMinutes: 5 }
+      tempRule({ name: 'manual 200', status_codes: [200] })
     ]
   },
   status: 'active'
@@ -40,3 +40,15 @@ const decision = decideAccountErrorPolicy({
 assert.equal(decision, undefined, '运行时不应对 2xx 状态码命中账号错误策略')
 
 console.log('account error policy validation regression passed')
+
+function tempRule(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    enabled: true,
+    name: '临时避让规则',
+    priority: 10,
+    status_codes: [429],
+    action: 'temp_unschedulable',
+    durationMinutes: 5,
+    ...overrides
+  }
+}

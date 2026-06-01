@@ -62,6 +62,7 @@ interface HighConcurrencyQueueAccountCapacity {
 }
 
 const queues = new Map<string, HighConcurrencyQueueState>()
+const queueItemsByAccountLane = new Map<string, Set<HighConcurrencyQueueItem>>()
 let nextQueueItemId = 1
 
 subscribeAccountConcurrencyRelease((event) => {
@@ -125,6 +126,7 @@ export function waitForHighConcurrencyGroupCapacity(input: HighConcurrencyQueueW
       input.signal.addEventListener('abort', item.abortListener, { once: true })
     }
     state.items.push(item)
+    indexQueueItem(item)
     state.perApiKeyCount.set(apiKeyKey, perApiKeyQueueSize + 1)
   })
 }
@@ -150,6 +152,7 @@ export function clearHighConcurrencyGroupQueues(): void {
     }
   }
   queues.clear()
+  queueItemsByAccountLane.clear()
 }
 
 function createQueueState(groupKey: string, lane: AccountConcurrencyLane): HighConcurrencyQueueState {
@@ -175,12 +178,17 @@ function wakeQueuesForReleasedAccount(accountId: string, releasedLane: AccountCo
 }
 
 function findQueueWakeCandidate(accountId: string, lane: AccountConcurrencyLane): { state: HighConcurrencyQueueState; item: HighConcurrencyQueueItem } | undefined {
-  for (const state of queues.values()) {
-    if (state.lane !== lane) {
+  const candidates = queueItemsByAccountLane.get(accountLaneIndexKey(accountId, lane))
+  if (!candidates) {
+    return undefined
+  }
+  for (const item of candidates) {
+    const state = queues.get(item.groupKey)
+    if (!state) {
+      unindexQueueItem(item)
       continue
     }
-    const item = state.items.find((candidate) => candidate.accountIds.has(accountId) && queueItemCanAcquireAfterRelease(candidate, accountId))
-    if (item) {
+    if (queueItemCanAcquireAfterRelease(item, accountId)) {
       return { state, item }
     }
   }
@@ -223,6 +231,7 @@ function hasImmediateAccountCapacity(
 
 function completeQueueItem(item: HighConcurrencyQueueItem, result: HighConcurrencyQueueWaitResult): void {
   const state = queues.get(item.groupKey)
+  unindexQueueItem(item)
   if (state) {
     const index = state.items.findIndex((candidate) => candidate.id === item.id)
     if (index >= 0) {
@@ -238,6 +247,29 @@ function completeQueueItem(item: HighConcurrencyQueueItem, result: HighConcurren
     item.signal.removeEventListener('abort', item.abortListener)
   }
   item.resolve(result)
+}
+
+function indexQueueItem(item: HighConcurrencyQueueItem): void {
+  for (const accountId of item.accountIds) {
+    const key = accountLaneIndexKey(accountId, item.lane)
+    const items = queueItemsByAccountLane.get(key) ?? new Set<HighConcurrencyQueueItem>()
+    items.add(item)
+    queueItemsByAccountLane.set(key, items)
+  }
+}
+
+function unindexQueueItem(item: HighConcurrencyQueueItem): void {
+  for (const accountId of item.accountIds) {
+    const key = accountLaneIndexKey(accountId, item.lane)
+    const items = queueItemsByAccountLane.get(key)
+    if (!items) {
+      continue
+    }
+    items.delete(item)
+    if (items.size === 0) {
+      queueItemsByAccountLane.delete(key)
+    }
+  }
 }
 
 function decrementPerApiKeyCount(state: HighConcurrencyQueueState, apiKeyKey: string): void {
@@ -266,6 +298,10 @@ function rejectedQueueWait(
 
 function highConcurrencyGroupQueueKey(systemAccountId: string, groupId: string, lane: AccountConcurrencyLane): string {
   return `${systemAccountId}:${groupId}:${lane}`
+}
+
+function accountLaneIndexKey(accountId: string, lane: AccountConcurrencyLane): string {
+  return `${lane}:${accountId}`
 }
 
 function buildAccountCapacities(

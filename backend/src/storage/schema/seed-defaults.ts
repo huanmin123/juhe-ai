@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { hashPassword } from '../crypto.js'
+import { defaultRequestQuotaHourlyWindowHours } from '../request-quota-limits.js'
 import { DEFAULT_GLOBAL_SETTINGS, DEFAULT_OPENAI_GROUP, DEFAULT_SYSTEM_SETTINGS, OPENAI_PROVIDER_SEED } from '../schema-defaults.js'
 
 export function seedDefaults(database: DatabaseSync): void {
@@ -32,6 +33,14 @@ export function seedDefaults(database: DatabaseSync): void {
   `)
   for (const [key, value] of DEFAULT_GLOBAL_SETTINGS) {
     globalStatement.run(key, JSON.stringify(value), now)
+  }
+
+  const quotaWindowStatement = database.prepare(`
+    INSERT OR IGNORE INTO request_quota_hourly_window_configs (window_hours, created_at, updated_at)
+    VALUES (?, ?, ?)
+  `)
+  for (const hours of defaultRequestQuotaHourlyWindowHours) {
+    quotaWindowStatement.run(hours, now, now)
   }
 
   database

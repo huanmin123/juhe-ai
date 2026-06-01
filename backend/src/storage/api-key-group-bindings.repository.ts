@@ -47,15 +47,24 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
       `)
       .all(...chunk) as unknown as ApiKeyGroupBindingRow[]
     for (const row of rows) {
+      if (!Number.isInteger(row.priority) || row.priority <= 0) {
+        throw new Error(`API Key 分组绑定优先级无效：${row.id}`)
+      }
+      if (row.status !== 'active' && row.status !== 'disabled') {
+        throw new Error(`API Key 分组绑定状态无效：${row.id}`)
+      }
+      if (row.group_enabled !== 0 && row.group_enabled !== 1) {
+        throw new Error(`API Key 分组绑定关联分组状态无效：${row.id}`)
+      }
       const item: ApiKeyGroupBindingSummary = {
         id: row.id,
         groupId: row.group_id,
         groupName: row.group_name ?? undefined,
         providerCode: row.provider_code ?? undefined,
-        priority: Number.isFinite(row.priority) ? row.priority : 1,
+        priority: row.priority,
         weight: normalizeApiKeyGroupBindingWeight(row.weight),
-        status: row.status === 'disabled' ? 'disabled' : 'active',
-        groupEnabled: row.group_enabled !== 0
+        status: row.status,
+        groupEnabled: row.group_enabled === 1
       }
       const existing = result.get(row.api_key_id) ?? []
       existing.push(item)

@@ -203,7 +203,7 @@ function main(): void {
 
   console.log(`Mockdata 已生成：使用记录 ${usageRecords.length} 条，审计 ${Math.ceil(usageRecords.length / 4)} 条，模型检测 ${modelCheckCounts.runs} 次，耗时 ${Date.now() - startedAt}ms`)
   console.log(`业务库：${runtimeConfig.databasePath}`)
-  console.log(`数据集库：${datasetDatabasePath()}`)
+  console.log(`数据集目录库：${datasetDatabasePath()}`)
   console.log(`统计结果库：${statsDatabasePath()}`)
   console.log(`摘要文件：${mockdataSummaryPath()}`)
 }
@@ -1268,6 +1268,7 @@ function buildUsageRecord(input: {
     id: `${idPrefix}usage_${String(input.ordinal + 1).padStart(5, '0')}`,
     systemAccountId: input.scenario.owner.id,
     traceId,
+    trafficSource: 'gateway',
     clientIp: `${input.scenario.clientIpBase}${20 + (input.ordinal % 180)}`,
     apiKeyId: input.scenario.key.id,
     groupId: input.scenario.group.id,
@@ -1910,7 +1911,8 @@ function createStorageMockdata(created: CreatedMockdata, options: MockdataOption
     ['system_teams', Object.keys(created.teams).length]
   ] as const
   const datasetTables = [
-    ['usage_records', options.days * options.dailyRequests],
+    ['usage_record_shards', Math.min(16, Math.max(1, options.days))],
+    ['usage_record_shard_entries', options.days * options.dailyRequests],
     ['audit_logs', Math.ceil(options.days * options.dailyRequests / 4)],
     ['operation_logs', 90],
     ['runtime_logs', Math.min(240, options.days * options.dailyRequests)]

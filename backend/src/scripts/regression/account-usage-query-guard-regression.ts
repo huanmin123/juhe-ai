@@ -312,10 +312,11 @@ try {
         OR usage_window.total_cost_usd > 0
         OR usage_window.last_used_at IS NOT NULL
       )
+    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
     LIMIT ?
-  `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', range.startDate, range.endDate, 10], 'idx_usage_scope_range_windows_range_lookup')
+  `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', range.startDate, range.endDate, 10], 'idx_usage_scope_range_windows_account_usage_order')
 
-  console.log('账号用量查询防护回归通过：关键词先解析账号 ID，手动选中账户按窗口 scope_id 补入，窗口查询不再接收前导通配符，并使用日期范围索引')
+  console.log('账号用量查询防护回归通过：关键词先解析账号 ID，手动选中账户按窗口 scope_id 补入，窗口查询不再接收前导通配符，并使用范围窗口排序索引')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -352,5 +353,6 @@ function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexNam
     .all(...params)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))
     .join('\n')
+  assert(!/USE TEMP B-TREE/i.test(details), `查询计划不应创建临时排序树，实际计划：${details}`)
   assert(details.includes(indexName), `查询计划应使用 ${indexName}，实际计划：${details}`)
 }

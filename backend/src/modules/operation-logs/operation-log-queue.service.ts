@@ -9,6 +9,7 @@ import { sendOperationLogsToWorker } from '../background/background-ipc.js'
 const operationLogFlushIntervalMs = 100
 const operationLogRetryPolicy = fixedRetryPolicy('operation_log_queue_flush', 1000)
 const operationLogBatchSize = 200
+const operationLogShutdownFlushMaxBatches = 1
 const operationLogQueueMaxItems = 5_000
 const operationLogQueueMaxBytes = 32 * 1024 * 1024
 
@@ -93,19 +94,19 @@ export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): 
   const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     do {
-      const batch = pendingOperationLogs.splice(0, operationLogBatchSize)
+      const batch = pendingOperationLogs.slice(0, operationLogBatchSize)
       if (batch.length === 0) {
         break
       }
       flushedBatches += 1
+      const batchBytes = sumQueuedOperationLogBytes(batch)
 
       try {
-        pendingOperationLogBytes = Math.max(0, pendingOperationLogBytes - sumQueuedOperationLogBytes(batch))
         createOperationLogsBatch(batch.map((item) => item.input))
+        pendingOperationLogs.splice(0, batch.length)
+        pendingOperationLogBytes = Math.max(0, pendingOperationLogBytes - batchBytes)
       } catch (error) {
         failed = true
-        pendingOperationLogs = [...batch, ...pendingOperationLogs]
-        pendingOperationLogBytes = sumQueuedOperationLogBytes(pendingOperationLogs)
         flushFailureCount += 1
         logger.error(errorLogFields(error, {
           event: 'operation_log_queue_flush_failed',
@@ -129,6 +130,10 @@ export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): 
 
 export function flushAllOperationLogQueue(): void {
   flushOperationLogQueue({ drain: true, retryOnFailure: false })
+}
+
+export function flushOperationLogQueueForShutdown(): void {
+  flushOperationLogQueue({ drain: true, retryOnFailure: false, maxBatches: operationLogShutdownFlushMaxBatches })
 }
 
 export function getOperationLogQueueRuntime(): {
@@ -157,11 +162,7 @@ export function installOperationLogQueueShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('beforeExit', flushAllOperationLogQueue)
-  process.once('exit', flushAllOperationLogQueue)
-
-  process.once('SIGINT', () => exitAfterOperationLogFlush(0))
-  process.once('SIGTERM', () => exitAfterOperationLogFlush(0))
+  process.once('beforeExit', flushOperationLogQueueForShutdown)
 }
 
 function enqueueOperationLogLocal(input: OperationLogInput): void {
@@ -181,11 +182,6 @@ function enqueueOperationLogLocal(input: OperationLogInput): void {
   pendingOperationLogs.push(queued)
   pendingOperationLogBytes += queued.bytes
   scheduleOperationLogFlush(pendingOperationLogs.length >= operationLogBatchSize ? 0 : operationLogFlushIntervalMs)
-}
-
-function exitAfterOperationLogFlush(exitCode: number): never {
-  flushAllOperationLogQueue()
-  process.exit(exitCode)
 }
 
 function scheduleOperationLogFlush(delayMs: number): void {

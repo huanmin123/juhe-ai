@@ -1,7 +1,10 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+
+assertQueueShutdownFlushIsBounded()
 
 runtimeConfig.processRole = 'worker'
 runtimeConfig.log.consoleEnabled = false
@@ -181,4 +184,27 @@ function runtimeLogLine(index: number): string {
     event: 'worker_local_queue_limit',
     msg: `worker 本地队列上限回归 ${index}`
   })
+}
+
+function assertQueueShutdownFlushIsBounded(): void {
+  const queueFiles = [
+    '../../modules/gateway/usage-record-queue.service.ts',
+    '../../modules/operation-logs/operation-log-queue.service.ts',
+    '../../modules/record-maintenance/record-maintenance-queue.service.ts',
+    '../../modules/runtime-logs/runtime-log-index-queue.service.ts',
+    '../../modules/audit-logs/audit-log-queue.service.ts'
+  ]
+
+  for (const file of queueFiles) {
+    const source = readFileSync(new URL(file, import.meta.url), 'utf8')
+    assert(!/process\.once\(\s*['"]exit['"]/.test(source), `${file} 不应注册 exit 同步 flush 钩子`)
+    assert(source.includes('QueueForShutdown'), `${file} 应提供退出路径专用的有限 flush`)
+    assert(source.includes('ShutdownFlushMaxBatches = 1'), `${file} 退出路径 flush 必须按批次数硬限制`)
+    assert(source.includes('maxBatches:'), `${file} 退出路径 flush 必须传入 maxBatches`)
+  }
+
+  const workerSource = readFileSync(new URL('../../worker.ts', import.meta.url), 'utf8')
+  assert(workerSource.includes('installWorkerSignalShutdownHooks()'), 'worker 应由统一信号钩子协调各本地队列退出 flush')
+  assert(workerSource.includes('flushWorkerQueuesForShutdown'), 'worker 信号退出应统一有限 flush 全部本地队列')
+  assert(workerSource.includes('await flushAuditLogQueueForShutdown()'), 'worker 信号退出应等待审计日志异步有限 flush 完成')
 }

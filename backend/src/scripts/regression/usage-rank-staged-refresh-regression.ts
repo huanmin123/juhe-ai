@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -35,6 +35,8 @@ const teamFilterId = 'team_staged_refresh'
 const granteeSystemAccountId = 'sys_grantee_staged_refresh'
 
 try {
+  assertSourceGuards()
+
   const database = databaseModule.getStatsDatabase()
   const today = usageStatsRepository.normalizeDefaultUsageStatsRange().endDate
   const fixedDates = usageStatsWindowHelpers.fixedUsageStatsDateKeys(usageStatsHelpers.usageStatsTimezone(), today)
@@ -178,4 +180,11 @@ function authorizationUserRequestCount(statDate: string): number {
       AND resource_filter_id = ''
   `).get(systemAccountId, statDate, statDate, teamFilterId, granteeSystemAccountId) as { requestCount?: number } | undefined
   return Number(row?.requestCount ?? 0)
+}
+
+function assertSourceGuards(): void {
+  const source = readFileSync(resolve('src/storage/usage-stats.repository.ts'), 'utf8')
+  assert.match(source, /maxUsageOverviewSnapshotScopes/, '统计概览 scope 发现必须有固定上限')
+  assert.match(source, /FROM usage_stats_totals\s+WHERE scope_type = 'system_account'\s+ORDER BY updated_at DESC, system_account_id ASC, scope_id ASC\s+LIMIT \?/, '统计概览 scope 发现必须按更新时间窗口读取')
+  assert.doesNotMatch(source, /FROM usage_stats_totals\s+WHERE scope_type = 'system_account'\s+`\)\.all\(\)/, '统计概览 scope 发现不应无界读取全部 system_account scope')
 }

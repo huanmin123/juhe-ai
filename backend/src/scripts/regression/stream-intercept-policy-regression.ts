@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   OpenAIStreamInterceptBuffer
@@ -57,6 +58,7 @@ const settings: GatewaySettings = {
 }
 
 {
+  assertStreamInterceptPolicyRepositoryGuards()
   const invalidCombinationValidation = validateAccountStreamInterceptRules([
     {
       enabled: true,
@@ -74,6 +76,7 @@ const settings: GatewaySettings = {
     {
       enabled: true,
       name: '模板账户规则',
+      priority: 10,
       match: {
         textIncludes: ['广告污染']
       },
@@ -81,6 +84,49 @@ const settings: GatewaySettings = {
     }
   ])
   assert.equal(actionValidation.valid, true, '账户级流式规则应接受 action 模板')
+  const missingRuntimeFieldsValidation = validateAccountStreamInterceptRules([
+    {
+      action: 'fail_stream',
+      match: {
+        textIncludes: ['广告污染']
+      }
+    }
+  ])
+  assert.equal(missingRuntimeFieldsValidation.valid, false, '账户级流式规则保存期必须拒绝缺少运行时必填字段的配置')
+  const tooManyMatchersValidation = validateAccountStreamInterceptRules([
+    {
+      enabled: true,
+      name: '过多匹配项账户规则',
+      priority: 20,
+      match: {
+        textIncludes: Array.from({ length: 51 }, (_, index) => `污染-${index}`)
+      },
+      action: 'fail_stream'
+    }
+  ])
+  assert.equal(tooManyMatchersValidation.valid, false, '账户级流式规则不应静默截断超过 50 项的匹配列表')
+  assert.throws(
+    () => resolveRuntimeStreamInterceptPolicies({
+      account: {
+        providerCode: 'openai',
+        credentials: {
+          stream_intercept_rules: [
+            {
+              enabled: true,
+              name: '运行时过多匹配项账户规则',
+              priority: 30,
+              match: {
+                textIncludes: Array.from({ length: 51 }, (_, index) => `污染-${index}`)
+              },
+              action: 'fail_stream'
+            }
+          ]
+        }
+      } as never
+    }),
+    /不能超过 50 项/,
+    '运行时账户流式规则不应截断超过 50 项的匹配列表'
+  )
 }
 
 {
@@ -336,6 +382,7 @@ const settings: GatewaySettings = {
           {
             id: 'account_rule_high_priority',
             name: '账户高优先级数字规则',
+            enabled: true,
             priority: 9999,
             match: { textIncludes: ['广告污染'] },
             action: 'fail_stream'
@@ -375,4 +422,32 @@ const settings: GatewaySettings = {
   )
 }
 
-console.log('流式拦截策略回归通过：事件丢弃、流丢弃、失败替换、试运行、来源排序、写下游前服务端重试和图像文本扫描跳过符合预期')
+console.log('流式拦截策略回归通过：策略读取上限、事件丢弃、流丢弃、失败替换、试运行、来源排序、写下游前服务端重试和图像文本扫描跳过符合预期')
+
+function assertStreamInterceptPolicyRepositoryGuards(): void {
+  const repositorySource = readFileSync(new URL('../../storage/stream-intercept-policy.repository.ts', import.meta.url), 'utf8')
+  const gatewayListBody = sourceFunctionBlock(repositorySource, 'export function listActiveStreamInterceptPoliciesForGateway')
+  const listBody = sourceFunctionBlock(repositorySource, 'function listStreamInterceptPolicyRows')
+  const createBody = sourceFunctionBlock(repositorySource, 'export function createStreamInterceptPolicy')
+  assert(repositorySource.includes('maxManagementStreamInterceptPolicies'), '管理端流式拦截策略必须有固定数量上限')
+  assert(!repositorySource.includes('normalizeSetValue('), '流式拦截策略不应再用旧动作兜底模板吞掉非法 action')
+  assert(!repositorySource.includes('Number(value)'), '流式拦截策略写入路径不应接收数字字符串')
+  assert(!repositorySource.includes('value.split(/[,;'), '流式拦截策略匹配条件不应接收旧字符串列表格式')
+  assert(repositorySource.includes('normalizePolicyAction'), '流式拦截策略必须显式校验 action 模板')
+  assert(repositorySource.includes('短期避让模板需要配置避让秒数'), '短期避让策略必须显式要求 TTL')
+  assert(gatewayListBody.includes('provider_code = ?'), '网关运行态读取流式拦截策略必须按供应商收窄')
+  assert(gatewayListBody.includes('LIMIT ?'), '网关运行态读取流式拦截策略必须带固定上限')
+  assert(gatewayListBody.includes('maxManagementStreamInterceptPolicies'), '网关运行态读取流式拦截策略必须复用管理端数量上限')
+  assert(listBody.includes('LIMIT ?'), '管理端策略列表不能无上限读取策略表')
+  assert(createBody.includes('assertManagementPolicyCapacity()'), '创建管理端流式拦截策略前必须校验总量上限')
+}
+
+function sourceFunctionBlock(source: string, marker: string): string {
+  const start = source.indexOf(marker)
+  assert(start >= 0, `未找到源码片段：${marker}`)
+  const nextFunction = source.indexOf('\nfunction ', start + marker.length)
+  const nextExportFunction = source.indexOf('\nexport function ', start + marker.length)
+  const candidates = [nextFunction, nextExportFunction].filter((index) => index >= 0)
+  const end = candidates.length ? Math.min(...candidates) : source.length
+  return source.slice(start, end)
+}

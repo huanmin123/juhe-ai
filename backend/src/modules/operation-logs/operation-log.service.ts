@@ -236,8 +236,13 @@ function isSensitiveField(field: string): boolean {
 
 function operationLogMaxChangesPerRecord(settings: Record<string, unknown>): number {
   const value = settings.operationLogMaxChangesPerRecord
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return Number.isFinite(number) ? Math.max(1, Math.min(500, Math.trunc(number))) : 100
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error('系统设置 operationLogMaxChangesPerRecord 必须是整数')
+  }
+  if (value < 1 || value > 500) {
+    throw new Error('系统设置 operationLogMaxChangesPerRecord 必须在 1 到 500 之间')
+  }
+  return value
 }
 
 function operationLogComparableValue(value: unknown): string {

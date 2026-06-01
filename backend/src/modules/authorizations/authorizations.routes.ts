@@ -18,6 +18,7 @@ import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-co
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import type { ResourceAuthorizationSummary } from '../../domain/types.js'
 
 export const authorizationsRouter = Router()
@@ -69,9 +70,9 @@ const createAuthorizationSchema = z.object({
   targetGroupId: z.string().trim().min(1, '目标分组不能为空').optional(),
   remark: z.string().trim().max(200).optional(),
   expiresAt: z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确').optional(),
-  limits: z.record(z.string(), z.unknown()).optional(),
+  limits: requestQuotaLimitsSchema.optional(),
   modelPolicy: z.record(z.string(), z.unknown()).optional()
-}).superRefine((value, ctx) => {
+}).strict().superRefine((value, ctx) => {
   if (value.resourceType === 'account' && value.granteeType === 'system_account' && !value.targetGroupId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -94,8 +95,8 @@ const updateAuthorizationSchema = z.object({
     z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确'),
     z.null()
   ]).optional(),
-  limits: z.record(z.string(), z.unknown()).nullable().optional()
-}).refine((value) => Object.prototype.hasOwnProperty.call(value, 'status') || Object.prototype.hasOwnProperty.call(value, 'expiresAt') || Object.prototype.hasOwnProperty.call(value, 'limits'), {
+  limits: requestQuotaLimitsSchema.nullable().optional()
+}).strict().refine((value) => Object.prototype.hasOwnProperty.call(value, 'status') || Object.prototype.hasOwnProperty.call(value, 'expiresAt') || Object.prototype.hasOwnProperty.call(value, 'limits'), {
   message: '请提供要修改的授权内容'
 })
 
@@ -104,8 +105,8 @@ const updateAuthorizationExpireSchema = z.object({
     z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确'),
     z.null()
   ]),
-  limits: z.record(z.string(), z.unknown()).nullable().optional()
-})
+  limits: requestQuotaLimitsSchema.nullable().optional()
+}).strict()
 
 authorizationsRouter.get('/', (req, res) => {
   const parsed = parseOrBadRequest(authorizationsQuerySchema, req.query, '查询参数不合法')

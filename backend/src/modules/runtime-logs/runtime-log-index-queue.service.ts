@@ -15,6 +15,7 @@ import { sendRuntimeLogLineToWorker } from '../background/background-ipc.js'
 const runtimeLogFlushIntervalMs = 200
 const runtimeLogRetryPolicy = fixedRetryPolicy('runtime_log_index_queue_flush', 1000)
 const runtimeLogBatchSize = 500
+const runtimeLogShutdownFlushMaxBatches = 1
 const runtimeLogMaxRawJsonChars = 128 * 1024
 const runtimeLogQueueMaxItems = 5_000
 const runtimeLogQueueMaxBytes = 32 * 1024 * 1024
@@ -39,6 +40,7 @@ let shutdownHooksInstalled = false
 interface RuntimeLogFlushOptions {
   drain?: boolean
   retryOnFailure?: boolean
+  maxBatches?: number
 }
 
 export interface RuntimeLogLineIndexOptions {
@@ -60,7 +62,8 @@ export interface RuntimeLogIndexRuntime {
 }
 
 export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): void {
-  if (runtimeConfig.processRole === 'server' && sendRuntimeLogLineToWorker(rawLine, options)) {
+  if (runtimeConfig.processRole === 'server') {
+    sendRuntimeLogLineToWorker(rawLine, options)
     return
   }
 
@@ -103,28 +106,31 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
   flushing = true
   let shouldRetry = false
   let failed = false
+  let flushedBatches = 0
+  const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     do {
-      const batch = pendingRuntimeLogs.splice(0, runtimeLogBatchSize)
+      const batch = pendingRuntimeLogs.slice(0, runtimeLogBatchSize)
       if (batch.length === 0) {
         break
       }
-      pendingRuntimeLogBytes = Math.max(0, pendingRuntimeLogBytes - sumQueuedRuntimeLogBytes(batch))
+      flushedBatches += 1
+      const batchBytes = sumQueuedRuntimeLogBytes(batch)
 
       try {
         createRuntimeLogsBatch(batch.map((item) => item.input))
+        pendingRuntimeLogs.splice(0, batch.length)
+        pendingRuntimeLogBytes = Math.max(0, pendingRuntimeLogBytes - batchBytes)
         flushLastSuccessAt = nowIso()
         flushLastError = undefined
       } catch (error) {
         failed = true
-        pendingRuntimeLogs = [...batch, ...pendingRuntimeLogs]
-        pendingRuntimeLogBytes = sumQueuedRuntimeLogBytes(pendingRuntimeLogs)
         flushLastError = error instanceof Error ? error.message : String(error)
         writeRuntimeLogIndexError(`运行日志索引写入失败：${flushLastError}`)
         shouldRetry = options.retryOnFailure !== false
         break
       }
-    } while (options.drain && pendingRuntimeLogs.length > 0)
+    } while (options.drain && pendingRuntimeLogs.length > 0 && flushedBatches < maxBatches)
   } finally {
     flushing = false
   }
@@ -137,6 +143,10 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
 
 export function flushAllRuntimeLogIndexQueue(): boolean {
   return flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
+}
+
+export function flushRuntimeLogIndexQueueForShutdown(): boolean {
+  return flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false, maxBatches: runtimeLogShutdownFlushMaxBatches })
 }
 
 export function getRuntimeLogIndexRuntime(): RuntimeLogIndexRuntime {
@@ -158,8 +168,7 @@ export function installRuntimeLogIndexQueueShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('beforeExit', flushAllRuntimeLogIndexQueue)
-  process.once('exit', flushAllRuntimeLogIndexQueue)
+  process.once('beforeExit', flushRuntimeLogIndexQueueForShutdown)
 }
 
 export function clearRuntimeLogIndexQueueForTest(): void {
@@ -280,6 +289,10 @@ function errorMessageFromErr(value: unknown): string | undefined {
 function truncateRawJson(value: string): string {
   if (value.length <= runtimeLogMaxRawJsonChars) return value
   return `${value.slice(0, runtimeLogMaxRawJsonChars)}...[truncated]`
+}
+
+function normalizeMaxBatches(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
 }
 
 function scheduleRuntimeLogFlush(delayMs: number): void {

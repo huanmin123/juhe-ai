@@ -73,7 +73,10 @@ export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map
 }
 
 function auditTrafficSource(value: unknown): AuditLogSummary['trafficSource'] {
-  return value === 'manual_account_test' || value === 'cooldown_retest' ? value : 'gateway'
+  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest') {
+    return value
+  }
+  throw new Error(`非法审计流量来源：${String(value)}`)
 }
 
 export function auditErrorGroupFromRow(row: AuditLogRow, systemAccountNames: Map<string, string>): AuditErrorGroupSummary {

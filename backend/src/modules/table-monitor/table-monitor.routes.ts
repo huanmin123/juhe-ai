@@ -38,9 +38,9 @@ const databaseHistoryQuerySchema = z.object({
 
 const usageRecordsCleanupSchema = z.object({
   cutoffAt: z.string().trim().min(1, '请选择清理截止时间'),
-  batchSize: z.coerce.number().int().min(100).max(10000).optional(),
-  maxBatches: z.coerce.number().int().min(1).max(100).optional()
-})
+  batchSize: z.number().int().min(100).max(10000).optional(),
+  maxBatches: z.number().int().min(1).max(100).optional()
+}).strict()
 
 interface UsageRecordsCleanupResult {
   cutoffAt: string

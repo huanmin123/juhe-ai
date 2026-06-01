@@ -999,7 +999,6 @@ async function clearServerGatewayRuntimeCache(): Promise<void> {
 async function clearServerClientIpPolicyCache(): Promise<void> {
   const policyCache = await import('../gateway/client-ip-policy-cache.service.js')
   policyCache.clearClientIpPolicyCacheLocal()
-  void policyCache.refreshClientIpPolicyCacheLocal()
 }
 
 async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {

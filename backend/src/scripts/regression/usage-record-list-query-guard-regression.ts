@@ -179,6 +179,7 @@ try {
     {
       id: 'usage_list_query_guard_exact',
       traceId: 'trace-usage-list-query-guard-exact',
+      trafficSource: 'gateway',
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: account.id,
@@ -194,6 +195,7 @@ try {
     {
       id: 'usage_list_query_guard_prefix_only',
       traceId: 'trace-usage-list-query-guard-prefix-only',
+      trafficSource: 'gateway',
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: account.id,
@@ -209,6 +211,7 @@ try {
     {
       id: 'usage_list_query_guard_middle_name',
       traceId: 'trace-usage-list-query-guard-middle-name',
+      trafficSource: 'gateway',
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: middleNameAccount.id,
@@ -224,6 +227,7 @@ try {
     {
       id: 'usage_list_query_guard_other_group',
       traceId: 'trace-usage-list-query-guard-other-group',
+      trafficSource: 'gateway',
       apiKeyId: otherApiKey.id,
       groupId: otherGroup.id,
       accountId: otherGroupAccount.id,
@@ -239,6 +243,7 @@ try {
     {
       id: 'usage_list_query_guard_authorized_source_owner_record',
       traceId: 'trace-usage-list-query-guard-authorized-source-owner-record',
+      trafficSource: 'gateway',
       groupId: ownerGroup.id,
       accountId: renamedAuthorizedSourceAccount.id,
       endpoint: '/v1/responses',
@@ -253,6 +258,7 @@ try {
     {
       id: 'usage_list_query_guard_authorized_instance_source_name',
       traceId: 'trace-usage-list-query-guard-authorized-instance-source-name',
+      trafficSource: 'gateway',
       systemAccountId: grantee.id,
       groupId: granteeGroup.id,
       accountId: authorizedInstance.id,
@@ -273,6 +279,7 @@ try {
     {
       id: 'usage_list_query_guard_authorized_instance_inferred_metadata',
       traceId: 'trace-usage-list-query-guard-authorized-instance-inferred-metadata',
+      trafficSource: 'gateway',
       systemAccountId: grantee.id,
       groupId: granteeGroup.id,
       accountId: authorizedInstance.id,
@@ -288,6 +295,7 @@ try {
     {
       id: 'usage_list_query_guard_group_authorized_source_name',
       traceId: 'trace-usage-list-query-guard-group-authorized-source-name',
+      trafficSource: 'gateway',
       systemAccountId: grantee.id,
       groupId: ownerGroup.id,
       accountId: groupAuthorizedSourceAccount.id,
@@ -466,6 +474,7 @@ try {
     {
       id: usageRecordShards.generateUsageRecordId(recentShapeCompactCreatedAt, 'recent-shape-compact'),
       traceId: 'trace-usage-recent-shape-compact',
+      trafficSource: 'gateway',
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: account.id,
@@ -480,6 +489,7 @@ try {
     {
       id: usageRecordShards.generateUsageRecordId(recentShapeMiddleEndpointCreatedAt, 'recent-shape-middle-endpoint'),
       traceId: 'trace-usage-recent-shape-middle-endpoint',
+      trafficSource: 'gateway',
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: account.id,
@@ -553,6 +563,7 @@ try {
       {
         id: routeDefaultWindowInsideId,
         traceId: 'trace-route-default-window-inside',
+        trafficSource: 'gateway',
         apiKeyId: apiKey.id,
         groupId: group.id,
         accountId: account.id,
@@ -567,6 +578,7 @@ try {
       {
         id: routeDefaultWindowOutsideId,
         traceId: 'trace-route-default-window-outside',
+        trafficSource: 'gateway',
         apiKeyId: apiKey.id,
         groupId: group.id,
         accountId: account.id,

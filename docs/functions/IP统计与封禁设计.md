@@ -9,7 +9,7 @@
 - 已实现：后台 `client-ip-stats-aggregation` job 按 usage shard 独立游标增量聚合 IP 统计，不在页面或网关请求路径扫描 `usage_records`。
 - 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、封禁和解封接口。
 - 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用和策略操作。
-- 已实现：网关请求入口只读取 server 进程内 IP 封禁缓存，命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`，封禁命中异步批量写入 `client_ip_policy_hits`；策略缓存由运行态快照和管理端封禁 / 解封变更刷新，认证前缺少 Bearer 或无效 Key 不会为了 IP 策略放大 DB service 读取。
+- 已实现：网关请求入口先读 server 进程内来源级 IP 封禁缓存，命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`，封禁命中异步批量写入 `client_ip_policy_hits`；命中缓冲最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多投递 `1000` 条，超出窗口的新 distinct 命中丢弃并计数，避免多来源封禁流量在主进程形成无界 Map 或大 IPC；有效 API Key 的缓存未命中请求只按当前 `ip_hash` 通过 DB service 精确查询一条 active 策略并写入短 TTL 缓存，缺少 Bearer 或无效 Key 不为 IP 策略额外查库，不随网关 runtime 快照携带全量策略数组。
 - 已实现：受保护外部来源 IP 聚合接口和 IP 消耗排行便利视图，只暴露 IP 聚合事实，不暴露封禁策略、内部账号、API Key、模型或公益站业务关系。
 
 ## 设计目标
@@ -28,7 +28,7 @@
 - IP 统计聚合：按 IP 聚合请求次数、成功 / 失败、Token、成本、活跃天数、首 token / 总耗时样本和、最大总耗时和最近使用时间。
 - IP 运维页面：管理员在“系统运维 / IP管理”查看列表、筛选、排序和策略状态。
 - IP 策略：支持封禁、临时封禁、解封和封禁命中记录。
-- 后台 job：负责注册 IP、写入 IP 聚合、刷新范围窗口、刷新策略运行态缓存。
+- 后台 job：负责注册 IP、写入 IP 聚合和刷新范围窗口；IP 封禁运行态采用来源级短 TTL 缓存，管理端封禁 / 解封只清理 server 缓存，不全量预热策略。
 
 ### 本期不包含
 
@@ -46,7 +46,7 @@
 - 首期只为 IP 写 `daily` 和范围窗口，避免把 IP 维度直接接入全套 `minute / hourly / weekly / monthly / totals` 造成写放大。
 - 统计 scope 使用 `ip_hash`，列表接口再关联 IP 注册表返回可展示 IP。
 - 当前 IP 管理只识别 IPv4；非 IPv4 来源不进入 IP 注册、统计和封禁策略。
-- IP 封禁是网关运行前置判断，必须读运行态缓存，不允许每次请求查库。
+- IP 封禁是网关运行前置判断，优先读来源级运行态缓存；缓存未命中时只能按当前 `ip_hash` 命中索引精确查询一条 active 策略，禁止在网关 runtime 读取、认证失败或缓存刷新中加载全部 active 策略。
 
 ## 数据流
 
@@ -67,8 +67,9 @@
 ```text
 管理员封禁 / 解封
   -> 写 client_ip_policies 和操作日志
-  -> 通知网关运行态刷新策略缓存
-  -> 网关请求进入时读内存策略缓存
+  -> 通知网关进程清理来源级策略缓存
+  -> 网关请求进入时优先读内存来源级策略缓存
+  -> 缓存未命中时只按当前 ip_hash 精确查询 active 策略
   -> 命中 active 封禁策略返回本地拒绝
   -> 异步记录封禁命中计数
 ```
@@ -235,7 +236,7 @@ client_ip_policy_hits
 - PRIMARY KEY (ip_hash, stat_date, policy_id)
 ```
 
-命中计数应异步批量写入，网关请求不能等待 SQLite 写入。
+命中计数应异步批量写入，网关请求不能等待 SQLite 写入；server 内命中缓冲和单次 DB service 投递都必须有固定窗口。
 
 ## 内存分桶 Set
 
@@ -304,12 +305,14 @@ else:
 - 最近 30 / 31 天
 - 列表默认使用已经预生成的固定窗口；任意自然日范围若未预生成，接口返回 `rangeReady=false`，前端提示稍后刷新。
 
-### IP 策略缓存刷新 job
+### IP 策略运行态缓存
 
 职责：
 
-- 加载 active 且未过期的 `blacklist` 策略到网关运行态缓存。
-- 管理员创建、解封或更新策略后主动触发刷新。
+- 以 `ip_hash` 为键保存来源级短 TTL 决策，缓存上限固定，避免全量 active 策略驻留或随 runtime IPC 放大。
+- 封禁命中写入采用 server 内短暂聚合缓冲：最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多 `1000` 条；满载时丢弃新的 distinct 命中而不是继续扩大内存或一次性发送大 IPC。
+- 网关认证前只做 cache-only 快速判断；认证 runtime 读取后若 API Key 有效、计划与图像权限等本地早拒绝检查已经通过，且当前来源仍未命中缓存，再按 `ip_hash` 精确查询 active 策略。
+- 管理员创建、解封或更新策略后主动清理 server 进程缓存；下一次请求按当前来源懒加载。
 - 过期策略可由定时 job 标记为 disabled，也可以运行态读取时自然忽略，再由清理 job 归档。
 
 ## 管理端页面

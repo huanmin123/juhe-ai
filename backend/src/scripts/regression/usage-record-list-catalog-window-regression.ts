@@ -49,6 +49,7 @@ try {
     return {
       id: usageRecordShards.generateUsageRecordId(createdAt, `catalog-window-${index}`),
       traceId: `trace-usage-catalog-window-${index}`,
+      trafficSource: 'gateway' as const,
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: account.id,

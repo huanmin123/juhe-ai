@@ -8,26 +8,27 @@ export interface CaptchaChallengeSummary {
 
 interface CaptchaChallengeRecord {
   answer: string
-  createdAt: number
   expiresAt: number
 }
 
 const captchaTtlMs = 5 * 60 * 1000
 const maxCaptchaChallenges = 1000
+const captchaCleanupIntervalMs = 30 * 1000
+const captchaCleanupBatchSize = 64
 const captchaChars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
 const captchaChallenges = new Map<string, CaptchaChallengeRecord>()
+let nextCaptchaCleanupAt = 0
 
 export function createCaptchaChallenge(): CaptchaChallengeSummary {
-  cleanupCaptchaChallenges()
+  const now = Date.now()
+  runCaptchaMaintenance(now)
   pruneCaptchaChallenges()
 
   const answer = createCaptchaAnswer()
   const captchaId = randomUUID()
-  const now = Date.now()
   const expiresAt = now + captchaTtlMs
   captchaChallenges.set(captchaId, {
     answer,
-    createdAt: now,
     expiresAt
   })
 
@@ -39,12 +40,13 @@ export function createCaptchaChallenge(): CaptchaChallengeSummary {
 }
 
 export function verifyCaptchaChallenge(captchaId: string, captchaCode: string): boolean {
-  cleanupCaptchaChallenges()
+  const now = Date.now()
+  runCaptchaMaintenance(now)
   const challenge = captchaChallenges.get(captchaId)
   if (!challenge) return false
 
   captchaChallenges.delete(captchaId)
-  if (challenge.expiresAt < Date.now()) return false
+  if (challenge.expiresAt < now) return false
 
   return normalizeCaptchaCode(captchaCode) === challenge.answer
 }
@@ -61,23 +63,30 @@ function normalizeCaptchaCode(value: string): string {
   return value.trim().replace(/\s+/g, '').toUpperCase()
 }
 
-function cleanupCaptchaChallenges(): void {
-  const now = Date.now()
-  for (const [captchaId, challenge] of captchaChallenges.entries()) {
-    if (challenge.expiresAt < now) {
-      captchaChallenges.delete(captchaId)
-    }
+function runCaptchaMaintenance(now: number): void {
+  if (now < nextCaptchaCleanupAt) return
+  nextCaptchaCleanupAt = now + captchaCleanupIntervalMs
+  cleanupExpiredCaptchaChallenges(now)
+}
+
+function cleanupExpiredCaptchaChallenges(now: number): void {
+  let inspected = 0
+  for (const [captchaId, challenge] of captchaChallenges) {
+    if (inspected >= captchaCleanupBatchSize) break
+    if (challenge.expiresAt >= now) break
+    captchaChallenges.delete(captchaId)
+    inspected += 1
   }
 }
 
 function pruneCaptchaChallenges(): void {
   if (captchaChallenges.size < maxCaptchaChallenges) return
   const overflow = captchaChallenges.size - maxCaptchaChallenges + 1
-  const oldest = [...captchaChallenges.entries()]
-    .sort((first, second) => first[1].createdAt - second[1].createdAt)
-    .slice(0, overflow)
-  for (const [captchaId] of oldest) {
+  let removed = 0
+  for (const captchaId of captchaChallenges.keys()) {
     captchaChallenges.delete(captchaId)
+    removed += 1
+    if (removed >= overflow) break
   }
 }
 

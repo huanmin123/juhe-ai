@@ -78,6 +78,12 @@ interface RgMatchEvent {
 }
 
 type RgExitState = 'matched' | 'no-match'
+type RgStopReason = 'match_parse_limit' | 'timeout'
+
+interface RgSearchResult {
+  exitState: RgExitState
+  stopReason?: RgStopReason
+}
 
 type OrderedRuntimeLogGrepItem = RuntimeLogGrepItem & {
   fileOrder: number
@@ -93,6 +99,8 @@ const maxLineLength = 20_000
 const maxRgJsonLineLength = maxLineLength + 8_000
 const maxRgStderrLength = 2_000
 const maxRgCommandChars = 24_000
+const maxRgParsedMatchEvents = 2_000
+const maxRgSearchMs = 15_000
 const dayMs = 24 * 60 * 60 * 1000
 const defaultGrepRangeDays = 3
 const maxGrepRangeDays = 7
@@ -376,13 +384,18 @@ async function searchLogFilesWithRg(options: {
   const items: OrderedRuntimeLogGrepItem[] = []
   let matchedCount = 0
   let noMatchBatches = 0
+  let stoppedReason: RgStopReason | undefined
   const batches = batchLogFilesForRg(options.files, primaryKeyword)
 
   for (const files of batches) {
-    const exitState = await runRgSearch({
+    if (stoppedReason) {
+      break
+    }
+    const searchResult = await runRgSearch({
       executable: options.rgExecutable,
       pattern: primaryKeyword,
       files,
+      shouldStop: () => matchedCount >= maxRgParsedMatchEvents,
       onMatch: (event) => {
         const filePath = event.data?.path?.text
         const line = event.data?.lines?.text?.replace(/\r?\n$/, '')
@@ -401,12 +414,13 @@ async function searchLogFilesWithRg(options: {
         }), options.limit)
       }
     })
-    if (exitState === 'no-match') {
+    stoppedReason = searchResult.stopReason
+    if (searchResult.exitState === 'no-match') {
       noMatchBatches += 1
     }
   }
 
-  const truncated = matchedCount > options.limit
+  const truncated = matchedCount > options.limit || Boolean(stoppedReason)
   return {
     available: true,
     elapsedMs: Math.round(performance.now() - options.startedAt),
@@ -422,7 +436,13 @@ async function searchLogFilesWithRg(options: {
     message: [
       ...options.warnings,
       truncated ? `结果超过 ${options.limit} 行，已按最新优先截断显示` : undefined,
-      noMatchBatches === batches.length ? '没有匹配的日志行' : undefined
+      stoppedReason === 'match_parse_limit'
+        ? `grep 命中行超过安全解析上限 ${maxRgParsedMatchEvents}，已提前停止以保护 DB service 事件循环`
+        : undefined,
+      stoppedReason === 'timeout'
+        ? `grep 搜索超过 ${Math.round(maxRgSearchMs / 1000)} 秒，已提前停止以保护 DB service 事件循环`
+        : undefined,
+      !stoppedReason && noMatchBatches === batches.length ? '没有匹配的日志行' : undefined
     ].filter(Boolean).join('；') || undefined
   }
 }
@@ -472,7 +492,8 @@ function runRgSearch(options: {
   pattern: string
   files: LogFile[]
   onMatch: (event: RgMatchEvent) => void
-}): Promise<RgExitState> {
+  shouldStop?: () => boolean
+}): Promise<RgSearchResult> {
   return new Promise((resolve, reject) => {
     const args = [...baseRgArgs(options.pattern), ...options.files.map((file) => file.path)]
     const child = spawn(options.executable, args, { windowsHide: true })
@@ -480,11 +501,51 @@ function runRgSearch(options: {
     let droppingOversizedStdoutLine = false
     let stderrText = ''
     let matched = false
+    let stoppedReason: RgStopReason | undefined
+    let settled = false
+    const timeout = setTimeout(() => {
+      stopChild('timeout')
+    }, maxRgSearchMs)
+    timeout.unref()
+
+    const cleanup = () => {
+      clearTimeout(timeout)
+    }
+    const settleResolve = (result: RgSearchResult) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(result)
+    }
+    const settleReject = (error: Error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const stopChild = (reason: RgStopReason) => {
+      if (stoppedReason) return
+      stoppedReason = reason
+      child.kill()
+    }
+    const handleMatchEvent = (event: RgMatchEvent) => {
+      matched = true
+      options.onMatch(event)
+      if (options.shouldStop?.()) {
+        stopChild('match_parse_limit')
+      }
+    }
 
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
+      if (stoppedReason) {
+        return
+      }
       let remaining = chunk
       while (remaining.length > 0) {
+        if (stoppedReason) {
+          return
+        }
         const newlineIndex = remaining.indexOf('\n')
         const segment = newlineIndex >= 0 ? remaining.slice(0, newlineIndex) : remaining
         remaining = newlineIndex >= 0 ? remaining.slice(newlineIndex + 1) : ''
@@ -502,8 +563,7 @@ function runRgSearch(options: {
           if (!droppingOversizedStdoutLine) {
             const event = parseRgJsonLine(stdoutPending)
             if (event?.type === 'match') {
-              matched = true
-              options.onMatch(event)
+              handleMatchEvent(event)
             }
           }
           stdoutPending = ''
@@ -514,31 +574,45 @@ function runRgSearch(options: {
 
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
+      if (stoppedReason) {
+        return
+      }
       stderrText = trimLine(stderrText + chunk, maxRgStderrLength)
     })
 
     child.on('error', (error) => {
-      reject(rgExecutionError(error))
+      if (stoppedReason) {
+        settleResolve({ exitState: matched ? 'matched' : 'no-match', stopReason: stoppedReason })
+        return
+      }
+      settleReject(rgExecutionError(error))
     })
 
     child.on('close', (code) => {
+      if (stoppedReason) {
+        settleResolve({ exitState: matched ? 'matched' : 'no-match', stopReason: stoppedReason })
+        return
+      }
       if (!droppingOversizedStdoutLine && stdoutPending.trim()) {
         const event = parseRgJsonLine(stdoutPending)
         if (event?.type === 'match') {
-          matched = true
-          options.onMatch(event)
+          handleMatchEvent(event)
         }
+      }
+      if (stoppedReason) {
+        settleResolve({ exitState: matched ? 'matched' : 'no-match', stopReason: stoppedReason })
+        return
       }
 
       if (code === 0) {
-        resolve('matched')
+        settleResolve({ exitState: 'matched' })
         return
       }
       if (code === 1 && !matched) {
-        resolve('no-match')
+        settleResolve({ exitState: 'no-match' })
         return
       }
-      reject(new Error(`rg 执行失败，grep 模式暂不可用。${stderrText ? `错误信息：${stderrText.trim()}` : ''}`))
+      settleReject(new Error(`rg 执行失败，grep 模式暂不可用。${stderrText ? `错误信息：${stderrText.trim()}` : ''}`))
     })
   })
 }

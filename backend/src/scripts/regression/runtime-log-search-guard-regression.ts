@@ -173,6 +173,19 @@ try {
   assert.equal(longGrep.items[0]?.event, 'long_grep_keyword_event')
   assert(!longGrep.items.some((item) => item.event === 'large_grep_keyword_event'), 'grep 不应把超长命中行输出到 Node 侧解析')
 
+  writeFileSync(join(logDir, 'juhe-ai-heavy.log'), Array.from({ length: 2_050 }, (_, index) => JSON.stringify({
+    time: now,
+    level: 30,
+    event: 'parse_cap_guard_event',
+    msg: `parsecapneedle-${index}`
+  })).join('\n') + '\n')
+
+  const cappedGrep = await runtimeLogGrep.grepRuntimeLogFiles({ keywords: ['parsecapneedle'], limit: 10 })
+  assert.equal(cappedGrep.available, true, '触发解析上限的 grep 仍应返回结果')
+  assert.equal(cappedGrep.items.length, 10, 'grep 结果应按请求上限返回最近命中')
+  assert.equal(cappedGrep.truncated, true, '触发解析上限时应标记截断')
+  assert.match(cappedGrep.message ?? '', /安全解析上限 2000/, '触发解析上限时应提示提前停止')
+
   console.log('运行日志搜索保护回归通过：索引模式仅模糊匹配 message，rawJson 不检索')
 } finally {
   try {

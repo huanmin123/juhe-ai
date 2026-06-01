@@ -580,7 +580,8 @@ async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl:
     type: 'oauth',
     credentials: {
       access_token: 'oauth-route-capability-primary',
-      refresh_token: 'refresh-route-capability-primary'
+      refresh_token: 'refresh-route-capability-primary',
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: primaryGroup.id,
     status: 'active',
@@ -697,7 +698,8 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
     type: 'oauth',
     credentials: {
       access_token: 'oauth-route-multi-hop-primary',
-      refresh_token: 'refresh-route-multi-hop-primary'
+      refresh_token: 'refresh-route-multi-hop-primary',
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: primaryGroup.id,
     status: 'active',

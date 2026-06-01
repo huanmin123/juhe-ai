@@ -1,8 +1,10 @@
 import type { RequestHourlyQuotaLimit, RequestQuotaLimit, RequestQuotaLimits } from '../domain/types.js'
 
-const MAX_HOURLY_WINDOW_HOURS = 24 * 30
-const MAX_SAFE_QUOTA_AMOUNT_USD = Number.MAX_SAFE_INTEGER
+export const maxRequestQuotaHourlyWindowHours = 24 * 30
+export const defaultRequestQuotaHourlyWindowHours = [1, 3, 6, 12, 24, 72, 168, 720] as const
+export const maxRequestQuotaAmountUsd = Number.MAX_SAFE_INTEGER
 const QUOTA_AMOUNT_PRECISION = 1_000_000
+const quotaLimitKeys = ['hourly', 'daily', 'weekly', 'monthly', 'total'] as const
 
 export function emptyRequestQuotaLimits(): RequestQuotaLimits {
   return {}
@@ -15,13 +17,16 @@ export function normalizeRequestQuotaLimits(value: unknown, fallback: RequestQuo
   if (value === null) {
     return emptyRequestQuotaLimits()
   }
-  const source = typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  if (!isRecord(value)) {
+    throw new Error('请求额度限制参数无效')
+  }
+  assertOnlyKeys(value, quotaLimitKeys, '请求额度限制')
   return stripDisabledQuotaLimits({
-    hourly: normalizeHourlyQuotaLimit(source.hourly),
-    daily: normalizeQuotaLimit(source.daily),
-    weekly: normalizeQuotaLimit(source.weekly),
-    monthly: normalizeQuotaLimit(source.monthly),
-    total: normalizeQuotaLimit(source.total)
+    hourly: normalizeHourlyQuotaLimit(value.hourly),
+    daily: normalizeQuotaLimit(value.daily, '日额度'),
+    weekly: normalizeQuotaLimit(value.weekly, '周额度'),
+    monthly: normalizeQuotaLimit(value.monthly, '月额度'),
+    total: normalizeQuotaLimit(value.total, '总额度')
   })
 }
 
@@ -29,11 +34,7 @@ export function parseRequestQuotaLimitsJson(value: string | null | undefined): R
   if (!value?.trim()) {
     return emptyRequestQuotaLimits()
   }
-  try {
-    return normalizeRequestQuotaLimits(JSON.parse(value) as unknown)
-  } catch {
-    return emptyRequestQuotaLimits()
-  }
+  return normalizeRequestQuotaLimits(JSON.parse(value) as unknown)
 }
 
 export function requestQuotaLimitsJson(value: RequestQuotaLimits): string | null {
@@ -51,23 +52,37 @@ export function hasEnabledRequestQuotaLimit(value: RequestQuotaLimits | undefine
   )
 }
 
-function normalizeQuotaLimit(value: unknown): RequestQuotaLimit | undefined {
-  const source = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
-  const limit = positiveAmount(source.limit)
+function normalizeQuotaLimit(value: unknown, label: string): RequestQuotaLimit | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) {
+    throw new Error(`${label}参数无效`)
+  }
+  assertOnlyKeys(value, ['enabled', 'limit'], label)
+  if (value.enabled !== true) {
+    throw new Error(`${label}启用状态必须为 true`)
+  }
+  const limit = positiveAmount(value.limit, label)
   return {
-    enabled: source.enabled === true && limit !== undefined,
-    limit: limit ?? 0
+    enabled: true,
+    limit
   }
 }
 
 function normalizeHourlyQuotaLimit(value: unknown): RequestHourlyQuotaLimit | undefined {
-  const source = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
-  const base = normalizeQuotaLimit(source)
-  const hours = positiveInteger(source.hours)
+  if (value === undefined) return undefined
+  if (!isRecord(value)) {
+    throw new Error('小时额度参数无效')
+  }
+  assertOnlyKeys(value, ['enabled', 'limit', 'hours'], '小时额度')
+  if (value.enabled !== true) {
+    throw new Error('小时额度启用状态必须为 true')
+  }
+  const limit = positiveAmount(value.limit, '小时额度')
+  const hours = positiveInteger(value.hours, '小时额度窗口')
   return {
-    enabled: Boolean(base?.enabled && hours),
-    hours: clampInteger(hours ?? 1, 1, MAX_HOURLY_WINDOW_HOURS),
-    limit: base?.limit ?? 0
+    enabled: true,
+    hours,
+    limit
   }
 }
 
@@ -81,20 +96,35 @@ function stripDisabledQuotaLimits(value: RequestQuotaLimits): RequestQuotaLimits
   }
 }
 
-function positiveInteger(value: unknown): number | undefined {
-  const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
-  if (!Number.isFinite(number)) return undefined
-  const integer = Math.floor(number)
-  return integer > 0 ? clampInteger(integer, 1, MAX_HOURLY_WINDOW_HOURS) : undefined
+function positiveInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error(`${label}必须是数字`)
+  }
+  if (value <= 0 || value > maxRequestQuotaHourlyWindowHours) {
+    throw new Error(`${label}必须在 1-${maxRequestQuotaHourlyWindowHours} 之间`)
+  }
+  return value
 }
 
-function positiveAmount(value: unknown): number | undefined {
-  const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
-  if (!Number.isFinite(number) || number <= 0) return undefined
-  const clamped = Math.min(number, MAX_SAFE_QUOTA_AMOUNT_USD)
-  return Math.round(clamped * QUOTA_AMOUNT_PRECISION) / QUOTA_AMOUNT_PRECISION
+function positiveAmount(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > maxRequestQuotaAmountUsd) {
+    throw new Error(`${label}金额必须是大于 0 的数字`)
+  }
+  const scaled = value * QUOTA_AMOUNT_PRECISION
+  if (Math.round(scaled) !== scaled) {
+    throw new Error(`${label}金额最多支持 6 位小数`)
+  }
+  return Math.round(scaled) / QUOTA_AMOUNT_PRECISION
 }
 
-function clampInteger(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value))
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function assertOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[], label: string): void {
+  const allowed = new Set(allowedKeys)
+  const unexpected = Object.keys(value).find((key) => !allowed.has(key))
+  if (unexpected) {
+    throw new Error(`${label}包含不支持字段：${unexpected}`)
+  }
 }

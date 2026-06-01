@@ -42,7 +42,7 @@ type UsageReportRow = {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
-  cache_read_cost: number
+  cache_read_cost_usd: number
   total_cost: number
   last_used_at: string | null
 }
@@ -84,7 +84,7 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
       report.input_tokens,
       report.output_tokens,
       report.cache_read_tokens,
-      report.cache_read_cost_usd AS cache_read_cost,
+      report.cache_read_cost_usd,
       report.total_cost_usd AS total_cost,
       report.last_used_at
     FROM authorization_team_usage_range_windows report
@@ -156,7 +156,7 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
       report.input_tokens,
       report.output_tokens,
       report.cache_read_tokens,
-      report.cache_read_cost_usd AS cache_read_cost,
+      report.cache_read_cost_usd,
       report.total_cost_usd AS total_cost,
       report.last_used_at
     FROM authorization_user_usage_range_windows report
@@ -268,7 +268,7 @@ function loadAuthorizationTeamUsageSummary(filterKey: ReportFilterKey): AccountU
       input_tokens,
       output_tokens,
       cache_read_tokens,
-      cache_read_cost_usd AS cache_read_cost,
+      cache_read_cost_usd,
       total_cost_usd AS total_cost,
       last_used_at
     FROM authorization_team_usage_range_windows
@@ -297,7 +297,7 @@ function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountU
       input_tokens,
       output_tokens,
       cache_read_tokens,
-      cache_read_cost_usd AS cache_read_cost,
+      cache_read_cost_usd,
       total_cost_usd AS total_cost,
       last_used_at
     FROM authorization_user_usage_range_windows

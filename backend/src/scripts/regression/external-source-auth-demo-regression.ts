@@ -54,6 +54,7 @@ async function runChild(): Promise<void> {
     upsertExternalIntegrationSource
   } = await import('../../storage/external-integration-source.repository.js')
   const {
+    createAccount,
     findSystemAccountByUsername,
     getOperationLogDetail,
     listOperationLogs,
@@ -135,6 +136,7 @@ async function runChild(): Promise<void> {
     scopes: [externalIntegrationAccountPushScope]
   })
   seedClientIpUsageWindow(clientIpStats, usageStatsHelpers, getStatsDatabase)
+  const seededUsageAccount = seedAccountUsageWindow(createAccount, usageStatsHelpers, getStatsDatabase)
 
   const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' })
   const server = await listen(app)
@@ -219,6 +221,40 @@ async function runChild(): Promise<void> {
     assert.equal(ipUsage.body.data.items[0].averageDurationMs, 240)
     assert.equal(ipUsage.body.data.items[0].maxDurationMs, 400)
 
+    const accountUsageNoScope = await requestJson(baseUrl, '/__aipublic__/account/usage?range=today&pageSize=5', {
+      Authorization: `Bearer ${validToken}`
+    })
+    assert.equal(accountUsageNoScope.status, 403)
+    assert.equal(accountUsageNoScope.body.code, 'external_source_scope_forbidden', '账号用量接口必须使用公开聚合读取 scope')
+
+    const mockAccountUsage = await requestJson(baseUrl, '/__aipublic__/account/usage?range=last7d&pageSize=2', {
+      Authorization: `Bearer ${externalIntegrationTestToken}`
+    })
+    assert.equal(mockAccountUsage.status, 200)
+    assert.equal(mockAccountUsage.body.data.source, 'mock')
+    assert.equal(mockAccountUsage.body.data.items.length, 2)
+    assert.equal(mockAccountUsage.body.data.items[0].dimension, 'account')
+    assert.equal(Object.prototype.hasOwnProperty.call(mockAccountUsage.body.data.items[0], 'credentials'), false, '公开账号聚合不返回上游凭据')
+
+    const accountUsage = await requestJson(baseUrl, '/__aipublic__/account/usage?range=today&pageSize=5&sortField=totalTokens&sortOrder=desc', {
+      Authorization: `Bearer ${ipUsageToken}`
+    })
+    assert.equal(accountUsage.status, 200)
+    assert.equal(accountUsage.body.data.source, 'stats')
+    assert.equal(accountUsage.body.data.rangeReady, true)
+    assert.equal(accountUsage.body.data.items[0].accountId, seededUsageAccount.id)
+    assert.equal(accountUsage.body.data.items[0].accountName, seededUsageAccount.name)
+    assert.equal(accountUsage.body.data.items[0].totalTokens, 1500)
+    assert.equal(accountUsage.body.data.items[0].successCount, 3)
+    assert.equal(accountUsage.body.data.items[0].errorCount, 1)
+    assert.equal(accountUsage.body.data.items[0].activeDays, 1)
+
+    const customAccountUsage = await requestJson(baseUrl, '/__aipublic__/account/usage?startDate=2026-05-24&endDate=2026-05-30', {
+      Authorization: `Bearer ${ipUsageToken}`
+    })
+    assert.equal(customAccountUsage.status, 400)
+    assert.match(customAccountUsage.body.message, /暂不支持自定义日期范围/, '公开账号聚合接口不应接受未预生成的自定义窗口')
+
     const customIpUsage = await requestJson(baseUrl, '/__aipublic__/ip/usage?startDate=2026-05-24&endDate=2026-05-30', {
       Authorization: `Bearer ${ipUsageToken}`
     })
@@ -238,7 +274,9 @@ async function runChild(): Promise<void> {
     })
     assert.equal(accessInfo.status, 200)
     assert.equal(accessInfo.body.data.dataDimension, 'client_ip')
+    assert.deepEqual(accessInfo.body.data.supportedDimensions, ['client_ip', 'account'])
     assert.deepEqual(accessInfo.body.data.supportedRanges, ['today', 'last7d', 'last31d'], '接入信息只能声明后台已维护的固定窗口')
+    assert(accessInfo.body.data.boundary.provides.includes('账号维度实际请求数、Token、缓存、成本、活跃天数和速度指标聚合'), '接入信息应声明账号实际用量事实')
     assert(accessInfo.body.data.boundary.notProvided.includes('公益站用户维度排行榜快照'), '接入信息应明确公益站业务快照不由 sub2api-lite 提供')
 
     const accountAddNoScope = await requestJson(baseUrl, '/__aipublic__/account/add', {
@@ -388,13 +426,14 @@ async function runChild(): Promise<void> {
       availabilitySchedule: {
         enabled: true,
         timezone: 'UTC',
+        mode: 'allow_windows',
         windows: [
           { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
         ]
       },
       externalId: 'account-registration:1001'
     })
-    assert.equal(accountAdd.status, 201)
+    assert.equal(accountAdd.status, 201, `公开账号新增应成功，实际响应：${JSON.stringify(accountAdd.body)}`)
     assert.equal(accountAdd.body.data.source, 'stats')
     assert.equal(accountAdd.body.data.action, 'created')
     assert.equal(accountAdd.body.data.target.username, 'huanmin')
@@ -565,6 +604,7 @@ async function runChild(): Promise<void> {
       status: 'active',
       availabilitySchedule: {
         enabled: true,
+        mode: 'allow_windows',
         timezone: 'UTC',
         windows: [
           { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
@@ -642,6 +682,93 @@ async function runChild(): Promise<void> {
   }
 
   console.log('外部来源系统鉴权和公开接口回归通过：公开前缀、Bearer token、测试 token mock、权限校验、停用来源、限频、后台登录边界、IP 聚合读取、账号新增/修改/删除、分组和 API Key 新增/修改/删除均符合预期')
+}
+
+function seedAccountUsageWindow(
+  createAccount: typeof import('../../storage/repositories.js')['createAccount'],
+  usageStatsHelpers: typeof import('../../storage/usage-stats-helpers.js'),
+  getStatsDatabase: typeof import('../../storage/database.js')['getStatsDatabase']
+): ReturnType<typeof createAccount> {
+  const account = createAccount({
+    providerCode: 'openai',
+    name: '公益站贡献统计账号',
+    type: 'api_key',
+    credentials: {
+      base_url: 'https://usage.example/v1',
+      api_key: 'sk-public-account-usage-regression'
+    }
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const today = usageStatsHelpers.dateKey(new Date(), usageStatsHelpers.usageStatsTimezone())
+  const now = new Date().toISOString()
+  const statsDatabase = getStatsDatabase()
+  statsDatabase.prepare(`
+    INSERT INTO usage_stats_daily (
+      system_account_id, scope_type, scope_id, stat_date,
+      request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+      duration_ms_sum, duration_ms_count, duration_ms_max,
+      first_token_ms_sum, first_token_ms_count, first_token_ms_max,
+      last_used_at, last_error_at, updated_at
+    ) VALUES (?, 'account', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'global',
+    account.id,
+    today,
+    4,
+    3,
+    1,
+    1000,
+    500,
+    100,
+    0.01,
+    0.07,
+    960,
+    4,
+    360,
+    320,
+    4,
+    120,
+    now,
+    now,
+    now
+  )
+  statsDatabase.prepare(`
+    INSERT INTO usage_scope_range_windows (
+      system_account_id, scope_type, scope_id, start_date, end_date,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+      cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+      last_used_at, last_error_at, updated_at
+    ) VALUES (?, 'account', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'global',
+    account.id,
+    today,
+    today,
+    4,
+    3,
+    1,
+    1000,
+    500,
+    100,
+    0.01,
+    0.07,
+    960,
+    4,
+    360,
+    320,
+    4,
+    120,
+    1,
+    now,
+    now,
+    now
+  )
+  statsDatabase.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, last_success_at, lag_seconds, updated_at)
+    VALUES ('global', '', 'usage_stats_aggregation', ?, 8, ?)
+  `).run(now, now)
+  return account
 }
 
 function seedClientIpUsageWindow(

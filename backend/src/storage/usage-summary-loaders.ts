@@ -19,7 +19,7 @@ interface UsageSummaryAggregateRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
-  cache_read_cost: number
+  cache_read_cost_usd: number
   total_cost: number
   last_used_at: string | null
 }
@@ -72,7 +72,7 @@ function loadUsageSummariesForScopeRequests(scopes: UsageSummaryScopeRequest[], 
           input_tokens,
           output_tokens,
           cache_read_tokens,
-          cache_read_cost_usd AS cache_read_cost,
+          cache_read_cost_usd,
           total_cost_usd AS total_cost,
           last_used_at
         FROM ${source.tableName}
@@ -128,7 +128,7 @@ function loadUsageRangeSummariesForScopeRequests(scopes: UsageSummaryScopeReques
           input_tokens,
           output_tokens,
           cache_read_tokens,
-          cache_read_cost_usd AS cache_read_cost,
+          cache_read_cost_usd,
           total_cost_usd AS total_cost,
           last_used_at
         FROM usage_scope_range_windows

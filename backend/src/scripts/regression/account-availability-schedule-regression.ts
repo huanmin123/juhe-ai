@@ -27,6 +27,7 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const allDaySchedule = {
   enabled: true,
   timezone: 'UTC',
+  mode: 'allow_windows',
   windows: [
     { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '23:59' },
     { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '23:59', end: '00:00' }
@@ -73,6 +74,7 @@ try {
       availabilitySchedule: {
         enabled: true,
         timezone: 'UTC',
+        mode: 'allow_windows',
         windows: [{ daysOfWeek: [8], start: '10:00', end: '11:00' }]
       }
     }),

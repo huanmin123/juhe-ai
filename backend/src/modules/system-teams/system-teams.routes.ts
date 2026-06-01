@@ -35,17 +35,17 @@ const createTeamSchema = z.object({
   name: z.string().trim().min(1, '团队名称不能为空').max(100, '团队名称不能超过 100 个字符'),
   description: z.string().trim().max(200).nullable().optional(),
   status: z.enum(['active', 'disabled']).optional()
-})
+}).strict()
 
 const updateTeamSchema = z.object({
   name: z.string().trim().min(1, '团队名称不能为空').max(100, '团队名称不能超过 100 个字符').optional(),
   description: z.string().trim().max(200).nullable().optional(),
   status: z.enum(['active', 'disabled']).optional()
-})
+}).strict()
 
 const teamMembersSchema = z.object({
   systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员').max(maxSystemTeamMemberBatchSize, `单次最多添加 ${maxSystemTeamMemberBatchSize} 个团队成员`)
-})
+}).strict()
 
 function currentUserTeamScope() {
   const context = getRequestAuthContext()

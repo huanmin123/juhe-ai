@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 import type { Request } from 'express'
 
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
@@ -13,6 +14,7 @@ import {
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 
 async function main(): Promise<void> {
+  testSessionAffinityMigrationUsesReverseIndex()
   testAffinityKeyUsesLocalIdentityOnly()
   testMissingBoundAccountDoesNotAffectCandidates()
   testForgetOnlyClearsMatchingBoundAccount()
@@ -30,6 +32,14 @@ async function main(): Promise<void> {
   testHighConcurrencyDetectsHardBusyGroup()
   await testHighConcurrencyPenalizesRealtimeSlowInFlight()
   console.log('OpenAI session affinity regression passed')
+}
+
+function testSessionAffinityMigrationUsesReverseIndex(): void {
+  const source = readFileSync(new URL('../../modules/gateway/openai-gateway-session-affinity.service.ts', import.meta.url), 'utf8')
+  assert(source.includes('sessionAffinityKeysByAccountId'), '会话亲和迁移应维护按账号反查的索引')
+  assert(source.includes('sessionAffinityKeysByAccountSystemScope'), '会话亲和迁移应维护按账号+系统账户反查的索引')
+  assert(!source.includes('for (const [key, binding] of sessionAffinityCache.entries())'), '迁移会话亲和不能扫描全部亲和缓存')
+  assert(source.includes('for (const key of sessionAffinityMigrationCandidateKeys(sourceAccountId, scope))'), '迁移会话亲和应只遍历源账号相关候选 key')
 }
 
 function testAffinityKeyUsesLocalIdentityOnly(): void {

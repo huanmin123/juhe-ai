@@ -153,7 +153,7 @@ function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogL
 
 function parseRuntimeLogGrepOptions(query: Record<string, unknown>): { keywords: string[]; limit?: number; startAt?: string; endAt?: string } {
   return {
-    keywords: stringArrayQueryValues(query.keyword).concat(stringArrayQueryValues(query.keywords)),
+    keywords: stringArrayQueryValues(query.keywords),
     limit: finiteNumberQueryValue(query.limit),
     startAt: optionalQueryText(query.startAt),
     endAt: optionalQueryText(query.endAt)

@@ -252,7 +252,9 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAc
     if (mode === 'update' && !existing) {
       throw new Error('账号不存在')
     }
-    const accountInput = accountInputForPush(input, providerCode, targetGroup.group.id)
+    const accountInput = existing
+      ? accountUpdateInputForPush(input)
+      : accountCreateInputForPush(input, providerCode, targetGroup.group.id)
     const account = existing
       ? updateAccount(existing.id, accountInput, access) ?? existing
       : createAccount(accountInput, access)
@@ -412,13 +414,7 @@ export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupRes
   if (input.providerCode) {
     assertProviderEnabled(input.providerCode)
   }
-  const updated = updateGroup(group.id, {
-    name: input.name,
-    providerCode: input.providerCode,
-    description: input.description,
-    enabled: input.enabled,
-    groupType: input.groupType
-  }, access)
+  const updated = updateGroup(group.id, publicGroupUpdatePayload(input), access)
   if (!updated) {
     return publicGroupResponse('not_found', target, null)
   }
@@ -789,6 +785,16 @@ function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUpdateInp
   return payload
 }
 
+function publicGroupUpdatePayload(input: PublicGroupUpdateInput): Record<string, unknown> {
+  const payload: Record<string, unknown> = {}
+  if (input.name !== undefined) payload.name = input.name
+  if (input.providerCode !== undefined) payload.providerCode = input.providerCode
+  if (input.description !== undefined) payload.description = input.description
+  if (input.enabled !== undefined) payload.enabled = input.enabled
+  if (input.groupType !== undefined) payload.groupType = input.groupType
+  return payload
+}
+
 function resolvePublicApiKey(access: TargetAccess, input: { apiKeyId?: string; name?: string }): ApiKeySummary | undefined {
   const apiKeyId = normalizedText(input.apiKeyId)
   if (apiKeyId) {
@@ -1034,7 +1040,20 @@ function notFoundAccountDeleteResponse(
   }
 }
 
-function accountInputForPush(input: PublicAccountPushInput, providerCode: string, groupId: string): Record<string, unknown> {
+function accountCreateInputForPush(input: PublicAccountPushInput, providerCode: string, groupId: string): Record<string, unknown> {
+  return {
+    ...accountWriteInputForPush(input),
+    providerCode,
+    type: 'api_key',
+    groupId
+  }
+}
+
+function accountUpdateInputForPush(input: PublicAccountPushInput): Record<string, unknown> {
+  return accountWriteInputForPush(input)
+}
+
+function accountWriteInputForPush(input: PublicAccountPushInput): Record<string, unknown> {
   const name = normalizedText(input.name)
   const baseUrl = normalizedText(input.baseUrl)
   const apiKey = normalizedText(input.apiKey)
@@ -1049,9 +1068,7 @@ function accountInputForPush(input: PublicAccountPushInput, providerCode: string
   }
 
   const payload: Record<string, unknown> = {
-    providerCode,
     name,
-    type: 'api_key',
     credentials: {
       api_key: apiKey,
       base_url: baseUrl
@@ -1061,7 +1078,6 @@ function accountInputForPush(input: PublicAccountPushInput, providerCode: string
     concurrencyLimit: boundedInteger(input.concurrencyLimit, 1, 100_000),
     priority: boundedInteger(input.priority, 0, 100_000) ?? 0,
     schedulable: input.status !== 'disabled',
-    groupId,
     notes: pushNotes(input)
   }
   if (Object.prototype.hasOwnProperty.call(input, 'availabilitySchedule')) {
@@ -1139,11 +1155,13 @@ function normalizedStringList(values: readonly string[] | undefined): string[] |
 }
 
 function boundedInteger(value: unknown, min: number, max: number): number | undefined {
-  const number = Math.trunc(Number(value))
-  if (!Number.isFinite(number)) {
+  if (value === undefined) {
     return undefined
   }
-  return Math.min(max, Math.max(min, number))
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`数值字段必须是 ${min} 到 ${max} 之间的整数`)
+  }
+  return value
 }
 
 function sameText(left: string, right: string): boolean {

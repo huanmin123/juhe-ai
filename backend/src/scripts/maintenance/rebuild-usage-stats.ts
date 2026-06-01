@@ -21,7 +21,7 @@ function main(): void {
 
   const durationMs = Date.now() - startedAt
   console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，耗时 ${durationMs}ms`)
-  console.log(`数据集库：${datasetDatabasePath()}`)
+  console.log(`数据集目录库：${datasetDatabasePath()}`)
   console.log(`统计结果库：${statsDatabasePath()}`)
 }
 

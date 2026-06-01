@@ -73,7 +73,38 @@ try {
     '单个团队有效授权数必须有固定上限，避免成员变更时线性展开无边界增长'
   )
 
-  console.log('系统团队展开边界回归通过：成员批量、成员总量和团队有效授权展开都有固定上限')
+  const missingDefaultGroupMemberId = seedSystemAccounts(1, 'fanout_missing_default_group')[0]
+  const missingDefaultGroupTeam = repositories.createSystemTeam({ name: '缺默认分组团队授权' }, access)
+  repositories.addSystemTeamMembers(missingDefaultGroupTeam.id, { systemAccountIds: [missingDefaultGroupMemberId] }, access)
+  const accountGroup = repositories.createGroup({
+    name: '缺默认分组团队授权来源分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  const sourceAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '缺默认分组团队授权来源账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-team-fanout-missing-default-group',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: accountGroup.id,
+    status: 'active'
+  }, access)
+  assert.throws(
+    () => repositories.createResourceAuthorization({
+      resourceType: 'account',
+      resourceId: sourceAccount.id,
+      granteeType: 'team',
+      granteeId: missingDefaultGroupTeam.id
+    }, access),
+    /目标用户缺少启用的默认分组/,
+    '团队账号授权展开不能在成员缺默认分组时运行时补建分组'
+  )
+  assert.equal(openAIGroupCountForSystemAccount(missingDefaultGroupMemberId), 0, '缺默认分组属于当前数据异常，团队授权写路径不能写 groups 修复')
+
+  console.log('系统团队展开边界回归通过：成员批量、成员总量和团队有效授权展开都有固定上限，团队账号授权不补建缺失默认分组')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -96,7 +127,14 @@ function seedSystemAccounts(count: number, prefix: string): string[] {
   for (let index = 0; index < count; index += 1) {
     const id = `${prefix}_${String(index).padStart(2, '0')}`
     ids.push(id)
-    statement.run(id, id, `展开边界成员 ${index}`, now, now)
+    statement.run(id, id, `${prefix} 展开边界成员 ${index}`, now, now)
   }
   return ids
+}
+
+function openAIGroupCountForSystemAccount(systemAccountId: string): number {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare("SELECT COUNT(*) AS total FROM groups WHERE system_account_id = ? AND provider_code = 'openai'")
+    .get(systemAccountId) as unknown as { total?: number } | undefined
+  return Number(row?.total ?? 0)
 }

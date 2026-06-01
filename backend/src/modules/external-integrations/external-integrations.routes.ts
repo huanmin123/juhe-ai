@@ -10,6 +10,8 @@ import {
   externalIntegrationSourceAuthDemoScope
 } from '../../storage/external-integration-source.repository.js'
 import { createOperationLog } from '../../storage/repositories.js'
+import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
+import { apiKeyAvailabilityScheduleSchema } from '../api-keys/api-key-availability-schedule.schema.js'
 import { getExternalIntegrationSourceContext, requireExternalIntegrationSource } from './external-source-auth.middleware.js'
 import {
   addPublicWelfareAccount,
@@ -34,6 +36,7 @@ import {
 } from './external-public-account-push.service.js'
 import {
   getPublicAccessInfo,
+  getPublicAccountUsage,
   getPublicClientIpUsage,
   getPublicConsumptionRanking
 } from './external-public-welfare.service.js'
@@ -48,6 +51,20 @@ const ipUsageQuerySchema = z.object({
   range: rangePresetSchema.optional(),
   startDate: unsupportedDateRangeSchema,
   endDate: unsupportedDateRangeSchema,
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  keyword: z.string().trim().optional(),
+  sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
+  sortOrder: z.enum(['asc', 'desc']).optional()
+})
+const accountUsageQuerySchema = z.object({
+  range: rangePresetSchema.optional(),
+  startDate: z.undefined({
+    invalid_type_error: '公开账号聚合接口暂不支持自定义日期范围'
+  }).optional(),
+  endDate: z.undefined({
+    invalid_type_error: '公开账号聚合接口暂不支持自定义日期范围'
+  }).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
   keyword: z.string().trim().optional(),
@@ -72,12 +89,12 @@ const accountPushSchema = z.object({
   apiKey: z.string().trim().min(1).max(1000),
   supportedModels: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
   status: z.enum(['active', 'disabled']).optional(),
-  concurrencyLimit: z.coerce.number().int().min(1).max(100000).optional(),
-  priority: z.coerce.number().int().min(0).max(100000).optional(),
+  concurrencyLimit: z.number().int().min(1).max(100000).optional(),
+  priority: z.number().int().min(0).max(100000).optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   notes: z.string().trim().max(1000).optional(),
   externalId: z.string().trim().max(200).optional()
-})
+}).strict()
 const accountDeleteSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetGroupName: z.string().trim().min(1).max(80),
@@ -85,7 +102,7 @@ const accountDeleteSchema = z.object({
   accountId: z.string().trim().min(1).max(120).optional(),
   name: z.string().trim().min(1).max(120).optional(),
   externalId: z.string().trim().min(1).max(200).optional()
-}).superRefine((value, context) => {
+}).strict().superRefine((value, context) => {
   if (!value.accountId && !value.name && !value.externalId) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -101,7 +118,7 @@ const groupAddSchema = z.object({
   description: z.string().trim().max(500).optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
-})
+}).strict()
 const groupUpdateSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   groupId: z.string().trim().min(1).max(120),
@@ -110,13 +127,13 @@ const groupUpdateSchema = z.object({
   description: z.string().trim().max(500).nullable().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
-})
+}).strict()
 const groupDeleteSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   groupId: z.string().trim().min(1).max(120).optional(),
   name: z.string().trim().min(1).max(80).optional(),
   providerCode: z.string().trim().min(1).max(60).optional()
-}).superRefine((value, context) => {
+}).strict().superRefine((value, context) => {
   if (!value.groupId && !value.name) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -126,10 +143,10 @@ const groupDeleteSchema = z.object({
 })
 const apiKeyGroupBindingSchema = z.object({
   groupId: z.string().trim().min(1).max(120),
-  priority: z.coerce.number().int().positive().optional(),
-  weight: z.coerce.number().int().min(1).max(100).optional(),
+  priority: z.number().int().positive().optional(),
+  weight: z.number().int().min(1).max(100).optional(),
   status: z.enum(['active', 'disabled']).optional()
-})
+}).strict()
 const apiKeyAddSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   name: z.string().trim().min(1).max(120),
@@ -138,9 +155,9 @@ const apiKeyAddSchema = z.object({
   groupRouteStrategy: z.enum(['priority_failover', 'round_robin', 'weighted_round_robin']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().trim().optional(),
-  quotaLimits: z.record(z.string(), z.unknown()).nullable().optional(),
-  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional()
-})
+  quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
+  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
+}).strict()
 const apiKeyUpdateSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   apiKeyId: z.string().trim().min(1).max(120),
@@ -150,14 +167,14 @@ const apiKeyUpdateSchema = z.object({
   groupRouteStrategy: z.enum(['priority_failover', 'round_robin', 'weighted_round_robin']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().trim().nullable().optional(),
-  quotaLimits: z.record(z.string(), z.unknown()).nullable().optional(),
-  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional()
-})
+  quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
+  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
+}).strict()
 const apiKeyDeleteSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   apiKeyId: z.string().trim().min(1).max(120).optional(),
   name: z.string().trim().min(1).max(120).optional()
-}).superRefine((value, context) => {
+}).strict().superRefine((value, context) => {
   if (!value.apiKeyId && !value.name) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -211,6 +228,20 @@ externalIntegrationsRouter.get(
     }
     const context = getExternalIntegrationSourceContext(res)
     res.json(ok(getPublicClientIpUsage(parsed.data, { mock: context.isTestToken })))
+  }
+)
+
+externalIntegrationsRouter.get(
+  '/account/usage',
+  requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
+  (req, res) => {
+    const parsed = accountUsageQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号聚合公开接口参数无效')))
+      return
+    }
+    const context = getExternalIntegrationSourceContext(res)
+    res.json(ok(getPublicAccountUsage(parsed.data, { mock: context.isTestToken })))
   }
 )
 

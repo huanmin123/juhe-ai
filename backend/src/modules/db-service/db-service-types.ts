@@ -148,7 +148,6 @@ export interface DbServiceGatewayRuntime {
   groupAccess?: GroupUsageAccessMetadata
   accounts: OpenAIAccountSecret[]
   hasAccountAvailabilitySchedule?: boolean
-  clientIpPolicies?: ActiveClientIpPolicy[]
   streamInterceptPolicies?: StreamInterceptPolicySummary[]
 }
 
@@ -260,7 +259,8 @@ export type DbServiceOperation =
     type: 'clear_gateway_runtime_cache'
   }
   | {
-    type: 'list_active_client_ip_policies'
+    type: 'find_active_client_ip_policy'
+    ipHash: string
   }
   | {
     type: 'list_active_stream_intercept_policies'
@@ -303,7 +303,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean; skippedReason?: string } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
-  T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :
+  T extends { type: 'find_active_client_ip_policy' } ? ActiveClientIpPolicy | undefined :
   T extends { type: 'list_active_stream_intercept_policies' } ? StreamInterceptPolicySummary[] :
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :

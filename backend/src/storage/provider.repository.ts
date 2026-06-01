@@ -13,14 +13,17 @@ interface ProviderRow {
   capabilities_json: string
 }
 
+const maxProviderDefinitions = 50
+
 export function listProviders(): ProviderDefinition[] {
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, code, name, description, enabled, base_url, account_types_json, capabilities_json
       FROM providers
       ORDER BY name ASC, code ASC
+      LIMIT ?
     `)
-    .all() as unknown as ProviderRow[]
+    .all(maxProviderDefinitions) as unknown as ProviderRow[]
   return rows.map((row) => ({
     id: row.id,
     code: row.code,

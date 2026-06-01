@@ -9,7 +9,7 @@ import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-i
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
-import { optionalNullableString, optionalString } from './value-utils.js'
+import { optionalString } from './value-utils.js'
 
 interface SystemSessionRow {
   id: string
@@ -24,6 +24,8 @@ const sessionTouchMinIntervalMs = 60 * 1000
 const defaultSystemAccountOptionLimit = 50
 const defaultSystemAccountPageSize = 20
 const maxSystemAccountPageSize = 100
+const systemAccountCreateInputKeys = new Set(['username', 'displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled'])
+const systemAccountUpdateInputKeys = new Set(['displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled'])
 
 export interface SystemAccountOptionListOptions {
   ids?: string[]
@@ -53,14 +55,7 @@ export interface SessionWithAccount {
 }
 
 export function listSystemAccounts(): SystemAccountSummary[] {
-  const rows = getBusinessDatabase()
-    .prepare(`
-      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
-      FROM system_accounts
-      ORDER BY created_at ASC, id ASC
-    `)
-    .all() as unknown as SystemAccountRow[]
-  return rows.map(systemAccountSummaryFromRow)
+  return listSystemAccountsPage({ page: 1, pageSize: maxSystemAccountPageSize }).items
 }
 
 export function listSystemAccountsPage(options: SystemAccountListOptions = {}): SystemAccountListResult {
@@ -243,7 +238,8 @@ export function createSystemAccount(input: {
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
 }): SystemAccountSummary {
-  return createSystemAccountWithPasswordHash(input, hashPassword(input.password))
+  const password = normalizeSystemAccountPassword(input.password)
+  return createSystemAccountWithPasswordHash(input, hashPassword(password))
 }
 
 export async function createSystemAccountAsync(input: {
@@ -256,7 +252,7 @@ export async function createSystemAccountAsync(input: {
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
 }): Promise<SystemAccountSummary> {
-  const passwordHash = await hashPasswordAsync(input.password)
+  const passwordHash = await hashPasswordAsync(normalizeSystemAccountPassword(input.password))
   return createSystemAccountWithPasswordHash(input, passwordHash)
 }
 
@@ -270,10 +266,11 @@ export function createSystemAccountWithPasswordHash(input: {
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
 }, passwordHash: string): SystemAccountSummary {
+  assertKnownInputKeys(input, systemAccountCreateInputKeys, '系统账户')
   const now = nowIso()
   const id = newId('sysacc')
-  const username = input.username.trim()
-  const displayName = input.displayName.trim()
+  const username = normalizeRequiredText(input.username, '用户账户')
+  const displayName = normalizeRequiredText(input.displayName, '用户名称')
   const database = getBusinessDatabase()
   ensureSystemAccountUsernameUnique(username, undefined, database)
   ensureSystemAccountDisplayNameUnique(displayName, undefined, database)
@@ -281,11 +278,11 @@ export function createSystemAccountWithPasswordHash(input: {
     id,
     username,
     displayName,
-    description: optionalString(input.description),
-    role: input.role ?? 'user',
-    status: input.status ?? 'active',
-    mustChangePassword: input.mustChangePassword ?? true,
-    imageGenerationEnabled: input.imageGenerationEnabled ?? false,
+    description: normalizeNullableText(input.description, '说明') ?? undefined,
+    role: normalizeSystemAccountRole(input.role, 'user'),
+    status: normalizeSystemAccountStatus(input.status, 'active'),
+    mustChangePassword: normalizeOptionalBoolean(input.mustChangePassword, true, '下次登录改密'),
+    imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, false, '支持图像生成'),
     createdAt: now,
     updatedAt: now
   }
@@ -317,7 +314,9 @@ export function updateSystemAccount(id: string, input: {
   imageGenerationEnabled?: boolean
   password?: string
 }): SystemAccountSummary | undefined {
-  return updateSystemAccountWithPasswordHash(id, input, input.password ? hashPassword(input.password) : undefined)
+  const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
+  const passwordHash = hasPasswordInput ? hashPassword(normalizeSystemAccountPassword(input.password)) : undefined
+  return updateSystemAccountWithPasswordHash(id, input, passwordHash)
 }
 
 export async function updateSystemAccountAsync(id: string, input: {
@@ -329,7 +328,8 @@ export async function updateSystemAccountAsync(id: string, input: {
   imageGenerationEnabled?: boolean
   password?: string
 }): Promise<SystemAccountSummary | undefined> {
-  const passwordHash = input.password ? await hashPasswordAsync(input.password) : undefined
+  const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
+  const passwordHash = hasPasswordInput ? await hashPasswordAsync(normalizeSystemAccountPassword(input.password)) : undefined
   return updateSystemAccountWithPasswordHash(id, input, passwordHash)
 }
 
@@ -342,6 +342,10 @@ export function updateSystemAccountWithPasswordHash(id: string, input: {
   imageGenerationEnabled?: boolean
   password?: string
 }, passwordHash?: string): SystemAccountSummary | undefined {
+  assertKnownInputKeys(input, systemAccountUpdateInputKeys, '系统账户')
+  if (Object.prototype.hasOwnProperty.call(input, 'password') && input.password !== undefined && !passwordHash) {
+    throw new Error('登录密码不能为空')
+  }
   const current = findSystemAccountById(id)
   if (!current) {
     return undefined
@@ -349,12 +353,12 @@ export function updateSystemAccountWithPasswordHash(id: string, input: {
 
   const next = {
     ...current,
-    displayName: input.displayName?.trim() || current.displayName,
-    description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
-    role: input.role ?? current.role,
-    status: input.status ?? current.status,
-    mustChangePassword: input.mustChangePassword ?? current.mustChangePassword,
-    imageGenerationEnabled: input.imageGenerationEnabled ?? current.imageGenerationEnabled
+    displayName: input.displayName === undefined ? current.displayName : normalizeRequiredText(input.displayName, '用户名称'),
+    description: input.description === undefined ? current.description : normalizeNullableText(input.description, '说明') ?? undefined,
+    role: normalizeSystemAccountRole(input.role, current.role),
+    status: normalizeSystemAccountStatus(input.status, current.status),
+    mustChangePassword: normalizeOptionalBoolean(input.mustChangePassword, current.mustChangePassword, '下次登录改密'),
+    imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, current.imageGenerationEnabled, '支持图像生成')
   }
   const now = nowIso()
   ensureSystemAccountDisplayNameUnique(next.displayName, id)
@@ -461,4 +465,64 @@ export function revokeSession(token: string): void {
 
 export function revokeAllSessionsForAccount(systemAccountId: string): void {
   getBusinessDatabase().prepare('DELETE FROM system_sessions WHERE system_account_id = ?').run(systemAccountId)
+}
+
+function normalizeRequiredText(value: unknown, label: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${label}不能为空`)
+  }
+  const text = value.trim()
+  if (!text) {
+    throw new Error(`${label}不能为空`)
+  }
+  return text
+}
+
+function normalizeNullableText(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${label}必须是字符串`)
+  }
+  const text = value.trim()
+  return text || null
+}
+
+function normalizeSystemAccountRole(value: unknown, fallback: SystemAccountRole): SystemAccountRole {
+  if (value === undefined) return fallback
+  if (value === 'admin' || value === 'user') {
+    return value
+  }
+  throw new Error('系统账户角色无效')
+}
+
+function normalizeSystemAccountStatus(value: unknown, fallback: SystemAccountStatus): SystemAccountStatus {
+  if (value === undefined) return fallback
+  if (value === 'active' || value === 'disabled') {
+    return value
+  }
+  throw new Error('系统账户状态无效')
+}
+
+function normalizeOptionalBoolean(value: unknown, fallback: boolean, label: string): boolean {
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') {
+    throw new Error(`${label}必须是布尔值`)
+  }
+  return value
+}
+
+function normalizeSystemAccountPassword(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 4) {
+    throw new Error('登录密码不能少于 4 个字符')
+  }
+  return value
+}
+
+function assertKnownInputKeys(input: object, allowedKeys: ReadonlySet<string>, label: string): void {
+  const unknownKeys = Object.keys(input as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
 }

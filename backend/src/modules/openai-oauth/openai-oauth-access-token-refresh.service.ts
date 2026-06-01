@@ -9,7 +9,6 @@ import {
   findAccountForTest,
   getSettings,
   listOpenAIOAuthAccountsDueForAccessTokenRefresh,
-  listOpenAIOAuthStoppedRefreshExceptionAccounts,
   markAccountException,
   resolveProxyUrlForProfile,
   updateAccount
@@ -203,18 +202,21 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   options: OpenAIOAuthAccessTokenRefreshOptions = {}
 ): Promise<OpenAIOAuthAccessTokenRefreshResult> {
   const settings = getSettings()
-  const leadSeconds = boundedNumber(options.leadSeconds ?? settings.oauthAccessTokenRefreshLeadSeconds, 300, 60, 86400)
-  const batchSize = boundedNumber(options.batchSize ?? settings.oauthAccessTokenRefreshBatchSize, 20, 1, 200)
-  const retryBackoffSeconds = boundedNumber(options.retryBackoffSeconds ?? settings.oauthAccessTokenRefreshRetryBackoffSeconds, 300, 0, 86400)
+  const leadSeconds = options.leadSeconds === undefined
+    ? settingsInteger(settings, 'oauthAccessTokenRefreshLeadSeconds', 60, 86400)
+    : optionInteger(options.leadSeconds, 'leadSeconds', 60, 86400)
+  const batchSize = options.batchSize === undefined
+    ? settingsInteger(settings, 'oauthAccessTokenRefreshBatchSize', 1, 200)
+    : optionInteger(options.batchSize, 'batchSize', 1, 200)
+  const retryBackoffSeconds = options.retryBackoffSeconds === undefined
+    ? settingsInteger(settings, 'oauthAccessTokenRefreshRetryBackoffSeconds', 0, 86400)
+    : optionInteger(options.retryBackoffSeconds, 'retryBackoffSeconds', 0, 86400)
   const now = Date.now()
   const leadMs = leadSeconds * 1000
   const retryBackoffMs = retryBackoffSeconds * 1000
   const retryBackoffPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_backoff', retryBackoffMs)
   cleanupRefreshFailureBackoff(now)
 
-  normalizeOpenAIOAuthStoppedRefreshExceptionMessages(listOpenAIOAuthStoppedRefreshExceptionAccounts({
-    stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
-  }))
   const dueAccounts = listOpenAIOAuthAccountsDueForAccessTokenRefresh({
     leadSeconds,
     limit: batchSize + refreshFailureStateByAccountId.size,
@@ -291,28 +293,6 @@ function isExistingOpenAIOAuthAccountWithRefreshToken(account: AccountSummary): 
 function shouldStopOpenAIOAuthBackgroundRefresh(account: AccountSummary): boolean {
   return account.status === 'error'
     && account.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
-}
-
-function normalizeOpenAIOAuthStoppedRefreshExceptionMessages(accounts: AccountSummary[]): void {
-  for (const account of accounts) {
-    if (!shouldStopOpenAIOAuthBackgroundRefresh(account) || account.lastErrorMessage?.includes('已停止自动刷新')) {
-      continue
-    }
-    const updated = markAccountException(
-      account.id,
-      OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
-      openAIOAuthTokenRefreshStoppedMessage(openAIOAuthRefreshFailureCountFromMessage(account.lastErrorMessage), account.lastErrorMessage ?? '历史后台刷新失败')
-    )
-    if (updated) {
-      clearGatewayRuntimeCache()
-    }
-  }
-}
-
-function openAIOAuthRefreshFailureCountFromMessage(message: string | undefined): number {
-  const matched = /连续\s+(\d+)\s+次/.exec(message ?? '')
-  const count = matched ? Number(matched[1]) : NaN
-  return Number.isFinite(count) && count > 0 ? Math.trunc(count) : oauthTokenRefreshFailureThreshold
 }
 
 function shouldPreRefreshAccessToken(credentials: Record<string, unknown>, now: number, leadMs: number): boolean {
@@ -529,7 +509,7 @@ function errorText(error: unknown): string {
 }
 
 function refreshLeadMs(leadSeconds: unknown): number {
-  return boundedNumber(leadSeconds, 60, 0, 86400) * 1000
+  return optionalInteger(leadSeconds, 'leadSeconds', 60, 0, 86400) * 1000
 }
 
 function credentialsChanged(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
@@ -563,10 +543,22 @@ function openAIOAuthTokenRefreshStoppedMessage(failureCount: number, lastError: 
   ].join(' ').slice(0, 1000)
 }
 
-function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return fallback
-  return Math.min(Math.max(Math.trunc(number), min), max)
+function settingsInteger(settings: Record<string, unknown>, key: string, min: number, max: number): number {
+  return optionInteger(settings[key], `系统设置 ${key}`, min, max)
+}
+
+function optionalInteger(value: unknown, label: string, fallback: number, min: number, max: number): number {
+  return value === undefined ? fallback : optionInteger(value, label, min, max)
+}
+
+function optionInteger(value: unknown, label: string, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new Error(`${label} 必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`${label} 必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
 }
 
 registerGatewayRuntimeCacheInvalidator(clearOpenAIOAuthRecentRefreshCache)

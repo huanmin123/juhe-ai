@@ -30,6 +30,7 @@ export type GatewayRuntimeRequest = Request & {
 
 interface ResolveGatewayRuntimeOptions {
   closeConnectionOnAuthFailure?: boolean
+  loadClientIpPolicy?: boolean
 }
 
 export async function preResolveOpenAIGatewayRuntime(
@@ -38,7 +39,10 @@ export async function preResolveOpenAIGatewayRuntime(
   next: NextFunction
 ): Promise<void> {
   try {
-    const runtime = await resolveGatewayRuntimeAsync(req, res, { closeConnectionOnAuthFailure: true })
+    const runtime = await resolveGatewayRuntimeAsync(req, res, {
+      closeConnectionOnAuthFailure: true,
+      loadClientIpPolicy: false
+    })
     if (!runtime?.apiKey) {
       recordEarlyGatewayAuthFailure(req, res)
       return
@@ -49,6 +53,9 @@ export async function preResolveOpenAIGatewayRuntime(
     }
     if (isImageGenerationDisabledForApiKey(runtime.apiKey, resolveOpenAIGatewayRequestLane(req))) {
       sendEarlyImageGenerationDisabledResponse(req, res)
+      return
+    }
+    if (await rejectCachedClientIpBlacklist(req, res, extractClientIp(req), { closeConnectionOnAuthFailure: true }, { cacheOnly: false })) {
       return
     }
     req.gatewayRuntime = runtime
@@ -68,7 +75,7 @@ export async function resolveGatewayRuntimeAsync(
   }
   const clientIp = extractClientIp(req)
   const authorization = req.header('authorization')
-  if (await rejectCachedClientIpBlacklist(req, res, clientIp, options)) {
+  if (await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: true })) {
     return undefined
   }
   const preAuthDecision = inspectGatewayPreAuthCircuit({ clientIp, authorization })
@@ -101,9 +108,6 @@ export async function resolveGatewayRuntimeAsync(
   }
 
   const runtime = await readCachedGatewayRuntimeAsync(gatewayApiKey)
-  if (await rejectCachedClientIpBlacklist(req, res, clientIp, options)) {
-    return undefined
-  }
   if (!runtime.apiKey) {
     const failureDecision = recordPreAuthFailure(req, res, 'invalid_api_key', options)
     if (failureDecision.blocked) {
@@ -129,6 +133,9 @@ export async function resolveGatewayRuntimeAsync(
     sendApiKeyScheduleInactiveResponse(res)
     return undefined
   }
+  if (options.loadClientIpPolicy !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: false })) {
+    return undefined
+  }
 
   return runtime
 }
@@ -147,9 +154,10 @@ async function rejectCachedClientIpBlacklist(
   req: Request,
   res: Response,
   clientIp: string | undefined,
-  options: ResolveGatewayRuntimeOptions
+  options: ResolveGatewayRuntimeOptions,
+  policyOptions: { cacheOnly: boolean }
 ): Promise<boolean> {
-  const ipPolicyDecision = await inspectClientIpPolicy(clientIp, { cacheOnly: true })
+  const ipPolicyDecision = await inspectClientIpPolicy(clientIp, { cacheOnly: policyOptions.cacheOnly })
   if (!ipPolicyDecision.blocked || !ipPolicyDecision.blacklistPolicy) {
     return false
   }

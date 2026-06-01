@@ -14,11 +14,20 @@ export const groupsRouter = Router()
 
 const groupSchema = z.object({
   name: z.string().trim().min(1),
-  providerCode: z.string().trim().min(1).optional(),
+  providerCode: z.string().trim().min(1),
   description: z.string().trim().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional(),
-  schedulingPolicy: z.record(z.unknown()).optional()
+  schedulingPolicy: z.object({
+    defaultSoftConcurrency: z.number().int().min(1).max(1_000_000).optional(),
+    maxQueueWaitMs: z.number().int().min(1).max(3_600_000).optional(),
+    clientIpConcurrencyLimit: z.number().int().min(0).max(1_000_000).optional(),
+    clientIpConcurrencyOverflowMode: z.enum(['reject', 'queue']).optional(),
+    imageLaneMaxConcurrency: z.number().int().min(0).max(1_000_000).optional()
+  }).strict().optional()
+}).strict()
+const groupPatchSchema = groupSchema.partial().refine((value) => Object.keys(value).length > 0, {
+  message: '请提供要修改的分组内容'
 })
 
 groupsRouter.get('/', async (req, res, next) => {
@@ -84,7 +93,7 @@ groupsRouter.post('/', mutationGuard({
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
-    providerCode: normalizedText(bodyField(req, 'providerCode')) || 'openai',
+    providerCode: normalizedText(bodyField(req, 'providerCode')),
     name: normalizedText(bodyField(req, 'name'))
   })
 }), (req, res) => {
@@ -99,7 +108,7 @@ groupsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest('分组参数无效'))
     return
   }
-  const providerCode = parsed.data.providerCode?.trim() || 'openai'
+  const providerCode = parsed.data.providerCode.trim()
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
     res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
@@ -149,9 +158,12 @@ groupsRouter.patch('/:id', (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const providerCode = typeof (req.body as Record<string, unknown>).providerCode === 'string'
-    ? String((req.body as Record<string, unknown>).providerCode).trim()
-    : undefined
+  const parsed = groupPatchSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('分组参数无效'))
+    return
+  }
+  const providerCode = parsed.data.providerCode?.trim()
   if (providerCode) {
     const provider = listProviders().find((item) => item.code === providerCode)
     if (!provider) {
@@ -166,7 +178,7 @@ groupsRouter.patch('/:id', (req, res) => {
   const before = findGroupSummary(req.params.id, requestAccess)
   try {
     const group = runLoggedOperation(() => {
-      const group = updateGroup(req.params.id, req.body as Record<string, unknown>, requestAccess)
+      const group = updateGroup(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
       if (!group) {
         throw new Error('分组不存在')
       }

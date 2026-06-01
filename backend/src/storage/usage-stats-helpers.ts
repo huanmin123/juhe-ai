@@ -52,15 +52,14 @@ export function usageSummaryFromAggregate(row: {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
-  cache_read_cost?: number
-  cache_read_cost_usd?: number
+  cache_read_cost_usd: number
   total_cost: number
   last_used_at: string | null
 }): AccountUsageSummary {
   const inputTokens = Number(row.input_tokens ?? 0)
   const outputTokens = Number(row.output_tokens ?? 0)
   const cacheReadTokens = Number(row.cache_read_tokens ?? 0)
-  const cacheReadCost = Number(row.cache_read_cost ?? row.cache_read_cost_usd ?? 0)
+  const cacheReadCost = requiredAggregateNumber(row.cache_read_cost_usd, 'cache_read_cost_usd')
   return {
     requestCount: Number(row.request_count ?? 0),
     inputTokens,
@@ -216,14 +215,21 @@ export function usageStatsTimezone(): string {
   }
   const row = getBusinessDatabase().prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
   if (!row?.value_json) {
-    return cacheUsageStatsTimezone(DEFAULT_USAGE_STATS_TIMEZONE, nowMs)
+    throw new Error('系统设置缺少 usageStatsTimezone')
   }
   try {
     const value = JSON.parse(row.value_json) as unknown
     return cacheUsageStatsTimezone(normalizeUsageStatsTimezone(value), nowMs)
-  } catch {
-    return cacheUsageStatsTimezone(DEFAULT_USAGE_STATS_TIMEZONE, nowMs)
+  } catch (error) {
+    throw new Error(`系统设置 usageStatsTimezone 无效：${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+function requiredAggregateNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`统计聚合字段 ${field} 必须是数字`)
+  }
+  return value
 }
 
 export function clearUsageStatsTimezoneCache(): void {
@@ -239,12 +245,15 @@ function cacheUsageStatsTimezone(value: string, nowMs = Date.now()): string {
 }
 
 export function normalizeUsageStatsTimezone(value: unknown): string {
-  const timezone = typeof value === 'string' && value.trim() ? value.trim() : DEFAULT_USAGE_STATS_TIMEZONE
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('统计时区必须是非空字符串')
+  }
+  const timezone = value.trim()
   try {
     new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date())
     return timezone
   } catch {
-    return DEFAULT_USAGE_STATS_TIMEZONE
+    throw new Error(`统计时区不存在：${timezone}`)
   }
 }
 

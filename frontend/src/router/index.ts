@@ -52,7 +52,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/api-keys/ApiKeysView.vue'),
     meta: {
       title: '我的 API Key',
-      description: '管理自己的 API Key，绑定自有或授权给自己的分组。',
+      description: '管理自己的 API Key，绑定自己的分组。',
       viewScope: 'self',
       heavy: true
     }
@@ -374,7 +374,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/table-monitor/TableMonitorView.vue'),
     meta: {
       title: '表监控',
-      description: '查看业务库、数据集目录库、usage shard 和统计结果库的表大小、行数、文件空闲空间和近期增长。',
+      description: '查看业务库、数据集目录库和统计结果库的表大小、行数、文件空闲空间和近期增长；usage shard 文件集合观测仍在后续增强阶段。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

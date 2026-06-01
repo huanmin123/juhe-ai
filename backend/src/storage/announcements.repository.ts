@@ -9,6 +9,7 @@ const announcementStatuses: readonly AnnouncementStatus[] = ['draft', 'published
 const publicAnnouncementLimit = 30
 const defaultAnnouncementPageSize = 50
 const maxAnnouncementPageSize = 100
+const announcementInputKeys = new Set(['title', 'content', 'level', 'status'])
 
 export interface AnnouncementInput {
   title: string
@@ -99,14 +100,7 @@ export function markPublicAnnouncementsRead(systemAccountId: string, announcemen
 }
 
 export function listAnnouncements(): AnnouncementSummary[] {
-  const rows = getBusinessDatabase()
-    .prepare(`
-      SELECT ${announcementListSelectColumns()}
-      FROM announcements
-      ORDER BY updated_at DESC, created_at DESC, id DESC
-    `)
-    .all() as unknown as AnnouncementRow[]
-  return announcementSummaries(rows, true)
+  return listAnnouncementsPage({ page: 1, pageSize: maxAnnouncementPageSize }).items
 }
 
 export function listAnnouncementsPage(options: AnnouncementListOptions = {}): AnnouncementListResult {
@@ -136,6 +130,7 @@ export function findAnnouncement(id: string): AnnouncementSummary | undefined {
 }
 
 export function createAnnouncement(input: AnnouncementInput, actorSystemAccountId: string): AnnouncementSummary {
+  assertKnownInputKeys(input, announcementInputKeys, '公告')
   const now = nowIso()
   const status = normalizeStatus(input.status, 'draft')
   const id = newId('ann')
@@ -161,6 +156,7 @@ export function createAnnouncement(input: AnnouncementInput, actorSystemAccountI
 }
 
 export function updateAnnouncement(id: string, input: Partial<AnnouncementInput>, actorSystemAccountId: string): AnnouncementSummary | undefined {
+  assertKnownInputKeys(input, announcementInputKeys, '公告')
   const current = getAnnouncementRow(id)
   if (!current) return undefined
 
@@ -245,19 +241,30 @@ function normalizePublicLimit(limit: unknown): number {
 }
 
 function normalizeRequiredText(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
+  if (typeof value !== 'string') {
+    throw new Error('公告文本必须是字符串')
+  }
+  const text = value.trim()
+  if (!text) {
+    throw new Error('公告文本不能为空')
+  }
+  return text
 }
 
 function normalizeLevel(value: unknown, fallback: AnnouncementLevel): AnnouncementLevel {
-  return typeof value === 'string' && announcementLevels.includes(value as AnnouncementLevel)
-    ? value as AnnouncementLevel
-    : fallback
+  if (value === undefined) return fallback
+  if (typeof value === 'string' && announcementLevels.includes(value as AnnouncementLevel)) {
+    return value as AnnouncementLevel
+  }
+  throw new Error('公告级别无效')
 }
 
 function normalizeStatus(value: unknown, fallback: AnnouncementStatus): AnnouncementStatus {
-  return typeof value === 'string' && announcementStatuses.includes(value as AnnouncementStatus)
-    ? value as AnnouncementStatus
-    : fallback
+  if (value === undefined) return fallback
+  if (typeof value === 'string' && announcementStatuses.includes(value as AnnouncementStatus)) {
+    return value as AnnouncementStatus
+  }
+  throw new Error('公告状态无效')
 }
 
 function normalizeAnnouncementListOptions(options: AnnouncementListOptions): Required<AnnouncementListOptions> {
@@ -319,4 +326,11 @@ function announcementSummaries(rows: Array<AnnouncementRow | PublicAnnouncementR
     }
     return summary
   })
+}
+
+function assertKnownInputKeys(input: object, allowedKeys: ReadonlySet<string>, label: string): void {
+  const unknownKeys = Object.keys(input as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
+  if (unknownKeys.length) {
+    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
+  }
 }

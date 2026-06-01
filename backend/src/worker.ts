@@ -5,14 +5,21 @@ import {
   type BackgroundWorkerRuntimeLogQueueRuntime
 } from './modules/background/background-ipc.js'
 import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs } from './modules/background/background-jobs.js'
-import { enqueueAuditLogsLocal, flushAllAuditLogQueue, getAuditLogQueueRuntime } from './modules/audit-logs/audit-log-queue.service.js'
+import {
+  enqueueAuditLogsLocal,
+  flushAuditLogQueueForShutdown,
+  getAuditLogQueueRuntime,
+  installAuditLogQueueShutdownHooks
+} from './modules/audit-logs/audit-log-queue.service.js'
 import {
   enqueueOperationLogsLocal,
+  flushOperationLogQueueForShutdown,
   getOperationLogQueueRuntime,
   installOperationLogQueueShutdownHooks
 } from './modules/operation-logs/operation-log-queue.service.js'
 import {
   enqueueRecordMaintenanceJobsLocal,
+  flushRecordMaintenanceQueueForShutdown,
   getRecordMaintenanceQueueRuntime,
   installRecordMaintenanceQueueShutdownHooks,
   isRecordMaintenanceJob
@@ -20,11 +27,13 @@ import {
 import { startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
   enqueueRuntimeLogLineLocal,
+  flushRuntimeLogIndexQueueForShutdown,
   getRuntimeLogIndexRuntime,
   installRuntimeLogIndexQueueShutdownHooks
 } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import {
   enqueueUsageRecordsLocal,
+  flushUsageRecordQueueForShutdown,
   getUsageRecordQueueRuntime,
   installUsageRecordQueueShutdownHooks
 } from './modules/gateway/usage-record-queue.service.js'
@@ -52,11 +61,13 @@ installUsageRecordQueueShutdownHooks()
 installOperationLogQueueShutdownHooks()
 installRecordMaintenanceQueueShutdownHooks()
 installRuntimeLogIndexQueueShutdownHooks()
-process.once('beforeExit', flushAllAuditLogQueue)
-process.once('exit', flushAllAuditLogQueue)
+installAuditLogQueueShutdownHooks()
+installWorkerSignalShutdownHooks()
 setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
 startRuntimeLogFileImport()
 startBackgroundJobs()
+
+let workerSignalShutdownInProgress = false
 
 process.on('message', (message: unknown) => {
   if (!isWorkerIncomingMessage(message)) {
@@ -189,6 +200,35 @@ function sendWorkerMessage(message: Record<string, unknown>): void {
     }), '后台 worker 向父进程发送 IPC 消息失败，进程将退出等待 supervisor 重启')
     process.exit(1)
   }
+}
+
+function installWorkerSignalShutdownHooks(): void {
+  process.once('SIGINT', () => {
+    void exitAfterWorkerQueueFlush(0)
+  })
+  process.once('SIGTERM', () => {
+    void exitAfterWorkerQueueFlush(0)
+  })
+}
+
+async function exitAfterWorkerQueueFlush(exitCode: number): Promise<never> {
+  if (workerSignalShutdownInProgress) {
+    process.exit(exitCode)
+  }
+  workerSignalShutdownInProgress = true
+  try {
+    await flushWorkerQueuesForShutdown()
+  } finally {
+    process.exit(exitCode)
+  }
+}
+
+async function flushWorkerQueuesForShutdown(): Promise<void> {
+  flushUsageRecordQueueForShutdown()
+  flushOperationLogQueueForShutdown()
+  flushRecordMaintenanceQueueForShutdown()
+  flushRuntimeLogIndexQueueForShutdown()
+  await flushAuditLogQueueForShutdown()
 }
 
 function runtimeLogLineOptionsFromMessage(message: Extract<WorkerIncomingMessage, { type: 'background_worker_runtime_log_line' }>): Parameters<typeof enqueueRuntimeLogLineLocal>[1] {

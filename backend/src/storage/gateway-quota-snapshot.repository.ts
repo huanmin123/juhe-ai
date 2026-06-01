@@ -5,6 +5,10 @@ import type {
   GatewayQuotaCostSnapshotEntry,
   GatewayQuotaSnapshot
 } from '../modules/gateway/gateway-quota-snapshot-cache.service.js'
+import {
+  maxGatewayQuotaSnapshotAuthorizationEntries,
+  maxGatewayQuotaSnapshotCostEntries
+} from '../modules/gateway/gateway-quota-snapshot-cache.service.js'
 import type { RequestQuotaLimits } from '../domain/types.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
@@ -113,7 +117,9 @@ function loadApiKeyQuotaSnapshotRows(database: DatabaseSync): ApiKeyQuotaSnapsho
     FROM api_keys
     WHERE status = 'active'
       AND quota_limits_json IS NOT NULL
-  `).all() as unknown as ApiKeyQuotaSnapshotRow[]
+    ORDER BY updated_at DESC, id ASC
+    LIMIT ?
+  `).all(maxGatewayQuotaSnapshotCostEntries) as unknown as ApiKeyQuotaSnapshotRow[]
 }
 
 function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): AuthorizationQuotaSnapshotRow[] {
@@ -125,10 +131,29 @@ function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): Authorizati
     LEFT JOIN accounts instance_accounts
       ON ra.resource_type = 'account'
       AND instance_accounts.authorization_instance_authorization_id = ra.id
-      AND instance_accounts.system_account_id = ra.grantee_system_account_id
-      AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+        AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
     WHERE ra.status = 'active'
-  `).all() as unknown as AuthorizationQuotaSnapshotRow[]
+      AND (
+        ra.limits_json IS NOT NULL
+        OR (
+          ra.effective_source_team_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM resource_authorization_grants grant_rows
+            WHERE grant_rows.resource_type = ra.resource_type
+              AND grant_rows.resource_id = ra.resource_id
+              AND grant_rows.grantee_type = 'team'
+              AND grant_rows.grantee_team_id = ra.effective_source_team_id
+              AND grant_rows.status = 'active'
+              AND grant_rows.limits_json IS NOT NULL
+            LIMIT 1
+          )
+        )
+      )
+    ORDER BY ra.updated_at DESC, ra.id ASC
+    LIMIT ?
+  `).all(maxGatewayQuotaSnapshotAuthorizationEntries) as unknown as AuthorizationQuotaSnapshotRow[]
 }
 
 function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): TeamAuthorizationQuotaSnapshotRow[] {
@@ -153,10 +178,13 @@ function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): TeamAut
       ON ra.resource_type = 'account'
       AND instance_accounts.authorization_instance_authorization_id = ra.id
       AND instance_accounts.system_account_id = ra.grantee_system_account_id
-      AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
     WHERE ra.status = 'active'
       AND ra.effective_source_team_id IS NOT NULL
-  `).all() as unknown as TeamAuthorizationQuotaSnapshotRow[]
+      AND grant_rows.limits_json IS NOT NULL
+    ORDER BY ra.updated_at DESC, ra.id ASC
+    LIMIT ?
+  `).all(maxGatewayQuotaSnapshotAuthorizationEntries) as unknown as TeamAuthorizationQuotaSnapshotRow[]
 }
 
 function apiKeyQuotaCostCheck(row: ApiKeyQuotaSnapshotRow, now: Date): (QuotaCostCheck & { apiKey: ApiKeyQuotaSnapshotRow }) | undefined {

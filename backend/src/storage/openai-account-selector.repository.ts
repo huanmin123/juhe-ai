@@ -8,7 +8,6 @@ import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { activeResourceAuthorization, activeResourceAuthorizationById, activeResourceAuthorizationsByIds } from './resource-authorization-helpers.js'
-import { ensureAccountAuthorizationInstancesForGrantee } from './resource-authorization-write-state.repository.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 
@@ -126,7 +125,6 @@ export function findOpenAIAccountForGroup(
   if (!groupAccess) {
     return undefined
   }
-  ensureAccountAuthorizationInstancesForGrantee(systemAccountId)
   const forceAvailability = options.ignoreAvailability === true
   const groupAccount = getBusinessDatabase()
     .prepare(`
@@ -162,7 +160,10 @@ export function findOpenAIAccountForGroup(
       LEFT JOIN accounts source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
       WHERE accounts.id = ?
         AND accounts.provider_code = 'openai'
-        AND COALESCE(source_accounts.type, accounts.type) IN ('api_key', 'oauth')
+        AND (
+          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.type IN ('api_key', 'oauth'))
+        )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
     `)
     .get(accountId, now) as unknown as OpenAIAccountRow | undefined
@@ -232,7 +233,6 @@ export function listOpenAIAccountsForGroupResult(
   if (!groupAccess) {
     return { accounts: [], hasAccountAvailabilitySchedule: false }
   }
-  ensureAccountAuthorizationInstancesForGrantee(systemAccountId, database)
   const groupAccountRows = [
     ...listOpenAIGroupAccountSelectionRows(database, groupId, groupAccess.groupOwnerSystemAccountId, now, 'without_schedule'),
     ...listOpenAIGroupAccountSelectionRows(database, groupId, groupAccess.groupOwnerSystemAccountId, now, 'with_schedule')
@@ -378,7 +378,10 @@ function listOpenAIGroupAccountSelectionRows(
         AND accounts.schedulable = 1
         AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         ${scheduleClause}
-        AND COALESCE(source_accounts.type, accounts.type) IN ('api_key', 'oauth')
+        AND (
+          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.type IN ('api_key', 'oauth'))
+        )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       ORDER BY
         group_accounts.local_fallback_enabled ASC,
@@ -408,7 +411,10 @@ export function hasOpenAIAccountAvailabilityScheduleForGroup(
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
         AND accounts.provider_code = 'openai'
-        AND COALESCE(source_accounts.type, accounts.type) IN ('api_key', 'oauth')
+        AND (
+          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.type IN ('api_key', 'oauth'))
+        )
         AND accounts.availability_schedule_json IS NOT NULL
       LIMIT 1
     `)
@@ -644,6 +650,9 @@ function resolveSchedulableOpenAIAccountAccess(
     systemAccountId,
     accountAuthorizationsByIdOrResourceId: options.accountAuthorizationsByIdOrResourceId
   })) {
+    return undefined
+  }
+  if (accountAccess.accountAccessType === 'account_authorized' && !row.resource_account_id) {
     return undefined
   }
   return accountAccess

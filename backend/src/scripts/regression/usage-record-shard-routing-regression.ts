@@ -50,6 +50,7 @@ try {
     return {
       id: usageRecordShards.generateUsageRecordId(createdAt, `routing-${index}`),
       traceId: `trace-usage-shard-routing-${index}`,
+      trafficSource: 'gateway' as const,
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: account.id,
@@ -107,6 +108,7 @@ try {
   repositories.createUsageRecordsBatch([{
     id: usageRecordShards.generateUsageRecordId(staleCreatedAt, 'stale-request-shape'),
     traceId: 'trace-usage-shard-stale-request-shape',
+    trafficSource: 'gateway' as const,
     apiKeyId: apiKey.id,
     accountId: staleShapeAccount.id,
     endpoint: '/v1/responses',
