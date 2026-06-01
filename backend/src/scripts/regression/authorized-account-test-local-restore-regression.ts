@@ -17,6 +17,7 @@ runtimeConfig.secret = 'authorized-account-test-local-restore-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -224,11 +225,25 @@ try {
   assert.equal(failureResult.statusCode, 400, '授权账户测试应保留上游失败状态码用于诊断')
   assert.equal(failureResult.accountStatusChanged, true, '授权账户测试失败应返回实例状态已变更')
   assert.equal(failureResult.accountStatus, 'temporary_unavailable', '授权账户测试失败应写入被授权实例临时不可调用')
+  assertNoLeak(JSON.stringify(failureResult), [
+    'account-test-bearer-token',
+    'sk-account-test-secret-token',
+    'account-test-client-secret',
+    'account-test-url-user',
+    'account-test-url-password'
+  ], '账户测试失败响应不应暴露上游错误体中的敏感串')
 
   const failedGranteeView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
   assert.equal(failedGranteeView?.status, 'temporary_unavailable', '测试失败后被授权用户视角应为临时不可调用')
   assert(failedGranteeView?.cooldownUntil, '测试失败应写入授权实例冷却时间')
   assert(failedGranteeView?.lastErrorMessage?.includes('账户测试失败'), `测试失败应写入授权实例错误信息，实际 ${failedGranteeView?.lastErrorMessage}`)
+  assertNoLeak(failedGranteeView?.lastErrorMessage ?? '', [
+    'account-test-bearer-token',
+    'sk-account-test-secret-token',
+    'account-test-client-secret',
+    'account-test-url-user',
+    'account-test-url-password'
+  ], '账户测试失败写入最近错误前应清理上游敏感串')
 
   const secondFailureResult = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
     appBaseUrl,
@@ -241,6 +256,20 @@ try {
   const secondFailedView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
   assert.equal(secondFailedView?.status, 'temporary_unavailable', '再次测试失败后仍应保持临时不可调用')
   assert(secondFailedView?.lastErrorMessage?.includes('第二次'), `再次测试失败应覆盖最近错误，实际 ${secondFailedView?.lastErrorMessage}`)
+  assertNoLeak(JSON.stringify(secondFailureResult), [
+    'second-account-test-bearer-token',
+    'sk-second-account-test-secret-token',
+    'second-account-test-client-secret',
+    'second-account-test-url-user',
+    'second-account-test-url-password'
+  ], '账户测试再次失败响应不应暴露上游敏感串')
+  assertNoLeak(secondFailedView?.lastErrorMessage ?? '', [
+    'second-account-test-bearer-token',
+    'sk-second-account-test-secret-token',
+    'second-account-test-client-secret',
+    'second-account-test-url-user',
+    'second-account-test-url-password'
+  ], '账户测试再次失败写入最近错误前应清理上游敏感串')
   assert.equal(repositories.findAccountSummary(failingOwnerAccount.id, ownerAccess)?.status, 'active', '测试失败不应修改所有者原账户')
 
   console.log('授权账户测试实例状态恢复和失败隔离回归通过')
@@ -272,7 +301,9 @@ function createMockOpenAIServer(): http.Server {
         res.end(JSON.stringify({
           error: {
             code: 'key_switch_cooldown',
-            message: attempt === 1 ? '切换key需要冷却30秒' : '第二次测试失败仍需保持最新错误',
+            message: attempt === 1
+              ? '切换key需要冷却30秒 Authorization: Bearer account-test-bearer-token sk-account-test-secret-token client_secret=account-test-client-secret url=https://account-test-url-user:account-test-url-password@example.com/v1'
+              : '第二次测试失败仍需保持最新错误 Authorization: Bearer second-account-test-bearer-token sk-second-account-test-secret-token client_secret=second-account-test-client-secret url=https://second-account-test-url-user:second-account-test-url-password@example.com/v1',
             type: 'invalid_request_error'
           }
         }))
@@ -363,4 +394,10 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
     })
     listeningServer.closeIdleConnections?.()
   })
+}
+
+function assertNoLeak(text: string, markers: string[], message: string): void {
+  for (const marker of markers) {
+    assert(!text.includes(marker), `${message}：${marker}`)
+  }
 }

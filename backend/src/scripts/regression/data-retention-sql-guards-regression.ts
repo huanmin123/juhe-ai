@@ -35,6 +35,7 @@ const statsTableNames = new Set([
   'ai_performance_summary_windows',
   'usage_quota_hourly_windows',
   'usage_scope_range_windows',
+  'client_ip_usage_range_windows',
   'account_usage_snapshots',
   'system_metrics_trend_windows',
   'process_event_loop_trend_windows'
@@ -71,6 +72,21 @@ try {
 
   assert.equal(tableCount('account_quality_minute_stats'), 0, '预聚合清理按表独立执行，前序表已清理后失败表等待下一轮')
   assert.equal(tableCount('usage_stats_minute'), 1, '预聚合清理失败时，失败表数据也应保留')
+  seedClientIpUsageRangeWindow()
+  const retryCleanup = dataRetention.cleanupUsageStatsBucketsBefore({
+    accountQualityMinuteCutoffMinute: '2001-01-01T00:00',
+    minuteCutoffMinute: '2001-01-01T00:00',
+    hourlyCutoffHour: '2001-01-01T00',
+    dailyCutoffDate: '2001-01-01',
+    weeklyCutoffWeek: '2001-W01',
+    monthlyCutoffMonth: '2001-01',
+    rankSnapshotCutoffIso: '2001-01-01T00:00:00.000Z',
+    windowCutoffDate: '2001-01-01',
+    windowCutoffIso: '2001-01-01T00:00:00.000Z',
+    limit: 100
+  })
+  assert.equal(retryCleanup.clientIpUsageRangeWindows, 1, 'IP 维度范围窗口应接入数据保留清理结果')
+  assert.equal(tableCount('client_ip_usage_range_windows'), 0, '过期 IP 维度范围窗口清理后不应残留旧记录')
 
   seedModelCheckHistory()
   const modelCheckCleanup = dataRetention.cleanupModelCheckRunsBefore('2001-01-01T00:00:00.000Z', 100)
@@ -98,6 +114,7 @@ try {
     { tableName: 'ai_performance_summary_windows', columnName: 'end_date', indexName: 'idx_ai_performance_summary_windows_end' },
     { tableName: 'usage_quota_hourly_windows', columnName: 'updated_at', indexName: 'idx_usage_quota_hourly_windows_updated' },
     { tableName: 'usage_scope_range_windows', columnName: 'end_date', indexName: 'idx_usage_scope_range_windows_end' },
+    { tableName: 'client_ip_usage_range_windows', columnName: 'end_date', indexName: 'idx_client_ip_range_end' },
     { tableName: 'account_usage_snapshots', columnName: 'updated_at', indexName: 'idx_account_usage_snapshots_updated' },
     { tableName: 'system_metrics_trend_windows', columnName: 'end_date', indexName: 'idx_system_metrics_trend_windows_end' },
     { tableName: 'process_event_loop_trend_windows', columnName: 'end_date', indexName: 'idx_process_event_loop_trend_windows_end' },
@@ -140,6 +157,15 @@ function seedModelCheckHistory(): void {
     INSERT INTO model_check_items (id, run_id, item_key, item_type, status, created_at, updated_at)
     VALUES ('mci_retention_old', 'mcr_retention_old', 'json_schema', 'capability', 'passed', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
   `).run()
+}
+
+function seedClientIpUsageRangeWindow(): void {
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at)
+      VALUES ('ip_retention_old', '2000-01-01', '2000-01-01', '2000-01-01T00:00:00.000Z')
+    `)
+    .run()
 }
 
 function seedRuntimeLogFileCursor(): void {

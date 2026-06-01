@@ -1,6 +1,7 @@
 import http from 'node:http'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { createSession, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
 import { systemSettingKeys } from '../../storage/settings.repository.js'
 import { createMockGatewayFixture } from '../maintenance/mockdata-fixtures.js'
 
@@ -308,20 +309,43 @@ async function fetchSmokeAccounts(): Promise<AccountSummary[]> {
 }
 
 async function loginAsAdmin(): Promise<void> {
-  const captcha = await getEnvelope<{ captchaId: string; image: string }>(apiPath('/auth/captcha'))
-  const captchaCode = parseCaptchaCode(captcha.image)
-  assert(captchaCode, '无法解析登录验证码')
-  const loginResult = await requestJson<ApiEnvelope<{ role?: string; username?: string }>>(apiPath('/auth/login'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      username: runtimeConfig.smokeTest.adminUsername,
-      password: runtimeConfig.smokeTest.adminPassword,
-      captchaId: captcha.captchaId,
-      captchaCode
-    })
-  })
-  assert(loginResult.data.role === 'super_admin' || loginResult.data.role === 'admin', `烟测登录账号不是管理员：${loginResult.data.username ?? 'unknown'}`)
+  assertSmokeBackendSupportsLocalSession()
+  const account = await verifySystemAccountCredentialsAsync(
+    runtimeConfig.smokeTest.adminUsername,
+    runtimeConfig.smokeTest.adminPassword
+  )
+  assert(account, `烟测管理员账号或密码错误：${runtimeConfig.smokeTest.adminUsername}`)
+  assert(account.role === 'super_admin' || account.role === 'admin', `烟测登录账号不是管理员：${account.username}`)
+  const session = createSession(account.id, 1)
+  updateSystemAccountLastLogin(account.id)
+  sessionCookie = `juhe_ai_session=${session.token}`
+
+  let currentUser: { role?: string; username?: string }
+  try {
+    currentUser = await getEnvelope<{ role?: string; username?: string }>(apiPath('/auth/me'))
+  } catch (error) {
+    throw new Error(
+      `烟测会话未被后端识别。pnpm test:smoke 当前会在脚本进程校验管理员凭据并写入短时会话，`
+      + `JUHE_AI_BACKEND_URL 必须指向共享同一 JUHE_AI_DATABASE_PATH 和 JUHE_AI_SECRET 的本机后端。`
+      + `当前后端地址：${backendUrl}；原始错误：${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+  assert(
+    currentUser.role === 'super_admin' || currentUser.role === 'admin',
+    `烟测会话未被后端识别为管理员：${currentUser.username ?? 'unknown'}`
+  )
+}
+
+function assertSmokeBackendSupportsLocalSession(): void {
+  const url = new URL(backendUrl)
+  const hostname = url.hostname.toLowerCase()
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]') {
+    return
+  }
+  throw new Error(
+    `pnpm test:smoke 当前会在脚本进程写入短时会话，JUHE_AI_BACKEND_URL 只能指向共享同一业务库和密钥的本机后端；`
+    + `当前配置为 ${backendUrl}。请在目标后端所在环境内运行 smoke，或改用本机 http://127.0.0.1:<port>。`
+  )
 }
 
 async function createTemporaryMockOpenAIGateway(
@@ -333,6 +357,7 @@ async function createTemporaryMockOpenAIGateway(
   resourceState.temporaryMockUpstream = upstream
   resourceState.ownerSystemAccountId = ownerSystemAccountId
 
+  runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
   const fixture = createMockGatewayFixture({
     label: '烟测',
     upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
@@ -365,12 +390,6 @@ async function resolveSmokeOwnerSystemAccountId(): Promise<string> {
   const activeAccount = activeAdmin ?? accounts.find((account) => account.status !== 'disabled')
   assert(activeAccount?.id, '无法定位烟测系统账户，不能创建临时账号')
   return activeAccount.id
-}
-
-function parseCaptchaCode(image: string): string {
-  const base64 = image.replace(/^data:image\/svg\+xml;base64,/, '')
-  const svg = Buffer.from(base64, 'base64').toString('utf8')
-  return [...svg.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map((match) => match[1]).join('')
 }
 
 async function createTemporaryGatewayKeyForAccount(

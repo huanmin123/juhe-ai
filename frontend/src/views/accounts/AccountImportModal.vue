@@ -196,10 +196,6 @@ const proxyColumns = [
 const importTemplate = JSON.stringify({
   type: 'juhe-ai-account-import',
   version: 1,
-  metadata: {
-    source: '用户自定义',
-    generatedAt: '2026-05-22T04:00:00.000Z'
-  },
   proxies: [
     {
       ref: 'proxy-hk-1',

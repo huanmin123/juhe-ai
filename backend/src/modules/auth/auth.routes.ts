@@ -2,8 +2,9 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createSession, findSessionByToken, revokeSession, touchSession, updateSystemAccountAsync, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
-import { createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
+import { sessionCookieOptions } from '../../shared/http-security.js'
+import { createSession, findSessionByToken, revokeOtherSessionsForAccount, revokeSession, touchSession, updateSystemAccountAsync, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
+import { consumeCaptchaIssueAllowance, createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
 import { checkLoginAllowed, getLoginClientIp, recordFailedLogin, recordSuccessfulLogin } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 
@@ -24,7 +25,16 @@ const passwordSchema = z.object({
   newPassword: z.string().min(4)
 }).strict()
 
-authRouter.get('/captcha', (_req, res) => {
+authRouter.get('/captcha', (req, res) => {
+  const clientIp = getLoginClientIp(req)
+  const issueAllowed = consumeCaptchaIssueAllowance(clientIp)
+  if (issueAllowed.blocked) {
+    if (issueAllowed.retryAfterSeconds) {
+      res.setHeader('Retry-After', String(issueAllowed.retryAfterSeconds))
+    }
+    res.status(429).json({ message: issueAllowed.message ?? '验证码请求过于频繁，请稍后再试' })
+    return
+  }
   res.json(ok(createCaptchaChallenge()))
 })
 
@@ -69,13 +79,7 @@ authRouter.post('/login', async (req, res, next) => {
     recordSuccessfulLogin(clientIp, account.username)
     const session = createSession(account.id)
     updateSystemAccountLastLogin(account.id)
-    res.cookie(sessionCookieName, session.token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      path: '/',
-      maxAge: sessionMaxAgeMs
-    })
+    res.cookie(sessionCookieName, session.token, sessionCookieOptions({ maxAge: sessionMaxAgeMs }))
     res.json(ok({ ...account, lastLoginAt: new Date().toISOString() }))
   } catch (error) {
     next(error)
@@ -118,6 +122,17 @@ authRouter.post('/change-password', requireSessionContext, async (req, res, next
       res.status(400).json(badRequest('密码参数无效'))
       return
     }
+    if (!context.mustChangePassword) {
+      if (!parsed.data.oldPassword) {
+        res.status(400).json(badRequest('请填写当前密码'))
+        return
+      }
+      const verified = await verifySystemAccountCredentialsAsync(context.username, parsed.data.oldPassword)
+      if (!verified || verified.id !== context.systemAccountId) {
+        res.status(400).json(badRequest('当前密码不正确'))
+        return
+      }
+    }
 
     const account = await updateSystemAccountAsync(context.systemAccountId, {
       password: parsed.data.newPassword,
@@ -127,6 +142,7 @@ authRouter.post('/change-password', requireSessionContext, async (req, res, next
       res.status(404).json({ message: '系统账户不存在' })
       return
     }
+    revokeOtherSessionsForAccount(context.systemAccountId, context.sessionId)
     res.json(ok(account))
   } catch (error) {
     next(error)
@@ -138,19 +154,16 @@ export function parseCookie(cookieHeader: string): Record<string, string> {
   for (const part of cookieHeader.split(';')) {
     const [rawName, ...rawValue] = part.trim().split('=')
     if (!rawName || rawValue.length === 0) continue
-    result[rawName] = decodeURIComponent(rawValue.join('='))
+    try {
+      result[rawName] = decodeURIComponent(rawValue.join('='))
+    } catch {
+    }
   }
   return result
 }
 
-export function clearSessionCookie(res: { cookie: (name: string, value: string, options: Record<string, unknown>) => void }): void {
-  res.cookie(sessionCookieName, '', {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: false,
-    path: '/',
-    maxAge: 0
-  })
+export function clearSessionCookie(res: { cookie: (name: string, value: string, options: ReturnType<typeof sessionCookieOptions>) => void }): void {
+  res.cookie(sessionCookieName, '', sessionCookieOptions({ maxAge: 0 }))
 }
 
 function requireSessionContext(req: Request, res: Response, next: NextFunction): void {

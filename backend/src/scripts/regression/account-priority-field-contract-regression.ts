@@ -35,7 +35,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-priority-contract-create',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: accountGroup.id,
     prioritiy: 99
@@ -47,7 +47,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-priority-contract-update',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     priority: 7,
     groupId: accountGroup.id
@@ -64,7 +64,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-priority-contract-missing-provider',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: accountGroup.id
   }, access), /供应商不能为空/, '创建账户必须显式提供当前供应商')
@@ -74,7 +74,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-priority-contract-missing-name',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: accountGroup.id
   }, access), /账户名称不能为空/, '创建账户必须显式提供当前账户名称')
@@ -84,7 +84,7 @@ try {
     name: '缺失类型创建检查',
     credentials: {
       api_key: 'sk-priority-contract-missing-type',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: accountGroup.id
   }, access), /账户类型不能为空/, '创建账户必须显式提供当前账户类型')
@@ -95,7 +95,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-priority-contract-string-concurrency',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     concurrencyLimit: '20',
     groupId: accountGroup.id
@@ -123,7 +123,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-priority-contract-unknown-credential',
-      base_url: 'http://127.0.0.1:9/v1',
+      base_url: 'https://api.openai.com/v1',
       apiKey: 'legacy-field'
     },
     groupId: accountGroup.id
@@ -132,10 +132,21 @@ try {
   assert.throws(() => repositories.updateAccount(account.id, {
     credentials: {
       api_key: 'sk-priority-contract-update-unknown-credential',
-      base_url: 'http://127.0.0.1:9/v1',
+      base_url: 'https://api.openai.com/v1',
       legacyToken: 'old-token'
     }
   }, access), /账户凭据包含未知字段：legacyToken/, '更新账户不应静默保留 credentials 内的旧字段')
+
+  assert.throws(() => repositories.createAccount({
+    providerCode: 'openai',
+    name: '超长 API Key 创建检查',
+    type: 'api_key',
+    credentials: {
+      api_key: 'x'.repeat(16 * 1024 + 1),
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: accountGroup.id
+  }, access), /API Key不能超过 16384 字节/, '创建账户不应接收超长 API Key 凭据')
 
   const oauthAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -151,7 +162,7 @@ try {
       account_id: 'acct_priority_contract',
       chatgpt_user_id: 'user_priority_contract',
       plan_type: 'plus',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: accountGroup.id
   }, access)
@@ -163,7 +174,7 @@ try {
     type: 'oauth',
     credentials: {
       refresh_token: 'refresh-priority-contract-legacy-oauth',
-      base_url: 'http://127.0.0.1:9/v1',
+      base_url: 'https://api.openai.com/v1',
       accountId: 'legacy-account-id'
     },
     groupId: accountGroup.id
@@ -176,10 +187,23 @@ try {
     credentials: {
       refresh_token: 'refresh-priority-contract-invalid-expiry',
       expires_at: 'not-a-date',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: accountGroup.id
   }, access), /Access Token 到期时间必须是有效时间字符串/, 'OAuth 凭据时间字段不应吞掉非法字符串')
+
+  assert.throws(() => repositories.createAccount({
+    providerCode: 'openai',
+    name: 'OAuth 凭据整体大小检查',
+    type: 'oauth',
+    credentials: {
+      access_token: 'a'.repeat(16 * 1024),
+      refresh_token: 'r'.repeat(16 * 1024),
+      id_token: 'i'.repeat(16 * 1024),
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: accountGroup.id
+  }, access), /账户凭据整体大小不能超过 32768 字节/, '创建账户不应接收整体过大的 OAuth 凭据')
 
   assert.throws(() => repositories.createGroup({
     name: '缺失供应商分组检查'
@@ -206,7 +230,7 @@ try {
   }, access)
   assert.throws(() => repositories.updateGroup(groupForUnknownField.id, { legacyDescription: '旧字段' }, access), /分组更新参数包含未知字段：legacyDescription/, '分组更新不应静默忽略未知字段')
 
-  console.log('账户字段契约回归通过：拼错字段和历史宽松输入被直接拒绝')
+  console.log('账户字段契约回归通过：拼错字段、历史宽松输入和超长凭据被直接拒绝')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

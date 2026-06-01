@@ -104,9 +104,13 @@
         <template v-else-if="column.key === 'key'">
           <div class="key-preview-cell">
             <span class="key-preview" :title="keyDisplayTitle(record)">{{ formatKeyPreview(record) }}</span>
-            <a-button class="key-copy-button" type="text" size="small" :disabled="!record.key" @click="copyText(record.key)">
-              <template #icon><copy-outlined /></template>
-            </a-button>
+            <a-tooltip title="完整密钥仅创建时显示">
+              <span>
+                <a-button class="key-copy-button" type="text" size="small" disabled>
+                  <template #icon><copy-outlined /></template>
+                </a-button>
+              </span>
+            </a-tooltip>
           </div>
         </template>
         <template v-else-if="column.key === 'group'">
@@ -204,7 +208,8 @@
           </div>
         </div>
         <div class="gateway-help-section">
-          <span class="gateway-step-title">2. 复制本页 API Key</span>
+          <span class="gateway-step-title">2. 复制新建时显示的 API Key</span>
+          <span>完整密钥只在创建成功弹窗中显示一次，列表仅保留前缀用于识别。</span>
         </div>
         <div class="gateway-help-section">
           <span class="gateway-step-title">3. 填到客户端</span>
@@ -216,7 +221,7 @@
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑 API Key' : '新建 API Key'" width="640px" :confirm-loading="apiKeySaving" :ok-button-props="{ type: 'primary', disabled: apiKeySaving }" @ok="saveApiKey">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
-      <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建后可在列表继续复制。" type="info" show-icon />
+      <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建成功后仅显示一次，请立即复制保存。" type="info" show-icon />
       <a-form layout="vertical" class="modal-form">
         <a-form-item label="名称" required>
           <a-input v-model:value="form.name" />
@@ -593,7 +598,7 @@ const activeFilterCount = computed(() => [
 ].filter(Boolean).length)
 const advancedFilterCount = computed(() => 0)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
-const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
+const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填创建成功时复制的完整密钥'].join('\n'))
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
   const systemAccountId = apiKeyScopeParams.value?.systemAccountId
@@ -762,14 +767,14 @@ function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; da
 
 function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
   const value = apiKey.key
-  if (!value) return apiKey.keyPrefix ? `${apiKey.keyPrefix}...` : '密钥不可还原'
+  if (!value) return apiKey.keyPrefix ? `${apiKey.keyPrefix}...` : '仅创建时显示'
   if (value.length <= 14) return value
   return `${value.slice(0, 6)}...${value.slice(-4)}`
 }
 
 function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
   if (apiKey.key) return apiKey.key
-  return apiKey.keyPrefix ? `${apiKey.keyPrefix}...` : '密钥不可还原'
+  return apiKey.keyPrefix ? '完整密钥仅创建时显示' : '完整密钥仅创建时显示'
 }
 
 function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {

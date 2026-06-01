@@ -95,10 +95,7 @@ export function withRequestContext<T>(context: RequestContext, handler: () => T)
 }
 
 export function extractClientIp(req: Request): string | undefined {
-  const forwarded = firstHeaderValue(req.header('x-forwarded-for'))
-  const realIp = firstHeaderValue(req.header('x-real-ip'))
-  const cfIp = firstHeaderValue(req.header('cf-connecting-ip'))
-  return normalizeClientIp(forwarded ?? realIp ?? cfIp ?? req.ip ?? req.socket.remoteAddress)
+  return normalizeClientIp(req.ip) ?? normalizeClientIp(req.socket.remoteAddress)
 }
 
 function logRequestFinished(req: Request, res: Response, context: RequestContext): void {
@@ -201,7 +198,7 @@ export function sanitizeUrlForLog(value: string): string {
   try {
     const params = new URLSearchParams(queryString)
     for (const name of [...params.keys()]) {
-      if (sensitiveQueryNames.has(name.toLowerCase())) {
+      if (isSensitiveQueryName(name)) {
         params.set(name, '[redacted]')
       }
     }
@@ -212,19 +209,59 @@ export function sanitizeUrlForLog(value: string): string {
   }
 }
 
+export function sanitizeUrlCredentialsForLog(value?: string | null): string | undefined {
+  const text = value?.trim()
+  if (!text) return undefined
+
+  try {
+    const url = new URL(text)
+    const authority = url.username || url.password ? `[redacted]@${url.host}` : url.host
+    const pathAndQuery = sanitizeUrlForLog(`${url.pathname}${url.search}`)
+    const normalizedPath = pathAndQuery === '/' ? '' : pathAndQuery
+    return `${url.protocol}//${authority}${normalizedPath}${url.hash}`
+  } catch {
+    if (text.includes('@')) {
+      return '[configured]'
+    }
+    return sanitizeUrlForLog(text)
+  }
+}
+
 const sensitiveQueryNames = new Set([
   'api_key',
   'apikey',
+  'access_token',
   'authorization',
   'code',
+  'code_verifier',
   'cookie',
   'key',
   'keyword',
   'keywords',
   'password',
+  'refreshtoken',
   'refresh_token',
   'secret',
   'session',
+  'signature',
+  'sig',
   'state',
   'token'
 ])
+
+const sensitiveQueryNameFragments = [
+  'token',
+  'secret',
+  'password',
+  'credential',
+  'authorization',
+  'api_key',
+  'apikey'
+]
+
+function isSensitiveQueryName(name: string): boolean {
+  const normalized = name.trim().toLowerCase()
+  if (!normalized) return false
+  return sensitiveQueryNames.has(normalized)
+    || sensitiveQueryNameFragments.some((fragment) => normalized.includes(fragment))
+}

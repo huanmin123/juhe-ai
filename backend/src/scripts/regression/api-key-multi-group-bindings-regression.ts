@@ -51,7 +51,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-api-key-multi-group-primary-blocked',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: primaryGroup.id,
     proxyProfileId: disabledProxy.id,
@@ -65,7 +65,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-api-key-multi-group-fallback',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: fallbackGroup.id,
     status: 'active',
@@ -235,7 +235,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-api-key-multi-group-primary-healthy',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: primaryGroup.id,
     status: 'active',
@@ -265,7 +265,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-api-key-multi-group-round-robin-a',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: roundRobinGroupA.id,
     status: 'active',
@@ -277,7 +277,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-api-key-multi-group-round-robin-b',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: roundRobinGroupB.id,
     status: 'active',
@@ -314,7 +314,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-api-key-multi-group-weighted-a',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: weightedGroupA.id,
     status: 'active',
@@ -326,7 +326,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-api-key-multi-group-weighted-b',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: weightedGroupB.id,
     status: 'active',

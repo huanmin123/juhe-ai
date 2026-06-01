@@ -14,6 +14,7 @@ runtimeConfig.secret = 'model-check-cross-paired-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
 const targetModel = 'gpt-5.5'

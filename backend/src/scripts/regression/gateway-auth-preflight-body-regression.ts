@@ -166,7 +166,7 @@ function seedGatewayRuntime(): { id: string; key: string } {
     type: 'api_key',
     credentials: {
       api_key: 'sk-auth-preflight-account',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     concurrencyLimit: 20,

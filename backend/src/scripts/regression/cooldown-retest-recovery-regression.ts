@@ -35,7 +35,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-cooldown-retest-recovery',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     groupId: group.id
@@ -77,7 +77,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-cooldown-retest-recovery-fresh',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     groupId: group.id
@@ -117,7 +117,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-cooldown-disable-clear-expired-error',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     groupId: group.id
@@ -135,7 +135,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-cooldown-retest-rate-limited',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     groupId: group.id

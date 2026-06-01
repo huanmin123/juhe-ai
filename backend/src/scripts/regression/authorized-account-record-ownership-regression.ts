@@ -95,7 +95,7 @@ try {
     providerCode: 'openai',
     name: '记录归属来源账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-record-ownership', base_url: 'http://127.0.0.1:9/v1' },
+    credentials: { api_key: 'sk-record-ownership', base_url: 'https://api.openai.com/v1' },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({

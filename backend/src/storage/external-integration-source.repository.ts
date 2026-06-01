@@ -30,6 +30,7 @@ export interface ExternalIntegrationSourceInput {
   name: string
   status?: ExternalIntegrationSourceStatus
   scopes?: string[]
+  allowedTargetUsernames?: string[]
   rateLimits?: ExternalIntegrationRateLimitRule[]
   expiresAt?: string | null
   notes?: string | null
@@ -39,6 +40,7 @@ export interface ExternalIntegrationSourceUpdateInput {
   name?: string
   status?: ExternalIntegrationSourceStatus
   scopes?: string[]
+  allowedTargetUsernames?: string[]
   rateLimits?: ExternalIntegrationRateLimitRule[]
   expiresAt?: string | null
   notes?: string | null
@@ -87,6 +89,7 @@ export interface ExternalIntegrationSourceSummary {
   name: string
   status: ExternalIntegrationSourceStatus
   scopes: string[]
+  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   expiresAt?: string
   notes?: string
@@ -120,6 +123,7 @@ export interface ExternalIntegrationSourceAuthContext {
   tokenName: string
   tokenPrefix: string
   scopes: string[]
+  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   authenticatedAt: string
   isTestToken: boolean
@@ -134,6 +138,7 @@ interface ExternalIntegrationSourceTokenRow {
   source_name: string
   source_status: string
   source_scopes_json: string
+  source_allowed_target_usernames_json: string
   source_rate_limits_json: string | null
   source_expires_at: string | null
   source_last_used_at: string | null
@@ -151,6 +156,7 @@ interface ExternalIntegrationSourceRow {
   name: string
   status: string
   scopes_json: string
+  allowed_target_usernames_json: string
   rate_limits_json: string | null
   expires_at: string | null
   notes: string | null
@@ -182,7 +188,7 @@ const generatedTokenPrefix = 'juis_'
 const touchLastUsedIntervalMs = 60_000
 const defaultPageSize = 20
 const maxPageSize = 100
-const externalIntegrationSourceInputKeys = new Set(['name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes'])
+const externalIntegrationSourceInputKeys = new Set(['name', 'status', 'scopes', 'allowedTargetUsernames', 'rateLimits', 'expiresAt', 'notes'])
 const externalIntegrationSourceTokenInputKeys = new Set(['sourceRefId', 'name', 'token', 'status', 'scopes', 'expiresAt'])
 const externalIntegrationSourceTokenUpdateInputKeys = new Set(['name', 'status', 'scopes', 'expiresAt'])
 const externalIntegrationRateLimitRuleKeys = ['windowSeconds', 'maxRequests'] as const
@@ -256,13 +262,14 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
   try {
     getBusinessDatabase().prepare(`
       INSERT INTO external_integration_sources (
-        id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, name, status, scopes_json, allowed_target_usernames_json, rate_limits_json, expires_at, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       name,
       normalizeSourceStatusInput(input.status),
       encodeScopes(input.scopes),
+      encodeTargetUsernames(input.allowedTargetUsernames),
       encodeRateLimits(input.rateLimits),
       normalizeNullableIso(input.expiresAt),
       normalizeNullableText(input.notes),
@@ -290,12 +297,13 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
   if (existing) {
     database.prepare(`
       UPDATE external_integration_sources
-      SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
+      SET name = ?, status = ?, scopes_json = ?, allowed_target_usernames_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
       WHERE id = ?
     `).run(
       name,
       normalizeSourceStatusInput(input.status),
       encodeScopes(input.scopes),
+      encodeTargetUsernames(input.allowedTargetUsernames),
       encodeRateLimits(input.rateLimits),
       normalizeNullableIso(input.expiresAt),
       normalizeNullableText(input.notes),
@@ -306,13 +314,14 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
   }
   database.prepare(`
     INSERT INTO external_integration_sources (
-      id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, name, status, scopes_json, allowed_target_usernames_json, rate_limits_json, expires_at, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     name,
     normalizeSourceStatusInput(input.status),
     encodeScopes(input.scopes),
+    encodeTargetUsernames(input.allowedTargetUsernames),
     encodeRateLimits(input.rateLimits),
     normalizeNullableIso(input.expiresAt),
     normalizeNullableText(input.notes),
@@ -334,14 +343,15 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
   }
   const nextStatus = input.status === undefined ? normalizeSourceStatus(existing.status) : normalizeSourceStatusInput(input.status)
   const nextScopes = input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes)
+  const nextAllowedTargetUsernames = input.allowedTargetUsernames === undefined ? existing.allowed_target_usernames_json : encodeTargetUsernames(input.allowedTargetUsernames)
   const nextRateLimits = input.rateLimits === undefined ? existing.rate_limits_json : encodeRateLimits(input.rateLimits)
   const nextExpiresAt = input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt)
   const nextNotes = input.notes === undefined ? existing.notes : normalizeNullableText(input.notes)
   getBusinessDatabase().prepare(`
     UPDATE external_integration_sources
-    SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
+    SET name = ?, status = ?, scopes_json = ?, allowed_target_usernames_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
     WHERE id = ?
-  `).run(nextName, nextStatus, nextScopes, nextRateLimits, nextExpiresAt, nextNotes, nowIso(), id)
+  `).run(nextName, nextStatus, nextScopes, nextAllowedTargetUsernames, nextRateLimits, nextExpiresAt, nextNotes, nowIso(), id)
   return requiredSource(id)
 }
 
@@ -446,6 +456,7 @@ export function validateExternalIntegrationSourceToken(input: {
       sources.name AS source_name,
       sources.status AS source_status,
       sources.scopes_json AS source_scopes_json,
+      sources.allowed_target_usernames_json AS source_allowed_target_usernames_json,
       sources.rate_limits_json AS source_rate_limits_json,
       sources.expires_at AS source_expires_at,
       sources.last_used_at AS source_last_used_at,
@@ -521,6 +532,7 @@ export function validateExternalIntegrationSourceToken(input: {
       tokenName: row.token_name,
       tokenPrefix: row.token_prefix,
       scopes: grantedScopes,
+      allowedTargetUsernames: decodeTargetUsernames(row.source_allowed_target_usernames_json),
       rateLimits: decodeRateLimits(row.source_rate_limits_json),
       authenticatedAt: now,
       isTestToken: false
@@ -550,6 +562,7 @@ function validateExternalIntegrationTestToken(token: string, requiredScope?: str
       tokenName: '内置测试 token',
       tokenPrefix: externalIntegrationTestTokenPrefix,
       scopes,
+      allowedTargetUsernames: [],
       rateLimits: [{ windowSeconds: 60, maxRequests: 120 }],
       authenticatedAt: nowIso(),
       isTestToken: true
@@ -618,6 +631,7 @@ function mapSourceSummary(row: ExternalIntegrationSourceListRow, tokens: Externa
     name: row.name,
     status: normalizeSourceStatus(row.status),
     scopes: decodeScopes(row.scopes_json),
+    allowedTargetUsernames: decodeTargetUsernames(row.allowed_target_usernames_json),
     rateLimits: decodeRateLimits(row.rate_limits_json),
     expiresAt: row.expires_at ?? undefined,
     notes: row.notes ?? undefined,
@@ -740,6 +754,44 @@ function normalizeScopes(scopes: unknown): string[] {
 function decodeScopes(value: string): string[] {
   const parsed = JSON.parse(value) as unknown
   return normalizeScopes(parsed)
+}
+
+function encodeTargetUsernames(values: unknown): string {
+  return JSON.stringify(normalizeTargetUsernames(values))
+}
+
+function decodeTargetUsernames(value: string): string[] {
+  const parsed = JSON.parse(value) as unknown
+  return normalizeTargetUsernames(parsed)
+}
+
+function normalizeTargetUsernames(values: unknown): string[] {
+  if (values === undefined) {
+    return []
+  }
+  if (!Array.isArray(values)) {
+    throw new Error('允许目标用户必须是字符串数组')
+  }
+  if (values.length > 100) {
+    throw new Error('允许目标用户最多 100 个')
+  }
+  const normalizedByKey = new Map<string, string>()
+  for (const item of values) {
+    if (typeof item !== 'string') {
+      throw new Error('允许目标用户必须是字符串数组')
+    }
+    const value = item.trim()
+    if (!value) {
+      throw new Error('允许目标用户不能为空')
+    }
+    if (value.length < 2 || value.length > 80) {
+      throw new Error('允许目标用户长度必须在 2 到 80 个字符之间')
+    }
+    normalizedByKey.set(value.toLowerCase(), value)
+  }
+  return [...normalizedByKey.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, value]) => value)
 }
 
 function encodeRateLimits(rules: unknown): string {

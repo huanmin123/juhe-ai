@@ -17,6 +17,7 @@ import {
 } from '../../storage/repositories.js'
 import { calculateOpenAICodexRateLimitResetAt } from './openai-codex-usage.service.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
+import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -139,7 +140,7 @@ export function applyAccountErrorHandling(
     accountStatus: account.status,
     reason: statusCode !== undefined
       ? '未配置处理策略的上游状态码 ' + statusCode
-      : '未配置处理策略的上游异常：' + (input.errorMessage ?? '请求失败')
+      : '未配置处理策略的上游异常：' + sanitizeDiagnosticPayload(input.errorMessage ?? '请求失败')
   }
 }
 
@@ -266,10 +267,10 @@ function accountErrorPolicyUpstreamSummary(bodyText: string, headers: Headers): 
   const code = stringValue(errorPayload.code)
   const message = stringValue(errorPayload.message)
   if (code) {
-    parts.push(code)
+    parts.push(sanitizeDiagnosticPayload(code))
   }
   if (message && message !== code) {
-    parts.push(message)
+    parts.push(sanitizeDiagnosticPayload(message))
   }
   return parts.length > 0 ? parts.join('；') : undefined
 }

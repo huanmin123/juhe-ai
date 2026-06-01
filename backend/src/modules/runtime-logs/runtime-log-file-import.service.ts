@@ -18,6 +18,7 @@ let polling = false
 const runtimeLogImportFlushEveryLines = 500
 const runtimeLogTailPollIntervalMs = 1000
 const runtimeLogTailMaxBytesPerFile = 1024 * 1024
+const runtimeLogTailMaxOversizedLineScanBytes = 1024 * 1024
 const runtimeLogTailMaxLinesPerFile = 5000
 
 export interface ActiveRuntimeLogFile {
@@ -114,7 +115,8 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
       const skippedLine = await skipOversizedRuntimeLogFileLine(file.path, {
         searchOffset: endOffset,
         fileSize: stats.size,
-        initialLineNumber: cursor.lineNumber
+        initialLineNumber: cursor.lineNumber,
+        maxScanBytes: runtimeLogTailMaxOversizedLineScanBytes
       })
       if (skippedLine) {
         saveRuntimeLogFileCursor({
@@ -291,14 +293,16 @@ async function skipOversizedRuntimeLogFileLine(logPath: string, input: {
   searchOffset: number
   fileSize: number
   initialLineNumber: number
+  maxScanBytes: number
 }): Promise<{ nextOffset: number; nextLineNumber: number } | undefined> {
   if (input.searchOffset >= input.fileSize) {
     return undefined
   }
 
+  const endOffset = Math.min(input.fileSize, input.searchOffset + Math.max(1, input.maxScanBytes))
   const stream = createReadStream(logPath, {
     start: input.searchOffset,
-    end: input.fileSize - 1
+    end: endOffset - 1
   })
   let chunkStartOffset = input.searchOffset
   for await (const chunk of stream) {

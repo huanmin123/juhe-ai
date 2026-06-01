@@ -24,10 +24,7 @@ const usernameAttempts = new Map<string, AttemptRecord>()
 let nextLoginGuardCleanupAt = 0
 
 export function getLoginClientIp(req: Request): string {
-  const forwardedFor = req.headers['x-forwarded-for']
-  const forwardedValue = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor
-  const forwardedIp = forwardedValue?.split(',')[0]?.trim()
-  return forwardedIp || req.ip || req.socket.remoteAddress || 'unknown'
+  return normalizeClientIp(req.ip) ?? normalizeClientIp(req.socket.remoteAddress) ?? 'unknown'
 }
 
 export function checkLoginAllowed(clientIp: string, username: string): LoginGuardBlockResult {
@@ -138,4 +135,9 @@ function trimRecentTimestamps(timestamps: number[], now: number, maxTimestamps: 
 
 function normalizeUsername(username: string): string {
   return username.trim().toLowerCase()
+}
+
+function normalizeClientIp(value: string | undefined): string | undefined {
+  const text = value?.trim()
+  return text || undefined
 }

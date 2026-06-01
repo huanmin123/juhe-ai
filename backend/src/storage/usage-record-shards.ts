@@ -25,6 +25,12 @@ export interface UsageRecordShardLocationWindow {
   hasMore: boolean
 }
 
+export interface UsageRecordShardLocationPage {
+  locations: UsageRecordShardLocation[]
+  hasMore: boolean
+  total: number
+}
+
 export interface UsageRecordShardEntryInput {
   id: string
   shardKey: string
@@ -122,6 +128,38 @@ export function listUsageRecordShardLocations(window: UsageRecordShardQueryWindo
   return listRegisteredUsageRecordShardLocations()
 }
 
+export function listUsageRecordShardLocationsPage(input: { offset?: number; limit: number }): UsageRecordShardLocationPage {
+  const limit = Math.max(1, Math.trunc(input.limit))
+  const offset = Math.max(0, Math.trunc(input.offset ?? 0))
+  const database = getDatasetDatabase()
+  const totalRow = database
+    .prepare("SELECT COUNT(*) AS total FROM usage_record_shards WHERE status = 'active'")
+    .get() as { total?: number } | undefined
+  const total = Math.max(0, Number(totalRow?.total ?? 0))
+  if (total === 0) {
+    return { locations: [], hasMore: false, total: 0 }
+  }
+
+  const normalizedOffset = offset % total
+  const requestedRows = Math.min(limit + 1, total)
+  const firstRows = listRegisteredUsageRecordShardLocations({
+    offset: normalizedOffset,
+    limit: requestedRows
+  })
+  const wrappedRows = firstRows.length < requestedRows && normalizedOffset > 0
+    ? listRegisteredUsageRecordShardLocations({
+        offset: 0,
+        limit: requestedRows - firstRows.length
+      })
+    : []
+  const rows = [...firstRows, ...wrappedRows]
+  return {
+    locations: rows.slice(0, limit),
+    hasMore: total > limit,
+    total
+  }
+}
+
 export function listUsageRecordShardLocationsForAccount(accountId: string, limit = 64): UsageRecordShardLocationWindow {
   const normalizedAccountId = accountId.trim()
   if (!normalizedAccountId) {
@@ -168,9 +206,11 @@ function listUsageRecordShardLocationsForDateWindow(startDateKey?: string, endDa
 function listRegisteredUsageRecordShardLocations(input: {
   startBucketDate?: string
   endBucketDate?: string
+  offset?: number
+  limit?: number
 } = {}): UsageRecordShardLocation[] {
   const clauses = ["status = 'active'"]
-  const params: string[] = []
+  const params: SQLInputValue[] = []
   if (input.startBucketDate) {
     clauses.push('bucket_date >= ?')
     params.push(input.startBucketDate)
@@ -179,14 +219,27 @@ function listRegisteredUsageRecordShardLocations(input: {
     clauses.push('bucket_date <= ?')
     params.push(input.endBucketDate)
   }
+  const normalizedLimit = typeof input.limit === 'number' ? Math.max(1, Math.trunc(input.limit)) : undefined
+  const normalizedOffset = typeof input.offset === 'number' ? Math.max(0, Math.trunc(input.offset)) : undefined
+  const limitClause = normalizedLimit === undefined
+    ? ''
+    : normalizedOffset === undefined
+      ? 'LIMIT ?'
+      : 'LIMIT ? OFFSET ?'
+  const limitParams: SQLInputValue[] = normalizedLimit === undefined
+    ? []
+    : normalizedOffset === undefined
+      ? [normalizedLimit]
+      : [normalizedLimit, normalizedOffset]
   const rows = getDatasetDatabase()
     .prepare(`
       SELECT shard_key, bucket_date, shard_id, file_path
       FROM usage_record_shards
       WHERE ${clauses.join(' AND ')}
       ORDER BY bucket_date ASC, shard_id ASC
+      ${limitClause}
     `)
-    .all(...params) as Array<{ shard_key?: string; bucket_date?: string; shard_id?: number; file_path?: string }>
+    .all(...params, ...limitParams) as Array<{ shard_key?: string; bucket_date?: string; shard_id?: number; file_path?: string }>
   return rows
     .map(usageRecordShardLocationFromRegistryRow)
     .filter((location): location is UsageRecordShardLocation => Boolean(location))

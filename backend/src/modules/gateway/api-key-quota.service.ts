@@ -5,8 +5,8 @@ import { getStatsDatabase } from '../../storage/database.js'
 import type { GatewayApiKeyRow } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCosts } from './request-quota-checker.js'
-import { readGatewayQuotaCostsSnapshot } from './gateway-quota-snapshot-cache.service.js'
+import { isRequestQuotaExceeded, loadRequestQuotaCosts, requestQuotaCostKey } from './request-quota-checker.js'
+import { isGatewayQuotaCostSnapshotIncomplete, readGatewayQuotaCostsSnapshot } from './gateway-quota-snapshot-cache.service.js'
 
 export const API_KEY_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
 
@@ -24,7 +24,7 @@ const apiKeyQuotaCache = createAppCache<string, ApiKeyQuotaCacheEntry>({
   name: 'gateway:api-key-quota',
   max: 10000,
   ttlMs: API_KEY_QUOTA_CACHE_TTL_MS,
-  updateAgeOnGet: true,
+  updateAgeOnGet: false,
   dispose: (_entry, cacheKey) => {
     removeApiKeyQuotaCacheIndex(apiKeyIdFromQuotaCacheKey(cacheKey), cacheKey)
   },
@@ -41,7 +41,7 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
     return { allowed: true }
   }
 
-  const cacheKey = apiKeyQuotaCacheKey(apiKey)
+  const cacheKey = apiKeyQuotaCacheKey(apiKey, now, quotaLimits.hourly?.hours)
   const cached = apiKeyQuotaCache.get(cacheKey)
   if (cached) {
     return cached
@@ -65,11 +65,12 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
 }
 
 export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Promise<ApiKeyQuotaDecision> {
+  const now = new Date()
   const quotaLimits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
   if (!hasEnabledRequestQuotaLimit(quotaLimits)) {
     return { allowed: true }
   }
-  const cacheKey = apiKeyQuotaCacheKey(apiKey)
+  const cacheKey = apiKeyQuotaCacheKey(apiKey, now, quotaLimits.hourly?.hours)
   const cached = apiKeyQuotaCache.get(cacheKey)
   if (cached) {
     return cached
@@ -81,7 +82,9 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
       scopeId: apiKey.id,
       hourlyWindowHours: quotaLimits.hourly?.hours
     })
-    const allowed = costs ? !isRequestQuotaExceeded(quotaLimits, costs) : true
+    const allowed = costs
+      ? !isRequestQuotaExceeded(quotaLimits, costs)
+      : !isGatewayQuotaCostSnapshotIncomplete()
     const passiveDecision: ApiKeyQuotaCacheEntry = {
       allowed,
       message: allowed ? undefined : API_KEY_QUOTA_EXCEEDED_MESSAGE,
@@ -120,8 +123,15 @@ function assertLocalGatewayDatabaseAccess(operation: string): void {
   }
 }
 
-function apiKeyQuotaCacheKey(apiKey: GatewayApiKeyRow): string {
-  return `${apiKey.system_account_id}\u0000${apiKey.id}\u0000${apiKey.quota_limits_json ?? ''}`
+function apiKeyQuotaCacheKey(apiKey: GatewayApiKeyRow, now: Date, hourlyWindowHours?: number): string {
+  const windowKey = requestQuotaCostKey({
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    now,
+    hourlyWindowHours
+  })
+  return `${apiKey.system_account_id}\u0000${apiKey.id}\u0000${windowKey}\u0000${apiKey.quota_limits_json ?? ''}`
 }
 
 function apiKeyIdFromQuotaCacheKey(cacheKey: string): string {

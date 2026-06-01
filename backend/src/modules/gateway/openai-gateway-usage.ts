@@ -63,10 +63,7 @@ export function extractBearerToken(authorization?: string): string | undefined {
 }
 
 export function extractClientIp(req: Request): string | undefined {
-  const forwarded = firstHeaderValue(req.header('x-forwarded-for'))
-  const realIp = firstHeaderValue(req.header('x-real-ip'))
-  const cfIp = firstHeaderValue(req.header('cf-connecting-ip'))
-  return normalizeClientIp(forwarded ?? realIp ?? cfIp ?? req.ip ?? req.socket.remoteAddress)
+  return normalizeClientIp(req.ip) ?? normalizeClientIp(req.socket.remoteAddress)
 }
 
 export function requestModel(req: Request): string | undefined {
@@ -202,6 +199,7 @@ const sensitiveHeaderNames = new Set([
   'cookie',
   'set-cookie',
   'x-api-key',
+  'x-goog-api-key',
   'api-key',
   'openai-api-key'
 ])
@@ -224,10 +222,6 @@ export function parseOpenAIUsageFromJsonTextFragment(text?: string): ParsedUsage
   } catch {
     return emptyUsage()
   }
-}
-
-function firstHeaderValue(value?: string): string | undefined {
-  return value?.split(',').map((item) => item.trim()).find(Boolean)
 }
 
 function extractJsonObjectPropertyFromTextFragment(text: string, propertyName: string): string | undefined {

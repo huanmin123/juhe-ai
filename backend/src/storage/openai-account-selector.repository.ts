@@ -6,6 +6,7 @@ import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { activeResourceAuthorization, activeResourceAuthorizationById, activeResourceAuthorizationsByIds } from './resource-authorization-helpers.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
@@ -20,12 +21,14 @@ export interface OpenAIAccountSecret {
   groupAccessType: 'owner' | 'authorized'
   accountAuthorizationId?: string
   accountAuthorizationExpiresAt?: string
+  accountAuthorizationQuotaLimited?: boolean
   accountAuthorizationSourceType?: ResourceAuthorizationSourceType
   accountAuthorizationSourceTeamId?: string
   bindingSystemAccountId?: string
   boundGroupId?: string
   groupAuthorizationId?: string
   groupAuthorizationExpiresAt?: string
+  groupAuthorizationQuotaLimited?: boolean
   groupAuthorizationSourceType?: ResourceAuthorizationSourceType
   groupAuthorizationSourceTeamId?: string
   name: string
@@ -67,6 +70,7 @@ export interface GroupUsageAccessMetadata {
   schedulingPolicy?: GroupSchedulingPolicy
   groupAuthorizationId?: string
   groupAuthorizationExpiresAt?: string
+  groupAuthorizationQuotaLimited?: boolean
   groupAuthorizationSourceType?: ResourceAuthorizationSourceType
   groupAuthorizationSourceTeamId?: string
 }
@@ -88,6 +92,7 @@ type OpenAIAccountAccess = {
   accountOwnerSystemAccountId?: string
   accountAuthorizationId?: string
   accountAuthorizationExpiresAt?: string
+  accountAuthorizationQuotaLimited?: boolean
   accountAuthorizationSourceType?: ResourceAuthorizationSourceType
   accountAuthorizationSourceTeamId?: string
 }
@@ -202,6 +207,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
     schedulingPolicy,
     groupAuthorizationId: authorization.id,
     groupAuthorizationExpiresAt: authorization.expires_at ?? undefined,
+    groupAuthorizationQuotaLimited: resourceAuthorizationQuotaLimited(authorization),
     groupAuthorizationSourceType: authorization.effective_source_type ?? undefined,
     groupAuthorizationSourceTeamId: authorization.effective_source_team_id ?? undefined
   }
@@ -218,6 +224,14 @@ export function listOpenAIAccountsForGroup(
 export interface OpenAIAccountsForGroupResult {
   accounts: OpenAIAccountSecret[]
   hasAccountAvailabilitySchedule: boolean
+}
+
+export function runtimeOpenAIAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {}
+  copyRuntimeCredentialText(credentials, output, 'account_id')
+  copyRuntimeCredentialValue(credentials, output, 'error_handling_rules')
+  copyRuntimeCredentialValue(credentials, output, 'stream_intercept_rules')
+  return output
 }
 
 export function listOpenAIAccountsForGroupResult(
@@ -529,12 +543,14 @@ function openAIAccountSecretFromRow(
     groupAccessType: groupAccess.groupAccessType,
     accountAuthorizationId: accountAccess.accountAuthorizationId,
     accountAuthorizationExpiresAt: accountAccess.accountAuthorizationExpiresAt,
+    accountAuthorizationQuotaLimited: accountAccess.accountAuthorizationQuotaLimited,
     accountAuthorizationSourceType: accountAccess.accountAuthorizationSourceType,
     accountAuthorizationSourceTeamId: accountAccess.accountAuthorizationSourceTeamId,
     bindingSystemAccountId,
     boundGroupId: isLocalAccountAuthorized ? groupAccount?.group_id ?? undefined : undefined,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
     groupAuthorizationExpiresAt: groupAccess.groupAuthorizationExpiresAt,
+    groupAuthorizationQuotaLimited: groupAccess.groupAuthorizationQuotaLimited,
     groupAuthorizationSourceType: groupAccess.groupAuthorizationSourceType,
     groupAuthorizationSourceTeamId: groupAccess.groupAuthorizationSourceTeamId,
     name: row.name,
@@ -565,7 +581,20 @@ function openAIAccountSecretFromRow(
     availabilityScheduleJson: row.availability_schedule_json ?? undefined,
     accountExpiresAt: row.account_expires_at ?? undefined,
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
-    credentials
+    credentials: runtimeOpenAIAccountCredentials(credentials)
+  }
+}
+
+function copyRuntimeCredentialText(input: Record<string, unknown>, output: Record<string, unknown>, key: string): void {
+  const value = input[key]
+  if (typeof value === 'string' && value.trim()) {
+    output[key] = value.trim()
+  }
+}
+
+function copyRuntimeCredentialValue(input: Record<string, unknown>, output: Record<string, unknown>, key: string): void {
+  if (Object.prototype.hasOwnProperty.call(input, key)) {
+    output[key] = input[key]
   }
 }
 
@@ -724,6 +753,7 @@ function resolveOpenAIAccountAccess(
       accountOwnerSystemAccountId: authorization.resource_owner_system_account_id,
       accountAuthorizationId: authorization.id,
       accountAuthorizationExpiresAt: authorization.expires_at ?? undefined,
+      accountAuthorizationQuotaLimited: resourceAuthorizationQuotaLimited(authorization),
       accountAuthorizationSourceType: authorization.effective_source_type ?? undefined,
       accountAuthorizationSourceTeamId: authorization.effective_source_team_id ?? undefined
     }
@@ -748,10 +778,15 @@ function resolveOpenAIAccountAccess(
         accountOwnerSystemAccountId: authorization.resource_owner_system_account_id,
         accountAuthorizationId: authorization.id,
         accountAuthorizationExpiresAt: authorization.expires_at ?? undefined,
+        accountAuthorizationQuotaLimited: resourceAuthorizationQuotaLimited(authorization),
         accountAuthorizationSourceType: authorization.effective_source_type ?? undefined,
         accountAuthorizationSourceTeamId: authorization.effective_source_team_id ?? undefined
       }
     : undefined
+}
+
+function resourceAuthorizationQuotaLimited(authorization: ResourceAuthorizationRow): boolean {
+  return hasEnabledRequestQuotaLimit(parseRequestQuotaLimitsJson(authorization.limits_json))
 }
 
 function canScheduleAuthorizedAccount(input: {

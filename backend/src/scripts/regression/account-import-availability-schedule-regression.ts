@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -287,6 +287,13 @@ try {
   }, {}, access)
   assert.equal(overProxyLimitPreview.canImport, false, '超过代理导入批量上限应阻止导入')
   assert.match(overProxyLimitPreview.messages.join('\n'), /proxies 单次最多导入 20 条/, '代理导入批量上限应保持小批次边界')
+
+  const frontendImportModalSource = readFileSync(resolve('..', 'frontend', 'src', 'views', 'accounts', 'AccountImportModal.vue'), 'utf8')
+  const frontendImportTemplateSource = frontendImportModalSource.slice(
+    frontendImportModalSource.indexOf('const importTemplate = JSON.stringify({'),
+    frontendImportModalSource.indexOf('}, null, 2)', frontendImportModalSource.indexOf('const importTemplate = JSON.stringify({'))
+  )
+  assert(!frontendImportTemplateSource.includes('metadata:'), '前端账户导入模板不应包含后端协议拒绝的 metadata 根字段')
 
   console.log('账户导入自动启停计划回归通过：显式账户计划、非法计划、字段白名单、凭据契约和小批量边界校验符合预期')
 } finally {

@@ -380,6 +380,7 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
   if (!targetAccount) {
     return notFoundAccountDeleteResponse(input, fallbackTarget)
   }
+  assertTargetActive(targetAccount)
 
   const access: TargetAccess = { systemAccountId: targetAccount.id, role: 'user' }
   const targetGroup = findExistingTargetGroup({
@@ -505,6 +506,7 @@ export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupRes
   if (!target) {
     return publicGroupNotFoundResponse(input.targetUsername)
   }
+  assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
   const group = resolvePublicGroup(access, {
     groupId: input.groupId,
@@ -529,6 +531,7 @@ export function deletePublicGroup(input: PublicGroupDeleteInput): PublicGroupRes
   if (!target) {
     return publicGroupNotFoundResponse(input.targetUsername)
   }
+  assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
   const group = resolvePublicGroup(access, input)
   if (!group) {
@@ -575,6 +578,7 @@ export function updatePublicApiKey(input: PublicApiKeyUpdateInput): PublicApiKey
   if (!target) {
     return publicApiKeyNotFoundResponse(input.targetUsername)
   }
+  assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
   const apiKey = resolvePublicApiKey(access, input)
   if (!apiKey) {
@@ -589,6 +593,7 @@ export function deletePublicApiKey(input: PublicApiKeyDeleteInput): PublicApiKey
   if (!target) {
     return publicApiKeyNotFoundResponse(input.targetUsername)
   }
+  assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
   const apiKey = resolvePublicApiKey(access, input)
   if (!apiKey) {

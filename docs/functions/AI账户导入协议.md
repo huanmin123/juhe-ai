@@ -31,10 +31,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 {
   "type": "juhe-ai-account-import",
   "version": 1,
-  "metadata": {
-    "source": "用户自定义",
-    "generatedAt": "2026-05-22T04:00:00.000Z"
-  },
   "proxies": [
     {
       "ref": "proxy-hk-1",
@@ -93,7 +89,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | --- | --- | --- |
 | `type` | 是 | 固定为 `juhe-ai-account-import`。 |
 | `version` | 是 | 当前固定为 `1`。 |
-| `metadata` | 否 | 来源、生成时间、备注等说明信息，仅用于人工识别。 |
 | `proxies` | 否 | 代理数组；账户通过 `proxyRef` 引用代理 `ref`。 |
 | `accounts` | 是 | 账户数组，至少 1 条。 |
 

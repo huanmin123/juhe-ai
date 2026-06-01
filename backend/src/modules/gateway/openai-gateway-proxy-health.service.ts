@@ -1,5 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
-import { getRequestLogger } from '../../shared/request-context.js'
+import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 
 export interface GatewayProxyHealthOrderResult {
@@ -68,10 +68,10 @@ export function orderOpenAIAccountsByGatewayUpstreamBucketHealth(accounts: Upstr
     return {
       accounts: orderedAccountsForBucketScope(specificOrder),
       applied: true,
-      avoidedBucketKeys: [...specificOrder.avoidedBucketKeys],
-      avoidedProxyKeys: [...specificOrder.avoidedProxyKeys],
+      avoidedBucketKeys: bucketKeysForLog([...specificOrder.avoidedBucketKeys]),
+      avoidedProxyKeys: bucketKeysForLog([...specificOrder.avoidedProxyKeys]),
       avoidedAccountIds: specificOrder.avoidedAccounts.map((account) => account.id),
-      halfOpenBucketKeys: [...specificOrder.halfOpenBucketKeys],
+      halfOpenBucketKeys: bucketKeysForLog([...specificOrder.halfOpenBucketKeys]),
       halfOpenAccountIds: specificOrder.halfOpenAccounts.map((account) => account.id),
       bypassedAllAvoided: false
     }
@@ -95,10 +95,10 @@ export function orderOpenAIAccountsByGatewayUpstreamBucketHealth(accounts: Upstr
     return {
       accounts: orderedAccountsForBucketScope(providerOrder),
       applied: true,
-      avoidedBucketKeys: [...providerOrder.avoidedBucketKeys],
-      avoidedProxyKeys: [...providerOrder.avoidedProxyKeys],
+      avoidedBucketKeys: bucketKeysForLog([...providerOrder.avoidedBucketKeys]),
+      avoidedProxyKeys: bucketKeysForLog([...providerOrder.avoidedProxyKeys]),
       avoidedAccountIds: providerOrder.avoidedAccounts.map((account) => account.id),
-      halfOpenBucketKeys: [...providerOrder.halfOpenBucketKeys],
+      halfOpenBucketKeys: bucketKeysForLog([...providerOrder.halfOpenBucketKeys]),
       halfOpenAccountIds: providerOrder.halfOpenAccounts.map((account) => account.id),
       bypassedAllAvoided: false
     }
@@ -107,10 +107,10 @@ export function orderOpenAIAccountsByGatewayUpstreamBucketHealth(accounts: Upstr
   return {
     accounts,
     applied: false,
-    avoidedBucketKeys: [...new Set([...specificOrder.avoidedBucketKeys, ...providerOrder.avoidedBucketKeys])],
-    avoidedProxyKeys: [...new Set([...specificOrder.avoidedProxyKeys, ...providerOrder.avoidedProxyKeys])],
+    avoidedBucketKeys: bucketKeysForLog([...new Set([...specificOrder.avoidedBucketKeys, ...providerOrder.avoidedBucketKeys])]),
+    avoidedProxyKeys: bucketKeysForLog([...new Set([...specificOrder.avoidedProxyKeys, ...providerOrder.avoidedProxyKeys])]),
     avoidedAccountIds: [...new Set([...specificOrder.avoidedAccounts, ...providerOrder.avoidedAccounts].map((account) => account.id))],
-    halfOpenBucketKeys: [...new Set([...specificOrder.halfOpenBucketKeys, ...providerOrder.halfOpenBucketKeys])],
+    halfOpenBucketKeys: bucketKeysForLog([...new Set([...specificOrder.halfOpenBucketKeys, ...providerOrder.halfOpenBucketKeys])]),
     halfOpenAccountIds: [...new Set([...specificOrder.halfOpenAccounts, ...providerOrder.halfOpenAccounts].map((account) => account.id))],
     bypassedAllAvoided: true
   }
@@ -224,7 +224,7 @@ function ensureHalfOpenProbe(
   upstreamBucketFailureCache.set(entry.key, nextEntry, { ttlMs: upstreamBucketFailureAvoidTtlMs + upstreamBucketFailureWindowMs })
   getRequestLogger().warn({
     event: 'gateway_upstream_failure_bucket_half_opened',
-    bucketKey: entry.key,
+    bucketKey: bucketKeyForLog(entry.key),
     bucketType: upstreamBucketType(entry.key),
     accountId: account.id,
     halfOpenUntil: new Date(halfOpenUntilMs).toISOString()
@@ -246,9 +246,9 @@ export function recordGatewayUpstreamBucketFailure(
   const proxyKey = bucketKeys.find(isProxyBucketKey)
   return {
     recorded: true,
-    proxyKey,
-    bucketKeys,
-    suspectedBucketKeys: suspectedDecisions.map((decision) => decision.bucketKey),
+    proxyKey: bucketKeyForLog(proxyKey),
+    bucketKeys: bucketKeysForLog(bucketKeys),
+    suspectedBucketKeys: bucketKeysForLog(suspectedDecisions.map((decision) => decision.bucketKey)),
     suspected: suspectedDecisions.length > 0,
     distinctAccountCount: Math.max(0, ...decisions.map((decision) => decision.distinctAccountCount))
   }
@@ -281,10 +281,12 @@ export function suppressGatewayUpstreamBucketLocallyForSeconds(
     }, { ttlMs: ttlMs + upstreamBucketFailureWindowMs })
   }
   const proxyKey = bucketKeys.find(isProxyBucketKey)
+  const safeBucketKeys = bucketKeysForLog(bucketKeys)
+  const safeProxyKey = bucketKeyForLog(proxyKey)
   getRequestLogger().warn({
     event: 'gateway_upstream_bucket_locally_suppressed',
-    bucketKeys,
-    proxyKey,
+    bucketKeys: safeBucketKeys,
+    proxyKey: safeProxyKey,
     accountId: account.id,
     ttlSeconds: Math.max(1, Math.trunc(ttlSeconds)),
     avoidUntil: new Date(avoidUntilMs).toISOString(),
@@ -292,9 +294,9 @@ export function suppressGatewayUpstreamBucketLocallyForSeconds(
   }, '网关按策略短期避让上游桶')
   return {
     recorded: true,
-    proxyKey,
-    bucketKeys,
-    suspectedBucketKeys: bucketKeys,
+    proxyKey: safeProxyKey,
+    bucketKeys: safeBucketKeys,
+    suspectedBucketKeys: safeBucketKeys,
     suspected: true,
     distinctAccountCount: 1
   }
@@ -336,7 +338,7 @@ function recordGatewayUpstreamBucketFailureKey(
   if (suspected && (!current?.avoidUntilMs || current.avoidUntilMs <= now)) {
     getRequestLogger().warn({
       event: 'gateway_upstream_failure_bucket_opened',
-      bucketKey: key,
+      bucketKey: bucketKeyForLog(key),
       bucketType: upstreamBucketType(key),
       accountId: account.id,
       distinctAccountCount,
@@ -461,6 +463,18 @@ function isProviderBucketKey(key: string): boolean {
 function upstreamBucketType(key: string): string {
   const separatorIndex = key.indexOf(':')
   return separatorIndex > 0 ? key.slice(0, separatorIndex) : 'unknown'
+}
+
+function bucketKeysForLog(keys: string[]): string[] {
+  return keys.map((key) => bucketKeyForLog(key) ?? key)
+}
+
+function bucketKeyForLog(key: string | undefined): string | undefined {
+  if (!key?.startsWith('proxy:url:')) {
+    return key
+  }
+  const proxyUrl = key.slice('proxy:url:'.length)
+  return `proxy:url:${sanitizeUrlCredentialsForLog(proxyUrl) ?? '[configured]'}`
 }
 
 function pruneAccountSamples(samples: Array<[string, number]>, now: number): Array<[string, number]> {

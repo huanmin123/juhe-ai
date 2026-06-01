@@ -92,7 +92,7 @@ async function assertStorageRoundTrip(): Promise<void> {
       type: 'api_key',
       credentials: {
         api_key: 'sk-account-model-filter-create',
-        base_url: 'http://127.0.0.1:9/v1'
+        base_url: 'https://api.openai.com/v1'
       },
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
       groupId: group.id
@@ -123,7 +123,7 @@ async function assertStorageRoundTrip(): Promise<void> {
         type: 'api_key',
         credentials: {
           api_key: 'sk-account-model-filter-invalid',
-          base_url: 'http://127.0.0.1:9/v1'
+          base_url: 'https://api.openai.com/v1'
         },
         supportedModels: ['claude-opus-4-6'],
         groupId: group.id

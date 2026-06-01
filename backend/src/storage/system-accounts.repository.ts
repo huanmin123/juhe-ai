@@ -468,6 +468,12 @@ export function revokeAllSessionsForAccount(systemAccountId: string): void {
   getBusinessDatabase().prepare('DELETE FROM system_sessions WHERE system_account_id = ?').run(systemAccountId)
 }
 
+export function revokeOtherSessionsForAccount(systemAccountId: string, keepSessionId: string): void {
+  getBusinessDatabase()
+    .prepare('DELETE FROM system_sessions WHERE system_account_id = ? AND id <> ?')
+    .run(systemAccountId, keepSessionId)
+}
+
 function normalizeRequiredText(value: unknown, label: string): string {
   if (typeof value !== 'string') {
     throw new Error(`${label}不能为空`)

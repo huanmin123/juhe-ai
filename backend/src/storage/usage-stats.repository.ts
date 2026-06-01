@@ -7,7 +7,7 @@ import type {
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
+import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { averageFromSum, dateKey, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapProcessEventLoopHourly, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
@@ -19,7 +19,7 @@ import {
   refreshCallerAccountLast7dRequestRankSnapshot,
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
-import { aggregateUsageStatsRecord, createUsageStatsAggregationContext } from './usage-stats-writers.js'
+import { aggregateUsageStatsRecord, createUsageStatsAggregationContext, extendUsageStatsAggregationContext } from './usage-stats-writers.js'
 import {
   aggregateUsageErrorRows,
   aggregateUsageModelRows,
@@ -62,6 +62,7 @@ export { getAiPerformanceOverview, listAiPerformanceAccountOptions } from './usa
 export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
+const USAGE_STATS_MAX_SHARDS_PER_BATCH = 16
 const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
 const PROCESS_EVENT_LOOP_PEAK_WINDOW_MS = 24 * 60 * 60 * 1000
 const USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY = 1
@@ -82,8 +83,9 @@ interface GroupAccountStatsDirtyRow {
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getStatsDatabase()
-  const shardLocations = listUsageRecordShardLocations()
   const batchLimit = Math.max(1, limit)
+  const shardLocationsWindow = usageStatsShardLocationsForBatch(batchLimit)
+  const shardLocations = shardLocationsWindow.locations
   const safeCreatedBefore = usageStatsSafeCreatedBefore()
   const transactionStarted = beginImmediateDatabaseTransaction(database)
   let processedRows = 0
@@ -98,8 +100,8 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
       return 0
     }
 
-    const orderedShardLocations = orderedUsageStatsShardLocations(shardLocations)
-    const perShardLimit = Math.max(1, Math.ceil(batchLimit / orderedShardLocations.length))
+    const scannedAllShardLocations = !shardLocationsWindow.hasMore
+    const perShardLimit = Math.max(1, Math.ceil(batchLimit / shardLocations.length))
     let globalCursor: { created_at: string; id: string } | undefined
     let maxLagSeconds = 0
     let aggregationContext: ReturnType<typeof createUsageStatsAggregationContext> | undefined
@@ -125,7 +127,9 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
         for (const row of rows) {
           row.source_shard_key = location.shardKey
         }
-        aggregationContext ??= createUsageStatsAggregationContext(rows)
+        aggregationContext = aggregationContext
+          ? extendUsageStatsAggregationContext(aggregationContext, rows)
+          : createUsageStatsAggregationContext(rows)
         for (const row of rows) {
           aggregateUsageStatsRecord(database, row, updatedAt, aggregationContext)
         }
@@ -160,7 +164,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
       return false
     }
 
-    for (const location of orderedShardLocations) {
+    for (const location of shardLocations) {
       if (processedRows >= batchLimit) break
       if (processShard(location, perShardLimit, true)) {
         shardsWithMoreRows.push(location)
@@ -179,7 +183,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
       cursorCreatedAt: globalCursor?.created_at,
       cursorId: globalCursor?.id,
       lastSuccessAt: updatedAt,
-      lagSeconds: maxLagSeconds
+      lagSeconds: scannedAllShardLocations ? maxLagSeconds : Math.max(maxLagSeconds, latestUsageStatsLagSeconds() ?? maxLagSeconds)
     })
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -194,11 +198,16 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   return processedRows
 }
 
-function orderedUsageStatsShardLocations(locations: UsageRecordShardLocation[]): UsageRecordShardLocation[] {
-  if (locations.length <= 1) return locations
-  const startIndex = usageStatsShardScanOffset % locations.length
-  usageStatsShardScanOffset = (startIndex + 1) % locations.length
-  return [...locations.slice(startIndex), ...locations.slice(0, startIndex)]
+function usageStatsShardLocationsForBatch(batchLimit: number): ReturnType<typeof listUsageRecordShardLocationsPage> {
+  const maxShardCount = Math.max(1, Math.min(USAGE_STATS_MAX_SHARDS_PER_BATCH, Math.trunc(batchLimit)))
+  const window = listUsageRecordShardLocationsPage({
+    offset: usageStatsShardScanOffset,
+    limit: maxShardCount
+  })
+  usageStatsShardScanOffset = window.total > 0
+    ? (usageStatsShardScanOffset + window.locations.length) % window.total
+    : 0
+  return window
 }
 
 export function markGroupAccountStatsDirty(groupIds: Array<string | null | undefined> | string | null | undefined, reason = 'write'): void {

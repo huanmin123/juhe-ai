@@ -450,6 +450,11 @@ function testApiKeyPassthroughUnchanged(): void {
   }, {
     'content-type': 'application/json; charset=utf-8',
     'x-custom-header': 'kept-for-api-key',
+    authorization: 'Bearer sk-client',
+    'openai-api-key': 'sk-client-openai-api-key',
+    'x-api-key': 'sk-client-x-api-key',
+    'x-goog-api-key': 'sk-client-google-api-key',
+    'api-key': 'sk-client-api-key',
     cookie: 'secret=value'
   })
   const apiKeyAccount = {
@@ -464,6 +469,10 @@ function testApiKeyPassthroughUnchanged(): void {
   assert.equal(headers.get('authorization'), 'Bearer sk-upstream')
   assert.equal(headers.get('content-type'), 'application/json; charset=utf-8')
   assert.equal(headers.get('x-custom-header'), 'kept-for-api-key')
+  assert.equal(headers.get('openai-api-key'), null)
+  assert.equal(headers.get('x-api-key'), null)
+  assert.equal(headers.get('x-goog-api-key'), null)
+  assert.equal(headers.get('api-key'), null)
   assert.equal(headers.get('cookie'), null)
 }
 

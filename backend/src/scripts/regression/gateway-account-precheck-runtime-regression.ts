@@ -261,7 +261,7 @@ function createGatewayAccount(name: string, credentialExtras: Record<string, unk
     groupId: group.id,
     credentials: {
       api_key: `sk-${Math.random().toString(16).slice(2)}`,
-      base_url: 'http://127.0.0.1:9/v1',
+      base_url: 'https://api.openai.com/v1',
       ...credentialExtras
     },
     status: 'active',
@@ -297,12 +297,12 @@ function createRuntimeAccount(id: string): OpenAIAccountSecret {
     fallbackEnabled: false,
     supportedModels: ['gpt-5.5'],
     currentConcurrency: 0,
-    baseUrl: 'http://127.0.0.1:9/v1',
+    baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-precheck-runtime',
     streamFailureCount: 0,
     credentials: {
       api_key: 'sk-precheck-runtime',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     }
   }
 }

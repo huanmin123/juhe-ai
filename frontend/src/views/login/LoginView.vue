@@ -124,9 +124,9 @@ async function handleLogin() {
       captchaCode: form.captchaCode
     })
     if (user.mustChangePassword) {
-      message.warning('当前账户仍在使用初始密码，请尽快在右上角修改密码')
+      message.warning('当前账户使用初始密码，请先完成修改')
     }
-    await router.replace(typeof route.query.redirect === 'string' ? route.query.redirect : getPreferredEntryPath(user))
+    await router.replace(resolveLoginRedirect(user))
   } catch (error) {
     console.error(error)
     message.error(getLoginErrorMessage(error))
@@ -151,6 +151,17 @@ async function refreshCaptcha(): Promise<void> {
 
 function getLoginErrorMessage(error: unknown): string {
   return extractApiErrorMessage(error, '登录失败，请检查账号、密码或验证码')
+}
+
+function resolveLoginRedirect(user: Awaited<ReturnType<typeof login>>): string {
+  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+  if (redirect.startsWith('/') && !redirect.startsWith('//')) {
+    const resolved = router.resolve(redirect)
+    if (resolved.name !== 'not-found' && resolved.path !== '/login') {
+      return resolved.fullPath
+    }
+  }
+  return getPreferredEntryPath(user)
 }
 
 onMounted(async () => {

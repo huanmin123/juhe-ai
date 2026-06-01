@@ -49,6 +49,8 @@ export interface RuntimeLogGrepRuntime {
   defaultRangeDays: number
   maxRangeDays: number
   fileRetentionDays: number
+  activeSearchCount: number
+  maxConcurrentSearches: number
 }
 
 interface LogFile {
@@ -58,6 +60,12 @@ interface LogFile {
   birthtimeMs: number
   mtimeMs: number
   order: number
+}
+
+interface LogFileListing {
+  files: LogFile[]
+  scannedEntryCount: number
+  truncatedReason?: 'entry_limit' | 'deadline'
 }
 
 interface RuntimeLogGrepTimeRange {
@@ -101,18 +109,21 @@ const maxRgStderrLength = 2_000
 const maxRgCommandChars = 24_000
 const maxRgParsedMatchEvents = 2_000
 const maxRgSearchMs = 15_000
+const maxConcurrentGrepSearches = 1
+const maxLogDirectoryScanEntries = 10_000
+const maxLogDirectoryScanMs = 2_000
 const dayMs = 24 * 60 * 60 * 1000
 const defaultGrepRangeDays = 3
 const maxGrepRangeDays = 7
 const logFileScanYieldEvery = 100
+let activeGrepSearches = 0
 
 export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promise<RuntimeLogGrepResult> {
   const startedAt = performance.now()
   const keywordInput = normalizeGrepKeywords(options.keywords)
   const keywords = keywordInput.keywords
   const limit = normalizeLimit(options.limit)
-  const files = runtimeConfig.log.fileEnabled ? await listLogFiles() : []
-  const timeRange = normalizeGrepTimeRange(options, files)
+  let timeRange = normalizeGrepTimeRange(options, [])
   const baseResult = (): Omit<RuntimeLogGrepResult, 'available' | 'items' | 'truncated' | 'elapsedMs' | 'scannedFileCount'> => ({
     keywords,
     startAt: timeRange.startAt,
@@ -140,66 +151,82 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
     return unavailableResult(baseResult(), startedAt, '文件日志未启用，无法使用 grep 模式。')
   }
 
-  if (!files.length) {
-    return {
-      ...baseResult(),
-      available: true,
-      elapsedMs: Math.round(performance.now() - startedAt),
-      items: [],
-      truncated: false,
-      scannedFileCount: 0,
-      message: '没有可搜索的日志文件'
-    }
-  }
-
-  const searchableFiles = filterLogFilesByTimeRange(files, timeRange)
-  if (!searchableFiles.length) {
-    return {
-      ...baseResult(),
-      available: true,
-      elapsedMs: Math.round(performance.now() - startedAt),
-      items: [],
-      truncated: false,
-      scannedFileCount: 0,
-      message: timeRange.adjusted
-        ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天；当前时间范围内没有可搜索的日志文件。`
-        : '当前文件时间范围内没有可搜索的日志文件'
-    }
-  }
-
-  const rgExecutable = await resolveRgExecutable()
-  if (!rgExecutable) {
-    return unavailableResult(
-      baseResult(),
-      startedAt,
-      '当前运行环境未找到 rg，grep 模式不可用。请确认部署时已成功安装后端生产依赖 @vscode/ripgrep。'
-    )
+  if (!acquireGrepSearchSlot()) {
+    return unavailableResult(baseResult(), startedAt, '已有 grep 搜索正在运行，请稍后重试。')
   }
 
   try {
-    const result = await searchLogFilesWithRg({
-      ...baseResult(),
-      files: searchableFiles,
-      rgExecutable,
-      timeRange,
-      warnings: [
-        timeRange.adjusted ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天` : undefined,
-        keywordInput.shortKeywordCount > 0 ? `已忽略少于 ${minKeywordLength} 个字符的短关键字` : undefined
-      ].filter((item): item is string => Boolean(item)),
-      startedAt
-    })
-    return result
-  } catch (error) {
-    return unavailableResult(
-      baseResult(),
-      startedAt,
-      error instanceof Error && error.message ? error.message : 'rg 执行失败，grep 模式暂不可用。'
-    )
+    const fileListing = await listLogFiles()
+    const files = fileListing.files
+    timeRange = normalizeGrepTimeRange(options, files)
+
+    if (!files.length) {
+      return {
+        ...baseResult(),
+        available: true,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        items: [],
+        truncated: false,
+        scannedFileCount: 0,
+        message: [logFileListingWarning(fileListing), '没有可搜索的日志文件'].filter(Boolean).join('；')
+      }
+    }
+
+    const searchableFiles = filterLogFilesByTimeRange(files, timeRange)
+    if (!searchableFiles.length) {
+      return {
+        ...baseResult(),
+        available: true,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        items: [],
+        truncated: false,
+        scannedFileCount: 0,
+        message: [
+          logFileListingWarning(fileListing),
+          timeRange.adjusted
+            ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天；当前时间范围内没有可搜索的日志文件。`
+            : '当前文件时间范围内没有可搜索的日志文件'
+        ].filter(Boolean).join('；')
+      }
+    }
+
+    const rgExecutable = await resolveRgExecutable()
+    if (!rgExecutable) {
+      return unavailableResult(
+        baseResult(),
+        startedAt,
+        '当前运行环境未找到 rg，grep 模式不可用。请确认部署时已成功安装后端生产依赖 @vscode/ripgrep。'
+      )
+    }
+
+    try {
+      const result = await searchLogFilesWithRg({
+        ...baseResult(),
+        files: searchableFiles,
+        rgExecutable,
+        timeRange,
+        warnings: [
+          logFileListingWarning(fileListing),
+          timeRange.adjusted ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天` : undefined,
+          keywordInput.shortKeywordCount > 0 ? `已忽略少于 ${minKeywordLength} 个字符的短关键字` : undefined
+        ].filter((item): item is string => Boolean(item)),
+        startedAt
+      })
+      return result
+    } catch (error) {
+      return unavailableResult(
+        baseResult(),
+        startedAt,
+        error instanceof Error && error.message ? error.message : 'rg 执行失败，grep 模式暂不可用。'
+      )
+    }
+  } finally {
+    releaseGrepSearchSlot()
   }
 }
 
 export async function getRuntimeLogGrepRuntime(): Promise<RuntimeLogGrepRuntime> {
-  const files = runtimeConfig.log.fileEnabled ? await listLogFiles() : []
+  const files = runtimeConfig.log.fileEnabled ? (await listLogFiles()).files : []
   const range = normalizeGrepTimeRange({}, files)
   const earliestFileMs = earliestLogFileMs(files)
   return {
@@ -208,8 +235,22 @@ export async function getRuntimeLogGrepRuntime(): Promise<RuntimeLogGrepRuntime>
     defaultEndAt: range.endAt,
     defaultRangeDays: defaultGrepRangeDays,
     maxRangeDays: maxGrepRangeDays,
-    fileRetentionDays: runtimeConfig.log.retentionDays
+    fileRetentionDays: runtimeConfig.log.retentionDays,
+    activeSearchCount: activeGrepSearches,
+    maxConcurrentSearches: maxConcurrentGrepSearches
   }
+}
+
+function acquireGrepSearchSlot(): boolean {
+  if (activeGrepSearches >= maxConcurrentGrepSearches) {
+    return false
+  }
+  activeGrepSearches += 1
+  return true
+}
+
+function releaseGrepSearchSlot(): void {
+  activeGrepSearches = Math.max(0, activeGrepSearches - 1)
 }
 
 function normalizeGrepKeywords(values: string[]): { keywords: string[]; shortKeywordCount: number } {
@@ -290,15 +331,25 @@ function parseTimeMs(value: string | undefined): number | undefined {
   return Number.isFinite(time) ? time : undefined
 }
 
-async function listLogFiles(): Promise<LogFile[]> {
+async function listLogFiles(): Promise<LogFileListing> {
   const maxFiles = Math.max(1, Math.trunc(runtimeConfig.log.maxFiles))
   const retainedFiles: Array<{ path: string; fileName: string; stats: Awaited<ReturnType<typeof stat>> }> = []
-  let scannedFileCount = 0
+  let scannedEntryCount = 0
+  let truncatedReason: LogFileListing['truncatedReason']
+  const deadline = performance.now() + maxLogDirectoryScanMs
   try {
     const directory = await opendir(runtimeConfig.log.directory)
     for await (const entry of directory) {
-      scannedFileCount += 1
-      if (scannedFileCount % logFileScanYieldEvery === 0) {
+      if (scannedEntryCount >= maxLogDirectoryScanEntries) {
+        truncatedReason = 'entry_limit'
+        break
+      }
+      if (performance.now() >= deadline) {
+        truncatedReason = 'deadline'
+        break
+      }
+      scannedEntryCount += 1
+      if (scannedEntryCount % logFileScanYieldEvery === 0) {
         await yieldImmediate()
       }
       if (!entry.isFile() || !entry.name.endsWith('.log')) continue
@@ -312,16 +363,28 @@ async function listLogFiles(): Promise<LogFile[]> {
       }
     }
   } catch {
-    return []
+    return { files: [], scannedEntryCount, truncatedReason }
   }
-  return retainedFiles.map((file, order) => ({
-    path: file.path,
-    fileName: file.fileName,
-    size: Number(file.stats.size),
-    birthtimeMs: Number(file.stats.birthtimeMs),
-    mtimeMs: Number(file.stats.mtimeMs),
-    order
-  }))
+  return {
+    files: retainedFiles.map((file, order) => ({
+      path: file.path,
+      fileName: file.fileName,
+      size: Number(file.stats.size),
+      birthtimeMs: Number(file.stats.birthtimeMs),
+      mtimeMs: Number(file.stats.mtimeMs),
+      order
+    })),
+    scannedEntryCount,
+    truncatedReason
+  }
+}
+
+function logFileListingWarning(listing: LogFileListing): string | undefined {
+  if (!listing.truncatedReason) return undefined
+  if (listing.truncatedReason === 'deadline') {
+    return `日志目录扫描超过 ${Math.round(maxLogDirectoryScanMs / 1000)} 秒，已只使用扫描到的最新日志文件`
+  }
+  return `日志目录条目超过 ${maxLogDirectoryScanEntries} 个，已只使用扫描到的最新日志文件`
 }
 
 function retainNewestLogFile<T extends { stats: Awaited<ReturnType<typeof stat>> }>(files: T[], file: T, maxFiles: number): void {

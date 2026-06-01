@@ -115,7 +115,7 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
     .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id ${filters.clause} ORDER BY api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC ${limitClause}`)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
-  const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: true })
+  const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: false })
   return {
     items,
     total: paged ? pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
@@ -125,21 +125,24 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
   }
 }
 
-function apiKeyListColumns(): string {
-  return [
+function apiKeyListColumns(options: { includeSecret?: boolean } = {}): string {
+  const columns = [
     'api_keys.id',
     'api_keys.system_account_id',
     'api_keys.name',
     'api_keys.description',
     'api_keys.key_prefix',
-    'api_keys.key_secret_encrypted',
     'api_keys.status',
     'api_keys.group_route_strategy',
     'system_accounts.display_name AS group_owner_system_account_name',
     'api_keys.expires_at',
     'api_keys.quota_limits_json',
     'api_keys.availability_schedule_json'
-  ].join(', ')
+  ]
+  if (options.includeSecret) {
+    columns.splice(5, 0, 'api_keys.key_secret_encrypted')
+  }
+  return columns.join(', ')
 }
 
 export function createApiKeyRecord(input: Record<string, unknown>, access?: AccessScope): ApiKeySummary & { key: string } {

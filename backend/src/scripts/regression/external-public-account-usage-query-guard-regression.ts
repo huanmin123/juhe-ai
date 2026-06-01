@@ -71,6 +71,7 @@ try {
       })
       assert.equal(result.rangeReady, true, `${sortField} 排序应命中已生成的窗口`)
       assert(result.items.length > 0, `${sortField} 排序应返回窗口数据`)
+      assertPublicAccountUsageItemsDoNotExposeOwner(result.items)
       const call = capturedCalls.pop()
       assert(call, `${sortField} 排序应读取账号用量窗口`)
       const plan = explainQueryPlan(database, call.sql, call.params)
@@ -217,4 +218,12 @@ function explainQueryPlan(database: DatabaseSync, sql: string, params: SQLInputV
 
 function assertNoTempBtree(details: string, label: string): void {
   assert(!/USE TEMP B-TREE/i.test(details), `${label}不应创建临时排序树，实际计划：${details}`)
+}
+
+function assertPublicAccountUsageItemsDoNotExposeOwner(items: ReadonlyArray<object>): void {
+  assert(items.length > 0, '公开账号用量应返回可验证的测试数据')
+  for (const item of items) {
+    assert(!Object.prototype.hasOwnProperty.call(item, 'ownerSystemAccountId'), '公开账号用量不应返回内部系统账户 ID')
+    assert(!Object.prototype.hasOwnProperty.call(item, 'ownerSystemAccountName'), '公开账号用量不应返回内部系统账户名称')
+  }
 }

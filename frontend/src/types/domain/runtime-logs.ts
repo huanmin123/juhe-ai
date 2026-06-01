@@ -71,6 +71,8 @@ export interface RuntimeLogGrepRuntime {
   defaultRangeDays: number
   maxRangeDays: number
   fileRetentionDays: number
+  activeSearchCount: number
+  maxConcurrentSearches: number
 }
 
 export interface RuntimeLogFacets {

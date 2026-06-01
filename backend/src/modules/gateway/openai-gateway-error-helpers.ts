@@ -1,6 +1,8 @@
 import type { UpstreamAttempt } from './openai-gateway-usage.js'
 import { parseErrorPayload } from './account-error-policy.service.js'
 import { gatewayErrorPayload } from './openai-gateway-responses.js'
+import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
+import { sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 
 type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload> & {
   upstream?: {
@@ -21,18 +23,18 @@ export function buildDiagnosticUpstreamError(
   const bodyText = lastAttempt.responseBodyText?.trim()
   const responseHeaders = headersFromObject(lastAttempt.responseHeaders)
   const parsedError = bodyText ? parseErrorPayload(bodyText, responseHeaders) : {}
-  const errorMessage = stringValue(parsedError.message) || lastAttempt.message || fallbackMessage
+  const errorMessage = sanitizeDiagnosticPayload(stringValue(parsedError.message) || lastAttempt.message || fallbackMessage)
   const errorType = stringValue(parsedError.type) || stringValue(parsedError.code) || 'upstream_error'
   const parsedPayload = bodyText ? parseJsonObject(bodyText) : undefined
   const payload = hasErrorObject(parsedPayload)
-    ? parsedPayload as GatewayDiagnosticErrorPayload
+    ? sanitizeDiagnosticPayload(parsedPayload) as GatewayDiagnosticErrorPayload
     : gatewayErrorPayload(errorMessage, errorType) as GatewayDiagnosticErrorPayload
 
   payload.upstream = {
     statusCode: lastAttempt.status,
     accountId: lastAttempt.accountId,
     accountName: lastAttempt.accountName,
-    upstreamUrl: lastAttempt.upstreamUrl
+    upstreamUrl: sanitizeUrlCredentialsForLog(lastAttempt.upstreamUrl) ?? lastAttempt.upstreamUrl
   }
 
   return { statusCode, payload, errorMessage }

@@ -1,6 +1,6 @@
 import type { Request } from 'express'
 
-import { getRequestLogger } from '../../shared/request-context.js'
+import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 import {
@@ -41,13 +41,14 @@ export async function performUpstreamRequestAttempt(
   } = input
   const socketTimeoutMs = upstreamSocketTimeoutMs(req, settings, account)
   const requestTimeoutMs = upstreamRequestTimeoutMs(req, settings, account)
+  const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
 
   getRequestLogger().info({
     event: 'gateway_upstream_request_started',
     accountId: account.id,
     accountType: account.type,
     accountStatus: account.status,
-    upstreamUrl,
+    upstreamUrl: safeUpstreamUrl,
     attemptIndex,
     auditAttemptIndex,
     method: req.method,
@@ -72,7 +73,7 @@ export async function performUpstreamRequestAttempt(
     event: 'gateway_upstream_response_received',
     accountId: account.id,
     accountType: account.type,
-    upstreamUrl,
+    upstreamUrl: safeUpstreamUrl,
     attemptIndex,
     auditAttemptIndex,
     statusCode: response.status,

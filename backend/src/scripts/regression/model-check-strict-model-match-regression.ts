@@ -14,6 +14,7 @@ runtimeConfig.secret = 'model-check-strict-match-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
 const responseModel = 'gpt-5.4-mini-2026-03-17'

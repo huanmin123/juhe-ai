@@ -957,6 +957,16 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind_account ON account_usage_snapshots(kind, account_id);
 
+    CREATE INDEX IF NOT EXISTS idx_stats_job_state_usage_shard_cursor_floor
+      ON stats_job_state(scope_type, job_name, cursor_created_at, cursor_id)
+      WHERE cursor_created_at IS NOT NULL
+        AND cursor_id IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_stats_job_state_usage_shard_cursor_floor_any_job
+      ON stats_job_state(scope_type, cursor_created_at, cursor_id, job_name)
+      WHERE cursor_created_at IS NOT NULL
+        AND cursor_id IS NOT NULL;
+
     CREATE INDEX IF NOT EXISTS idx_usage_stats_totals_updated ON usage_stats_totals(updated_at);
 
     CREATE INDEX IF NOT EXISTS idx_usage_stats_minute_scope_minute ON usage_stats_minute(system_account_id, scope_type, scope_id, stat_minute);
@@ -1140,6 +1150,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_active_days ON client_ip_usage_range_windows(start_date, end_date, active_days DESC, ip_hash);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_last_used ON client_ip_usage_range_windows(start_date, end_date, last_used_at DESC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_end ON client_ip_usage_range_windows(end_date);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_dirty_updated ON client_ip_range_window_dirty_ips(updated_at ASC, ip_hash);
 

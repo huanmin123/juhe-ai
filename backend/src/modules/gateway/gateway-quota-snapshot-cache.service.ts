@@ -23,17 +23,23 @@ export interface GatewayQuotaSnapshot {
   generatedAt: string
   costEntries: GatewayQuotaCostSnapshotEntry[]
   authorizationEntries: GatewayAuthorizationQuotaSnapshotEntry[]
+  costEntriesComplete?: boolean
+  authorizationEntriesComplete?: boolean
 }
 
 export const maxGatewayQuotaSnapshotCostEntries = 5000
 export const maxGatewayQuotaSnapshotAuthorizationEntries = 5000
 
 let snapshotGeneratedAt: string | undefined
+let costSnapshotComplete = false
+let authorizationSnapshotComplete = false
 const costSnapshot = new Map<string, RequestQuotaCosts>()
 const authorizationSnapshot = new Map<string, GatewayQuotaDecision>()
 
 export function replaceGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): void {
   snapshotGeneratedAt = snapshot.generatedAt
+  costSnapshotComplete = snapshot.costEntriesComplete ?? snapshot.costEntries.length < maxGatewayQuotaSnapshotCostEntries
+  authorizationSnapshotComplete = snapshot.authorizationEntriesComplete ?? snapshot.authorizationEntries.length < maxGatewayQuotaSnapshotAuthorizationEntries
   costSnapshot.clear()
   authorizationSnapshot.clear()
   for (const entry of snapshot.costEntries.slice(0, maxGatewayQuotaSnapshotCostEntries)) {
@@ -46,6 +52,8 @@ export function replaceGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): voi
 
 export function clearGatewayQuotaSnapshot(): void {
   snapshotGeneratedAt = undefined
+  costSnapshotComplete = false
+  authorizationSnapshotComplete = false
   costSnapshot.clear()
   authorizationSnapshot.clear()
 }
@@ -73,12 +81,32 @@ export function gatewayQuotaSnapshotRuntime(): {
   generatedAt?: string
   costEntryCount: number
   authorizationEntryCount: number
+  costEntriesComplete: boolean
+  authorizationEntriesComplete: boolean
 } {
   return {
     generatedAt: snapshotGeneratedAt,
     costEntryCount: costSnapshot.size,
-    authorizationEntryCount: authorizationSnapshot.size
+    authorizationEntryCount: authorizationSnapshot.size,
+    costEntriesComplete: costSnapshotComplete,
+    authorizationEntriesComplete: authorizationSnapshotComplete
   }
+}
+
+export function isGatewayQuotaCostSnapshotComplete(): boolean {
+  return snapshotGeneratedAt !== undefined && costSnapshotComplete
+}
+
+export function isGatewayAuthorizationSnapshotComplete(): boolean {
+  return snapshotGeneratedAt !== undefined && authorizationSnapshotComplete
+}
+
+export function isGatewayQuotaCostSnapshotIncomplete(): boolean {
+  return snapshotGeneratedAt !== undefined && !costSnapshotComplete
+}
+
+export function isGatewayAuthorizationSnapshotIncomplete(): boolean {
+  return snapshotGeneratedAt !== undefined && !authorizationSnapshotComplete
 }
 
 function costSnapshotKey(input: {

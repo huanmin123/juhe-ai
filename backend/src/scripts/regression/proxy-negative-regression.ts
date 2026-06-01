@@ -18,6 +18,7 @@ runtimeConfig.secret = 'proxy-negative-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -25,6 +26,7 @@ const [
   { accountsRouter },
   { apiKeysRouter },
   { authRouter },
+  { captchaAnswerForTest },
   { groupsRouter },
   { openAIGatewayRouter },
   { proxiesRouter },
@@ -40,6 +42,7 @@ const [
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/api-keys/api-keys.routes.js'),
   import('../../modules/auth/auth.routes.js'),
+  import('../../modules/auth/captcha.service.js'),
   import('../../modules/groups/groups.routes.js'),
   import('../../modules/gateway/openai-gateway.routes.js'),
   import('../../modules/proxies/proxies.routes.js'),
@@ -124,6 +127,8 @@ interface UsageRecordListResult {
   total: number
 }
 
+const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
+
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
@@ -146,6 +151,11 @@ async function main(): Promise<void> {
       port: 9,
       enabled: true
     })
+    const group = await postEnvelope<GroupSummary>(baseUrl, '/__aisys__/api/groups', adminCookie, {
+      name: '代理负向回归分组',
+      providerCode: 'openai',
+      enabled: true
+    })
     const account = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, {
       providerCode: 'openai',
       name: '代理负向回归账户',
@@ -156,14 +166,9 @@ async function main(): Promise<void> {
       },
       proxyProfileId: proxy.id,
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      groupId: group.id
     })
-    const group = await postEnvelope<GroupSummary>(baseUrl, '/__aisys__/api/groups', adminCookie, {
-      name: '代理负向回归分组',
-      providerCode: 'openai',
-      enabled: true
-    })
-    await postEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}/group`, adminCookie, { groupId: group.id })
     const apiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '代理负向回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -183,7 +188,7 @@ async function main(): Promise<void> {
     assert(testResult.message.includes('代理不存在或已停用'), `账户测试错误信息异常：${testResult.message}`)
     assert(testResult.accountStatusChanged === true, '账户测试确认账号不可用后应返回状态已变更')
     assert(testResult.accountStatus === 'temporary_unavailable', `账户测试失败后应标记临时不可调用，实际 ${testResult.accountStatus}`)
-    const cooledAccount = repositories.findAccountSummary(account.id)
+    const cooledAccount = repositories.findAccountSummary(account.id, adminAccess)
     assert(cooledAccount?.status === 'temporary_unavailable', `账户测试失败后数据库状态应为临时不可调用，实际 ${cooledAccount?.status}`)
     assert(Boolean(cooledAccount?.cooldownUntil), '账户测试失败后应写入冷却结束时间')
     assert(cooledAccount?.lastErrorMessage?.includes('账户测试失败'), `账户测试失败后应写入最近错误，实际 ${cooledAccount?.lastErrorMessage}`)
@@ -273,8 +278,8 @@ function captureGatewayRawBody(req: RawBodyRequest, _res: ExpressResponse, next:
 
 async function login(baseUrl: string): Promise<string> {
   const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/__aisys__/api/auth/captcha')
-  const captchaCode = parseCaptchaCode(captcha.image)
-  assert(captchaCode, '无法解析登录验证码')
+  const captchaCode = captchaAnswerForTest(captcha.captchaId)
+  assert(captchaCode, '测试夹具无法读取登录验证码')
   const response = await fetch(`${baseUrl}/__aisys__/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -288,13 +293,13 @@ async function login(baseUrl: string): Promise<string> {
   const cookie = response.headers.get('set-cookie')?.split(';')[0]
   assert(response.ok, `登录失败：HTTP ${response.status} ${await response.text()}`)
   assert(cookie, '登录未返回会话 Cookie')
+  const passwordResponse = await fetch(`${baseUrl}/__aisys__/api/auth/change-password`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ newPassword: 'admin-regression-password' })
+  })
+  assert(passwordResponse.ok, `回归夹具修改初始密码失败：HTTP ${passwordResponse.status} ${await passwordResponse.text()}`)
   return cookie
-}
-
-function parseCaptchaCode(image: string): string {
-  const base64 = image.replace(/^data:image\/svg\+xml;base64,/, '')
-  const svg = Buffer.from(base64, 'base64').toString('utf8')
-  return [...svg.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map((match) => match[1]).join('')
 }
 
 async function waitForUsageRecord(baseUrl: string, cookie: string, apiKeyId: string, accountId: string): Promise<void> {

@@ -215,6 +215,7 @@ try {
 function seedData(): { accountId: string; adminCookie: string; groupId: string } {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const access = { systemAccountId: admin.id, role: 'admin' as const }
   const group = repositories.createGroup({
     name: '运行态快照不可用分组',
@@ -226,7 +227,7 @@ function seedData(): { accountId: string; adminCookie: string; groupId: string }
     type: 'api_key',
     credentials: {
       api_key: 'sk-runtime-snapshot-unavailable',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     concurrencyLimit: 10,

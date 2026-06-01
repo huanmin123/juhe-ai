@@ -3,7 +3,7 @@ import type { Request } from 'express'
 import { getAccountCurrentConcurrency, tryAcquireAccountConcurrency, type AccountConcurrencySlot } from '../../shared/account-concurrency.js'
 import { effectiveImageLaneConcurrencyLimit } from '../../domain/group-scheduling.js'
 import type { GroupSchedulingPolicy } from '../../domain/types.js'
-import { getRequestLogger } from '../../shared/request-context.js'
+import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import { exponentialRetryPolicy, retryDelayMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import type { AuditCaptureContext } from './audit-capture.service.js'
@@ -365,7 +365,8 @@ function buildUpstreamAttemptFailureMessage(accountCount: number, lastAttempt?: 
     return prefix
   }
   const result = stringValue(lastAttempt.message) || numberValue(lastAttempt.status) || '未知错误'
-  return `${prefix}；最后一次尝试 ${lastAttempt.accountName} ${lastAttempt.upstreamUrl} 返回 ${result}`
+  const upstreamUrl = sanitizeUrlCredentialsForLog(lastAttempt.upstreamUrl) ?? lastAttempt.upstreamUrl
+  return `${prefix}；最后一次尝试 ${lastAttempt.accountName} ${upstreamUrl} 返回 ${result}`
 }
 
 async function acquireAccountConcurrencyWithShortRetry(

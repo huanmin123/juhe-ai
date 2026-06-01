@@ -17,6 +17,7 @@ import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwne
 import { executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { submitAccountRelatedCleanup } from './account-cleanup.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
+import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from './account-stream-intercept-policy-validation.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
@@ -119,7 +120,7 @@ accountsRouter.get('/', async (req, res, next) => {
       serverTimingMetric('account-list', listDurationMs),
       serverTimingMetric('account-concurrency', concurrencyDurationMs)
     ].join(', '))
-    res.json(ok(hydratedResult))
+    res.json(ok(sanitizeAccountListResponse(hydratedResult)))
   } catch (error) {
     next(error)
   }
@@ -157,7 +158,7 @@ accountsRouter.get('/:id', async (req, res, next) => {
       return
     }
     const hydratedAccount = await applyServerAccountRuntimeToAccount(account)
-    res.json(ok(hydratedAccount))
+    res.json(ok(sanitizeAccountResponse(hydratedAccount)))
   } catch (error) {
     next(error)
   }
@@ -392,7 +393,7 @@ accountsRouter.post('/', mutationGuard({
         }
       }
     }, req)
-    res.status(201).json(ok(account))
+    res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
@@ -448,7 +449,7 @@ accountsRouter.post('/:id/group', (req, res) => {
         }
       }
     }, req)
-    res.json(ok(account))
+    res.json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '绑定账户分组失败'))
   }
@@ -513,11 +514,11 @@ accountsRouter.post('/:id/traffic-migration', (req, res) => {
         }
       }
     }, req)
-    res.json(ok({
+    res.json(ok(sanitizeAccountTrafficMigrationResponse({
       ...migration,
       ...affinityResult,
       sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
-    }))
+    })))
   } catch (error) {
     if (error instanceof Error && error.message === '账户不存在或无权迁移') {
       res.status(404).json({ message: '账户不存在或无权迁移' })
@@ -607,7 +608,7 @@ accountsRouter.patch('/:id/authorized-dispatch', async (req, res) => {
     if (parsed.data.clearFailureState === true || parsed.data.status === 'active') {
       await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
     }
-    res.json(ok(await applyServerAccountRuntimeToAccount(account)))
+    res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '更新授权账户调度设置失败'))
   }
@@ -654,6 +655,10 @@ accountsRouter.patch('/:id', async (req, res) => {
   if (streamPolicyValidationMessage) {
     res.status(400).json(badRequest(streamPolicyValidationMessage))
     return
+  }
+  const requestedCredentials = credentialsRecordValue(body.credentials)
+  if (Object.prototype.hasOwnProperty.call(body, 'credentials') && requestedCredentials) {
+    accountUpdateInput.credentials = mergeAccountCredentialsForUpdate(existingAccount, requestedCredentials)
   }
   try {
     const account = runLoggedOperation(() => {
@@ -717,7 +722,7 @@ accountsRouter.patch('/:id', async (req, res) => {
     if (requestedClearFailureState === true || body.status === 'active') {
       await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
     }
-    res.json(ok(await applyServerAccountRuntimeToAccount(account)))
+    res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
@@ -964,4 +969,39 @@ function credentialsRecordValue(value: unknown): Record<string, unknown> | undef
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined
+}
+
+function mergeAccountCredentialsForUpdate(account: AccountSummary, requested: Record<string, unknown>): Record<string, unknown> {
+  const credentials = { ...requested }
+  preserveCredentialText(credentials, account.credentials, 'base_url')
+  if (account.type === 'api_key') {
+    preserveCredentialText(credentials, account.credentials, 'api_key')
+  } else if (account.type === 'oauth') {
+    for (const key of [
+      'access_token',
+      'refresh_token',
+      'expires_at',
+      'client_id',
+      'id_token',
+      'email',
+      'account_id',
+      'chatgpt_user_id',
+      'plan_type'
+    ]) {
+      preserveCredentialText(credentials, account.credentials, key)
+    }
+  }
+  return credentials
+}
+
+function preserveCredentialText(output: Record<string, unknown>, source: Record<string, unknown>, key: string): void {
+  if (hasCredentialText(output[key])) return
+  const value = source[key]
+  if (hasCredentialText(value)) {
+    output[key] = value
+  }
+}
+
+function hasCredentialText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
 }

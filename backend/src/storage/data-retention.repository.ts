@@ -1,9 +1,10 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
+import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, type UsageRecordShardLocation } from './usage-record-shards.js'
 
 type CleanupRow = Record<string, unknown>
 type StatsDatabase = ReturnType<typeof getStatsDatabase>
+const usageRecordCleanupRequiredCursorJobNames = ['usage_stats_aggregation', 'client_ip_stats_aggregation'] as const
 
 interface UsageRecordShardCleanupRow {
   id: string
@@ -81,6 +82,7 @@ export interface UsageStatsRetentionCleanupResult {
   aiPerformanceSummaryWindows: number
   usageQuotaHourlyWindows: number
   usageScopeRangeWindows: number
+  clientIpUsageRangeWindows: number
   accountUsageSnapshots: number
 }
 
@@ -123,8 +125,10 @@ function cleanupUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10
 }
 
 export function inspectProcessedUsageRecordsCleanupBefore(cutoffCreatedAt: string, limit = 10000): ProcessedUsageRecordsCleanupPreviewResult {
-  const blockedReason = usageRecordsCleanupBlockedReason(cutoffCreatedAt)
-  if (blockedReason) {
+  const statsDatabase = getStatsDatabase()
+  const batchLimit = positiveLimit(limit)
+  const safetyCursor = usageRecordShardCleanupFloorCursor(statsDatabase)
+  if (!safetyCursor) {
     if (!hasUsageRecordsBefore(cutoffCreatedAt)) {
       return {
         cutoffCreatedAt,
@@ -136,22 +140,36 @@ export function inspectProcessedUsageRecordsCleanupBefore(cutoffCreatedAt: strin
       cutoffCreatedAt,
       eligibleRows: 0,
       hasMore: false,
-      blockedReason
+      blockedReason: usageRecordCleanupMissingCursorBlockedReason()
     }
   }
 
-  const batchLimit = positiveLimit(limit)
-  const rows = selectProcessedUsageRecordCleanupRows(cutoffCreatedAt, batchLimit + 1)
+  const rows = selectProcessedUsageRecordCleanupRowsWithCursor(cutoffCreatedAt, safetyCursor, batchLimit + 1)
+  const blockedReason = usageRecordsCleanupBlockedReasonForRows(statsDatabase, rows.slice(0, batchLimit))
+  if (blockedReason) {
+    return {
+      cutoffCreatedAt,
+      safetyCursorCreatedAt: safetyCursor.cursorCreatedAt,
+      safetyCursorId: safetyCursor.cursorId,
+      eligibleRows: 0,
+      hasMore: false,
+      blockedReason
+    }
+  }
   return {
     cutoffCreatedAt,
+    safetyCursorCreatedAt: safetyCursor.cursorCreatedAt,
+    safetyCursorId: safetyCursor.cursorId,
     eligibleRows: Math.min(rows.length, batchLimit),
     hasMore: rows.length > batchLimit
   }
 }
 
 export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10000): ProcessedUsageRecordsCleanupBatchResult {
-  const blockedReason = usageRecordsCleanupBlockedReason(cutoffCreatedAt)
-  if (blockedReason) {
+  const statsDatabase = getStatsDatabase()
+  const batchLimit = positiveLimit(limit)
+  const safetyCursor = usageRecordShardCleanupFloorCursor(statsDatabase)
+  if (!safetyCursor) {
     if (!hasUsageRecordsBefore(cutoffCreatedAt)) {
       return {
         cutoffCreatedAt,
@@ -163,84 +181,72 @@ export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: st
       cutoffCreatedAt,
       deletedRows: 0,
       hasMore: false,
-      blockedReason
+      blockedReason: usageRecordCleanupMissingCursorBlockedReason()
     }
   }
 
-  const batchLimit = positiveLimit(limit)
-  const rows = selectProcessedUsageRecordCleanupRows(cutoffCreatedAt, batchLimit + 1)
+  const rows = selectProcessedUsageRecordCleanupRowsWithCursor(cutoffCreatedAt, safetyCursor, batchLimit + 1)
+  const rowsToDelete = rows.slice(0, batchLimit)
+  const blockedReason = usageRecordsCleanupBlockedReasonForRows(statsDatabase, rowsToDelete)
+  if (blockedReason) {
+    return {
+      cutoffCreatedAt,
+      safetyCursorCreatedAt: safetyCursor.cursorCreatedAt,
+      safetyCursorId: safetyCursor.cursorId,
+      deletedRows: 0,
+      hasMore: false,
+      blockedReason
+    }
+  }
   return {
     cutoffCreatedAt,
-    deletedRows: deleteUsageRecordShardRows(rows.slice(0, batchLimit)),
+    safetyCursorCreatedAt: safetyCursor.cursorCreatedAt,
+    safetyCursorId: safetyCursor.cursorId,
+    deletedRows: deleteUsageRecordShardRows(rowsToDelete),
     hasMore: rows.length > batchLimit
   }
 }
 
-function selectProcessedUsageRecordCleanupRows(
+function selectProcessedUsageRecordCleanupRowsWithCursor(
   cutoffCreatedAt: string,
+  cursor: { cursorCreatedAt: string; cursorId: string },
   limit: number
 ): UsageRecordShardCleanupRow[] {
-  const rows: UsageRecordShardCleanupRow[] = []
   const batchLimit = positiveLimit(limit)
-  const statsDatabase = getStatsDatabase()
-  for (const location of listUsageRecordShardLocations()) {
-    const cursor = usageRecordShardCleanupCursor(statsDatabase, location.shardKey)
-    if (!cursor) continue
-    const shardRows = getUsageRecordShardDatabase(location)
-      .prepare(`
-        SELECT id, created_at
-        FROM usage_records
-        WHERE created_at < ?
-          AND (created_at < ? OR (created_at = ? AND id <= ?))
-        ORDER BY created_at ASC, id ASC
-        LIMIT ?
-      `)
-      .all(cutoffCreatedAt, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId, batchLimit) as Array<{ id: string; created_at: string }>
-    rows.push(...shardRows.map((row) => ({ ...row, location })))
-  }
-  return rows
-    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))
-    .slice(0, batchLimit)
+  return selectUsageRecordCleanupCatalogRows({
+    cutoffCreatedAt,
+    cursorCreatedAt: cursor.cursorCreatedAt,
+    cursorId: cursor.cursorId,
+    limit: batchLimit
+  })
 }
 
 function selectUsageRecordCleanupRows(
   cutoffCreatedAt: string,
   limit: number
 ): UsageRecordShardCleanupRow[] {
-  const rows: UsageRecordShardCleanupRow[] = []
-  const batchLimit = positiveLimit(limit)
-  for (const location of listUsageRecordShardLocations()) {
-    const shardRows = getUsageRecordShardDatabase(location)
-      .prepare(`
-        SELECT id, created_at
-        FROM usage_records
-        WHERE created_at < ?
-        ORDER BY created_at ASC, id ASC
-        LIMIT ?
-      `)
-      .all(cutoffCreatedAt, batchLimit) as Array<{ id: string; created_at: string }>
-    rows.push(...shardRows.map((row) => ({ ...row, location })))
-  }
-  return rows
-    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))
-    .slice(0, batchLimit)
+  return selectUsageRecordCleanupCatalogRows({
+    cutoffCreatedAt,
+    limit: positiveLimit(limit)
+  })
 }
 
 function hasUsageRecordsBefore(cutoffCreatedAt: string): boolean {
-  for (const location of listUsageRecordShardLocations()) {
-    const row = getUsageRecordShardDatabase(location)
-      .prepare('SELECT id FROM usage_records WHERE created_at < ? LIMIT 1')
-      .get(cutoffCreatedAt) as unknown as { id?: string } | undefined
-    if (row?.id) return true
-  }
-  return false
+  const row = getDatasetDatabase()
+    .prepare(`
+      SELECT ue.usage_id
+      FROM usage_record_shard_entries ue
+      JOIN usage_record_shards s ON s.shard_key = ue.shard_key
+      WHERE s.status = 'active'
+        AND ue.created_at < ?
+      ORDER BY ue.created_at ASC, ue.usage_id ASC
+      LIMIT 1
+    `)
+    .get(cutoffCreatedAt) as unknown as { usage_id?: string } | undefined
+  return Boolean(row?.usage_id)
 }
 
 export function usageRecordsCleanupCursor(database: StatsDatabase): UsageRecordsCleanupCursor {
-  const blockedReason = usageRecordsCleanupBlockedReason()
-  if (blockedReason) {
-    return { blockedReason }
-  }
   const aggregationCursor = usageRecordShardCleanupFloorCursor(database)
   if (!aggregationCursor) {
     return {
@@ -250,51 +256,135 @@ export function usageRecordsCleanupCursor(database: StatsDatabase): UsageRecords
   return aggregationCursor
 }
 
-function usageRecordsCleanupBlockedReason(cutoffCreatedAt?: string): string | undefined {
-  const statsDatabase = getStatsDatabase()
-  for (const location of listUsageRecordShardLocations()) {
-    if (usageRecordShardCleanupCursor(statsDatabase, location.shardKey)) {
-      continue
-    }
-    if (!cutoffCreatedAt || shardHasUsageRecordsBefore(location, cutoffCreatedAt)) {
-      return '部分使用记录分片的统计安全游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试'
-    }
+function usageRecordsCleanupBlockedReasonForRows(database: StatsDatabase, rows: UsageRecordShardCleanupRow[]): string | undefined {
+  const shardKeys = [...new Set(rows.map((row) => row.location.shardKey.trim()).filter(Boolean))]
+  if (shardKeys.length === 0) {
+    return undefined
   }
-  return undefined
+  const cursorShardKeys = usageRecordShardCleanupCursorShardKeysForShards(database, shardKeys)
+  return shardKeys.some((shardKey) => !cursorShardKeys.has(shardKey))
+    ? usageRecordCleanupMissingCursorBlockedReason()
+    : undefined
 }
 
-function shardHasUsageRecordsBefore(location: UsageRecordShardLocation, cutoffCreatedAt: string): boolean {
-  const row = getUsageRecordShardDatabase(location)
-    .prepare('SELECT id FROM usage_records WHERE created_at < ? LIMIT 1')
-    .get(cutoffCreatedAt) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
-}
-
-function usageRecordShardCleanupCursor(database: StatsDatabase, shardKey: string): { cursorCreatedAt: string; cursorId: string } | undefined {
-  const row = database
-    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'usage_shard' AND scope_id = ? AND job_name = 'usage_stats_aggregation'")
-    .get(shardKey) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
-  const cursorCreatedAt = row?.cursor_created_at?.trim()
-  const cursorId = row?.cursor_id?.trim()
-  return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
+function usageRecordCleanupMissingCursorBlockedReason(): string {
+  return '部分使用记录分片的统计安全游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试'
 }
 
 function usageRecordShardCleanupFloorCursor(database: StatsDatabase): { cursorCreatedAt: string; cursorId: string } | undefined {
+  const placeholders = sqlPlaceholders(usageRecordCleanupRequiredCursorJobNames.length)
   const row = database
     .prepare(`
       SELECT cursor_created_at, cursor_id
       FROM stats_job_state
       WHERE scope_type = 'usage_shard'
-        AND job_name = 'usage_stats_aggregation'
+        AND job_name IN (${placeholders})
         AND cursor_created_at IS NOT NULL
         AND cursor_id IS NOT NULL
       ORDER BY cursor_created_at ASC, cursor_id ASC
       LIMIT 1
     `)
-    .get() as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
+    .get(...usageRecordCleanupRequiredCursorJobNames) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
   const cursorCreatedAt = row?.cursor_created_at?.trim()
   const cursorId = row?.cursor_id?.trim()
   return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
+}
+
+function usageRecordShardCleanupCursorShardKeysForShards(database: StatsDatabase, shardKeys: string[]): Set<string> {
+  const normalizedShardKeys = [...new Set(shardKeys.map((shardKey) => shardKey.trim()).filter(Boolean))]
+  const cursorShardKeys = new Set<string>()
+  for (const chunk of chunkValues(normalizedShardKeys, 900)) {
+    if (chunk.length === 0) continue
+    const jobPlaceholders = sqlPlaceholders(usageRecordCleanupRequiredCursorJobNames.length)
+    const rows = database
+      .prepare(`
+        SELECT scope_id
+        FROM stats_job_state
+        WHERE scope_type = 'usage_shard'
+          AND scope_id IN (${sqlPlaceholders(chunk.length)})
+          AND job_name IN (${jobPlaceholders})
+          AND cursor_created_at IS NOT NULL
+          AND cursor_id IS NOT NULL
+        GROUP BY scope_id
+        HAVING COUNT(DISTINCT job_name) = ?
+      `)
+      .all(...chunk, ...usageRecordCleanupRequiredCursorJobNames, usageRecordCleanupRequiredCursorJobNames.length) as Array<{ scope_id?: string | null }>
+    for (const row of rows) {
+      const scopeId = row.scope_id?.trim()
+      if (scopeId) {
+        cursorShardKeys.add(scopeId)
+      }
+    }
+  }
+  return cursorShardKeys
+}
+
+function selectUsageRecordCleanupCatalogRows(input: {
+  cutoffCreatedAt: string
+  cursorCreatedAt?: string
+  cursorId?: string
+  limit: number
+}): UsageRecordShardCleanupRow[] {
+  const params: Array<string | number> = [input.cutoffCreatedAt]
+  const cursorClause = input.cursorCreatedAt && input.cursorId
+    ? 'AND (ue.created_at < ? OR (ue.created_at = ? AND ue.usage_id <= ?))'
+    : ''
+  if (cursorClause) {
+    params.push(input.cursorCreatedAt as string, input.cursorCreatedAt as string, input.cursorId as string)
+  }
+  params.push(positiveLimit(input.limit))
+  const rows = getDatasetDatabase()
+    .prepare(`
+      SELECT ue.usage_id, ue.created_at, s.shard_key, s.bucket_date, s.shard_id, s.file_path
+      FROM usage_record_shard_entries ue
+      JOIN usage_record_shards s ON s.shard_key = ue.shard_key
+      WHERE s.status = 'active'
+        AND ue.created_at < ?
+        ${cursorClause}
+      ORDER BY ue.created_at ASC, ue.usage_id ASC
+      LIMIT ?
+    `)
+    .all(...params) as Array<{
+      usage_id?: string | null
+      created_at?: string | null
+      shard_key?: string | null
+      bucket_date?: string | null
+      shard_id?: number | null
+      file_path?: string | null
+    }>
+  return rows
+    .map(usageRecordCleanupRowFromCatalog)
+    .filter((row): row is UsageRecordShardCleanupRow => Boolean(row))
+}
+
+function usageRecordCleanupRowFromCatalog(row: {
+  usage_id?: string | null
+  created_at?: string | null
+  shard_key?: string | null
+  bucket_date?: string | null
+  shard_id?: number | null
+  file_path?: string | null
+}): UsageRecordShardCleanupRow | undefined {
+  const id = row.usage_id?.trim()
+  const createdAt = row.created_at?.trim()
+  const shardKey = row.shard_key?.trim()
+  const bucketDate = row.bucket_date?.trim()
+  const filePath = row.file_path?.trim()
+  const shardId = Number(row.shard_id)
+  if (!id || !createdAt || !shardKey || !bucketDate || !filePath || !Number.isInteger(shardId)) {
+    return undefined
+  }
+  return {
+    id,
+    created_at: createdAt,
+    location: {
+      shardKey,
+      bucketDate,
+      bucketDateKey: bucketDate.replace(/-/g, ''),
+      shardId,
+      filePath
+    }
+  }
 }
 
 export function cleanupUsageStatsBucketsBefore(input: {
@@ -345,6 +435,7 @@ export function cleanupUsageStatsBucketsBefore(input: {
     aiPerformanceSummaryWindows: deleteRowsBeforeByRowid(database, 'ai_performance_summary_windows', 'end_date', input.windowCutoffDate, limit),
     usageQuotaHourlyWindows: deleteRowsBeforeByRowid(database, 'usage_quota_hourly_windows', 'updated_at', input.windowCutoffIso, limit),
     usageScopeRangeWindows: deleteRowsBeforeByRowid(database, 'usage_scope_range_windows', 'end_date', input.windowCutoffDate, limit),
+    clientIpUsageRangeWindows: deleteRowsBeforeByRowid(database, 'client_ip_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
     accountUsageSnapshots: deleteRowsBeforeByRowid(database, 'account_usage_snapshots', 'updated_at', input.windowCutoffIso, limit)
   }
 }
@@ -397,12 +488,23 @@ export function cleanupModelCheckRunsBefore(cutoffCreatedAt: string, limit = 100
   }, database)
 }
 
-export function cleanupExpiredSystemSessions(expiredBefore = nowIso()): number {
-  return changed(getBusinessDatabase().prepare('DELETE FROM system_sessions WHERE expires_at < ?').run(expiredBefore))
+export function cleanupExpiredSystemSessions(expiredBefore = nowIso(), limit = 1000): number {
+  const batchLimit = Math.max(1, Math.trunc(limit))
+  return changed(getBusinessDatabase().prepare(`
+    DELETE FROM system_sessions
+    WHERE rowid IN (
+      SELECT rowid
+      FROM system_sessions
+      WHERE expires_at < ?
+      ORDER BY expires_at ASC, rowid ASC
+      LIMIT ?
+    )
+  `).run(expiredBefore, batchLimit))
 }
 
 function deleteUsageRecordShardRows(rows: UsageRecordShardCleanupRow[]): number {
   let deletedRows = 0
+  const processedCatalogIds: string[] = []
   const rowsByShard = new Map<string, UsageRecordShardCleanupRow[]>()
   for (const row of rows) {
     rowsByShard.set(row.location.shardKey, [...(rowsByShard.get(row.location.shardKey) ?? []), row])
@@ -415,15 +517,23 @@ function deleteUsageRecordShardRows(rows: UsageRecordShardCleanupRow[]): number 
     try {
       for (const chunk of chunkValues(ids, 900)) {
         const placeholders = sqlPlaceholders(chunk.length)
-        deletedRows += changed(database.prepare(`DELETE FROM usage_records WHERE id IN (${placeholders})`).run(...chunk))
+        const existingIds = database
+          .prepare(`SELECT id FROM usage_records WHERE id IN (${placeholders})`)
+          .all(...chunk)
+          .map((row) => String((row as { id?: unknown }).id ?? ''))
+          .filter(Boolean)
+        if (existingIds.length === 0) continue
+        const existingPlaceholders = sqlPlaceholders(existingIds.length)
+        deletedRows += changed(database.prepare(`DELETE FROM usage_records WHERE id IN (${existingPlaceholders})`).run(...existingIds))
       }
       commitDatabaseTransaction(database, transactionStarted)
+      processedCatalogIds.push(...ids)
     } catch (error) {
       rollbackDatabaseTransaction(database, transactionStarted)
       throw error
     }
   }
-  deleteUsageRecordShardEntries(rows.map((row) => row.id))
+  deleteUsageRecordShardEntries(processedCatalogIds)
   return deletedRows
 }
 

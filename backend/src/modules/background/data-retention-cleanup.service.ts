@@ -73,6 +73,7 @@ export interface DataRetentionCleanupResult {
   aiPerformanceSummaryWindows: number
   usageQuotaHourlyWindows: number
   usageScopeRangeWindows: number
+  clientIpUsageRangeWindows: number
   accountUsageSnapshots: number
   systemMetricsSamples: number
   systemMetricsHourly: number
@@ -186,7 +187,11 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     )
 
     await yieldToEventLoop()
-    result.systemSessions = cleanupExpiredSystemSessions(new Date(now).toISOString())
+    result.systemSessions = await cleanupInBatches(
+      () => cleanupExpiredSystemSessions(new Date(now).toISOString(), batchSize),
+      batchSize,
+      maxBatches
+    )
 
     logger.info({
       event: 'data_retention_cleanup_completed',
@@ -354,6 +359,7 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     aiPerformanceSummaryWindows: 0,
     usageQuotaHourlyWindows: 0,
     usageScopeRangeWindows: 0,
+    clientIpUsageRangeWindows: 0,
     accountUsageSnapshots: 0,
     systemMetricsSamples: 0,
     systemMetricsHourly: 0,

@@ -1610,20 +1610,13 @@ onBeforeUnmount(() => {
 })
 
 function applyRouteFilters() {
-  const hasRouteFilters = [
-    route.query.resourceType,
-    route.query.resourceId,
-    route.query.status,
-    route.query.resourceOwnerSystemAccountId,
-    route.query.teamId,
-    route.query.granteeSystemAccountId
-  ].some((value) => value !== undefined)
-  if (!hasRouteFilters) return
+  if (!hasAuthorizationRouteFilters()) return
   filters.resourceType = 'all'
   filters.status = 'all'
   filters.resourceOwnerSystemAccountId = allSystemAccountsValue
   filters.resourceOwnerSystemAccount = undefined
   filters.resourceId = undefined
+  filters.resourceAccount = undefined
   filters.resourceGroup = undefined
   filters.teamId = undefined
   filters.team = undefined
@@ -1654,10 +1647,41 @@ function applyRouteFilters() {
   }
 }
 
+function authorizationRouteFilterValues() {
+  return [
+    route.query.resourceType,
+    route.query.resourceId,
+    route.query.status,
+    route.query.resourceOwnerSystemAccountId,
+    route.query.teamId,
+    route.query.granteeSystemAccountId
+  ] as const
+}
+
+function hasAuthorizationRouteFilters(): boolean {
+  return authorizationRouteFilterValues().some((value) => value !== undefined)
+}
+
 function normalizeAuthorizationStatusFilter(value: unknown): AuthorizationStatusFilter {
   return value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked' || value === 'returned' || value === 'all'
     ? value
     : 'all'
+}
+
+function applyAuthorizationsPageState(state: AuthorizationsPageState): void {
+  const fallback = defaultAuthorizationsPageState()
+  Object.assign(filters, {
+    ...fallback.filters,
+    ...state.filters
+  })
+  pagination.current = state.pagination?.current ?? fallback.pagination?.current ?? 1
+  pagination.pageSize = state.pagination?.pageSize ?? fallback.pagination?.pageSize ?? pageSize
+  resetFilterOptionSearchState()
+}
+
+function restorePageStateAfterRouteFiltersCleared(): void {
+  applyAuthorizationsPageState(pageStateCache.read())
+  void Promise.all([loadMetaData(), loadData()])
 }
 
 function snapshotPageState(): AuthorizationsPageState {
@@ -1667,7 +1691,23 @@ function snapshotPageState(): AuthorizationsPageState {
   }
 }
 
-watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(snapshotPageState, () => {
+  if (hasAuthorizationRouteFilters()) {
+    pageStateCache.cancelPendingWrite()
+    return
+  }
+  pageStateCache.scheduleWrite(snapshotPageState)
+}, { deep: true })
+watch(authorizationRouteFilterValues, () => {
+  if (!hasAuthorizationRouteFilters()) {
+    restorePageStateAfterRouteFiltersCleared()
+    return
+  }
+  applyRouteFilters()
+  resetPagination()
+  resetFilterOptionSearchState()
+  void Promise.all([loadMetaData(), loadData()])
+})
 watch(filterResourceDisabled, (disabled) => {
   if (!disabled) return
   resetFilterResource()

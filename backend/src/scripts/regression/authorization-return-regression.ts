@@ -134,7 +134,7 @@ try {
     providerCode: 'openai',
     name: '管理员代归还授权账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-admin-authorization-return', base_url: 'http://127.0.0.1:9/v1' },
+    credentials: { api_key: 'sk-admin-authorization-return', base_url: 'https://api.openai.com/v1' },
     groupId: seed.ownerGroupId
   }, { systemAccountId: seed.ownerId, role: 'user' as const })
   const adminManagedGrant = repositories.createResourceAuthorization({
@@ -171,6 +171,7 @@ try {
 function seedData() {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const owner = repositories.createSystemAccount({
     username: 'authorization_return_owner',
     displayName: '授权归还所有者',
@@ -201,7 +202,7 @@ function seedData() {
     groupId: ownerGroup.id,
     name: '授权归还账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-authorization-return', base_url: 'http://127.0.0.1:9/v1' }
+    credentials: { api_key: 'sk-authorization-return', base_url: 'https://api.openai.com/v1' }
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

@@ -73,6 +73,9 @@ try {
   assert(sensitiveHeaderDetail, '敏感 header 脱敏审计事件应写入详情')
   assert.equal(sensitiveHeaderDetail.queryString?.includes('audit-query-token'), false, '审计主记录 queryString 不应保留敏感查询参数')
   assert(sensitiveHeaderDetail.queryString?.includes('token=%5Bredacted%5D'), '审计主记录 queryString 应保留查询参数脱敏占位')
+  const sensitiveHeaderSerializedDetail = JSON.stringify(sensitiveHeaderDetail)
+  assert.equal(sensitiveHeaderSerializedDetail.includes('audit-upstream-query-token'), false, '审计 attempt upstreamUrl 不应保留敏感查询参数')
+  assert(sensitiveHeaderSerializedDetail.includes('token=%5Bredacted%5D'), '审计 attempt upstreamUrl 应保留查询参数脱敏占位')
   const sensitiveHeaderPayloads = await Promise.all(sensitiveHeaderDetail.payloads.map((payload) => repositories.getAuditLogPayload(sensitiveHeaderAuditId, payload.id)))
   const sensitiveHeaderSerialized = JSON.stringify(sensitiveHeaderPayloads)
   assert.equal(sensitiveHeaderSerialized.includes('Bearer client-secret-token'), false, '客户端 Authorization 不应进入审计 payload')
@@ -81,8 +84,27 @@ try {
   assert.equal(sensitiveHeaderSerialized.includes('upstream-set-cookie-secret'), false, 'Set-Cookie 不应进入审计 payload')
   assert.equal(sensitiveHeaderSerialized.includes('gateway-set-cookie-secret'), false, '网关 Set-Cookie 不应进入审计 payload')
   assert.equal(sensitiveHeaderSerialized.includes('upstream-x-api-key-secret'), false, 'X-API-Key 不应进入审计 payload')
+  assert.equal(sensitiveHeaderSerialized.includes('audit-google-key-secret'), false, '客户端 X-Goog-API-Key 不应进入审计 payload')
+  assert.equal(sensitiveHeaderSerialized.includes('upstream-google-key-secret'), false, '上游 X-Goog-API-Key 不应进入审计 payload')
   assert.equal(sensitiveHeaderSerialized.includes('sk-account-secret'), false, '账号 API Key 不应进入审计 payload')
   assert(sensitiveHeaderSerialized.includes('[redacted]'), '审计 payload 中的敏感 header 应保留脱敏占位')
+
+  const proxyCredentialTraceId = 'trace-proxy-credential-redaction'
+  finalizeProxyCredentialAudit(proxyCredentialTraceId)
+  auditQueue.flushAllAuditLogQueue()
+  const proxyCredentialAuditId = repositories.listAuditLogs({ traceId: proxyCredentialTraceId }).items[0]?.id ?? ''
+  const proxyCredentialDetail = repositories.getAuditLogDetail(proxyCredentialAuditId)
+  assert(proxyCredentialDetail, '代理凭据脱敏审计事件应写入详情')
+  const proxyCredentialRow = databaseModule.getDatasetDatabase()
+    .prepare('SELECT proxy_url FROM audit_log_attempts WHERE audit_log_id = ?')
+    .get(proxyCredentialAuditId) as { proxy_url?: string } | undefined
+  const proxyCredentialSerialized = JSON.stringify({
+    row: proxyCredentialRow,
+    detail: proxyCredentialDetail
+  })
+  assert.equal(proxyCredentialSerialized.includes('proxy-user'), false, 'audit_log_attempts.proxy_url 不应保留代理用户名')
+  assert.equal(proxyCredentialSerialized.includes('proxy-pass'), false, 'audit_log_attempts.proxy_url 不应保留代理密码')
+  assert(proxyCredentialSerialized.includes('[redacted]@127.0.0.1:18080'), '审计详情应保留代理已配置信号和目标地址')
 
   const sensitiveUsageRecordId = usageRecordShards.generateUsageRecordId(now, 'usage_sensitive_headers')
   usageRecordQueue.enqueueUsageRecord({
@@ -104,6 +126,7 @@ try {
         authorization: 'Bearer usage-client-token',
         'api-key': 'usage-api-key-secret',
         'openai-api-key': 'usage-openai-api-key-secret',
+        'x-goog-api-key': 'usage-google-api-key-secret',
         'content-type': 'application/json'
       }
     },
@@ -123,6 +146,7 @@ try {
         headers: {
           authorization: 'Bearer usage-last-upstream-token',
           'proxy-authorization': 'Basic usage-proxy-token',
+          'x-goog-api-key': 'usage-last-upstream-google-key',
           'content-type': 'application/json'
         }
       }
@@ -138,10 +162,12 @@ try {
   assert.equal(sensitiveUsageSerialized.includes('usage-client-token'), false, '使用记录请求 snapshot 不应保留 Authorization')
   assert.equal(sensitiveUsageSerialized.includes('usage-api-key-secret'), false, '使用记录请求 snapshot 不应保留 API-Key')
   assert.equal(sensitiveUsageSerialized.includes('usage-openai-api-key-secret'), false, '使用记录请求 snapshot 不应保留 OpenAI-API-Key')
+  assert.equal(sensitiveUsageSerialized.includes('usage-google-api-key-secret'), false, '使用记录请求 snapshot 不应保留 X-Goog-API-Key')
   assert.equal(sensitiveUsageSerialized.includes('usage-response-cookie'), false, '使用记录响应 snapshot 不应保留 Set-Cookie')
   assert.equal(sensitiveUsageSerialized.includes('usage-response-key'), false, '使用记录响应 snapshot 不应保留 X-API-Key')
   assert.equal(sensitiveUsageSerialized.includes('usage-last-upstream-token'), false, '使用记录 lastUpstreamAttempt 不应保留 Authorization')
   assert.equal(sensitiveUsageSerialized.includes('usage-proxy-token'), false, '使用记录 lastUpstreamAttempt 不应保留 Proxy-Authorization')
+  assert.equal(sensitiveUsageSerialized.includes('usage-last-upstream-google-key'), false, '使用记录 lastUpstreamAttempt 不应保留 X-Goog-API-Key')
   assert.equal(sensitiveUsageSerialized.includes('usage-query-token'), false, '使用记录请求 snapshot 不应保留敏感查询参数')
   assert.equal(sensitiveUsageSerialized.includes('usage-upstream-query-key'), false, '使用记录响应 snapshot 不应保留上游 URL 敏感查询参数')
   assert(sensitiveUsageSerialized.includes('[redacted]'), '使用记录 snapshot 中的敏感 header 应保留脱敏占位')
@@ -165,6 +191,7 @@ try {
     reason: 'gateway_body_rejected',
     method: 'POST',
     path: '/v1/responses',
+    queryString: 'token=body-rejected-query-token&api_key=body-rejected-api-key&safe=ok',
     statusCode: 413,
     errorPhase: 'gateway',
     errorCode: 'entity.too.large',
@@ -174,6 +201,11 @@ try {
   const rejectedEvents = repositories.listAuditLogs({ traceId: 'trace-body-rejected-retained' })
   assert.equal(rejectedEvents.total, 1, '请求体被网关拒绝时也应保留失败事件')
   assert.equal(rejectedEvents.items[0]?.captureStatus, 'overflow', '请求体被网关拒绝时应标记为 overflow')
+  const rejectedDetail = repositories.getAuditLogDetail(rejectedEvents.items[0]?.id ?? '')
+  assert.equal(rejectedDetail?.queryString?.includes('body-rejected-query-token'), false, '早期拒绝审计 queryString 不应保留 token 参数')
+  assert.equal(rejectedDetail?.queryString?.includes('body-rejected-api-key'), false, '早期拒绝审计 queryString 不应保留 api_key 参数')
+  assert(rejectedDetail?.queryString?.includes('token=%5Bredacted%5D'), '早期拒绝审计 queryString 应保留 token 脱敏占位')
+  assert(rejectedDetail?.queryString?.includes('api_key=%5Bredacted%5D'), '早期拒绝审计 queryString 应保留 api_key 脱敏占位')
 
   const largeFailedTraceId = 'trace-large-failed-payload-summary'
   finalizeFailedRequestWithBody(largeFailedTraceId, largeFailedRequestBody)
@@ -534,7 +566,7 @@ function finalizeSuccessfulAccountRequestWithBody(traceId: string, body: Buffer<
   const attemptId = capture.startAttempt({
     account: auditOpenAIAccount(accountId),
     attemptIndex: 0,
-    upstreamUrl: 'https://api.openai.com/v1/responses',
+    upstreamUrl: 'https://api.openai.com/v1/responses?token=audit-upstream-query-token&safe=ok',
     method: 'POST',
     headers: new Headers({ 'content-type': 'application/json' }),
     body
@@ -598,6 +630,7 @@ function finalizeSensitiveHeaderAudit(traceId: string): void {
       {
         authorization: 'Bearer client-secret-token',
         cookie: 'session=session-secret-cookie',
+        'x-goog-api-key': 'audit-google-key-secret',
         'content-type': 'application/json'
       },
       '/v1/responses?token=audit-query-token&safe=ok'
@@ -630,6 +663,7 @@ function finalizeSensitiveHeaderAudit(traceId: string): void {
     headers: new Headers({
       authorization: 'Bearer upstream-secret-token',
       'x-api-key': 'upstream-x-api-key-secret',
+      'x-goog-api-key': 'upstream-google-key-secret',
       'content-type': 'application/json'
     }),
     body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' })
@@ -653,6 +687,44 @@ function finalizeSensitiveHeaderAudit(traceId: string): void {
     responseBody: JSON.stringify({ error: 'gateway failed' }),
     errorPhase: 'upstream_response',
     errorMessage: '上游失败'
+  })
+}
+
+function finalizeProxyCredentialAudit(traceId: string): void {
+  const capture = auditCapture.createAuditCapture({
+    req: auditRequest(),
+    traceId,
+    clientIp: '127.0.0.1',
+    startedAtMs: Date.parse(now)
+  })
+  const account = {
+    ...auditOpenAIAccount('account_proxy_credential'),
+    proxyUrl: 'http://proxy-user:proxy-pass@127.0.0.1:18080'
+  } as ReturnType<typeof auditOpenAIAccount>
+  const attemptId = capture.startAttempt({
+    account,
+    attemptIndex: 0,
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' })
+  })
+  capture.completeAttempt(attemptId, {
+    success: false,
+    statusCode: 502,
+    responseHeaders: new Headers({ 'content-type': 'application/json' }),
+    responseBody: JSON.stringify({ error: 'proxy failed' }),
+    errorPhase: 'upstream_request',
+    errorMessage: '代理失败'
+  })
+  capture.finalize({
+    outcome: 'gateway_failed',
+    success: false,
+    statusCode: 502,
+    responseHeaders: { 'content-type': 'application/json' },
+    responseBody: JSON.stringify({ error: 'proxy failed' }),
+    errorPhase: 'upstream_request',
+    errorMessage: '代理失败'
   })
 }
 

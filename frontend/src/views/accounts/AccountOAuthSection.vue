@@ -3,17 +3,17 @@
     <div class="form-section-head">
       <div>
         <h4>{{ title }} 配置</h4>
-        <p v-if="editing">Access Token 与 Refresh Token 只在编辑弹窗展示和修改，不会出现在列表。</p>
+        <p v-if="editing">Access Token 与 Refresh Token 不会回显；留空表示保留原凭据，填写新值则替换。</p>
         <p v-else>创建时支持手动授权或直接粘贴 Refresh Token；敏感凭据不会在列表展示。</p>
       </div>
     </div>
 
     <template v-if="editing">
       <a-form-item label="Access Token">
-        <a-textarea v-model:value="form.accessToken" :rows="3" placeholder="可直接查看和修改 Access Token" />
+        <a-textarea v-model:value="form.accessToken" :rows="3" placeholder="留空保留原 Access Token" />
       </a-form-item>
       <a-form-item label="Refresh Token">
-        <a-textarea v-model:value="form.refreshToken" :rows="3" placeholder="可直接查看和修改 Refresh Token" />
+        <a-textarea v-model:value="form.refreshToken" :rows="3" placeholder="留空保留原 Refresh Token" />
       </a-form-item>
     </template>
 

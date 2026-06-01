@@ -500,6 +500,16 @@ async function main(): Promise<void> {
     const adminTeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/system-teams', seed.adminCookie)
     const adminTeams = adminTeamsPage.items
     assert(adminTeams.some((team) => team.id === seed.teamSharedId) && adminTeams.some((team) => team.id === seed.teamUserBOnlyId), '管理员系统团队管理没有返回全量团队')
+    const userBOnlyTeam = adminTeams.find((team) => team.id === seed.teamUserBOnlyId)
+    const userBOnlyMemberId = userBOnlyTeam?.members?.find((member) => member.systemAccountId === seed.userBId)?.id
+    assert(userBOnlyMemberId, '回归需要用户 B 专属团队成员 ID')
+    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'PATCH', { name: '不应跨作用域更新团队' }, '管理员按用户 A 作用域写入时不应能更新用户 A 不可见团队')
+    await assertJsonStatus(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members?systemAccountId=${seed.userAId}`, seed.adminCookie, 'POST', { systemAccountIds: [seed.userCId] }, 404, '管理员按用户 A 作用域写入时不应能向用户 A 不可见团队添加成员')
+    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members/${userBOnlyMemberId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'DELETE', {}, '管理员按用户 A 作用域写入时不应能移除用户 A 不可见团队成员')
+    const scopedWriteBlockedTeam = repositories.findSystemTeamSummary(seed.teamUserBOnlyId)
+    assert(scopedWriteBlockedTeam?.name !== '不应跨作用域更新团队', '系统团队 scoped 写入拦截失败：团队名称被跨作用域更新')
+    assert((scopedWriteBlockedTeam?.members ?? []).every((member) => member.systemAccountId !== seed.userCId), '系统团队 scoped 写入拦截失败：用户 A 不可见团队被添加成员')
+    assert((scopedWriteBlockedTeam?.members ?? []).some((member) => member.id === userBOnlyMemberId && member.status === 'active'), '系统团队 scoped 写入拦截失败：用户 A 不可见团队成员被移除')
     summary.push('我的团队成员作用域检查通过')
 
     const userAGranteeAccounts = await getEnvelope<SystemAccountPrincipalSummary[]>(baseUrl, '/__aisys__/api/my-authorization-options/grantee-accounts', seed.userACookie)
@@ -572,6 +582,7 @@ async function main(): Promise<void> {
 function seedData(): SeedState {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const userA = repositories.createSystemAccount({
     username: 'scope_user_a',
     displayName: '作用域用户 A',

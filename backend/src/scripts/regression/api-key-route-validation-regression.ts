@@ -22,6 +22,7 @@ logger.level = 'silent'
 const [
   { apiKeysRouter },
   { authRouter },
+  { captchaAnswerForTest },
   { requireAdmin, requireAuth },
   { requestContextMiddleware },
   databaseModule,
@@ -29,6 +30,7 @@ const [
 ] = await Promise.all([
   import('../../modules/api-keys/api-keys.routes.js'),
   import('../../modules/auth/auth.routes.js'),
+  import('../../modules/auth/captcha.service.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
@@ -111,7 +113,7 @@ async function main(): Promise<void> {
     const expiringApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '清空过期时间回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
-      expiresAt: '2026-06-01T00:01:00'
+      expiresAt: '2099-06-01T00:01:00.000Z'
     })
     assert(Boolean(expiringApiKey.expiresAt), '创建 API Key 时应保存过期时间')
     await assertBadRequestMessage(baseUrl, adminCookie, {
@@ -262,8 +264,8 @@ async function assertPatchBadRequestMessage(baseUrl: string, cookie: string, id:
 
 async function login(baseUrl: string): Promise<string> {
   const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/__aisys__/api/auth/captcha')
-  const captchaCode = parseCaptchaCode(captcha.image)
-  assert(captchaCode, '无法解析登录验证码')
+  const captchaCode = captchaAnswerForTest(captcha.captchaId)
+  assert(captchaCode, '测试夹具无法读取登录验证码')
   const response = await fetch(`${baseUrl}/__aisys__/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -277,13 +279,13 @@ async function login(baseUrl: string): Promise<string> {
   const cookie = response.headers.get('set-cookie')?.split(';')[0]
   assert(response.ok, `登录失败：HTTP ${response.status} ${await response.text()}`)
   assert(cookie, '登录未返回会话 Cookie')
+  const passwordResponse = await fetch(`${baseUrl}/__aisys__/api/auth/change-password`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ newPassword: 'admin-regression-password' })
+  })
+  assert(passwordResponse.ok, `回归夹具修改初始密码失败：HTTP ${passwordResponse.status} ${await passwordResponse.text()}`)
   return cookie
-}
-
-function parseCaptchaCode(image: string): string {
-  const base64 = image.replace(/^data:image\/svg\+xml;base64,/, '')
-  const svg = Buffer.from(base64, 'base64').toString('utf8')
-  return [...svg.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map((match) => match[1]).join('')
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie?: string): Promise<T> {

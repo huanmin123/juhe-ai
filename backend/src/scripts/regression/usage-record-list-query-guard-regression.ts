@@ -549,6 +549,7 @@ try {
 
   const admin = repositories.listSystemAccounts().find((systemAccount) => systemAccount.username === 'admin')
   assert(admin, '使用记录路由回归需要默认管理员')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const routeApp = createSystemApiApp({ systemApiPrefix: '/__aisys__/api' })
   const routeServer = routeApp.listen(0, '127.0.0.1')
   await listen(routeServer)

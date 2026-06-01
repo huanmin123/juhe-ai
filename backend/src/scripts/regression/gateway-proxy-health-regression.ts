@@ -15,6 +15,7 @@ logger.level = 'silent'
 clearGatewayProxyHealthForTest()
 
 testProxyBucket()
+testProxyUrlBucketMetadataRedaction()
 testBaseUrlBucket()
 testBaseUrlBucketHalfOpen()
 
@@ -54,6 +55,28 @@ function testProxyBucket(): void {
   assert.equal(order.applied, false, '所有候选账号都被代理桶命中时不应清空候选')
   assert.equal(order.bypassedAllAvoided, true, '所有候选都被避让时应旁路以保证可用性')
   assert.deepEqual(order.accounts.map((item) => item.id), [first.id, second.id], '旁路时应保持原候选顺序')
+
+  clearGatewayProxyHealthForTest()
+}
+
+function testProxyUrlBucketMetadataRedaction(): void {
+  const proxyUrl = 'http://proxy-user:proxy-pass@127.0.0.1:18080'
+  const first = account('account-proxy-url-1', undefined, 'https://proxy-url-upstream.example/v1', proxyUrl)
+  const second = account('account-proxy-url-2', undefined, 'https://proxy-url-upstream.example/v1', proxyUrl)
+  const third = account('account-proxy-url-3', undefined, 'https://proxy-url-other.example/v1', 'http://proxy-user:other-pass@127.0.0.1:18081')
+
+  recordGatewayProxyFailure(first, 'ECONNRESET')
+  const decision = recordGatewayProxyFailure(second, 'ECONNRESET')
+  const order = orderOpenAIAccountsByGatewayProxyHealth([first, second, third])
+  const serialized = JSON.stringify({
+    decision,
+    avoidedBucketKeys: order.avoidedBucketKeys,
+    avoidedProxyKeys: order.avoidedProxyKeys,
+    halfOpenBucketKeys: order.halfOpenBucketKeys
+  })
+  assert.equal(serialized.includes('proxy-user'), false, '代理 URL 桶元数据不应保留代理用户名')
+  assert.equal(serialized.includes('proxy-pass'), false, '代理 URL 桶元数据不应保留代理密码')
+  assert(serialized.includes('proxy:url:http://[redacted]@127.0.0.1:18080'), '代理 URL 桶元数据应保留脱敏后的代理目标信号')
 
   clearGatewayProxyHealthForTest()
 }
@@ -122,7 +145,7 @@ function testBaseUrlBucketHalfOpen(): void {
   clearGatewayProxyHealthForTest()
 }
 
-function account(id: string, proxyProfileId: string, baseUrl = 'https://example.invalid/v1'): OpenAIAccountSecret {
+function account(id: string, proxyProfileId: string | undefined, baseUrl = 'https://example.invalid/v1', proxyUrl?: string): OpenAIAccountSecret {
   return {
     id,
     systemAccountId: 'sys_admin',
@@ -140,6 +163,7 @@ function account(id: string, proxyProfileId: string, baseUrl = 'https://example.
     fallbackEnabled: false,
     schedulable: true,
     proxyProfileId,
+    proxyUrl,
     accountOwnerSystemAccountId: 'sys_admin',
     groupOwnerSystemAccountId: 'sys_admin',
     accountAccessType: 'owner',

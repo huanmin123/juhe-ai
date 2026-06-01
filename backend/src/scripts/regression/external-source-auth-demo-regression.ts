@@ -60,7 +60,8 @@ async function runChild(): Promise<void> {
     getOperationLogDetail,
     listOperationLogs,
     listAccounts,
-    listGroupOptions
+    listGroupOptions,
+    updateSystemAccount
   } = await import('../../storage/repositories.js')
   const { closeStorageDatabases, getBusinessDatabase, getStatsDatabase } = await import('../../storage/database.js')
   const clientIpStats = await import('../../storage/client-ip-stats.repository.js')
@@ -128,7 +129,14 @@ async function runChild(): Promise<void> {
   const accountWriteSource = upsertExternalIntegrationSource({
     name: '公开资源写入来源',
     status: 'active',
-    scopes: [externalIntegrationAccountPushScope]
+    scopes: [externalIntegrationAccountPushScope],
+    allowedTargetUsernames: [
+      'external_id_collision_user',
+      'huanmin',
+      'illegal_type_user',
+      'invalid_model_user',
+      'public_control_user'
+    ]
   })
   createExternalIntegrationSourceToken({
     sourceRefId: accountWriteSource.id,
@@ -338,6 +346,22 @@ async function runChild(): Promise<void> {
     assert.equal(mockAccountDelete.body.data.action, 'mock')
     assert.equal(Object.prototype.hasOwnProperty.call(mockAccountDelete.body.data.account, 'credentials'), false, '账号删除 mock 响应不能返回凭据')
 
+    const forbiddenTargetAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'forbidden_public_user',
+      targetGroupName: '未授权目标分组',
+      providerCode: 'openai',
+      name: '未授权目标账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-forbidden-target',
+      supportedModels: ['gpt-5.5']
+    })
+    assert.equal(forbiddenTargetAdd.status, 403)
+    assert.equal(forbiddenTargetAdd.body.code, 'external_source_target_forbidden')
+    assert.equal(findSystemAccountByUsername('forbidden_public_user'), undefined, '目标用户未授权时不应进入业务服务自动创建用户')
+
     const illegalTypeAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
@@ -546,6 +570,21 @@ async function runChild(): Promise<void> {
     })
     assert.equal(missingAccountUpdate.status, 404, '账号修改接口找不到账号时不应自动新增')
 
+    assert.equal(updateSystemAccount(targetAccount.id, { status: 'disabled' })?.status, 'disabled', '回归准备：目标用户 huanmin 应可被停用')
+    const disabledTargetAccountDelete = await requestJson(baseUrl, '/__aipublic__/account/del', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'openai',
+      accountId: accountAdd.body.data.account.id,
+      name: '公益站测试账号新版',
+      externalId: 'account-registration:1001'
+    })
+    assert.equal(disabledTargetAccountDelete.status, 400, '目标用户停用后公开账号删除应被拒绝')
+    assert.match(disabledTargetAccountDelete.body.message, /目标用户已停用/)
+    assert.equal(updateSystemAccount(targetAccount.id, { status: 'active' })?.status, 'active', '回归准备：目标用户 huanmin 应可恢复启用')
+
     const accountDelete = await requestJson(baseUrl, '/__aipublic__/account/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
@@ -649,6 +688,49 @@ async function runChild(): Promise<void> {
     const listedApiKey = publicApiKeyList.body.data.items.find((item: any) => item.id === publicApiKeyId)
     assert(listedApiKey, '公开 API Key 列表应按绑定分组返回刚新增的 Key')
     assert.equal(Object.prototype.hasOwnProperty.call(listedApiKey, 'key'), false, '公开 API Key 列表不能返回明文密钥')
+
+    const publicControlTarget = findSystemAccountByUsername('public_control_user')
+    assert(publicControlTarget, '公开控制面新增分组应自动创建目标用户')
+    assert.equal(updateSystemAccount(publicControlTarget.id, { status: 'disabled' })?.status, 'disabled', '回归准备：公开控制面目标用户应可被停用')
+
+    const disabledPublicGroupUpdate = await requestJson(baseUrl, '/__aipublic__/group/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      groupId: publicGroupId,
+      name: '停用用户不应修改的分组'
+    })
+    assert.equal(disabledPublicGroupUpdate.status, 400, '目标用户停用后公开分组修改应被拒绝')
+    assert.match(disabledPublicGroupUpdate.body.message, /目标用户已停用/)
+
+    const disabledPublicGroupDelete = await requestJson(baseUrl, '/__aipublic__/group/del', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      groupId: publicGroupId
+    })
+    assert.equal(disabledPublicGroupDelete.status, 400, '目标用户停用后公开分组删除应被拒绝')
+    assert.match(disabledPublicGroupDelete.body.message, /目标用户已停用/)
+
+    const disabledPublicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      apiKeyId: publicApiKeyId,
+      status: 'disabled'
+    })
+    assert.equal(disabledPublicApiKeyUpdate.status, 400, '目标用户停用后公开 API Key 修改应被拒绝')
+    assert.match(disabledPublicApiKeyUpdate.body.message, /目标用户已停用/)
+
+    const disabledPublicApiKeyDelete = await requestJson(baseUrl, '/__aipublic__/api-key/del', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      apiKeyId: publicApiKeyId
+    })
+    assert.equal(disabledPublicApiKeyDelete.status, 400, '目标用户停用后公开 API Key 删除应被拒绝')
+    assert.match(disabledPublicApiKeyDelete.body.message, /目标用户已停用/)
+    assert.equal(updateSystemAccount(publicControlTarget.id, { status: 'active' })?.status, 'active', '回归准备：公开控制面目标用户应可恢复启用')
 
     const publicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
       Authorization: `Bearer ${accountWriteToken}`

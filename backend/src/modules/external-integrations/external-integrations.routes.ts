@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
@@ -321,6 +321,9 @@ externalIntegrationsRouter.get(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicGroupList(parsed.data)))
       return
@@ -344,6 +347,9 @@ externalIntegrationsRouter.get(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicApiKeyList(parsed.data)))
       return
@@ -367,6 +373,9 @@ externalIntegrationsRouter.get(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicWelfareAccountList(parsed.data)))
       return
@@ -390,6 +399,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.status(201).json(ok(mockPublicGroupAdd(parsed.data)))
       return
@@ -413,6 +425,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicGroupUpdate(parsed.data)))
       return
@@ -437,6 +452,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicGroupDelete(parsed.data)))
       return
@@ -460,6 +478,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.status(201).json(ok(mockPublicApiKeyAdd(parsed.data)))
       return
@@ -483,6 +504,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicApiKeyUpdate(parsed.data)))
       return
@@ -507,6 +531,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicApiKeyDelete(parsed.data)))
       return
@@ -530,6 +557,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicWelfareAccountPush(parsed.data)))
       return
@@ -556,6 +586,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicWelfareAccountPush(parsed.data)))
       return
@@ -582,6 +615,9 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
+    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
+      return
+    }
     if (context.isTestToken) {
       res.json(ok(mockPublicWelfareAccountDelete(parsed.data)))
       return
@@ -597,6 +633,22 @@ externalIntegrationsRouter.post(
     }
   }
 )
+
+function ensureAccountPushTargetAllowed(res: Response, context: ExternalIntegrationSourceAuthContext, targetUsername: string): boolean {
+  if (context.isTestToken) {
+    return true
+  }
+  const target = targetUsername.trim().toLowerCase()
+  const allowedTargets = new Set(context.allowedTargetUsernames.map((username) => username.trim().toLowerCase()).filter(Boolean))
+  if (target && allowedTargets.has(target)) {
+    return true
+  }
+  res.status(403).json({
+    message: '来源系统未授权操作该目标用户',
+    code: 'external_source_target_forbidden'
+  })
+  return false
+}
 
 function recordPublicWelfareAccountWriteOperation(
   context: ExternalIntegrationSourceAuthContext,

@@ -42,7 +42,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-account-quality-refresh',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
     status: 'active'
@@ -53,7 +53,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-account-quality-stale-refresh',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
     status: 'active'
@@ -64,7 +64,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: `sk-account-quality-batch-${index}`,
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
     status: 'active'

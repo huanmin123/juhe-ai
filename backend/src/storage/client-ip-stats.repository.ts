@@ -5,7 +5,7 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import type { AccountUsageStatsRange } from '../domain/types.js'
 import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders } from './query-utils.js'
-import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
+import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { dateKey, normalizeAccountUsageStatsRange, usageStatsTimezone } from './usage-stats-helpers.js'
 import { fixedUsageStatsDateKeys } from './usage-stats-window-helpers.js'
 import {
@@ -126,6 +126,7 @@ const cursorSafetyDelaySeconds = 5
 const clientIpRangeWindowDirtyLimit = 1000
 const clientIpRangeWindowChunkSize = 200
 const clientIpStatsMaxListWindowRows = 1001
+const clientIpStatsMaxShardsPerBatch = 16
 let clientIpStatsShardScanOffset = 0
 const ipRegistryBuckets = new Map<number, Set<string>>()
 const clientIpRangeWindowDirtyIpHashes = new Set<string>()
@@ -177,8 +178,10 @@ export function normalizeClientIpForStats(value?: string | null): NormalizedClie
 
 export function aggregateClientIpStatsBatch(limit = 2000): number {
   const database = getStatsDatabase()
-  const shardLocations = listUsageRecordShardLocations()
   const batchLimit = Math.max(1, Math.trunc(limit))
+  const shardLocationsWindow = clientIpStatsShardLocationsForBatch(batchLimit)
+  const shardLocations = shardLocationsWindow.locations
+  const scannedAllShardLocations = !shardLocationsWindow.hasMore
   const safeCreatedBefore = clientIpStatsSafeCreatedBefore()
   const transactionStarted = beginImmediateDatabaseTransaction(database)
   let processedRows = 0
@@ -193,8 +196,7 @@ export function aggregateClientIpStatsBatch(limit = 2000): number {
       return 0
     }
 
-    const orderedShardLocations = orderedClientIpStatsShardLocations(shardLocations)
-    const perShardLimit = Math.max(1, Math.ceil(batchLimit / orderedShardLocations.length))
+    const perShardLimit = Math.max(1, Math.ceil(batchLimit / shardLocations.length))
     let globalCursor: { created_at: string; id: string } | undefined
     let maxLagSeconds = 0
     const shardsWithMoreRows: UsageRecordShardLocation[] = []
@@ -249,7 +251,7 @@ export function aggregateClientIpStatsBatch(limit = 2000): number {
       return false
     }
 
-    for (const location of orderedShardLocations) {
+    for (const location of shardLocations) {
       if (processedRows >= batchLimit) break
       if (processShard(location, perShardLimit, true)) {
         shardsWithMoreRows.push(location)
@@ -268,7 +270,9 @@ export function aggregateClientIpStatsBatch(limit = 2000): number {
       cursorCreatedAt: globalCursor?.created_at,
       cursorId: globalCursor?.id,
       lastSuccessAt: updatedAt,
-      lagSeconds: maxLagSeconds
+      lagSeconds: scannedAllShardLocations
+        ? maxLagSeconds
+        : Math.max(maxLagSeconds, latestClientIpStatsLagSeconds() ?? maxLagSeconds)
     })
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -296,8 +300,15 @@ export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirt
   }
   const dirtyIpHashes = takeClientIpRangeWindowDirtyIpHashes(database, options.dirtyLimit ?? clientIpRangeWindowDirtyLimit)
   if (!dirtyIpHashes.length) {
+    if (hasStaleClientIpUsageRangeWindows(database, windows)) {
+      for (const window of windows) {
+        refreshClientIpUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
+      }
+      clearAllClientIpRangeWindowDirtyIpHashes(database)
+    }
     return
   }
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const window of windows) {
       refreshClientIpUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
@@ -306,7 +317,9 @@ export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirt
     if (!hasPendingClientIpRangeWindowDirtyIpHashes(database)) {
       markClientIpUsageRangeWindowsReady(database, windows, updatedAt)
     }
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
     markClientIpRangeWindowsDirty(database, dirtyIpHashes)
     throw error
   }
@@ -870,6 +883,24 @@ function markClientIpUsageRangeWindowsReady(database: DatabaseSync, windows: Arr
   }
 }
 
+function hasStaleClientIpUsageRangeWindows(database: DatabaseSync, windows: Array<{ startDate: string; endDate: string }>): boolean {
+  const statement = database.prepare(`
+    SELECT last_success_at
+    FROM stats_job_state
+    WHERE scope_type = ?
+      AND scope_id = ?
+      AND job_name = ?
+    LIMIT 1
+  `)
+  for (const window of windows) {
+    const row = statement.get(clientIpRangeWindowScopeType, clientIpRangeWindowScopeId(window.startDate, window.endDate), clientIpRangeWindowJobName) as
+      | { last_success_at?: string | null }
+      | undefined
+    if (row && !row.last_success_at) return true
+  }
+  return false
+}
+
 function markCurrentClientIpUsageRangeWindowsStale(database: DatabaseSync): void {
   const windows = currentClientIpRangeWindows()
   if (!windows.length) return
@@ -1160,11 +1191,16 @@ function clientIpIdentity(clientIp: string, aggregateIpKey: string, ipVersion: 4
   }
 }
 
-function orderedClientIpStatsShardLocations(locations: UsageRecordShardLocation[]): UsageRecordShardLocation[] {
-  if (locations.length <= 1) return locations
-  const startIndex = clientIpStatsShardScanOffset % locations.length
-  clientIpStatsShardScanOffset = (startIndex + 1) % locations.length
-  return [...locations.slice(startIndex), ...locations.slice(0, startIndex)]
+function clientIpStatsShardLocationsForBatch(batchLimit: number): ReturnType<typeof listUsageRecordShardLocationsPage> {
+  const maxShardCount = Math.max(1, Math.min(clientIpStatsMaxShardsPerBatch, Math.trunc(batchLimit)))
+  const window = listUsageRecordShardLocationsPage({
+    offset: clientIpStatsShardScanOffset,
+    limit: maxShardCount
+  })
+  clientIpStatsShardScanOffset = window.total > 0
+    ? (clientIpStatsShardScanOffset + window.locations.length) % window.total
+    : 0
+  return window
 }
 
 function clientIpStatsShardJobState(database: DatabaseSync, shardKey: string): { cursorCreatedAt: string; cursorId: string } {

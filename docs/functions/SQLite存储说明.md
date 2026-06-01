@@ -296,6 +296,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `client_ip_registry(client_ip)`：IP 运维关键词按最近样本明文 IP 定位。
 - `client_ip_stats_daily(stat_date, ip_hash)`：IP 范围窗口按日期读取 daily 桶。
 - `client_ip_usage_range_windows(start_date, end_date, total_cost_usd/request_count/active_days/last_used_at, ip_hash)`：IP 运维列表按范围窗口成本、请求数、活跃天数和最近使用排序；总 Token 和失败率排序使用表达式索引。平均首 token、平均总耗时和最大总耗时只展示不排序，避免新增高基数排序压力。
+- `client_ip_usage_range_windows(end_date)`：数据保留任务按范围窗口结束日期分批清理过期 IP 窗口，避免保留清理退回全表排序。
 - `client_ip_range_window_dirty_ips(updated_at, ip_hash)`：持久记录等待刷新范围窗口的 dirty IP；刷新成功后删除，避免 worker 重启丢失内存 dirty Set 后只能靠全量重建恢复。
 - `stats_job_state(scope_type, scope_id, job_name)`：同时用于 IP 范围窗口 ready/stale 标记；新 IP daily 写入会把当前固定窗口标记为 stale，后台刷新完全部 dirty IP 后再标记 ready，列表不靠窗口表行数判断可读。
 - `client_ip_policies(status, ip_hash, expires_at)`：网关封禁缓存和管理页状态读取 active 封禁策略。
@@ -319,7 +320,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `group_account_stats(system_account_id, group_id)`：分组列表读取账户数量与状态统计。
 - 系统账户选项接口只读业务库里的 `id`、`username`、`display_name`、`status`，不得使用 `SELECT *`，也不得读取 `password_hash`、角色、改密状态、最后登录、创建 / 更新时间等系统账户管理字段。
 - 账户 / 分组选项接口只读业务库里的资源基础字段、有效授权关系和必要的 `group_accounts` 账号 ID 映射；普通下拉不得读取 `group_account_stats`、用量缓存、账户质量记录或并发快照，账户页专用分组 `account-options` 也只允许额外返回 `accountIds`；分组选项关键词只支持分组 ID、名称和供应商的精确 / 前缀匹配，不做无边界包含匹配。
-- `stats_job_state(scope_type, scope_id, job_name)`：后台任务游标读取。
+- `stats_job_state(scope_type, scope_id, job_name)`：后台任务游标读取；使用记录保留清理的安全 floor cursor 还依赖 `scope_type, cursor_created_at, cursor_id, job_name` 部分索引，同时比较 `usage_stats_aggregation` 与 `client_ip_stats_aggregation` 两类 usage shard 消费者游标。
 - `operation_logs(created_at, id)`：操作日志默认分页。
 - `operation_logs(actor_system_account_id, created_at, id)`：按操作人筛选。
 - `operation_logs(operation_scope_system_account_id, created_at, id)`：按业务作用域筛选。
@@ -393,7 +394,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 运行日志索引 worker 从 Pino JSONL 输出流旁路接收日志行，按 worker 队列批量写入 `runtime_logs`，并随新增日志增量维护级别 / 事件 facets；常规维护只在 facets 缺失时重建，数据保留清理按已删除索引行扣减 facets，不能每轮或每次清理后对 `runtime_logs` 全量 `COUNT/GROUP BY`。
 - 日志搜索不再有额外回填任务；运行日志 keyword 只查 `runtime_logs.message`，操作日志 keyword 读取随操作日志写入同步生成的 `operation_log_search_terms` 倒排词项。
 - “日志搜索”索引查询读取当前 SQLite `runtime_logs` 表，使用 `traceId`、级别、事件和日志时间等通用索引条件缩小结果，关键字只对 `message` 列做普通模糊匹配；列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由后台清理任务控制。
-- “日志搜索”的 `grep 模式` 通过后端 `rg` 直接扫描日志目录中当前保留的 `.log` 文件，不受索引表 3 天保留期限制；文件日志默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制。该模式默认按文件时间搜索最近 3 天，单次文件时间范围最多 7 天，时间范围只用于筛选参与扫描的文件，不读取文件内容判断行时间；不设置查询超时，最多展示 100 行；多关键字必须在同一行同时命中，后端按日志时间或文件时间返回最新匹配。运行环境缺少 `rg` 时直接返回错误提示，不回退到慢速文件扫描。
+- “日志搜索”的 `grep 模式` 通过后端 `rg` 直接扫描日志目录中当前保留的 `.log` 文件，不受索引表 3 天保留期限制；文件日志默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制。该模式默认按文件时间搜索最近 3 天，单次文件时间范围最多 7 天，时间范围只用于筛选参与扫描的文件，不读取文件内容判断行时间；同一后端进程一次只允许 1 个 grep 搜索，单次 `rg` 搜索 15 秒超时，最多展示 100 行；多关键字必须在同一行同时命中，后端按日志时间或文件时间返回最新匹配。运行环境缺少 `rg` 时直接返回错误提示，不回退到慢速文件扫描。
 - 使用记录、操作日志、统计数据集域维护、审计和运行日志索引队列都是 best-effort 队列，系统重启、进程崩溃或队列溢出导致统计数据集域事实丢失或维护延迟可以接受；队列丢弃或投递失败计数应进入运维监控。
 - 账户、分组、API Key 等列表接口只读 `usage_stats_totals` / `usage_stats_daily`，不要在列表查询里 `SUM usage_records`。
 - 概览图表接口读取 `usage_overview_*_windows`、`usage_model_rank_windows`、`usage_error_rank_windows` 和 `system_metrics_trend_windows`；进程事件循环趋势是短期运维排障图，固定读取最近 24 小时低频采样并按分钟聚合，不跟随业务日期范围，页面上方摘要取同一 24 小时窗口内各进程最大延迟；后台任务运行状态来自 worker 运行态快照，不落表；运行态快照缺失时通过可用性字段表达不可观测，不用 `0`、`false`、`[]` 或默认天数伪装正常；`AI性能监控` 图表只读 `usage_stats_hourly` 和账户元数据，摘要只读 `ai_performance_summary_windows`。
@@ -940,6 +941,6 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。API Key 自动启停计划也不属于敏感凭据，保存在 `api_keys.availability_schedule_json`；计划以分钟为粒度判断，网关运行态缓存命中计划边界时最多保留到下一分钟，避免时段切换长时间滞后。
 
-外部来源系统 token 明文只在创建或轮换时展示一次；业务库 `external_integration_source_tokens` 只保存带用途前缀的 SHA-256 摘要 `token_hash`、安全展示用 `token_prefix`、状态、scope 和过期时间。内置测试 token 不写入业务库，只用于公开接口 mock 数据分支。普通日志、运行日志、错误响应、操作记录和 demo 成功响应都不能输出真实明文 token 或 token hash。
+外部来源系统 token 明文只在创建或轮换时展示一次；业务库 `external_integration_source_tokens` 只保存带用途前缀的 SHA-256 摘要 `token_hash`、安全展示用 `token_prefix`、状态、scope 和过期时间。`external_integration_sources.allowed_target_usernames_json` 保存公开资源写入允许操作的系统用户名，空数组表示真实 token 不能操作任何目标用户。内置测试 token 不写入业务库，只用于公开接口 mock 数据分支。普通日志、运行日志、错误响应、操作记录和 demo 成功响应都不能输出真实明文 token 或 token hash。
 
 更完整的凭据展示、请求快照、操作日志、原始审计日志、日志脱敏、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md)、[操作日志设计](操作日志设计.md) 与 [原始审计日志设计](原始审计日志设计.md)。

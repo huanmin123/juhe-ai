@@ -29,6 +29,7 @@ export interface ExternalIntegrationSourceSummary {
   name: string
   status: ExternalIntegrationSourceStatus
   scopes: string[]
+  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   expiresAt?: string
   notes?: string
@@ -52,6 +53,7 @@ export interface ExternalIntegrationSourcePayload {
   name: string
   status: ExternalIntegrationSourceStatus
   scopes: string[]
+  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   expiresAt?: string | null
   notes?: string | null

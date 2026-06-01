@@ -10,12 +10,14 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
+import { sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
 import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from '../accounts/account-stream-intercept-policy-validation.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
   extractCodeAndState,
   generateOpenAIAuthURL,
+  sanitizeOpenAIOAuthErrorMessage,
   type OpenAITokenInfo,
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
@@ -143,7 +145,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         log: buildOAuthCreateLog(account, requestAccess, 'openai_oauth.create_from_code', '通过授权码创建 OpenAI OAuth 账户')
       }
     }, req)
-    res.status(201).json(ok(account))
+    res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
@@ -153,7 +155,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI 授权码交换失败' })
+    res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 授权码交换失败') })
   }
 })
 
@@ -216,7 +218,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         log: buildOAuthCreateLog(account, requestAccess, 'openai_oauth.create_from_refresh_token', '通过 Refresh Token 创建 OpenAI OAuth 账户')
       }
     }, req)
-    res.status(201).json(ok(account))
+    res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
@@ -226,7 +228,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI 刷新令牌授权失败' })
+    res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 刷新令牌授权失败') })
   }
 })
 
@@ -260,7 +262,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       return
     }
     recordOperationLog(buildOAuthUpdateLog(account, updated, requestAccess, 'refresh_token', '刷新 OpenAI OAuth Token'), req)
-    res.json(ok(updated))
+    res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) {
       return
@@ -269,7 +271,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI 访问令牌刷新失败' })
+    res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 访问令牌刷新失败') })
   }
 })
 
@@ -310,7 +312,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
         log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_code', '重新授权 OpenAI OAuth 账户')
       }
     }, req)
-    res.json(ok(updated))
+    res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'OpenAI OAuth 重新授权失败')
   }
@@ -351,7 +353,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
         log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 OpenAI OAuth 账户')
       }
     }, req)
-    res.json(ok(updated))
+    res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'OpenAI 刷新令牌重新授权失败')
   }
@@ -438,7 +440,11 @@ function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMe
     res.status(400).json(badRequest(error.message))
     return
   }
-  res.status(502).json({ message: error instanceof Error ? error.message : fallbackMessage })
+  res.status(502).json({ message: oauthErrorMessage(error, fallbackMessage) })
+}
+
+function oauthErrorMessage(error: unknown, fallbackMessage: string): string {
+  return sanitizeOpenAIOAuthErrorMessage(error instanceof Error ? error.message : fallbackMessage)
 }
 
 function buildOAuthCreateLog(

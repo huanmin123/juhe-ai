@@ -4,6 +4,7 @@ import { request as httpsRequest } from 'node:https'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
+import { sanitizeDiagnosticPayload } from '../gateway/payload-sanitizer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 
@@ -159,6 +160,10 @@ export function shouldRefreshOpenAIOAuthCredentials(credentials: Record<string, 
   return expiresAt - Date.now() < 60_000
 }
 
+export function sanitizeOpenAIOAuthErrorMessage(message: string): string {
+  return sanitizeDiagnosticPayload(message)
+}
+
 async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: string, signal?: AbortSignal): Promise<OpenAITokenInfo> {
   const bodyText = new URLSearchParams(form).toString()
   const response = await performTokenRequest(bodyText, proxyUrl, signal)
@@ -174,7 +179,7 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
   }
 
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorDescription = normalizeString(payload.error_description) || normalizeString(payload.error) || text
+    const errorDescription = sanitizeOpenAIOAuthErrorMessage(normalizeString(payload.error_description) || normalizeString(payload.error) || text)
     throw new Error(`OpenAI OAuth 令牌请求失败：HTTP ${response.statusCode}${errorDescription ? `，${errorDescription}` : ''}`)
   }
 

@@ -27,9 +27,20 @@ try {
   assertPlanUsesIndex(
     businessDatabase,
     'system_sessions expires_at 清理',
-    'EXPLAIN QUERY PLAN DELETE FROM system_sessions WHERE expires_at < ?',
-    ['2026-01-01T00:00:00.000Z'],
-    'idx_system_sessions_expires_at'
+    `
+      EXPLAIN QUERY PLAN
+      DELETE FROM system_sessions
+      WHERE rowid IN (
+        SELECT rowid
+        FROM system_sessions
+        WHERE expires_at < ?
+        ORDER BY expires_at ASC, rowid ASC
+        LIMIT ?
+      )
+    `,
+    ['2026-01-01T00:00:00.000Z', 1000],
+    'idx_system_sessions_expires_at',
+    { rejectTempSort: true }
   )
 
   assertPlanUsesIndex(

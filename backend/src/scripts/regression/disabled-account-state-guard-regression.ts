@@ -18,12 +18,14 @@ runtimeConfig.secret = 'disabled-account-guard-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const [
   { accountsRouter },
   { authRouter },
+  { captchaAnswerForTest },
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
   databaseModule,
@@ -34,6 +36,7 @@ const [
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/auth/auth.routes.js'),
+  import('../../modules/auth/captcha.service.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
@@ -356,8 +359,8 @@ function assertAccountErrorCode(accountId: string, code: string, message: string
 
 async function login(baseUrl: string): Promise<string> {
   const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/__aisys__/api/auth/captcha')
-  const captchaCode = parseCaptchaCode(captcha.image)
-  assert(captchaCode, '无法解析登录验证码')
+  const captchaCode = captchaAnswerForTest(captcha.captchaId)
+  assert(captchaCode, '测试夹具无法读取登录验证码')
   const response = await fetch(`${baseUrl}/__aisys__/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -371,6 +374,12 @@ async function login(baseUrl: string): Promise<string> {
   const cookie = response.headers.get('set-cookie')?.split(';')[0]
   assert(response.ok, `登录失败：HTTP ${response.status} ${await response.text()}`)
   assert(cookie, '登录未返回会话 Cookie')
+  const passwordResponse = await fetch(`${baseUrl}/__aisys__/api/auth/change-password`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ newPassword: 'admin-regression-password' })
+  })
+  assert(passwordResponse.ok, `回归夹具修改初始密码失败：HTTP ${passwordResponse.status} ${await passwordResponse.text()}`)
   return cookie
 }
 
@@ -379,12 +388,6 @@ async function getEnvelope<T>(baseUrl: string, path: string): Promise<T> {
   const text = await response.text()
   assert(response.ok, `${path} HTTP ${response.status}: ${text}`)
   return (JSON.parse(text) as ApiEnvelope<T>).data
-}
-
-function parseCaptchaCode(image: string): string {
-  const base64 = image.replace(/^data:image\/svg\+xml;base64,/, '')
-  const svg = Buffer.from(base64, 'base64').toString('utf8')
-  return [...svg.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map((match) => match[1]).join('')
 }
 
 function listen(server: http.Server): Promise<void> {

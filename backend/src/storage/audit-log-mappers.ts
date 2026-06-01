@@ -7,6 +7,7 @@ import type {
   AuditPayloadCaptureStatus,
   AuditPayloadPartType
 } from './audit-logs.repository.js'
+import { sanitizeUrlCredentialsForLog } from '../shared/request-context.js'
 import { loadAccountNameMap, loadApiKeyNameMap, loadGroupNameMap } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
@@ -128,10 +129,10 @@ export function auditLogAttemptFromRow(
     accountOwnerSystemAccountId: optionalString(row.account_owner_system_account_id),
     groupId,
     groupName: groupId ? groupNames.get(groupId) : undefined,
-    proxyUrl: optionalString(row.proxy_url),
+    proxyUrl: sanitizeUrlCredentialsForLog(optionalString(row.proxy_url)),
     providerCode: optionalString(row.provider_code),
     upstreamMethod: String(row.upstream_method),
-    upstreamUrl: String(row.upstream_url),
+    upstreamUrl: sanitizeUrlCredentialsForLog(String(row.upstream_url)) ?? String(row.upstream_url),
     upstreamStatusCode: numberValue(row.upstream_status_code),
     success: row.success === 1,
     errorPhase: optionalString(row.error_phase),

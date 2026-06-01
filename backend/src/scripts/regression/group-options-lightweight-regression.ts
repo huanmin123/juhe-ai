@@ -64,6 +64,7 @@ interface GroupOptionSummary {
 
 interface SeedState {
   adminCookie: string
+  adminAuthorizedAccountId: string
   adminAuthorizedGroupId: string
   matchedGroupId: string
   matchedPrefixGroupId: string
@@ -111,6 +112,11 @@ try {
   const accountTargetOption = accountOptions.find((group) => group.id === seed.userGroupId)
   assert(accountTargetOption, '账户页分组选项应包含目标分组')
   assert.deepEqual(accountTargetOption.accountIds, [seed.userAccountId], '账户页分组选项应返回账号到分组映射所需 accountIds')
+  const authorizedAccountOption = accountOptions.find((group) => group.id === seed.adminAuthorizedGroupId)
+  assert(authorizedAccountOption, '账户页分组选项应保留已授权分组摘要')
+  const authorizedAccountIds: string[] = authorizedAccountOption.accountIds ?? []
+  assert.equal(authorizedAccountIds.includes(seed.adminAuthorizedAccountId), false, '账户页分组选项不应包含授权方账号 ID')
+  assert.deepEqual(authorizedAccountIds, [], '账户页分组选项不应暴露授权方分组成员账号 ID')
   assert.equal(Object.prototype.hasOwnProperty.call(accountTargetOption, 'accountStats'), false, '账户页分组选项不应返回 accountStats')
 
   const database = databaseModule.getBusinessDatabase()
@@ -183,6 +189,7 @@ try {
 function seedData(): SeedState {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const user = repositories.createSystemAccount({
     username: 'group_options_user',
     displayName: '分组选项用户',
@@ -241,6 +248,7 @@ function seedData(): SeedState {
     enabled: true
   }, { systemAccountId: admin.id, role: 'admin' as const })
   seedActiveGroupAuthorization(adminAuthorizedGroup.id, admin.id, user.id)
+  const adminAuthorizedAccountId = 'acc_group_options_authorized_owner'
   const userAccountId = 'acc_group_options_lightweight'
   const now = new Date().toISOString()
   databaseModule.getBusinessDatabase()
@@ -258,12 +266,32 @@ function seedData(): SeedState {
     .run(userAccountId, user.id, '分组选项账户种子', now, now)
   databaseModule.getBusinessDatabase()
     .prepare(`
+      INSERT INTO accounts (
+        id, system_account_id, provider_code, name, notes, type, status, credential_mask, credentials_encrypted,
+        proxy_profile_id, concurrency_limit, error_policy_id, priority, super_priority_enabled,
+        fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
+        last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+      ) VALUES (?, ?, 'openai', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
+        NULL, 20, NULL, 10, 0,
+        0, 1, NULL, NULL, NULL, NULL,
+        NULL, 0, NULL, ?, ?)
+    `)
+    .run(adminAuthorizedAccountId, admin.id, '授权方分组选项账户种子', now, now)
+  databaseModule.getBusinessDatabase()
+    .prepare(`
       INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
       VALUES (?, ?, ?, NULL, 1, ?, ?)
     `)
     .run(user.id, userGroup.id, userAccountId, now, now)
+  databaseModule.getBusinessDatabase()
+    .prepare(`
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 1, ?, ?)
+    `)
+    .run(admin.id, adminAuthorizedGroup.id, adminAuthorizedAccountId, now, now)
   return {
     adminCookie: sessionCookie(admin.id),
+    adminAuthorizedAccountId,
     adminAuthorizedGroupId: adminAuthorizedGroup.id,
     matchedGroupId: matchedGroup.id,
     matchedPrefixGroupId: matchedPrefixGroup.id,

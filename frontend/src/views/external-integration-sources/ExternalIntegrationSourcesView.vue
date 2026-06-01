@@ -42,7 +42,7 @@
       row-key="id"
       :loading="loading"
       :pagination="tablePagination"
-      :scroll-x="1180"
+      :scroll-x="1340"
       @change="handleTableChange"
     >
       <template #emptyText>
@@ -66,6 +66,12 @@
           <div class="tag-line">
             <a-tag v-for="scope in record.scopes" :key="scope">{{ scopeLabel(scope) }}</a-tag>
             <span v-if="!record.scopes.length" class="muted-cell">未授权</span>
+          </div>
+        </template>
+        <template v-else-if="column.key === 'allowedTargets'">
+          <div class="tag-line">
+            <a-tag v-for="username in record.allowedTargetUsernames" :key="username">{{ username }}</a-tag>
+            <span v-if="!record.allowedTargetUsernames.length" class="muted-cell">未配置</span>
           </div>
         </template>
         <template v-else-if="column.key === 'rateLimits'">
@@ -97,6 +103,10 @@
             <div class="mobile-list-meta-item">
               <span>限频</span>
               <strong>{{ formatRateLimits(record.rateLimits) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>目标用户</span>
+              <strong>{{ formatAllowedTargetUsernames(record.allowedTargetUsernames) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>到期</span>
@@ -247,6 +257,14 @@
         </a-form-item>
         <a-form-item label="授权能力">
           <a-select v-model:value="sourceForm.scopes" mode="multiple" :options="scopeOptions" placeholder="选择允许调用的公开接口能力" />
+        </a-form-item>
+        <a-form-item label="允许目标用户">
+          <a-select
+            v-model:value="sourceForm.allowedTargetUsernames"
+            mode="tags"
+            :token-separators="[',', '，', ' ']"
+            placeholder="输入系统用户名后回车"
+          />
         </a-form-item>
         <a-form-item label="到期时间">
           <a-date-picker v-model:value="sourceForm.expiresAt" class="full-control" show-time allow-clear />
@@ -402,6 +420,7 @@ const sourceForm = reactive<{
   name: string
   status: ExternalIntegrationSourceStatus
   scopes: string[]
+  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   expiresAt: Dayjs | null
   notes: string
@@ -409,6 +428,7 @@ const sourceForm = reactive<{
   name: '',
   status: 'active',
   scopes: [],
+  allowedTargetUsernames: [],
   rateLimits: [],
   expiresAt: null,
   notes: ''
@@ -454,6 +474,7 @@ const columns = [
   { title: '状态', key: 'status', width: 100, align: 'left' },
   { title: 'Token', key: 'tokens', width: 100, align: 'left' },
   { title: '授权能力', key: 'scopes', width: 220, align: 'left' },
+  { title: '目标用户', key: 'allowedTargets', width: 180, align: 'left' },
   { title: '限频', key: 'rateLimits', width: 180, align: 'left' },
   { title: '到期时间', key: 'expiresAt', width: 180, align: 'left' },
   { title: '最近调用', key: 'lastUsedAt', width: 180, align: 'left' },
@@ -798,6 +819,7 @@ function openCreateSource(): void {
     name: '',
     status: 'active',
     scopes: scopeOptions.value.map((item) => item.value),
+    allowedTargetUsernames: [],
     rateLimits: [],
     expiresAt: null,
     notes: ''
@@ -820,6 +842,7 @@ function openEditSource(record: ExternalIntegrationSourceSummary): void {
     name: record.name,
     status: record.status,
     scopes: [...record.scopes],
+    allowedTargetUsernames: [...record.allowedTargetUsernames],
     rateLimits,
     expiresAt,
     notes: record.notes ?? ''
@@ -838,6 +861,7 @@ async function saveSource(): Promise<void> {
       name: sourceForm.name.trim(),
       status: sourceForm.status,
       scopes: [...sourceForm.scopes],
+      allowedTargetUsernames: normalizeTargetUsernames(sourceForm.allowedTargetUsernames),
       rateLimits: normalizeRateLimits(sourceForm.rateLimits),
       expiresAt: formatServerDateTimeInput(sourceForm.expiresAt),
       notes: sourceForm.notes.trim() || null
@@ -1032,6 +1056,27 @@ function normalizeRateLimitInteger(value: unknown, min: number, max: number, lab
 
 function formatRateLimits(rules: ExternalIntegrationRateLimitRule[]): string {
   return rules.length ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join('，') : '不限制'
+}
+
+function normalizeTargetUsernames(usernames: string[]): string[] {
+  const values = new Map<string, string>()
+  for (const username of usernames) {
+    const value = username.trim()
+    if (!value) continue
+    if (value.length < 2 || value.length > 80) {
+      throw new Error('目标用户名长度必须在 2 到 80 个字符之间')
+    }
+    values.set(value.toLowerCase(), value)
+  }
+  return [...values.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, value]) => value)
+}
+
+function formatAllowedTargetUsernames(usernames: string[]): string {
+  if (!usernames.length) return '未配置'
+  const visible = usernames.slice(0, 3).join('，')
+  return usernames.length > 3 ? `${visible} 等 ${usernames.length} 个` : visible
 }
 
 function sourceStatusText(status: ExternalIntegrationSourceStatus): string {

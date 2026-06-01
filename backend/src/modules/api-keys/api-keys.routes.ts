@@ -102,7 +102,7 @@ apiKeysRouter.post('/', mutationGuard({
         }
       }
     }, req)
-    res.status(201).json(ok(apiKey, 'API Key 已创建，可在列表继续复制'))
+    res.status(201).json(ok(apiKey, 'API Key 已创建，请立即复制完整密钥'))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'API Key 参数无效'
     res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))

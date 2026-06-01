@@ -17,6 +17,7 @@ runtimeConfig.secret = 'authorized-account-admin-dispatch-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -391,6 +392,7 @@ function createMockOpenAIServer(): http.Server {
 function seedData(mockBaseUrl: string): SeedState {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const owner = repositories.createSystemAccount({
     username: 'admin_dispatch_owner',
     displayName: '管理员调度所有者',

@@ -82,8 +82,6 @@ export interface PublicAccountUsageItem {
   accountId: string
   accountName: string
   providerCode?: string
-  ownerSystemAccountId?: string
-  ownerSystemAccountName?: string
   type?: string
   status?: string
   requestCount: number
@@ -195,8 +193,6 @@ interface AccountUsageMetadataRow {
   id: string
   name: string
   provider_code: string
-  system_account_id: string
-  owner_system_account_name: string | null
   type: string
   status: string
 }
@@ -264,26 +260,23 @@ const mockRows: Array<{ ip: string; usage: ClientIpUsageSummary }> = [
   }
 ]
 
-const mockAccountRows: Array<{ accountId: string; accountName: string; providerCode: string; ownerSystemAccountId: string; usage: AccountUsageRangeRow }> = [
+const mockAccountRows: Array<{ accountId: string; accountName: string; providerCode: string; usage: AccountUsageRangeRow }> = [
   {
     accountId: 'acc_mock_public_welfare_main',
     accountName: '公益体验入口',
     providerCode: 'openai',
-    ownerSystemAccountId: 'sysacc_mock',
     usage: mockAccountUsageRow('acc_mock_public_welfare_main', 1280, 1252, 28, 516000, 326000, 126000, 12.36, 7)
   },
   {
     accountId: 'acc_mock_public_welfare_backup',
     accountName: '校园社群入口',
     providerCode: 'openai',
-    ownerSystemAccountId: 'sysacc_mock',
     usage: mockAccountUsageRow('acc_mock_public_welfare_backup', 936, 914, 22, 317400, 214000, 68420, 8.42, 6)
   },
   {
     accountId: 'acc_mock_public_welfare_test',
     accountName: '志愿者测试入口',
     providerCode: 'openai',
-    ownerSystemAccountId: 'sysacc_mock',
     usage: mockAccountUsageRow('acc_mock_public_welfare_test', 648, 631, 17, 184200, 120600, 38200, 5.18, 5)
   }
 ]
@@ -351,9 +344,7 @@ export function getPublicAccountUsage(input: PublicAccountUsageQuery, options: {
       .map((row, index) => mapPublicAccountUsageItem({
         ...row.usage,
         accountName: row.accountName,
-        providerCode: row.providerCode,
-        ownerSystemAccountId: row.ownerSystemAccountId,
-        ownerSystemAccountName: '内置测试来源'
+        providerCode: row.providerCode
       }, offset + index + 1))
     return {
       source: 'mock',
@@ -639,8 +630,6 @@ function listPublicAccountUsageStats(input: {
         ...row,
         accountName: metadata?.name ?? row.scope_id,
         providerCode: metadata?.provider_code,
-        ownerSystemAccountId: metadata?.system_account_id,
-        ownerSystemAccountName: metadata?.owner_system_account_name ?? undefined,
         type: metadata?.type,
         status: metadata?.status
       }, offset + index + 1)
@@ -738,12 +727,9 @@ function loadPublicAccountUsageMetadata(accountIds: string[]): Map<string, Accou
         accounts.id,
         accounts.name,
         accounts.provider_code,
-        accounts.system_account_id,
-        COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id) AS owner_system_account_name,
         accounts.type,
         accounts.status
       FROM accounts
-      LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
       WHERE accounts.id IN (${sqlPlaceholders(chunk.length)})
     `).all(...chunk) as unknown as AccountUsageMetadataRow[]
     for (const row of rows) {
@@ -780,8 +766,6 @@ function mapPublicAccountUsageItem(
   row: AccountUsageRangeRow & {
     accountName?: string
     providerCode?: string
-    ownerSystemAccountId?: string
-    ownerSystemAccountName?: string
     type?: string
     status?: string
   },
@@ -801,8 +785,6 @@ function mapPublicAccountUsageItem(
     accountId: row.scope_id,
     accountName: row.accountName ?? row.scope_id,
     providerCode: row.providerCode,
-    ownerSystemAccountId: row.ownerSystemAccountId,
-    ownerSystemAccountName: row.ownerSystemAccountName,
     type: row.type,
     status: row.status,
     requestCount,

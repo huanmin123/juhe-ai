@@ -102,7 +102,7 @@ async function main(): Promise<void> {
     }
 
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async () => {
-      throw new Error('模拟刷新失败')
+      throw new Error('模拟刷新失败 Authorization: Bearer oauth-refresh-bearer-token sk-oauth-refresh-secret-token refresh_token=oauth-refresh-token-secret client_secret=oauth-refresh-client-secret proxy=https://oauth-refresh-proxy-user:oauth-refresh-proxy-password@example.com')
     })
 
     const failedActive = createOAuthAccount('连续刷新失败账户', 'active', true, 'active-fail-token', {
@@ -144,6 +144,12 @@ async function main(): Promise<void> {
     assertAccountState(stoppedRefresh.id, 'error', false, 'oauth_token_refresh_failed', '连续 432 次')
     assertAccountLastErrorMessageIncludes(stoppedRefresh.id, '连续 432 次')
     assertAccountLastErrorMessageDoesNotInclude(stoppedRefresh.id, '已停止自动刷新')
+    assertAccountLastErrorMessageDoesNotInclude(failedActive.id, 'oauth-refresh-bearer-token')
+    assertAccountLastErrorMessageDoesNotInclude(failedActive.id, 'sk-oauth-refresh-secret-token')
+    assertAccountLastErrorMessageDoesNotInclude(failedActive.id, 'oauth-refresh-token-secret')
+    assertAccountLastErrorMessageDoesNotInclude(failedActive.id, 'oauth-refresh-client-secret')
+    assertAccountLastErrorMessageDoesNotInclude(failedActive.id, 'oauth-refresh-proxy-user')
+    assertAccountLastErrorMessageDoesNotInclude(failedActive.id, 'oauth-refresh-proxy-password')
 
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => ({
       accessToken: `access-recovered-${refreshToken}`,

@@ -50,7 +50,7 @@ export interface ExternalPublicApiCatalog {
 const authHeader: ExternalPublicApiHeader = {
   name: 'Authorization',
   required: true,
-  description: '来源系统 Bearer token。使用内置测试 token 时接口只返回 mock 数据。',
+  description: '来源系统 Bearer token。公开资源写入接口还会校验来源系统允许目标用户和目标用户启用状态；使用内置测试 token 时接口只返回 mock 数据。',
   example: 'Bearer <source_token>'
 }
 
@@ -741,7 +741,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'account-add',
         name: '账号新增',
-        summary: '新增 API Key 类型账号到指定系统用户和分组；目标用户或分组不存在时自动创建，重复账号会返回冲突。',
+        summary: '新增 API Key 类型账号到指定系统用户和分组；目标用户或分组不存在时自动创建，目标用户已停用时拒绝写入，重复账号会返回冲突。',
         status: 'available',
         method: 'POST',
         path: '/__aipublic__/account/add',
@@ -949,7 +949,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'account-delete',
         name: '账号删除',
-        summary: '删除指定目标用户和分组内的账号；接口按 externalId、账号 ID 或名称定位，找不到时幂等返回 not_found。',
+        summary: '删除指定目标用户和分组内的账号；接口按 externalId、账号 ID 或名称定位，目标用户已停用时拒绝删除，找不到时幂等返回 not_found。',
         status: 'available',
         method: 'POST',
         path: '/__aipublic__/account/del',

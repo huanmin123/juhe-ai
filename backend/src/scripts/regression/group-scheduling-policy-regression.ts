@@ -134,7 +134,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-group-scheduling-policy',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     concurrencyLimit: 10,
     groupId: highConcurrencyGroup.id

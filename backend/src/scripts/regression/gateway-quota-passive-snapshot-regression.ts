@@ -31,6 +31,8 @@ runtimeConfig.processRole = 'server'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
+const databaseModule = await import('../../storage/database.js')
+
 try {
   assertGatewayQuotaSnapshotSourcesBounded()
   assertGatewayQuotaRequestPathUsesAsyncOnly()
@@ -113,6 +115,62 @@ try {
   clearGatewayQuotaSnapshot()
   replaceGatewayQuotaSnapshot({
     generatedAt: new Date().toISOString(),
+    costEntries: [],
+    authorizationEntries: [],
+    costEntriesComplete: false,
+    authorizationEntriesComplete: true
+  })
+  const incompleteSnapshotApiKeyDecision = await checkGatewayApiKeyQuotaAsync({
+    id: 'key_passive_missing_from_incomplete_snapshot',
+    system_account_id: 'sys_passive_quota',
+    selected_group_id: 'group_passive_quota',
+    status: 'active',
+    expires_at: null,
+    group_route_strategy: 'priority_failover',
+    system_account_image_generation_enabled: 0,
+    quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
+  } as GatewayApiKeyRow)
+  assert.equal(incompleteSnapshotApiKeyDecision.allowed, false, '额度快照已截断时，启用额度的 API Key 缺失快照不能长期放行')
+
+  clearGatewayQuotaSnapshot()
+  replaceGatewayQuotaSnapshot({
+    generatedAt: new Date().toISOString(),
+    costEntries: [],
+    authorizationEntries: [],
+    costEntriesComplete: true,
+    authorizationEntriesComplete: false
+  })
+  const incompleteSnapshotAuthorizationDecision = await checkGatewayAuthorizationQuotaBatchAsync({
+    groupAccess: {
+      groupOwnerSystemAccountId: 'sys_passive_quota',
+      groupAccessType: 'authorized',
+      groupAuthorizationId: 'group_auth_passive_missing_from_incomplete_snapshot',
+      groupAuthorizationQuotaLimited: true
+    } as GroupUsageAccessMetadata,
+    accounts: [passiveAccount('account_passive_missing_from_incomplete_snapshot', 'account_auth_passive_missing_from_incomplete_snapshot', true)]
+  })
+  assert.equal(
+    incompleteSnapshotAuthorizationDecision.get('account_passive_missing_from_incomplete_snapshot')?.allowed,
+    false,
+    '授权额度快照已截断时，缺失授权快照不能长期放行'
+  )
+  const unlimitedMissingAuthorizationDecision = await checkGatewayAuthorizationQuotaBatchAsync({
+    groupAccess: {
+      groupOwnerSystemAccountId: 'sys_passive_quota',
+      groupAccessType: 'authorized',
+      groupAuthorizationId: 'group_auth_passive_unlimited_missing_from_incomplete_snapshot'
+    } as GroupUsageAccessMetadata,
+    accounts: [passiveAccount('account_passive_unlimited_missing_from_incomplete_snapshot', 'account_auth_passive_unlimited_missing_from_incomplete_snapshot')]
+  })
+  assert.equal(
+    unlimitedMissingAuthorizationDecision.get('account_passive_unlimited_missing_from_incomplete_snapshot')?.allowed,
+    true,
+    '授权额度快照已截断时，未标记额度限制的授权缺失快照仍应按无额度限制放行，避免误伤无额度授权'
+  )
+
+  clearGatewayQuotaSnapshot()
+  replaceGatewayQuotaSnapshot({
+    generatedAt: new Date().toISOString(),
     costEntries: Array.from({ length: maxGatewayQuotaSnapshotCostEntries + 1 }, (_, index) => ({
       systemAccountId: 'sys_snapshot_cap',
       scopeType: 'api_key',
@@ -128,10 +186,16 @@ try {
   const cappedRuntime = gatewayQuotaSnapshotRuntime()
   assert.equal(cappedRuntime.costEntryCount, maxGatewayQuotaSnapshotCostEntries, 'server 接收额度快照时必须截断 API Key 成本窗口')
   assert.equal(cappedRuntime.authorizationEntryCount, maxGatewayQuotaSnapshotAuthorizationEntries, 'server 接收额度快照时必须截断授权决策窗口')
+  assert.equal(cappedRuntime.costEntriesComplete, false, 'server 接收超上限 API Key 成本窗口时应标记快照不完整')
+  assert.equal(cappedRuntime.authorizationEntriesComplete, false, 'server 接收超上限授权决策窗口时应标记快照不完整')
 
   console.log('网关额度被动快照回归通过：server 请求链路不主动查询 DB service，直接读取 worker 推送的有界额度快照，并禁止误调同步 SQLite 配额读取')
 } finally {
   clearGatewayQuotaSnapshot()
+  try {
+    databaseModule.closeStorageDatabases()
+  } catch {
+  }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
@@ -194,7 +258,7 @@ function sourceFunctionBlock(source: string, marker: string): string {
   return source.slice(start, nextFunction === -1 ? undefined : nextFunction)
 }
 
-function passiveAccount(id: string, accountAuthorizationId?: string): OpenAIAccountSecret {
+function passiveAccount(id: string, accountAuthorizationId?: string, accountAuthorizationQuotaLimited?: boolean): OpenAIAccountSecret {
   return {
     id,
     providerCode: 'openai',
@@ -207,6 +271,7 @@ function passiveAccount(id: string, accountAuthorizationId?: string): OpenAIAcco
     type: 'api_key',
     status: 'active',
     accountAuthorizationId,
+    accountAuthorizationQuotaLimited,
     supportedModels: [],
     concurrencyLimit: 10,
     priority: 0,

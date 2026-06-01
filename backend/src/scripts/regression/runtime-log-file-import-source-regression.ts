@@ -153,6 +153,19 @@ try {
     '文件导入的正常日志应带准确来源位置'
   )
 
+  writeFileSync(logPath, '')
+  await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
+  const unfinishedOversizedLine = 'x'.repeat(3 * 1024 * 1024)
+  writeFileSync(logPath, unfinishedOversizedLine)
+  await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
+  const cursorAfterUnfinishedOversizedLine = runtimeLogsRepository.getRuntimeLogFileCursor(logPath)
+  assert.equal(cursorAfterUnfinishedOversizedLine?.cursorOffset, 0, '未换行超长日志行不应推进主游标')
+  assert.match(cursorAfterUnfinishedOversizedLine?.lastErrorMessage ?? '', /等待完整换行/, '未换行超长日志行应留下等待换行的游标提示')
+
+  writeFileSync(logPath, `${longLine}\n${normalLine}\n`)
+  await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
+  await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
+
   const flushFailureLine = JSON.stringify({
     time: now,
     level: 30,

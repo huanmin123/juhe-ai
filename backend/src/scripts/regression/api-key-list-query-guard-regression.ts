@@ -87,7 +87,8 @@ try {
     assert(nameIds.includes(matchedByName.id), 'API Key 搜索应命中名称精确值')
     assert(nameIds.includes(matchedByNamePrefix.id), 'API Key 搜索应命中名称前缀值')
     assert(!nameIds.includes(middleNameOnly.id), 'API Key 搜索不应命中名称中间包含值')
-    assert.equal(nameResult.items.find((item) => item.id === matchedByName.id)?.key, matchedByName.key, 'API Key 列表应返回完整本地密钥供页面复制')
+    assert.equal(nameResult.items.find((item) => item.id === matchedByName.id)?.key, '', 'API Key 列表不应重复返回完整本地密钥')
+    assert.equal(matchedByName.key.startsWith(matchedByName.keyPrefix), true, 'API Key 创建响应仍应返回一次完整密钥供用户保存')
 
     const descriptionResult = repositories.listApiKeysPage(access, { keyword: '说明前缀', page: 1, pageSize: 20 })
     const descriptionIds = descriptionResult.items.map((item) => item.id)
@@ -120,7 +121,7 @@ try {
   assertBusinessIndexMissing('idx_api_keys_description_lookup')
   assertBusinessIndexMissing('idx_api_keys_system_account_description_lookup')
 
-  console.log('API Key 列表查询防护回归通过：搜索仅按名称精确/前缀匹配，不再使用 Key 前缀、前导通配符或包含匹配')
+  console.log('API Key 列表查询防护回归通过：搜索仅按名称精确/前缀匹配，列表不返回完整密钥')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

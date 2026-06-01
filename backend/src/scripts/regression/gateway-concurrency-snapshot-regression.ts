@@ -77,7 +77,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-concurrency-snapshot-a',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     concurrencyLimit: 10,
@@ -90,7 +90,7 @@ try {
     type: 'api_key',
     credentials: {
       api_key: 'sk-concurrency-snapshot-b',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     concurrencyLimit: 10,

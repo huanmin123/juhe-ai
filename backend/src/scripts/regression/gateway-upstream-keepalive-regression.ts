@@ -1,10 +1,13 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import {
   closeGatewayUpstreamAgentsForTest,
   requestUpstream
 } from '../../modules/gateway/openai-gateway-upstream.js'
+
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 
 let connectionCount = 0
 const server = http.createServer((req, res) => {

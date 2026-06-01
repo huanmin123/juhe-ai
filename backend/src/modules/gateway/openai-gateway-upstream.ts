@@ -4,6 +4,7 @@ import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
 import type { Request } from 'express'
 
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
+import { prepareSafeUpstreamRequestUrl } from '../../shared/upstream-url-policy.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import {
   buildOpenAIOAuthCodexRequestParts,
@@ -74,7 +75,8 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
 
 }
 
-export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
+export async function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
+  const safeRequest = await prepareSafeUpstreamRequestUrl(upstreamUrl)
   return new Promise((resolve, reject) => {
     let settled = false
     const settleResolve = (response: GatewayUpstreamResponse) => {
@@ -91,7 +93,7 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
       settleReject(new UpstreamRequestAbortedError('请求已取消'))
       return
     }
-    const url = new URL(upstreamUrl)
+    const url = safeRequest.url
     const transport = url.protocol === 'http:' ? http : https
     let agent: http.Agent | undefined
     try {
@@ -103,7 +105,8 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
     const requestOptions: http.RequestOptions = {
       method: options.method,
       headers: headersToNodeHeaders(options.headers),
-      agent
+      agent,
+      lookup: safeRequest.lookup
     }
     let requestTimeout: NodeJS.Timeout | undefined
     let upstreamRequestStarted = false
@@ -431,6 +434,7 @@ const skippedUpstreamRequestHeaders = new Set([
   'accept-encoding',
   'cookie',
   'set-cookie',
+  'openai-api-key',
   'x-api-key',
   'x-goog-api-key',
   'api-key',

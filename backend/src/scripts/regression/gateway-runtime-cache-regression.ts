@@ -109,6 +109,7 @@ try {
   assert(first.apiKey?.id === apiKey.id, '首次读取应返回 API Key 运行配置')
   assert.equal(first.accounts.length, 2, '首次读取应返回同一分组内 OAuth/API Key 混合候选账号')
   assert.deepEqual(sortedAccountTypes(first.accounts), ['api_key', 'oauth'], '运行配置缓存不应按上游账号类型拆分候选账号')
+  assertRuntimeCredentialsAreSlim(first.accounts, apiKey)
   assert.equal(fakeChild.sentOperationCount, 1, '首次读取应请求 DB service')
   assert.equal(groupOwnerLookupCount, 1, 'read_gateway_runtime 应复用已解析的 groupAccess，避免账号选择阶段重复查询分组归属')
 
@@ -120,7 +121,7 @@ try {
 
   const updatedCredentials = {
     api_key: 'sk-runtime-cache-account-updated',
-    base_url: 'http://127.0.0.1:9/v1'
+    base_url: 'https://api.openai.com/v1'
   }
   const updateResult = await runWithDbServiceParentMessageBridge(fakeChild, () => dbServiceIpc.requestDbService({
     type: 'update_openai_oauth_credentials',
@@ -211,6 +212,26 @@ try {
   assert.equal(fakeChild.sentOperationCount, expiringOperationCount + 2, 'API Key 过期后应重新请求 DB service')
 
   gatewayCache.clearGatewayRuntimeCacheLocal()
+  const authorizationExpiresAt = new Date(Date.now() + 300).toISOString()
+  repositories.updateResourceAuthorization(apiKey.authorizedGroupAuthorizationId, { expiresAt: authorizationExpiresAt }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const authorizedGroupAccessFirst = await gatewayCache.resolveCachedGroupUsageAccessMetadataAsync(apiKey.authorizedGroupId, apiKey.authorizedGranteeId)
+  assert.equal(authorizedGroupAccessFirst?.groupAuthorizationExpiresAt, authorizationExpiresAt, '授权分组过期前应返回分组授权元数据')
+  const authorizedAccountsFirst = await gatewayCache.listCachedOpenAIAccountsForGroupAsync(apiKey.authorizedGroupId, apiKey.authorizedGranteeId)
+  assert.equal(authorizedAccountsFirst.length, 1, '授权分组过期前应返回授权账号候选')
+  assert.equal(authorizedAccountsFirst[0]?.groupAuthorizationExpiresAt, authorizationExpiresAt, '授权账号候选应携带分组授权到期时间')
+  const authorizationLoadedOperationCount = fakeChild.sentOperationCount
+  const authorizedGroupAccessSecond = await gatewayCache.resolveCachedGroupUsageAccessMetadataAsync(apiKey.authorizedGroupId, apiKey.authorizedGranteeId)
+  assert.equal(authorizedGroupAccessSecond?.groupAuthorizationId, authorizedGroupAccessFirst?.groupAuthorizationId, '授权过期边界前应命中分组授权元数据缓存')
+  const authorizedAccountsSecond = await gatewayCache.listCachedOpenAIAccountsForGroupAsync(apiKey.authorizedGroupId, apiKey.authorizedGranteeId)
+  assert.equal(authorizedAccountsSecond.length, 1, '授权过期边界前应命中授权账号候选缓存')
+  assert.equal(fakeChild.sentOperationCount, authorizationLoadedOperationCount, '授权过期边界前分组元数据和账号候选重复读取应命中缓存')
+  await delay(380)
+  const authorizedGroupAccessAfterBoundary = await gatewayCache.resolveCachedGroupUsageAccessMetadataAsync(apiKey.authorizedGroupId, apiKey.authorizedGranteeId)
+  assert.equal(authorizedGroupAccessAfterBoundary, undefined, '授权过期后分组元数据旁路缓存不应继续命中过期授权')
+  const authorizedAccountsAfterBoundary = await gatewayCache.listCachedOpenAIAccountsForGroupAsync(apiKey.authorizedGroupId, apiKey.authorizedGranteeId)
+  assert.equal(authorizedAccountsAfterBoundary.length, 0, '授权过期后账号候选旁路缓存不应继续返回过期授权账号')
+
+  gatewayCache.clearGatewayRuntimeCacheLocal()
   const coldConcurrentOperationCount = fakeChild.sentOperationCount
   const concurrentRuntimeReads = await Promise.all([
     gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key),
@@ -220,7 +241,7 @@ try {
   assert(concurrentRuntimeReads.every((runtime) => runtime.apiKey?.id === apiKey.id), '冷缓存并发读取应全部返回同一个 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, coldConcurrentOperationCount + 1, '同一 API Key 冷缓存并发读取应合并为一次 DB service 请求')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，API Key 停用不污染分组账号缓存，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划边界和过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，API Key 停用不污染分组账号缓存，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划、API Key 过期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -230,7 +251,21 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string; accountGroupId: string; id: string; key: string; scheduledKey: string; accountScheduledKey: string; multiGroupAccountScheduledKey: string; expiringKeyId: string; expiringKey: string } {
+function seedGatewayRuntime(): {
+  apiKeyAccountId: string
+  oauthAccountId: string
+  accountGroupId: string
+  id: string
+  key: string
+  scheduledKey: string
+  accountScheduledKey: string
+  multiGroupAccountScheduledKey: string
+  expiringKeyId: string
+  expiringKey: string
+  authorizedGroupId: string
+  authorizedGranteeId: string
+  authorizedGroupAuthorizationId: string
+} {
   const group = repositories.createGroup({
     name: '运行配置缓存混合账号分组',
     providerCode: 'openai',
@@ -242,7 +277,7 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
     type: 'api_key',
     credentials: {
       api_key: 'sk-runtime-cache-account',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
     status: 'active',
@@ -257,6 +292,7 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
       refresh_token: 'refresh-runtime-cache-oauth',
       access_token: 'access-runtime-cache-oauth',
       expires_at: '2099-01-01T00:00:00.000Z',
+      account_id: 'acct_runtime_cache_oauth',
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
@@ -285,6 +321,39 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     expiresAt: '2026-06-01T00:01:00.000Z'
   }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const authorizedGrantee = repositories.createSystemAccount({
+    username: 'gateway_runtime_cache_auth_grantee',
+    displayName: '运行配置缓存授权被授权人',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const authorizedGroup = repositories.createGroup({
+    name: '运行配置缓存临期授权分组',
+    providerCode: 'openai',
+    enabled: true
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  repositories.createAccount({
+    providerCode: 'openai',
+    name: '运行配置缓存临期授权账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-runtime-cache-authorized-group',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: authorizedGroup.id,
+    status: 'active',
+    concurrencyLimit: 20,
+    schedulable: true
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const authorizedGroupAuthorization = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: authorizedGroup.id,
+    granteeType: 'system_account',
+    granteeId: authorizedGrantee.id,
+    expiresAt: '2099-01-01T00:01:00.000Z'
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
   const accountScheduledGroup = repositories.createGroup({
     name: '运行配置缓存账户计划分组',
     providerCode: 'openai',
@@ -296,7 +365,7 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
     type: 'api_key',
     credentials: {
       api_key: 'sk-runtime-cache-account-scheduled',
-      base_url: 'http://127.0.0.1:9/v1'
+      base_url: 'https://api.openai.com/v1'
     },
     groupId: accountScheduledGroup.id,
     status: 'active',
@@ -332,7 +401,7 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
       type: 'api_key',
       credentials: {
         api_key: `sk-runtime-cache-multi-account-scheduled-${index + 1}`,
-        base_url: 'http://127.0.0.1:9/v1'
+        base_url: 'https://api.openai.com/v1'
       },
       groupId,
       status: 'active',
@@ -366,12 +435,33 @@ function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string
     accountScheduledKey: accountScheduledApiKey.key,
     multiGroupAccountScheduledKey: multiGroupAccountScheduledApiKey.key,
     expiringKeyId: expiringApiKey.id,
-    expiringKey: expiringApiKey.key
+    expiringKey: expiringApiKey.key,
+    authorizedGroupId: authorizedGroup.id,
+    authorizedGranteeId: authorizedGrantee.id,
+    authorizedGroupAuthorizationId: authorizedGroupAuthorization.id
   }
 }
 
 function sortedAccountTypes(accounts: Array<{ type: string }>): string[] {
   return accounts.map((account) => account.type).sort()
+}
+
+function assertRuntimeCredentialsAreSlim(
+  accounts: Array<{ id: string; apiKey: string; credentials: Record<string, unknown> }>,
+  seed: { apiKeyAccountId: string; oauthAccountId: string }
+): void {
+  const apiKeyAccount = accountById(accounts, seed.apiKeyAccountId)
+  const oauthAccount = accountById(accounts, seed.oauthAccountId)
+  assert(apiKeyAccount, '运行配置应包含 API Key 账号')
+  assert(oauthAccount, '运行配置应包含 OAuth 账号')
+  assert.equal(apiKeyAccount.apiKey, 'sk-runtime-cache-account', '运行时账号顶层仍应保留转发所需 API Key')
+  assert.equal(oauthAccount.apiKey, 'access-runtime-cache-oauth', '运行时 OAuth 账号顶层仍应保留转发所需 Access Token')
+  assert.equal(oauthAccount.credentials.account_id, 'acct_runtime_cache_oauth', '运行时 OAuth 账号应保留 Codex 必需 account_id')
+  for (const [account, label] of [[apiKeyAccount, 'API Key'], [oauthAccount, 'OAuth']] as const) {
+    for (const field of ['api_key', 'access_token', 'refresh_token', 'base_url', 'client_id', 'expires_at']) {
+      assert.equal(Object.prototype.hasOwnProperty.call(account.credentials, field), false, `运行时 ${label} credentials 不应携带完整 ${field}`)
+    }
+  }
 }
 
 function assertReadGatewayRuntimeDefersPolicyLists(): void {

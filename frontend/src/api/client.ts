@@ -429,10 +429,42 @@ const http = axios.create({
   withCredentials: true
 })
 
+let unauthorizedHandler: (() => void) | undefined
+let mustChangePasswordHandler: (() => void) | undefined
+
+export function setUnauthorizedHandler(handler: () => void): void {
+  unauthorizedHandler = handler
+}
+
+export function setMustChangePasswordHandler(handler: () => void): void {
+  mustChangePasswordHandler = handler
+}
+
+http.interceptors.response.use(undefined, (error: unknown) => {
+  if (axios.isAxiosError(error) && error.response?.status === 401 && shouldNotifyUnauthorized(error.config?.url)) {
+    unauthorizedHandler?.()
+  } else if (axios.isAxiosError(error) && error.response?.status === 403 && isMustChangePasswordResponse(error.response.data)) {
+    mustChangePasswordHandler?.()
+  }
+  return Promise.reject(error)
+})
+
 function normalizeApiBaseUrl(value?: string): string {
   const text = value?.trim()
   if (!text) return '/__aisys__/api'
   return text.replace(/\/+$/, '') || '/__aisys__/api'
+}
+
+function shouldNotifyUnauthorized(url?: string): boolean {
+  if (!url) return true
+  return !url.startsWith('/auth/')
+}
+
+function isMustChangePasswordResponse(data: unknown): boolean {
+  return typeof data === 'object'
+    && data !== null
+    && !Array.isArray(data)
+    && (data as { code?: unknown }).code === 'must_change_password'
 }
 
 async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T> {
@@ -454,7 +486,7 @@ async function runModelCheckStream(path: string, payload: ModelCheckRunPayload, 
     signal: options?.signal
   })
   if (!response.ok) {
-    throw new Error(await readFetchErrorMessage(response))
+    throw new Error(await readFetchErrorMessage(response, path))
   }
   if (!response.body) {
     throw new Error('模型检测进度流不可用')
@@ -537,13 +569,24 @@ function parseJsonPayload(text: string): unknown {
   }
 }
 
-async function readFetchErrorMessage(response: Response): Promise<string> {
+async function readFetchErrorMessage(response: Response, path?: string): Promise<string> {
   const text = await response.text()
+  notifyAuthFailure(response.status, text, path)
   if (!text.trim()) return `请求失败：HTTP ${response.status}`
   try {
     return extractResponseErrorMessage(JSON.parse(text) as unknown) ?? text
   } catch {
     return localizeTransportErrorMessage(text, `请求失败：HTTP ${response.status}`)
+  }
+}
+
+function notifyAuthFailure(status: number, responseText: string, path?: string): void {
+  if (status === 401 && shouldNotifyUnauthorized(path)) {
+    unauthorizedHandler?.()
+    return
+  }
+  if (status === 403 && isMustChangePasswordResponse(parseJsonPayload(responseText))) {
+    mustChangePasswordHandler?.()
   }
 }
 

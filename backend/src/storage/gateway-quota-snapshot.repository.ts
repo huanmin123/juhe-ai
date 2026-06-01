@@ -48,12 +48,20 @@ interface QuotaCostCheck {
   costInput: RequestQuotaCostInput
 }
 
+interface BoundedQuotaRows<T> {
+  rows: T[]
+  complete: boolean
+}
+
 export function buildGatewayQuotaSnapshot(now = new Date()): GatewayQuotaSnapshot {
   const businessDatabase = getBusinessDatabase()
   const statsDatabase = getStatsDatabase()
-  const apiKeys = loadApiKeyQuotaSnapshotRows(businessDatabase)
-  const authorizations = loadAuthorizationQuotaSnapshotRows(businessDatabase)
-  const teamAuthorizations = loadTeamAuthorizationQuotaSnapshotRows(businessDatabase)
+  const apiKeyWindow = loadApiKeyQuotaSnapshotRows(businessDatabase)
+  const authorizationWindow = loadAuthorizationQuotaSnapshotRows(businessDatabase)
+  const teamAuthorizationWindow = loadTeamAuthorizationQuotaSnapshotRows(businessDatabase)
+  const apiKeys = apiKeyWindow.rows
+  const authorizations = authorizationWindow.rows
+  const teamAuthorizations = teamAuthorizationWindow.rows
 
   const apiKeyChecks = apiKeys
     .map((row) => apiKeyQuotaCostCheck(row, now))
@@ -107,23 +115,29 @@ export function buildGatewayQuotaSnapshot(now = new Date()): GatewayQuotaSnapsho
   return {
     generatedAt: nowIso(),
     costEntries,
-    authorizationEntries
+    authorizationEntries,
+    costEntriesComplete: apiKeyWindow.complete,
+    authorizationEntriesComplete: authorizationWindow.complete && teamAuthorizationWindow.complete
   }
 }
 
-function loadApiKeyQuotaSnapshotRows(database: DatabaseSync): ApiKeyQuotaSnapshotRow[] {
-  return database.prepare(`
+function loadApiKeyQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<ApiKeyQuotaSnapshotRow> {
+  const rows = database.prepare(`
     SELECT id, system_account_id, quota_limits_json
     FROM api_keys
     WHERE status = 'active'
       AND quota_limits_json IS NOT NULL
     ORDER BY updated_at DESC, id ASC
     LIMIT ?
-  `).all(maxGatewayQuotaSnapshotCostEntries) as unknown as ApiKeyQuotaSnapshotRow[]
+  `).all(maxGatewayQuotaSnapshotCostEntries + 1) as unknown as ApiKeyQuotaSnapshotRow[]
+  return {
+    rows: rows.slice(0, maxGatewayQuotaSnapshotCostEntries),
+    complete: rows.length <= maxGatewayQuotaSnapshotCostEntries
+  }
 }
 
-function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): AuthorizationQuotaSnapshotRow[] {
-  return database.prepare(`
+function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<AuthorizationQuotaSnapshotRow> {
+  const rows = database.prepare(`
     SELECT ra.id, ra.resource_owner_system_account_id, ra.grantee_system_account_id, ra.resource_type, ra.resource_id,
       instance_accounts.id AS instance_account_id,
       ra.effective_source_team_id, ra.limits_json
@@ -153,11 +167,15 @@ function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): Authorizati
       )
     ORDER BY ra.updated_at DESC, ra.id ASC
     LIMIT ?
-  `).all(maxGatewayQuotaSnapshotAuthorizationEntries) as unknown as AuthorizationQuotaSnapshotRow[]
+  `).all(maxGatewayQuotaSnapshotAuthorizationEntries + 1) as unknown as AuthorizationQuotaSnapshotRow[]
+  return {
+    rows: rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries),
+    complete: rows.length <= maxGatewayQuotaSnapshotAuthorizationEntries
+  }
 }
 
-function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): TeamAuthorizationQuotaSnapshotRow[] {
-  return database.prepare(`
+function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<TeamAuthorizationQuotaSnapshotRow> {
+  const rows = database.prepare(`
     SELECT
       ra.id AS authorization_id,
       grant_rows.resource_owner_system_account_id,
@@ -184,7 +202,11 @@ function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): TeamAut
       AND grant_rows.limits_json IS NOT NULL
     ORDER BY ra.updated_at DESC, ra.id ASC
     LIMIT ?
-  `).all(maxGatewayQuotaSnapshotAuthorizationEntries) as unknown as TeamAuthorizationQuotaSnapshotRow[]
+  `).all(maxGatewayQuotaSnapshotAuthorizationEntries + 1) as unknown as TeamAuthorizationQuotaSnapshotRow[]
+  return {
+    rows: rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries),
+    complete: rows.length <= maxGatewayQuotaSnapshotAuthorizationEntries
+  }
 }
 
 function apiKeyQuotaCostCheck(row: ApiKeyQuotaSnapshotRow, now: Date): (QuotaCostCheck & { apiKey: ApiKeyQuotaSnapshotRow }) | undefined {

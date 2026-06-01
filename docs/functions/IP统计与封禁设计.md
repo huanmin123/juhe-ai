@@ -190,6 +190,7 @@ idx_client_ip_range_requests ON client_ip_usage_range_windows(start_date, end_da
 idx_client_ip_range_error_rate ON client_ip_usage_range_windows(start_date, end_date, (CASE WHEN request_count > 0 THEN CAST(error_count AS REAL) / request_count ELSE 0 END) DESC, ip_hash)
 idx_client_ip_range_active_days ON client_ip_usage_range_windows(start_date, end_date, active_days DESC, ip_hash)
 idx_client_ip_range_last_used ON client_ip_usage_range_windows(start_date, end_date, last_used_at DESC, ip_hash)
+idx_client_ip_range_end ON client_ip_usage_range_windows(end_date)
 ```
 
 ### 不设置范围总聚合表

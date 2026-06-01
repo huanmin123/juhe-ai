@@ -173,6 +173,13 @@ try {
   assert.equal(longGrep.items[0]?.event, 'long_grep_keyword_event')
   assert(!longGrep.items.some((item) => item.event === 'large_grep_keyword_event'), 'grep 不应把超长命中行输出到 Node 侧解析')
 
+  const concurrentGrep = await Promise.all([
+    runtimeLogGrep.grepRuntimeLogFiles({ keywords: ['grepneedle'], limit: 10 }),
+    runtimeLogGrep.grepRuntimeLogFiles({ keywords: ['grepneedle'], limit: 10 })
+  ])
+  assert(concurrentGrep.some((result) => result.available), '并发 grep 中应有一个请求获得执行槽')
+  assert(concurrentGrep.some((result) => !result.available && /已有 grep 搜索正在运行/.test(result.message ?? '')), '并发 grep 应拒绝额外请求，避免多个 rg 同时扫描日志目录')
+
   writeFileSync(join(logDir, 'juhe-ai-heavy.log'), Array.from({ length: 2_050 }, (_, index) => JSON.stringify({
     time: now,
     level: 30,

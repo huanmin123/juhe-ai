@@ -25,6 +25,12 @@ interface RotatingFileLogStreamOptions {
 
 const runtimeLogIndexMaxLineBytes = 256 * 1024
 const logDirectoryScanYieldEvery = 100
+const sensitiveJsonStringFieldPattern = /("(?:authorization|cookie|set-cookie|password|secret|token|accessToken|refreshToken|apiKey|api_key|access_token|refresh_token|proxyAuthorization|proxy_authorization|xApiKey|x_api_key|x-api-key|proxy-authorization)"\s*:\s*")((?:\\.|[^"\\])*)(")/gi
+const sensitiveQueryValuePattern = /\b(access_token|refresh_token|api_key|token|secret|password)=([^&\s,;'"\\]+)/gi
+const sensitiveHeaderValuePattern = /\b(authorization|proxy-authorization|x-api-key)\s*([:=])\s*(?:Bearer\s+)?[^\s,;'"\\]+/gi
+const bearerTokenPattern = /\bBearer\s+[A-Za-z0-9._~+/-]+={0,2}/g
+const jwtTokenPattern = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g
+const openAiSecretKeyPattern = /\bsk-[A-Za-z0-9_-]{10,}\b/g
 
 interface LogFileMtime {
   path: string
@@ -280,9 +286,13 @@ class MultiDestinationLogStream extends Writable {
   }
 
   _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    const safeChunk = Buffer.from(
+      redactSensitiveLogText(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk),
+      'utf8'
+    )
     for (const destination of this.destinations) {
       try {
-        destination.write(chunk, encoding)
+        destination.write(safeChunk)
       } catch {
       }
     }
@@ -480,20 +490,48 @@ const loggerOptions: LoggerOptions = {
       'password',
       'secret',
       'token',
+      'api_key',
+      'access_token',
+      'refresh_token',
+      'proxyAuthorization',
+      'proxy_authorization',
+      'xApiKey',
+      'x_api_key',
       'accessToken',
       'refreshToken',
       'apiKey',
       'headers.authorization',
       'headers.cookie',
       'headers.set-cookie',
+      'headers.api_key',
+      'headers.access_token',
+      'headers.refresh_token',
+      'headers.proxyAuthorization',
+      'headers.proxy_authorization',
+      'headers.xApiKey',
+      'headers.x_api_key',
       'req.headers.authorization',
       'req.headers.cookie',
       'req.headers.set-cookie',
+      'req.headers.api_key',
+      'req.headers.access_token',
+      'req.headers.refresh_token',
+      'req.headers.proxyAuthorization',
+      'req.headers.proxy_authorization',
+      'req.headers.xApiKey',
+      'req.headers.x_api_key',
       '*.authorization',
       '*.cookie',
       '*.password',
       '*.secret',
       '*.token',
+      '*.api_key',
+      '*.access_token',
+      '*.refresh_token',
+      '*.proxyAuthorization',
+      '*.proxy_authorization',
+      '*.xApiKey',
+      '*.x_api_key',
       '*.accessToken',
       '*.refreshToken',
       '*.apiKey'
@@ -522,14 +560,37 @@ export function installProcessLogHandlers(): void {
   })
 
   process.on('uncaughtException', (error) => {
-    logger.fatal({ event: 'process_uncaught_exception', err: error }, '未捕获异常')
+    logger.fatal(errorLogFields(error, { event: 'process_uncaught_exception' }), '未捕获异常')
     setImmediate(() => process.exit(1))
   })
 }
 
 export function errorLogFields(error: unknown, fields: Record<string, unknown> = {}): Record<string, unknown> {
   if (error instanceof Error) {
-    return { ...fields, err: error }
+    return { ...fields, err: sanitizeSerializedError(pino.stdSerializers.err(error) as Record<string, unknown>) }
   }
-  return { ...fields, errorMessage: String(error) }
+  return { ...fields, errorMessage: redactSensitiveLogText(String(error)) }
+}
+
+function sanitizeSerializedError(error: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(error).map(([key, value]) => [
+      key,
+      typeof value === 'string' ? redactSensitiveLogText(value) : value
+    ])
+  )
+}
+
+function redactSensitiveLogText(value: string): string {
+  return value
+    .replace(sensitiveJsonStringFieldPattern, '$1[redacted]$3')
+    .replace(sensitiveHeaderValuePattern, (_match, name: string, separator: string) => `${name}${separator} [redacted]`)
+    .replace(sensitiveQueryValuePattern, '$1=[redacted]')
+    .replace(bearerTokenPattern, 'Bearer [redacted]')
+    .replace(jwtTokenPattern, '[redacted]')
+    .replace(openAiSecretKeyPattern, '[redacted]')
+}
+
+export function redactSensitiveLogTextForTest(value: string): string {
+  return redactSensitiveLogText(value)
 }

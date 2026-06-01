@@ -103,10 +103,34 @@ const usageLatencyTimeBuckets: TimeBucketDefinition[] = [
 const latencyBucketUpperBoundsMs = [100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000, -1] as const
 
 export function createUsageStatsAggregationContext(rows: UsageStatsRecordRow[]): UsageStatsAggregationContext {
-  const accountAuthorizationIds = uniqueIds(rows.map((row) => row.account_authorization_id))
-  return {
-    ...loadUsageStatsAccountAuthorizationLookup(accountAuthorizationIds)
+  const context: UsageStatsAggregationContext = {
+    accountAuthorizationResourceIds: new Map(),
+    accountAuthorizationInstanceAccountIds: new Map()
   }
+  extendUsageStatsAggregationContext(context, rows)
+  return context
+}
+
+export function extendUsageStatsAggregationContext(context: UsageStatsAggregationContext, rows: UsageStatsRecordRow[]): UsageStatsAggregationContext {
+  const accountAuthorizationIds = uniqueIds(rows.map((row) => row.account_authorization_id))
+    .filter((id) => !context.accountAuthorizationResourceIds?.has(id))
+  if (!context.accountAuthorizationResourceIds) {
+    context.accountAuthorizationResourceIds = new Map()
+  }
+  if (!context.accountAuthorizationInstanceAccountIds) {
+    context.accountAuthorizationInstanceAccountIds = new Map()
+  }
+  if (!accountAuthorizationIds.length) {
+    return context
+  }
+  const lookup = loadUsageStatsAccountAuthorizationLookup(accountAuthorizationIds)
+  for (const [id, resourceId] of lookup.accountAuthorizationResourceIds) {
+    context.accountAuthorizationResourceIds.set(id, resourceId)
+  }
+  for (const [id, instanceAccountId] of lookup.accountAuthorizationInstanceAccountIds ?? new Map<string, string>()) {
+    context.accountAuthorizationInstanceAccountIds.set(id, instanceAccountId)
+  }
+  return context
 }
 
 function loadUsageStatsAccountAuthorizationLookup(accountAuthorizationIds: string[]): UsageStatsAuthorizationLookup & { accountAuthorizationResourceIds: Map<string, string> } {

@@ -13,7 +13,6 @@ import { compactAccountCredentials } from './accountFormDefaults'
 const oauthCredentialMetadataKeys = [
   'expires_at',
   'client_id',
-  'id_token',
   'email',
   'account_id',
   'chatgpt_user_id',

@@ -16,6 +16,7 @@ import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
+import { createCorsOriginDelegate } from './shared/http-security.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { sendRuntimeLogLineToWorker } from './modules/background/background-ipc.js'
 
@@ -87,8 +88,12 @@ setRuntimeLogLineSink((line, options) => sendRuntimeLogLineToWorker(line, option
 startDbServiceSupervisor()
 startBackgroundWorkerSupervisor()
 
+if (runtimeConfig.httpSecurity.trustProxy !== false) {
+  app.set('trust proxy', runtimeConfig.httpSecurity.trustProxy)
+}
+
 app.use(requestContextMiddleware)
-app.use(cors({ credentials: true, origin: true }))
+app.use(cors({ credentials: true, origin: createCorsOriginDelegate() }))
 
 app.get(`${systemPrefix}/health`, (_req, res) => {
   res.json({ status: 'ok', service: 'juhe-ai' })

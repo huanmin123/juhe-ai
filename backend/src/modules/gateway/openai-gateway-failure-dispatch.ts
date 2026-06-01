@@ -1,7 +1,6 @@
 import type { Request } from 'express'
 
-import { errorLogFields } from '../../shared/logger.js'
-import { getRequestLogger } from '../../shared/request-context.js'
+import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import {
   decideAccountErrorPolicy,
   parseErrorPayload,
@@ -40,6 +39,7 @@ import {
   recordGatewayUpstreamBucketFailure
 } from './openai-gateway-proxy-health.service.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
+import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 export type AccountFailureInput = {
   success: false
@@ -116,20 +116,21 @@ export async function handleFailedUpstreamResponse(
   const responseBody = responseBodyRead.body
   const responseBodyText = responseBodyRead.bodyText
   const diagnosticResponseBodyText = responseBodyRead.diagnosticBodyText
+  const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
   if (responseBodyRead.truncated) {
     logGatewayFailureWarning(usageContext, {
       event: 'gateway_upstream_retry_error_body_truncated',
       accountId: account.id,
       statusCode: response.status,
       readBytes: responseBodyRead.readBytes,
-      upstreamUrl
+      upstreamUrl: safeUpstreamUrl
     }, '上游失败响应体超过网关捕获上限，已截断用于重试诊断')
   }
   logGatewayFailureWarning(usageContext, {
     event: 'gateway_upstream_response_failed',
     accountId: account.id,
     accountType: account.type,
-    upstreamUrl,
+    upstreamUrl: safeUpstreamUrl,
     attemptIndex,
     auditAttemptIndex,
     statusCode: response.status,
@@ -183,6 +184,8 @@ export async function handleFailedUpstreamResponse(
   if (!responseBodyRead.truncated) {
     parsedError = parseErrorPayload(responseBodyText, response.headers)
   }
+  const parsedErrorMessage = sanitizeDiagnosticPayload(stringValue(parsedError.message))
+  const diagnosticErrorMessage = sanitizeDiagnosticPayload(diagnosticResponseBodyText)
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
   const upstreamBucketFailure = accountStateMutationEnabled && usageContext.trafficSource === 'gateway'
@@ -212,7 +215,7 @@ export async function handleFailedUpstreamResponse(
       statusCode: response.status,
       reason: responseBodyRead.truncated
         ? `上游账号返回非成功状态：HTTP ${response.status}`
-        : stringValue(parsedError.message) || diagnosticResponseBodyText || `上游账号返回非成功状态：HTTP ${response.status}`
+        : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`
     })
   }
 
@@ -221,7 +224,7 @@ export async function handleFailedUpstreamResponse(
     errorCode: stringValue(parsedError.code) || undefined,
     errorType: stringValue(parsedError.type) || undefined,
     errorPhase: 'upstream_response',
-    errorMessage: stringValue(parsedError.message) || diagnosticResponseBodyText || undefined,
+    errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
     endpoint: requestEndpoint(req)
   })
 
@@ -278,17 +281,21 @@ export async function handleUpstreamRequestError(
     throw error
   }
 
-  const message = formatUpstreamRequestErrorMessage(error)
-  logGatewayFailureWarning(usageContext, errorLogFields(error, {
+  const message = sanitizeDiagnosticPayload(formatUpstreamRequestErrorMessage(error))
+  const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
+  logGatewayFailureWarning(usageContext, {
     event: 'gateway_upstream_request_failed',
     accountId: account.id,
     accountType: account.type,
-    upstreamUrl,
+    upstreamUrl: safeUpstreamUrl,
     attemptIndex,
     auditAttemptIndex,
     elapsedMs: Date.now() - attemptStartedAt,
-    stream: isEffectiveOpenAIStreamRequest(req, account)
-  }), '网关请求上游失败')
+    stream: isEffectiveOpenAIStreamRequest(req, account),
+    errorName: sanitizeOptionalDiagnosticPayload(error instanceof Error ? error.name : objectStringProperty(error, 'name')),
+    errorCode: sanitizeOptionalDiagnosticPayload(objectStringProperty(error, 'code')),
+    errorMessage: message
+  }, '网关请求上游失败')
   const lastAttempt: UpstreamAttempt = {
     accountId: account.id,
     accountName: account.name,
@@ -301,7 +308,7 @@ export async function handleUpstreamRequestError(
     errorMessage: message
   })
   recordFailedUpstreamAttempt(req, usageContext, account, {
-    upstreamUrl,
+    upstreamUrl: safeUpstreamUrl,
     startedAt: attemptStartedAt,
     errorMessage: message
   })
@@ -390,6 +397,10 @@ function objectStringProperty(value: unknown, key: string): string | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+function sanitizeOptionalDiagnosticPayload(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : sanitizeDiagnosticPayload(value)
 }
 
 function isRealUpstreamUrl(value: string): boolean {

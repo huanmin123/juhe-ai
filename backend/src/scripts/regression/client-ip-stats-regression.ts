@@ -272,6 +272,24 @@ try {
   assert.equal(refreshedIpv4Row.rangeUsage.requestCount, 3, '窗口重新刷新后应包含新增 IP 用量')
   assert.equal(refreshedIpv4Row.rangeUsage.maxDurationMs, 400, '窗口重新刷新后最大总耗时应更新')
 
+  statsDatabase.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, last_success_at, updated_at)
+    VALUES ('client_ip_range_window', ?, 'client_ip_range_window_refresh', NULL, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      last_success_at = NULL,
+      updated_at = excluded.updated_at
+  `).run(`${today}:${today}`, new Date().toISOString())
+  statsDatabase.prepare('DELETE FROM client_ip_range_window_dirty_ips').run()
+  clientIpStats.clearClientIpRangeWindowDirtyMemoryForTest()
+  const staleWithoutDirtyList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
+  assert.equal(staleWithoutDirtyList.rangeReady, false, '窗口 stale 但 dirty 为空时列表应继续标记未就绪')
+  clientIpStats.refreshClientIpUsageRangeWindows()
+  const selfHealedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10, sortField: 'requestCount', sortOrder: 'desc' })
+  const selfHealedIpv4Row = selfHealedList.items.find((item) => item.ipHash === ipv4Identity.ipHash)
+  assert.equal(selfHealedList.rangeReady, true, '窗口 stale 且 dirty 为空时后台刷新应完整重建并恢复 ready')
+  assert(selfHealedIpv4Row, '自愈重建后 IPv4 行应继续可见')
+  assert.equal(selfHealedIpv4Row.rangeUsage.requestCount, 3, '自愈重建后不应丢失已聚合用量')
+
   const ipKeywordList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, keyword: '203.0.113', pageSize: 10 })
   assert.equal(ipKeywordList.pageUpperBound, 1, 'IP 管理搜索应支持按 IP 前缀命中')
   const hashKeywordList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, keyword: ipv4Identity.ipHash, pageSize: 10 })

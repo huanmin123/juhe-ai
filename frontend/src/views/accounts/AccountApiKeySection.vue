@@ -3,11 +3,12 @@
     <div class="form-section-head">
       <div>
         <h4>{{ title }} 配置</h4>
-        <p>API Key 会完整保存在本地；列表不展示，编辑弹窗可通过显示按钮查看和修改。</p>
+        <p v-if="editing">API Key 不会回显；留空表示保留原凭据，填写新值则替换。</p>
+        <p v-else>API Key 会加密保存在本地；创建后不会在页面回显。</p>
       </div>
     </div>
-    <a-form-item label="API Key" required>
-      <a-input-password v-model:value="form.apiKey" autocomplete="off" placeholder="粘贴完整 API Key" />
+    <a-form-item label="API Key" :required="!editing">
+      <a-input-password v-model:value="form.apiKey" autocomplete="off" :placeholder="editing ? '留空保留原 API Key' : '粘贴完整 API Key'" />
     </a-form-item>
     <a-form-item label="Base URL" required>
       <a-input v-model:value="form.baseUrl" :placeholder="baseUrlPlaceholder" />
@@ -20,6 +21,7 @@ import type { AccountFormModel } from './accountFormTypes'
 
 defineProps<{
   baseUrlPlaceholder: string
+  editing: boolean
   form: AccountFormModel
   title: string
 }>()

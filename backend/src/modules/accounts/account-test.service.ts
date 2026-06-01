@@ -14,6 +14,7 @@ import {
 } from '../../storage/repositories.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
+import { sanitizeDiagnosticPayload } from '../gateway/payload-sanitizer.js'
 import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
 import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-effects.service.js'
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
@@ -96,7 +97,7 @@ export async function testOpenAIAccount(
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
     const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
-    return accountTestResultWithDiagnosticsMode({
+    return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
       accountName: account.name,
       providerCode: account.providerCode,
@@ -123,11 +124,11 @@ export async function testOpenAIAccount(
       accountStatusChanged: finalAccountStatus !== account.status,
       accountStatus: finalAccountStatus,
       accountFailureEligible: !success
-    }, limitedDiagnostics)
+    }), limitedDiagnostics)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OpenAI Responses 测试失败'
     const accountFailureEligible = accountTestFailureEligible(error)
-    return accountTestResultWithDiagnosticsMode({
+    return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
       accountName: account.name,
       providerCode: account.providerCode,
@@ -144,8 +145,12 @@ export async function testOpenAIAccount(
       accountStatusChanged: false,
       accountStatus: account.status,
       accountFailureEligible
-    }, limitedDiagnostics)
+    }), limitedDiagnostics)
   }
+}
+
+function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult {
+  return sanitizeDiagnosticPayload(result)
 }
 
 function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited: boolean): AccountTestResult {
@@ -493,7 +498,7 @@ function createOpenAIChatCompletionsTestPayload(model: string, prompt: string, s
 function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret): boolean | undefined {
   if (original.type !== 'oauth') return false
   const before = stringValue(original.credentials.access_token)
-  const after = stringValue(resolved.credentials.access_token)
+  const after = stringValue(resolved.apiKey)
   return Boolean(after && before !== after)
 }
 

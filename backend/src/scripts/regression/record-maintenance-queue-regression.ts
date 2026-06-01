@@ -49,7 +49,7 @@ try {
   await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(usageRecordCount('usage_cleanup_regression'), 1, '统计安全游标未就绪时不应删除使用记录')
 
-  seedUsageStatsCleanupCursors('2000-01-01T00:00:00.000Z', 'usage_cleanup_regression')
+  seedUsageStatsCleanupCursors('2000-01-01T00:00:01.000Z', 'usage_cleanup_regression')
   recordMaintenanceQueue.enqueueRecordMaintenanceJob({
     type: 'usage_records_cleanup',
     id: 'recmaint_usage_cleanup_regression_after_cursor',
@@ -139,7 +139,7 @@ try {
   seedAccount('acct_codex_snapshot_retry_0', 'sys_admin')
   seedAccount('acct_codex_snapshot_retry_1', 'sys_admin')
   seedUsageRecord('usage_cleanup_retry_guard', '2000-01-01T00:00:00.000Z')
-  seedUsageStatsCleanupCursors('2000-01-01T00:00:00.000Z', 'usage_cleanup_retry_guard')
+  seedUsageStatsCleanupCursors('2000-01-01T00:00:01.000Z', 'usage_cleanup_retry_guard')
   let failedSnapshotUpsertPrepares = 0
   statsDatabase.prepare = ((sql: string) => {
     if (/^\s*INSERT\s+INTO\s+account_usage_snapshots\b/i.test(sql)) {
@@ -288,6 +288,14 @@ function seedUsageRecord(id: string, createdAt: string): void {
       VALUES (?, 'sys_admin', ?, 'gateway', 0, 1, ?)
     `)
     .run(id, `trace_${id}`, createdAt)
+  usageRecordShards.recordUsageRecordShardEntries([{
+    id,
+    shardKey: location.shardKey,
+    systemAccountId: 'sys_admin',
+    trafficSource: 'gateway',
+    success: true,
+    createdAt
+  }])
 }
 
 function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string): void {

@@ -85,7 +85,9 @@ export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAcc
     return cached ? cloneGroupUsageAccessMetadata(cached) : undefined
   }
   const value = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
-  groupUsageAccessCache.set(cacheKey, value ? cloneGroupUsageAccessMetadata(value) : false)
+  groupUsageAccessCache.set(cacheKey, value ? cloneGroupUsageAccessMetadata(value) : false, value ? {
+    ttlMs: groupUsageAccessCacheTtlMs(value)
+  } : undefined)
   return value ? cloneGroupUsageAccessMetadata(value) : undefined
 }
 
@@ -100,7 +102,9 @@ export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string
     groupId,
     systemAccountId
   })
-  groupUsageAccessCache.set(cacheKey, value ? cloneGroupUsageAccessMetadata(value) : false)
+  groupUsageAccessCache.set(cacheKey, value ? cloneGroupUsageAccessMetadata(value) : false, value ? {
+    ttlMs: groupUsageAccessCacheTtlMs(value)
+  } : undefined)
   return value ? cloneGroupUsageAccessMetadata(value) : undefined
 }
 
@@ -112,8 +116,9 @@ export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountI
     return cloneOpenAIAccountsWithCurrentConcurrency(cached)
   }
   const value = listOpenAIAccountsForGroupResult(groupId, systemAccountId)
-  openAIAccountsCache.set(cacheKey, value.accounts.map(cloneStaticOpenAIAccountSecret), {
-    ttlMs: openAIAccountsCacheTtlMs(value.hasAccountAvailabilitySchedule)
+  const accounts = value.accounts.map(cloneStaticOpenAIAccountSecret)
+  openAIAccountsCache.set(cacheKey, accounts, {
+    ttlMs: openAIAccountsCacheTtlMs(value.hasAccountAvailabilitySchedule, Date.now(), accounts)
   })
   return cloneOpenAIAccountsWithCurrentConcurrency(value.accounts)
 }
@@ -129,8 +134,9 @@ export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, sys
     groupId,
     systemAccountId
   })
-  openAIAccountsCache.set(cacheKey, result.accounts.map(cloneStaticOpenAIAccountSecret), {
-    ttlMs: openAIAccountsCacheTtlMs(result.hasAccountAvailabilitySchedule)
+  const accounts = result.accounts.map(cloneStaticOpenAIAccountSecret)
+  openAIAccountsCache.set(cacheKey, accounts, {
+    ttlMs: openAIAccountsCacheTtlMs(result.hasAccountAvailabilitySchedule, Date.now(), accounts)
   })
   return cloneOpenAIAccountsWithCurrentConcurrency(result.accounts)
 }
@@ -237,11 +243,14 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
   }
   gatewaySettingsCache.set('current', runtime.settings)
   if (runtime.groupAccess) {
-    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), cloneGroupUsageAccessMetadata(runtime.groupAccess))
+    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), cloneGroupUsageAccessMetadata(runtime.groupAccess), {
+      ttlMs: groupUsageAccessCacheTtlMs(runtime.groupAccess, nowMs)
+    })
   }
   if (runtime.groupAccess && !isRuntimeApiKeyScheduleInactive(runtime)) {
-    openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), runtime.accounts.map(cloneStaticOpenAIAccountSecret), {
-      ttlMs: openAIAccountsCacheTtlMs(runtime.hasAccountAvailabilitySchedule === true)
+    const accounts = runtime.accounts.map(cloneStaticOpenAIAccountSecret)
+    openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), accounts, {
+      ttlMs: openAIAccountsCacheTtlMs(runtime.hasAccountAvailabilitySchedule === true, nowMs, accounts)
     })
   }
 }
@@ -329,8 +338,29 @@ function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime, now = Date.n
   return Math.max(1, ttlMs)
 }
 
-function openAIAccountsCacheTtlMs(hasAccountAvailabilitySchedule: boolean, now = Date.now()): number {
-  return hasAccountAvailabilitySchedule ? availabilityScheduleCacheTtlMs(now) : openAIAccountsTtlMs
+function groupUsageAccessCacheTtlMs(value: GroupUsageAccessMetadata, now = Date.now()): number {
+  return ttlBoundedByIsoExpiries(groupUsageAccessTtlMs, [value.groupAuthorizationExpiresAt], now)
+}
+
+function openAIAccountsCacheTtlMs(hasAccountAvailabilitySchedule: boolean, now = Date.now(), accounts: OpenAIAccountSecret[] = []): number {
+  const ttlMs = hasAccountAvailabilitySchedule ? availabilityScheduleCacheTtlMs(now) : openAIAccountsTtlMs
+  return ttlBoundedByIsoExpiries(ttlMs, accounts.flatMap((account) => [
+    account.accountExpiresAt,
+    account.expiresAt,
+    account.accountAuthorizationExpiresAt,
+    account.groupAuthorizationExpiresAt
+  ]), now)
+}
+
+function ttlBoundedByIsoExpiries(baseTtlMs: number, expiresAtValues: Array<string | undefined>, now = Date.now()): number {
+  let ttlMs = baseTtlMs
+  for (const expiresAt of expiresAtValues) {
+    if (!expiresAt) continue
+    const expiresAtMs = Date.parse(expiresAt)
+    if (!Number.isFinite(expiresAtMs)) continue
+    ttlMs = Math.min(ttlMs, expiresAtMs - now)
+  }
+  return Math.max(1, ttlMs)
 }
 
 function runtimeCacheExpiryCandidates(runtime: DbServiceGatewayRuntime): string[] {

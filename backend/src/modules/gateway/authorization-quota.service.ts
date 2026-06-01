@@ -7,7 +7,7 @@ import { chunkValues, sqlPlaceholders } from '../../storage/query-utils.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import { readGatewayAuthorizationQuotaSnapshot } from './gateway-quota-snapshot-cache.service.js'
+import { isGatewayAuthorizationSnapshotIncomplete, readGatewayAuthorizationQuotaSnapshot } from './gateway-quota-snapshot-cache.service.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
 
 export const AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
@@ -64,7 +64,7 @@ const authorizationQuotaCache = createAppCache<string, AuthorizationQuotaCacheEn
   name: 'gateway:authorization-quota',
   max: 10000,
   ttlMs: AUTHORIZATION_QUOTA_CACHE_TTL_MS,
-  updateAgeOnGet: true
+  updateAgeOnGet: false
 })
 
 export function checkGatewayAuthorizationQuota(input: {
@@ -86,13 +86,19 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
   if (!input.groupAccess.groupAuthorizationId && !input.account?.accountAuthorizationId) {
     return { allowed: true }
   }
-  const cacheKey = authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, input.account?.accountAuthorizationId)
+  const now = new Date()
+  const cacheKey = authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, input.account?.accountAuthorizationId, now)
   const cached = authorizationQuotaCache.get(cacheKey)
   if (cached) {
     return cached
   }
   if (runtimeConfig.processRole === 'server') {
-    const decision = authorizationQuotaDecisionFromSnapshot(input.groupAccess.groupAuthorizationId, input.account?.accountAuthorizationId)
+    const decision = authorizationQuotaDecisionFromSnapshot({
+      groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+      groupAuthorizationQuotaLimited: input.groupAccess.groupAuthorizationQuotaLimited,
+      accountAuthorizationId: input.account?.accountAuthorizationId,
+      accountAuthorizationQuotaLimited: input.account?.accountAuthorizationQuotaLimited
+    })
     authorizationQuotaCache.set(cacheKey, {
       ...decision,
       checkedAtMs: Date.now()
@@ -116,6 +122,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
   accounts: OpenAIAccountSecret[]
 }): Promise<Map<string, AuthorizationQuotaDecision>> {
   const hasGroupAuthorizationQuota = Boolean(input.groupAccess.groupAuthorizationId)
+  const now = new Date()
   const accountsToCheck = hasGroupAuthorizationQuota
     ? input.accounts
     : input.accounts.filter((account) => Boolean(account.accountAuthorizationId))
@@ -127,7 +134,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
   const missingCacheKeys = new Map<string, string>()
   const requestedMissingCacheKeys = new Set<string>()
   for (const account of accountsToCheck) {
-    const cacheKey = authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, account.accountAuthorizationId)
+    const cacheKey = authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, account.accountAuthorizationId, now)
     const cached = authorizationQuotaCache.get(cacheKey)
     if (cached) {
       cachedDecisionsByAccountId.set(account.id, cached)
@@ -154,7 +161,12 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     }
     for (const account of missingAccounts) {
       const cacheKey = missingCacheKeys.get(account.id)
-      const decision = authorizationQuotaDecisionFromSnapshot(input.groupAccess.groupAuthorizationId, account.accountAuthorizationId)
+      const decision = authorizationQuotaDecisionFromSnapshot({
+        groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+        groupAuthorizationQuotaLimited: input.groupAccess.groupAuthorizationQuotaLimited,
+        accountAuthorizationId: account.accountAuthorizationId,
+        accountAuthorizationQuotaLimited: account.accountAuthorizationQuotaLimited
+      })
       output.set(account.id, decision)
       if (cacheKey) {
         authorizationQuotaCache.set(cacheKey, {
@@ -166,7 +178,12 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     for (const [accountId, cacheKey] of missingCacheKeys.entries()) {
       if (!output.has(accountId)) {
         const account = accountsToCheck.find((item) => item.id === accountId)
-        const decision = authorizationQuotaDecisionFromSnapshot(input.groupAccess.groupAuthorizationId, account?.accountAuthorizationId)
+        const decision = authorizationQuotaDecisionFromSnapshot({
+          groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+          groupAuthorizationQuotaLimited: input.groupAccess.groupAuthorizationQuotaLimited,
+          accountAuthorizationId: account?.accountAuthorizationId,
+          accountAuthorizationQuotaLimited: account?.accountAuthorizationQuotaLimited
+        })
         output.set(accountId, decision)
         authorizationQuotaCache.set(cacheKey, {
           ...decision,
@@ -289,16 +306,17 @@ function authorizationQuotaCostChecksForAuthorizationRow(row: AuthorizationQuota
   const limits = parseRequestQuotaLimitsJson(row.limits_json)
   if (!hasEnabledRequestQuotaLimit(limits)) return []
   const systemAccountId = authorizationQuotaStatsSystemAccountId(row, scopeType)
+  const costInput = {
+    systemAccountId,
+    scopeType,
+    scopeId: row.id,
+    now,
+    hourlyWindowHours: limits.hourly?.hours
+  }
   return [{
-    cacheKey: `authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${row.id}\u0000${row.limits_json ?? ''}`,
+    cacheKey: `authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${row.id}\u0000${requestQuotaCostKey(costInput)}\u0000${row.limits_json ?? ''}`,
     limits,
-    costInput: {
-      systemAccountId,
-      scopeType,
-      scopeId: row.id,
-      now,
-      hourlyWindowHours: limits.hourly?.hours
-    }
+    costInput
   }]
 }
 
@@ -309,16 +327,17 @@ function authorizationQuotaCostChecksForTeamRow(row: TeamAuthorizationQuotaRow, 
   const resourceId = teamAuthorizationResourceId(row, scopeType)
   if (!resourceId) return []
   const scopeId = `${resourceId}:${teamId}`
+  const costInput = {
+    systemAccountId,
+    scopeType: teamAuthorizationScopeType(scopeType),
+    scopeId,
+    now,
+    hourlyWindowHours: limits.hourly?.hours
+  }
   return [{
-    cacheKey: `team_authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${teamId}\u0000${row.id}\u0000${row.limits_json ?? ''}`,
+    cacheKey: `team_authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${teamId}\u0000${row.id}\u0000${requestQuotaCostKey(costInput)}\u0000${row.limits_json ?? ''}`,
     limits,
-    costInput: {
-      systemAccountId,
-      scopeType: teamAuthorizationScopeType(scopeType),
-      scopeId,
-      now,
-      hourlyWindowHours: limits.hourly?.hours
-    }
+    costInput
   }]
 }
 
@@ -445,18 +464,34 @@ function authorizationQuotaScopeKey(authorizationId: string, scopeType: Authoriz
   return `${scopeType}\u0000${authorizationId}`
 }
 
-function authorizationQuotaRuntimeCacheKey(groupAuthorizationId?: string, accountAuthorizationId?: string): string {
-  return `runtime_authorization_quota\u0000${groupAuthorizationId ?? ''}\u0000${accountAuthorizationId ?? ''}`
+function authorizationQuotaRuntimeCacheKey(groupAuthorizationId?: string, accountAuthorizationId?: string, now = new Date()): string {
+  return `runtime_authorization_quota\u0000${groupAuthorizationId ?? ''}\u0000${accountAuthorizationId ?? ''}\u0000${requestQuotaCostKey({
+    systemAccountId: '',
+    scopeType: 'authorization_runtime',
+    scopeId: '',
+    now
+  })}`
 }
 
-function authorizationQuotaDecisionFromSnapshot(groupAuthorizationId?: string, accountAuthorizationId?: string): AuthorizationQuotaDecision {
-  const groupDecision = readGatewayAuthorizationQuotaSnapshot('group_authorization', groupAuthorizationId)
+function authorizationQuotaDecisionFromSnapshot(input: {
+  groupAuthorizationId?: string
+  groupAuthorizationQuotaLimited?: boolean
+  accountAuthorizationId?: string
+  accountAuthorizationQuotaLimited?: boolean
+}): AuthorizationQuotaDecision {
+  const groupDecision = readGatewayAuthorizationQuotaSnapshot('group_authorization', input.groupAuthorizationId)
   if (groupDecision && !groupDecision.allowed) {
     return groupDecision
   }
-  const accountDecision = readGatewayAuthorizationQuotaSnapshot('account_authorization', accountAuthorizationId)
+  if (input.groupAuthorizationId && input.groupAuthorizationQuotaLimited && !groupDecision && isGatewayAuthorizationSnapshotIncomplete()) {
+    return { allowed: false, message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE }
+  }
+  const accountDecision = readGatewayAuthorizationQuotaSnapshot('account_authorization', input.accountAuthorizationId)
   if (accountDecision && !accountDecision.allowed) {
     return accountDecision
+  }
+  if (input.accountAuthorizationId && input.accountAuthorizationQuotaLimited && !accountDecision && isGatewayAuthorizationSnapshotIncomplete()) {
+    return { allowed: false, message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE }
   }
   return { allowed: true }
 }

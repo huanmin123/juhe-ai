@@ -17,6 +17,7 @@ runtimeConfig.secret = 'client-ip-account-avoidance-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -337,6 +338,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
 
 function createGatewayServer(): http.Server {
   const app = express()
+  app.set('trust proxy', 1)
   app.use(requestContextMiddleware)
   app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
   return http.createServer(app)

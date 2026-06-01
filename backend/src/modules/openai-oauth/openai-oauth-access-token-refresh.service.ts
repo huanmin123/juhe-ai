@@ -20,6 +20,7 @@ import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.servi
 import {
   buildOpenAIOAuthCredentials,
   refreshOpenAIOAuthToken,
+  sanitizeOpenAIOAuthErrorMessage,
   type OpenAITokenInfo
 } from './openai-oauth.service.js'
 
@@ -531,7 +532,7 @@ function stringCredential(credentials: Record<string, unknown>, key: string): st
 }
 
 function errorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : 'OpenAI OAuth 访问令牌刷新失败'
+  const message = sanitizeOpenAIOAuthErrorMessage(error instanceof Error ? error.message : 'OpenAI OAuth 访问令牌刷新失败')
   return message.length > 240 ? `${message.slice(0, 237)}...` : message
 }
 

@@ -6,10 +6,11 @@ import { createUsageRecordsBatch, type UsageRecordInput } from '../../storage/re
 import { generateUsageRecordId } from '../../storage/usage-record-shards.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { sanitizeUrlForLog } from '../../shared/request-context.js'
+import { sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../background/background-ipc.js'
 import { isSensitiveHeaderName } from './openai-gateway-usage.js'
+import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
@@ -204,6 +205,8 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
   return {
     ...input,
     id: input.id ?? generateUsageRecordId(createdAt, randomUUID()),
+    errorCode: sanitizeUsageRecordErrorMessage(input.errorCode),
+    errorMessage: sanitizeUsageRecordErrorMessage(input.errorMessage),
     requestSnapshot: sanitizeUsageRecordSnapshot(input.requestSnapshot),
     responseSnapshot: sanitizeUsageRecordSnapshot(input.responseSnapshot),
     createdAt
@@ -240,6 +243,10 @@ function sanitizeUsageRecordSnapshot(value: unknown): unknown {
     truncated: false,
     seen: new WeakSet<object>()
   })
+}
+
+function sanitizeUsageRecordErrorMessage(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : sanitizeDiagnosticPayload(value)
 }
 
 function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext): unknown {
@@ -316,17 +323,18 @@ function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext)
 }
 
 function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext): string {
+  const sanitized = sanitizeDiagnosticPayload(value)
   const remaining = Math.max(0, usageSnapshotMaxBytes - context.bytes)
   const limit = Math.min(usageSnapshotMaxStringBytes, remaining)
-  const bytes = boundedStringByteLength(value, limit + 1)
+  const bytes = boundedStringByteLength(sanitized, limit + 1)
   if (bytes <= limit) {
     context.bytes += bytes
-    return value
+    return sanitized
   }
   context.truncated = true
   const suffix = `...[truncated ${bytes - limit} bytes]`
   const prefixBytes = Math.max(0, limit - Buffer.byteLength(suffix, 'utf8'))
-  const truncated = sliceStringByUtf8Bytes(value, prefixBytes)
+  const truncated = sliceStringByUtf8Bytes(sanitized, prefixBytes)
   context.bytes += boundedStringByteLength(truncated, prefixBytes) + Buffer.byteLength(suffix, 'utf8')
   return `${truncated}${suffix}`
 }
@@ -336,7 +344,7 @@ function sanitizeSnapshotField(key: string, value: unknown): unknown {
     return redactedSnapshotSensitiveValue(value)
   }
   if (isUrlSnapshotFieldName(key) && typeof value === 'string') {
-    return sanitizeUrlForLog(value)
+    return sanitizeUrlCredentialsForLog(value)
   }
   return value
 }
@@ -366,10 +374,16 @@ const sensitiveSnapshotFieldNames = new Set([
   'apikey',
   'openaiapikey',
   'password',
+  'key',
   'secret',
   'token',
   'accesstoken',
   'refreshtoken',
+  'idtoken',
+  'clientsecret',
+  'codeverifier',
+  'credential',
+  'credentials',
   'session'
 ])
 

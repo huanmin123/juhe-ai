@@ -88,6 +88,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const providerModelOptions = ref<SelectOption[]>([])
   const providerModelsLoading = ref(false)
   const providerModelOptionsCache = new Map<string, SelectOption[]>()
+  let formOpenRequestToken = 0
 
   const createScopeParams = computed<AccountScopeParams>(() => creatingAccountScopeParams.value ?? options.accountScopeParams.value)
   const targetSystemAccountLabel = computed(() => {
@@ -176,6 +177,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function openCreate() {
+    nextFormOpenRequestToken()
     if (options.isManagementView.value && !options.accountScopeParams.value?.systemAccountId) {
       message.warning('请先在右侧选择目标系统账户，再创建 AI 账户')
       return
@@ -233,49 +235,54 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     authResult.value = undefined
   }
 
-  function openEdit(account: AccountSummary) {
+  async function openEdit(account: AccountSummary) {
+    const requestToken = nextFormOpenRequestToken()
     const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
-    const defaults = defaultForm(account.providerCode, account.type)
-    const baseUrl = isAuthorizedAccount(account)
+    const sourceAccount = isAuthorizedAccount(account)
+      ? account
+      : await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
+    if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
+    const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type)
+    const baseUrl = isAuthorizedAccount(sourceAccount)
       ? defaults.baseUrl
-      : credentialBaseUrlForForm(account.credentials, '账户凭据')
-    const policyRules = loadCredentialPolicyRules(account.credentials, '账户策略')
+      : credentialBaseUrlForForm(sourceAccount.credentials, '账户详情凭据')
+    const policyRules = loadCredentialPolicyRules(sourceAccount.credentials, '账户详情策略')
     if (!baseUrl || !policyRules) return
-    const selectedGroup = account.boundGroupId
-      ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
+    const selectedGroup = sourceAccount.boundGroupId
+      ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
       : undefined
     let accountExpiresAt: AccountFormModel['accountExpiresAt']
     let availabilitySchedule: AccountFormModel['availabilitySchedule']
     try {
-      accountExpiresAt = parseStrictDatePickerValue(account.accountExpiresAt, '账户过期时间')
-      availabilitySchedule = createAccountAvailabilityScheduleForm(account.availabilitySchedule)
+      accountExpiresAt = parseStrictDatePickerValue(sourceAccount.accountExpiresAt, '账户过期时间')
+      availabilitySchedule = createAccountAvailabilityScheduleForm(sourceAccount.availabilitySchedule)
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '账户数据结构异常，请清理后再编辑'))
       return
     }
-    editingId.value = account.id
-    editingAccountDetail.value = account
+    editingId.value = sourceAccount.id
+    editingAccountDetail.value = sourceAccount
     cloningSourceId.value = undefined
     creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(editScopeParams?.systemAccountId)
     Object.assign(form, defaults, {
-      providerCode: account.providerCode,
-      name: account.name,
-      type: account.type,
-      concurrencyLimit: account.concurrencyLimit,
-      priority: account.priority,
-      proxyProfileId: account.proxyProfileId,
+      providerCode: sourceAccount.providerCode,
+      name: sourceAccount.name,
+      type: sourceAccount.type,
+      concurrencyLimit: sourceAccount.concurrencyLimit,
+      priority: sourceAccount.priority,
+      proxyProfileId: sourceAccount.proxyProfileId,
       accountExpiresAt,
-      groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
+      groupId: selectedGroup?.id ?? options.groupIdForAccount(sourceAccount.id),
       group: selectedGroup,
-      apiKey: isAuthorizedAccount(account) ? '' : asString(account.credentials.api_key),
+      apiKey: '',
       baseUrl,
-      accessToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.access_token),
-      refreshToken: isAuthorizedAccount(account) ? '' : asString(account.credentials.refresh_token),
-      supportedModels: [...(account.supportedModels ?? [])],
+      accessToken: '',
+      refreshToken: '',
+      supportedModels: [...(sourceAccount.supportedModels ?? [])],
       availabilitySchedule,
-      notes: account.notes ?? ''
+      notes: sourceAccount.notes ?? ''
     })
     editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
     cloningScheduleFingerprint.value = undefined
@@ -284,37 +291,36 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     authResult.value = undefined
     modalOpen.value = true
     void options.loadGroupOptions('', true, {
-      providerCode: account.providerCode,
+      providerCode: sourceAccount.providerCode,
       systemAccountId: editScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
     })
-    void loadProviderModelOptions(account.providerCode)
-    if (!isAuthorizedAccount(account)) {
-      void loadEditingAccountDetail(account.id, editScopeParams)
-    }
+    void loadProviderModelOptions(sourceAccount.providerCode)
   }
 
-  function openClone(account: AccountSummary) {
+  async function openClone(account: AccountSummary) {
+    const requestToken = nextFormOpenRequestToken()
     const cloneScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (options.isManagementView.value && !cloneScopeParams?.systemAccountId) {
       message.warning('无法确定克隆目标系统账户，请先筛选目标系统账户后再克隆')
       return
     }
+    const sourceAccount = await loadAccountDetailForForm(account.id, cloneScopeParams, '加载克隆账户配置失败')
+    if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
     editingId.value = undefined
     editingAccountDetail.value = undefined
     editingScheduleFingerprint.value = undefined
-    cloningSourceId.value = account.id
+    cloningSourceId.value = sourceAccount.id
     creatingAccountScopeParams.value = cloneScopeParams
     void options.loadAccountOptions(cloneScopeParams?.systemAccountId)
-    if (!fillCloneForm(account, account.credentials)) return
+    if (!fillCloneForm(sourceAccount, sourceAccount.credentials)) return
     modalOpen.value = true
     void options.loadGroupOptions('', true, {
-      providerCode: account.providerCode,
+      providerCode: sourceAccount.providerCode,
       systemAccountId: cloneScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
     })
-    void loadProviderModelOptions(account.providerCode)
-    void loadCloneAccountDetail(account.id, cloneScopeParams)
+    void loadProviderModelOptions(sourceAccount.providerCode)
   }
 
   async function loadProviderModelOptions(providerCode: string): Promise<void> {
@@ -352,55 +358,25 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     ensureDefaultGroupSelected(providerCode)
   }
 
-  async function loadEditingAccountDetail(accountId: string, scopeParams?: AccountScopeParams): Promise<void> {
+  async function loadAccountDetailForForm(accountId: string, scopeParams: AccountScopeParams | undefined, fallbackMessage: string): Promise<AccountSummary | undefined> {
     try {
-      const detail = options.isManagementView.value
+      return options.isManagementView.value
         ? await api.accounts.detail(accountId, scopeParams)
         : await api.myAccounts.detail(accountId)
-      if (editingId.value !== accountId) return
-      editingAccountDetail.value = detail
-      const baseUrl = credentialBaseUrlForForm(detail.credentials, '账户详情凭据')
-      const policyRules = loadCredentialPolicyRules(detail.credentials, '账户详情策略')
-      if (!baseUrl || !policyRules) return
-      const nextDetailPatch: Partial<AccountFormModel> = {
-        apiKey: asString(detail.credentials.api_key),
-        baseUrl,
-        accessToken: asString(detail.credentials.access_token),
-        refreshToken: asString(detail.credentials.refresh_token),
-        supportedModels: [...(detail.supportedModels ?? [])]
-      }
-      if (editingScheduleFingerprint.value === accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)) {
-        nextDetailPatch.availabilitySchedule = createAccountAvailabilityScheduleForm(detail.availabilitySchedule)
-      }
-      Object.assign(form, nextDetailPatch)
-      editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
-      if (detail.boundGroupId || detail.boundGroupName) {
-        setFormGroup(groupSelectionForId(detail.boundGroupId, detail.boundGroupName))
-      }
-      accountErrorPolicyRules.value = policyRules.error
-      accountStreamInterceptRules.value = policyRules.stream
     } catch (error) {
       console.error(error)
-      message.error(options.extractApiErrorMessage(error, '加载账户详情失败'))
+      message.error(options.extractApiErrorMessage(error, fallbackMessage))
+      return undefined
     }
   }
 
-  async function loadCloneAccountDetail(accountId: string, scopeParams?: AccountScopeParams): Promise<void> {
-    try {
-      const detail = options.isManagementView.value
-        ? await api.accounts.detail(accountId, scopeParams)
-        : await api.myAccounts.detail(accountId)
-      if (cloningSourceId.value !== accountId || editingId.value) return
-      applyCloneCredentialDetails(detail, detail.credentials)
-      void options.loadGroupOptions('', true, {
-        providerCode: detail.providerCode,
-        systemAccountId: creatingAccountScopeParams.value?.systemAccountId,
-        selectedIds: [form.groupId]
-      })
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '加载克隆账户配置失败'))
-    }
+  function nextFormOpenRequestToken(): number {
+    formOpenRequestToken += 1
+    return formOpenRequestToken
+  }
+
+  function isCurrentFormOpenRequest(requestToken: number): boolean {
+    return requestToken === formOpenRequestToken
   }
 
   const saveAccount = submitAction('accounts.save', async () => {
@@ -623,6 +599,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function fillCloneForm(account: AccountSummary, credentials: Record<string, unknown>): boolean {
     const policyRules = loadCredentialPolicyRules(credentials, '克隆来源策略')
     if (!policyRules) return false
+    const baseUrl = credentialBaseUrlForForm(credentials, '克隆来源凭据')
+    if (!baseUrl) return false
     const selectedGroup = account.boundGroupId
       ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
       : undefined
@@ -648,7 +626,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
       group: selectedGroup,
       apiKey: '',
-      baseUrl: asString(credentials.base_url),
+      baseUrl,
       accessToken: '',
       refreshToken: '',
       callbackUrl: '',
@@ -662,29 +640,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountStreamInterceptRules.value = policyRules.stream
     authResult.value = undefined
     return true
-  }
-
-  function applyCloneCredentialDetails(account: AccountSummary, credentials: Record<string, unknown>): void {
-    const defaults = defaultForm(account.providerCode, account.type)
-    const baseUrl = asString(credentials.base_url)
-    if (baseUrl && (!form.baseUrl || form.baseUrl === defaults.baseUrl)) {
-      form.baseUrl = baseUrl
-    }
-    if (account.boundGroupId && (!form.groupId || form.groupId === account.boundGroupId)) {
-      setFormGroup(groupSelectionForId(account.boundGroupId, account.boundGroupName))
-    }
-    if (cloningScheduleFingerprint.value === accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)) {
-      form.availabilitySchedule = createAccountAvailabilityScheduleForm(account.availabilitySchedule)
-      cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
-    }
-    if (accountErrorPolicyRules.value.length === 0) {
-      const policyRules = loadCredentialPolicyRules(credentials, '克隆来源策略')
-      if (policyRules) accountErrorPolicyRules.value = policyRules.error
-    }
-    if (accountStreamInterceptRules.value.length === 0) {
-      const policyRules = loadCredentialPolicyRules(credentials, '克隆来源策略')
-      if (policyRules) accountStreamInterceptRules.value = policyRules.stream
-    }
   }
 
   function cloneAccountName(name: string): string {

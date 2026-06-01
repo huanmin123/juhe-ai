@@ -28,7 +28,10 @@
         @user-menu-click="handleUserMenuClick"
       />
       <a-layout-content class="content">
-        <router-view v-slot="{ Component, route: viewRoute }">
+        <div v-if="mustChangePassword" class="password-lock-state">
+          <a-result status="warning" title="请先修改初始密码" sub-title="完成后将自动进入控制台。" />
+        </div>
+        <router-view v-else v-slot="{ Component, route: viewRoute }">
           <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
             <component :is="Component" :key="viewRoute.path" />
           </KeepAlive>
@@ -41,7 +44,7 @@
       :announcements="announcements"
       :loading="announcementsLoading"
     />
-    <ChangePasswordModal v-model:open="passwordModalOpen" :form="passwordForm" :saving="passwordSaving" @ok="handleChangePassword" />
+    <ChangePasswordModal v-model:open="passwordModalOpen" :forced="mustChangePassword" :form="passwordForm" :require-old-password="requireOldPasswordForPasswordChange" :saving="passwordSaving" @ok="handleChangePassword" />
   </a-layout>
 </template>
 
@@ -99,7 +102,7 @@ const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
 const passwordModalOpen = ref(false)
 const passwordSaving = ref(false)
-const passwordForm = reactive({ newPassword: '', confirmPassword: '' })
+const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
 const keepAliveMax = 48
 const announcementModalOpen = ref(false)
 const announcementsLoading = ref(false)
@@ -113,9 +116,11 @@ const openMenuKeys = computed(() => {
   const currentRoute = visibleMenuRoutes.value.find((item) => item.path === route.path)
   return currentRoute?.meta?.menuGroup ? [`group:${currentRoute.meta.menuGroup}`] : []
 })
-const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
-const currentPageDescription = computed(() => route.meta.description || 'OpenAI OAuth + API Key')
 const currentUser = authState.currentUser
+const mustChangePassword = computed(() => Boolean(currentUser.value?.mustChangePassword))
+const currentPageTitle = computed(() => mustChangePassword.value ? '修改登录密码' : route.meta.title || '轻量中转管理')
+const currentPageDescription = computed(() => mustChangePassword.value ? '请先完成初始密码修改' : route.meta.description || 'OpenAI OAuth + API Key')
+const requireOldPasswordForPasswordChange = computed(() => !mustChangePassword.value)
 const canSwitchMenuMode = computed(() => isAdminRole(currentUser.value?.role))
 const switchMenuModeLabel = computed(() => (appMenuMode.value === 'admin' ? '切换到用户模式' : '切换到管理模式'))
 const userDisplayName = computed(() => currentUser.value?.displayName || '用户')
@@ -134,7 +139,7 @@ const userAvatarText = computed(() => {
   }
   return /^[\x00-\x7F]+$/.test(name) ? name.slice(0, 2).toUpperCase() : name.slice(0, 1)
 })
-const hasNewAnnouncements = computed(() => announcements.value.some((announcement) => !announcement.readAt))
+const hasNewAnnouncements = computed(() => !mustChangePassword.value && announcements.value.some((announcement) => !announcement.readAt))
 
 const ApiKeyMenuIcon = () =>
   h('span', { class: 'anticon menu-api-key-icon', role: 'img', 'aria-hidden': 'true' }, [
@@ -256,19 +261,27 @@ const menuItems = computed<ItemType[]>(() => {
 function handleMenuClick(event: { key: string | number }) {
   const key = String(event.key)
   if (key.startsWith('group:')) return
+  if (mustChangePassword.value) {
+    openPasswordModal(false)
+    sidebarOpen.value = false
+    return
+  }
   router.push(key)
   sidebarOpen.value = false
 }
 
 async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
+  if (mustChangePassword.value && event.key !== 'password' && event.key !== 'logout') {
+    message.warning('请先修改初始密码')
+    openPasswordModal(false)
+    return
+  }
   if (event.key === 'switch-mode') {
     await switchMenuMode()
     return
   }
   if (event.key === 'password') {
-    passwordForm.newPassword = ''
-    passwordForm.confirmPassword = ''
-    passwordModalOpen.value = true
+    openPasswordModal()
     return
   }
   if (event.key === 'logout') {
@@ -278,6 +291,11 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
 }
 
 async function openAnnouncements() {
+  if (mustChangePassword.value) {
+    message.warning('请先修改初始密码')
+    openPasswordModal(false)
+    return
+  }
   announcementModalOpen.value = true
   const visibleAnnouncements = await loadAnnouncements()
   await markAnnouncementsViewed(visibleAnnouncements)
@@ -292,7 +310,12 @@ async function refreshAnnouncementsInModal() {
 
 async function loadAnnouncements(): Promise<PublishedAnnouncementSummary[]> {
   const requestUserKey = currentAnnouncementUserKey()
-  if (!requestUserKey) return announcements.value
+  if (!requestUserKey || mustChangePassword.value) {
+    announcementsRequestId += 1
+    announcements.value = []
+    announcementsLoading.value = false
+    return []
+  }
   const requestId = ++announcementsRequestId
   announcementsLoading.value = true
   try {
@@ -337,6 +360,11 @@ async function markAnnouncementsViewed(visibleAnnouncements = announcements.valu
 }
 
 async function switchMenuMode() {
+  if (mustChangePassword.value) {
+    message.warning('请先修改初始密码')
+    openPasswordModal(false)
+    return
+  }
   const nextMode: AppMenuMode = appMenuMode.value === 'admin' ? 'self' : 'admin'
   const savedMode = saveMenuModePreference(currentUser.value, nextMode)
   const targetPath = getDefaultPathForMenuMode(savedMode)
@@ -347,6 +375,10 @@ async function switchMenuMode() {
 }
 
 async function handleChangePassword() {
+  if (requireOldPasswordForPasswordChange.value && !passwordForm.oldPassword) {
+    message.warning('请输入当前密码')
+    return
+  }
   if (passwordForm.newPassword.length < 4) {
     message.warning('新密码至少 4 位')
     return
@@ -357,7 +389,10 @@ async function handleChangePassword() {
   }
   passwordSaving.value = true
   try {
-    await changePassword({ newPassword: passwordForm.newPassword })
+    await changePassword({
+      oldPassword: requireOldPasswordForPasswordChange.value ? passwordForm.oldPassword : undefined,
+      newPassword: passwordForm.newPassword
+    })
     message.success('密码已修改')
     passwordModalOpen.value = false
   } catch (error) {
@@ -366,6 +401,19 @@ async function handleChangePassword() {
   } finally {
     passwordSaving.value = false
   }
+}
+
+function resetPasswordForm() {
+  passwordForm.oldPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmPassword = ''
+}
+
+function openPasswordModal(resetForm = true) {
+  if (resetForm) {
+    resetPasswordForm()
+  }
+  passwordModalOpen.value = true
 }
 
 function updateViewport() {
@@ -380,6 +428,7 @@ function handleResize() {
 }
 
 async function refreshAnnouncementsSafely() {
+  if (mustChangePassword.value) return
   if (announcementsRefreshRunning) return
   announcementsRefreshRunning = true
   try {
@@ -428,7 +477,12 @@ watch(
 watch(
   currentUser,
   (user) => {
-    if (user) {
+    if (user?.mustChangePassword) {
+      announcementsRequestId += 1
+      announcements.value = []
+      announcementsLoading.value = false
+      openPasswordModal()
+    } else if (user) {
       void loadAnnouncements()
     } else {
       announcementsRequestId += 1
@@ -442,6 +496,27 @@ watch(
     syncMenuModeWithUser(user)
   },
   { immediate: true }
+)
+
+watch(
+  mustChangePassword,
+  (required) => {
+    if (required) {
+      openPasswordModal(false)
+    } else if (passwordModalOpen.value && !passwordSaving.value) {
+      passwordModalOpen.value = false
+    }
+  },
+  { immediate: true }
+)
+
+watch(
+  passwordModalOpen,
+  (open) => {
+    if (!open && mustChangePassword.value) {
+      openPasswordModal(false)
+    }
+  }
 )
 
 watch(
@@ -480,6 +555,18 @@ watch(
   background:
     radial-gradient(circle at 20% 0%, rgba(22, 119, 255, 0.06), transparent 28%),
     #f5f7fb;
+}
+
+.password-lock-state {
+  min-height: calc(100vh - 154px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.password-lock-state :deep(.ant-result-title) {
+  color: #0f172a;
+  font-weight: 800;
 }
 
 @media (max-width: 991px) {

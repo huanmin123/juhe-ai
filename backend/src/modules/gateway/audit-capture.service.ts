@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { Request, Response } from 'express'
 
 import { nowIso } from '../../storage/database.js'
-import { sanitizeUrlForLog } from '../../shared/request-context.js'
+import { sanitizeUrlCredentialsForLog, sanitizeUrlForLog } from '../../shared/request-context.js'
 import type {
   AuditLogAttemptInput,
   AuditLogInput,
@@ -24,6 +24,7 @@ import {
   normalizeOpenAIGatewayTrafficSource,
   type OpenAIGatewayTrafficSource
 } from './openai-gateway-traffic-source.js'
+import { sanitizeAuditPayloadBody, sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
@@ -283,10 +284,10 @@ export class AuditCaptureContext {
       accountId: input.account.id,
       accountOwnerSystemAccountId: input.account.accountOwnerSystemAccountId,
       groupId: this.gatewayContext.groupId,
-      proxyUrl: input.account.proxyUrl,
+      proxyUrl: sanitizeUrlCredentialsForLog(input.account.proxyUrl),
       providerCode: 'openai',
       upstreamMethod: input.method,
-      upstreamUrl: input.upstreamUrl,
+      upstreamUrl: sanitizeUrlCredentialsForLog(input.upstreamUrl) ?? 'unknown',
       startedAt: new Date(startedAtMs).toISOString()
     }
     this.attempts.push(attempt)
@@ -317,8 +318,8 @@ export class AuditCaptureContext {
     state.attempt.upstreamStatusCode = input.statusCode
     state.attempt.success = input.success
     state.attempt.errorPhase = input.errorPhase
-    state.attempt.errorCode = input.errorCode
-    state.attempt.errorMessage = input.errorMessage
+    state.attempt.errorCode = sanitizeOptionalDiagnosticMessage(input.errorCode)
+    state.attempt.errorMessage = sanitizeOptionalDiagnosticMessage(input.errorMessage)
     if (!input.success) {
       this.hadFailedAttempt = true
     }
@@ -395,8 +396,10 @@ export class AuditCaptureContext {
       success,
       finalStatusCode: input.statusCode,
       errorPhase: clientAborted ? input.errorPhase ?? 'client' : input.errorPhase,
-      errorCode: input.errorCode,
-      errorMessage: clientAborted ? input.errorMessage ?? 'Client aborted request' : input.errorMessage,
+      errorCode: sanitizeOptionalDiagnosticMessage(input.errorCode),
+      errorMessage: clientAborted
+        ? sanitizeOptionalDiagnosticMessage(input.errorMessage) ?? 'Client aborted request'
+        : sanitizeOptionalDiagnosticMessage(input.errorMessage),
       sampleBucket: this.sampleBucket,
       sampleReason: this.sampleReasonForOutcome(outcome, forceCaptureSuccess),
       captureStatus: this.overflowed ? 'overflow' : 'complete',
@@ -425,6 +428,7 @@ export class AuditCaptureContext {
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
+    sanitizeAuditPayloadInput(payload)
     if (!this.shouldPreserveFullPayloadBodies() && !this.mayPreserveFullPayloadBodiesAfterAccountMatch()) {
       summarizePayloadForLimit(payload, failedAuditFullBodyLimitBytes)
     }
@@ -477,6 +481,22 @@ export class AuditCaptureContext {
     }
     return `success_sample_${this.successSampleRate}`
   }
+}
+
+function sanitizeAuditPayloadInput(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
+  const sanitized = sanitizeAuditPayloadBody({
+    body: payload.body,
+    contentType: payload.contentType,
+    contentEncoding: payload.contentEncoding
+  })
+  if (!sanitized.redacted) return
+  payload.rawBodySizeBytes = payload.rawBodySizeBytes ?? sanitized.originalSizeBytes
+  payload.body = sanitized.body
+  payload.contentEncoding = undefined
+}
+
+function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : sanitizeDiagnosticPayload(value)
 }
 
 export function createAuditCapture(input: AuditCaptureContextInput): AuditCaptureContext {

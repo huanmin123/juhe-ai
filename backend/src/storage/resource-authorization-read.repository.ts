@@ -23,6 +23,7 @@ import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageSummar
 import { optionalString } from './value-utils.js'
 
 const RUNTIME_AUTHORIZATION_BATCH_SIZE = 200
+const TEAM_REPORT_USAGE_BATCH_SIZE = 100
 const defaultResourceAuthorizationPageSize = 50
 const maxResourceAuthorizationPageSize = 500
 
@@ -378,53 +379,64 @@ function loadResourceAuthorizationGrantTeamReportUsageSummaries(
   statDateOrRange: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
 ): Map<string, AccountUsageSummary> {
   const result = new Map<string, AccountUsageSummary>()
-  if (!rows.length) return result
+  const scopedRows = rows.filter((row) => row.grantee_team_id)
+  if (!scopedRows.length) return result
   const database = getStatsDatabase()
   const isRange = typeof statDateOrRange !== 'string'
-  const statement = isRange
-    ? database.prepare(`
-      SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
-      FROM authorization_team_usage_range_windows
-      WHERE system_account_id = ?
-        AND start_date = ?
-        AND end_date = ?
-        AND team_filter_id = ?
-        AND resource_filter_type = ?
-        AND resource_filter_id = ?
-      LIMIT 1
-    `)
-    : database.prepare(`
-      SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
-      FROM authorization_team_usage_summary_daily
-      WHERE system_account_id = ?
-        AND stat_date = ?
-        AND team_filter_id = ?
-        AND resource_filter_type = ?
-        AND resource_filter_id = ?
-      LIMIT 1
-    `)
-  for (const row of rows) {
-    if (!row.grantee_team_id) continue
-    const usageRow = isRange
-      ? statement.get(
+  for (const chunk of chunkValues(scopedRows, TEAM_REPORT_USAGE_BATCH_SIZE)) {
+    const values = chunk.map(() => isRange ? '(?, ?, ?, ?, ?, ?, ?)' : '(?, ?, ?, ?, ?, ?)').join(', ')
+    const params = chunk.flatMap((row) => isRange
+      ? [
+        row.id,
         row.resource_owner_system_account_id,
         statDateOrRange.startDate,
         statDateOrRange.endDate,
         row.grantee_team_id,
         row.resource_type,
         row.resource_id
-      )
-      : statement.get(
+      ]
+      : [
+        row.id,
         row.resource_owner_system_account_id,
         statDateOrRange,
         row.grantee_team_id,
         row.resource_type,
         row.resource_id
-      )
-    if (usageRow) {
-      result.set(row.id, usageSummaryFromAggregate(usageRow as Parameters<typeof usageSummaryFromAggregate>[0]))
+      ])
+    const usageRows = isRange
+      ? database.prepare(`
+        WITH requested(grant_id, system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id) AS (
+          VALUES ${values}
+        )
+        SELECT requested.grant_id, report.request_count, report.input_tokens, report.output_tokens, report.cache_read_tokens,
+          report.cache_read_cost_usd, report.total_cost_usd AS total_cost, report.last_used_at
+        FROM requested
+        INNER JOIN authorization_team_usage_range_windows report
+          ON report.system_account_id = requested.system_account_id
+          AND report.start_date = requested.start_date
+          AND report.end_date = requested.end_date
+          AND report.team_filter_id = requested.team_filter_id
+          AND report.resource_filter_type = requested.resource_filter_type
+          AND report.resource_filter_id = requested.resource_filter_id
+      `).all(...params)
+      : database.prepare(`
+        WITH requested(grant_id, system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id) AS (
+          VALUES ${values}
+        )
+        SELECT requested.grant_id, report.request_count, report.input_tokens, report.output_tokens, report.cache_read_tokens,
+          report.cache_read_cost_usd, report.total_cost_usd AS total_cost, report.last_used_at
+        FROM requested
+        INNER JOIN authorization_team_usage_summary_daily report
+          ON report.system_account_id = requested.system_account_id
+          AND report.stat_date = requested.stat_date
+          AND report.team_filter_id = requested.team_filter_id
+          AND report.resource_filter_type = requested.resource_filter_type
+          AND report.resource_filter_id = requested.resource_filter_id
+      `).all(...params)
+    for (const usageRow of usageRows as Array<{ grant_id?: string | null } & Parameters<typeof usageSummaryFromAggregate>[0]>) {
+      if (usageRow.grant_id) {
+        result.set(usageRow.grant_id, usageSummaryFromAggregate(usageRow))
+      }
     }
   }
   return result

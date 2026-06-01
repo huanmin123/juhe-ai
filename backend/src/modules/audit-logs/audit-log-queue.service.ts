@@ -4,6 +4,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
 import { createAuditLogsBatch, createAuditLogsBatchAsync, type AuditLogInput } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
@@ -70,14 +71,15 @@ export function recordDroppedAuditCapture(input: {
   userAgent?: string
 }): void {
   const timestamp = nowIso()
+  const sanitizedUrl = sanitizeDroppedAuditUrl(input.path, input.queryString)
   enqueueAuditLog({
     id: `audit_${Date.now()}_${randomUUID()}`,
     traceId: input.traceId,
     auditOutcome: input.auditOutcome as AuditLogInput['auditOutcome'],
     success: input.success,
     method: input.method?.toUpperCase() ?? 'UNKNOWN',
-    path: input.path ?? 'unknown',
-    queryString: input.queryString,
+    path: sanitizedUrl.path,
+    queryString: sanitizedUrl.queryString,
     clientIp: input.clientIp,
     userAgent: input.userAgent,
     finalStatusCode: input.statusCode,
@@ -96,6 +98,19 @@ export function recordDroppedAuditCapture(input: {
     attempts: [],
     payloads: []
   })
+}
+
+function sanitizeDroppedAuditUrl(path?: string, queryString?: string): { path: string; queryString?: string } {
+  const rawPath = path?.trim() || 'unknown'
+  const pathWithoutQuery = rawPath.split('?')[0] || 'unknown'
+  const url = queryString ? `${pathWithoutQuery}?${queryString}` : rawPath
+  const sanitized = sanitizeUrlForLog(url)
+  const [sanitizedPath, ...queryParts] = sanitized.split('?')
+  const sanitizedQuery = queryParts.length ? queryParts.join('?') : undefined
+  return {
+    path: sanitizedPath || 'unknown',
+    queryString: sanitizedQuery
+  }
 }
 
 export function enqueueAuditLog(input: AuditLogInput): void {

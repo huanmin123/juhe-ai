@@ -1,6 +1,8 @@
 import type { Request } from 'express'
 
 import { getRequestLogger } from '../../shared/request-context.js'
+import { assertSafeUpstreamBaseUrl } from '../../shared/upstream-url-policy.js'
+import { runtimeOpenAIAccountCredentials } from '../../storage/repositories.js'
 import { shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
@@ -75,7 +77,8 @@ export function handleUnavailableProxyProfile(
 }
 
 export async function prepareUpstreamAccount(account: UpstreamAccount, signal?: AbortSignal): Promise<UpstreamAccount> {
-  if (account.type !== 'oauth' || !shouldRefreshOpenAIOAuthCredentials(account.credentials) || !account.refreshToken) {
+  const refreshCredentials = openAIOAuthRefreshCredentials(account)
+  if (account.type !== 'oauth' || !shouldRefreshOpenAIOAuthCredentials(refreshCredentials) || !account.refreshToken) {
     return account
   }
   throwIfRequestAborted(signal)
@@ -83,18 +86,37 @@ export async function prepareUpstreamAccount(account: UpstreamAccount, signal?: 
   const credentialSourceAccount = account.credentialSourceAccountId
     ? { ...account, id: account.credentialSourceAccountId }
     : account
-  const updated = await refreshOpenAIOAuthAccountAccessToken(credentialSourceAccount, { signal, force: false, persistMode: 'db-service' })
+  const updated = await refreshOpenAIOAuthAccountAccessToken({
+    ...credentialSourceAccount,
+    credentials: refreshCredentials
+  }, { signal, force: false, persistMode: 'db-service' })
   const credentials = updated.credentials
   const accessToken = typeof credentials.access_token === 'string' ? credentials.access_token : account.apiKey
+  const refreshedBaseUrl = typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : undefined
+  if (refreshedBaseUrl) {
+    assertSafeUpstreamBaseUrl(refreshedBaseUrl)
+  }
   return {
     ...account,
     apiKey: accessToken,
-    baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : account.baseUrl,
+    baseUrl: refreshedBaseUrl ?? account.baseUrl,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : account.refreshToken,
     clientId: typeof credentials.client_id === 'string' ? credentials.client_id : account.clientId,
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : account.expiresAt,
-    credentials
+    credentials: runtimeOpenAIAccountCredentials(credentials)
   }
+}
+
+function openAIOAuthRefreshCredentials(account: UpstreamAccount): Record<string, unknown> {
+  const credentials: Record<string, unknown> = {
+    ...account.credentials,
+    access_token: account.apiKey,
+    base_url: account.baseUrl
+  }
+  if (account.refreshToken) credentials.refresh_token = account.refreshToken
+  if (account.clientId) credentials.client_id = account.clientId
+  if (account.expiresAt) credentials.expires_at = account.expiresAt
+  return credentials
 }
 
 export async function buildPreparedUpstreamRequestParts(

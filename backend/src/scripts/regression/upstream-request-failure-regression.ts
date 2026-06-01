@@ -18,6 +18,7 @@ runtimeConfig.secret = 'upstream-request-failure-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -57,6 +58,7 @@ assert.equal(
 const app = express()
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
@@ -70,7 +72,7 @@ async function main(): Promise<void> {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
-    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'openai', enabled: true })
+    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'openai', enabled: true }, access)
     const firstAccount = repositories.createAccount({
       providerCode: 'openai',
       name: '01-上游失败回归账户',
@@ -82,7 +84,7 @@ async function main(): Promise<void> {
       groupId: group.id,
       status: 'active',
       schedulable: true
-    })
+    }, access)
     const secondAccount = repositories.createAccount({
       providerCode: 'openai',
       name: '02-上游失败回归账户',
@@ -94,7 +96,7 @@ async function main(): Promise<void> {
       groupId: group.id,
       status: 'active',
       schedulable: true
-    })
+    }, access)
     const thirdAccount = repositories.createAccount({
       providerCode: 'openai',
       name: '03-上游失败回归账户',
@@ -106,10 +108,10 @@ async function main(): Promise<void> {
       groupId: group.id,
       status: 'active',
       schedulable: true
-    })
+    }, access)
     const apiKey = createRegressionApiKey(group.id, 'sk-request-failure-regression')
     dispatchRaceSecondAccountId = secondAccount.id
-    const waitGroup = repositories.createGroup({ name: '本地屏蔽等待回归分组', providerCode: 'openai', enabled: true })
+    const waitGroup = repositories.createGroup({ name: '本地屏蔽等待回归分组', providerCode: 'openai', enabled: true }, access)
     const waitAccount = repositories.createAccount({
       providerCode: 'openai',
       name: '单账号等待回归账户',
@@ -121,14 +123,14 @@ async function main(): Promise<void> {
       groupId: waitGroup.id,
       status: 'active',
       schedulable: true
-    })
+    }, access)
     const waitApiKey = createRegressionApiKey(waitGroup.id, 'sk-request-failure-wait-key')
     closedTransportServer = http.createServer()
     await listen(closedTransportServer)
     const closedTransportBaseUrl = `http://127.0.0.1:${serverAddress(closedTransportServer).port}/v1`
     await closeServer(closedTransportServer)
     closedTransportServer = undefined
-    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'openai', enabled: true })
+    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'openai', enabled: true }, access)
     for (let index = 0; index < 2; index += 1) {
       repositories.createAccount({
         providerCode: 'openai',
@@ -141,7 +143,7 @@ async function main(): Promise<void> {
         groupId: directTransportFailureGroup.id,
         status: 'active',
         schedulable: true
-      })
+      }, access)
     }
     const directTransportFailureApiKey = createRegressionApiKey(directTransportFailureGroup.id, 'sk-direct-transport-failure-key')
 
@@ -378,7 +380,7 @@ async function main(): Promise<void> {
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '单账号续期屏蔽释放后本地屏蔽计数应恢复为 0')
 
     usageRecordQueue.flushAllUsageRecordQueue()
-    const accounts = repositories.listAccounts()
+    const accounts = repositories.listAccounts(access)
     for (const account of [firstAccount, secondAccount, thirdAccount, waitAccount]) {
       const updated = accounts.find((item) => item.id === account.id)
       assert(updated, `账号 ${account.name} 不存在`)
@@ -630,7 +632,7 @@ function createRegressionApiKey(groupId: string, key: string): { id: string; key
     name: `上游失败回归 Key ${key.slice(-8)}`,
     groupBindings: [{ groupId, priority: 1, status: 'active' }],
     status: 'active'
-  })
+  }, access)
   assert(apiKey.key, '回归 API Key 未返回明文密钥')
   return { id: apiKey.id, key: apiKey.key }
 }

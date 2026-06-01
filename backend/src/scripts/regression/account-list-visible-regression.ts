@@ -112,6 +112,7 @@ try {
 function seedData(): SeedState {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const userA = repositories.createSystemAccount({
     username: 'account_list_visible_user_a',
     displayName: '账户列表可见用户 A',

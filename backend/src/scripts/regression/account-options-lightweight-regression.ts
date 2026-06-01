@@ -204,6 +204,7 @@ try {
 function seedData(): SeedState {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const user = repositories.createSystemAccount({
     username: 'account_options_user',
     displayName: '账户选项用户',

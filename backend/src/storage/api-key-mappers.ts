@@ -15,7 +15,7 @@ export interface ApiKeyRow {
   name: string
   description: string | null
   key_prefix: string
-  key_secret_encrypted: string
+  key_secret_encrypted?: string | null
   status: 'active' | 'disabled'
   group_route_strategy?: ApiKeySummary['groupRouteStrategy'] | null
   group_owner_system_account_name?: string | null
@@ -29,7 +29,7 @@ export function apiKeySummariesFromRows(
   access?: AccessScope,
   options: { includeSecret?: boolean; bindingsByApiKeyId?: Map<string, ApiKeyGroupBindingSummary[]> } = {}
 ): ApiKeySummary[] {
-  const includeSecret = options.includeSecret ?? true
+  const includeSecret = options.includeSecret === true
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
   const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
@@ -57,7 +57,10 @@ export function apiKeySummariesFromRows(
   })
 }
 
-function decryptApiKeySecret(value: string): string {
+function decryptApiKeySecret(value: string | null | undefined): string {
+  if (!value) {
+    throw new Error('API Key 密文缺少完整密钥')
+  }
   const decrypted = decryptJson<{ key?: unknown }>(value)
   if (typeof decrypted.key !== 'string' || decrypted.key.length === 0) {
     throw new Error('API Key 密文缺少完整密钥')

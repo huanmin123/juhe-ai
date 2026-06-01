@@ -4,7 +4,7 @@ import type {
   GroupUsageAccessMetadata,
   OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { getRequestLogger } from '../../shared/request-context.js'
+import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import { parseErrorPayload } from './account-error-policy.service.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
 import {
@@ -24,6 +24,7 @@ import {
 import type { GatewayErrorPayload } from './openai-gateway-responses.js'
 import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
+import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -100,18 +101,19 @@ export function recordFailedUpstreamAttempt(
   const errorPayload = input.bodyText && input.headers instanceof Headers
     ? parseErrorPayload(input.bodyText, input.headers)
     : {}
-  const errorMessage = input.errorMessage
+  const errorCode = sanitizeOptionalDiagnosticMessage(typeof errorPayload.code === 'string' ? errorPayload.code : undefined)
+  const errorMessage = sanitizeDiagnosticPayload(input.errorMessage
     ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
-    ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
+    ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败'))
 
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_upstream_attempt_failed',
-    upstreamUrl: input.upstreamUrl,
+    upstreamUrl: sanitizeUrlCredentialsForLog(input.upstreamUrl) ?? 'unknown',
     accountId: account.id,
     accountName: account.name,
     statusCode: input.statusCode,
     durationMs: Date.now() - input.startedAt,
-    errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
+    errorCode,
     errorMessage,
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
@@ -134,7 +136,7 @@ export function recordFailedUpstreamAttempt(
     statusCode: input.statusCode,
     success: false,
     durationMs: Date.now() - input.startedAt,
-    errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
+    errorCode,
     errorMessage,
     requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
     responseSnapshot: usageRecordSnapshot(usageContext, buildUsageResponseSnapshot({
@@ -252,11 +254,12 @@ export function recordGatewayFailure(
     errorMessage?: string
   }
 ): void {
+  const errorMessage = sanitizeDiagnosticPayload(input.errorMessage ?? input.responsePayload.error.message)
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_request_failed',
     statusCode: input.statusCode,
     durationMs: Date.now() - input.startedAt,
-    errorMessage: input.errorMessage ?? input.responsePayload.error.message,
+    errorMessage,
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
     endpoint: usageContext.endpoint
@@ -281,7 +284,7 @@ export function recordGatewayFailure(
     statusCode: input.statusCode,
     success: false,
     durationMs: Date.now() - input.startedAt,
-    errorMessage: input.errorMessage ?? input.responsePayload.error.message,
+    errorMessage,
     requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
     responseSnapshot: usageRecordSnapshot(usageContext, buildGatewayErrorResponseSnapshot(input.statusCode, input.responsePayload))
   })
@@ -292,6 +295,10 @@ function usageRecordSnapshot(
   snapshot: unknown
 ): unknown {
   return usageContext.trafficSource === 'cooldown_retest' ? undefined : snapshot
+}
+
+function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : sanitizeDiagnosticPayload(value)
 }
 
 function logGatewayAttemptFailure(
