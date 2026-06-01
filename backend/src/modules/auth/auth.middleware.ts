@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express'
 
+import { isAdminRole, isSuperAdminRole } from '../../domain/types.js'
 import { findSessionByToken, touchSession } from '../../storage/repositories.js'
 import { bindRequestContextFields } from '../../shared/request-context.js'
 import { parseCookie, sessionCookieName } from './auth.routes.js'
@@ -35,8 +36,17 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
 export function requireAdmin(_req: Request, res: Response, next: NextFunction): void {
   const context = getRequestAuthContext()
-  if (!context || context.role !== 'admin') {
+  if (!context || !isAdminRole(context.role)) {
     res.status(403).json({ message: '需要管理员权限' })
+    return
+  }
+  next()
+}
+
+export function requireSuperAdmin(_req: Request, res: Response, next: NextFunction): void {
+  const context = getRequestAuthContext()
+  if (!context || !isSuperAdminRole(context.role)) {
+    res.status(403).json({ message: '需要超级管理员权限' })
     return
   }
   next()

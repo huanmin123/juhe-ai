@@ -1,4 +1,4 @@
-import type { AccountAvailabilitySchedule, AccountType, ProviderDefinition } from '../../domain/types.js'
+import { isAdminRole, type AccountAvailabilitySchedule, type AccountType, type ProviderDefinition } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
 import { accountIdentityFingerprint } from '../../storage/account-identity.js'
@@ -434,7 +434,7 @@ function planProxy(value: unknown, index: number, context: ImportContext): Proxy
   if (!context.options.createMissingProxies) {
     item.action = 'skip'
     item.warnings.push('当前导入选项未启用代理创建')
-  } else if (context.access?.role !== 'admin') {
+  } else if (!isAdminRole(context.access?.role)) {
     item.action = 'failed'
     item.messages.push('用户侧导入不能创建代理，请由管理员先创建代理')
   } else {

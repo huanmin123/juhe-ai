@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 
+import { isAdminRole } from '@/shared/systemAccountRoles'
 import type { CurrentUserSummary } from '@/types/domain'
 
 export type AppMenuMode = 'self' | 'admin'
@@ -14,7 +15,7 @@ function normalizeMenuMode(value: unknown): AppMenuMode {
 }
 
 function canUseAdminMode(user?: CurrentUserSummary): boolean {
-  return user?.role === 'admin'
+  return isAdminRole(user?.role)
 }
 
 function getStorage(): Storage | undefined {

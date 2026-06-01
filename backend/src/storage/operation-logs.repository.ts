@@ -1,9 +1,10 @@
+import type { SystemAccountRole } from '../domain/types.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
-export type OperationLogActorRole = 'admin' | 'user'
+export type OperationLogActorRole = SystemAccountRole
 export type OperationLogMode = 'self' | 'admin'
 export type OperationLogDetailLevel = 'full' | 'summary'
 export type OperationLogVisibilityScope = 'targeted' | 'all_users' | 'admin_only'

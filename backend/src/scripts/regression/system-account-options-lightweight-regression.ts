@@ -61,12 +61,32 @@ interface SystemAccountOptionSummary {
   passwordHash?: unknown
 }
 
+interface SystemAccountSummary {
+  id: string
+  username: string
+  displayName: string
+  role: 'super_admin' | 'admin' | 'user'
+  status: 'active' | 'disabled'
+}
+
+interface SystemAccountListResult {
+  items: SystemAccountSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 interface SeedState {
   activeUserId: string
   adminCookie: string
+  adminId: string
   disabledUserId: string
   middleNameUserId: string
   prefixUserId: string
+  promotionTargetId: string
+  readonlyAdminCookie: string
+  readonlyAdminId: string
   userCookie: string
   wildcardLiteralUserId: string
   wildcardNeighborUserId: string
@@ -126,6 +146,25 @@ try {
     const wildcardIds = wildcardOptions.map((account) => account.id)
     assert(wildcardIds.includes(seed.wildcardLiteralUserId), '系统账户选项关键词应支持 % 字面量')
     assert(!wildcardIds.includes(seed.wildcardNeighborUserId), '系统账户选项关键词不应把用户输入的 % 当作 LIKE 通配符')
+
+    const readonlyAdminList = await getEnvelope<SystemAccountListResult>(baseUrl, '/__aisys__/api/system-accounts?page=1&pageSize=10', seed.readonlyAdminCookie)
+    assert(readonlyAdminList.items.some((account) => account.id === seed.activeUserId), '普通管理员应能查看系统账户列表')
+    const readonlyAdminOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options?limit=10', seed.readonlyAdminCookie)
+    assert(readonlyAdminOptions.some((account) => account.id === seed.activeUserId), '普通管理员应能查看系统账户选项')
+    await assertJsonStatus(baseUrl, '/__aisys__/api/system-accounts', seed.readonlyAdminCookie, 'POST', {
+      username: 'system_account_options_admin_blocked_create',
+      displayName: '普通管理员禁止创建',
+      password: 'password',
+      role: 'user'
+    }, 403, '普通管理员不应创建系统账户')
+    await assertJsonStatus(baseUrl, `/__aisys__/api/system-accounts/${seed.activeUserId}`, seed.readonlyAdminCookie, 'PATCH', {
+      displayName: '普通管理员禁止更新'
+    }, 403, '普通管理员不应更新系统账户')
+    const promoted = await patchEnvelope<SystemAccountSummary>(baseUrl, `/__aisys__/api/system-accounts/${seed.promotionTargetId}`, seed.adminCookie, { role: 'admin' })
+    assert.equal(promoted.role, 'admin', '超级管理员应能把普通用户升级为管理员')
+    await assertJsonStatus(baseUrl, `/__aisys__/api/system-accounts/${seed.adminId}`, seed.adminCookie, 'PATCH', {
+      role: 'admin'
+    }, 409, '不能移除最后一个启用的超级管理员')
 
     for (const sql of systemAccountOptionSqls) {
       if (/\bLIKE\s+\?/i.test(sql)) {
@@ -200,12 +239,32 @@ function seedData(): SeedState {
     status: 'active',
     mustChangePassword: false
   })
+  const readonlyAdmin = repositories.createSystemAccount({
+    username: 'system_account_options_readonly_admin',
+    displayName: '系统账户选项只读管理员',
+    password: 'password',
+    role: 'admin',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const promotionTarget = repositories.createSystemAccount({
+    username: 'system_account_options_promote_target',
+    displayName: '系统账户选项待升级用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
   return {
     activeUserId: activeUser.id,
     adminCookie: sessionCookie(admin.id),
+    adminId: admin.id,
     disabledUserId: disabledUser.id,
     middleNameUserId: middleNameUser.id,
     prefixUserId: prefixUser.id,
+    promotionTargetId: promotionTarget.id,
+    readonlyAdminCookie: sessionCookie(readonlyAdmin.id),
+    readonlyAdminId: readonlyAdmin.id,
     userCookie: sessionCookie(activeUser.id),
     wildcardLiteralUserId: wildcardLiteralUser.id,
     wildcardNeighborUserId: wildcardNeighborUser.id
@@ -229,6 +288,36 @@ async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Pr
     throw new Error(`${path} HTTP ${response.status}: ${text}`)
   }
   return (JSON.parse(text) as ApiEnvelope<T>).data
+}
+
+async function patchEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'PATCH',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`${path} HTTP ${response.status}: ${text}`)
+  }
+  return (JSON.parse(text) as ApiEnvelope<T>).data
+}
+
+async function assertJsonStatus(
+  baseUrl: string,
+  path: string,
+  cookie: string,
+  method: 'POST' | 'PATCH',
+  body: unknown,
+  expectedStatus: number,
+  message: string
+): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  assert.equal(response.status, expectedStatus, `${message}，实际状态 ${response.status}: ${await response.text()}`)
 }
 
 async function onceListening(listeningServer: ReturnType<typeof app.listen>): Promise<void> {

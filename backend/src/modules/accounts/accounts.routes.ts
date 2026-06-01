@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
-import type { AccountSummary } from '../../domain/types.js'
+import { isAdminRole, type AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, clearAuthorizedAccountBindingFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
@@ -782,7 +782,7 @@ accountsRouter.post('/:id/test', async (req, res) => {
     }
   })
   try {
-    const diagnostics = requestAccess?.role === 'admin' || account.accessType !== 'authorized' ? 'full' : 'limited'
+    const diagnostics = isAdminRole(requestAccess?.role) || account.accessType !== 'authorized' ? 'full' : 'limited'
     const { prompt: _ignoredPrompt, ...testOptions } = parsed.data ?? {}
     let accountTestStatusChanges: ReturnType<typeof safeChange>[] | undefined
     let result = await testOpenAIAccount(account, {

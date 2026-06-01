@@ -85,6 +85,7 @@ import {
 } from '@/composables/useMenuMode'
 import { menuRoutes } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { PublishedAnnouncementSummary } from '@/types/domain'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
@@ -115,12 +116,14 @@ const openMenuKeys = computed(() => {
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => route.meta.description || 'OpenAI OAuth + API Key')
 const currentUser = authState.currentUser
-const canSwitchMenuMode = computed(() => currentUser.value?.role === 'admin')
+const canSwitchMenuMode = computed(() => isAdminRole(currentUser.value?.role))
 const switchMenuModeLabel = computed(() => (appMenuMode.value === 'admin' ? '切换到用户模式' : '切换到管理模式'))
 const userDisplayName = computed(() => currentUser.value?.displayName || '用户')
 const userRoleLabel = computed(() => {
-  if (canSwitchMenuMode.value) {
-    return appMenuMode.value === 'admin' ? '管理员 · 管理模式' : '管理员 · 用户模式'
+  const user = currentUser.value
+  if (user && canSwitchMenuMode.value) {
+    const label = systemAccountRoleLabel(user.role)
+    return appMenuMode.value === 'admin' ? `${label} · 管理模式` : `${label} · 用户模式`
   }
   return '普通用户'
 })

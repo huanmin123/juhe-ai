@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { isAdminRole } from '../../domain/types.js'
 import { errorLogFields } from '../../shared/logger.js'
 import { getRequestContext, getRequestLogger } from '../../shared/request-context.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -104,7 +105,7 @@ export function runLoggedOperation<T>(operation: () => LoggedOperationResult<T>,
 }
 
 export function operationMode(access?: Pick<AccessScope, 'role'>): 'admin' | 'self' {
-  return access?.role === 'admin' ? 'admin' : 'self'
+  return isAdminRole(access?.role) ? 'admin' : 'self'
 }
 
 export function resolveOperationOwner(resource?: Record<string, unknown>, access?: AccessScope): string | undefined {
@@ -122,7 +123,7 @@ export function resolveOperationOwner(resource?: Record<string, unknown>, access
     resource?.resourceOwnerSystemAccountId
   )
   if (ownerFromResource) return ownerFromResource
-  if (access?.role === 'admin' && access.systemAccountFilterId?.trim()) {
+  if (isAdminRole(access?.role) && access.systemAccountFilterId?.trim()) {
     return access.systemAccountFilterId.trim()
   }
   return access?.systemAccountId

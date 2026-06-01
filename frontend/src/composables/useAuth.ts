@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 
 import { api } from '@/api/client'
+import { isAdminRole, isSuperAdminRole } from '@/shared/systemAccountRoles'
 import type { CaptchaChallengeSummary, CurrentUserSummary } from '@/types/domain'
 
 const currentUser = ref<CurrentUserSummary>()
@@ -10,7 +11,8 @@ export const authState = {
   currentUser,
   authChecked,
   isLoggedIn: computed(() => Boolean(currentUser.value)),
-  isAdmin: computed(() => currentUser.value?.role === 'admin')
+  isAdmin: computed(() => isAdminRole(currentUser.value?.role)),
+  isSuperAdmin: computed(() => isSuperAdminRole(currentUser.value?.role))
 }
 
 export async function loadCurrentUser(force = false): Promise<CurrentUserSummary | undefined> {

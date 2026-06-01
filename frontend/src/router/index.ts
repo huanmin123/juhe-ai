@@ -2,6 +2,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
 import { loadCurrentUser } from '@/composables/useAuth'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
+import type { SystemAccountRole } from '@/types/domain'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -13,9 +14,11 @@ declare module 'vue-router' {
     menuGroupTitle?: string
     public?: boolean
     viewScope?: 'admin' | 'self'
-    roles?: Array<'admin' | 'user'>
+    roles?: SystemAccountRole[]
   }
 }
+
+const managementRoles: SystemAccountRole[] = ['super_admin', 'admin']
 
 export const menuRoutes: RouteRecordRaw[] = [
   {
@@ -161,7 +164,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '统计概览',
       description: '按监控窗口查看请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和系统性能。',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -174,7 +177,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: managementRoles
     }
   },
   {
@@ -186,7 +189,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: managementRoles
     }
   },
   {
@@ -198,7 +201,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -211,7 +214,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: managementRoles
     }
   },
   {
@@ -223,7 +226,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -236,7 +239,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -249,7 +252,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -262,7 +265,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: managementRoles
     }
   },
   {
@@ -274,7 +277,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -287,7 +290,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -300,7 +303,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -313,7 +316,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -326,7 +329,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -339,7 +342,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -352,7 +355,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -365,7 +368,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -378,7 +381,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -391,7 +394,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -404,7 +407,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -417,7 +420,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
-      roles: ['admin'],
+      roles: managementRoles,
       heavy: true
     }
   },
@@ -430,7 +433,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: managementRoles
     }
   },
   {
@@ -442,7 +445,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: managementRoles
     }
   },
   {
@@ -454,7 +457,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: managementRoles
     }
   }
 ]

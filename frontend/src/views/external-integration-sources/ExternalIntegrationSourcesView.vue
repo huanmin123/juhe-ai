@@ -158,10 +158,16 @@
                 </div>
                 <p>{{ selectedApiDoc.summary }}</p>
               </div>
-              <a-button type="primary" @click="copyCurl(selectedApiDoc)">
-                <template #icon><copy-outlined /></template>
-                复制 curl
-              </a-button>
+              <div class="api-doc-actions">
+                <a-button @click="exportApiMarkdown(selectedApiDoc)">
+                  <template #icon><download-outlined /></template>
+                  导出 Markdown
+                </a-button>
+                <a-button type="primary" @click="copyCurl(selectedApiDoc)">
+                  <template #icon><copy-outlined /></template>
+                  复制 curl
+                </a-button>
+              </div>
             </div>
 
             <a-descriptions bordered size="small" :column="1">
@@ -343,7 +349,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
-import { BookOutlined, CopyOutlined } from '@ant-design/icons-vue'
+import { BookOutlined, CopyOutlined, DownloadOutlined } from '@ant-design/icons-vue'
 
 import { api, type ExternalIntegrationSourceListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -362,6 +368,7 @@ import type {
   ExternalIntegrationSourceTokenStatus,
   ExternalIntegrationSourceTokenSummary,
   ExternalPublicApiDocItem,
+  ExternalPublicApiField,
   ExternalPublicApiStatus,
   ExternalPublicApiCatalog
 } from '@/types/domain'
@@ -540,6 +547,12 @@ function copyCurl(item: ExternalPublicApiDocItem | undefined): void {
   void copyTextToClipboard(buildCurl(item), 'curl 已复制')
 }
 
+function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
+  if (!item) return
+  downloadTextFile(apiMarkdownFilename(item), buildApiMarkdown(item))
+  message.success('Markdown 文档已导出')
+}
+
 function buildCurl(item: ExternalPublicApiDocItem | undefined): string {
   if (!item) return ''
   const url = buildApiDocUrl(item)
@@ -557,6 +570,112 @@ function buildCurl(item: ExternalPublicApiDocItem | undefined): string {
     parts.push('--data', quoteShell(JSON.stringify(item.requestBody.example), platform))
   }
   return parts.join(' ')
+}
+
+function buildApiMarkdown(item: ExternalPublicApiDocItem): string {
+  const lines = [
+    `# ${item.name}`,
+    '',
+    item.summary,
+    '',
+    '## 基本信息',
+    '',
+    `- 状态：${apiStatusText(item.status)}`,
+    `- 方法：\`${item.method}\``,
+    `- 路径：\`${item.path}\``,
+    `- 调用地址：\`${buildApiDocUrl(item)}\``,
+    '- 认证方式：`Authorization: Bearer <source_token>`',
+    '',
+    '## 请求头',
+    '',
+    markdownFieldTable(item.headers.map((header) => ({
+      name: header.name,
+      type: '-',
+      required: header.required,
+      description: header.description,
+      example: header.example
+    }))),
+    '',
+    '## 请求参数',
+    '',
+    item.query.length ? markdownFieldTable(item.query) : '无',
+    '',
+    '## 请求体',
+    ''
+  ]
+  if (item.requestBody) {
+    lines.push(
+      `Content-Type：\`${item.requestBody.contentType}\``,
+      '',
+      item.requestBody.fields.length ? markdownFieldTable(item.requestBody.fields) : '无字段说明',
+      '',
+      markdownCodeBlock('json', formatJson(item.requestBody.example)),
+      ''
+    )
+  } else {
+    lines.push('无', '')
+  }
+  lines.push(
+    '## 响应示例',
+    '',
+    markdownCodeBlock('json', formatResponseExample(item)),
+    '',
+    '## curl 示例',
+    '',
+    markdownCodeBlock(curlCommandPlatform.value === 'windows' ? 'powershell' : 'bash', buildCurl(item)),
+    ''
+  )
+  return lines.join('\n')
+}
+
+function markdownFieldTable(fields: Array<ExternalPublicApiField | {
+  name: string
+  type: string
+  required: boolean
+  description: string
+  example?: string | number | boolean
+}>): string {
+  const rows = [
+    '| 名称 | 类型 | 必填 | 说明 | 示例 |',
+    '| --- | --- | --- | --- | --- |'
+  ]
+  for (const field of fields) {
+    rows.push([
+      markdownTableCell(field.name),
+      markdownTableCell(field.type),
+      field.required ? '是' : '否',
+      markdownTableCell(field.description),
+      markdownTableCell(field.example ?? '-')
+    ].join(' | ').replace(/^/, '| ').replace(/$/, ' |'))
+  }
+  return rows.join('\n')
+}
+
+function markdownTableCell(value: string | number | boolean): string {
+  return String(value).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>')
+}
+
+function markdownCodeBlock(language: string, content: string): string {
+  const fence = content.includes('```') ? '````' : '```'
+  return `${fence}${language}\n${content}\n${fence}`
+}
+
+function apiMarkdownFilename(item: ExternalPublicApiDocItem): string {
+  const base = `${item.method}-${item.path.replace(/^\/+/, '').replace(/[/?#&=]+/g, '-')}`
+  const safeBase = base.replace(/[<>:"\\|*]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+  return `${safeBase || item.id}.md`
+}
+
+function downloadTextFile(filename: string, content: string): void {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
 }
 
 function buildApiDocUrl(item: ExternalPublicApiDocItem): string {
@@ -1117,6 +1236,14 @@ function scopeLabel(scope: string): string {
   margin-bottom: 14px;
 }
 
+.api-doc-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .api-doc-detail-head p {
   margin: 6px 0 0;
   color: #64748b;
@@ -1188,6 +1315,10 @@ function scopeLabel(scope: string): string {
   .api-doc-detail-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .api-doc-actions {
+    justify-content: flex-start;
   }
 
   .api-doc-field-row {

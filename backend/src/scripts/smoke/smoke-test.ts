@@ -321,7 +321,7 @@ async function loginAsAdmin(): Promise<void> {
       captchaCode
     })
   })
-  assert(loginResult.data.role === 'admin', `烟测登录账号不是管理员：${loginResult.data.username ?? 'unknown'}`)
+  assert(loginResult.data.role === 'super_admin' || loginResult.data.role === 'admin', `烟测登录账号不是管理员：${loginResult.data.username ?? 'unknown'}`)
 }
 
 async function createTemporaryMockOpenAIGateway(
@@ -361,7 +361,7 @@ async function createTemporaryMockOpenAIGateway(
 async function resolveSmokeOwnerSystemAccountId(): Promise<string> {
   const accounts = await getEnvelope<Array<{ id: string; username?: string; role?: string; status?: string }>>(apiPath('/system-accounts'))
   const configuredAdmin = accounts.find((account) => account.username === runtimeConfig.smokeTest.adminUsername)
-  const activeAdmin = configuredAdmin ?? accounts.find((account) => account.role === 'admin' && account.status !== 'disabled')
+  const activeAdmin = configuredAdmin ?? accounts.find((account) => (account.role === 'super_admin' || account.role === 'admin') && account.status !== 'disabled')
   const activeAccount = activeAdmin ?? accounts.find((account) => account.status !== 'disabled')
   assert(activeAccount?.id, '无法定位烟测系统账户，不能创建临时账号')
   return activeAccount.id

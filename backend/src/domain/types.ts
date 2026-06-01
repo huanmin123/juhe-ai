@@ -2,7 +2,17 @@ export type ProviderCode = string
 export type AccountType = string
 export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
 export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled'
-export type SystemAccountRole = 'admin' | 'user'
+export const SYSTEM_ACCOUNT_ROLES = ['super_admin', 'admin', 'user'] as const
+export type SystemAccountRole = typeof SYSTEM_ACCOUNT_ROLES[number]
+export type ManagementSystemAccountRole = Extract<SystemAccountRole, 'super_admin' | 'admin'>
+
+export function isAdminRole(role: unknown): role is ManagementSystemAccountRole {
+  return role === 'super_admin' || role === 'admin'
+}
+
+export function isSuperAdminRole(role: unknown): role is 'super_admin' {
+  return role === 'super_admin'
+}
 export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
 export type AccountUsageAccessType = 'owner' | 'authorized' | 'account_authorized' | 'group_authorized'

@@ -16,9 +16,9 @@ export function seedDefaults(database: DatabaseSync): void {
     .run(
       'sys_admin',
       'admin',
-      '管理员',
-      '系统默认管理员账户',
-      'admin',
+      '超级管理员',
+      '系统默认超级管理员账户',
+      'super_admin',
       'active',
       hashPassword('admin'),
       1,

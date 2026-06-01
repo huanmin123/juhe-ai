@@ -109,7 +109,7 @@ const defaultResourceAuthorizationUsageDetailPageSize = 200
 const temporaryUnavailableInitialBackoffSeconds = 3
 const temporaryUnavailableFastThresholdSeconds = 60
 const temporaryUnavailableBackoffMultiplier = 2
-const internalAccountReadAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin' }
+const internalAccountReadAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 type AccountOptionFilterValue = string | number
 const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 

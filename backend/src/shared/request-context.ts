@@ -4,6 +4,7 @@ import { isIP } from 'node:net'
 import type { NextFunction, Request, Response } from 'express'
 import type { Logger } from 'pino'
 
+import type { SystemAccountRole } from '../domain/types.js'
 import { logger } from './logger.js'
 
 export interface RequestContext {
@@ -14,7 +15,7 @@ export interface RequestContext {
   originalUrl: string
   clientIp?: string
   systemAccountId?: string
-  role?: 'admin' | 'user'
+  role?: SystemAccountRole
   apiKeyId?: string
   groupId?: string
   trafficSource?: string
@@ -23,7 +24,7 @@ export interface RequestContext {
 
 export interface RequestContextFields {
   systemAccountId?: string
-  role?: 'admin' | 'user'
+  role?: SystemAccountRole
   apiKeyId?: string
   groupId?: string
   trafficSource?: string

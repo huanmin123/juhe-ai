@@ -17,7 +17,7 @@
           </div>
 
           <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>全局配置仅包含系统名称和系统图标路径，仅管理员可修改；普通用户不会看到这些字段。</template>
+            <template #message>全局配置仅包含系统名称和系统图标路径，仅管理角色可修改；普通用户不会看到这些字段。</template>
           </a-alert>
 
           <div class="settings-grid">

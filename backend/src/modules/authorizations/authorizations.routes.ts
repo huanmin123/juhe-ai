@@ -20,7 +20,7 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
-import type { ResourceAuthorizationSummary } from '../../domain/types.js'
+import { isAdminRole, type ResourceAuthorizationSummary } from '../../domain/types.js'
 
 export const authorizationsRouter = Router()
 
@@ -170,7 +170,7 @@ authorizationsRouter.post('/', mutationGuard({
     return
   }
   const authContext = getRequestAuthContext()
-  if (authContext?.role === 'admin' && req.baseUrl.endsWith('/authorizations') && !scopeQuery.data.systemAccountId) {
+  if (isAdminRole(authContext?.role) && req.baseUrl.endsWith('/authorizations') && !scopeQuery.data.systemAccountId) {
     sendBadRequest(res, '管理员新增授权时必须指定授权人')
     return
   }

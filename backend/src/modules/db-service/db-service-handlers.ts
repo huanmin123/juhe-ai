@@ -52,7 +52,7 @@ let pendingRequestCount = 0
 let lastRequestAt: string | undefined
 let lastError: string | undefined
 let dbServiceHttpEndpoint: { host: string; port: number } | undefined
-const internalDbServiceAccountAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin' }
+const internalDbServiceAccountAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 
 export async function handleDbServiceOperation<T extends DbServiceOperation>(operation: T): Promise<DbServiceOperationResult<T>> {
   pendingRequestCount += 1

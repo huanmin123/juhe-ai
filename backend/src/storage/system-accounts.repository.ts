@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import type { SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
+import { isSuperAdminRole, type SystemAccountPrincipalSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
 import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPasswordAsync } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
@@ -361,6 +361,7 @@ export function updateSystemAccountWithPasswordHash(id: string, input: {
     imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, current.imageGenerationEnabled, '支持图像生成')
   }
   const now = nowIso()
+  ensureActiveSuperAdminRemains(current, next, id)
   ensureSystemAccountDisplayNameUnique(next.displayName, id)
   if (passwordHash) {
     getBusinessDatabase()
@@ -491,10 +492,27 @@ function normalizeNullableText(value: unknown, label: string): string | null {
 
 function normalizeSystemAccountRole(value: unknown, fallback: SystemAccountRole): SystemAccountRole {
   if (value === undefined) return fallback
-  if (value === 'admin' || value === 'user') {
+  if (value === 'super_admin' || value === 'admin' || value === 'user') {
     return value
   }
   throw new Error('系统账户角色无效')
+}
+
+function ensureActiveSuperAdminRemains(
+  current: Pick<SystemAccountSummary, 'role' | 'status'>,
+  next: Pick<SystemAccountSummary, 'role' | 'status'>,
+  id: string
+): void {
+  if (!isSuperAdminRole(current.role) || (isSuperAdminRole(next.role) && next.status === 'active')) {
+    return
+  }
+
+  const row = getBusinessDatabase()
+    .prepare("SELECT COUNT(*) AS count FROM system_accounts WHERE id <> ? AND role = 'super_admin' AND status = 'active'")
+    .get(id) as unknown as { count?: number } | undefined
+  if (Number(row?.count ?? 0) < 1) {
+    throw new Error('至少保留一个启用的超级管理员')
+  }
 }
 
 function normalizeSystemAccountStatus(value: unknown, fallback: SystemAccountStatus): SystemAccountStatus {

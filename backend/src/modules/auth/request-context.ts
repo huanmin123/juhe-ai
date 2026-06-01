@@ -1,8 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
+import { isAdminRole, type SystemAccountRole } from '../../domain/types.js'
+
 export interface RequestAuthContext {
   systemAccountId: string
-  role: 'admin' | 'user'
+  role: SystemAccountRole
   username: string
   displayName: string
   mustChangePassword: boolean
@@ -11,7 +13,7 @@ export interface RequestAuthContext {
 
 export interface RequestAccessScope {
   systemAccountId: string
-  role: 'admin' | 'user'
+  role: SystemAccountRole
   systemAccountFilterId?: string
 }
 
@@ -28,7 +30,7 @@ export function getRequestAuthContext(): RequestAuthContext | undefined {
 export function getRequestAccessScope(systemAccountIdFilter?: unknown): RequestAccessScope | undefined {
   const context = getRequestAuthContext()
   if (!context) return undefined
-  const filterId = context.role === 'admin' ? normalizeSystemAccountIdFilter(systemAccountIdFilter) : undefined
+  const filterId = isAdminRole(context.role) ? normalizeSystemAccountIdFilter(systemAccountIdFilter) : undefined
   return {
     systemAccountId: context.systemAccountId,
     role: context.role,

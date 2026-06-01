@@ -2,14 +2,14 @@
   <a-card class="page-card system-account-card responsive-page-card">
     <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索用户名称" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchAccounts" @reset="resetSearch" @refresh="refreshAccounts">
       <template #actions>
-        <a-button type="primary" @click="openCreate">新增系统账户</a-button>
+        <a-button v-if="canManageSystemAccounts" type="primary" @click="openCreate">新增系统账户</a-button>
       </template>
     </ResponsiveListToolbar>
 
     <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1190" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileAccounts" @mobile-refresh="refreshMobileAccounts">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
-          <a-tag :color="record.role === 'admin' ? 'geekblue' : 'default'">{{ record.role === 'admin' ? '管理员' : '用户' }}</a-tag>
+          <a-tag :color="systemAccountRoleColor(record.role)">{{ systemAccountRoleLabel(record.role) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="record.status === 'active' ? 'green' : 'red'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
@@ -27,7 +27,7 @@
           <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <RowActions :actions="systemAccountActions" @action-click="handleSystemAccountAction($event, record)" />
+          <RowActions v-if="canManageSystemAccounts" :actions="systemAccountActions" @action-click="handleSystemAccountAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -35,7 +35,7 @@
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">{{ record.username }}</div>
             <div class="mobile-list-card-tags">
-              <a-tag :color="record.role === 'admin' ? 'geekblue' : 'default'">{{ record.role === 'admin' ? '管理员' : '用户' }}</a-tag>
+              <a-tag :color="systemAccountRoleColor(record.role)">{{ systemAccountRoleLabel(record.role) }}</a-tag>
               <a-tag :color="record.status === 'active' ? 'green' : 'red'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
               <a-tag :color="record.imageGenerationEnabled ? 'green' : 'default'">{{ record.imageGenerationEnabled ? '支持图像' : '禁用图像' }}</a-tag>
               <a-tag :color="record.mustChangePassword ? 'warning' : 'success'">{{ record.mustChangePassword ? '提醒改密' : '不提醒改密' }}</a-tag>
@@ -55,7 +55,7 @@
               <strong>{{ record.description || '-' }}</strong>
             </div>
           </div>
-          <div class="mobile-list-card-actions">
+          <div v-if="canManageSystemAccounts" class="mobile-list-card-actions">
             <RowActions variant="button" :actions="systemAccountActions" @action-click="handleSystemAccountAction($event, record)" />
           </div>
         </article>
@@ -104,17 +104,19 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { authState } from '@/composables/useAuth'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
 const pageSize = 20
@@ -127,6 +129,7 @@ const editingId = ref<string>()
 const resettingId = ref<string>()
 const resetPassword = ref('')
 const keyword = ref('')
+const canManageSystemAccounts = computed(() => isSuperAdminRole(authState.currentUser.value?.role))
 
 const form = reactive({
   username: '',
@@ -140,6 +143,7 @@ const form = reactive({
 })
 
 const roleOptions = [
+  { label: '超级管理员', value: 'super_admin', disabled: true },
   { label: '管理员', value: 'admin' },
   { label: '用户', value: 'user' }
 ]
@@ -149,7 +153,7 @@ const statusOptions = [
   { label: '停用', value: 'disabled' }
 ]
 
-const columns = [
+const baseColumns = [
   { title: '用户名', dataIndex: 'username', key: 'username', width: 160 },
   { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 180 },
   { title: '角色', key: 'role', width: 110 },
@@ -157,9 +161,12 @@ const columns = [
   { title: '图像生成', key: 'imageGenerationEnabled', width: 110 },
   { title: '改密提醒', key: 'mustChangePassword', width: 110 },
   { title: '最后登录', key: 'lastLoginAt', width: 180 },
-  { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', fixed: 'right' }
+  { title: '说明', dataIndex: 'description', key: 'description', width: 200 }
 ]
+
+const columns = computed(() => canManageSystemAccounts.value
+  ? [...baseColumns, { title: '操作', key: 'actions', fixed: 'right' }]
+  : baseColumns)
 
 const systemAccountActions: RowActionItem[] = [
   { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
@@ -194,12 +201,14 @@ const {
 })
 
 function openCreate() {
+  if (!canManageSystemAccounts.value) return
   editingId.value = undefined
   Object.assign(form, { username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true, imageGenerationEnabled: false })
   modalOpen.value = true
 }
 
 function openEdit(record: SystemAccountSummary) {
+  if (!canManageSystemAccounts.value) return
   editingId.value = record.id
   Object.assign(form, {
     username: record.username,
@@ -215,6 +224,7 @@ function openEdit(record: SystemAccountSummary) {
 }
 
 function openResetPassword(record: SystemAccountSummary) {
+  if (!canManageSystemAccounts.value) return
   resettingId.value = record.id
   resetPassword.value = ''
   passwordModalOpen.value = true
@@ -231,6 +241,10 @@ function handleSystemAccountAction(key: string, record: SystemAccountSummary) {
 }
 
 const handleSave = submitAction('system_accounts.save', async () => {
+  if (!canManageSystemAccounts.value) {
+    message.warning('需要超级管理员权限')
+    return
+  }
   const username = form.username.trim()
   const displayName = form.displayName.trim()
   if (!username || !displayName) {
@@ -269,6 +283,10 @@ const handleSave = submitAction('system_accounts.save', async () => {
 })
 
 const handleResetPassword = submitAction('system_accounts.reset_password', async () => {
+  if (!canManageSystemAccounts.value) {
+    message.warning('需要超级管理员权限')
+    return
+  }
   if (!resettingId.value || resetPassword.value.length < 4) {
     message.warning('新密码至少 4 位')
     return

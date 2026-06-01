@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { requireAdmin } from '../auth/auth.middleware.js'
+import { requireAdmin, requireSuperAdmin } from '../auth/auth.middleware.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
 import { createSystemAccountWithPasswordHash, findSystemAccountById, listSystemAccountOptions, listSystemAccountsPage, revokeAllSessionsForAccount, updateSystemAccountWithPasswordHash } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
@@ -16,7 +16,7 @@ const createSchema = z.object({
   displayName: z.string().trim().min(1),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4),
-  role: z.enum(['admin', 'user']).optional(),
+  role: z.enum(['super_admin', 'admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional()
@@ -26,7 +26,7 @@ const updateSchema = z.object({
   displayName: z.string().trim().min(1).optional(),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4).optional(),
-  role: z.enum(['admin', 'user']).optional(),
+  role: z.enum(['super_admin', 'admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional()
@@ -60,7 +60,7 @@ function parseSystemAccountListOptions(query: Record<string, unknown>) {
   }
 }
 
-systemAccountsRouter.post('/', requireAdmin, mutationGuard({
+systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
   operationKey: 'system_accounts.create',
   fingerprint: (req) => ({
     username: normalizedText(bodyField(req, 'username')),
@@ -106,7 +106,7 @@ systemAccountsRouter.post('/', requireAdmin, mutationGuard({
   }
 })
 
-systemAccountsRouter.patch('/:id', requireAdmin, async (req, res, next) => {
+systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => {
   try {
     if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'username')) {
       res.status(400).json(badRequest('用户账户创建后不能修改'))

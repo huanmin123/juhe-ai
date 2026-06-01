@@ -1,4 +1,6 @@
-export type OperationLogActorRole = 'admin' | 'user'
+import type { SystemAccountRole } from './base'
+
+export type OperationLogActorRole = SystemAccountRole
 export type OperationLogMode = 'self' | 'admin'
 export type OperationLogDetailLevel = 'full' | 'summary'
 export type OperationLogVisibilityScope = 'targeted' | 'all_users' | 'admin_only'

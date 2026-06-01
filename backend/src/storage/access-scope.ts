@@ -1,8 +1,9 @@
+import { isAdminRole, type SystemAccountRole } from '../domain/types.js'
 import { getRequestAuthContext } from '../modules/auth/request-context.js'
 
 export interface AccessScope {
   systemAccountId: string
-  role: 'admin' | 'user'
+  role: SystemAccountRole
   systemAccountFilterId?: string
 }
 
@@ -22,13 +23,13 @@ export function currentSystemAccountId(access?: AccessScope): string {
 
 export function canAccessAll(access?: AccessScope): boolean {
   const scope = resolveAccessScope(access)
-  return scope?.role === 'admin'
+  return isAdminRole(scope?.role)
 }
 
 export function scopedSystemAccountId(access?: AccessScope): string | undefined {
   const scope = resolveAccessScope(access)
   if (!scope) return undefined
-  if (scope.role === 'admin') {
+  if (isAdminRole(scope.role)) {
     const filterId = scope.systemAccountFilterId?.trim()
     return filterId || undefined
   }

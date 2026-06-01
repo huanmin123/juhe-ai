@@ -48,7 +48,7 @@ export interface RefreshedOpenAIOAuthAccount {
 const oauthTokenRefreshFailureThreshold = 3
 export const OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE = 'oauth_token_refresh_failed'
 const openAIOAuthRefreshRaceRetryPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_race', 0, 1)
-const internalOpenAIOAuthRefreshAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'admin' }
+const internalOpenAIOAuthRefreshAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const refreshFailureStateByAccountId = new Map<string, { count: number; backoffUntil: number }>()
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
 const recentRefreshTtlMs = 30_000

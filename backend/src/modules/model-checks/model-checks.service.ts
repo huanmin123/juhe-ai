@@ -2,15 +2,16 @@ import { EventEmitter } from 'node:events'
 import type { IncomingHttpHeaders } from 'node:http'
 import type { Request } from 'express'
 
-import type {
-  AccountSummary,
-  ModelCheckItemSummary,
-  ModelCheckOptions,
-  ModelCheckRunDetail,
-  ModelCheckRunListResult,
-  ModelCheckRunRequest,
-  ModelCheckRunStatus,
-  ModelCheckTargetType
+import {
+  isAdminRole,
+  type AccountSummary,
+  type ModelCheckItemSummary,
+  type ModelCheckOptions,
+  type ModelCheckRunDetail,
+  type ModelCheckRunListResult,
+  type ModelCheckRunRequest,
+  type ModelCheckRunStatus,
+  type ModelCheckTargetType
 } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
@@ -485,7 +486,7 @@ function resolveAccountTarget(accountId: string, access?: AccessScope): ModelChe
 }
 
 function effectiveAccountTargetSystemAccountId(account: AccountSummary, access?: AccessScope): string {
-  if (access?.role === 'admin') {
+  if (isAdminRole(access?.role)) {
     const systemAccountId = access.systemAccountFilterId?.trim()
       || account.systemAccountId
       || account.ownerSystemAccountId
