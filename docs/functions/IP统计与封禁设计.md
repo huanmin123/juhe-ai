@@ -464,7 +464,7 @@ GET /__aipublic__/ip/usage
 Authorization: Bearer <source_token>
 ```
 
-来源系统鉴权复用 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)，IP 用量接口使用独立 scope `juhe_ai_ip_usage:read`。正式 token 读取真实 IP 窗口表；内置测试 token 只返回 mock 数据。
+来源授权鉴权复用 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)，IP 用量接口使用独立 scope `juhe_ai_public:ip_usage:read`。正式 token 读取真实 IP 窗口表；内置测试 token 只返回 mock 数据。
 
 该接口：
 

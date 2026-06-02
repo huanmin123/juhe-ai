@@ -36,6 +36,7 @@ export interface ModelCheckRunPayload {
 }
 
 export interface ModelCheckRunListParams {
+  systemAccountId?: string
   page?: number
   pageSize?: number
   targetType?: ModelCheckTargetType

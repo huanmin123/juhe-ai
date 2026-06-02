@@ -106,7 +106,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       scopes_json TEXT NOT NULL DEFAULT '[]',
-      allowed_target_usernames_json TEXT NOT NULL DEFAULT '[]',
       rate_limits_json TEXT NOT NULL DEFAULT '[]',
       expires_at TEXT,
       notes TEXT,

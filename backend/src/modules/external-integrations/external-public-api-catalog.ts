@@ -1,4 +1,22 @@
 import {
+  externalIntegrationAccessInfoReadScope,
+  externalIntegrationAccountAddWriteScope,
+  externalIntegrationAccountDeleteWriteScope,
+  externalIntegrationAccountListReadScope,
+  externalIntegrationAccountUpdateWriteScope,
+  externalIntegrationAccountUsageReadScope,
+  externalIntegrationApiKeyAddWriteScope,
+  externalIntegrationApiKeyDeleteWriteScope,
+  externalIntegrationApiKeyListReadScope,
+  externalIntegrationApiKeyUpdateWriteScope,
+  externalIntegrationConsumptionRankingReadScope,
+  externalIntegrationGroupAddWriteScope,
+  externalIntegrationGroupDeleteWriteScope,
+  externalIntegrationGroupListReadScope,
+  externalIntegrationGroupUpdateWriteScope,
+  externalIntegrationIpUsageReadScope,
+  externalIntegrationMockRankingDemoScope,
+  externalIntegrationSourceAuthDemoScope,
   externalIntegrationTestToken
 } from '../../storage/external-integration-source.repository.js'
 
@@ -33,6 +51,7 @@ export interface ExternalPublicApiDocItem {
   status: ExternalPublicApiStatus
   method: ExternalPublicApiMethod
   path: string
+  scope?: string
   headers: ExternalPublicApiHeader[]
   query: ExternalPublicApiField[]
   requestBody?: ExternalPublicApiBody
@@ -50,7 +69,7 @@ export interface ExternalPublicApiCatalog {
 const authHeader: ExternalPublicApiHeader = {
   name: 'Authorization',
   required: true,
-  description: '来源系统 Bearer token。公开资源写入接口还会校验来源系统允许目标用户和目标用户启用状态；使用内置测试 token 时接口只返回 mock 数据。',
+  description: '来源授权 Bearer token。每个公开接口都有独立资源 scope；使用内置测试 token 时接口只返回 mock 数据。',
   example: 'Bearer <source_token>'
 }
 
@@ -60,11 +79,11 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
     authType: 'Bearer',
     testTokenName: '内置测试 token',
     testToken: externalIntegrationTestToken,
-    items: [
+    items: ([
       {
         id: 'source-auth-demo',
         name: '来源鉴权 Demo',
-        summary: '验证来源系统 token、状态和公开接口限频是否生效。',
+        summary: '验证来源授权 token、状态和公开接口限频是否生效。',
         status: 'available',
         method: 'GET',
         path: '/__aipublic__/demo/source-auth',
@@ -394,7 +413,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             supportedRanges: ['today', 'last7d', 'last31d'],
             supportedMetrics: ['totalTokens', 'totalCost', 'requestCount'],
             boundary: {
-              provides: ['来源系统 Bearer token 鉴权', 'IP 维度聚合事实', '账号维度实际消耗聚合事实'],
+              provides: ['来源授权 Bearer token 鉴权', 'IP 维度聚合事实', '账号维度实际消耗聚合事实'],
               notProvided: ['公益站用户维度排行榜快照', 'IP 或账号到公益站业务身份的归属']
             }
           }
@@ -1015,6 +1034,33 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           }
         }
       }
-    ]
+    ] as ExternalPublicApiDocItem[]).map((item) => ({
+      ...item,
+      scope: scopeForPublicApiDocItem(item.id)
+    }))
   }
+}
+
+function scopeForPublicApiDocItem(id: string): string {
+  const scopesById: Record<string, string> = {
+    'source-auth-demo': externalIntegrationSourceAuthDemoScope,
+    'mock-ranking-demo': externalIntegrationMockRankingDemoScope,
+    'ip-usage': externalIntegrationIpUsageReadScope,
+    'consumption-ranking': externalIntegrationConsumptionRankingReadScope,
+    'account-usage': externalIntegrationAccountUsageReadScope,
+    'access-info': externalIntegrationAccessInfoReadScope,
+    'group-list': externalIntegrationGroupListReadScope,
+    'api-key-list': externalIntegrationApiKeyListReadScope,
+    'account-list': externalIntegrationAccountListReadScope,
+    'group-add': externalIntegrationGroupAddWriteScope,
+    'group-update': externalIntegrationGroupUpdateWriteScope,
+    'group-delete': externalIntegrationGroupDeleteWriteScope,
+    'api-key-add': externalIntegrationApiKeyAddWriteScope,
+    'api-key-update': externalIntegrationApiKeyUpdateWriteScope,
+    'api-key-delete': externalIntegrationApiKeyDeleteWriteScope,
+    'account-add': externalIntegrationAccountAddWriteScope,
+    'account-update': externalIntegrationAccountUpdateWriteScope,
+    'account-delete': externalIntegrationAccountDeleteWriteScope
+  }
+  return scopesById[id] ?? ''
 }

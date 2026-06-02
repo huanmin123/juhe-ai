@@ -2,20 +2,50 @@ import { randomBytes } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 
 import { hashSecret } from './crypto.js'
-import { getBusinessDatabase, newId, nowIso } from './database.js'
+import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
 import { normalizeListPage } from './query-utils.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
 export const externalIntegrationSourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
-export const externalIntegrationIpUsageReadScope = 'juhe_ai_ip_usage:read'
-export const externalIntegrationAccountPushScope = 'juhe_ai_account_push:write'
+export const externalIntegrationMockRankingDemoScope = 'external_integrations:mock_ranking_demo:read'
+export const externalIntegrationIpUsageReadScope = 'juhe_ai_public:ip_usage:read'
+export const externalIntegrationAccountUsageReadScope = 'juhe_ai_public:account_usage:read'
+export const externalIntegrationConsumptionRankingReadScope = 'juhe_ai_public:consumption_ranking:read'
+export const externalIntegrationAccessInfoReadScope = 'juhe_ai_public:access_info:read'
+export const externalIntegrationGroupListReadScope = 'juhe_ai_public:group_list:read'
+export const externalIntegrationApiKeyListReadScope = 'juhe_ai_public:api_key_list:read'
+export const externalIntegrationAccountListReadScope = 'juhe_ai_public:account_list:read'
+export const externalIntegrationGroupAddWriteScope = 'juhe_ai_public:group_add:write'
+export const externalIntegrationGroupUpdateWriteScope = 'juhe_ai_public:group_update:write'
+export const externalIntegrationGroupDeleteWriteScope = 'juhe_ai_public:group_delete:write'
+export const externalIntegrationApiKeyAddWriteScope = 'juhe_ai_public:api_key_add:write'
+export const externalIntegrationApiKeyUpdateWriteScope = 'juhe_ai_public:api_key_update:write'
+export const externalIntegrationApiKeyDeleteWriteScope = 'juhe_ai_public:api_key_delete:write'
+export const externalIntegrationAccountAddWriteScope = 'juhe_ai_public:account_add:write'
+export const externalIntegrationAccountUpdateWriteScope = 'juhe_ai_public:account_update:write'
+export const externalIntegrationAccountDeleteWriteScope = 'juhe_ai_public:account_delete:write'
 export const externalIntegrationTestToken = process.env.JUHE_AI_EXTERNAL_SOURCE_TEST_TOKEN?.trim() || 'juis_test_mock_public_token'
 export const externalIntegrationTestTokenPrefix = externalIntegrationTestToken.slice(0, 12)
 
 export const externalIntegrationScopeOptions = [
-  { value: externalIntegrationSourceAuthDemoScope, label: '来源鉴权 demo' },
-  { value: externalIntegrationIpUsageReadScope, label: 'IP 聚合读取' },
-  { value: externalIntegrationAccountPushScope, label: '公开资源写入' }
+  { value: externalIntegrationSourceAuthDemoScope, label: 'GET 来源鉴权 Demo' },
+  { value: externalIntegrationMockRankingDemoScope, label: 'GET 公益榜 Mock Demo' },
+  { value: externalIntegrationIpUsageReadScope, label: 'GET IP 维度消费聚合' },
+  { value: externalIntegrationAccountUsageReadScope, label: 'GET 账号维度实际消耗聚合' },
+  { value: externalIntegrationConsumptionRankingReadScope, label: 'GET IP 维度消耗排行' },
+  { value: externalIntegrationAccessInfoReadScope, label: 'GET 公益接入信息' },
+  { value: externalIntegrationGroupListReadScope, label: 'GET 分组列表' },
+  { value: externalIntegrationApiKeyListReadScope, label: 'GET API Key 列表' },
+  { value: externalIntegrationAccountListReadScope, label: 'GET 账号列表' },
+  { value: externalIntegrationGroupAddWriteScope, label: 'POST 分组新增' },
+  { value: externalIntegrationGroupUpdateWriteScope, label: 'POST 分组修改' },
+  { value: externalIntegrationGroupDeleteWriteScope, label: 'POST 分组删除' },
+  { value: externalIntegrationApiKeyAddWriteScope, label: 'POST API Key 新增' },
+  { value: externalIntegrationApiKeyUpdateWriteScope, label: 'POST API Key 修改' },
+  { value: externalIntegrationApiKeyDeleteWriteScope, label: 'POST API Key 删除' },
+  { value: externalIntegrationAccountAddWriteScope, label: 'POST 账号新增' },
+  { value: externalIntegrationAccountUpdateWriteScope, label: 'POST 账号修改' },
+  { value: externalIntegrationAccountDeleteWriteScope, label: 'POST 账号删除' }
 ] as const
 
 export type ExternalIntegrationSourceStatus = 'active' | 'disabled'
@@ -30,7 +60,6 @@ export interface ExternalIntegrationSourceInput {
   name: string
   status?: ExternalIntegrationSourceStatus
   scopes?: string[]
-  allowedTargetUsernames?: string[]
   rateLimits?: ExternalIntegrationRateLimitRule[]
   expiresAt?: string | null
   notes?: string | null
@@ -40,7 +69,6 @@ export interface ExternalIntegrationSourceUpdateInput {
   name?: string
   status?: ExternalIntegrationSourceStatus
   scopes?: string[]
-  allowedTargetUsernames?: string[]
   rateLimits?: ExternalIntegrationRateLimitRule[]
   expiresAt?: string | null
   notes?: string | null
@@ -71,6 +99,11 @@ export interface CreatedExternalIntegrationSourceToken {
   expiresAt?: string
 }
 
+export interface CreatedExternalIntegrationSourceAuthorization {
+  source: ExternalIntegrationSourceSummary
+  token: CreatedExternalIntegrationSourceToken
+}
+
 export interface ExternalIntegrationSourceTokenSummary {
   id: string
   name: string
@@ -89,7 +122,6 @@ export interface ExternalIntegrationSourceSummary {
   name: string
   status: ExternalIntegrationSourceStatus
   scopes: string[]
-  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   expiresAt?: string
   notes?: string
@@ -123,7 +155,6 @@ export interface ExternalIntegrationSourceAuthContext {
   tokenName: string
   tokenPrefix: string
   scopes: string[]
-  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   authenticatedAt: string
   isTestToken: boolean
@@ -138,7 +169,6 @@ interface ExternalIntegrationSourceTokenRow {
   source_name: string
   source_status: string
   source_scopes_json: string
-  source_allowed_target_usernames_json: string
   source_rate_limits_json: string | null
   source_expires_at: string | null
   source_last_used_at: string | null
@@ -156,7 +186,6 @@ interface ExternalIntegrationSourceRow {
   name: string
   status: string
   scopes_json: string
-  allowed_target_usernames_json: string
   rate_limits_json: string | null
   expires_at: string | null
   notes: string | null
@@ -188,7 +217,7 @@ const generatedTokenPrefix = 'juis_'
 const touchLastUsedIntervalMs = 60_000
 const defaultPageSize = 20
 const maxPageSize = 100
-const externalIntegrationSourceInputKeys = new Set(['name', 'status', 'scopes', 'allowedTargetUsernames', 'rateLimits', 'expiresAt', 'notes'])
+const externalIntegrationSourceInputKeys = new Set(['name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes'])
 const externalIntegrationSourceTokenInputKeys = new Set(['sourceRefId', 'name', 'token', 'status', 'scopes', 'expiresAt'])
 const externalIntegrationSourceTokenUpdateInputKeys = new Set(['name', 'status', 'scopes', 'expiresAt'])
 const externalIntegrationRateLimitRuleKeys = ['windowSeconds', 'maxRequests'] as const
@@ -262,14 +291,13 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
   try {
     getBusinessDatabase().prepare(`
       INSERT INTO external_integration_sources (
-        id, name, status, scopes_json, allowed_target_usernames_json, rate_limits_json, expires_at, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       name,
       normalizeSourceStatusInput(input.status),
       encodeScopes(input.scopes),
-      encodeTargetUsernames(input.allowedTargetUsernames),
       encodeRateLimits(input.rateLimits),
       normalizeNullableIso(input.expiresAt),
       normalizeNullableText(input.notes),
@@ -285,6 +313,25 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
   return requiredSource(id)
 }
 
+export function createExternalIntegrationSourceAuthorization(input: ExternalIntegrationSourceInput): CreatedExternalIntegrationSourceAuthorization {
+  return runInDatabaseTransaction(() => {
+    const source = createExternalIntegrationSource({
+      ...input
+    })
+    const token = createExternalIntegrationSourceToken({
+      sourceRefId: source.id,
+      name: `${source.name} 生产 Token`,
+      status: source.status,
+      scopes: source.scopes,
+      expiresAt: source.expiresAt ?? null
+    })
+    return {
+      source: requiredSource(source.id),
+      token
+    }
+  })
+}
+
 export function upsertExternalIntegrationSource(input: ExternalIntegrationSourceInput): { id: string; name: string } {
   assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
   const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
@@ -297,13 +344,12 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
   if (existing) {
     database.prepare(`
       UPDATE external_integration_sources
-      SET name = ?, status = ?, scopes_json = ?, allowed_target_usernames_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
+      SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
       WHERE id = ?
     `).run(
       name,
       normalizeSourceStatusInput(input.status),
       encodeScopes(input.scopes),
-      encodeTargetUsernames(input.allowedTargetUsernames),
       encodeRateLimits(input.rateLimits),
       normalizeNullableIso(input.expiresAt),
       normalizeNullableText(input.notes),
@@ -314,14 +360,13 @@ export function upsertExternalIntegrationSource(input: ExternalIntegrationSource
   }
   database.prepare(`
     INSERT INTO external_integration_sources (
-      id, name, status, scopes_json, allowed_target_usernames_json, rate_limits_json, expires_at, notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     name,
     normalizeSourceStatusInput(input.status),
     encodeScopes(input.scopes),
-    encodeTargetUsernames(input.allowedTargetUsernames),
     encodeRateLimits(input.rateLimits),
     normalizeNullableIso(input.expiresAt),
     normalizeNullableText(input.notes),
@@ -343,15 +388,15 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
   }
   const nextStatus = input.status === undefined ? normalizeSourceStatus(existing.status) : normalizeSourceStatusInput(input.status)
   const nextScopes = input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes)
-  const nextAllowedTargetUsernames = input.allowedTargetUsernames === undefined ? existing.allowed_target_usernames_json : encodeTargetUsernames(input.allowedTargetUsernames)
   const nextRateLimits = input.rateLimits === undefined ? existing.rate_limits_json : encodeRateLimits(input.rateLimits)
   const nextExpiresAt = input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt)
   const nextNotes = input.notes === undefined ? existing.notes : normalizeNullableText(input.notes)
   getBusinessDatabase().prepare(`
     UPDATE external_integration_sources
-    SET name = ?, status = ?, scopes_json = ?, allowed_target_usernames_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
+    SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
     WHERE id = ?
-  `).run(nextName, nextStatus, nextScopes, nextAllowedTargetUsernames, nextRateLimits, nextExpiresAt, nextNotes, nowIso(), id)
+  `).run(nextName, nextStatus, nextScopes, nextRateLimits, nextExpiresAt, nextNotes, nowIso(), id)
+  syncExternalIntegrationSourceTokenState(id)
   return requiredSource(id)
 }
 
@@ -431,6 +476,30 @@ export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenI
   return requiredSource(sourceRefId).tokens.find((token) => token.id === tokenId)
 }
 
+function syncExternalIntegrationSourceTokenState(sourceRefId: string): void {
+  const source = findSourceRow(sourceRefId)
+  if (!source) {
+    return
+  }
+  const sourceStatus = normalizeSourceStatus(source.status)
+  getBusinessDatabase().prepare(`
+    UPDATE external_integration_source_tokens
+    SET name = ?,
+        status = CASE WHEN status = 'revoked' THEN status ELSE ? END,
+        scopes_json = ?,
+        expires_at = ?,
+        updated_at = ?
+    WHERE source_ref_id = ?
+  `).run(
+    `${source.name} 生产 Token`,
+    sourceStatus,
+    source.scopes_json,
+    source.expires_at,
+    nowIso(),
+    sourceRefId
+  )
+}
+
 export function validateExternalIntegrationSourceToken(input: {
   token: string
   requiredScope?: string
@@ -456,7 +525,6 @@ export function validateExternalIntegrationSourceToken(input: {
       sources.name AS source_name,
       sources.status AS source_status,
       sources.scopes_json AS source_scopes_json,
-      sources.allowed_target_usernames_json AS source_allowed_target_usernames_json,
       sources.rate_limits_json AS source_rate_limits_json,
       sources.expires_at AS source_expires_at,
       sources.last_used_at AS source_last_used_at,
@@ -532,7 +600,6 @@ export function validateExternalIntegrationSourceToken(input: {
       tokenName: row.token_name,
       tokenPrefix: row.token_prefix,
       scopes: grantedScopes,
-      allowedTargetUsernames: decodeTargetUsernames(row.source_allowed_target_usernames_json),
       rateLimits: decodeRateLimits(row.source_rate_limits_json),
       authenticatedAt: now,
       isTestToken: false
@@ -562,7 +629,6 @@ function validateExternalIntegrationTestToken(token: string, requiredScope?: str
       tokenName: '内置测试 token',
       tokenPrefix: externalIntegrationTestTokenPrefix,
       scopes,
-      allowedTargetUsernames: [],
       rateLimits: [{ windowSeconds: 60, maxRequests: 120 }],
       authenticatedAt: nowIso(),
       isTestToken: true
@@ -631,7 +697,6 @@ function mapSourceSummary(row: ExternalIntegrationSourceListRow, tokens: Externa
     name: row.name,
     status: normalizeSourceStatus(row.status),
     scopes: decodeScopes(row.scopes_json),
-    allowedTargetUsernames: decodeTargetUsernames(row.allowed_target_usernames_json),
     rateLimits: decodeRateLimits(row.rate_limits_json),
     expiresAt: row.expires_at ?? undefined,
     notes: row.notes ?? undefined,
@@ -754,44 +819,6 @@ function normalizeScopes(scopes: unknown): string[] {
 function decodeScopes(value: string): string[] {
   const parsed = JSON.parse(value) as unknown
   return normalizeScopes(parsed)
-}
-
-function encodeTargetUsernames(values: unknown): string {
-  return JSON.stringify(normalizeTargetUsernames(values))
-}
-
-function decodeTargetUsernames(value: string): string[] {
-  const parsed = JSON.parse(value) as unknown
-  return normalizeTargetUsernames(parsed)
-}
-
-function normalizeTargetUsernames(values: unknown): string[] {
-  if (values === undefined) {
-    return []
-  }
-  if (!Array.isArray(values)) {
-    throw new Error('允许目标用户必须是字符串数组')
-  }
-  if (values.length > 100) {
-    throw new Error('允许目标用户最多 100 个')
-  }
-  const normalizedByKey = new Map<string, string>()
-  for (const item of values) {
-    if (typeof item !== 'string') {
-      throw new Error('允许目标用户必须是字符串数组')
-    }
-    const value = item.trim()
-    if (!value) {
-      throw new Error('允许目标用户不能为空')
-    }
-    if (value.length < 2 || value.length > 80) {
-      throw new Error('允许目标用户长度必须在 2 到 80 个字符之间')
-    }
-    normalizedByKey.set(value.toLowerCase(), value)
-  }
-  return [...normalizedByKey.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([, value]) => value)
 }
 
 function encodeRateLimits(rules: unknown): string {

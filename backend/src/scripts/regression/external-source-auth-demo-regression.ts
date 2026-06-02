@@ -47,7 +47,21 @@ async function runChild(): Promise<void> {
   const { createSystemApiApp } = await import('../../modules/system-api/system-api-app.js')
   const {
     createExternalIntegrationSourceToken,
-    externalIntegrationAccountPushScope,
+    externalIntegrationAccessInfoReadScope,
+    externalIntegrationAccountAddWriteScope,
+    externalIntegrationAccountDeleteWriteScope,
+    externalIntegrationAccountListReadScope,
+    externalIntegrationAccountUpdateWriteScope,
+    externalIntegrationAccountUsageReadScope,
+    externalIntegrationApiKeyAddWriteScope,
+    externalIntegrationApiKeyDeleteWriteScope,
+    externalIntegrationApiKeyListReadScope,
+    externalIntegrationApiKeyUpdateWriteScope,
+    externalIntegrationConsumptionRankingReadScope,
+    externalIntegrationGroupAddWriteScope,
+    externalIntegrationGroupDeleteWriteScope,
+    externalIntegrationGroupListReadScope,
+    externalIntegrationGroupUpdateWriteScope,
     externalIntegrationIpUsageReadScope,
     externalIntegrationSourceAuthDemoScope,
     externalIntegrationTestToken,
@@ -73,6 +87,9 @@ async function runChild(): Promise<void> {
   const disabledSourceToken = 'juis_disabled_source_demo_token_32_chars'
   const limitedSourceToken = 'juis_limited_source_demo_token_32_chars'
   const ipUsageToken = 'juis_valid_ip_usage_public_token_32_chars'
+  const accountUsageToken = 'juis_valid_account_usage_public_token_32_chars'
+  const consumptionRankingToken = 'juis_valid_consumption_ranking_public_token_32'
+  const accessInfoToken = 'juis_valid_access_info_public_token_32_chars'
   const accountWriteToken = 'juis_valid_account_write_public_token_32_chars'
 
   const source = upsertExternalIntegrationSource({
@@ -126,22 +143,63 @@ async function runChild(): Promise<void> {
     token: ipUsageToken,
     scopes: [externalIntegrationIpUsageReadScope]
   })
+  const accountUsageSource = upsertExternalIntegrationSource({
+    name: '账号聚合来源',
+    status: 'active',
+    scopes: [externalIntegrationAccountUsageReadScope]
+  })
+  createExternalIntegrationSourceToken({
+    sourceRefId: accountUsageSource.id,
+    name: 'account-usage-token',
+    token: accountUsageToken,
+    scopes: [externalIntegrationAccountUsageReadScope]
+  })
+  const consumptionRankingSource = upsertExternalIntegrationSource({
+    name: '消耗排行来源',
+    status: 'active',
+    scopes: [externalIntegrationConsumptionRankingReadScope]
+  })
+  createExternalIntegrationSourceToken({
+    sourceRefId: consumptionRankingSource.id,
+    name: 'consumption-ranking-token',
+    token: consumptionRankingToken,
+    scopes: [externalIntegrationConsumptionRankingReadScope]
+  })
+  const accessInfoSource = upsertExternalIntegrationSource({
+    name: '接入信息来源',
+    status: 'active',
+    scopes: [externalIntegrationAccessInfoReadScope]
+  })
+  createExternalIntegrationSourceToken({
+    sourceRefId: accessInfoSource.id,
+    name: 'access-info-token',
+    token: accessInfoToken,
+    scopes: [externalIntegrationAccessInfoReadScope]
+  })
+  const resourceControlScopes = [
+    externalIntegrationGroupListReadScope,
+    externalIntegrationApiKeyListReadScope,
+    externalIntegrationAccountListReadScope,
+    externalIntegrationGroupAddWriteScope,
+    externalIntegrationGroupUpdateWriteScope,
+    externalIntegrationGroupDeleteWriteScope,
+    externalIntegrationApiKeyAddWriteScope,
+    externalIntegrationApiKeyUpdateWriteScope,
+    externalIntegrationApiKeyDeleteWriteScope,
+    externalIntegrationAccountAddWriteScope,
+    externalIntegrationAccountUpdateWriteScope,
+    externalIntegrationAccountDeleteWriteScope
+  ]
   const accountWriteSource = upsertExternalIntegrationSource({
     name: '公开资源写入来源',
     status: 'active',
-    scopes: [externalIntegrationAccountPushScope],
-    allowedTargetUsernames: [
-      'huanmin',
-      'illegal_type_user',
-      'invalid_model_user',
-      'public_control_user'
-    ]
+    scopes: resourceControlScopes
   })
   createExternalIntegrationSourceToken({
     sourceRefId: accountWriteSource.id,
     name: 'account-write-token',
     token: accountWriteToken,
-    scopes: [externalIntegrationAccountPushScope]
+    scopes: resourceControlScopes
   })
   seedClientIpUsageWindow(clientIpStats, usageStatsHelpers, getStatsDatabase)
   const seededUsageAccount = seedAccountUsageWindow(createAccount, createGroup, usageStatsHelpers, getStatsDatabase)
@@ -200,6 +258,12 @@ async function runChild(): Promise<void> {
     assert.equal(mockRanking.body.data.items.length, 3)
     assert.equal(Object.prototype.hasOwnProperty.call(mockRanking.body.data, 'token'), false, 'mock 响应不能返回明文 token')
 
+    const mockRankingNoScope = await requestJson(baseUrl, '/__aipublic__/demo/mock-ranking?range=last7d&limit=3', {
+      Authorization: `Bearer ${validToken}`
+    })
+    assert.equal(mockRankingNoScope.status, 403)
+    assert.equal(mockRankingNoScope.body.code, 'external_source_scope_forbidden', 'Mock Demo 必须使用自己的接口 scope')
+
     const ipUsageNoScope = await requestJson(baseUrl, '/__aipublic__/ip/usage?range=today&pageSize=5', {
       Authorization: `Bearer ${validToken}`
     })
@@ -229,11 +293,23 @@ async function runChild(): Promise<void> {
     assert.equal(ipUsage.body.data.items[0].averageDurationMs, 240)
     assert.equal(ipUsage.body.data.items[0].maxDurationMs, 400)
 
+    const ipUsageWithAccountUsageScope = await requestJson(baseUrl, '/__aipublic__/ip/usage?range=today&pageSize=5', {
+      Authorization: `Bearer ${accountUsageToken}`
+    })
+    assert.equal(ipUsageWithAccountUsageScope.status, 403)
+    assert.equal(ipUsageWithAccountUsageScope.body.code, 'external_source_scope_forbidden', 'IP 用量和账号用量必须是两个独立接口资源')
+
     const accountUsageNoScope = await requestJson(baseUrl, '/__aipublic__/account/usage?range=today&pageSize=5', {
       Authorization: `Bearer ${validToken}`
     })
     assert.equal(accountUsageNoScope.status, 403)
-    assert.equal(accountUsageNoScope.body.code, 'external_source_scope_forbidden', '账号用量接口必须使用公开聚合读取 scope')
+    assert.equal(accountUsageNoScope.body.code, 'external_source_scope_forbidden', '账号用量接口必须使用自己的接口 scope')
+
+    const accountUsageWithIpScope = await requestJson(baseUrl, '/__aipublic__/account/usage?range=today&pageSize=5', {
+      Authorization: `Bearer ${ipUsageToken}`
+    })
+    assert.equal(accountUsageWithIpScope.status, 403)
+    assert.equal(accountUsageWithIpScope.body.code, 'external_source_scope_forbidden', '账号用量不能复用 IP 用量接口 scope')
 
     const mockAccountUsage = await requestJson(baseUrl, '/__aipublic__/account/usage?range=last7d&pageSize=2', {
       Authorization: `Bearer ${externalIntegrationTestToken}`
@@ -245,7 +321,7 @@ async function runChild(): Promise<void> {
     assert.equal(Object.prototype.hasOwnProperty.call(mockAccountUsage.body.data.items[0], 'credentials'), false, '公开账号聚合不返回上游凭据')
 
     const accountUsage = await requestJson(baseUrl, '/__aipublic__/account/usage?range=today&pageSize=5&sortField=totalTokens&sortOrder=desc', {
-      Authorization: `Bearer ${ipUsageToken}`
+      Authorization: `Bearer ${accountUsageToken}`
     })
     assert.equal(accountUsage.status, 200)
     assert.equal(accountUsage.body.data.source, 'stats')
@@ -258,7 +334,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountUsage.body.data.items[0].activeDays, 1)
 
     const customAccountUsage = await requestJson(baseUrl, '/__aipublic__/account/usage?startDate=2026-05-24&endDate=2026-05-30', {
-      Authorization: `Bearer ${ipUsageToken}`
+      Authorization: `Bearer ${accountUsageToken}`
     })
     assert.equal(customAccountUsage.status, 400)
     assert.match(customAccountUsage.body.message, /暂不支持自定义日期范围/, '公开账号聚合接口不应接受未预生成的自定义窗口')
@@ -270,7 +346,7 @@ async function runChild(): Promise<void> {
     assert.match(customIpUsage.body.message, /暂不支持自定义日期范围/, '公开 IP 聚合接口不应宣称并接受未预生成的自定义窗口')
 
     const consumptionRanking = await requestJson(baseUrl, '/__aipublic__/consumption/ranking?range=today&limit=1&metric=requestCount', {
-      Authorization: `Bearer ${ipUsageToken}`
+      Authorization: `Bearer ${consumptionRankingToken}`
     })
     assert.equal(consumptionRanking.status, 200)
     assert.equal(consumptionRanking.body.data.dimension, 'client_ip')
@@ -278,7 +354,7 @@ async function runChild(): Promise<void> {
     assert.equal(consumptionRanking.body.data.items[0].metricValue, 3)
 
     const accessInfo = await requestJson(baseUrl, '/__aipublic__/access/info', {
-      Authorization: `Bearer ${ipUsageToken}`
+      Authorization: `Bearer ${accessInfoToken}`
     })
     assert.equal(accessInfo.status, 200)
     assert.equal(accessInfo.body.data.dataDimension, 'client_ip')
@@ -342,22 +418,6 @@ async function runChild(): Promise<void> {
     assert.equal(mockAccountDelete.body.data.source, 'mock')
     assert.equal(mockAccountDelete.body.data.action, 'mock')
     assert.equal(Object.prototype.hasOwnProperty.call(mockAccountDelete.body.data.account, 'credentials'), false, '账号删除 mock 响应不能返回凭据')
-
-    const forbiddenTargetAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
-      Authorization: `Bearer ${accountWriteToken}`
-    }, 'POST', {
-      targetUsername: 'forbidden_public_user',
-      targetGroupName: '未授权目标分组',
-      providerCode: 'openai',
-      name: '未授权目标账号',
-      type: 'api_key',
-      baseUrl: 'https://push.example/v1',
-      apiKey: 'sk-public-push-regression-forbidden-target',
-      supportedModels: ['gpt-5.5']
-    })
-    assert.equal(forbiddenTargetAdd.status, 403)
-    assert.equal(forbiddenTargetAdd.body.code, 'external_source_target_forbidden')
-    assert.equal(findSystemAccountByUsername('forbidden_public_user'), undefined, '目标用户未授权时不应进入业务服务自动创建用户')
 
     const illegalTypeAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
       Authorization: `Bearer ${accountWriteToken}`

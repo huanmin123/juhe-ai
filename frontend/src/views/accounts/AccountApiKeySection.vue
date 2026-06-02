@@ -3,7 +3,7 @@
     <div class="form-section-head">
       <div>
         <h4>{{ title }} 配置</h4>
-        <p v-if="editing">API Key 不会回显；留空表示保留原凭据，填写新值则替换。</p>
+        <p v-if="editing">API Key 会在编辑时回显；可直接查看或替换。</p>
         <p v-else>API Key 会加密保存在本地；创建后不会在页面回显。</p>
       </div>
     </div>

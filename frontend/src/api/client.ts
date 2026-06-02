@@ -48,6 +48,7 @@ import type {
   ExternalIntegrationSourceSummary,
   ExternalIntegrationSourceTokenPayload,
   ExternalIntegrationSourceTokenSummary,
+  CreatedExternalIntegrationSourceAuthorization,
   CreatedExternalIntegrationSourceToken,
   GlobalSettings,
   SystemSettingsPatch,
@@ -359,6 +360,9 @@ export interface ExternalIntegrationSourceListParams {
 
 export type StreamInterceptPolicyPayload = Omit<StreamInterceptPolicySummary, 'id' | 'defaultRule' | 'editable' | 'createdAt' | 'updatedAt'>
 
+export interface ModelCheckScopeParams {
+  systemAccountId?: string
+}
 export type ModelCheckListParams = ModelCheckRunListParams
 
 export interface ModelCheckStreamOptions extends RequestControlOptions {
@@ -482,8 +486,8 @@ async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T>
 
 const noTimeout = { timeout: 0 }
 
-async function runModelCheckStream(path: string, payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions): Promise<ModelCheckRunDetail> {
-  const response = await fetch(`${normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined)}${path}`, {
+async function runModelCheckStream(path: string, payload: ModelCheckRunPayload, streamOptions?: ModelCheckStreamOptions, params?: ModelCheckScopeParams): Promise<ModelCheckRunDetail> {
+  const response = await fetch(`${normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined)}${path}${queryString(params)}`, {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -491,7 +495,7 @@ async function runModelCheckStream(path: string, payload: ModelCheckRunPayload, 
       'content-type': 'application/json'
     },
     body: JSON.stringify(payload),
-    signal: options?.signal
+    signal: streamOptions?.signal
   })
   if (!response.ok) {
     throw new Error(await readFetchErrorMessage(response, path))
@@ -509,17 +513,17 @@ async function runModelCheckStream(path: string, payload: ModelCheckRunPayload, 
     if (!event.data) return
     const payload = parseJsonPayload(event.data)
     if (event.event === 'progress') {
-      options?.onProgress?.(payload as ModelCheckProgressEvent)
+      streamOptions?.onProgress?.(payload as ModelCheckProgressEvent)
       return
     }
     if (event.event === 'complete') {
       completedDetail = payload as ModelCheckRunDetail
-      options?.onComplete?.(completedDetail)
+      streamOptions?.onComplete?.(completedDetail)
       return
     }
     if (event.event === 'error') {
       const error = payload as { message?: string; statusCode?: number }
-      options?.onError?.(error)
+      streamOptions?.onError?.(error)
       throw new Error(error.message || '模型检测失败')
     }
   }
@@ -596,6 +600,17 @@ function notifyAuthFailure(status: number, responseText: string, path?: string):
   if (status === 403 && isMustChangePasswordResponse(parseJsonPayload(responseText))) {
     mustChangePasswordHandler?.()
   }
+}
+
+function queryString(params?: object): string {
+  if (!params) return ''
+  const searchParams = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue
+    searchParams.set(key, String(value))
+  }
+  const text = searchParams.toString()
+  return text ? `?${text}` : ''
 }
 
 export const api = {
@@ -835,17 +850,17 @@ export const api = {
     scopes: () => unwrap<ExternalIntegrationScopeOption[]>(http.get('/external-integration-sources/scopes')),
     apiDocs: () => unwrap<ExternalPublicApiCatalog>(http.get('/external-integration-sources/api-docs')),
     list: (params?: ExternalIntegrationSourceListParams) => unwrap<ExternalIntegrationSourceListResult>(http.get('/external-integration-sources', { params })),
-    create: (payload: ExternalIntegrationSourcePayload) => unwrap<ExternalIntegrationSourceSummary>(http.post('/external-integration-sources', payload)),
+    create: (payload: ExternalIntegrationSourcePayload) => unwrap<CreatedExternalIntegrationSourceAuthorization>(http.post('/external-integration-sources', payload)),
     update: (id: string, payload: Partial<ExternalIntegrationSourcePayload>) => unwrap<ExternalIntegrationSourceSummary>(http.patch(`/external-integration-sources/${id}`, payload)),
     createToken: (id: string, payload: ExternalIntegrationSourceTokenPayload) => unwrap<{ token: CreatedExternalIntegrationSourceToken; source?: ExternalIntegrationSourceSummary }>(http.post(`/external-integration-sources/${id}/tokens`, payload)),
     updateToken: (id: string, tokenId: string, payload: Partial<ExternalIntegrationSourceTokenPayload>) => unwrap<ExternalIntegrationSourceTokenSummary>(http.patch(`/external-integration-sources/${id}/tokens/${tokenId}`, payload))
   },
   modelChecks: {
-    options: () => unwrap<ModelCheckOptions>(http.get('/model-checks/options')),
-    run: (payload: ModelCheckRunPayload) => unwrap<ModelCheckRunDetail>(http.post('/model-checks/run', payload, noTimeout)),
-    runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions) => runModelCheckStream('/model-checks/run/stream', payload, options),
+    options: (params?: ModelCheckScopeParams) => unwrap<ModelCheckOptions>(http.get('/model-checks/options', { params })),
+    run: (payload: ModelCheckRunPayload, params?: ModelCheckScopeParams) => unwrap<ModelCheckRunDetail>(http.post('/model-checks/run', payload, { ...noTimeout, params })),
+    runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions, params?: ModelCheckScopeParams) => runModelCheckStream('/model-checks/run/stream', payload, options, params),
     list: (params?: ModelCheckRunListParams) => unwrap<ModelCheckRunListResult>(http.get('/model-checks/runs', { params: modelCheckRunListParams(params) })),
-    detail: (id: string) => unwrap<ModelCheckRunDetail>(http.get(`/model-checks/runs/${id}`))
+    detail: (id: string, params?: ModelCheckScopeParams) => unwrap<ModelCheckRunDetail>(http.get(`/model-checks/runs/${id}`, { params }))
   },
   myModelChecks: {
     options: () => unwrap<ModelCheckOptions>(http.get('/my-model-checks/options')),
@@ -1042,6 +1057,7 @@ function aiPerformanceAccountOptionsParams(params?: AiPerformanceAccountOptionsP
 function modelCheckRunListParams(params?: ModelCheckRunListParams): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
+  if (params.systemAccountId?.trim()) output.systemAccountId = params.systemAccountId.trim()
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.targetType) output.targetType = params.targetType

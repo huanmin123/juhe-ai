@@ -8,13 +8,11 @@ const sourceName = readOption('--name', process.env.JUHE_AI_EXTERNAL_SOURCE_NAME
 const tokenName = readOption('--token-name', process.env.JUHE_AI_EXTERNAL_TOKEN_NAME) ?? '来源系统鉴权 demo token'
 const expiresAt = readOption('--expires-at', process.env.JUHE_AI_EXTERNAL_TOKEN_EXPIRES_AT)
 const scopes = readScopes(readOption('--scopes', process.env.JUHE_AI_EXTERNAL_SOURCE_SCOPES))
-const allowedTargetUsernames = readCsvOption('--target-users', process.env.JUHE_AI_EXTERNAL_SOURCE_TARGET_USERS)
 
 const source = upsertExternalIntegrationSource({
   name: sourceName,
   status: 'active',
   scopes,
-  allowedTargetUsernames,
   notes: '用于验证外部来源系统是否允许调用的 demo 来源。'
 })
 
@@ -30,9 +28,6 @@ console.log(`来源系统：${source.name}`)
 console.log(`Token 名称：${created.name}`)
 console.log(`Token 前缀：${created.tokenPrefix}`)
 console.log(`Scopes：${created.scopes.join(', ')}`)
-if (allowedTargetUsernames.length) {
-  console.log(`允许目标用户：${allowedTargetUsernames.join(', ')}`)
-}
 if (created.expiresAt) {
   console.log(`过期时间：${created.expiresAt}`)
 }
@@ -60,10 +55,6 @@ function readScopes(value: string | undefined): string[] {
     }
   }
   return [...scopes].sort()
-}
-
-function readCsvOption(name: string, fallback?: string): string[] {
-  return readCsv(readOption(name, fallback))
 }
 
 function readCsv(value: string | undefined): string[] {

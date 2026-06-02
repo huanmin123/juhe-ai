@@ -24,7 +24,7 @@
           <template #icon><book-outlined /></template>
           接入文档
         </a-button>
-        <a-button type="primary" @click="openCreateSource">新增来源</a-button>
+        <a-button type="primary" @click="openCreateSource">新增来源授权</a-button>
       </template>
       <template #filters>
         <a-form layout="vertical">
@@ -46,7 +46,7 @@
       @change="handleTableChange"
     >
       <template #emptyText>
-        <a-empty class="page-empty-card" description="暂无公开接口来源系统。" />
+        <a-empty class="page-empty-card" description="暂无公开接口来源授权。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'source'">
@@ -58,20 +58,12 @@
           <a-tag :color="sourceStatusColor(record.status)">{{ sourceStatusText(record.status) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'tokens'">
-          <button class="link-button" type="button" @click="openTokenList(record)">
-            {{ record.activeTokenCount }}/{{ record.tokenCount }}
-          </button>
+          <span :class="primaryToken(record)?.tokenPrefix ? 'name-cell' : 'muted-cell'">{{ primaryToken(record)?.tokenPrefix ?? '未生成' }}</span>
         </template>
         <template v-else-if="column.key === 'scopes'">
           <div class="tag-line">
             <a-tag v-for="scope in record.scopes" :key="scope">{{ scopeLabel(scope) }}</a-tag>
             <span v-if="!record.scopes.length" class="muted-cell">未授权</span>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'allowedTargets'">
-          <div class="tag-line">
-            <a-tag v-for="username in record.allowedTargetUsernames" :key="username">{{ username }}</a-tag>
-            <span v-if="!record.allowedTargetUsernames.length" class="muted-cell">未配置</span>
           </div>
         </template>
         <template v-else-if="column.key === 'rateLimits'">
@@ -98,15 +90,11 @@
           <div class="mobile-list-meta-grid">
             <div class="mobile-list-meta-item">
               <span>Token</span>
-              <strong>{{ record.activeTokenCount }}/{{ record.tokenCount }}</strong>
+              <strong>{{ primaryToken(record)?.tokenPrefix ?? '未生成' }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>限频</span>
               <strong>{{ formatRateLimits(record.rateLimits) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>目标用户</span>
-              <strong>{{ formatAllowedTargetUsernames(record.allowedTargetUsernames) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>到期</span>
@@ -193,6 +181,9 @@
               <a-descriptions-item label="认证方式">
                 <code>Authorization: Bearer &lt;source_token&gt;</code>
               </a-descriptions-item>
+              <a-descriptions-item label="接口资源授权">
+                <code>{{ selectedApiDoc.scope || '-' }}</code>
+              </a-descriptions-item>
             </a-descriptions>
 
             <div class="api-doc-section">
@@ -249,103 +240,21 @@
 
     <a-modal
       v-model:open="sourceModalOpen"
-      :title="editingSourceId ? '编辑来源系统' : '新增来源系统'"
+      :title="editingSourceId ? '编辑来源授权' : '新增来源授权'"
       width="760px"
       :confirm-loading="sourceSaving"
-      @ok="saveSource"
-    >
-      <a-form layout="vertical">
-        <a-form-item label="名称" required>
-          <a-input v-model:value="sourceForm.name" placeholder="例如 juhe-ai公益站" />
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select v-model:value="sourceForm.status" :options="sourceStatusOptions" />
-        </a-form-item>
-        <a-form-item label="授权能力">
-          <a-select v-model:value="sourceForm.scopes" mode="multiple" :options="scopeOptions" placeholder="选择允许调用的公开接口能力" />
-        </a-form-item>
-        <a-form-item label="允许目标用户">
-          <a-select
-            v-model:value="sourceForm.allowedTargetUsernames"
-            mode="tags"
-            :token-separators="[',', '，', ' ']"
-            placeholder="输入系统用户名后回车"
-          />
-        </a-form-item>
-        <a-form-item label="到期时间">
-          <a-date-picker v-model:value="sourceForm.expiresAt" class="full-control" show-time allow-clear />
-        </a-form-item>
-        <a-form-item label="限频规则">
-          <div class="rate-limit-list">
-            <div v-for="(rule, index) in sourceForm.rateLimits" :key="index" class="rate-limit-row">
-              <a-input-number v-model:value="rule.windowSeconds" :min="1" :max="86400" :precision="0" addon-after="秒内" />
-              <a-input-number v-model:value="rule.maxRequests" :min="1" :max="100000" :precision="0" addon-after="次" />
-              <a-button danger @click="removeRateLimit(index)">删除</a-button>
-            </div>
-            <a-button @click="addRateLimit">新增限频规则</a-button>
-            <span v-if="!sourceForm.rateLimits.length" class="muted-cell">默认不限制。</span>
-          </div>
-        </a-form-item>
-        <a-form-item label="备注">
-          <a-textarea v-model:value="sourceForm.notes" :rows="3" :maxlength="500" show-count />
-        </a-form-item>
-      </a-form>
-    </a-modal>
-
-    <a-modal v-model:open="tokenListOpen" title="来源 Token" width="860px" :footer="null">
-      <div class="modal-toolbar">
-        <div>
-          <strong>{{ selectedSource?.name }}</strong>
-        </div>
-        <a-button type="primary" @click="openCreateToken">生成 Token</a-button>
-      </div>
-      <a-table
-        class="page-table token-table"
-        row-key="id"
-        :columns="tokenColumns"
-        :data-source="selectedSource?.tokens ?? []"
-        :pagination="false"
-        :scroll="{ x: 760 }"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'status'">
-            <a-tag :color="tokenStatusColor(record.status)">{{ tokenStatusText(record.status) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'scopes'">
-            <div class="tag-line">
-              <a-tag v-for="scope in record.scopes" :key="scope">{{ scopeLabel(scope) }}</a-tag>
-              <span v-if="!record.scopes.length" class="muted-cell">未授权</span>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'expiresAt'">
-            <span :class="record.expiresAt ? 'name-cell' : 'muted-cell'">{{ formatDateTime(record.expiresAt) }}</span>
-          </template>
-          <template v-else-if="column.key === 'lastUsedAt'">
-            <span :class="record.lastUsedAt ? 'name-cell' : 'muted-cell'">{{ formatDateTime(record.lastUsedAt) }}</span>
-          </template>
-          <template v-else-if="column.key === 'actions'">
-            <RowActions :actions="tokenActions(record)" @action-click="handleTokenAction($event, record)" />
-          </template>
-        </template>
-      </a-table>
-    </a-modal>
-
-    <a-modal
-      v-model:open="tokenModalOpen"
-      :title="editingTokenId ? '编辑 Token' : '生成 Token'"
-      width="680px"
-      :confirm-loading="tokenSaving"
       :ok-text="createdTokenPlain ? '已保存' : '保存'"
+      :cancel-text="createdTokenPlain ? '关闭' : '取消'"
       :ok-button-props="{ disabled: Boolean(createdTokenPlain) }"
-      @ok="saveToken"
+      @ok="saveSource"
     >
       <a-alert
         v-if="createdTokenPlain"
         class="created-token-alert"
         type="success"
         show-icon
-        message="Token 只展示这一次"
-        description="请把它配置到调用方后端，不要放进前端包或公开文档。"
+        message="生产 Token 只展示这一次"
+        description="请把它配置到外部系统后端，不要放进前端包或公开文档。"
       />
       <a-input-group v-if="createdTokenPlain" compact class="created-token-input">
         <a-input :value="createdTokenPlain" readonly />
@@ -353,17 +262,31 @@
       </a-input-group>
 
       <a-form layout="vertical">
-        <a-form-item label="名称" required>
-          <a-input v-model:value="tokenForm.name" placeholder="例如 公益站生产 token" :disabled="Boolean(createdTokenPlain)" />
+        <a-form-item label="授权名称" required>
+          <a-input v-model:value="sourceForm.name" placeholder="例如 公益站生产授权" :disabled="Boolean(createdTokenPlain)" />
         </a-form-item>
-        <a-form-item v-if="editingTokenId" label="状态">
-          <a-select v-model:value="tokenForm.status" :options="tokenStatusOptions" :disabled="Boolean(createdTokenPlain)" />
+        <a-form-item label="状态">
+          <a-select v-model:value="sourceForm.status" :options="sourceStatusOptions" :disabled="Boolean(createdTokenPlain)" />
         </a-form-item>
-        <a-form-item label="授权能力">
-          <a-select v-model:value="tokenForm.scopes" mode="multiple" :options="scopeOptions" :disabled="Boolean(createdTokenPlain)" />
+        <a-form-item label="接口资源授权">
+          <a-select v-model:value="sourceForm.scopes" mode="multiple" :options="scopeOptions" placeholder="选择允许调用的公开接口" :disabled="Boolean(createdTokenPlain)" />
         </a-form-item>
         <a-form-item label="到期时间">
-          <a-date-picker v-model:value="tokenForm.expiresAt" class="full-control" show-time allow-clear :disabled="Boolean(createdTokenPlain)" />
+          <a-date-picker v-model:value="sourceForm.expiresAt" class="full-control" show-time allow-clear :disabled="Boolean(createdTokenPlain)" />
+        </a-form-item>
+        <a-form-item label="限频规则">
+          <div class="rate-limit-list">
+            <div v-for="(rule, index) in sourceForm.rateLimits" :key="index" class="rate-limit-row">
+              <a-input-number v-model:value="rule.windowSeconds" :min="1" :max="86400" :precision="0" addon-after="秒内" :disabled="Boolean(createdTokenPlain)" />
+              <a-input-number v-model:value="rule.maxRequests" :min="1" :max="100000" :precision="0" addon-after="次" :disabled="Boolean(createdTokenPlain)" />
+              <a-button danger :disabled="Boolean(createdTokenPlain)" @click="removeRateLimit(index)">删除</a-button>
+            </div>
+            <a-button :disabled="Boolean(createdTokenPlain)" @click="addRateLimit">新增限频规则</a-button>
+            <span v-if="!sourceForm.rateLimits.length" class="muted-cell">默认不限制。</span>
+          </div>
+        </a-form-item>
+        <a-form-item label="备注">
+          <a-textarea v-model:value="sourceForm.notes" :rows="3" :maxlength="500" show-count :disabled="Boolean(createdTokenPlain)" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -389,8 +312,6 @@ import type {
   ExternalIntegrationScopeOption,
   ExternalIntegrationSourceStatus,
   ExternalIntegrationSourceSummary,
-  ExternalIntegrationSourceTokenStatus,
-  ExternalIntegrationSourceTokenSummary,
   ExternalPublicApiDocItem,
   ExternalPublicApiField,
   ExternalPublicApiStatus,
@@ -426,7 +347,6 @@ const sourceForm = reactive<{
   name: string
   status: ExternalIntegrationSourceStatus
   scopes: string[]
-  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   expiresAt: Dayjs | null
   notes: string
@@ -434,29 +354,12 @@ const sourceForm = reactive<{
   name: '',
   status: 'active',
   scopes: [],
-  allowedTargetUsernames: [],
   rateLimits: [],
   expiresAt: null,
   notes: ''
 })
 
-const tokenListOpen = ref(false)
-const selectedSource = ref<ExternalIntegrationSourceSummary>()
-const tokenModalOpen = ref(false)
-const tokenSaving = ref(false)
-const editingTokenId = ref<string>()
 const createdTokenPlain = ref('')
-const tokenForm = reactive<{
-  name: string
-  status: ExternalIntegrationSourceTokenStatus
-  scopes: string[]
-  expiresAt: Dayjs | null
-}>({
-  name: '',
-  status: 'active',
-  scopes: [],
-  expiresAt: null
-})
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -469,32 +372,15 @@ const sourceStatusOptions = [
   { label: '停用', value: 'disabled' }
 ]
 
-const tokenStatusOptions = [
-  { label: '启用', value: 'active' },
-  { label: '停用', value: 'disabled' },
-  { label: '撤销', value: 'revoked' }
-]
-
 const columns = [
-  { title: '来源系统', key: 'source', width: 180, fixed: 'left', align: 'left' },
+  { title: '来源授权', key: 'source', width: 180, fixed: 'left', align: 'left' },
   { title: '状态', key: 'status', width: 100, align: 'left' },
-  { title: 'Token', key: 'tokens', width: 100, align: 'left' },
-  { title: '授权能力', key: 'scopes', width: 220, align: 'left' },
-  { title: '目标用户', key: 'allowedTargets', width: 180, align: 'left' },
+  { title: 'Token 前缀', key: 'tokens', width: 130, align: 'left' },
+  { title: '接口资源授权', key: 'scopes', width: 260, align: 'left' },
   { title: '限频', key: 'rateLimits', width: 180, align: 'left' },
   { title: '到期时间', key: 'expiresAt', width: 180, align: 'left' },
   { title: '最近调用', key: 'lastUsedAt', width: 180, align: 'left' },
   { title: '操作', key: 'actions', width: 120, fixed: 'right', align: 'left' }
-]
-
-const tokenColumns = [
-  { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
-  { title: '前缀', dataIndex: 'tokenPrefix', key: 'tokenPrefix', width: 120 },
-  { title: '状态', key: 'status', width: 90 },
-  { title: '授权能力', key: 'scopes', width: 220 },
-  { title: '到期时间', key: 'expiresAt', width: 170 },
-  { title: '最近调用', key: 'lastUsedAt', width: 170 },
-  { title: '操作', key: 'actions', width: 80, fixed: 'right' }
 ]
 
 const activeFilterCount = computed(() => {
@@ -538,9 +424,9 @@ async function loadScopes(): Promise<void> {
     scopeOptions.value = await api.externalIntegrationSources.scopes()
   } catch {
     scopeOptions.value = [
-      { value: 'external_integrations:source_auth_demo:read', label: '来源鉴权 demo' },
-      { value: 'juhe_ai_ip_usage:read', label: 'IP 聚合读取' },
-      { value: 'juhe_ai_account_push:write', label: '公开资源写入' }
+      { value: 'external_integrations:source_auth_demo:read', label: 'GET 来源鉴权 Demo' },
+      { value: 'juhe_ai_public:ip_usage:read', label: 'GET IP 维度消费聚合' },
+      { value: 'juhe_ai_public:account_usage:read', label: 'GET 账号维度实际消耗聚合' }
     ]
   }
 }
@@ -610,6 +496,7 @@ function buildApiMarkdown(item: ExternalPublicApiDocItem): string {
     `- 状态：${apiStatusText(item.status)}`,
     `- 方法：\`${item.method}\``,
     `- 路径：\`${item.path}\``,
+    `- 接口资源授权：\`${item.scope || '-'}\``,
     `- 调用地址：\`${buildApiDocUrl(item)}\``,
     '- 认证方式：`Authorization: Bearer <source_token>`',
     '',
@@ -784,7 +671,6 @@ async function loadData(): Promise<void> {
     pagination.current = result.page
     pagination.pageSize = result.pageSize
     paginationUpperBound.value = result.pageUpperBound
-    syncSelectedSource()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '加载公开接口授权失败'))
   } finally {
@@ -821,11 +707,11 @@ function handleTableChange(nextPagination: unknown): void {
 
 function openCreateSource(): void {
   editingSourceId.value = undefined
+  createdTokenPlain.value = ''
   Object.assign(sourceForm, {
     name: '',
     status: 'active',
     scopes: scopeOptions.value.map((item) => item.value),
-    allowedTargetUsernames: [],
     rateLimits: [],
     expiresAt: null,
     notes: ''
@@ -838,17 +724,17 @@ function openEditSource(record: ExternalIntegrationSourceSummary): void {
   let expiresAt: Dayjs | null
   try {
     rateLimits = normalizeRateLimits(record.rateLimits)
-    expiresAt = parseStrictDatePickerValue(record.expiresAt, '来源系统过期时间') ?? null
+    expiresAt = parseStrictDatePickerValue(record.expiresAt, '来源授权过期时间') ?? null
   } catch (error) {
-    message.error(extractApiErrorMessage(error, '来源系统数据异常，请清理后再编辑'))
+    message.error(extractApiErrorMessage(error, '来源授权数据异常，请清理后再编辑'))
     return
   }
   editingSourceId.value = record.id
+  createdTokenPlain.value = ''
   Object.assign(sourceForm, {
     name: record.name,
     status: record.status,
     scopes: [...record.scopes],
-    allowedTargetUsernames: [...record.allowedTargetUsernames],
     rateLimits,
     expiresAt,
     notes: record.notes ?? ''
@@ -867,22 +753,22 @@ async function saveSource(): Promise<void> {
       name: sourceForm.name.trim(),
       status: sourceForm.status,
       scopes: [...sourceForm.scopes],
-      allowedTargetUsernames: normalizeTargetUsernames(sourceForm.allowedTargetUsernames),
       rateLimits: normalizeRateLimits(sourceForm.rateLimits),
       expiresAt: formatServerDateTimeInput(sourceForm.expiresAt),
       notes: sourceForm.notes.trim() || null
     }
     if (editingSourceId.value) {
       await api.externalIntegrationSources.update(editingSourceId.value, payload)
-      message.success('来源系统已更新')
+      message.success('来源授权已更新')
+      sourceModalOpen.value = false
     } else {
-      await api.externalIntegrationSources.create(payload)
-      message.success('来源系统已创建')
+      const result = await api.externalIntegrationSources.create(payload)
+      createdTokenPlain.value = result.token.token
+      message.success('来源授权已创建')
     }
-    sourceModalOpen.value = false
     await loadData()
   } catch (error) {
-    message.error(extractApiErrorMessage(error, '保存来源系统失败'))
+    message.error(extractApiErrorMessage(error, '保存来源授权失败'))
   } finally {
     sourceSaving.value = false
   }
@@ -899,7 +785,6 @@ function removeRateLimit(index: number): void {
 function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[] {
   return [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
-    { key: 'tokens', label: 'Token', icon: 'settings', tone: 'info' },
     record.status === 'active'
       ? { key: 'disable', label: '停用', icon: 'disable', tone: 'danger' }
       : { key: 'enable', label: '启用', icon: 'enable', tone: 'success' }
@@ -911,10 +796,6 @@ function handleSourceAction(key: string, record: ExternalIntegrationSourceSummar
     openEditSource(record)
     return
   }
-  if (key === 'tokens') {
-    openTokenList(record)
-    return
-  }
   if (key === 'enable' || key === 'disable') {
     void updateSourceStatus(record, key === 'enable' ? 'active' : 'disabled')
   }
@@ -923,120 +804,11 @@ function handleSourceAction(key: string, record: ExternalIntegrationSourceSummar
 async function updateSourceStatus(record: ExternalIntegrationSourceSummary, status: ExternalIntegrationSourceStatus): Promise<void> {
   try {
     await api.externalIntegrationSources.update(record.id, { status })
-    message.success(status === 'active' ? '来源系统已启用' : '来源系统已停用')
+    message.success(status === 'active' ? '来源授权已启用' : '来源授权已停用')
     await loadData()
   } catch (error) {
-    message.error(extractApiErrorMessage(error, '更新来源系统状态失败'))
+    message.error(extractApiErrorMessage(error, '更新来源授权状态失败'))
   }
-}
-
-function openTokenList(record: ExternalIntegrationSourceSummary): void {
-  selectedSource.value = record
-  tokenListOpen.value = true
-}
-
-function openCreateToken(): void {
-  if (!selectedSource.value) return
-  let expiresAt: Dayjs | null
-  try {
-    expiresAt = parseStrictDatePickerValue(selectedSource.value.expiresAt, '来源系统过期时间') ?? null
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '来源系统数据异常，请清理后再创建 Token'))
-    return
-  }
-  editingTokenId.value = undefined
-  createdTokenPlain.value = ''
-  Object.assign(tokenForm, {
-    name: '',
-    status: 'active',
-    scopes: [...selectedSource.value.scopes],
-    expiresAt
-  })
-  tokenModalOpen.value = true
-}
-
-function openEditToken(record: ExternalIntegrationSourceTokenSummary): void {
-  let expiresAt: Dayjs | null
-  try {
-    expiresAt = parseStrictDatePickerValue(record.expiresAt, 'Token 过期时间') ?? null
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, 'Token 数据异常，请清理后再编辑'))
-    return
-  }
-  editingTokenId.value = record.id
-  createdTokenPlain.value = ''
-  Object.assign(tokenForm, {
-    name: record.name,
-    status: record.status,
-    scopes: [...record.scopes],
-    expiresAt
-  })
-  tokenModalOpen.value = true
-}
-
-async function saveToken(): Promise<void> {
-  if (!selectedSource.value || !tokenForm.name.trim()) {
-    message.error('请填写 Token 名称')
-    return
-  }
-  tokenSaving.value = true
-  try {
-    const payload = {
-      name: tokenForm.name.trim(),
-      status: tokenForm.status,
-      scopes: [...tokenForm.scopes],
-      expiresAt: formatServerDateTimeInput(tokenForm.expiresAt)
-    }
-    if (editingTokenId.value) {
-      await api.externalIntegrationSources.updateToken(selectedSource.value.id, editingTokenId.value, payload)
-      message.success('Token 已更新')
-      tokenModalOpen.value = false
-    } else {
-      const result = await api.externalIntegrationSources.createToken(selectedSource.value.id, payload)
-      createdTokenPlain.value = result.token.token
-      message.success('Token 已生成')
-    }
-    await loadData()
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '保存 Token 失败'))
-  } finally {
-    tokenSaving.value = false
-  }
-}
-
-function tokenActions(record: ExternalIntegrationSourceTokenSummary): RowActionItem[] {
-  return [
-    { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
-    record.status === 'active'
-      ? { key: 'disable', label: '停用', icon: 'disable', tone: 'danger' }
-      : { key: 'enable', label: '启用', icon: 'enable', tone: 'success', disabled: record.status === 'revoked' }
-  ]
-}
-
-function handleTokenAction(key: string, record: ExternalIntegrationSourceTokenSummary): void {
-  if (key === 'edit') {
-    openEditToken(record)
-    return
-  }
-  if ((key === 'enable' || key === 'disable') && selectedSource.value) {
-    void updateTokenStatus(record, key === 'enable' ? 'active' : 'disabled')
-  }
-}
-
-async function updateTokenStatus(record: ExternalIntegrationSourceTokenSummary, status: ExternalIntegrationSourceTokenStatus): Promise<void> {
-  if (!selectedSource.value) return
-  try {
-    await api.externalIntegrationSources.updateToken(selectedSource.value.id, record.id, { status })
-    message.success(status === 'active' ? 'Token 已启用' : 'Token 已停用')
-    await loadData()
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '更新 Token 状态失败'))
-  }
-}
-
-function syncSelectedSource(): void {
-  if (!selectedSource.value) return
-  selectedSource.value = rows.value.find((item) => item.id === selectedSource.value?.id)
 }
 
 function copyCreatedToken(): void {
@@ -1064,27 +836,6 @@ function formatRateLimits(rules: ExternalIntegrationRateLimitRule[]): string {
   return rules.length ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join('，') : '不限制'
 }
 
-function normalizeTargetUsernames(usernames: string[]): string[] {
-  const values = new Map<string, string>()
-  for (const username of usernames) {
-    const value = username.trim()
-    if (!value) continue
-    if (value.length < 2 || value.length > 80) {
-      throw new Error('目标用户名长度必须在 2 到 80 个字符之间')
-    }
-    values.set(value.toLowerCase(), value)
-  }
-  return [...values.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([, value]) => value)
-}
-
-function formatAllowedTargetUsernames(usernames: string[]): string {
-  if (!usernames.length) return '未配置'
-  const visible = usernames.slice(0, 3).join('，')
-  return usernames.length > 3 ? `${visible} 等 ${usernames.length} 个` : visible
-}
-
 function sourceStatusText(status: ExternalIntegrationSourceStatus): string {
   return status === 'active' ? '启用' : '停用'
 }
@@ -1093,18 +844,12 @@ function sourceStatusColor(status: ExternalIntegrationSourceStatus): string {
   return status === 'active' ? 'green' : 'red'
 }
 
-function tokenStatusText(status: ExternalIntegrationSourceTokenStatus): string {
-  if (status === 'revoked') return '撤销'
-  return status === 'active' ? '启用' : '停用'
-}
-
-function tokenStatusColor(status: ExternalIntegrationSourceTokenStatus): string {
-  if (status === 'revoked') return 'default'
-  return status === 'active' ? 'green' : 'red'
-}
-
 function scopeLabel(scope: string): string {
   return scopeOptions.value.find((item) => item.value === scope)?.label ?? scope
+}
+
+function primaryToken(record: ExternalIntegrationSourceSummary) {
+  return record.tokens[0]
 }
 </script>
 

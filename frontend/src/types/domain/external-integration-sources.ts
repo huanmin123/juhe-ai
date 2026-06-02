@@ -29,7 +29,6 @@ export interface ExternalIntegrationSourceSummary {
   name: string
   status: ExternalIntegrationSourceStatus
   scopes: string[]
-  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   expiresAt?: string
   notes?: string
@@ -53,7 +52,6 @@ export interface ExternalIntegrationSourcePayload {
   name: string
   status: ExternalIntegrationSourceStatus
   scopes: string[]
-  allowedTargetUsernames: string[]
   rateLimits: ExternalIntegrationRateLimitRule[]
   expiresAt?: string | null
   notes?: string | null
@@ -73,6 +71,11 @@ export interface CreatedExternalIntegrationSourceToken {
   tokenPrefix: string
   scopes: string[]
   expiresAt?: string
+}
+
+export interface CreatedExternalIntegrationSourceAuthorization {
+  source: ExternalIntegrationSourceSummary
+  token: CreatedExternalIntegrationSourceToken
 }
 
 export type ExternalPublicApiMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE'
@@ -106,6 +109,7 @@ export interface ExternalPublicApiDocItem {
   status: ExternalPublicApiStatus
   method: ExternalPublicApiMethod
   path: string
+  scope?: string
   headers: ExternalPublicApiHeader[]
   query: ExternalPublicApiField[]
   requestBody?: ExternalPublicApiBody

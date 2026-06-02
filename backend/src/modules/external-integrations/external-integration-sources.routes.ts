@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import {
-  createExternalIntegrationSource,
+  createExternalIntegrationSourceAuthorization,
   createExternalIntegrationSourceToken,
   externalIntegrationScopeOptions,
   findExternalIntegrationSource,
@@ -33,7 +33,6 @@ const sourceBodySchema = z.object({
   name: z.string().trim().min(1, '来源系统名称不能为空').max(80, '来源系统名称不能超过 80 个字符'),
   status: z.enum(['active', 'disabled']).optional(),
   scopes: z.array(z.string().trim().min(1)).optional(),
-  allowedTargetUsernames: z.array(z.string().trim().min(2, '目标用户名不能少于 2 个字符').max(80, '目标用户名不能超过 80 个字符')).max(100, '允许目标用户最多 100 个').optional(),
   rateLimits: z.array(rateLimitRuleSchema).max(8, '限频规则最多 8 条').optional(),
   expiresAt: expiresAtSchema,
   notes: z.string().trim().max(500, '备注不能超过 500 个字符').nullable().optional()
@@ -95,7 +94,8 @@ externalIntegrationSourcesRouter.post('/', mutationGuard({
     return
   }
   try {
-    const source = createExternalIntegrationSource(parsed.data)
+    const created = createExternalIntegrationSourceAuthorization(parsed.data)
+    const source = created.source
     recordSourceOperation(req, {
       action: 'create',
       operationKey: 'external_integration_sources.create',
@@ -105,12 +105,11 @@ externalIntegrationSourcesRouter.post('/', mutationGuard({
       changes: [
         safeChange('name', '名称', undefined, source.name),
         safeChange('status', '状态', undefined, source.status),
-        safeChange('allowedTargetUsernames', '允许目标用户', undefined, formatAllowedTargetUsernames(source.allowedTargetUsernames)),
         safeChange('expiresAt', '到期时间', undefined, source.expiresAt),
         safeChange('rateLimits', '限频规则', undefined, formatRateLimits(source.rateLimits))
       ]
     })
-    res.status(201).json(ok(source))
+    res.status(201).json(ok(created))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统创建失败'))
   }
@@ -151,7 +150,6 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
     changes: [
       safeChange('name', '名称', before?.name, source.name),
       safeChange('status', '状态', before?.status, source.status),
-      safeChange('allowedTargetUsernames', '允许目标用户', formatAllowedTargetUsernames(before?.allowedTargetUsernames ?? []), formatAllowedTargetUsernames(source.allowedTargetUsernames)),
       safeChange('expiresAt', '到期时间', before?.expiresAt, source.expiresAt),
       safeChange('rateLimits', '限频规则', formatRateLimits(before?.rateLimits ?? []), formatRateLimits(source.rateLimits))
     ]
@@ -275,8 +273,4 @@ function formatRateLimits(rules: Array<{ windowSeconds: number; maxRequests: num
   return rules.length
     ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join(', ')
     : '不限制'
-}
-
-function formatAllowedTargetUsernames(usernames: string[]): string {
-  return usernames.length ? usernames.join(', ') : '未配置'
 }

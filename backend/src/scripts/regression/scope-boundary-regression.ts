@@ -315,7 +315,7 @@ async function main(): Promise<void> {
     assertSameIds(userAMyAccounts, userAMyAccountsWithQuery, '用户 A 传 systemAccountId 后 my-accounts 结果发生变化')
     const userAOwnAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}`, seed.userACookie)
     assert(userAOwnAccountDetail.credentials?.base_url === 'https://api.openai.com/v1', '用户 A 应能打开自有账户详情并读取非敏感 Base URL')
-    assert(!Object.prototype.hasOwnProperty.call(userAOwnAccountDetail.credentials ?? {}, 'api_key'), '用户 A 自有账户详情不应返回明文 API Key')
+    assert(userAOwnAccountDetail.credentials?.api_key === 'sk-scope-user-a', '用户 A 自有账户详情应返回明文 API Key 供编辑弹窗查看')
     await assertJsonStatus(
       `${baseUrl}/__aisys__/api/my-accounts/import/preview`,
       seed.userACookie,

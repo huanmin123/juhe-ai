@@ -276,10 +276,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(sourceAccount.id),
       group: selectedGroup,
-      apiKey: '',
+      apiKey: asString(sourceAccount.credentials.api_key) ?? '',
       baseUrl,
-      accessToken: '',
-      refreshToken: '',
+      accessToken: asString(sourceAccount.credentials.access_token) ?? '',
+      refreshToken: asString(sourceAccount.credentials.refresh_token) ?? '',
       supportedModels: [...(sourceAccount.supportedModels ?? [])],
       availabilitySchedule,
       notes: sourceAccount.notes ?? ''

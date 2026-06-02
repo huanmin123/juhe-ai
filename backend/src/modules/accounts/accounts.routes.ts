@@ -240,7 +240,7 @@ accountsRouter.get('/:id', async (req, res, next) => {
       return
     }
     const hydratedAccount = await applyServerAccountRuntimeToAccount(account)
-    res.json(ok(sanitizeAccountResponse(hydratedAccount)))
+    res.json(ok(hydratedAccount))
   } catch (error) {
     next(error)
   }

@@ -502,7 +502,7 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
     ],
     boundary: {
       provides: [
-        '来源系统 Bearer token 鉴权',
+        '来源授权 Bearer token 鉴权',
         'IP 维度请求数、Token、缓存、成本、活跃天数和速度指标聚合',
         '账号维度实际请求数、Token、缓存、成本、活跃天数和速度指标聚合',
         '基于 IP 聚合表的消耗排行便利视图',

@@ -1,6 +1,6 @@
 import type { Ref } from 'vue'
 
-import { api, type AccountOptionParams, type ApiKeyListParams, type ModelCheckListParams, type ModelCheckStreamOptions, type OperationLogListParams, type UsageRecordListParams } from '@/api/client'
+import { api, type AccountOptionParams, type ApiKeyListParams, type ModelCheckListParams, type ModelCheckScopeParams, type ModelCheckStreamOptions, type OperationLogListParams, type UsageRecordListParams } from '@/api/client'
 import type { ModelCheckRunPayload } from '@/types/domain'
 
 type ApiKeyMutationScopeParams = Parameters<typeof api.apiKeys.create>[1]
@@ -77,20 +77,20 @@ export function useScopedOperationLogsApi(isManagementView: Ref<boolean>) {
 
 export function useScopedModelChecksApi(isManagementView: Ref<boolean>) {
   return {
-    options: () => isManagementView.value
-      ? api.modelChecks.options()
+    options: (params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.options(params)
       : api.myModelChecks.options(),
-    run: (payload: ModelCheckRunPayload) => isManagementView.value
-      ? api.modelChecks.run(payload)
+    run: (payload: ModelCheckRunPayload, params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.run(payload, params)
       : api.myModelChecks.run(payload),
-    runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions) => isManagementView.value
-      ? api.modelChecks.runStream(payload, options)
+    runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions, params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.runStream(payload, options, params)
       : api.myModelChecks.runStream(payload, options),
     list: (params?: ModelCheckListParams) => isManagementView.value
       ? api.modelChecks.list(params)
       : api.myModelChecks.list(params),
-    detail: (id: string) => isManagementView.value
-      ? api.modelChecks.detail(id)
+    detail: (id: string, params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.detail(id, params)
       : api.myModelChecks.detail(id)
   }
 }

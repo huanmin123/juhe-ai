@@ -82,7 +82,7 @@ try {
   const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie)
   assert.equal(detail.credentials.base_url, 'https://api.openai.com/v1', '详情响应应保留前端编辑需要的 Base URL')
   assert.deepEqual(detail.credentials.error_handling_rules, seed.errorHandlingRules, '详情响应应保留非敏感错误策略配置')
-  assertNoCredentialLeak(detail, '账户详情响应')
+  assert.equal(detail.credentials.api_key, 'sk-redaction-existing-api-key', '详情响应应返回完整 API Key 供编辑弹窗查看')
 
   const created = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
     providerCode: 'openai',
@@ -153,7 +153,7 @@ try {
   assertNoCredentialLeak(migration, '账户流量迁移响应')
   assertOAuthRoutesUseAccountResponseSanitizer()
 
-  console.log('AI 账户响应凭据脱敏回归通过：详情、创建、编辑、绑定分组和迁移响应均不返回明文凭据，编辑留空保留原凭据')
+  console.log('AI 账户响应凭据边界回归通过：详情按权限返回明文凭据，列表、创建、编辑、绑定分组和迁移响应仍不返回明文凭据，编辑留空保留原凭据')
 } finally {
   oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
   await closeServer(server)

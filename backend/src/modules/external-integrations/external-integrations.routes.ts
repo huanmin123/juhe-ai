@@ -1,12 +1,27 @@
-import { Router, type Request, type Response } from 'express'
+import { Router, type Request } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   type ExternalIntegrationSourceAuthContext,
-  externalIntegrationAccountPushScope,
+  externalIntegrationAccessInfoReadScope,
+  externalIntegrationAccountAddWriteScope,
+  externalIntegrationAccountDeleteWriteScope,
+  externalIntegrationAccountListReadScope,
+  externalIntegrationAccountUpdateWriteScope,
+  externalIntegrationAccountUsageReadScope,
+  externalIntegrationApiKeyAddWriteScope,
+  externalIntegrationApiKeyDeleteWriteScope,
+  externalIntegrationApiKeyListReadScope,
+  externalIntegrationApiKeyUpdateWriteScope,
+  externalIntegrationConsumptionRankingReadScope,
+  externalIntegrationGroupAddWriteScope,
+  externalIntegrationGroupDeleteWriteScope,
+  externalIntegrationGroupListReadScope,
+  externalIntegrationGroupUpdateWriteScope,
   externalIntegrationIpUsageReadScope,
+  externalIntegrationMockRankingDemoScope,
   externalIntegrationSourceAuthDemoScope
 } from '../../storage/external-integration-source.repository.js'
 import { createOperationLog } from '../../storage/repositories.js'
@@ -215,7 +230,7 @@ externalIntegrationsRouter.get(
 
 externalIntegrationsRouter.get(
   '/demo/mock-ranking',
-  requireExternalIntegrationSource(externalIntegrationSourceAuthDemoScope),
+  requireExternalIntegrationSource(externalIntegrationMockRankingDemoScope),
   (req, res) => {
     const context = getExternalIntegrationSourceContext(res)
     const limit = normalizeLimit(req.query.limit)
@@ -247,7 +262,7 @@ externalIntegrationsRouter.get(
 
 externalIntegrationsRouter.get(
   '/account/usage',
-  requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
+  requireExternalIntegrationSource(externalIntegrationAccountUsageReadScope),
   (req, res) => {
     const parsed = accountUsageQuerySchema.safeParse(req.query)
     if (!parsed.success) {
@@ -261,7 +276,7 @@ externalIntegrationsRouter.get(
 
 externalIntegrationsRouter.get(
   '/consumption/ranking',
-  requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
+  requireExternalIntegrationSource(externalIntegrationConsumptionRankingReadScope),
   (req, res) => {
     const parsed = consumptionRankingQuerySchema.safeParse(req.query)
     if (!parsed.success) {
@@ -275,7 +290,7 @@ externalIntegrationsRouter.get(
 
 externalIntegrationsRouter.get(
   '/access/info',
-  requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
+  requireExternalIntegrationSource(externalIntegrationAccessInfoReadScope),
   (_req, res) => {
     const context = getExternalIntegrationSourceContext(res)
     res.json(ok(getPublicAccessInfo({ mock: context.isTestToken })))
@@ -284,7 +299,7 @@ externalIntegrationsRouter.get(
 
 externalIntegrationsRouter.get(
   '/group/list',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationGroupListReadScope),
   (req, res) => {
     const parsed = groupListQuerySchema.safeParse(req.query)
     if (!parsed.success) {
@@ -292,9 +307,6 @@ externalIntegrationsRouter.get(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicGroupList(parsed.data)))
       return
@@ -310,7 +322,7 @@ externalIntegrationsRouter.get(
 
 externalIntegrationsRouter.get(
   '/api-key/list',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationApiKeyListReadScope),
   (req, res) => {
     const parsed = apiKeyListQuerySchema.safeParse(req.query)
     if (!parsed.success) {
@@ -318,9 +330,6 @@ externalIntegrationsRouter.get(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicApiKeyList(parsed.data)))
       return
@@ -336,7 +345,7 @@ externalIntegrationsRouter.get(
 
 externalIntegrationsRouter.get(
   '/account/list',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationAccountListReadScope),
   (req, res) => {
     const parsed = accountListQuerySchema.safeParse(req.query)
     if (!parsed.success) {
@@ -344,9 +353,6 @@ externalIntegrationsRouter.get(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicWelfareAccountList(parsed.data)))
       return
@@ -362,7 +368,7 @@ externalIntegrationsRouter.get(
 
 externalIntegrationsRouter.post(
   '/group/add',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationGroupAddWriteScope),
   async (req, res) => {
     const parsed = groupAddSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -370,9 +376,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.status(201).json(ok(mockPublicGroupAdd(parsed.data)))
       return
@@ -388,7 +391,7 @@ externalIntegrationsRouter.post(
 
 externalIntegrationsRouter.post(
   '/group/update',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationGroupUpdateWriteScope),
   (req, res) => {
     const parsed = groupUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -396,9 +399,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicGroupUpdate(parsed.data)))
       return
@@ -415,7 +415,7 @@ externalIntegrationsRouter.post(
 
 externalIntegrationsRouter.post(
   '/group/del',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationGroupDeleteWriteScope),
   (req, res) => {
     const parsed = groupDeleteSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -423,9 +423,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicGroupDelete(parsed.data)))
       return
@@ -441,7 +438,7 @@ externalIntegrationsRouter.post(
 
 externalIntegrationsRouter.post(
   '/api-key/add',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationApiKeyAddWriteScope),
   (req, res) => {
     const parsed = apiKeyAddSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -449,9 +446,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.status(201).json(ok(mockPublicApiKeyAdd(parsed.data)))
       return
@@ -467,7 +461,7 @@ externalIntegrationsRouter.post(
 
 externalIntegrationsRouter.post(
   '/api-key/update',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationApiKeyUpdateWriteScope),
   (req, res) => {
     const parsed = apiKeyUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -475,9 +469,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicApiKeyUpdate(parsed.data)))
       return
@@ -494,7 +485,7 @@ externalIntegrationsRouter.post(
 
 externalIntegrationsRouter.post(
   '/api-key/del',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationApiKeyDeleteWriteScope),
   (req, res) => {
     const parsed = apiKeyDeleteSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -502,9 +493,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicApiKeyDelete(parsed.data)))
       return
@@ -520,7 +508,7 @@ externalIntegrationsRouter.post(
 
 externalIntegrationsRouter.post(
   '/account/add',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationAccountAddWriteScope),
   async (req, res) => {
     const parsed = accountPushSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -528,9 +516,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicWelfareAccountPush(parsed.data)))
       return
@@ -549,7 +534,7 @@ externalIntegrationsRouter.post(
 
 externalIntegrationsRouter.post(
   '/account/update',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationAccountUpdateWriteScope),
   (req, res) => {
     const parsed = accountUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -557,9 +542,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicWelfareAccountPush(parsed.data)))
       return
@@ -578,7 +560,7 @@ externalIntegrationsRouter.post(
 
 externalIntegrationsRouter.post(
   '/account/del',
-  requireExternalIntegrationSource(externalIntegrationAccountPushScope),
+  requireExternalIntegrationSource(externalIntegrationAccountDeleteWriteScope),
   (req, res) => {
     const parsed = accountDeleteSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -586,9 +568,6 @@ externalIntegrationsRouter.post(
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    if (!ensureAccountPushTargetAllowed(res, context, parsed.data.targetUsername)) {
-      return
-    }
     if (context.isTestToken) {
       res.json(ok(mockPublicWelfareAccountDelete(parsed.data)))
       return
@@ -604,22 +583,6 @@ externalIntegrationsRouter.post(
     }
   }
 )
-
-function ensureAccountPushTargetAllowed(res: Response, context: ExternalIntegrationSourceAuthContext, targetUsername: string): boolean {
-  if (context.isTestToken) {
-    return true
-  }
-  const target = targetUsername.trim().toLowerCase()
-  const allowedTargets = new Set(context.allowedTargetUsernames.map((username) => username.trim().toLowerCase()).filter(Boolean))
-  if (target && allowedTargets.has(target)) {
-    return true
-  }
-  res.status(403).json({
-    message: '来源系统未授权操作该目标用户',
-    code: 'external_source_target_forbidden'
-  })
-  return false
-}
 
 function recordPublicWelfareAccountWriteOperation(
   context: ExternalIntegrationSourceAuthContext,

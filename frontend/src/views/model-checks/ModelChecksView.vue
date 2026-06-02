@@ -4,17 +4,33 @@
       <a-form class="model-checks-form" layout="vertical">
         <div class="model-checks-control-panel">
           <div class="model-checks-fields">
+            <a-form-item v-if="isManagementView" class="model-checks-system-account-field" required>
+              <SystemPrincipalSelect
+                v-model:value="systemAccountFilter"
+                v-model:selected-principal="systemAccountFilterSelection"
+                :accounts="systemAccounts"
+                :active-only="false"
+                allow-clear
+                :disabled="submitting"
+                :filter-option="false"
+                :loading="systemAccountOptionsLoading"
+                placeholder="请选择系统账户"
+                @change="handleSystemAccountFilterChange"
+                @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+                @search="handleSystemAccountOptionsSearch"
+              />
+            </a-form-item>
             <a-form-item class="model-checks-account-field" required>
               <AccountSelect
                 :value="selectValueOrUndefined(form.targetId)"
                 v-model:selected-account="selectedTargetAccount"
                 show-search
                 allow-clear
-                :disabled="submitting"
+                :disabled="accountSelectDisabled"
                 :filter-option="false"
                 :loading="targetOptionsLoading"
                 :options="targetOptions"
-                placeholder="输入账户名称搜索"
+                :placeholder="accountSelectPlaceholder"
                 @change="handleTargetChange"
                 @dropdown-visible-change="handleTargetDropdownVisibleChange"
                 @search="handleTargetSearch"
@@ -36,11 +52,11 @@
                 v-model:selected-account="selectedComparisonAccount"
                 show-search
                 allow-clear
-                :disabled="submitting"
+                :disabled="accountSelectDisabled"
                 :filter-option="false"
                 :loading="comparisonOptionsLoading"
                 :options="comparisonOptions"
-                placeholder="可信对比账户（可选）"
+                :placeholder="comparisonSelectPlaceholder"
                 @dropdown-visible-change="handleComparisonDropdownVisibleChange"
                 @search="handleComparisonSearch"
               />
@@ -95,6 +111,21 @@
     <a-card class="page-card model-checks-history-card" title="历史检测">
       <div class="history-toolbar">
         <a-space wrap>
+          <SystemPrincipalSelect
+            v-if="isManagementView"
+            v-model:value="systemAccountFilter"
+            v-model:selected-principal="systemAccountFilterSelection"
+            :accounts="systemAccounts"
+            :active-only="false"
+            allow-clear
+            class="history-filter history-system-account-filter"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
+            placeholder="请选择系统账户"
+            @change="handleSystemAccountFilterChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
+          />
           <a-select v-model:value="filters.model" allow-clear class="history-filter" :options="modelOptions" placeholder="全部模型" @change="reloadRuns" />
           <a-select v-model:value="filters.status" allow-clear class="history-filter" :options="statusOptions" placeholder="全部状态" @change="reloadRuns" />
           <a-select v-model:value="filters.level" allow-clear class="history-filter" :options="levelOptions" placeholder="全部级别" @change="reloadRuns" />
@@ -104,10 +135,11 @@
             show-search
             allow-clear
             class="history-target-filter"
+            :disabled="managementScopeRequired"
             :filter-option="false"
             :loading="historyTargetOptionsLoading"
             :options="historyTargetOptions"
-            placeholder="全部账户"
+            :placeholder="historyAccountSelectPlaceholder"
             @change="() => reloadRuns()"
             @dropdown-visible-change="handleHistoryTargetDropdownVisibleChange"
             @search="handleHistoryTargetSearch"
@@ -142,7 +174,7 @@
         @mobile-refresh="refreshMobileRuns"
       >
         <template #emptyText>
-          <a-empty description="暂无模型检测历史" />
+          <a-empty :description="modelCheckHistoryEmptyText" />
         </template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'target'">
@@ -273,7 +305,9 @@ import { message } from '@/lib/antd'
 
 import AccountSelect from '@/components/AccountSelect.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import {
@@ -285,6 +319,7 @@ import {
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type {
   AccountOptionSummary,
@@ -298,6 +333,7 @@ import type {
   ModelCheckRunSummary,
   ModelCheckStatus
 } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
 const fallbackOptions: ModelCheckOptions = {
   supportedModels: [
@@ -338,9 +374,29 @@ const modelCheckPageSize = 20
 type AccountSelectOption = { label: string; value: string }
 type SelectValue = string | string[] | undefined
 
-const { isManagementView } = useScopedMenuView()
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
 const accountsApi = useScopedAccountsApi(isManagementView)
+const systemAccountFilter = ref<string>()
+const systemAccountFilterSelection = ref<PrincipalSelection>()
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  onMissingSelectedIds: (ids) => {
+    if (!systemAccountFilter.value || !ids.includes(systemAccountFilter.value)) return
+    systemAccountFilter.value = undefined
+    systemAccountFilterSelection.value = undefined
+    resetModelCheckScopedState()
+    void loadOptions()
+    void reloadRuns()
+  },
+  selectedIds: () => [systemAccountFilter.value]
+})
 const optionsLoading = ref(false)
 const targetOptionsLoading = ref(false)
 const comparisonOptionsLoading = ref(false)
@@ -393,18 +449,30 @@ const {
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 条检测记录，还有更多`
     : `共 ${formatNumber(total)} 条检测记录`,
-  fetchPage: (_options, pageState) => modelChecksApi.list({
-    page: pageState.current,
-    pageSize: pageState.pageSize,
-    targetType: 'account',
-    targetId: filters.targetId?.trim() || undefined,
-    model: filters.model,
-    level: filters.level,
-    status: filters.status
-  }).then((page) => {
-    rememberRunAccountLabels(page.items)
-    return page
-  }),
+  fetchPage: (_options, pageState) => {
+    if (managementScopeRequired.value) {
+      return Promise.resolve({
+        items: [],
+        page: pageState.current,
+        pageSize: pageState.pageSize,
+        total: 0,
+        hasMore: false
+      })
+    }
+    return modelChecksApi.list({
+      ...modelCheckScopeParams.value,
+      page: pageState.current,
+      pageSize: pageState.pageSize,
+      targetType: 'account',
+      targetId: filters.targetId?.trim() || undefined,
+      model: filters.model,
+      level: filters.level,
+      status: filters.status
+    }).then((page) => {
+      rememberRunAccountLabels(page.items)
+      return page
+    })
+  },
   onError: (error) => {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载模型检测历史失败'))
@@ -412,6 +480,19 @@ const {
 })
 
 const modelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))
+const selectedManagementSystemAccountId = computed(() => isManagementView.value
+  ? scopedSystemAccountId(systemAccountFilter.value || allSystemAccountsValue)
+  : undefined)
+const modelCheckScopeParams = computed(() => {
+  const systemAccountId = selectedManagementSystemAccountId.value
+  return isManagementView.value && systemAccountId ? { systemAccountId } : undefined
+})
+const managementScopeRequired = computed(() => isManagementView.value && !selectedManagementSystemAccountId.value)
+const accountSelectDisabled = computed(() => submitting.value || managementScopeRequired.value)
+const accountSelectPlaceholder = computed(() => managementScopeRequired.value ? '请先选择系统账户' : '输入账户名称搜索')
+const comparisonSelectPlaceholder = computed(() => managementScopeRequired.value ? '请先选择系统账户' : '可信对比账户（可选）')
+const historyAccountSelectPlaceholder = computed(() => managementScopeRequired.value ? '请先选择系统账户' : '全部账户')
+const modelCheckHistoryEmptyText = computed(() => managementScopeRequired.value ? '请先选择系统账户后查看模型检测历史' : '暂无模型检测历史')
 const detailDescriptionColumns = computed(() => (window.innerWidth < 900 ? 1 : 2))
 const terminalStatusText = computed(() => submitting.value ? '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
 const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalLines.value.length ? 'green' : 'default')
@@ -433,7 +514,7 @@ type TerminalLine = {
 async function loadOptions() {
   optionsLoading.value = true
   try {
-    const nextOptions = await modelChecksApi.options()
+    const nextOptions = await modelChecksApi.options(modelCheckScopeParams.value)
     options.value = nextOptions
     form.model = nextOptions.defaultModel
     form.profile = nextOptions.defaultProfile
@@ -446,8 +527,14 @@ async function loadOptions() {
 }
 
 async function loadTargetOptions(keyword = '') {
+  if (managementScopeRequired.value) {
+    targetOptions.value = []
+    targetOptionsLoading.value = false
+    return
+  }
   const normalizedKeyword = keyword.trim()
-  const requestKey = JSON.stringify([normalizedKeyword])
+  const systemAccountId = modelCheckScopeParams.value?.systemAccountId
+  const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword])
   const requestId = ++targetOptionsRequestId
   const cachedOptions = targetOptionsCache.get(requestKey)
   if (cachedOptions) {
@@ -458,6 +545,7 @@ async function loadTargetOptions(keyword = '') {
   targetOptionsLoading.value = true
   try {
     const accounts = await accountsApi.options({
+      systemAccountId,
       keyword: normalizedKeyword || undefined,
       status: 'active',
       schedulable: 'enabled',
@@ -482,8 +570,14 @@ async function loadTargetOptions(keyword = '') {
 }
 
 async function loadComparisonOptions(keyword = '') {
+  if (managementScopeRequired.value) {
+    comparisonOptions.value = []
+    comparisonOptionsLoading.value = false
+    return
+  }
   const normalizedKeyword = keyword.trim()
-  const requestKey = JSON.stringify([normalizedKeyword, form.targetId])
+  const systemAccountId = modelCheckScopeParams.value?.systemAccountId
+  const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword, form.targetId])
   const requestId = ++comparisonOptionsRequestId
   const cachedOptions = comparisonOptionsCache.get(requestKey)
   if (cachedOptions) {
@@ -494,6 +588,7 @@ async function loadComparisonOptions(keyword = '') {
   comparisonOptionsLoading.value = true
   try {
     const accounts = await accountsApi.options({
+      systemAccountId,
       keyword: normalizedKeyword || undefined,
       status: 'active',
       schedulable: 'enabled',
@@ -518,8 +613,14 @@ async function loadComparisonOptions(keyword = '') {
 }
 
 async function loadHistoryTargetOptions(keyword = '') {
+  if (managementScopeRequired.value) {
+    historyTargetOptions.value = []
+    historyTargetOptionsLoading.value = false
+    return
+  }
   const normalizedKeyword = keyword.trim()
-  const requestKey = JSON.stringify([normalizedKeyword])
+  const systemAccountId = modelCheckScopeParams.value?.systemAccountId
+  const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword])
   const requestId = ++historyTargetOptionsRequestId
   const cachedOptions = historyTargetOptionsCache.get(requestKey)
   if (cachedOptions) {
@@ -530,6 +631,7 @@ async function loadHistoryTargetOptions(keyword = '') {
   historyTargetOptionsLoading.value = true
   try {
     const accounts = await accountsApi.options({
+      systemAccountId,
       keyword: normalizedKeyword || undefined,
       limit: 50
     })
@@ -552,6 +654,10 @@ async function loadHistoryTargetOptions(keyword = '') {
 }
 
 async function submitRun() {
+  if (managementScopeRequired.value) {
+    message.warning('请先选择系统账户')
+    return
+  }
   const targetId = form.targetId.trim()
   const trustedComparisonAccountId = form.trustedComparisonAccountId?.trim()
   if (!targetId) {
@@ -583,7 +689,7 @@ async function submitRun() {
     currentRun.value = await modelChecksApi.runStream(payload, {
       signal: controller.signal,
       onProgress: handleModelCheckProgress
-    })
+    }, modelCheckScopeParams.value)
     appendTerminalLine('success', `检测报告已生成：${levelText(currentRun.value.level)}，${currentRun.value.score}/${currentRun.value.maxScore}，${currentRun.value.message || '-'}`)
     message.success('模型检测完成')
     await reloadRuns()
@@ -617,10 +723,14 @@ async function reloadRuns() {
 }
 
 async function loadRunDetail(id: string) {
+  if (managementScopeRequired.value) {
+    message.warning('请先选择系统账户')
+    return
+  }
   detailOpen.value = true
   detailLoading.value = true
   try {
-    currentRun.value = await modelChecksApi.detail(id)
+    currentRun.value = await modelChecksApi.detail(id, modelCheckScopeParams.value)
     rememberRunAccountLabels([currentRun.value])
   } catch (error) {
     console.error(error)
@@ -628,6 +738,40 @@ async function loadRunDetail(id: string) {
   } finally {
     detailLoading.value = false
   }
+}
+
+function handleSystemAccountFilterChange() {
+  if (!systemAccountFilter.value) {
+    systemAccountFilterSelection.value = undefined
+  }
+  resetSystemAccountOptionsSearch()
+  resetModelCheckScopedState()
+  void loadOptions()
+  void reloadRuns()
+}
+
+function resetModelCheckScopedState() {
+  form.targetId = ''
+  selectedTargetAccount.value = undefined
+  form.trustedComparison = false
+  form.trustedComparisonAccountId = undefined
+  selectedComparisonAccount.value = undefined
+  filters.targetId = undefined
+  selectedHistoryTargetAccount.value = undefined
+  currentRun.value = undefined
+  detailOpen.value = false
+  targetOptions.value = []
+  comparisonOptions.value = []
+  historyTargetOptions.value = []
+  targetOptionsLoading.value = false
+  comparisonOptionsLoading.value = false
+  historyTargetOptionsLoading.value = false
+  targetOptionsCache.clear()
+  comparisonOptionsCache.clear()
+  historyTargetOptionsCache.clear()
+  targetOptionsRequestId += 1
+  comparisonOptionsRequestId += 1
+  historyTargetOptionsRequestId += 1
 }
 
 function handleTargetSearch(value: string) {
@@ -1007,6 +1151,7 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.model-checks-system-account-field,
 .model-checks-account-field {
   flex: 0 1 300px;
   width: 300px;
@@ -1212,6 +1357,10 @@ onBeforeUnmount(() => {
   width: 240px;
 }
 
+.history-system-account-filter {
+  width: 220px;
+}
+
 .target-cell {
   display: inline-flex;
   max-width: 100%;
@@ -1339,6 +1488,7 @@ onBeforeUnmount(() => {
     align-items: stretch;
   }
 
+  .model-checks-system-account-field,
   .model-checks-account-field,
   .model-checks-model-field,
   .model-checks-comparison-field {
@@ -1369,6 +1519,7 @@ onBeforeUnmount(() => {
   }
 
   .history-filter,
+  .history-system-account-filter,
   .history-target-filter {
     width: 100%;
   }

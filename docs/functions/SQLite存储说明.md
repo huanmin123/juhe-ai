@@ -940,6 +940,6 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。API Key 自动启停计划也不属于敏感凭据，保存在 `api_keys.availability_schedule_json`；计划以分钟为粒度判断，网关运行态缓存命中计划边界时最多保留到下一分钟，避免时段切换长时间滞后。
 
-外部来源系统 token 明文只在创建或轮换时展示一次；业务库 `external_integration_source_tokens` 只保存带用途前缀的 SHA-256 摘要 `token_hash`、安全展示用 `token_prefix`、状态、scope 和过期时间。`external_integration_sources.allowed_target_usernames_json` 保存公开资源写入允许操作的系统用户名，空数组表示真实 token 不能操作任何目标用户。内置测试 token 不写入业务库，只用于公开接口 mock 数据分支。普通日志、运行日志、错误响应、操作记录和 demo 成功响应都不能输出真实明文 token 或 token hash。
+外部来源授权 token 明文只在创建时展示一次；业务库 `external_integration_source_tokens` 只保存带用途前缀的 SHA-256 摘要 `token_hash`、安全展示用 `token_prefix`、状态、scope 和过期时间。每一个公开接口都是独立资源 scope，来源授权和 token 都必须包含目标接口 scope 才能调用。内置测试 token 不写入业务库，只用于公开接口 mock 数据分支。普通日志、运行日志、错误响应、操作记录和 demo 成功响应都不能输出真实明文 token 或 token hash。
 
 更完整的凭据展示、请求快照、操作日志、原始审计日志、日志脱敏、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md)、[操作日志设计](操作日志设计.md) 与 [原始审计日志设计](原始审计日志设计.md)。

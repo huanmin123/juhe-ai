@@ -26,7 +26,7 @@
           :filter-option="false"
           :groups="groups"
           :loading="groupOptionsLoading"
-          :placeholder="groupFilterDisabled ? '请先选择系统账户' : '全部分组'"
+          :placeholder="groupFilterDisabled ? '请先选择系统账户' : '绑定分组'"
           @change="handleGroupFilterChange"
           @dropdown-visible-change="handleGroupOptionsDropdown"
           @search="handleGroupOptionsSearch"
@@ -52,7 +52,7 @@
           <a-select v-model:value="statusFilter" :options="listStatusOptions" />
         </label>
         <label class="mobile-filter-field">
-          <span>分组</span>
+          <span>绑定分组</span>
           <GroupSelect
             v-model:value="groupFilter"
             v-model:selected-group="groupFilterSelection"
@@ -61,7 +61,7 @@
             :filter-option="false"
             :groups="groups"
             :loading="groupOptionsLoading"
-            :placeholder="groupFilterDisabled ? '请先选择系统账户' : '全部分组'"
+            :placeholder="groupFilterDisabled ? '请先选择系统账户' : '绑定分组'"
             @change="handleGroupFilterChange"
             @dropdown-visible-change="handleGroupOptionsDropdown"
             @search="handleGroupOptionsSearch"
