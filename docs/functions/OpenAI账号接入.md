@@ -59,7 +59,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 保存要求：
 
 - token 加密存储
-- OAuth 账户按账户身份指纹做数据库全局唯一约束：`provider_code + type + base_url host[:port] + refresh_token`；无 `refresh_token` 时兜底使用 `access_token`。`base_url` 只取 host 和端口，路径后缀不参与判重。
+- OAuth 账户允许重复添加相同凭据；同一个 `refresh_token` 或兜底 `access_token` 可以创建多个账户。系统只保留凭据指纹用于排查相同 token，不承担唯一约束。
 - 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
 - `expires_at` 由后端根据 OpenAI 返回的 `expires_in` 自动计算和刷新
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
@@ -85,7 +85,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 保存要求：
 
 - API Key 加密存储
-- API Key 账户按账户身份指纹做数据库全局唯一约束：`provider_code + type + base_url host[:port] + api_key`。因此同一个固定 API Key 可以在不同上游域名下重复添加；同一域名下即使 `/v1`、路径或尾部 `/` 写法不同，仍视为同一个上游账户。
+- API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入

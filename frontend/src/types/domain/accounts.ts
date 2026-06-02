@@ -307,6 +307,24 @@ export interface AccountImportResult {
   messages: string[]
 }
 
+export interface AccountExportDocument {
+  type: 'juhe-ai-account-import'
+  version: 1
+  proxies?: Array<Record<string, unknown>>
+  accounts: Array<Record<string, unknown>>
+}
+
+export interface AccountExportResult {
+  document: AccountExportDocument
+  summary: {
+    accounts: number
+    proxies: number
+    skippedAccounts: number
+    matchedAccounts?: number
+    truncated?: boolean
+  }
+}
+
 export interface ErrorPolicySummary {
   id: string
   name: string

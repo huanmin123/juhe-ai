@@ -208,7 +208,6 @@ erDiagram
 | 登录会话 token | `system_sessions.token_hash` | 只保存哈希，客户端持有明文 token |
 | 上游 API Key / OAuth token | `accounts.credentials_encrypted` | 加密存储，列表只展示掩码，编辑和测试按权限读取完整凭据 |
 | 凭据指纹 | `accounts.credential_fingerprint` | 用哈希指纹辅助排查相同凭据，不替代密文，不承担唯一约束 |
-| 账户身份指纹 | `accounts.account_identity_fingerprint` | 用 `provider + type + base_url host[:port] + 凭据` 的哈希指纹识别同一上游账户 |
 | 本地网关 API Key | `api_keys.key_hash`、`api_keys.key_secret_encrypted` | 校验用哈希，自用复制需要时按权限展示完整 key |
 | 代理密码 | `proxy_profiles.password_encrypted` | 加密存储，列表不明文暴露 |
 | 请求与响应快照 | `usage_records.request_snapshot_json`、`usage_records.response_snapshot_json` | 用于排查，必须避免额外写入不必要敏感头 |

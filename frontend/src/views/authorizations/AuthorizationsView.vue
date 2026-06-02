@@ -1,6 +1,7 @@
 <template>
   <a-card class="page-card authorizations-page-card responsive-page-card">
     <AuthorizationFilterToolbar
+      v-model:keyword="keywordFilter"
       :filters="filters"
       :is-management-view="isManagementView"
       :direction-options="directionOptions"
@@ -233,6 +234,7 @@ type AuthorizationFilters = {
 }
 type AuthorizationsPageState = {
   filters: AuthorizationFilters
+  keywordFilter: string
   pagination?: { current: number; pageSize: number }
 }
 const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
@@ -251,6 +253,7 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
     granteeSystemAccountId: undefined,
     granteeSystemAccount: undefined
   },
+  keywordFilter: '',
   pagination: { current: 1, pageSize }
 })
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
@@ -263,6 +266,7 @@ const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, def
     const pagination = state.pagination && typeof state.pagination === 'object'
       ? state.pagination as Partial<{ current: number; pageSize: number }>
       : {}
+    const keywordFilter = typeof state.keywordFilter === 'string' ? state.keywordFilter : fallback.keywordFilter
     return {
       filters: {
         ...fallback.filters,
@@ -271,6 +275,7 @@ const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, def
         sourceType: filters.sourceType === 'manual' || filters.sourceType === 'team' ? filters.sourceType : 'all',
         status: normalizeAuthorizationStatusFilter(filters.status)
       },
+      keywordFilter,
       pagination: {
         current: typeof pagination.current === 'number' && Number.isFinite(pagination.current) && pagination.current > 0 ? Math.trunc(pagination.current) : fallback.pagination?.current ?? 1,
         pageSize: typeof pagination.pageSize === 'number' && Number.isFinite(pagination.pageSize) && pagination.pageSize > 0 ? Math.trunc(pagination.pageSize) : fallback.pagination?.pageSize ?? pageSize
@@ -280,6 +285,7 @@ const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, def
 })
 const initialPageState = pageStateCache.read()
 
+const keywordFilter = ref(initialPageState.keywordFilter)
 const filters = reactive<AuthorizationFilters>({ ...initialPageState.filters })
 const selectedFilterOwnerSystemAccountId = computed(() => {
   return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
@@ -407,6 +413,8 @@ const createTargetGroupTip = computed(() => createTargetGroups.value.length
   : '目标用户暂无可选同供应商分组，请先为目标用户准备分组。')
 const activeFilterCount = computed(() => {
   let count = 0
+  if (keywordFilter.value.trim()) count += 1
+  if (!isManagementView.value && filters.direction !== 'outbound') count += 1
   if (!isManagementView.value && filters.sourceType !== 'all') count += 1
   if (filters.status !== 'all') count += 1
   if (isManagementView.value && filters.resourceOwnerSystemAccountId !== allSystemAccountsValue) count += 1
@@ -417,9 +425,15 @@ const activeFilterCount = computed(() => {
   return count
 })
 const advancedFilterCount = computed(() => {
-  if (!isManagementView.value) return 0
   let count = 0
+  if (!isManagementView.value && filters.direction !== 'outbound') count += 1
+  if (!isManagementView.value && filters.sourceType !== 'all') count += 1
+  if (filters.status !== 'all') count += 1
+  if (isManagementView.value && filters.resourceType !== 'all') count += 1
+  if (isManagementView.value && filters.resourceOwnerSystemAccountId !== allSystemAccountsValue) count += 1
   if (!filterResourceDisabled.value && filters.resourceId) count += 1
+  if (isManagementView.value && filters.teamId) count += 1
+  if (isManagementView.value && filters.granteeSystemAccountId) count += 1
   return count
 })
 const authorizationEmptyDescription = computed(() => {
@@ -533,6 +547,7 @@ function canReturnAuthorization(authorization: ResourceAuthorizationSummary): bo
 
 function authorizationListParams(pageState: { current: number; pageSize: number }) {
   return {
+    keyword: keywordFilter.value.trim() || undefined,
     resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
     resourceId: filters.resourceType === 'all' || filterResourceDisabled.value ? undefined : filters.resourceId,
     resourceOwnerSystemAccountId: isManagementView.value ? selectedFilterOwnerSystemAccountId.value : undefined,
@@ -694,6 +709,7 @@ function handleResourceTypeChange() {
 }
 
 function resetFilters() {
+  keywordFilter.value = ''
   Object.assign(filters, defaultAuthorizationsPageState().filters)
   resetPagination()
   pageStateCache.clear()
@@ -1674,6 +1690,7 @@ function normalizeAuthorizationStatusFilter(value: unknown): AuthorizationStatus
 
 function applyAuthorizationsPageState(state: AuthorizationsPageState): void {
   const fallback = defaultAuthorizationsPageState()
+  keywordFilter.value = state.keywordFilter ?? fallback.keywordFilter
   Object.assign(filters, {
     ...fallback.filters,
     ...state.filters
@@ -1691,6 +1708,7 @@ function restorePageStateAfterRouteFiltersCleared(): void {
 function snapshotPageState(): AuthorizationsPageState {
   return {
     filters: { ...filters },
+    keywordFilter: keywordFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize }
   }
 }

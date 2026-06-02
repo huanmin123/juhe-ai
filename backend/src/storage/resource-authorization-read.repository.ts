@@ -159,6 +159,11 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
     clauses.push('rag.resource_owner_system_account_id = ?')
     params.push(ownerSystemAccountId)
   }
+  const keywordFilter = resourceAuthorizationKeywordFilter(filters.keyword)
+  if (keywordFilter.clause) {
+    clauses.push(keywordFilter.clause)
+    params.push(...keywordFilter.params)
+  }
   const scopeSystemAccountId = scopedSystemAccountId(access)
   if (scopeSystemAccountId) {
     clauses.push(`(rag.resource_owner_system_account_id = ? OR rag.grantee_system_account_id = ? OR EXISTS (
@@ -200,6 +205,90 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   return getBusinessDatabase().prepare(`SELECT ${resourceAuthorizationGrantSelectColumns('rag')} FROM resource_authorization_grants rag ${where} ORDER BY rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
+}
+
+function resourceAuthorizationKeywordFilter(value: unknown): { clause: string; params: string[] } {
+  const keyword = optionalString(value)?.trim()
+  if (!keyword) return { clause: '', params: [] }
+  const prefix = `${escapeLikePrefix(keyword)}%`
+  let matchCount = 0
+  const matchText = (expression: string) => {
+    matchCount += 1
+    return `(${expression} COLLATE NOCASE = ? OR ${expression} LIKE ? ESCAPE '\\')`
+  }
+  const clause = `(
+    ${matchText('rag.id')}
+    OR ${matchText('rag.resource_id')}
+    OR ${matchText('rag.remark')}
+    OR EXISTS (
+      SELECT 1
+      FROM system_accounts owner_accounts
+      WHERE owner_accounts.id = rag.resource_owner_system_account_id
+        AND (
+          ${matchText('owner_accounts.username')}
+          OR ${matchText('owner_accounts.display_name')}
+        )
+    )
+    OR (
+      rag.grantee_type = 'system_account'
+      AND EXISTS (
+        SELECT 1
+        FROM system_accounts grantee_accounts
+        WHERE grantee_accounts.id = rag.grantee_system_account_id
+          AND (
+            ${matchText('grantee_accounts.username')}
+            OR ${matchText('grantee_accounts.display_name')}
+          )
+      )
+    )
+    OR (
+      rag.grantee_type = 'team'
+      AND EXISTS (
+        SELECT 1
+        FROM system_teams grantee_teams
+        WHERE grantee_teams.id = rag.grantee_team_id
+          AND ${matchText('grantee_teams.name')}
+      )
+    )
+    OR (
+      rag.resource_type = 'account'
+      AND EXISTS (
+        SELECT 1
+        FROM accounts resource_accounts
+        WHERE resource_accounts.id = rag.resource_id
+          AND ${matchText('resource_accounts.name')}
+      )
+    )
+    OR (
+      rag.resource_type = 'account'
+      AND EXISTS (
+        SELECT 1
+        FROM resource_authorizations resource_runtime
+        INNER JOIN accounts authorization_instances
+          ON authorization_instances.authorization_instance_authorization_id = resource_runtime.id
+        WHERE resource_runtime.resource_type = 'account'
+          AND resource_runtime.resource_id = rag.resource_id
+          AND ${matchText('authorization_instances.name')}
+      )
+    )
+    OR (
+      rag.resource_type = 'group'
+      AND EXISTS (
+        SELECT 1
+        FROM groups resource_groups
+        WHERE resource_groups.id = rag.resource_id
+          AND ${matchText('resource_groups.name')}
+      )
+    )
+  )`
+  return {
+    clause,
+    params: Array.from({ length: matchCount }, () => [keyword, prefix]).flat()
+  }
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 function resourceAuthorizationGrantSelectColumns(alias: string): string {

@@ -1206,6 +1206,7 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
 
 function createGatewayServer(): http.Server {
   const app = express()
+  app.set('trust proxy', true)
   app.use(requestContextMiddleware)
   app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
   return http.createServer(app)

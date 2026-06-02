@@ -10,7 +10,7 @@ import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { accountCredentialFingerprint, accountIdentityFingerprint } from './account-identity.js'
+import { accountCredentialFingerprint } from './account-identity.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { cleanupDeletedAccountDetachedStats, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
 import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
@@ -159,13 +159,6 @@ interface OpenAIOAuthRefreshCandidateRow {
 }
 
 export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
-
-export class DuplicateAccountCredentialError extends Error {
-  constructor() {
-    super('同一上游站点下账户凭据已被其他账户使用，不能重复添加')
-    this.name = 'DuplicateAccountCredentialError'
-  }
-}
 
 export class DefaultGroupReadonlyError extends Error {
   constructor() {
@@ -1097,17 +1090,6 @@ function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode
   return models
 }
 
-function isDuplicateAccountCredentialError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  const databaseError = error as Error & { code?: string }
-  return databaseError.message.includes('UNIQUE constraint failed: accounts.account_identity_fingerprint')
-    || databaseError.message.includes('idx_accounts_identity_fingerprint')
-}
-
-function throwDuplicateAccountCredentialError(): never {
-  throw new DuplicateAccountCredentialError()
-}
-
 function isDuplicateAccountNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   return error.message.includes('idx_accounts_owner_provider_name_unique_lower')
@@ -2034,12 +2016,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   }
   const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials)
   const credentialSource = requiredAccountCredentialSource(accountType, credentials)
-  const baseUrl = requiredTextInput(credentials.base_url, 'Base URL')
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
-    : null
-  const accountIdentity = typeof credentialSource === 'string' && credentialSource.trim()
-    ? accountIdentityFingerprint({ providerCode, type: accountType, baseUrl, secret: credentialSource })
     : null
   const oauthRefreshMetadata = openAIOAuthRefreshMetadata(accountType, credentials)
   const accountExpiresAt = hasOwnInput(input, 'accountExpiresAt')
@@ -2113,11 +2091,11 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     database
       .prepare(`
         INSERT INTO accounts (
-          id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, account_identity_fingerprint, credential_mask,
+          id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit, error_policy_id,
           priority, super_priority_enabled, fallback_enabled, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -2128,7 +2106,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.status,
         encryptJson(credentials),
         credentialFingerprint,
-        accountIdentity,
         maskSecret(credentialSource),
         oauthRefreshMetadata.accessTokenExpiresAt,
         oauthRefreshMetadata.refreshTokenPresent ? 1 : 0,
@@ -2173,9 +2150,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
-    if (isDuplicateAccountCredentialError(error)) {
-      throwDuplicateAccountCredentialError()
-    }
     if (isDuplicateAccountNameError(error)) {
       throw new Error(`同一供应商下账户名称已存在：${account.name}`)
     }
@@ -2209,12 +2183,8 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     ? normalizeAccountCredentialsForWrite(current.type, input.credentials)
     : normalizeAccountCredentialsForWrite(current.type, current.credentials)
   const credentialSource = requiredAccountCredentialSource(current.type, credentials)
-  const baseUrl = requiredTextInput(credentials.base_url, 'Base URL')
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
-    : null
-  const accountIdentity = typeof credentialSource === 'string' && credentialSource.trim()
-    ? accountIdentityFingerprint({ providerCode: current.providerCode, type: current.type, baseUrl, secret: credentialSource })
     : null
   const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials)
   const hasAccountExpiresAtInput = hasOwnInput(input, 'accountExpiresAt')
@@ -2353,7 +2323,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     const result = database
       .prepare(`
       UPDATE accounts
-      SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, account_identity_fingerprint = ?, credential_mask = ?,
+      SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
@@ -2366,7 +2336,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.status,
         encryptJson(credentials),
         credentialFingerprint,
-        accountIdentity,
         maskSecret(credentialSource),
         oauthRefreshMetadata.accessTokenExpiresAt,
         oauthRefreshMetadata.refreshTokenPresent ? 1 : 0,
@@ -2426,9 +2395,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     }
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
-    if (isDuplicateAccountCredentialError(error)) {
-      throwDuplicateAccountCredentialError()
-    }
     if (isDuplicateAccountNameError(error)) {
       throw new Error(`同一供应商下账户名称已存在：${next.name}`)
     }

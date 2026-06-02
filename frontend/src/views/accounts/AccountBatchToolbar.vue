@@ -6,6 +6,7 @@
     </div>
     <div class="batch-toolbar-actions">
       <a-button @click="$emit('clear')">清空选择</a-button>
+      <a-button v-if="canExport" :loading="exportLoading" @click="$emit('export')">导出 JSON</a-button>
       <a-button type="primary" @click="$emit('test')">批量测试</a-button>
       <a-button @click="$emit('enable')">批量启用</a-button>
       <a-button danger @click="$emit('disable')">批量停用</a-button>
@@ -15,6 +16,8 @@
 
 <script setup lang="ts">
 defineProps<{
+  canExport?: boolean
+  exportLoading?: boolean
   selectedCount: number
 }>()
 
@@ -22,6 +25,7 @@ defineEmits<{
   (event: 'clear'): void
   (event: 'disable'): void
   (event: 'enable'): void
+  (event: 'export'): void
   (event: 'test'): void
 }>()
 </script>

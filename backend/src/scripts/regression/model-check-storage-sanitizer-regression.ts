@@ -13,7 +13,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'model-check-storage-sanitizer-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 
 const secretApiKey = 'sk-model-check-storage-leak-1234567890'

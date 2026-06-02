@@ -311,7 +311,9 @@ function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string)
       last_success_at = excluded.last_success_at,
       updated_at = excluded.updated_at
   `)
-  statement.run(location.shardKey, 'usage_stats_aggregation', cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
+  for (const jobName of ['usage_stats_aggregation', 'client_ip_stats_aggregation']) {
+    statement.run(location.shardKey, jobName, cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
+  }
 }
 
 function usageRecordCount(id: string): number {

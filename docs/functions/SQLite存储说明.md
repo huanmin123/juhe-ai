@@ -225,8 +225,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `system_accounts(lower(display_name))`：保证用户名称大小写不敏感唯一。
 - `system_accounts(display_name, id)`：系统账户管理列表只按用户名称精确 / 前缀匹配。
 - `system_accounts(username, id)`：保留给系统账户选项、授权候选用户 options 和 AI 性能账号选项解析 owner ID；系统账户管理列表不按用户名或 ID 搜索。
-- `accounts(account_identity_fingerprint) WHERE account_identity_fingerprint IS NOT NULL`：保证同一供应商、账户类型、上游站点 host[:port] 和凭据组合唯一；`base_url` 路径差异不影响判重，同一个固定 API Key 可在不同上游域名下创建多个账户。
-- `accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL`：保留普通索引用于排查相同凭据，不承担唯一约束。
+- `accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL`：普通索引，用于排查相同凭据，不承担唯一约束。
 - `accounts(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下 AI 账户名称唯一。
 - `accounts(name, id)`、`accounts(system_account_id, name, id)`：AI 账户列表、账户选项和 AI 性能账号选项按账号名称精确 / 前缀定位。
 - `accounts(provider_code, id)`、`accounts(system_account_id, provider_code, id)`、`accounts(type, id)`、`accounts(system_account_id, type, id)`：保留给供应商、账户类型筛选或排序使用；AI 账户通用搜索不再匹配这些字段。

@@ -11,27 +11,30 @@
       @reset="resetFilters"
       @search="applyFilters"
     >
-      <template #inline-filters>
-        <a-select v-model:value="outcomeFilter" class="toolbar-select audit-outcome-filter responsive-list-inline-filter" :options="outcomeOptions" @change="applyFilters" />
-        <a-select v-model:value="trafficSourceFilter" class="toolbar-select audit-source-filter responsive-list-inline-filter" :options="trafficSourceOptions" @change="applyFilters" />
-        <SystemPrincipalSelect
-          v-model:value="systemAccountFilter"
-          :accounts="systemAccounts"
-          :active-only="false"
-          :filter-option="false"
-          :loading="systemAccountOptionsLoading"
-          v-model:selected-principal="systemAccountSelection"
-          include-all
-          all-label="全部用户"
-          class="toolbar-select audit-user-filter responsive-list-inline-filter"
-          placeholder="筛选用户"
-          @change="applyFilters"
-          @dropdown-visible-change="handleSystemAccountOptionsDropdown"
-          @search="handleSystemAccountOptionsSearch"
-        />
-      </template>
       <template #advanced-filters>
         <a-form layout="vertical" class="advanced-filter-form">
+          <a-form-item label="结果">
+            <a-select v-model:value="outcomeFilter" :options="outcomeOptions" @change="applyFilters" />
+          </a-form-item>
+          <a-form-item label="来源">
+            <a-select v-model:value="trafficSourceFilter" :options="trafficSourceOptions" @change="applyFilters" />
+          </a-form-item>
+          <a-form-item label="用户">
+            <SystemPrincipalSelect
+              v-model:value="systemAccountFilter"
+              :accounts="systemAccounts"
+              :active-only="false"
+              :filter-option="false"
+              :loading="systemAccountOptionsLoading"
+              v-model:selected-principal="systemAccountSelection"
+              include-all
+              all-label="全部用户"
+              placeholder="筛选用户"
+              @change="applyFilters"
+              @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+              @search="handleSystemAccountOptionsSearch"
+            />
+          </a-form-item>
           <a-form-item label="AI账户">
             <AccountSelect
               v-model:value="accountIdFilter"
@@ -51,9 +54,6 @@
           </a-form-item>
           <a-form-item label="状态码">
             <a-input v-model:value="statusCodeFilter" allow-clear placeholder="401 / 503" @press-enter="applyFilters" />
-          </a-form-item>
-          <a-form-item label="来源">
-            <a-select v-model:value="trafficSourceFilter" :options="trafficSourceOptions" @change="applyFilters" />
           </a-form-item>
         </a-form>
       </template>
@@ -202,7 +202,7 @@
             <a-descriptions-item label="分组">{{ displayAuditGroupName(detail.groupName, detail.groupId) }}</a-descriptions-item>
             <a-descriptions-item label="系统账户">{{ displayName(detail.systemAccountName, detail.systemAccountId) }}</a-descriptions-item>
             <a-descriptions-item label="耗时">{{ formatDuration(detail.durationMs) }}</a-descriptions-item>
-            <a-descriptions-item label="采样">{{ detail.sampleReason }} / {{ detail.sampleBucket }}</a-descriptions-item>
+            <a-descriptions-item label="采样" :span="2">{{ detail.sampleReason }} / {{ detail.sampleBucket }}</a-descriptions-item>
             <a-descriptions-item label="错误" :span="2">{{ detail.errorMessage ?? '-' }}</a-descriptions-item>
           </a-descriptions>
 
@@ -594,6 +594,8 @@ const activeFilterCount = computed(() => {
 })
 const advancedFilterCount = computed(() => {
   let count = 0
+  if (outcomeFilter.value !== 'all') count += 1
+  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (accountIdFilter.value) count += 1
   if (pathFilter.value.trim()) count += 1
   if (statusCodeFilter.value.trim()) count += 1

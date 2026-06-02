@@ -53,6 +53,7 @@ const [
 interface SeededGateway {
   apiKey: string
   groupId: string
+  systemAccountId: string
   failedAccountId: string
   freshAccountId: string
   apiKeyId: string
@@ -70,6 +71,7 @@ interface MockUpstreamState {
 }
 
 let sequence = 0
+let seedOwnerAccess: { systemAccountId: string; role: 'user' } | undefined
 
 async function main(): Promise<void> {
   let gatewayServer: http.Server | undefined
@@ -257,13 +259,13 @@ async function assertClientAbortClearsSessionAffinity(
   const beforeStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
 
   const sessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionRequest(sessionId), {
-    systemAccountId: 'sys_admin',
+    systemAccountId: seeded.systemAccountId,
     apiKeyId: seeded.apiKeyId,
     groupId: seeded.groupId
   })
   assert(sessionKey, '测试应能生成会话亲和 key')
   sessionAffinity.rememberOpenAIAccountForSession(sessionKey, seeded.freshAccountId, {
-    systemAccountId: 'sys_admin',
+    systemAccountId: seeded.systemAccountId,
     apiKeyId: seeded.apiKeyId,
     groupId: seeded.groupId
   })
@@ -291,13 +293,13 @@ async function assertClientAbortClearsSessionAffinity(
 
   const headerDelaySessionId = `session-client-abort-before-headers-${Date.now()}`
   const headerDelaySessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionRequest(headerDelaySessionId), {
-    systemAccountId: 'sys_admin',
+    systemAccountId: seeded.systemAccountId,
     apiKeyId: seeded.apiKeyId,
     groupId: seeded.groupId
   })
   assert(headerDelaySessionKey, '测试应能生成响应头前断开场景的会话亲和 key')
   sessionAffinity.rememberOpenAIAccountForSession(headerDelaySessionKey, seeded.freshAccountId, {
-    systemAccountId: 'sys_admin',
+    systemAccountId: seeded.systemAccountId,
     apiKeyId: seeded.apiKeyId,
     groupId: seeded.groupId
   })
@@ -334,11 +336,12 @@ async function assertClientAbortClearsSessionAffinity(
 
 function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: { freshPriority?: number } = {}): SeededGateway {
   sequence += 1
+  const access = seedGatewayAccess()
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组-${label}`,
     providerCode: 'openai',
     enabled: true
-  })
+  }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
   const freshUpstreamKey = `sk-codex-switch-${sequence}-fresh`
   const failedAccount = repositories.createAccount({
@@ -353,7 +356,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     status: 'active',
     schedulable: true,
     priority: 0
-  })
+  }, access)
   if ((options.freshPriority ?? 10) === 0) {
     waitForClockTick()
   }
@@ -369,7 +372,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     status: 'active',
     schedulable: true,
     priority: options.freshPriority ?? 10
-  })
+  }, access)
   if ((options.freshPriority ?? 10) === 0) {
     forceGroupAccountOrder(group.id, failedAccount.id, freshAccount.id)
   }
@@ -377,12 +380,13 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     name: `Codex 切号 e2e Key-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
-  })
+  }, access)
   assert(apiKey.key, '临时 API Key 未返回明文密钥')
   gatewayCache.clearGatewayRuntimeCache()
   return {
     apiKey: apiKey.key,
     groupId: group.id,
+    systemAccountId: access.systemAccountId,
     failedAccountId: failedAccount.id,
     freshAccountId: freshAccount.id,
     apiKeyId: apiKey.id,
@@ -658,8 +662,13 @@ function assertUsageRecords(seeded: SeededGateway): void {
 }
 
 function assertAccountsStillActive(gateways: SeededGateway[]): void {
-  const accounts = repositories.listAccounts()
+  const accountsBySystemAccountId = new Map<string, ReturnType<typeof repositories.listAccounts>>()
   for (const gateway of gateways) {
+    const accounts = accountsBySystemAccountId.get(gateway.systemAccountId) ?? repositories.listAccounts({
+      systemAccountId: gateway.systemAccountId,
+      role: 'user'
+    })
+    accountsBySystemAccountId.set(gateway.systemAccountId, accounts)
     for (const accountId of [gateway.failedAccountId, gateway.freshAccountId]) {
       const account = accounts.find((item) => item.id === accountId)
       assert.equal(account?.status, 'active', `账号 ${accountId} 不应被 turn 级策略改成非 active`)
@@ -686,6 +695,21 @@ function parseJsonObject(value: string): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+function seedGatewayAccess(): { systemAccountId: string; role: 'user' } {
+  if (!seedOwnerAccess) {
+    const owner = repositories.createSystemAccount({
+      username: 'codex_turn_switch_owner',
+      displayName: 'Codex turn 切号回归用户',
+      password: 'password',
+      role: 'user',
+      status: 'active',
+      mustChangePassword: false
+    })
+    seedOwnerAccess = { systemAccountId: owner.id, role: 'user' }
+  }
+  return seedOwnerAccess
 }
 
 function createSessionRequest(sessionId: string): Request {

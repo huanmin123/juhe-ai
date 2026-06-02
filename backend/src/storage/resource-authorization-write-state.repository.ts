@@ -267,13 +267,13 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
   database
     .prepare(`
       INSERT INTO accounts (
-        id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, account_identity_fingerprint, credential_mask,
+        id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
         proxy_profile_id, concurrency_limit, error_policy_id,
         priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
         cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
         authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
     `)
     .run(
       id,

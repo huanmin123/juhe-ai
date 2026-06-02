@@ -2,6 +2,7 @@ import axios from 'axios'
 
 import type {
   AccountSummary,
+  AccountExportResult,
   AccountImportOptions,
   AccountImportResult,
   AccountListResult,
@@ -204,6 +205,11 @@ export interface AccountListParams extends ListParams {
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
 }
 
+export type AccountExportFilters = Omit<AccountListParams, 'systemAccountId' | 'page' | 'pageSize'>
+export type AccountExportPayload =
+  | { accountIds: string[] }
+  | { filters: AccountExportFilters }
+
 export interface AccountOptionParams extends ListParams {
   ids?: string[]
   page?: number
@@ -362,6 +368,7 @@ export interface ModelCheckStreamOptions extends RequestControlOptions {
 }
 
 export interface AuthorizationListParams extends ListParams {
+  keyword?: string
   resourceType?: AuthorizationResourceType
   resourceId?: string
   resourceOwnerSystemAccountId?: string
@@ -646,6 +653,7 @@ export const api = {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
     options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
     detail: (id: string, params?: ListParams) => unwrap<AccountSummary>(http.get(`/accounts/${id}`, { params })),
+    export: (payload: AccountExportPayload, params?: ListParams) => unwrap<AccountExportResult>(http.post('/accounts/export', payload, { params })),
     importPreview: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/preview', payload, { params })),
     importConfirm: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),

@@ -3,7 +3,7 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, findGroupSummary, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
+import { ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, findGroupSummary, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -147,10 +147,6 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
     }, req)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
-    if (error instanceof DuplicateAccountCredentialError) {
-      res.status(409).json({ message: error.message })
-      return
-    }
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
       return
@@ -165,6 +161,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
+    name: normalizedText(bodyField(req, 'name')),
     refreshToken: sensitiveFingerprint(bodyField(req, 'refreshToken'))
   })
 }), async (req, res) => {
@@ -220,10 +217,6 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     }, req)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
-    if (error instanceof DuplicateAccountCredentialError) {
-      res.status(409).json({ message: error.message })
-      return
-    }
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
       return
@@ -432,10 +425,6 @@ function isBlockedOpenAIOAuthErrorAccount(account: NonNullable<ReturnType<typeof
 }
 
 function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMessage: string): void {
-  if (error instanceof DuplicateAccountCredentialError) {
-    res.status(409).json({ message: error.message })
-    return
-  }
   if (error instanceof ProxyProfileUnavailableError) {
     res.status(400).json(badRequest(error.message))
     return

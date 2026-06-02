@@ -140,7 +140,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'active',
       credentials_encrypted TEXT NOT NULL,
       credential_fingerprint TEXT,
-      account_identity_fingerprint TEXT,
       credential_mask TEXT NOT NULL DEFAULT '',
       oauth_access_token_expires_at TEXT,
       oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
@@ -413,7 +412,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_system_accounts_username_lookup ON system_accounts(username COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(display_name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_identity_fingerprint ON accounts(account_identity_fingerprint) WHERE account_identity_fingerprint IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_provider_name_unique_lower ON accounts(system_account_id, provider_code, lower(name));
     CREATE INDEX IF NOT EXISTS idx_accounts_name_lookup ON accounts(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_name_lookup ON accounts(system_account_id, name COLLATE NOCASE, id);

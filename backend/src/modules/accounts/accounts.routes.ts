@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { isAdminRole, type AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, clearAuthorizedAccountBindingFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, clearAuthorizedAccountBindingFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -14,7 +14,8 @@ import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireD
 import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
+import { exportAccountsAsImportDocument } from './account-export.service.js'
+import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { submitAccountRelatedCleanup } from './account-cleanup.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
@@ -93,7 +94,7 @@ const accountImportRequestSchema = z.object({
   }).strict().optional()
 }).strict()
 
-const accountListSortFields = new Set<AccountListSortField>([
+const accountListSortFieldValues = [
   'priority',
   'superPriority',
   'fallback',
@@ -106,7 +107,39 @@ const accountListSortFields = new Set<AccountListSortField>([
   'status',
   'accountExpiresAt',
   'lastUsedAt'
+] as const
+const accountListSortFields = new Set<AccountListSortField>(accountListSortFieldValues)
+
+const accountExportFilterSchema = z.object({
+  sorts: z.array(z.object({
+    field: z.enum(accountListSortFieldValues),
+    order: z.enum(['asc', 'desc'])
+  }).strict()).max(accountListSortFieldValues.length).optional(),
+  keyword: z.string().trim().max(200).optional(),
+  providerCode: z.string().trim().max(80).optional(),
+  groupId: z.string().trim().max(120).optional(),
+  type: z.string().trim().max(80).optional(),
+  status: z.union([
+    z.string().trim(),
+    z.array(z.string().trim()).max(20)
+  ]).optional(),
+  schedulable: z.enum(['all', 'enabled', 'disabled', 'cooling']).optional()
+}).strict()
+
+const accountExportByIdsRequestSchema = z.object({
+  accountIds: z.array(z.string().trim().min(1)).min(1).max(accountImportMaxAccounts)
+}).strict()
+
+const accountExportByFiltersRequestSchema = z.object({
+  filters: accountExportFilterSchema
+}).strict()
+
+const accountExportRequestSchema = z.union([
+  accountExportByIdsRequestSchema,
+  accountExportByFiltersRequestSchema
 ])
+
+type AccountExportRequest = z.infer<typeof accountExportRequestSchema>
 
 accountsRouter.get('/', async (req, res, next) => {
   try {
@@ -132,6 +165,55 @@ accountsRouter.get('/options', (req, res, next) => {
     res.json(ok(options))
   } catch (error) {
     next(error)
+  }
+})
+
+accountsRouter.post('/export', requireAdmin, (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const parsed = accountExportRequestSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(`账户导出参数无效，单次最多导出 ${accountImportMaxAccounts} 个账户`))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  if (!requestAccess) {
+    res.status(401).json(badRequest('缺少系统账户上下文'))
+    return
+  }
+  try {
+    const result = exportAccountsForRequest(parsed.data, requestAccess)
+    const ownerSystemAccountId = resolveOperationOwner(undefined, requestAccess)
+    const matchedText = typeof result.summary.matchedAccounts === 'number' ? `，匹配 ${result.summary.matchedAccounts} 条` : ''
+    const truncatedText = result.summary.truncated ? `，仅处理前 ${accountImportMaxAccounts} 条` : ''
+    recordOperationLog({
+      operationScopeSystemAccountId: ownerSystemAccountId,
+      mode: operationMode(requestAccess),
+      module: 'accounts',
+      action: 'export',
+      operationKey: 'accounts.export',
+      resourceType: 'account',
+      resourceName: 'AI 账户导出',
+      summary: `导出 AI 账户：${result.summary.accounts} 个账户，${result.summary.proxies} 个代理${matchedText}${truncatedText}`,
+      visibilityScope: 'admin_only',
+      changes: [
+        safeChange('accountExported', '导出账户数', undefined, result.summary.accounts),
+        safeChange('proxyExported', '导出代理数', undefined, result.summary.proxies),
+        safeChange('accountSkipped', '跳过账户数', undefined, result.summary.skippedAccounts),
+        ...(typeof result.summary.matchedAccounts === 'number'
+          ? [safeChange('accountMatched', '匹配账户数', undefined, result.summary.matchedAccounts)]
+          : []),
+        ...(result.summary.truncated
+          ? [safeChange('accountExportTruncated', '导出结果截断', false, true)]
+          : [])
+      ]
+    }, req)
+    res.json(ok(result))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '导出账户失败'))
   }
 })
 
@@ -230,6 +312,47 @@ function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | u
 
 function serverTimingMetric(name: string, durationMs: number): string {
   return `${name};dur=${Math.max(0, durationMs).toFixed(1)}`
+}
+
+function exportAccountsForRequest(request: AccountExportRequest, access: RequestAccessScope) {
+  if ('accountIds' in request) {
+    return exportAccountsAsImportDocument({ accountIds: request.accountIds }, access)
+  }
+
+  const page = listAccountsPage(access, accountExportListOptions(request.filters))
+  const accountIds = page.items.map((account) => account.id)
+  if (!accountIds.length) {
+    throw new Error('当前筛选条件下没有匹配的 AI 账户')
+  }
+  return exportAccountsAsImportDocument({
+    accountIds,
+    matchedAccounts: page.total,
+    truncated: page.hasMore
+  }, access)
+}
+
+function accountExportListOptions(filters: z.infer<typeof accountExportFilterSchema>): AccountListOptions {
+  return {
+    sorts: filters.sorts,
+    page: 1,
+    pageSize: accountImportMaxAccounts,
+    keyword: accountExportTextFilter(filters.keyword),
+    providerCode: accountExportAllFilter(filters.providerCode),
+    groupId: accountExportTextFilter(filters.groupId),
+    type: accountExportAllFilter(filters.type),
+    status: statusQueryValue(filters.status),
+    schedulable: schedulableQueryValue(filters.schedulable)
+  }
+}
+
+function accountExportTextFilter(value: string | undefined): string | undefined {
+  const text = value?.trim()
+  return text || undefined
+}
+
+function accountExportAllFilter(value: string | undefined): string | undefined {
+  const text = accountExportTextFilter(value)
+  return text && text !== 'all' ? text : undefined
 }
 
 accountsRouter.post('/import/preview', requireAdmin, (req, res) => {
@@ -395,10 +518,6 @@ accountsRouter.post('/', mutationGuard({
     }, req)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
-    if (error instanceof DuplicateAccountCredentialError) {
-      res.status(409).json({ message: error.message })
-      return
-    }
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
       return
@@ -724,10 +843,6 @@ accountsRouter.patch('/:id', async (req, res) => {
     }
     res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
   } catch (error) {
-    if (error instanceof DuplicateAccountCredentialError) {
-      res.status(409).json({ message: error.message })
-      return
-    }
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
       return

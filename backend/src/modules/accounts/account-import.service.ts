@@ -1,9 +1,7 @@
 import { isAdminRole, type AccountAvailabilitySchedule, type AccountType, type ProviderDefinition } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
-import { accountIdentityFingerprint } from '../../storage/account-identity.js'
 import {
-  DuplicateAccountCredentialError,
   createAccount,
   createGroup,
   createProxy,
@@ -673,41 +671,16 @@ function resolveAccountProxy(
 
 function markDuplicateAccounts(accounts: AccountPlan[], skipDuplicates: boolean): void {
   const seenName = new Map<string, number>()
-  const seenCredential = new Map<string, number>()
   for (const account of accounts) {
     if (account.item.action === 'failed') continue
     const nameKey = `${account.source.providerCode}:${account.source.name.trim().toLowerCase()}`
-    const credentialKey = accountCredentialKey(account.source)
     const duplicatedByName = seenName.get(nameKey)
-    const duplicatedByCredential = credentialKey ? seenCredential.get(credentialKey) : undefined
-    if (duplicatedByName || duplicatedByCredential) {
+    if (duplicatedByName) {
       account.item.action = skipDuplicates ? 'skip' : 'failed'
-      account.item.messages.push(duplicatedByName
-        ? `与第 ${duplicatedByName} 条账户名称重复`
-        : `与第 ${duplicatedByCredential} 条账户凭据重复`)
+      account.item.messages.push(`与第 ${duplicatedByName} 条账户名称重复`)
     } else {
       seenName.set(nameKey, account.source.index)
-      if (credentialKey) seenCredential.set(credentialKey, account.source.index)
     }
-  }
-}
-
-function accountCredentialKey(account: NormalizedImportAccount): string | undefined {
-  const secret = account.type === 'oauth'
-    ? text(account.credentials.refresh_token) || text(account.credentials.access_token)
-    : text(account.credentials.api_key)
-  if (!secret) return undefined
-  const baseUrl = text(account.credentials.base_url)
-  if (!baseUrl) return undefined
-  try {
-    return accountIdentityFingerprint({
-      providerCode: account.providerCode,
-      type: account.type,
-      baseUrl,
-      secret
-    })
-  } catch {
-    return undefined
   }
 }
 
@@ -906,8 +879,7 @@ function isProxyType(value: string): value is NormalizedImportProxy['type'] {
 }
 
 function isDuplicateAccountError(error: unknown): boolean {
-  return error instanceof DuplicateAccountCredentialError
-    || (error instanceof Error && error.message.includes('账户名称已存在'))
+  return error instanceof Error && error.message.includes('账户名称已存在')
 }
 
 function errorMessage(error: unknown): string {

@@ -2,6 +2,7 @@
   <a-card class="page-card accounts-page-card responsive-page-card">
     <AccountFilterToolbar
       :active-filter-count="activeAdvancedFilterCount"
+      :export-loading="exportLoading"
       :filters="filters"
       :group-filter-disabled="isManagementView && !accountScopeParams?.systemAccountId"
       :group-options="filterGroupOptions"
@@ -13,6 +14,7 @@
       :system-accounts="systemAccounts"
       :system-accounts-loading="systemAccountOptionsLoading"
       @create="openCreate"
+      @export="exportFilteredAccounts"
       @group-dropdown="handleFilterGroupOptionsDropdown"
       @group-search="handleFilterGroupOptionsSearch"
       @import="openImportModal"
@@ -43,10 +45,13 @@
     </AccountFilterToolbar>
 
     <AccountBatchToolbar
+      :can-export="isManagementView"
+      :export-loading="exportLoading"
       :selected-count="selectedAccounts.length"
       @clear="clearSelection"
       @disable="batchSetStatus('disabled')"
       @enable="batchSetStatus('active')"
+      @export="exportSelectedAccounts"
       @test="batchTestSelected"
     />
 
@@ -183,14 +188,14 @@
 import { message } from '@/lib/antd'
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 
-import { api } from '@/api/client'
+import { api, type AccountExportFilters } from '@/api/client'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId, rememberGroupLabel } from '@/shared/groupLabelCache'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountExportResult, AccountSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountFilterToolbar from './AccountFilterToolbar.vue'
@@ -236,6 +241,8 @@ const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./Accoun
 
 const selectedAccountIds = ref<string[]>([])
 const importModalOpen = ref(false)
+const exportLoading = ref(false)
+const ACCOUNT_EXPORT_MAX_ACCOUNTS = 50
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
   loading,
@@ -619,6 +626,107 @@ function openImportModal() {
     return
   }
   importModalOpen.value = true
+}
+
+async function exportSelectedAccounts() {
+  await exportAccountsByIds(selectedAccounts.value)
+}
+
+async function exportFilteredAccounts() {
+  if (!isManagementView.value) return
+  exportLoading.value = true
+  try {
+    const result = await api.accounts.export(
+      { filters: currentAccountExportFilters() },
+      accountScopeParams.value
+    )
+    downloadJsonFile(accountExportFilename(result.summary.accounts), result.document)
+    message.success(accountFilterExportSuccessMessage(result.summary))
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '导出账户失败'))
+  } finally {
+    exportLoading.value = false
+  }
+}
+
+async function exportAccountsByIds(sourceAccounts: AccountSummary[]) {
+  if (!isManagementView.value) return
+  const exportableAccounts = sourceAccounts.filter(canExportAccount)
+  if (!exportableAccounts.length) {
+    message.warning('当前没有可导出的自有 AI 账户')
+    return
+  }
+  if (exportableAccounts.length > ACCOUNT_EXPORT_MAX_ACCOUNTS) {
+    message.warning(`单次最多导出 ${ACCOUNT_EXPORT_MAX_ACCOUNTS} 个账户，请先筛选或勾选部分账户`)
+    return
+  }
+  exportLoading.value = true
+  try {
+    const result = await api.accounts.export(
+      { accountIds: exportableAccounts.map((account) => account.id) },
+      accountScopeParams.value
+    )
+    downloadJsonFile(accountExportFilename(result.summary.accounts), result.document)
+    const skippedText = result.summary.skippedAccounts ? `，跳过 ${result.summary.skippedAccounts} 个` : ''
+    message.success(`已导出 ${result.summary.accounts} 个账户${skippedText}`)
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '导出账户失败'))
+  } finally {
+    exportLoading.value = false
+  }
+}
+
+function currentAccountExportFilters(): AccountExportFilters {
+  return {
+    sorts: accountSorts.value,
+    keyword: filters.keyword.trim() || undefined,
+    providerCode: filters.providerCode && filters.providerCode !== 'all' ? filters.providerCode : undefined,
+    type: filters.type && filters.type !== 'all' ? filters.type : undefined,
+    groupId: isManagementView.value && !accountScopeParams.value?.systemAccountId ? undefined : filters.groupId || undefined,
+    status: filters.status.length ? filters.status : undefined
+  }
+}
+
+function accountFilterExportSuccessMessage(summary: AccountExportResult['summary']): string {
+  const matchedText = typeof summary.matchedAccounts === 'number' ? `，匹配 ${summary.matchedAccounts} 个` : ''
+  const skippedText = summary.skippedAccounts ? `，跳过 ${summary.skippedAccounts} 个不可导出账户` : ''
+  const truncatedText = summary.truncated ? `，仅处理前 ${ACCOUNT_EXPORT_MAX_ACCOUNTS} 条匹配结果` : ''
+  return `已按当前筛选导出 ${summary.accounts} 个账户${matchedText}${skippedText}${truncatedText}`
+}
+
+function canExportAccount(account: AccountSummary): boolean {
+  return account.accessType !== 'authorized'
+    && account.permissions?.canViewCredentials !== false
+    && account.permissions?.canEdit !== false
+}
+
+function accountExportFilename(accountCount: number): string {
+  const target = exportTargetSystemAccountLabel()
+  const safeTarget = target.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `${safeTarget || 'AI账户'}-${accountCount}个账户-${timestamp}.json`
+}
+
+function exportTargetSystemAccountLabel(): string {
+  const selectedId = accountScopeParams.value?.systemAccountId
+  if (!selectedId) return 'AI账户'
+  if (filters.systemAccount?.id === selectedId && filters.systemAccount.name) return filters.systemAccount.name
+  const account = systemAccounts.value.find((item) => item.id === selectedId)
+  return account?.displayName || filters.systemAccount?.name || 'AI账户'
+}
+
+function downloadJsonFile(filename: string, data: unknown): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
 }
 
 async function handleImportCompleted() {

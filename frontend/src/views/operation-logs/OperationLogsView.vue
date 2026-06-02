@@ -11,72 +11,78 @@
       @reset="resetFilters"
       @search="applyFilters"
     >
-      <template #inline-filters>
-        <a-select v-model:value="moduleFilter" class="toolbar-select module-filter responsive-list-inline-filter" :options="moduleOptions" @change="applyFilters" />
-        <a-select v-model:value="actionFilter" class="toolbar-select action-filter responsive-list-inline-filter" :options="actionOptions" @change="applyFilters" />
-        <a-range-picker
-          v-model:value="createdAtRange"
-          allow-clear
-          class="toolbar-select created-at-range responsive-list-inline-filter"
-          format="YYYY-MM-DD HH:mm"
-          show-time
-          :placeholder="['创建开始时间', '创建结束时间']"
-          @change="handleCreatedAtRangeChange"
-        />
-        <SystemPrincipalSelect
-          v-if="isManagementView"
-          v-model:value="actorSystemAccountFilter"
-          v-model:selected-principal="actorSystemAccountSelection"
-          :accounts="actorSystemAccounts"
-          :active-only="false"
-          :filter-option="false"
-          :loading="actorSystemAccountOptionsLoading"
-          include-all
-          all-label="全部用户"
-          class="toolbar-select account-filter responsive-list-inline-filter"
-          placeholder="筛选操作人"
-          @change="handleActorSystemAccountChange"
-          @dropdown-visible-change="handleActorSystemAccountOptionsDropdown"
-          @search="handleActorSystemAccountOptionsSearch"
-        />
-        <SystemPrincipalSelect
-          v-if="isManagementView"
-          v-model:value="affectedSystemAccountFilter"
-          v-model:selected-principal="affectedSystemAccountSelection"
-          :accounts="affectedSystemAccounts"
-          :active-only="false"
-          :filter-option="false"
-          :loading="affectedSystemAccountOptionsLoading"
-          include-all
-          all-label="全部用户"
-          class="toolbar-select account-filter responsive-list-inline-filter"
-          placeholder="筛选影响用户"
-          @change="handleAffectedSystemAccountChange"
-          @dropdown-visible-change="handleAffectedSystemAccountOptionsDropdown"
-          @search="handleAffectedSystemAccountOptionsSearch"
-        />
-        <SystemPrincipalSelect
-          v-if="isManagementView"
-          v-model:value="operationScopeSystemAccountFilter"
-          v-model:selected-principal="operationScopeSystemAccountSelection"
-          :accounts="operationScopeSystemAccounts"
-          :active-only="false"
-          :filter-option="false"
-          :loading="operationScopeSystemAccountOptionsLoading"
-          include-all
-          all-label="全部用户"
-          class="toolbar-select account-filter responsive-list-inline-filter"
-          placeholder="筛选业务归属"
-          @change="handleOperationScopeSystemAccountChange"
-          @dropdown-visible-change="handleOperationScopeSystemAccountOptionsDropdown"
-          @search="handleOperationScopeSystemAccountOptionsSearch"
-        />
-      </template>
       <template #advanced-filters>
         <a-form layout="vertical" class="advanced-filter-form">
+          <a-form-item label="模块">
+            <a-select v-model:value="moduleFilter" :options="moduleOptions" @change="applyFilters" />
+          </a-form-item>
+          <a-form-item label="动作">
+            <a-select v-model:value="actionFilter" :options="actionOptions" @change="applyFilters" />
+          </a-form-item>
+          <a-form-item label="创建时间">
+            <a-range-picker
+              v-model:value="createdAtRange"
+              allow-clear
+              class="drawer-range-picker"
+              format="YYYY-MM-DD HH:mm"
+              show-time
+              :placeholder="['开始时间', '结束时间']"
+              @change="handleCreatedAtRangeChange"
+            />
+          </a-form-item>
           <a-form-item label="traceId">
             <a-input v-model:value="traceIdFilter" allow-clear placeholder="输入 traceId" @press-enter="applyFilters" />
           </a-form-item>
+          <template v-if="isManagementView">
+            <a-form-item label="操作人">
+              <SystemPrincipalSelect
+                v-model:value="actorSystemAccountFilter"
+                v-model:selected-principal="actorSystemAccountSelection"
+                :accounts="actorSystemAccounts"
+                :active-only="false"
+                :filter-option="false"
+                :loading="actorSystemAccountOptionsLoading"
+                include-all
+                all-label="全部用户"
+                placeholder="筛选操作人"
+                @change="handleActorSystemAccountChange"
+                @dropdown-visible-change="handleActorSystemAccountOptionsDropdown"
+                @search="handleActorSystemAccountOptionsSearch"
+              />
+            </a-form-item>
+            <a-form-item label="影响用户">
+              <SystemPrincipalSelect
+                v-model:value="affectedSystemAccountFilter"
+                v-model:selected-principal="affectedSystemAccountSelection"
+                :accounts="affectedSystemAccounts"
+                :active-only="false"
+                :filter-option="false"
+                :loading="affectedSystemAccountOptionsLoading"
+                include-all
+                all-label="全部用户"
+                placeholder="筛选影响用户"
+                @change="handleAffectedSystemAccountChange"
+                @dropdown-visible-change="handleAffectedSystemAccountOptionsDropdown"
+                @search="handleAffectedSystemAccountOptionsSearch"
+              />
+            </a-form-item>
+            <a-form-item label="业务归属">
+              <SystemPrincipalSelect
+                v-model:value="operationScopeSystemAccountFilter"
+                v-model:selected-principal="operationScopeSystemAccountSelection"
+                :accounts="operationScopeSystemAccounts"
+                :active-only="false"
+                :filter-option="false"
+                :loading="operationScopeSystemAccountOptionsLoading"
+                include-all
+                all-label="全部用户"
+                placeholder="筛选业务归属"
+                @change="handleOperationScopeSystemAccountChange"
+                @dropdown-visible-change="handleOperationScopeSystemAccountOptionsDropdown"
+                @search="handleOperationScopeSystemAccountOptionsSearch"
+              />
+            </a-form-item>
+          </template>
         </a-form>
       </template>
       <template #actions>
@@ -243,9 +249,9 @@
             <a-descriptions-item label="操作人">{{ actorText(detail) }}</a-descriptions-item>
             <a-descriptions-item label="业务归属">{{ displayName(detail.operationScopeSystemAccountName, detail.operationScopeSystemAccountId) }}</a-descriptions-item>
             <a-descriptions-item label="资源">{{ resourceText(detail) }}</a-descriptions-item>
-            <a-descriptions-item label="可见范围">{{ visibilityText(detail.visibilityScope) }}</a-descriptions-item>
+            <a-descriptions-item label="可见范围" :span="detail.method || detail.path || detail.clientIp ? 1 : 2">{{ visibilityText(detail.visibilityScope) }}</a-descriptions-item>
             <a-descriptions-item v-if="detail.method || detail.path" label="请求">{{ requestText(detail) }}</a-descriptions-item>
-            <a-descriptions-item v-if="detail.clientIp" label="客户端 IP">{{ detail.clientIp }}</a-descriptions-item>
+            <a-descriptions-item v-if="detail.clientIp" label="客户端 IP" :span="detail.method || detail.path ? 2 : 1">{{ detail.clientIp }}</a-descriptions-item>
             <a-descriptions-item label="traceId" :span="2">{{ detail.traceId ?? '-' }}</a-descriptions-item>
             <a-descriptions-item label="摘要" :span="2">{{ detail.summary }}</a-descriptions-item>
           </a-descriptions>
@@ -524,7 +530,13 @@ const activeFilterCount = computed(() => {
 })
 const advancedFilterCount = computed(() => {
   let count = 0
+  if (moduleFilter.value !== 'all') count += 1
+  if (actionFilter.value !== 'all') count += 1
+  if (normalizeCreatedAtRange(createdAtRange.value)) count += 1
   if (traceIdFilter.value.trim()) count += 1
+  if (isManagementView.value && actorSystemAccountFilter.value !== allSystemAccountsValue) count += 1
+  if (isManagementView.value && affectedSystemAccountFilter.value !== allSystemAccountsValue) count += 1
+  if (isManagementView.value && operationScopeSystemAccountFilter.value !== allSystemAccountsValue) count += 1
   return count
 })
 const rawColumns = computed(() => {

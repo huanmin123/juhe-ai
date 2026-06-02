@@ -11,40 +11,36 @@
     @refresh="emit('refresh')"
     @search="emit('search')"
   >
-    <template #inline-filters>
-      <a-range-picker
-        :value="dateRange"
-        allow-clear
-        class="filter-select date-range-filter toolbar-select responsive-list-inline-filter"
-        format="YYYY-MM-DD"
-        :placeholder="['开始日期', '结束日期']"
-        @change="handleDateRangeUpdate"
-      />
-      <a-select
-        :value="result"
-        class="filter-select toolbar-select responsive-list-inline-filter"
-        :options="resultOptions"
-        @update:value="handleResultUpdate"
-      />
-      <SystemPrincipalSelect
-        v-if="isManagementView"
-        :value="systemAccountId"
-        :accounts="systemAccounts"
-        :active-only="false"
-        :filter-option="false"
-        :loading="systemAccountsLoading"
-        :selected-principal="systemAccountSelection"
-        include-all
-        class="system-account-filter toolbar-select responsive-list-inline-filter"
-        @update:value="handleSystemAccountUpdate"
-        @update:selected-principal="emit('update:systemAccountSelection', $event)"
-        @change="emit('system-account-change')"
-        @dropdown-visible-change="emit('system-account-dropdown', $event)"
-        @search="emit('system-account-search', $event)"
-      />
-    </template>
     <template #advanced-filters>
       <a-form layout="vertical" class="advanced-filter-form">
+        <a-form-item label="时间范围">
+          <a-range-picker
+            :value="dateRange"
+            allow-clear
+            format="YYYY-MM-DD"
+            :placeholder="['开始日期', '结束日期']"
+            @change="handleDateRangeUpdate"
+          />
+        </a-form-item>
+        <a-form-item label="请求结果">
+          <a-select :value="result" :options="resultOptions" @update:value="handleResultUpdate" />
+        </a-form-item>
+        <a-form-item v-if="isManagementView" label="系统账户">
+          <SystemPrincipalSelect
+            :value="systemAccountId"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :filter-option="false"
+            :loading="systemAccountsLoading"
+            :selected-principal="systemAccountSelection"
+            include-all
+            @update:value="handleSystemAccountUpdate"
+            @update:selected-principal="emit('update:systemAccountSelection', $event)"
+            @change="emit('system-account-change')"
+            @dropdown-visible-change="emit('system-account-dropdown', $event)"
+            @search="emit('system-account-search', $event)"
+          />
+        </a-form-item>
         <a-form-item label="分组">
           <GroupSelect
             :value="groupId"

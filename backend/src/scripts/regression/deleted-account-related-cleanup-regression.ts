@@ -200,10 +200,11 @@ function seedOwnerUsageRecord(id: string, accountId: string, ownerSystemAccountI
       INSERT INTO usage_records (
         id, system_account_id, trace_id, traffic_source, account_id, endpoint, provider_code, model,
         stream, success, input_tokens, output_tokens, cost_usd,
+        account_owner_system_account_id, account_access_type,
         created_at
-      ) VALUES (?, ?, ?, 'gateway', ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?)
+      ) VALUES (?, ?, ?, 'gateway', ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?, 'owner', ?)
     `)
-    .run(id, ownerSystemAccountId, `trace_${id}`, accountId, createdAt)
+    .run(id, ownerSystemAccountId, `trace_${id}`, accountId, ownerSystemAccountId, createdAt)
   usageRecordShards.recordUsageRecordShardEntries([{
     id,
     shardKey: location.shardKey,

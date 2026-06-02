@@ -64,7 +64,16 @@ async function main(): Promise<void> {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
-    const group = repositories.createGroup({ name: '大响应回归分组', providerCode: 'openai' })
+    const owner = repositories.createSystemAccount({
+      username: 'large_response_owner',
+      displayName: '大响应回归用户',
+      password: 'password',
+      role: 'user',
+      status: 'active',
+      mustChangePassword: false
+    })
+    const access = { systemAccountId: owner.id, role: 'user' as const }
+    const group = repositories.createGroup({ name: '大响应回归分组', providerCode: 'openai' }, access)
     const account = repositories.createAccount({
       providerCode: 'openai',
       name: '大响应回归账户',
@@ -76,12 +85,12 @@ async function main(): Promise<void> {
       groupId: group.id,
       status: 'active',
       schedulable: true
-    })
+    }, access)
     const apiKey = repositories.createApiKeyRecord({
       name: '大响应回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
-    })
+    }, access)
 
     appServer = app.listen(0, '127.0.0.1')
     await listen(appServer)

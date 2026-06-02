@@ -31,6 +31,7 @@ const authorizationIdParamsSchema = z.object({
 })
 
 const authorizationsQuerySchema = z.object({
+  keyword: z.string().trim().max(120, '搜索关键字最多 120 个字符').optional(),
   resourceType: z.enum(['account', 'group']).optional(),
   resourceId: z.string().trim().min(1, '授权资源 ID 不能为空').optional(),
   resourceOwnerSystemAccountId: z.string().trim().min(1, '资源归属用户 ID 不能为空').optional(),

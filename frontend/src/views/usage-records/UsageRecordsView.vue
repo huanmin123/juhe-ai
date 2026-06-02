@@ -362,6 +362,9 @@ const activeFilterCount = computed(() => {
 })
 const advancedFilterCount = computed(() => {
   let count = 0
+  if (dateRangeFilter.value) count += 1
+  if (resultFilter.value !== 'all') count += 1
+  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (groupFilter.value) count += 1
   if (clientIpFilter.value.trim()) count += 1
   if (modelFilter.value.trim()) count += 1

@@ -1,70 +1,47 @@
 <template>
   <ResponsiveListToolbar
-    :show-search="false"
+    :keyword="keyword"
+    search-placeholder="搜索资源 / 授权对象"
     filter-title="筛选授权"
     :active-filter-count="activeFilterCount"
     :advanced-filter-count="advancedFilterCount"
     :refresh-loading="loading"
+    @update:keyword="$emit('update:keyword', $event)"
     @reset="$emit('reset')"
     @refresh="$emit('refresh')"
     @search="$emit('refresh')"
     >
-    <template #inline-filters>
-      <a-segmented v-if="!isManagementView" v-model:value="filters.direction" class="direction-filter responsive-list-inline-filter" :options="directionOptions" @change="$emit('refresh')" />
-      <a-select v-if="!isManagementView" v-model:value="filters.sourceType" class="filter-select responsive-list-inline-filter" :options="sourceOptions" @change="$emit('refresh')" />
-      <a-select v-if="isManagementView" v-model:value="filters.resourceType" class="filter-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
-      <a-select v-model:value="filters.status" class="filter-select responsive-list-inline-filter" :options="statusOptions" @change="$emit('refresh')" />
-      <SystemPrincipalSelect
-        v-if="isManagementView"
-        v-model:value="filters.resourceOwnerSystemAccountId"
-        v-model:selected-principal="filters.resourceOwnerSystemAccount"
-        :accounts="ownerUsers"
-        :active-only="false"
-        :filter-option="false"
-        :loading="ownerLoading"
-        include-all
-        all-label="全部资源归属用户"
-        class="filter-user responsive-list-inline-filter"
-        placeholder="筛选资源归属用户"
-        @dropdown-visible-change="$emit('owner-dropdown', $event)"
-        @search="$emit('owner-search', $event)"
-        @change="$emit('owner-change')"
-      />
-      <SystemPrincipalSelect
-        v-if="isManagementView"
-        v-model:value="filters.teamId"
-        v-model:selected-principal="filters.team"
-        :teams="teams"
-        :active-only="false"
-        allow-clear
-        :filter-option="false"
-        :loading="teamLoading"
-        class="filter-user responsive-list-inline-filter"
-        placeholder="筛选被授权团队"
-        scope="team"
-        @dropdown-visible-change="$emit('team-dropdown', $event)"
-        @search="$emit('team-search', $event)"
-        @change="$emit('refresh')"
-      />
-      <SystemPrincipalSelect
-        v-if="isManagementView"
-        v-model:value="filters.granteeSystemAccountId"
-        v-model:selected-principal="filters.granteeSystemAccount"
-        :accounts="users"
-        :active-only="false"
-        allow-clear
-        :filter-option="false"
-        :loading="userLoading"
-        class="filter-user responsive-list-inline-filter"
-        placeholder="筛选被授权用户"
-        @dropdown-visible-change="$emit('user-dropdown', $event)"
-        @search="$emit('user-search', $event)"
-        @change="$emit('refresh')"
-      />
-    </template>
     <template #advanced-filters>
-      <a-form v-if="isManagementView" layout="vertical" class="advanced-filter-form">
-        <a-form-item label="授权资源">
+      <a-form layout="vertical" class="advanced-filter-form">
+        <a-form-item v-if="!isManagementView" label="授权方向">
+          <a-segmented v-model:value="filters.direction" :options="directionOptions" @change="$emit('refresh')" />
+        </a-form-item>
+        <a-form-item v-if="!isManagementView" label="授权方式">
+          <a-select v-model:value="filters.sourceType" :options="sourceOptions" @change="$emit('refresh')" />
+        </a-form-item>
+        <a-form-item label="授权状态">
+          <a-select v-model:value="filters.status" :options="statusOptions" @change="$emit('refresh')" />
+        </a-form-item>
+        <a-form-item v-if="isManagementView" label="授权内容">
+          <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
+        </a-form-item>
+        <a-form-item v-if="isManagementView" label="资源归属用户">
+          <SystemPrincipalSelect
+            v-model:value="filters.resourceOwnerSystemAccountId"
+            v-model:selected-principal="filters.resourceOwnerSystemAccount"
+            :accounts="ownerUsers"
+            :active-only="false"
+            :filter-option="false"
+            :loading="ownerLoading"
+            include-all
+            all-label="全部资源归属用户"
+            placeholder="筛选资源归属用户"
+            @dropdown-visible-change="$emit('owner-dropdown', $event)"
+            @search="$emit('owner-search', $event)"
+            @change="$emit('owner-change')"
+          />
+        </a-form-item>
+        <a-form-item v-if="isManagementView" label="授权资源">
           <GroupSelect
             v-if="filters.resourceType === 'group'"
             v-model:value="filters.resourceId"
@@ -92,6 +69,37 @@
             :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
             @dropdown-visible-change="$emit('resource-dropdown', $event)"
             @search="$emit('resource-search', $event)"
+            @change="$emit('refresh')"
+          />
+        </a-form-item>
+        <a-form-item v-if="isManagementView" label="被授权团队">
+          <SystemPrincipalSelect
+            v-model:value="filters.teamId"
+            v-model:selected-principal="filters.team"
+            :teams="teams"
+            :active-only="false"
+            allow-clear
+            :filter-option="false"
+            :loading="teamLoading"
+            scope="team"
+            placeholder="筛选被授权团队"
+            @dropdown-visible-change="$emit('team-dropdown', $event)"
+            @search="$emit('team-search', $event)"
+            @change="$emit('refresh')"
+          />
+        </a-form-item>
+        <a-form-item v-if="isManagementView" label="被授权用户">
+          <SystemPrincipalSelect
+            v-model:value="filters.granteeSystemAccountId"
+            v-model:selected-principal="filters.granteeSystemAccount"
+            :accounts="users"
+            :active-only="false"
+            allow-clear
+            :filter-option="false"
+            :loading="userLoading"
+            placeholder="筛选被授权用户"
+            @dropdown-visible-change="$emit('user-dropdown', $event)"
+            @search="$emit('user-search', $event)"
             @change="$emit('refresh')"
           />
         </a-form-item>
@@ -222,6 +230,7 @@ import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '
 import type { AuthorizationDirectionFilter, AuthorizationFilterResourceType, AuthorizationSourceFilter, AuthorizationStatusFilter } from './authorizationTableColumns'
 
 const props = defineProps<{
+  keyword: string
   filters: {
     direction: AuthorizationDirectionFilter
     sourceType: AuthorizationSourceFilter
@@ -270,6 +279,7 @@ defineEmits<{
   (event: 'resource-dropdown', open: boolean): void
   (event: 'team-search', value: string): void
   (event: 'team-dropdown', open: boolean): void
+  (event: 'update:keyword', value: string): void
   (event: 'user-search', value: string): void
   (event: 'user-dropdown', open: boolean): void
 }>()

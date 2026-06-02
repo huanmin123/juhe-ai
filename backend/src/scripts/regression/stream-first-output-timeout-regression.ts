@@ -52,6 +52,7 @@ const app = express()
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 let scenarioCredentialIndex = 0
+let scenarioCredentialOwnerAccess: { systemAccountId: string; role: 'user' } | undefined
 
 function codexStreamHeaders(apiKey: string, turnId: string): Record<string, string> {
   return {
@@ -232,7 +233,7 @@ async function main(): Promise<void> {
     assert(missingTerminalResult.streamText.includes('"code":"upstream_retryable_error"'), `缺少终止事件应改写为可重试错误码：${missingTerminalResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const missingTerminalAccount = repositories.listAccounts().find((item) => item.id === missingTerminalCredential.account.id)
+    const missingTerminalAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === missingTerminalCredential.account.id)
     assert.equal(missingTerminalAccount?.status, 'active', '缺少终止事件但仅有 response.created 时不应把账号置为临时不可调用')
     assert.equal(missingTerminalAccount?.streamFailureCount, 0, '缺少终止事件但未产生可见输出时不应累计账号流失败计数')
 
@@ -253,7 +254,7 @@ async function main(): Promise<void> {
     assert(overloadedBeforeOutputResult.streamText.includes('upstream_retryable_error'), `未输出前容量错误应按通用兜底改写为可重试错误：${overloadedBeforeOutputResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const overloadedBeforeOutputAccount = repositories.listAccounts().find((item) => item.id === overloadedBeforeOutputCredential.account.id)
+    const overloadedBeforeOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === overloadedBeforeOutputCredential.account.id)
     assert.equal(overloadedBeforeOutputAccount?.status, 'active', '未输出前容量错误不应把账号置为临时不可调用')
     assert.equal(overloadedBeforeOutputAccount?.streamFailureCount, 0, '未输出前容量错误不应累计账号流失败计数')
     auditLogQueue.flushAllAuditLogQueue()
@@ -269,7 +270,7 @@ async function main(): Promise<void> {
     assert(slowDownResult.streamText.includes('upstream_retryable_error'), `未输出前 slow_down 应按通用兜底改写为可重试错误：${slowDownResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const slowDownAccount = repositories.listAccounts().find((item) => item.id === slowDownCredential.account.id)
+    const slowDownAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === slowDownCredential.account.id)
     assert.equal(slowDownAccount?.status, 'active', '未输出前 slow_down 不应把账号置为临时不可调用')
     assert.equal(slowDownAccount?.streamFailureCount, 0, '未输出前 slow_down 不应累计账号流失败计数')
 
@@ -278,7 +279,7 @@ async function main(): Promise<void> {
     assert(genericErrorEventResult.streamText.includes('upstream_retryable_error'), `未知 error 事件应按写入下游前失败统一改写为可重试错误：${genericErrorEventResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const genericErrorEventAccount = repositories.listAccounts().find((item) => item.id === genericErrorEventCredential.account.id)
+    const genericErrorEventAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === genericErrorEventCredential.account.id)
     assert.equal(genericErrorEventAccount?.status, 'active', '未知 error 事件未输出前不应把账号置为临时不可调用')
     assert.equal(genericErrorEventAccount?.streamFailureCount, 0, '未知 error 事件未输出前不应累计账号流失败计数')
     auditLogQueue.flushAllAuditLogQueue()
@@ -294,7 +295,7 @@ async function main(): Promise<void> {
     assert(cyberPolicyResult.streamText.includes('upstream_retryable_error'), `未输出前 cyber_policy 应改写为可重试错误：${cyberPolicyResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const cyberPolicyAccount = repositories.listAccounts().find((item) => item.id === cyberPolicyCredential.account.id)
+    const cyberPolicyAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyCredential.account.id)
     assert.equal(cyberPolicyAccount?.status, 'active', '未输出前 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAccount?.streamFailureCount, 0, '未输出前 cyber_policy 不应累计账号流失败计数')
     auditLogQueue.flushAllAuditLogQueue()
@@ -311,7 +312,7 @@ async function main(): Promise<void> {
     assert(cyberPolicyAfterOutputResult.streamText.includes('upstream_retryable_error'), `尚未写入下游时 cyber_policy 应改写为可重试错误：${cyberPolicyAfterOutputResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const cyberPolicyAfterOutputAccount = repositories.listAccounts().find((item) => item.id === cyberPolicyAfterOutputCredential.account.id)
+    const cyberPolicyAfterOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyAfterOutputCredential.account.id)
     assert.equal(cyberPolicyAfterOutputAccount?.status, 'active', '输出后 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAfterOutputAccount?.streamFailureCount, 0, '输出后 cyber_policy 改写后不应累计账号流失败计数')
     auditLogQueue.flushAllAuditLogQueue()
@@ -340,7 +341,7 @@ async function main(): Promise<void> {
     assert(overloadedAfterOutputResult.streamText.includes('upstream_retryable_error'), `尚未写入下游时容量错误应给下游明确可重试信号：${overloadedAfterOutputResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const overloadedAfterOutputAccount = repositories.listAccounts().find((item) => item.id === overloadedAfterOutputCredential.account.id)
+    const overloadedAfterOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === overloadedAfterOutputCredential.account.id)
     assert.equal(overloadedAfterOutputAccount?.streamFailureCount, 0, '真实网关流量输出后容量错误不应直接写入账号流失败计数')
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '流失败未达到阈值前不应本地屏蔽账号')
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().precheckPendingAccountCount, 0, '单次输出后容量错误不应触发账号事前确认')
@@ -351,7 +352,7 @@ async function main(): Promise<void> {
     assert(outputItemThenFailureResult.streamText.includes('upstream_retryable_error'), `尚未写入下游时 output item 后失败应给下游明确可重试信号：${outputItemThenFailureResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const outputItemThenFailureAccount = repositories.listAccounts().find((item) => item.id === outputItemThenFailureCredential.account.id)
+    const outputItemThenFailureAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === outputItemThenFailureCredential.account.id)
     assert.equal(outputItemThenFailureAccount?.streamFailureCount, 0, '真实网关流量 output item 后失败不应直接写入账号流失败计数')
 
     const topLevelCodeMessageResult = await requestStreamScenario(baseUrl, topLevelCodeMessageCredential.apiKey.key, 'top-level-code-message-non-error')
@@ -384,7 +385,8 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
   account: ReturnType<typeof repositories.createAccount>
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
-  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'openai', enabled: true })
+  const access = scenarioCredentialAccess()
+  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'openai', enabled: true }, access)
   scenarioCredentialIndex += 1
   const account = repositories.createAccount({
     providerCode: 'openai',
@@ -397,14 +399,29 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
     groupId: group.id,
     status: 'active',
     schedulable: true
-  })
+  }, access)
   const apiKey = apiKeyRepository.createApiKeyRecord({
     name: `流式超时回归 Key-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
-  })
+  }, access)
   assert(apiKey.key, '临时 API Key 未返回明文密钥')
   return { account, apiKey }
+}
+
+function scenarioCredentialAccess(): { systemAccountId: string; role: 'user' } {
+  if (!scenarioCredentialOwnerAccess) {
+    const owner = repositories.createSystemAccount({
+      username: 'stream_first_output_owner',
+      displayName: '流式超时回归用户',
+      password: 'password',
+      role: 'user',
+      status: 'active',
+      mustChangePassword: false
+    })
+    scenarioCredentialOwnerAccess = { systemAccountId: owner.id, role: 'user' }
+  }
+  return scenarioCredentialOwnerAccess
 }
 
 function createStreamTimeoutRegressionUpstream(): http.Server {
@@ -1001,7 +1018,7 @@ function assertSuccessfulUsageRecord(
 ): void {
   const records = repositories.listUsageRecords(undefined, { result: 'success', page: 1, pageSize: 50 })
   const record = records.items.find((item) => item.accountId === accountId && item.success === true)
-  const account = repositories.listAccounts().find((item) => item.id === accountId)
+  const account = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === accountId)
   const accountRecords = repositories
     .listUsageRecords(undefined, { page: 1, pageSize: 200 })
     .items

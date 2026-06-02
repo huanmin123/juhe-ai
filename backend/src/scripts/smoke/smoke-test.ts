@@ -91,6 +91,20 @@ interface AccountListResult {
   pageSize: number
 }
 
+interface SystemAccountSummary {
+  id: string
+  username?: string
+  role?: string
+  status?: string
+}
+
+interface SystemAccountListResult {
+  items: SystemAccountSummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 interface SystemSettings {
   defaultTemporaryUnschedulableMinutes?: number
   temporaryUnschedulableRetryIntervalSeconds?: number
@@ -308,6 +322,13 @@ async function fetchSmokeAccounts(): Promise<AccountSummary[]> {
   throw new Error('账户列表返回格式异常')
 }
 
+async function fetchSmokeSystemAccounts(): Promise<SystemAccountSummary[]> {
+  const data = await getEnvelope<SystemAccountSummary[] | SystemAccountListResult>(apiPath('/system-accounts'))
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data.items)) return data.items
+  throw new Error('系统账户列表返回格式异常')
+}
+
 async function loginAsAdmin(): Promise<void> {
   assertSmokeBackendSupportsLocalSession()
   const account = await verifySystemAccountCredentialsAsync(
@@ -384,7 +405,7 @@ async function createTemporaryMockOpenAIGateway(
 }
 
 async function resolveSmokeOwnerSystemAccountId(): Promise<string> {
-  const accounts = await getEnvelope<Array<{ id: string; username?: string; role?: string; status?: string }>>(apiPath('/system-accounts'))
+  const accounts = await fetchSmokeSystemAccounts()
   const configuredAdmin = accounts.find((account) => account.username === runtimeConfig.smokeTest.adminUsername)
   const activeAdmin = configuredAdmin ?? accounts.find((account) => (account.role === 'super_admin' || account.role === 'admin') && account.status !== 'disabled')
   const activeAccount = activeAdmin ?? accounts.find((account) => account.status !== 'disabled')

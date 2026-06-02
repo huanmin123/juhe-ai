@@ -11,51 +11,24 @@
     @reset="emit('reset')"
     @refresh="emit('refresh')"
   >
-    <template #inline-filters>
-      <SystemPrincipalSelect
-        v-if="isManagementView"
-        :value="filters.systemAccountId"
-        :accounts="systemAccounts"
-        :active-only="false"
-        :filter-option="false"
-        :loading="systemAccountsLoading"
-        :selected-principal="filters.systemAccount"
-        include-all
-        class="toolbar-select account-system-filter responsive-list-inline-filter"
-        @update:value="handleSystemAccountUpdate"
-        @update:selected-principal="emit('update:systemAccountSelection', $event)"
-        @change="emit('system-account-change')"
-        @dropdown-visible-change="emit('system-account-dropdown', $event)"
-        @search="emit('system-account-search', $event)"
-      />
-      <GroupSelect
-        :value="filters.groupId || undefined"
-        :selected-group="filters.group"
-        allow-clear
-        class="toolbar-select account-group-filter responsive-list-inline-filter"
-        :disabled="groupFilterDisabled"
-        :filter-option="false"
-        :groups="groupOptions"
-        :loading="groupOptionsLoading"
-        :placeholder="groupFilterDisabled ? '请先选择系统账户' : '全部分组'"
-        @dropdown-visible-change="emit('group-dropdown', $event)"
-        @search="emit('group-search', $event)"
-        @update:selected-group="handleGroupSelectionUpdate"
-        @update:value="handleGroupUpdate"
-      />
-      <a-select
-        :value="filters.status"
-        allow-clear
-        class="toolbar-select account-status-filter responsive-list-inline-filter"
-        :max-tag-count="1"
-        mode="multiple"
-        :options="statusOptions"
-        placeholder="全部状态"
-        @change="handleStatusChange"
-      />
-    </template>
     <template #advanced-filters>
       <a-form layout="vertical" class="advanced-filter-form">
+        <a-form-item v-if="isManagementView" label="系统账户">
+          <SystemPrincipalSelect
+            :value="filters.systemAccountId"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :filter-option="false"
+            :loading="systemAccountsLoading"
+            :selected-principal="filters.systemAccount"
+            include-all
+            @update:value="handleSystemAccountUpdate"
+            @update:selected-principal="emit('update:systemAccountSelection', $event)"
+            @change="emit('system-account-change')"
+            @dropdown-visible-change="emit('system-account-dropdown', $event)"
+            @search="emit('system-account-search', $event)"
+          />
+        </a-form-item>
         <a-form-item label="供应商">
           <a-select
             :value="filters.providerCode || 'all'"
@@ -72,10 +45,43 @@
             @change="handleTypeUpdate"
           />
         </a-form-item>
+        <a-form-item label="分组">
+          <GroupSelect
+            :value="filters.groupId || undefined"
+            :selected-group="filters.group"
+            allow-clear
+            :disabled="groupFilterDisabled"
+            :filter-option="false"
+            :groups="groupOptions"
+            :loading="groupOptionsLoading"
+            :placeholder="groupFilterDisabled ? '请先选择系统账户' : '全部分组'"
+            @dropdown-visible-change="emit('group-dropdown', $event)"
+            @search="emit('group-search', $event)"
+            @update:selected-group="handleGroupSelectionUpdate"
+            @update:value="handleGroupUpdate"
+          />
+        </a-form-item>
+        <a-form-item label="账户状态">
+          <a-select
+            :value="filters.status"
+            allow-clear
+            :max-tag-count="1"
+            mode="multiple"
+            :options="statusOptions"
+            placeholder="全部状态"
+            @change="handleStatusChange"
+          />
+        </a-form-item>
       </a-form>
     </template>
     <template #actions>
       <slot name="actions" />
+      <a-button v-if="isManagementView" :loading="exportLoading" @click="emit('export')">
+        <template #icon>
+          <DownloadOutlined />
+        </template>
+        导出 JSON
+      </a-button>
       <a-button v-if="isManagementView" @click="emit('import')">
         <template #icon>
           <UploadOutlined />
@@ -154,7 +160,7 @@
 </template>
 
 <script setup lang="ts">
-import { UploadOutlined } from '@ant-design/icons-vue'
+import { DownloadOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import GroupSelect from '@/components/GroupSelect.vue'
@@ -163,6 +169,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountStatus, GroupOptionSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText } from './accountFormatters'
 import type { AccountFilters } from './accountFormTypes'
 import { OPENAI_PROVIDER } from './accountOptions'
@@ -175,6 +182,7 @@ type SelectValue = string | string[] | undefined
 
 const props = defineProps<{
   activeFilterCount: number
+  exportLoading?: boolean
   filters: AccountFilters
   groupFilterDisabled?: boolean
   groupOptions: GroupOptionSummary[]
@@ -189,6 +197,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'create'): void
+  (event: 'export'): void
   (event: 'group-dropdown', open: boolean): void
   (event: 'group-search', value: string): void
   (event: 'import'): void
@@ -235,7 +244,10 @@ const accountTypeOptions = computed(() => {
 })
 const advancedFilterCount = computed(() => [
   Boolean(props.filters.providerCode && props.filters.providerCode !== 'all'),
-  Boolean(props.filters.type && props.filters.type !== 'all')
+  Boolean(props.filters.type && props.filters.type !== 'all'),
+  props.filters.status.length > 0,
+  Boolean(props.filters.groupId),
+  props.isManagementView && props.filters.systemAccountId !== allSystemAccountsValue
 ].filter(Boolean).length)
 
 function handleProviderUpdate(value: SelectValue) {
@@ -270,18 +282,6 @@ function isAccountStatus(value: string): value is AccountStatus {
 </script>
 
 <style scoped>
-.toolbar-select {
-  min-width: 150px;
-}
-
-.account-status-filter {
-  min-width: 172px;
-}
-
-.account-group-filter {
-  min-width: 180px;
-}
-
 .mobile-filter-field {
   display: grid;
   gap: 8px;
@@ -296,12 +296,5 @@ function isAccountStatus(value: string): value is AccountStatus {
 
 .advanced-filter-form :deep(.ant-select) {
   width: 100%;
-}
-
-@media (max-width: 900px) {
-  .toolbar-select {
-    width: 100%;
-    min-width: 0;
-  }
 }
 </style>

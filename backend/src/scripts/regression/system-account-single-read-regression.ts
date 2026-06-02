@@ -23,9 +23,17 @@ const [databaseModule, repositories] = await Promise.all([
 ])
 
 try {
-  let targetId = ''
+  const target = repositories.createSystemAccount({
+    username: 'system_account_single_read_target',
+    displayName: '系统账号单条读取回归-目标',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const targetId = target.id
   for (let index = 0; index < 250; index += 1) {
-    const account = repositories.createSystemAccount({
+    repositories.createSystemAccount({
       username: `system_account_single_read_${String(index).padStart(3, '0')}`,
       displayName: `系统账号单条读取回归-${String(index).padStart(3, '0')}`,
       password: 'password',
@@ -33,17 +41,17 @@ try {
       status: 'active',
       mustChangePassword: false
     })
-    if (index === 249) {
-      targetId = account.id
-    }
   }
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE system_accounts SET updated_at = ? WHERE id = ?')
+    .run('2000-01-01T00:00:00.000Z', targetId)
 
   const firstPageLikeList = repositories.listSystemAccounts().slice(0, 200)
-  assert.equal(firstPageLikeList.some((account) => account.id === targetId), false, '第 250 个创建的系统账号不应出现在前 200 条列表窗口里')
+  assert.equal(firstPageLikeList.some((account) => account.id === targetId), false, '目标系统账号不应出现在前 200 条列表窗口里')
 
-  const target = repositories.findSystemAccountById(targetId)
-  assert.equal(target?.id, targetId, '按 ID 单条读取应能找到前 200 条之外的系统账号')
-  assert.equal(target?.displayName, '系统账号单条读取回归-249', '按 ID 单条读取应返回完整系统账号摘要')
+  const foundTarget = repositories.findSystemAccountById(targetId)
+  assert.equal(foundTarget?.id, targetId, '按 ID 单条读取应能找到前 200 条之外的系统账号')
+  assert.equal(foundTarget?.displayName, '系统账号单条读取回归-目标', '按 ID 单条读取应返回完整系统账号摘要')
 
   const updated = repositories.updateSystemAccount(targetId, { description: '已通过单条读取更新' })
   assert.equal(updated?.description, '已通过单条读取更新', '更新系统账号应通过单条读取返回目标账号摘要')

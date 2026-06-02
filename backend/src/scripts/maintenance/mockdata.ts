@@ -443,7 +443,7 @@ function createProxies(adminAccess: AccessScope): { http: string; socks: string;
     enabled: true
   }, adminAccess)
   repositories.updateProxyTestState(http.id, {
-    testStatus: 'success',
+    testStatus: 'passed',
     latencyMs: 82,
     outboundIp: '203.0.113.10',
     outboundRegion: '本地测试出口',
@@ -459,7 +459,7 @@ function createProxies(adminAccess: AccessScope): { http: string; socks: string;
     enabled: true
   }, adminAccess)
   repositories.updateProxyTestState(socks.id, {
-    testStatus: 'success',
+    testStatus: 'passed',
     latencyMs: 118,
     outboundIp: '203.0.113.11',
     outboundRegion: '本地备用出口',
@@ -533,12 +533,12 @@ function createAccounts(
     name: `${namePrefix}主力 API Key 账户`,
     type: 'api_key',
     groupId: groups.main.id,
-    credentials: apiKeyCredentials('primary', policies.quota),
+    credentials: apiKeyCredentials('primary'),
     proxyProfileId: proxies.http,
     errorPolicyId: policies.quota,
     supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1-mini'],
     concurrencyLimit: 80,
-    priority: -100,
+    priority: 0,
     superPriorityEnabled: true,
     notes: 'Mockdata 主力账号，超级优先'
   }, adminAccess)
@@ -548,7 +548,7 @@ function createAccounts(
     name: `${namePrefix}带代理 API Key 账户`,
     type: 'api_key',
     groupId: groups.main.id,
-    credentials: apiKeyCredentials('proxied', policies.temporary),
+    credentials: apiKeyCredentials('proxied'),
     proxyProfileId: proxies.http,
     errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-4o-mini'],
@@ -562,7 +562,7 @@ function createAccounts(
     name: `${namePrefix}普通 API Key 账户`,
     type: 'api_key',
     groupId: groups.main.id,
-    credentials: apiKeyCredentials('normal', policies.strict),
+    credentials: apiKeyCredentials('normal'),
     errorPolicyId: policies.strict,
     supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini', 'gpt-4o-mini'],
     concurrencyLimit: 35,
@@ -575,7 +575,7 @@ function createAccounts(
     name: `${namePrefix}降级备用账户`,
     type: 'api_key',
     groupId: groups.backup.id,
-    credentials: apiKeyCredentials('fallback', policies.temporary),
+    credentials: apiKeyCredentials('fallback'),
     errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.4', 'gpt-4.1-mini'],
     concurrencyLimit: 25,
@@ -594,7 +594,7 @@ function createAccounts(
     errorPolicyId: policies.quota,
     supportedModels: ['gpt-5.5', 'gpt-5.4'],
     concurrencyLimit: 50,
-    priority: -30,
+    priority: 5,
     notes: 'Mockdata OAuth 主力账号，带 Codex 额度快照'
   }, adminAccess)
 
@@ -617,7 +617,7 @@ function createAccounts(
     name: `${namePrefix}限流中账户`,
     type: 'api_key',
     groupId: groups.backup.id,
-    credentials: apiKeyCredentials('rate-limited', policies.quota),
+    credentials: apiKeyCredentials('rate-limited'),
     errorPolicyId: policies.quota,
     supportedModels: ['gpt-5.4-mini'],
     concurrencyLimit: 15,
@@ -636,7 +636,7 @@ function createAccounts(
     name: `${namePrefix}临时不可调用账户`,
     type: 'api_key',
     groupId: groups.experiment.id,
-    credentials: apiKeyCredentials('temporary', policies.temporary),
+    credentials: apiKeyCredentials('temporary'),
     errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.4', 'gpt-4.1-mini'],
     concurrencyLimit: 15,
@@ -655,7 +655,7 @@ function createAccounts(
     name: `${namePrefix}异常账户`,
     type: 'api_key',
     groupId: groups.experiment.id,
-    credentials: apiKeyCredentials('error', policies.strict),
+    credentials: apiKeyCredentials('error'),
     errorPolicyId: policies.strict,
     supportedModels: ['gpt-5.5'],
     concurrencyLimit: 10,
@@ -669,7 +669,7 @@ function createAccounts(
     name: `${namePrefix}已到期账户`,
     type: 'api_key',
     groupId: groups.experiment.id,
-    credentials: apiKeyCredentials('expired', policies.strict),
+    credentials: apiKeyCredentials('expired'),
     errorPolicyId: policies.strict,
     supportedModels: ['gpt-4.1-mini'],
     concurrencyLimit: 5,
@@ -691,11 +691,10 @@ function createAccounts(
   }
 }
 
-function apiKeyCredentials(suffix: string, policyId: string): Record<string, unknown> {
+function apiKeyCredentials(suffix: string): Record<string, unknown> {
   return {
     api_key: `sk-mockdata-admin-${suffix}-${'x'.repeat(24)}`,
     base_url: 'https://api.openai.com/v1',
-    error_policy_id: policyId,
     error_handling_rules: [
       {
         enabled: true,
@@ -924,8 +923,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
     description: 'Mockdata 主力本地网关 Key，绑定主力分组',
     groupBindings: [{ groupId: groups.main.id, priority: 1, status: 'active' }],
     status: 'active',
-    quotaLimits: quotaLimits(35, 260, 1000),
-    scopes: ['responses', 'chat', 'models']
+    quotaLimits: quotaLimits(35, 260, 1000)
   }, adminAccess)
   const adminHighFrequency = repositories.createApiKeyRecord({
     name: `${namePrefix}高频限额 Key`,
@@ -936,8 +934,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
       hourly: { enabled: true, hours: 3, limit: 90 },
       daily: { enabled: true, limit: 420 },
       monthly: { enabled: true, limit: 1600 }
-    },
-    scopes: ['responses', 'chat']
+    }
   }, adminAccess)
   const adminBackup = repositories.createApiKeyRecord({
     name: `${namePrefix}备用网关 Key`,

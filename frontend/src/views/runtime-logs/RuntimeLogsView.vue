@@ -190,7 +190,7 @@
           <a-descriptions-item label="时间">{{ formatDateTime(selectedLog.time) }}</a-descriptions-item>
           <a-descriptions-item label="级别">{{ levelText(selectedLog.level) }}</a-descriptions-item>
           <a-descriptions-item label="traceId" :span="2">{{ selectedLog.traceId ?? '-' }}</a-descriptions-item>
-          <a-descriptions-item label="事件">{{ eventText(selectedLog.event) }}</a-descriptions-item>
+          <a-descriptions-item label="事件" :span="selectedLog.event ? 1 : 2">{{ eventText(selectedLog.event) }}</a-descriptions-item>
           <a-descriptions-item v-if="selectedLog.event" label="事件原值">{{ selectedLog.event }}</a-descriptions-item>
           <a-descriptions-item label="消息" :span="2">{{ runtimeLogMessageText(selectedLog) }}</a-descriptions-item>
         </a-descriptions>
@@ -208,7 +208,7 @@
           <a-descriptions-item v-if="selectedGrepItem.event" label="事件原值">{{ selectedGrepItem.event }}</a-descriptions-item>
           <a-descriptions-item label="消息">{{ runtimeLogMessageText(selectedGrepItem) }}</a-descriptions-item>
           <a-descriptions-item label="文件">{{ selectedGrepItem.fileName || selectedGrepItem.file }}</a-descriptions-item>
-          <a-descriptions-item label="位置">{{ grepLinePositionText(selectedGrepItem) }}</a-descriptions-item>
+          <a-descriptions-item label="位置" :span="selectedGrepItem.event ? 2 : 1">{{ grepLinePositionText(selectedGrepItem) }}</a-descriptions-item>
           <a-descriptions-item label="完整路径" :span="2">{{ selectedGrepItem.file }}</a-descriptions-item>
         </a-descriptions>
         <pre class="raw-block">{{ prettyRawJson(selectedGrepItem.rawJson || selectedGrepItem.line) }}</pre>

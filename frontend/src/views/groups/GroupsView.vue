@@ -275,6 +275,24 @@ const defaultHighConcurrencySchedulingPolicy: Required<GroupSchedulingPolicy> = 
   clientIpConcurrencyOverflowMode: 'reject',
   imageLaneMaxConcurrency: 0
 }
+const groupSchedulingPolicyKeys = [
+  'mode',
+  'defaultSoftConcurrency',
+  'fastFirstEnabled',
+  'fallbackOnQueueEnabled',
+  'breakAffinityOnSoftLimit',
+  'breakAffinityOnQueueWaitMs',
+  'slowRequestThresholdMs',
+  'firstOutputSlowThresholdMs',
+  'recentTimeoutWindowSeconds',
+  'recentTimeoutPenaltyThreshold',
+  'maxQueueWaitMs',
+  'maxQueueSize',
+  'perApiKeyQueueLimit',
+  'clientIpConcurrencyLimit',
+  'clientIpConcurrencyOverflowMode',
+  'imageLaneMaxConcurrency'
+] as const
 const defaultClientIpConcurrencyLimit = 5
 const clientIpOverflowModeOptions = [
   { label: '立即拒绝', value: 'reject' },
@@ -493,25 +511,6 @@ function groupSchedulingPolicyRecord(source?: GroupSchedulingPolicy, options: { 
   }
   return source as Record<string, unknown>
 }
-
-const groupSchedulingPolicyKeys = [
-  'mode',
-  'defaultSoftConcurrency',
-  'fastFirstEnabled',
-  'fallbackOnQueueEnabled',
-  'breakAffinityOnSoftLimit',
-  'breakAffinityOnQueueWaitMs',
-  'slowRequestThresholdMs',
-  'firstOutputSlowThresholdMs',
-  'recentTimeoutWindowSeconds',
-  'recentTimeoutPenaltyThreshold',
-  'maxQueueWaitMs',
-  'maxQueueSize',
-  'perApiKeyQueueLimit',
-  'clientIpConcurrencyLimit',
-  'clientIpConcurrencyOverflowMode',
-  'imageLaneMaxConcurrency'
-] as const
 
 function assertGroupSchedulingPolicyKeys(input: Record<string, unknown>): void {
   const allowed = new Set<string>(groupSchedulingPolicyKeys)
@@ -859,7 +858,9 @@ function openEdit(group: GroupSummary) {
   }
   let schedulingPolicy: Required<GroupSchedulingPolicy>
   try {
-    schedulingPolicy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy, { requireComplete: true })
+    schedulingPolicy = group.groupType === 'high_concurrency'
+      ? cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy, { requireComplete: true })
+      : cloneHighConcurrencySchedulingPolicy()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '分组调度策略数据异常，请清理后再编辑'))
     return
