@@ -21,10 +21,12 @@ logger.level = 'silent'
 const [
   { createSystemApiApp },
   databaseModule,
+  oauthRefreshService,
   repositories
 ] = await Promise.all([
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/database.js'),
+  import('../../modules/openai-oauth/openai-oauth-access-token-refresh.service.js'),
   import('../../storage/repositories.js')
 ])
 
@@ -59,6 +61,9 @@ const secretValues = [
   'oauth-redaction-access-token',
   'oauth-redaction-refresh-token',
   'oauth-redaction-id-token',
+  'oauth-redaction-refreshed-access-token',
+  'oauth-redaction-refreshed-refresh-token',
+  'oauth-redaction-refreshed-id-token',
   'sk-redaction-target-api-key'
 ]
 
@@ -115,6 +120,27 @@ try {
   assert.equal(latestOAuth?.credentials.refresh_token, 'oauth-redaction-refresh-token', 'OAuth 编辑留空时应保留原 refresh_token')
   assert.equal(latestOAuth?.credentials.id_token, 'oauth-redaction-id-token', 'OAuth 编辑留空时应保留原 id_token')
 
+  oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
+    assert.equal(refreshToken, 'oauth-redaction-refresh-token', 'OAuth 刷新路由应使用原 refresh_token 换取新令牌')
+    assert.equal(clientId, 'oauth-redaction-client', 'OAuth 刷新路由应沿用账号 client_id')
+    return {
+      accessToken: 'oauth-redaction-refreshed-access-token',
+      refreshToken: 'oauth-redaction-refreshed-refresh-token',
+      idToken: 'oauth-redaction-refreshed-id-token',
+      expiresIn: 3600,
+      expiresAt: '2027-01-02T00:00:00.000Z',
+      clientId: 'oauth-redaction-client',
+      email: 'redaction-refreshed@example.com',
+      accountId: 'acct-redaction-refreshed',
+      chatgptUserId: 'user-redaction-refreshed',
+      planType: 'pro'
+    }
+  })
+  const refreshedOAuth = await postEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/openai-oauth/accounts/${seed.oauthAccountId}/refresh-token`, seed.adminCookie, {})
+  assert.equal(refreshedOAuth.credentials.expires_at, '2027-01-02T00:00:00.000Z', 'OAuth 刷新响应应保留前端需要展示的过期时间')
+  assert.equal(refreshedOAuth.credentials.base_url, 'https://api.openai.com/v1', 'OAuth 刷新响应应保留 Base URL')
+  assertNoCredentialLeak(refreshedOAuth, 'OAuth 刷新响应')
+
   const rebound = await postEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/group`, seed.adminCookie, {
     groupId: seed.groupBId
   })
@@ -129,6 +155,7 @@ try {
 
   console.log('AI 账户响应凭据脱敏回归通过：详情、创建、编辑、绑定分组和迁移响应均不返回明文凭据，编辑留空保留原凭据')
 } finally {
+  oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
   await closeServer(server)
   try {
     databaseModule.getBusinessDatabase().close()
@@ -259,7 +286,7 @@ async function requestEnvelope<T>(baseUrl: string, path: string, cookie: string,
 function assertOAuthRoutesUseAccountResponseSanitizer(): void {
   const source = readFileSync('src/modules/openai-oauth/openai-oauth.routes.ts', 'utf8')
   assert.match(source, /ok\(sanitizeAccountResponse\(account\)\)/, 'OpenAI OAuth 创建响应必须经过账号响应脱敏器')
-  assert.match(source, /ok\(sanitizeAccountResponse\(updated\)\)/, 'OpenAI OAuth 更新响应必须经过账号响应脱敏器')
+  assert.match(source, /ok\(sanitizeAccount(?:CredentialCarrier)?Response\(updated\)\)/, 'OpenAI OAuth 更新响应必须经过账号响应脱敏器')
 }
 
 function assertNoCredentialLeak(value: unknown, label: string): void {

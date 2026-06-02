@@ -364,6 +364,7 @@ export interface ModelCheckStreamOptions extends RequestControlOptions {
 export interface AuthorizationListParams extends ListParams {
   resourceType?: AuthorizationResourceType
   resourceId?: string
+  resourceOwnerSystemAccountId?: string
   granteeSystemAccountId?: string
   teamId?: string
   status?: 'active' | 'paused' | 'expired' | 'revoked' | 'returned' | 'all'

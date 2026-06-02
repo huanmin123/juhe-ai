@@ -314,8 +314,7 @@ const {
     ? `已加载到第 ${range?.[1] ?? total - 1} 条授权，还有更多`
     : `共 ${total} 条授权`,
   fetchPage: async (_options, pageState) => {
-    const systemAccountId = isManagementView.value ? authorizationScopeParams.value?.systemAccountId : undefined
-    const params = authorizationListParams(systemAccountId, pageState)
+    const params = authorizationListParams(pageState)
     return isManagementView.value
       ? await api.authorizations.listPage(params)
       : await api.myAuthorizations.listPage(params)
@@ -432,8 +431,8 @@ const authorizationEmptyDescription = computed(() => {
   }
   return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无我授权出去的记录，可新增授权给其他用户或团队。'
 })
-const authorizationScopeParams = computed(() => {
-  const systemAccountId = selectedFilterOwnerSystemAccountId.value
+const createAuthorizationScopeParams = computed(() => {
+  const systemAccountId = createForm.ownerSystemAccountId
   return systemAccountId ? { systemAccountId } : undefined
 })
 const createOwnedAccounts = computed(() => createAccounts.value.filter((account) => account.permissions?.canAuthorize !== false))
@@ -532,19 +531,24 @@ function canReturnAuthorization(authorization: ResourceAuthorizationSummary): bo
   return authorization.status !== 'revoked' && authorization.status !== 'returned'
 }
 
-function authorizationListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
+function authorizationListParams(pageState: { current: number; pageSize: number }) {
   return {
     resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
     resourceId: filters.resourceType === 'all' || filterResourceDisabled.value ? undefined : filters.resourceId,
+    resourceOwnerSystemAccountId: isManagementView.value ? selectedFilterOwnerSystemAccountId.value : undefined,
     teamId: isManagementView.value ? filters.teamId : undefined,
     granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
     status: filters.status === 'all' ? undefined : filters.status,
     direction: isManagementView.value ? undefined : filters.direction,
     sourceType: !isManagementView.value && filters.sourceType !== 'all' ? filters.sourceType : undefined,
-    systemAccountId,
     page: pageState.current,
     pageSize: pageState.pageSize
   }
+}
+
+function authorizationOperationScopeParams(item: ResourceAuthorizationSummary) {
+  if (!isManagementView.value || !item.resourceOwnerSystemAccountId) return undefined
+  return { systemAccountId: item.resourceOwnerSystemAccountId }
 }
 
 function refreshData() {
@@ -553,7 +557,7 @@ function refreshData() {
 }
 
 function openCreateModal() {
-  createForm.ownerSystemAccountId = isManagementView.value ? authorizationScopeParams.value?.systemAccountId : currentSystemAccountId.value
+  createForm.ownerSystemAccountId = isManagementView.value ? selectedFilterOwnerSystemAccountId.value : currentSystemAccountId.value
   createForm.resourceType = filters.resourceType === 'group' ? 'group' : 'account'
   createForm.resourceId = ''
   createForm.resourceAccount = undefined
@@ -1414,7 +1418,7 @@ const createAuthorization = submitAction('authorizations.create', async () => {
       limits: quotaLimitsPayload(createForm.quotaLimits)
     }
     if (isManagementView.value) {
-      await api.authorizations.create(payload, createForm.ownerSystemAccountId ? { systemAccountId: createForm.ownerSystemAccountId } : undefined)
+      await api.authorizations.create(payload, createAuthorizationScopeParams.value)
     } else {
       await api.myAuthorizations.create(payload)
     }
@@ -1431,7 +1435,7 @@ async function revokeManualSource(item: ResourceAuthorizationSummary) {
   try {
     let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      updated = await api.authorizations.revoke(item.id, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, authorizationOperationScopeParams(item))
     } else {
       updated = await api.myAuthorizations.revoke(item.id)
     }
@@ -1448,7 +1452,7 @@ async function revokeTeamSource(item: ResourceAuthorizationSummary) {
   try {
     let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      updated = await api.authorizations.revoke(item.id, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, authorizationOperationScopeParams(item))
     } else {
       updated = await api.myAuthorizations.revoke(item.id)
     }
@@ -1465,7 +1469,7 @@ async function revokeAuthorization(item: ResourceAuthorizationSummary) {
   try {
     let updated: ResourceAuthorizationSummary
     if (isManagementView.value) {
-      updated = await api.authorizations.revoke(item.id, authorizationScopeParams.value)
+      updated = await api.authorizations.revoke(item.id, authorizationOperationScopeParams(item))
     } else {
       updated = await api.myAuthorizations.revoke(item.id)
     }
@@ -1538,7 +1542,7 @@ async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, sta
       }
     }
     if (isManagementView.value) {
-      const updated = await api.authorizations.update(item.id, payload, authorizationScopeParams.value)
+      const updated = await api.authorizations.update(item.id, payload, authorizationOperationScopeParams(item))
       updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
     } else {
       const updated = await api.myAuthorizations.update(item.id, payload)
@@ -1583,7 +1587,7 @@ async function confirmExpireChange() {
       limits: quotaLimitsPayload(expireForm.quotaLimits)
     }
     if (isManagementView.value) {
-      const updated = await api.authorizations.updateExpire(authorization.id, payload, authorizationScopeParams.value)
+      const updated = await api.authorizations.updateExpire(authorization.id, payload, authorizationOperationScopeParams(authorization))
       updateAuthorizationItems((item) => item.id === authorization.id, () => updated)
     } else {
       const updated = await api.myAuthorizations.updateExpire(authorization.id, payload)

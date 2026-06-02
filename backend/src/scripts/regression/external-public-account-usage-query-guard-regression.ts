@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
@@ -141,6 +141,8 @@ try {
     }
   }
 
+  assertPublicUsageRoutesBoundKeywordLength()
+
   console.log('公开账号用量查询防护回归通过：请求链路只读范围窗口表，各排序入口不再扫描日表或创建临时排序树')
 } finally {
   try {
@@ -218,6 +220,13 @@ function explainQueryPlan(database: DatabaseSync, sql: string, params: SQLInputV
 
 function assertNoTempBtree(details: string, label: string): void {
   assert(!/USE TEMP B-TREE/i.test(details), `${label}不应创建临时排序树，实际计划：${details}`)
+}
+
+function assertPublicUsageRoutesBoundKeywordLength(): void {
+  const source = readFileSync('src/modules/external-integrations/external-integrations.routes.ts', 'utf8')
+  assert.match(source, /const publicUsageKeywordSchema = z\.string\(\)\.trim\(\)\.max\(120, '关键词不能超过 120 个字符'\)\.optional\(\)/, '公开 usage 查询 keyword 必须有 120 字符上限和中文错误消息')
+  assert.match(source, /const ipUsageQuerySchema[\s\S]*keyword: publicUsageKeywordSchema[\s\S]*const accountUsageQuerySchema/, 'IP usage 查询必须复用公开 usage keyword 上限')
+  assert.match(source, /const accountUsageQuerySchema[\s\S]*keyword: publicUsageKeywordSchema[\s\S]*const consumptionRankingQuerySchema/, '账号 usage 查询必须复用公开 usage keyword 上限')
 }
 
 function assertPublicAccountUsageItemsDoNotExposeOwner(items: ReadonlyArray<object>): void {

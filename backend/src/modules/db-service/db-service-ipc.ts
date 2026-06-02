@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig, type AuditFullBodyCaptureRuntimeConfig } from '../../config/runtime.js'
+import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import { normalizeAuditFullBodyCaptureConfig, readAuditFullBodyCaptureConfig, setAuditLogFullBodyCaptureConfig, type AuditFullBodyCaptureConfigInput } from '../audit-logs/audit-log-settings.js'
 import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
+import { invalidateGatewayAuthorizationQuotaSnapshot } from '../gateway/gateway-quota-snapshot-cache.service.js'
 import type {
   AccountRuntimeAvailabilityClearResult,
   AccountRuntimeAvailabilityClearTarget,
@@ -272,6 +274,17 @@ export function notifyClientIpPolicyCacheInvalidated(): void {
   }
 }
 
+function notifyServerAuthorizationQuotaCacheInvalidated(): void {
+  if (runtimeConfig.processRole === 'server') {
+    invalidateGatewayAuthorizationQuotaSnapshot()
+    void clearServerAuthorizationQuotaRuntimeCache()
+    return
+  }
+  if (runtimeConfig.processRole === 'db-service' && typeof process.send === 'function') {
+    sendDbServiceChildMessage({ type: 'authorization_quota_cache_invalidate' })
+  }
+}
+
 export async function requestServerAccountRuntimeSnapshot(timeoutMs = 300): Promise<Pick<DbServiceServerRuntimeSnapshot, 'accountConcurrency' | 'accountRuntimeAvailability'> | undefined> {
   const snapshot = await requestServerRuntimeSnapshotByScope('account_runtime', timeoutMs)
   return snapshot
@@ -507,6 +520,12 @@ function handleDbServiceMessage(message: unknown): void {
     case 'gateway_runtime_cache_invalidate':
       if (runtimeConfig.processRole === 'server') {
         void clearServerGatewayRuntimeCache()
+      }
+      break
+    case 'authorization_quota_cache_invalidate':
+      if (runtimeConfig.processRole === 'server') {
+        invalidateGatewayAuthorizationQuotaSnapshot()
+        void clearServerAuthorizationQuotaRuntimeCache()
       }
       break
     case 'client_ip_policy_cache_invalidate':
@@ -996,10 +1015,17 @@ async function clearServerGatewayRuntimeCache(): Promise<void> {
   oauthRefresh.clearOpenAIOAuthRecentRefreshCache()
 }
 
+async function clearServerAuthorizationQuotaRuntimeCache(): Promise<void> {
+  const authorizationQuota = await import('../gateway/authorization-quota.service.js')
+  authorizationQuota.clearAuthorizationQuotaCache()
+}
+
 async function clearServerClientIpPolicyCache(): Promise<void> {
   const policyCache = await import('../gateway/client-ip-policy-cache.service.js')
   policyCache.clearClientIpPolicyCacheLocal()
 }
+
+registerAuthorizationQuotaCacheInvalidator(notifyServerAuthorizationQuotaCacheInvalidated)
 
 async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
   const backgroundIpc = await import('../background/background-ipc.js')

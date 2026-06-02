@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { EventEmitter } from 'node:events'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -14,10 +15,13 @@ import {
 import {
   clearGatewayQuotaSnapshot,
   gatewayQuotaSnapshotRuntime,
+  invalidateGatewayAuthorizationQuotaSnapshot,
   maxGatewayQuotaSnapshotAuthorizationEntries,
   maxGatewayQuotaSnapshotCostEntries,
   replaceGatewayQuotaSnapshot
 } from '../../modules/gateway/gateway-quota-snapshot-cache.service.js'
+import * as dbServiceIpc from '../../modules/db-service/db-service-ipc.js'
+import { notifyAuthorizationQuotaCacheInvalidation } from '../../shared/gateway-cache-invalidation.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-quota-passive-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -33,10 +37,21 @@ logger.level = 'silent'
 
 const databaseModule = await import('../../storage/database.js')
 
+class FakeDbServiceChild extends EventEmitter {
+  readonly pid = 525252
+  readonly connected = true
+
+  send(_message: unknown, callback?: (error?: Error | null) => void): boolean {
+    callback?.()
+    return true
+  }
+}
+
 try {
   assertGatewayQuotaSnapshotSourcesBounded()
   assertGatewayQuotaRequestPathUsesAsyncOnly()
   assertLocalQuotaReadersRejectServerRole()
+  assertAuthorizationQuotaInvalidationSourcesConnected()
   clearGatewayQuotaSnapshot()
   replaceGatewayQuotaSnapshot({
     generatedAt: new Date().toISOString(),
@@ -98,6 +113,102 @@ try {
   })
   assert.equal(authorizationDecisions.get('account_passive_ok')?.allowed, true, '快照缺失的授权组合应短时放行等待 worker 追平')
   assert.equal(authorizationDecisions.get('account_passive_blocked')?.allowed, false, 'server 请求链路应直接使用 worker 推送的授权额度快照拦截')
+
+  clearGatewayQuotaSnapshot()
+  replaceGatewayQuotaSnapshot({
+    generatedAt: new Date().toISOString(),
+    costEntries: [{
+      systemAccountId: 'sys_passive_quota',
+      scopeType: 'api_key',
+      scopeId: 'key_auth_invalidation_cost_snapshot',
+      costs: {
+        hourly: 20,
+        daily: 20,
+        weekly: 20,
+        monthly: 20,
+        total: 20
+      }
+    }],
+    authorizationEntries: [
+      {
+        scopeType: 'group_authorization',
+        authorizationId: 'group_auth_stale_snapshot',
+        decision: { allowed: true }
+      },
+      {
+        scopeType: 'account_authorization',
+        authorizationId: 'account_auth_stale_snapshot',
+        decision: { allowed: true }
+      }
+    ],
+    costEntriesComplete: true,
+    authorizationEntriesComplete: true
+  })
+  const staleAuthorizationBeforeInvalidation = await checkGatewayAuthorizationQuotaBatchAsync({
+    groupAccess: {
+      groupOwnerSystemAccountId: 'sys_passive_quota',
+      groupAccessType: 'authorized',
+      groupAuthorizationId: 'group_auth_stale_snapshot',
+      groupAuthorizationQuotaLimited: true
+    } as GroupUsageAccessMetadata,
+    accounts: [passiveAccount('account_stale_snapshot', 'account_auth_stale_snapshot', true)]
+  })
+  assert.equal(
+    staleAuthorizationBeforeInvalidation.get('account_stale_snapshot')?.allowed,
+    true,
+    '失效前应能复现 server 使用旧授权快照中的允许决策'
+  )
+  notifyAuthorizationQuotaCacheInvalidation('gateway_quota_passive_snapshot_regression')
+  const invalidatedAuthorizationRuntime = gatewayQuotaSnapshotRuntime()
+  assert.equal(invalidatedAuthorizationRuntime.authorizationEntryCount, 0, '授权配额失效后 server 必须清空旧授权快照决策')
+  assert.equal(invalidatedAuthorizationRuntime.authorizationEntriesComplete, false, '授权配额失效后 server 必须把授权快照标记为不完整')
+  assert.equal(invalidatedAuthorizationRuntime.costEntryCount, 1, '授权配额失效不能清空 API Key 成本快照')
+  assert.equal(invalidatedAuthorizationRuntime.costEntriesComplete, true, '授权配额失效不能把 API Key 成本快照误标为不完整')
+  const staleAuthorizationAfterInvalidation = await checkGatewayAuthorizationQuotaBatchAsync({
+    groupAccess: {
+      groupOwnerSystemAccountId: 'sys_passive_quota',
+      groupAccessType: 'authorized',
+      groupAuthorizationId: 'group_auth_stale_snapshot',
+      groupAuthorizationQuotaLimited: true
+    } as GroupUsageAccessMetadata,
+    accounts: [passiveAccount('account_stale_snapshot', 'account_auth_stale_snapshot', true)]
+  })
+  assert.equal(
+    staleAuthorizationAfterInvalidation.get('account_stale_snapshot')?.allowed,
+    false,
+    '授权配额失效后，带额度限制但缺失新快照的授权必须 fail-closed，不能继续复用旧允许决策'
+  )
+  const apiKeyDecisionAfterAuthorizationInvalidation = await checkGatewayApiKeyQuotaAsync({
+    id: 'key_auth_invalidation_cost_snapshot',
+    system_account_id: 'sys_passive_quota',
+    selected_group_id: 'group_passive_quota',
+    status: 'active',
+    expires_at: null,
+    group_route_strategy: 'priority_failover',
+    system_account_image_generation_enabled: 0,
+    quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 10 } })
+  } as GatewayApiKeyRow)
+  assert.equal(apiKeyDecisionAfterAuthorizationInvalidation.allowed, false, '授权配额失效不应破坏 API Key 成本快照判断')
+
+  await assertDbServiceAuthorizationQuotaInvalidationBridge()
+
+  clearGatewayQuotaSnapshot()
+  invalidateGatewayAuthorizationQuotaSnapshot()
+  const invalidatedWithoutCostSnapshotDecision = await checkGatewayApiKeyQuotaAsync({
+    id: 'key_auth_invalidation_without_cost_snapshot',
+    system_account_id: 'sys_passive_quota',
+    selected_group_id: 'group_passive_quota',
+    status: 'active',
+    expires_at: null,
+    group_route_strategy: 'priority_failover',
+    system_account_image_generation_enabled: 0,
+    quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
+  } as GatewayApiKeyRow)
+  assert.equal(
+    invalidatedWithoutCostSnapshotDecision.allowed,
+    true,
+    '仅授权快照失效时不能把缺失的 API Key 成本快照误判为截断'
+  )
 
   clearGatewayQuotaSnapshot()
   const noSnapshotDecision = await checkGatewayApiKeyQuotaAsync({
@@ -212,6 +323,20 @@ function assertGatewayQuotaSnapshotSourcesBounded(): void {
   assert(cacheSource.includes('slice(0, maxGatewayQuotaSnapshotAuthorizationEntries)'), 'server 接收授权额度快照必须二次截断')
 }
 
+function assertAuthorizationQuotaInvalidationSourcesConnected(): void {
+  const dbServiceIpcSource = readFileSync(new URL('../../modules/db-service/db-service-ipc.ts', import.meta.url), 'utf8')
+  const dbServiceTypesSource = readFileSync(new URL('../../modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
+  const authorizationQuotaSource = readFileSync(new URL('../../modules/gateway/authorization-quota.service.ts', import.meta.url), 'utf8')
+  const cacheSource = readFileSync(new URL('../../modules/gateway/gateway-quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
+  assert(dbServiceTypesSource.includes("type: 'authorization_quota_cache_invalidate'"), 'DB service 子进程消息类型必须包含授权配额缓存失效')
+  assert(dbServiceIpcSource.includes('registerAuthorizationQuotaCacheInvalidator(notifyServerAuthorizationQuotaCacheInvalidated)'), 'DB service 必须把授权配额失效器注册到跨进程通知链路')
+  assert(dbServiceIpcSource.includes("sendDbServiceChildMessage({ type: 'authorization_quota_cache_invalidate' })"), 'DB service 角色必须把授权配额失效转发给 server')
+  assert(dbServiceIpcSource.includes('authorizationQuota.clearAuthorizationQuotaCache()'), 'server 收到授权配额失效后必须清空运行时授权配额缓存')
+  assert(dbServiceIpcSource.includes('invalidateGatewayAuthorizationQuotaSnapshot()'), 'server 收到授权配额失效后必须同步让授权配额快照失效')
+  assert(cacheSource.includes('authorizationSnapshotInvalidated'), '授权配额快照缓存必须有独立失效标记，避免误伤 API Key 成本快照')
+  assert(authorizationQuotaSource.includes('gatewayAuthorizationQuotaSnapshotVersion()'), '授权配额快照缓存版本必须参与 server 运行时缓存 key，避免复用旧决策')
+}
+
 function assertGatewayQuotaRequestPathUsesAsyncOnly(): void {
   const preflightSource = readFileSync(new URL('../../modules/gateway/openai-gateway-request-preflight.ts', import.meta.url), 'utf8')
   assert(!/\bcheckGatewayApiKeyQuota\b/.test(preflightSource), '网关请求预检禁止调用同步 API Key 额度读取')
@@ -258,6 +383,86 @@ function sourceFunctionBlock(source: string, marker: string): string {
   return source.slice(start, nextFunction === -1 ? undefined : nextFunction)
 }
 
+async function assertDbServiceAuthorizationQuotaInvalidationBridge(): Promise<void> {
+  clearGatewayQuotaSnapshot()
+  replaceGatewayQuotaSnapshot({
+    generatedAt: new Date().toISOString(),
+    costEntries: [{
+      systemAccountId: 'sys_passive_quota',
+      scopeType: 'api_key',
+      scopeId: 'key_auth_invalidation_bridge_cost_snapshot',
+      costs: {
+        hourly: 20,
+        daily: 20,
+        weekly: 20,
+        monthly: 20,
+        total: 20
+      }
+    }],
+    authorizationEntries: [
+      {
+        scopeType: 'group_authorization',
+        authorizationId: 'group_auth_invalidation_bridge',
+        decision: { allowed: true }
+      },
+      {
+        scopeType: 'account_authorization',
+        authorizationId: 'account_auth_invalidation_bridge',
+        decision: { allowed: true }
+      }
+    ],
+    costEntriesComplete: true,
+    authorizationEntriesComplete: true
+  })
+  const fakeChild = new FakeDbServiceChild()
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'server'
+    dbServiceIpc.attachDbServiceProcess(fakeChild as never)
+    fakeChild.emit('message', {
+      type: 'db_service_ready',
+      pid: fakeChild.pid,
+      httpHost: '127.0.0.1',
+      httpPort: 1
+    })
+    await runWithDbServiceParentMessageBridge(fakeChild, () => {
+      runtimeConfig.processRole = 'db-service'
+      notifyAuthorizationQuotaCacheInvalidation('gateway_quota_passive_snapshot_bridge_regression')
+    })
+    await delay(10)
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
+  const runtime = gatewayQuotaSnapshotRuntime()
+  assert.equal(runtime.authorizationEntryCount, 0, 'DB service 授权配额失效消息必须让 server 清空授权快照决策')
+  assert.equal(runtime.authorizationEntriesComplete, false, 'DB service 授权配额失效消息必须让 server 标记授权快照不完整')
+  assert.equal(runtime.costEntryCount, 1, 'DB service 授权配额失效消息不能清空 server API Key 成本快照')
+  assert.equal(runtime.costEntriesComplete, true, 'DB service 授权配额失效消息不能把 server API Key 成本快照误标为不完整')
+}
+
+async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceChild, operation: () => Promise<T> | T): Promise<T> {
+  const previousProcessRole = runtimeConfig.processRole
+  const previousSend = process.send
+  try {
+    ;(process as typeof process & { send?: (message: unknown) => boolean }).send = (message: unknown) => {
+      queueMicrotask(() => {
+        const parentProcessRole = runtimeConfig.processRole
+        runtimeConfig.processRole = 'server'
+        try {
+          fakeChild.emit('message', message)
+        } finally {
+          runtimeConfig.processRole = parentProcessRole
+        }
+      })
+      return true
+    }
+    return await operation()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+    ;(process as typeof process & { send?: (message: unknown) => boolean }).send = previousSend
+  }
+}
+
 function passiveAccount(id: string, accountAuthorizationId?: string, accountAuthorizationQuotaLimited?: boolean): OpenAIAccountSecret {
   return {
     id,
@@ -285,4 +490,8 @@ function passiveAccount(id: string, accountAuthorizationId?: string, accountAuth
       base_url: 'https://api.openai.com/v1'
     }
   } as OpenAIAccountSecret
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

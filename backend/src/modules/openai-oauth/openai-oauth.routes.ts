@@ -10,7 +10,7 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
-import { sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
+import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
 import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from '../accounts/account-stream-intercept-policy-validation.js'
 import {
   buildOpenAIOAuthCredentials,
@@ -262,7 +262,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       return
     }
     recordOperationLog(buildOAuthUpdateLog(account, updated, requestAccess, 'refresh_token', '刷新 OpenAI OAuth Token'), req)
-    res.json(ok(sanitizeAccountResponse(updated)))
+    res.json(ok(sanitizeAccountCredentialCarrierResponse(updated)))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) {
       return

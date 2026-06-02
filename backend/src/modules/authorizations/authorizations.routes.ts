@@ -33,6 +33,7 @@ const authorizationIdParamsSchema = z.object({
 const authorizationsQuerySchema = z.object({
   resourceType: z.enum(['account', 'group']).optional(),
   resourceId: z.string().trim().min(1, '授权资源 ID 不能为空').optional(),
+  resourceOwnerSystemAccountId: z.string().trim().min(1, '资源归属用户 ID 不能为空').optional(),
   granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
   status: z.enum(['active', 'paused', 'expired', 'revoked', 'returned', 'all']).optional(),
@@ -57,6 +58,7 @@ const authorizationUsageOverviewQuerySchema = z.object({
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
   resourceType: z.enum(['account', 'group']).optional(),
   resourceId: z.string().trim().min(1, '授权资源 ID 不能为空').optional(),
+  resourceOwnerSystemAccountId: z.string().trim().min(1, '资源归属用户 ID 不能为空').optional(),
   granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),

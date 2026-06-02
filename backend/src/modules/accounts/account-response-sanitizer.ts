@@ -30,6 +30,13 @@ export function sanitizeAccountResponse<T extends AccountSummary>(account: T): T
   } as T
 }
 
+export function sanitizeAccountCredentialCarrierResponse<T extends { credentials: Record<string, unknown> }>(value: T): T {
+  return {
+    ...value,
+    credentials: sanitizeAccountCredentialsForResponse(value.credentials)
+  }
+}
+
 export function sanitizeAccountListResponse<T extends { items: AccountSummary[] }>(result: T): T {
   return {
     ...result,

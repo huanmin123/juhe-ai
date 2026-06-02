@@ -53,13 +53,14 @@ const rangePresetSchema = z.enum(['today', 'last7d', 'last31d'])
 const unsupportedDateRangeSchema = z.undefined({
   invalid_type_error: '公开 IP 聚合接口暂不支持自定义日期范围'
 }).optional()
+const publicUsageKeywordSchema = z.string().trim().max(120, '关键词不能超过 120 个字符').optional()
 const ipUsageQuerySchema = z.object({
   range: rangePresetSchema.optional(),
   startDate: unsupportedDateRangeSchema,
   endDate: unsupportedDateRangeSchema,
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
-  keyword: z.string().trim().optional(),
+  keyword: publicUsageKeywordSchema,
   sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
   sortOrder: z.enum(['asc', 'desc']).optional()
 })
@@ -73,7 +74,7 @@ const accountUsageQuerySchema = z.object({
   }).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
-  keyword: z.string().trim().optional(),
+  keyword: publicUsageKeywordSchema,
   sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
   sortOrder: z.enum(['asc', 'desc']).optional()
 })

@@ -314,7 +314,8 @@ async function main(): Promise<void> {
     const userAMyAccountsWithQuery = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.userACookie)
     assertSameIds(userAMyAccounts, userAMyAccountsWithQuery, '用户 A 传 systemAccountId 后 my-accounts 结果发生变化')
     const userAOwnAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}`, seed.userACookie)
-    assert(userAOwnAccountDetail.credentials?.api_key === 'sk-scope-user-a', '用户 A 应能查看自有账户凭据详情')
+    assert(userAOwnAccountDetail.credentials?.base_url === 'https://api.openai.com/v1', '用户 A 应能打开自有账户详情并读取非敏感 Base URL')
+    assert(!Object.prototype.hasOwnProperty.call(userAOwnAccountDetail.credentials ?? {}, 'api_key'), '用户 A 自有账户详情不应返回明文 API Key')
     await assertJsonStatus(
       `${baseUrl}/__aisys__/api/my-accounts/import/preview`,
       seed.userACookie,
@@ -563,6 +564,12 @@ async function main(): Promise<void> {
     assert(adminAuthorization.permissions?.canEdit === true, '管理员统一授权管理应保留管理能力')
     const adminTeamAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&sourceType=team`, seed.adminCookie)).items
     assert(adminTeamAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '管理员统一授权团队来源筛选没有返回团队授权记录')
+    const adminUserBResourceOwnerAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/authorizations?status=all&resourceOwnerSystemAccountId=${seed.userBId}`, seed.adminCookie)).items
+    assert(adminUserBResourceOwnerAuthorizations.length >= 2, '管理员统一授权资源归属用户筛选应返回用户 B 授权记录')
+    assert(adminUserBResourceOwnerAuthorizations.every((authorization) => authorization.resourceOwnerSystemAccountId === seed.userBId), '管理员统一授权资源归属用户筛选不应混入其他所有者授权')
+    const adminUserAVisibleAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userAId}`, seed.adminCookie)).items
+    assert(adminUserAVisibleAuthorizations.some((authorization) => authorization.resourceOwnerSystemAccountId === seed.userBId), '管理员统一授权 systemAccountId 作用域应保留被授权给用户 A 的入站记录')
+    assert(adminUserAVisibleAuthorizations.some((authorization) => authorization.resourceOwnerSystemAccountId === seed.userAId), '管理员统一授权 systemAccountId 作用域应保留用户 A 自己授权出去的记录')
     const adminAuthorizationPage1 = await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
     assert(adminAuthorizationPage1.items.length === 1 && adminAuthorizationPage1.hasMore === true && adminAuthorizationPage1.total >= 2, '管理员统一授权分页异常')
     summary.push('授权方向作用域检查通过')
@@ -684,6 +691,13 @@ function seedData(): SeedState {
     granteeId: teamShared.id,
     remark: '用户 B 授权给共享团队的分组'
   }, userBAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: userATargetGroup.id,
+    granteeType: 'system_account',
+    granteeId: userC.id,
+    remark: '用户 A 授权给用户 C 的分组'
+  }, userAAccess)
   const userAOwnedGroup = repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
   assert(userAOwnedGroup, '用户 A 应存在可绑定的自有分组')
   let rejectedAuthorizedGroupApiKey = false

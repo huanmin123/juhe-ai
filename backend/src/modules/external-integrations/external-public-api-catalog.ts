@@ -154,6 +154,13 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             example: 20
           },
           {
+            name: 'keyword',
+            type: 'string',
+            required: false,
+            description: '按 IP 精确或前缀筛选，最多 120 个字符。',
+            example: '203.0.113.'
+          },
+          {
             name: 'sortField',
             type: 'string',
             required: false,
@@ -312,7 +319,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             name: 'keyword',
             type: 'string',
             required: false,
-            description: '按账号 ID、账号名称、供应商或账号类型做精确或前缀筛选。',
+            description: '按账号 ID、账号名称、供应商或账号类型做精确或前缀筛选，最多 120 个字符。',
             example: '公益站'
           },
           {

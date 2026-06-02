@@ -405,6 +405,9 @@ export type DbServiceChildMessage =
     type: 'gateway_runtime_cache_invalidate'
   }
   | {
+    type: 'authorization_quota_cache_invalidate'
+  }
+  | {
     type: 'client_ip_policy_cache_invalidate'
   }
   | {

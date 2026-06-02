@@ -7,7 +7,7 @@ import { chunkValues, sqlPlaceholders } from '../../storage/query-utils.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import { isGatewayAuthorizationSnapshotIncomplete, readGatewayAuthorizationQuotaSnapshot } from './gateway-quota-snapshot-cache.service.js'
+import { gatewayAuthorizationQuotaSnapshotVersion, isGatewayAuthorizationSnapshotIncomplete, readGatewayAuthorizationQuotaSnapshot } from './gateway-quota-snapshot-cache.service.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
 
 export const AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
@@ -470,7 +470,7 @@ function authorizationQuotaRuntimeCacheKey(groupAuthorizationId?: string, accoun
     scopeType: 'authorization_runtime',
     scopeId: '',
     now
-  })}`
+  })}\u0000${runtimeConfig.processRole === 'server' ? gatewayAuthorizationQuotaSnapshotVersion() : 0}`
 }
 
 function authorizationQuotaDecisionFromSnapshot(input: {

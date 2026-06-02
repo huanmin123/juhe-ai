@@ -33,6 +33,8 @@ export const maxGatewayQuotaSnapshotAuthorizationEntries = 5000
 let snapshotGeneratedAt: string | undefined
 let costSnapshotComplete = false
 let authorizationSnapshotComplete = false
+let authorizationSnapshotInvalidated = false
+let authorizationSnapshotVersion = 0
 const costSnapshot = new Map<string, RequestQuotaCosts>()
 const authorizationSnapshot = new Map<string, GatewayQuotaDecision>()
 
@@ -40,6 +42,8 @@ export function replaceGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): voi
   snapshotGeneratedAt = snapshot.generatedAt
   costSnapshotComplete = snapshot.costEntriesComplete ?? snapshot.costEntries.length < maxGatewayQuotaSnapshotCostEntries
   authorizationSnapshotComplete = snapshot.authorizationEntriesComplete ?? snapshot.authorizationEntries.length < maxGatewayQuotaSnapshotAuthorizationEntries
+  authorizationSnapshotInvalidated = false
+  authorizationSnapshotVersion += 1
   costSnapshot.clear()
   authorizationSnapshot.clear()
   for (const entry of snapshot.costEntries.slice(0, maxGatewayQuotaSnapshotCostEntries)) {
@@ -54,7 +58,16 @@ export function clearGatewayQuotaSnapshot(): void {
   snapshotGeneratedAt = undefined
   costSnapshotComplete = false
   authorizationSnapshotComplete = false
+  authorizationSnapshotInvalidated = false
+  authorizationSnapshotVersion += 1
   costSnapshot.clear()
+  authorizationSnapshot.clear()
+}
+
+export function invalidateGatewayAuthorizationQuotaSnapshot(): void {
+  authorizationSnapshotInvalidated = true
+  authorizationSnapshotComplete = false
+  authorizationSnapshotVersion += 1
   authorizationSnapshot.clear()
 }
 
@@ -98,7 +111,7 @@ export function isGatewayQuotaCostSnapshotComplete(): boolean {
 }
 
 export function isGatewayAuthorizationSnapshotComplete(): boolean {
-  return snapshotGeneratedAt !== undefined && authorizationSnapshotComplete
+  return snapshotGeneratedAt !== undefined && authorizationSnapshotComplete && !authorizationSnapshotInvalidated
 }
 
 export function isGatewayQuotaCostSnapshotIncomplete(): boolean {
@@ -106,7 +119,11 @@ export function isGatewayQuotaCostSnapshotIncomplete(): boolean {
 }
 
 export function isGatewayAuthorizationSnapshotIncomplete(): boolean {
-  return snapshotGeneratedAt !== undefined && !authorizationSnapshotComplete
+  return authorizationSnapshotInvalidated || (snapshotGeneratedAt !== undefined && !authorizationSnapshotComplete)
+}
+
+export function gatewayAuthorizationQuotaSnapshotVersion(): number {
+  return authorizationSnapshotVersion
 }
 
 function costSnapshotKey(input: {

@@ -160,10 +160,10 @@ flowchart LR
 | 分区 | 表 | 作用 |
 | --- | --- | --- |
 | 登录与权限 | `system_accounts`、`system_sessions` | 后台账号、角色、状态、密码哈希和登录会话 |
-| 设置 | `global_settings`、`system_settings` | 平台公开设置和系统账户级运行偏好 |
+| 设置 | `global_settings`、`system_settings` | 平台公开设置和全局系统运行策略单例 |
 | 供应商与资源 | `providers`、`accounts`、`proxy_profiles`、`error_policies` | 上游供应商、AI 账户、代理和账号错误策略 |
 | 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_accounts` | 系统团队、团队成员、授权操作、最终用户授权、授权来源、分组和分组账号绑定 |
-| 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和额度配置 |
+| 网关访问 | `api_keys`、`api_key_group_bindings` | 本地网关密钥、分组绑定、状态、过期和额度配置 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
 | 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs`、`audit_error_groups` | 审计事件、上游尝试、payload 引用、压缩 blob 元数据和重复错误聚合 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
@@ -186,7 +186,8 @@ erDiagram
   groups ||--o{ resource_authorizations : grants
   groups ||--o{ group_accounts : contains
   accounts ||--o{ group_accounts : joins
-  groups ||--o{ api_keys : binds
+  api_keys ||--o{ api_key_group_bindings : binds
+  groups ||--o{ api_key_group_bindings : selected
   api_keys ||--o{ usage_records : calls
   accounts ||--o{ usage_records : hits
   groups ||--o{ usage_records : scopes
@@ -194,7 +195,8 @@ erDiagram
 
 - `system_account_id` 是业务数据隔离主线；普通用户只访问自己拥有或被授权使用的资源。
 - `providers.code` 是供应商稳定标识；`accounts.provider_code` 和 `groups.provider_code` 以它作为逻辑归属。
-- `groups` 是 API Key 的授权边界；`group_accounts` 保存分组与账号的多对多关系。
+- `system_settings` 当前按固定系统设置账户 ID 保存全局运行策略单例，不表达每个系统账户的个人偏好。
+- `groups` 是 API Key 的授权边界；`api_key_group_bindings` 保存 API Key 与分组的绑定和优先级，`group_accounts` 保存分组与账号的多对多关系。
 - `resource_authorizations` 统一记录账户 / 分组授权给系统账户 / 团队的使用权，不授予管理权，也不泄露凭据。
 - `usage_records` 冗余账号所有者、分组所有者、统一授权 ID、授权对象类型和访问类型，便于真实资源总量、授权消耗统计和历史追溯。
 
