@@ -502,8 +502,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               boundGroupName: '福利',
               schedulable: true,
               concurrencyLimit: 20,
-              priority: 0,
-              externalId: 'account-registration:12'
+              priority: 0
             }]
           }
         }
@@ -592,8 +591,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           contentType: 'application/json',
           fields: [
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
-            { name: 'groupId', type: 'string', required: false, description: '分组 ID；与 name 至少提供一个。', example: 'grp_xxx' },
-            { name: 'name', type: 'string', required: false, description: '分组名称；与 groupId 至少提供一个。', example: '福利' }
+            { name: 'groupId', type: 'string', required: true, description: '分组新增或列表响应返回的分组 ID。', example: 'grp_xxx' }
           ],
           example: {
             targetUsername: 'huanmin',
@@ -720,8 +718,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           contentType: 'application/json',
           fields: [
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
-            { name: 'apiKeyId', type: 'string', required: false, description: 'API Key ID；与 name 至少提供一个。', example: 'key_xxx' },
-            { name: 'name', type: 'string', required: false, description: 'API Key 名称；与 apiKeyId 至少提供一个。' }
+            { name: 'apiKeyId', type: 'string', required: true, description: 'API Key 新增或列表响应返回的 API Key ID。', example: 'key_xxx' }
           ],
           example: {
             targetUsername: 'huanmin',
@@ -748,7 +745,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'account-add',
         name: '账号新增',
-        summary: '新增 API Key 类型账号到指定系统用户和分组；目标用户或分组不存在时自动创建，目标用户已停用时拒绝写入，重复账号会返回冲突。',
+        summary: '新增 API Key 类型账号到指定系统用户和分组；目标用户或分组不存在时自动创建，目标用户已停用时拒绝写入，重复账号会返回冲突。新增响应返回本系统账号 ID，外部来源系统应自行保存该 ID 用于后续修改或删除。',
         status: 'available',
         method: 'POST',
         path: '/__aipublic__/account/add',
@@ -827,13 +824,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               example: 'active'
             },
             {
-              name: 'externalId',
-              type: 'string',
-              required: false,
-              description: '公益站登记 ID；用于后续修改或删除时精确定位原账号。',
-              example: 'account-registration:12'
-            },
-            {
               name: 'availabilitySchedule',
               type: 'object|null',
               required: false,
@@ -855,8 +845,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               enabled: true,
               mode: 'allow_windows',
               windows: [{ daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }]
-            },
-            externalId: 'account-registration:12'
+            }
           }
         },
         responseExample: {
@@ -884,15 +873,14 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               boundGroupName: '福利',
               schedulable: true,
               availabilitySchedule: { enabled: true, mode: 'allow_windows' }
-            },
-            externalId: 'account-registration:12'
+            }
           }
         }
       },
       {
         id: 'account-update',
         name: '账号修改',
-        summary: '按同一 externalId 或账号名称修改指定系统用户和分组内的既有账号；找不到时返回 404，响应不回显上游凭据。',
+        summary: '按账号新增或列表响应返回的本系统账号 ID 修改指定系统用户和分组内的既有账号；找不到时返回 404，响应不回显上游凭据。',
         status: 'available',
         method: 'POST',
         path: '/__aipublic__/account/update',
@@ -904,25 +892,25 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
             { name: 'targetGroupName', type: 'string', required: true, description: '目标账号分组名称。', example: '福利' },
             { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: 'openai' },
+            { name: 'accountId', type: 'string', required: true, description: '账号新增或列表响应返回的账号 ID。', example: 'acc_xxx' },
             { name: 'name', type: 'string', required: true, description: '账号名称。', example: '公益站-青芽主通道' },
             { name: 'type', type: 'string', required: true, description: '账号类型；当前公开修改只支持 api_key。', example: 'api_key' },
             { name: 'baseUrl', type: 'string', required: true, description: 'OpenAI 兼容 Base URL。', example: 'https://api.openai.com/v1' },
             { name: 'apiKey', type: 'string', required: true, description: '上游 API Key；响应不会回显。', example: 'sk-...' },
             { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled。', example: 'disabled' },
-            { name: 'externalId', type: 'string', required: false, description: '外部登记 ID；建议持续传同一个值。', example: 'account-registration:12' },
             { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示保留。' }
           ],
           example: {
             targetUsername: 'huanmin',
             targetGroupName: '福利',
             providerCode: 'openai',
+            accountId: 'acc_xxx',
             name: '公益站-青芽主通道',
             type: 'api_key',
             baseUrl: 'https://api.openai.com/v1',
             apiKey: 'sk-...',
             status: 'disabled',
-            availabilitySchedule: null,
-            externalId: 'account-registration:12'
+            availabilitySchedule: null
           }
         },
         responseExample: {
@@ -948,15 +936,14 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               boundGroupId: 'grp_xxx',
               boundGroupName: '福利',
               schedulable: false
-            },
-            externalId: 'account-registration:12'
+            }
           }
         }
       },
       {
         id: 'account-delete',
         name: '账号删除',
-        summary: '删除指定目标用户和分组内的账号；接口按 externalId、账号 ID 或名称定位，目标用户已停用时拒绝删除，找不到时幂等返回 not_found。',
+        summary: '按账号新增或列表响应返回的本系统账号 ID 删除指定目标用户和分组内的账号；目标用户已停用时拒绝删除，找不到时幂等返回 not_found。',
         status: 'available',
         method: 'POST',
         path: '/__aipublic__/account/del',
@@ -989,32 +976,16 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             {
               name: 'accountId',
               type: 'string',
-              required: false,
-              description: '账号新增响应返回的账号 ID；与 externalId、name 至少提供一个。',
+              required: true,
+              description: '账号新增或列表响应返回的账号 ID。',
               example: 'acc_xxx'
-            },
-            {
-              name: 'name',
-              type: 'string',
-              required: false,
-              description: '账号名称；与 accountId、externalId 至少提供一个。',
-              example: '公益站-青芽主通道'
-            },
-            {
-              name: 'externalId',
-              type: 'string',
-              required: false,
-              description: '公益站登记 ID；优先按该结构化映射定位原账号。',
-              example: 'account-registration:12'
             }
           ],
           example: {
             targetUsername: 'huanmin',
             targetGroupName: '福利',
             providerCode: 'openai',
-            accountId: 'acc_xxx',
-            name: '公益站-青芽主通道',
-            externalId: 'account-registration:12'
+            accountId: 'acc_xxx'
           }
         },
         responseExample: {
@@ -1040,8 +1011,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               boundGroupId: 'grp_xxx',
               boundGroupName: '福利',
               schedulable: true
-            },
-            externalId: 'account-registration:12'
+            }
           }
         }
       }

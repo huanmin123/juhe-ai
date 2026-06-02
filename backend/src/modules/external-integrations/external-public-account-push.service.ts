@@ -23,7 +23,7 @@ import {
   updateApiKey,
   updateGroup
 } from '../../storage/repositories.js'
-import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from '../../storage/database.js'
+import { getBusinessDatabase, runInDatabaseTransaction } from '../../storage/database.js'
 import { submitAccountRelatedCleanup } from '../accounts/account-cleanup.service.js'
 import { submitApiKeyRelatedCleanup } from '../api-keys/api-key-cleanup.service.js'
 
@@ -42,7 +42,10 @@ export interface PublicAccountPushInput {
   priority?: number
   availabilitySchedule?: Record<string, unknown> | null
   notes?: string
-  externalId?: string
+}
+
+export interface PublicAccountUpdateInput extends PublicAccountPushInput {
+  accountId: string
 }
 
 export interface PublicAccountPushResponse {
@@ -70,16 +73,13 @@ export interface PublicAccountPushResponse {
     schedulable: boolean
     availabilitySchedule?: AccountSummary['availabilitySchedule']
   }
-  externalId?: string
 }
 
 export interface PublicAccountDeleteInput {
   targetUsername: string
   targetGroupName: string
   providerCode: string
-  accountId?: string
-  name?: string
-  externalId?: string
+  accountId: string
 }
 
 export interface PublicAccountDeleteResponse {
@@ -88,7 +88,6 @@ export interface PublicAccountDeleteResponse {
   action: 'deleted' | 'not_found' | 'mock'
   target: PublicAccountPushResponse['target']
   account: PublicAccountPushResponse['account'] | null
-  externalId?: string
 }
 
 export interface PublicAccountListInput {
@@ -107,7 +106,6 @@ export interface PublicAccountListInput {
 export type PublicAccountListItem = PublicAccountPushResponse['account'] & {
   concurrencyLimit: number
   priority: number
-  externalId?: string
 }
 
 export interface PublicAccountListResponse {
@@ -133,7 +131,7 @@ export interface PublicGroupAddInput {
 
 export interface PublicGroupUpdateInput {
   targetUsername: string
-  groupId?: string
+  groupId: string
   name?: string
   providerCode?: string
   description?: string | null
@@ -143,9 +141,7 @@ export interface PublicGroupUpdateInput {
 
 export interface PublicGroupDeleteInput {
   targetUsername: string
-  groupId?: string
-  name?: string
-  providerCode?: string
+  groupId: string
 }
 
 export interface PublicGroupResponse {
@@ -189,7 +185,7 @@ export interface PublicApiKeyAddInput {
 
 export interface PublicApiKeyUpdateInput {
   targetUsername: string
-  apiKeyId?: string
+  apiKeyId: string
   name?: string
   description?: string | null
   groupBindings?: Array<{ groupId: string; priority?: number; weight?: number; status?: 'active' | 'disabled' }>
@@ -202,8 +198,7 @@ export interface PublicApiKeyUpdateInput {
 
 export interface PublicApiKeyDeleteInput {
   targetUsername: string
-  apiKeyId?: string
-  name?: string
+  apiKeyId: string
 }
 
 export interface PublicApiKeyResponse {
@@ -277,11 +272,11 @@ export async function addPublicWelfareAccount(input: PublicAccountPushInput): Pr
   return writePublicWelfareAccount(input, 'create', await autoCreatedTargetPasswordHash())
 }
 
-export function updatePublicWelfareAccount(input: PublicAccountPushInput): PublicAccountPushResponse {
+export function updatePublicWelfareAccount(input: PublicAccountUpdateInput): PublicAccountPushResponse {
   return writePublicWelfareAccount(input, 'update')
 }
 
-function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAccountWriteMode, targetPasswordHash?: string): PublicAccountPushResponse {
+function writePublicWelfareAccount(input: PublicAccountPushInput | PublicAccountUpdateInput, mode: PublicAccountWriteMode, targetPasswordHash?: string): PublicAccountPushResponse {
   const providerCode = requiredProviderCode(input.providerCode)
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
@@ -303,17 +298,19 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAc
     const targetGroup = mode === 'update'
       ? requireExistingTargetGroup({ access, providerCode, groupName: input.targetGroupName })
       : ensureTargetGroup({ access, providerCode, groupName: input.targetGroupName })
-    const existing = findTargetAccountByExternalId({
-      access,
-      providerCode,
-      groupId: targetGroup.group.id,
-      externalId: input.externalId
-    }) ?? findTargetAccount({
-      access,
-      providerCode,
-      groupId: targetGroup.group.id,
-      name: input.name
-    })
+    const existing = mode === 'update'
+      ? findTargetAccountById({
+        access,
+        providerCode,
+        groupId: targetGroup.group.id,
+        accountId: (input as PublicAccountUpdateInput).accountId
+      })
+      : findTargetAccount({
+        access,
+        providerCode,
+        groupId: targetGroup.group.id,
+        name: input.name
+      })
     if (mode === 'create' && existing) {
       throw new Error(`账号已存在：${existing.name}`)
     }
@@ -326,13 +323,6 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAc
     const account = existing
       ? updateAccount(existing.id, accountInput, access) ?? existing
       : createAccount(accountInput, access)
-    upsertExternalAccountPushRecord({
-      systemAccountId: target.account.id,
-      providerCode,
-      groupId: targetGroup.group.id,
-      externalId: input.externalId,
-      accountId: account.id
-    })
 
     return {
       source: 'stats',
@@ -347,8 +337,7 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, mode: PublicAc
         groupName: targetGroup.group.name,
         groupCreated: targetGroup.created
       },
-      account: sanitizeAccount(account),
-      externalId: normalizedText(input.externalId)
+      account: sanitizeAccount(account)
     }
   }, getBusinessDatabase())
 }
@@ -369,16 +358,14 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
     throw new Error('目标分组不能为空')
   }
   const accountId = normalizedText(input.accountId)
-  const name = normalizedText(input.name)
-  const externalId = normalizedText(input.externalId)
-  if (!accountId && !name && !externalId) {
-    throw new Error('删除账号时必须提供 accountId、name 或 externalId')
+  if (!accountId) {
+    throw new Error('删除账号时必须提供 accountId')
   }
 
   const fallbackTarget = targetFromInput(username, groupName)
   const targetAccount = findSystemAccountByUsername(username)
   if (!targetAccount) {
-    return notFoundAccountDeleteResponse(input, fallbackTarget)
+    return notFoundAccountDeleteResponse(fallbackTarget)
   }
   assertTargetActive(targetAccount)
 
@@ -398,30 +385,18 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
     groupCreated: false
   }
   if (!targetGroup) {
-    return notFoundAccountDeleteResponse(input, resolvedTarget)
+    return notFoundAccountDeleteResponse(resolvedTarget)
   }
 
-  const account = findTargetAccountByExternalId({
-    access,
-    providerCode,
-    groupId: targetGroup.id,
-    externalId
-  }) ?? findTargetAccountById({
+  const account = findTargetAccountById({
     access,
     providerCode,
     groupId: targetGroup.id,
     accountId
-  }) ?? (name
-    ? findTargetAccount({
-      access,
-      providerCode,
-      groupId: targetGroup.id,
-      name
-    })
-    : undefined)
+  })
 
   if (!account) {
-    return notFoundAccountDeleteResponse(input, resolvedTarget)
+    return notFoundAccountDeleteResponse(resolvedTarget)
   }
 
   const deletedAccount = sanitizeAccount(account)
@@ -438,8 +413,7 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
     generatedAt: new Date().toISOString(),
     action: 'deleted',
     target: resolvedTarget,
-    account: deletedAccount,
-    externalId
+    account: deletedAccount
   }
 }
 
@@ -463,7 +437,6 @@ export function listPublicWelfareAccounts(input: PublicAccountListInput): Public
     status: normalizedText(input.status),
     schedulable: input.schedulable
   })
-  const externalIdsByAccountId = loadExternalIdsByAccountIds(target.account.id, page.items.map((item) => item.id))
   return publicAccountListResponse(target, {
     page: page.page,
     pageSize: page.pageSize,
@@ -472,8 +445,7 @@ export function listPublicWelfareAccounts(input: PublicAccountListInput): Public
     items: page.items.map((account) => ({
       ...sanitizeAccount(account),
       concurrencyLimit: account.concurrencyLimit,
-      priority: account.priority,
-      externalId: externalIdsByAccountId.get(account.id)
+      priority: account.priority
     }))
   })
 }
@@ -654,8 +626,7 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput): Pub
       boundGroupId: 'mock_group_welfare',
       boundGroupName: groupName,
       schedulable: input.status !== 'disabled'
-    },
-    externalId: normalizedText(input.externalId)
+    }
   }
 }
 
@@ -688,8 +659,7 @@ export function mockPublicWelfareAccountList(input: PublicAccountListInput): Pub
         boundGroupName: groupName,
         schedulable: true,
         concurrencyLimit: 20,
-        priority: 0,
-        externalId: 'account-registration:mock'
+        priority: 0
       }
     ]
   }
@@ -716,15 +686,14 @@ export function mockPublicWelfareAccountDelete(input: PublicAccountDeleteInput):
     },
     account: {
       id: accountId,
-      name: normalizedText(input.name) || accountId,
+      name: accountId,
       providerCode,
       type: 'api_key',
       status: 'disabled',
       boundGroupId: 'mock_group_welfare',
       boundGroupName: groupName,
       schedulable: false
-    },
-    externalId: normalizedText(input.externalId)
+    }
   }
 }
 
@@ -755,8 +724,8 @@ export function mockPublicGroupUpdate(input: PublicGroupUpdateInput): PublicGrou
 export function mockPublicGroupDelete(input: PublicGroupDeleteInput): PublicGroupResponse {
   return publicMockGroupResponse('mock', input.targetUsername, {
     id: normalizedText(input.groupId) || 'mock_group_public',
-    name: normalizedText(input.name) || '公开接口分组',
-    providerCode: normalizedText(input.providerCode) ?? '',
+    name: '公开接口分组',
+    providerCode: 'mock_provider',
     enabled: true,
     groupType: 'personal',
     isDefault: false
@@ -849,7 +818,7 @@ export function mockPublicApiKeyUpdate(input: PublicApiKeyUpdateInput): PublicAp
 export function mockPublicApiKeyDelete(input: PublicApiKeyDeleteInput): PublicApiKeyResponse {
   return publicMockApiKeyResponse('mock', input.targetUsername, {
     id: normalizedText(input.apiKeyId) || 'mock_api_key_public',
-    name: normalizedText(input.name) || '公开接口 API Key',
+    name: '公开接口 API Key',
     keyPrefix: 'juis_mock',
     status: 'disabled',
     groupRouteStrategy: 'priority_failover',
@@ -1099,17 +1068,12 @@ function publicGroupUpdatePayload(input: PublicGroupUpdateInput): Record<string,
   return payload
 }
 
-function resolvePublicApiKey(access: TargetAccess, input: { apiKeyId?: string; name?: string }): ApiKeySummary | undefined {
+function resolvePublicApiKey(access: TargetAccess, input: { apiKeyId?: string }): ApiKeySummary | undefined {
   const apiKeyId = normalizedText(input.apiKeyId)
   if (apiKeyId) {
     return findApiKeySummary(apiKeyId, access)
   }
-  const name = normalizedText(input.name)
-  if (!name) {
-    return undefined
-  }
-  return listApiKeysPage(access, { keyword: name, page: 1, pageSize: 20 }).items
-    .find((item) => sameText(item.name, name))
+  return undefined
 }
 
 function ensureTargetSystemAccount(input: { targetUsername: string; targetDisplayName?: string }, passwordHash?: string): ResolvedTarget {
@@ -1211,38 +1175,6 @@ function findExistingTargetGroup(input: {
   return existing ? findGroupSummary(existing.id, input.access) : undefined
 }
 
-function findTargetAccountByExternalId(input: {
-  access: TargetAccess
-  providerCode: string
-  groupId: string
-  externalId?: string
-}): AccountSummary | undefined {
-  const externalId = normalizedText(input.externalId)
-  if (!externalId) {
-    return undefined
-  }
-  const row = getBusinessDatabase().prepare(`
-    SELECT push_records.account_id AS id
-    FROM external_integration_account_push_records push_records
-    INNER JOIN accounts ON accounts.id = push_records.account_id
-    INNER JOIN group_accounts ON group_accounts.account_id = accounts.id
-      AND group_accounts.group_id = push_records.group_id
-    WHERE push_records.system_account_id = ?
-      AND push_records.provider_code = ?
-      AND push_records.group_id = ?
-      AND push_records.external_id = ?
-      AND accounts.system_account_id = push_records.system_account_id
-      AND accounts.provider_code = push_records.provider_code
-    LIMIT 1
-  `).get(
-    input.access.systemAccountId,
-    input.providerCode,
-    input.groupId,
-    externalId
-  ) as { id?: string } | undefined
-  return row?.id ? findAccountSummary(row.id, input.access) : undefined
-}
-
 function findTargetAccountById(input: {
   access: TargetAccess
   providerCode: string
@@ -1269,56 +1201,6 @@ function findTargetAccountById(input: {
     input.groupId
   ) as { id?: string } | undefined
   return row?.id ? findAccountSummary(row.id, input.access) : undefined
-}
-
-function loadExternalIdsByAccountIds(systemAccountId: string, accountIds: string[]): Map<string, string> {
-  const ids = [...new Set(accountIds.filter(Boolean))]
-  const result = new Map<string, string>()
-  if (!ids.length) {
-    return result
-  }
-  const placeholders = ids.map(() => '?').join(',')
-  const rows = getBusinessDatabase().prepare(`
-    SELECT account_id, external_id
-    FROM external_integration_account_push_records
-    WHERE system_account_id = ?
-      AND account_id IN (${placeholders})
-    ORDER BY updated_at DESC, id DESC
-  `).all(systemAccountId, ...ids) as Array<{ account_id: string; external_id: string }>
-  for (const row of rows) {
-    if (!result.has(row.account_id)) {
-      result.set(row.account_id, row.external_id)
-    }
-  }
-  return result
-}
-
-function upsertExternalAccountPushRecord(input: {
-  systemAccountId: string
-  providerCode: string
-  groupId: string
-  externalId?: string
-  accountId: string
-}): void {
-  const externalId = normalizedText(input.externalId)
-  if (!externalId) return
-  const now = nowIso()
-  getBusinessDatabase().prepare(`
-    INSERT INTO external_integration_account_push_records (
-      id, system_account_id, provider_code, group_id, external_id, account_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(system_account_id, provider_code, group_id, external_id)
-    DO UPDATE SET account_id = excluded.account_id, updated_at = excluded.updated_at
-  `).run(
-    newId('eapush'),
-    input.systemAccountId,
-    input.providerCode,
-    input.groupId,
-    externalId,
-    input.accountId,
-    now,
-    now
-  )
 }
 
 function findTargetAccount(input: {
@@ -1352,17 +1234,13 @@ function targetFromInput(username: string, groupName: string): PublicAccountDele
   }
 }
 
-function notFoundAccountDeleteResponse(
-  input: PublicAccountDeleteInput,
-  target: PublicAccountDeleteResponse['target']
-): PublicAccountDeleteResponse {
+function notFoundAccountDeleteResponse(target: PublicAccountDeleteResponse['target']): PublicAccountDeleteResponse {
   return {
     source: 'stats',
     generatedAt: new Date().toISOString(),
     action: 'not_found',
     target,
-    account: null,
-    externalId: normalizedText(input.externalId)
+    account: null
   }
 }
 
@@ -1475,11 +1353,7 @@ function sanitizeApiKey(apiKey: ApiKeySummary & { key?: string }, options: { inc
 }
 
 function pushNotes(input: PublicAccountPushInput): string | undefined {
-  const parts = [
-    normalizedText(input.notes),
-    normalizedText(input.externalId) ? `externalId=${normalizedText(input.externalId)}` : undefined
-  ].filter((item): item is string => Boolean(item))
-  return parts.length ? parts.join('\n') : undefined
+  return normalizedText(input.notes)
 }
 
 function normalizedText(value: unknown): string | undefined {

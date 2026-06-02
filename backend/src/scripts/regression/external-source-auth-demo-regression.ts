@@ -131,7 +131,6 @@ async function runChild(): Promise<void> {
     status: 'active',
     scopes: [externalIntegrationAccountPushScope],
     allowedTargetUsernames: [
-      'external_id_collision_user',
       'huanmin',
       'illegal_type_user',
       'invalid_model_user',
@@ -337,9 +336,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'openai',
-      accountId: 'acc_mock_delete',
-      name: '公益站测试账号',
-      externalId: 'account-registration:mock-delete'
+      accountId: 'acc_mock_delete'
     })
     assert.equal(mockAccountDelete.status, 200)
     assert.equal(mockAccountDelete.body.data.source, 'mock')
@@ -397,52 +394,20 @@ async function runChild(): Promise<void> {
       .get() as { total?: number } | undefined
     assert.equal(Number(invalidModelGroupResidue?.total ?? 0), 0, '账号创建失败后不应残留自动创建的目标分组')
 
-    const businessDatabaseForAccountWrite = getBusinessDatabase()
-    const originalAccountWritePrepare = businessDatabaseForAccountWrite.prepare.bind(businessDatabaseForAccountWrite) as typeof businessDatabaseForAccountWrite.prepare
-    const accountNotesLookupSqls: string[] = []
-    businessDatabaseForAccountWrite.prepare = ((sql: string) => {
-      if (/\baccounts\.notes\s+LIKE\s+\?/i.test(sql)) {
-        accountNotesLookupSqls.push(sql)
-      }
-      return originalAccountWritePrepare(sql)
-    }) as typeof businessDatabaseForAccountWrite.prepare
-    try {
-      const longExternalId = 'account-registration:10012'
-      const shortExternalId = 'account-registration:1001'
-      const longExternalIdAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
-        Authorization: `Bearer ${accountWriteToken}`
-      }, 'POST', {
-        targetUsername: 'external_id_collision_user',
-        targetGroupName: '外部 ID 碰撞分组',
-        providerCode: 'openai',
-        name: '外部 ID 长前缀账号',
-        type: 'api_key',
-        baseUrl: 'https://push.example/v1',
-        apiKey: 'sk-public-push-regression-long-external-id',
-        supportedModels: ['gpt-5.5'],
-        externalId: longExternalId
-      })
-      assert.equal(longExternalIdAdd.status, 201)
-
-      const shortExternalIdAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
-        Authorization: `Bearer ${accountWriteToken}`
-      }, 'POST', {
-        targetUsername: 'external_id_collision_user',
-        targetGroupName: '外部 ID 碰撞分组',
-        providerCode: 'openai',
-        name: '外部 ID 短前缀账号',
-        type: 'api_key',
-        baseUrl: 'https://push.example/v1',
-        apiKey: 'sk-public-push-regression-short-external-id',
-        supportedModels: ['gpt-5.5'],
-        externalId: shortExternalId
-      })
-      assert.equal(shortExternalIdAdd.status, 201, '前缀相同但不完全相同的 externalId 不应更新已有账号')
-      assert.notEqual(shortExternalIdAdd.body.data.account.id, longExternalIdAdd.body.data.account.id, '不同 externalId 应绑定到不同账号')
-    } finally {
-      businessDatabaseForAccountWrite.prepare = originalAccountWritePrepare
-    }
-    assert.equal(accountNotesLookupSqls.length, 0, '账号新增 externalId 幂等匹配不应扫描 accounts.notes 长文本')
+    const legacyExternalIdAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'openai',
+      name: '旧外部登记字段账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-legacy-external-id',
+      supportedModels: ['gpt-5.5'],
+      externalId: 'account-registration:legacy'
+    })
+    assert.equal(legacyExternalIdAdd.status, 400, '公开账号新增不应再接收 externalId')
 
     const accountAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -463,8 +428,7 @@ async function runChild(): Promise<void> {
         windows: [
           { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
         ]
-      },
-      externalId: 'account-registration:1001'
+      }
     })
     assert.equal(accountAdd.status, 201, `公开账号新增应成功，实际响应：${JSON.stringify(accountAdd.body)}`)
     assert.equal(accountAdd.body.data.source, 'stats')
@@ -507,7 +471,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountList.body.data.source, 'stats')
     const listedAccount = accountList.body.data.items.find((item: any) => item.id === accountAdd.body.data.account.id)
     assert(listedAccount, '公开账号列表应能按目标用户和分组返回刚新增的账号')
-    assert.equal(listedAccount.externalId, 'account-registration:1001', '公开账号列表应返回结构化 externalId 便于外部系统对账')
+    assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'externalId'), false, '公开账号列表不应回显外部来源系统业务 ID')
     assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'credentials'), false, '公开账号列表不能返回上游凭据')
 
     const accountUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
@@ -516,13 +480,13 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'openai',
+      accountId: accountAdd.body.data.account.id,
       name: '公益站测试账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
       apiKey: 'sk-public-push-regression-001',
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
-      status: 'disabled',
-      externalId: 'account-registration:1001'
+      status: 'disabled'
     })
     assert.equal(accountUpdate.status, 200)
     assert.equal(accountUpdate.body.data.action, 'updated')
@@ -536,14 +500,14 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'openai',
+      accountId: accountAdd.body.data.account.id,
       name: '公益站测试账号新版',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
       apiKey: 'sk-public-push-regression-001',
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
       status: 'active',
-      availabilitySchedule: null,
-      externalId: 'account-registration:1001'
+      availabilitySchedule: null
     })
     assert.equal(accountRename.status, 200)
     assert.equal(accountRename.body.data.action, 'updated')
@@ -553,7 +517,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountRename.body.data.account.availabilitySchedule, undefined, '公开账号修改应支持 availabilitySchedule: null 清空计划')
     const renamedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号新版', providerCode: 'openai', groupId: welfareGroup.id })
       .find((item) => item.name === '公益站测试账号新版')
-    assert.equal(renamedAccount?.id, addedAccount.id, '同一 externalId 的账号改名应更新原账号，不能因凭据重复创建失败')
+    assert.equal(renamedAccount?.id, addedAccount.id, '按 accountId 修改账号时应更新原账号，不能因名称变化创建新账号')
 
     const missingAccountUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -561,12 +525,12 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'openai',
+      accountId: 'acc_public_missing_update',
       name: '不存在的账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
       apiKey: 'sk-public-push-regression-missing-update',
-      status: 'active',
-      externalId: 'account-registration:not-found'
+      status: 'active'
     })
     assert.equal(missingAccountUpdate.status, 404, '账号修改接口找不到账号时不应自动新增')
 
@@ -577,9 +541,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'openai',
-      accountId: accountAdd.body.data.account.id,
-      name: '公益站测试账号新版',
-      externalId: 'account-registration:1001'
+      accountId: accountAdd.body.data.account.id
     })
     assert.equal(disabledTargetAccountDelete.status, 400, '目标用户停用后公开账号删除应被拒绝')
     assert.match(disabledTargetAccountDelete.body.message, /目标用户已停用/)
@@ -591,9 +553,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'openai',
-      accountId: accountAdd.body.data.account.id,
-      name: '公益站测试账号新版',
-      externalId: 'account-registration:1001'
+      accountId: accountAdd.body.data.account.id
     })
     assert.equal(accountDelete.status, 200)
     assert.equal(accountDelete.body.data.source, 'stats')
@@ -616,8 +576,7 @@ async function runChild(): Promise<void> {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
       providerCode: 'openai',
-      accountId: accountAdd.body.data.account.id,
-      externalId: 'account-registration:1001'
+      accountId: accountAdd.body.data.account.id
     })
     assert.equal(accountDeleteAgain.status, 200)
     assert.equal(accountDeleteAgain.body.data.action, 'not_found', '重复删除应幂等成功，便于公益站删除本地记录')

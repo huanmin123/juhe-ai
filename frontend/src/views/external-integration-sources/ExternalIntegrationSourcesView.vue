@@ -124,7 +124,13 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="apiDocsOpen" title="公开接口接入文档" width="1080px" :footer="null">
+    <a-modal
+      v-model:open="apiDocsOpen"
+      title="公开接口接入文档"
+      width="calc(100vw - 60px)"
+      wrap-class-name="api-doc-modal-wrap"
+      :footer="null"
+    >
       <a-spin :spinning="apiDocsLoading">
         <div v-if="apiCatalog" class="api-doc-layout">
           <aside class="api-doc-sidebar">
@@ -1176,15 +1182,30 @@ function scopeLabel(scope: string): string {
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 }
 
+:global(.api-doc-modal-wrap .ant-modal) {
+  top: 30px;
+  width: calc(100vw - 60px) !important;
+  max-width: calc(100vw - 60px) !important;
+  padding-bottom: 30px;
+}
+
+:global(.api-doc-modal-wrap .ant-modal-body) {
+  max-height: none;
+  overflow: hidden;
+  padding: 16px 24px 24px;
+}
+
 .api-doc-layout {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 16px;
-  min-height: 620px;
+  height: calc(100vh - 156px);
+  min-height: 0;
 }
 
 .api-doc-sidebar {
   display: flex;
+  min-height: 0;
   min-width: 0;
   flex-direction: column;
   gap: 12px;
@@ -1264,6 +1285,7 @@ function scopeLabel(scope: string): string {
 }
 
 .api-doc-detail {
+  min-height: 0;
   min-width: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -1348,13 +1370,21 @@ function scopeLabel(scope: string): string {
 @media (max-width: 720px) {
   .api-doc-layout {
     grid-template-columns: 1fr;
+    height: auto;
+    max-height: calc(100vh - 156px);
+    overflow-y: auto;
   }
 
   .api-doc-sidebar {
+    max-height: 380px;
     border-right: 0;
     border-bottom: 1px solid #edf1f7;
     padding-right: 0;
     padding-bottom: 12px;
+  }
+
+  .api-doc-detail {
+    overflow: visible;
   }
 
   .api-doc-detail-head {

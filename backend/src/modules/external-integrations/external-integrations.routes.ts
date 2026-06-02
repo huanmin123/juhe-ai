@@ -103,24 +103,17 @@ const accountPushSchema = z.object({
   concurrencyLimit: z.number().int().min(1).max(100000).optional(),
   priority: z.number().int().min(0).max(100000).optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
-  notes: z.string().trim().max(1000).optional(),
-  externalId: z.string().trim().max(200).optional()
+  notes: z.string().trim().max(1000).optional()
+}).strict()
+const accountUpdateSchema = accountPushSchema.extend({
+  accountId: z.string().trim().min(1).max(120)
 }).strict()
 const accountDeleteSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetGroupName: z.string().trim().min(1).max(80),
   providerCode: providerCodeSchema,
-  accountId: z.string().trim().min(1).max(120).optional(),
-  name: z.string().trim().min(1).max(120).optional(),
-  externalId: z.string().trim().min(1).max(200).optional()
-}).strict().superRefine((value, context) => {
-  if (!value.accountId && !value.name && !value.externalId) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: '删除账号时必须提供 accountId、name 或 externalId'
-    })
-  }
-})
+  accountId: z.string().trim().min(1).max(120)
+}).strict()
 const accountListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetGroupName: z.string().trim().min(1).max(80).optional(),
@@ -153,23 +146,8 @@ const groupUpdateSchema = z.object({
 }).strict()
 const groupDeleteSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
-  groupId: z.string().trim().min(1).max(120).optional(),
-  name: z.string().trim().min(1).max(80).optional(),
-  providerCode: z.string().trim().min(1).max(60).optional()
-}).strict().superRefine((value, context) => {
-  if (!value.groupId && !value.name) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: '删除分组时必须提供 groupId 或 name'
-    })
-  }
-  if (!value.groupId && !value.providerCode) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: '按名称删除分组时必须提供 providerCode'
-    })
-  }
-})
+  groupId: z.string().trim().min(1).max(120)
+}).strict()
 const groupListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   providerCode: z.string().trim().min(1).max(60).optional(),
@@ -208,16 +186,8 @@ const apiKeyUpdateSchema = z.object({
 }).strict()
 const apiKeyDeleteSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
-  apiKeyId: z.string().trim().min(1).max(120).optional(),
-  name: z.string().trim().min(1).max(120).optional()
-}).strict().superRefine((value, context) => {
-  if (!value.apiKeyId && !value.name) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: '删除 API Key 时必须提供 apiKeyId 或 name'
-    })
-  }
-})
+  apiKeyId: z.string().trim().min(1).max(120)
+}).strict()
 const apiKeyListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   keyword: z.string().trim().max(120).optional(),
@@ -581,7 +551,7 @@ externalIntegrationsRouter.post(
   '/account/update',
   requireExternalIntegrationSource(externalIntegrationAccountPushScope),
   (req, res) => {
-    const parsed = accountPushSchema.safeParse(req.body)
+    const parsed = accountUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号修改参数无效')))
       return
@@ -680,8 +650,7 @@ function recordPublicWelfareAccountWriteOperation(
         { field: 'status', label: '账户状态', after: result.account.status },
         { field: 'schedulable', label: '可调度', after: result.account.schedulable },
         { field: 'targetCreated', label: '新建目标用户', after: result.target.created },
-        { field: 'groupCreated', label: '新建目标分组', after: result.target.groupCreated },
-        { field: 'externalId', label: '外部登记 ID', after: result.externalId }
+        { field: 'groupCreated', label: '新建目标分组', after: result.target.groupCreated }
       ],
       metadata: {
         sourceRefId: context.sourceRefId,
@@ -697,8 +666,7 @@ function recordPublicWelfareAccountWriteOperation(
         accountName: result.account.name,
         providerCode: result.account.providerCode,
         type: result.account.type,
-        supportedModels: result.account.supportedModels,
-        externalId: result.externalId
+        supportedModels: result.account.supportedModels
       },
       method: req.method,
       path: `${req.baseUrl}${req.path}`,
@@ -747,8 +715,7 @@ function recordPublicWelfareAccountDeleteOperation(
       detailLevel: 'full',
       visibilityScope: 'admin_only',
       changes: [
-        { field: 'deleted', label: '删除状态', before: false, after: true },
-        { field: 'externalId', label: '外部登记 ID', after: result.externalId }
+        { field: 'deleted', label: '删除状态', before: false, after: true }
       ],
       metadata: {
         sourceRefId: context.sourceRefId,
@@ -762,8 +729,7 @@ function recordPublicWelfareAccountDeleteOperation(
         groupName: result.target.groupName,
         accountId: result.account.id,
         accountName: result.account.name,
-        providerCode: result.account.providerCode,
-        externalId: result.externalId
+        providerCode: result.account.providerCode
       },
       method: req.method,
       path: `${req.baseUrl}${req.path}`,
