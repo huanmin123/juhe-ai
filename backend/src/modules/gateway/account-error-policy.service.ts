@@ -15,7 +15,6 @@ import {
   markAuthorizedAccountBindingDisabledByFailure,
   type AuthorizedAccountBindingRuntimeTarget
 } from '../../storage/repositories.js'
-import { calculateOpenAICodexRateLimitResetAt } from './openai-codex-usage.service.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
@@ -123,7 +122,7 @@ export function applyAccountErrorHandling(
 
   if (statusCode !== undefined) {
     const decision = decideAccountErrorPolicy(account, statusCode, headers, Buffer.from(bodyText), settings)
-    if (decision) {
+    if (decision && decision.action !== 'retry_next') {
       const updated = applyAccountErrorPolicySideEffect(account, statusCode, decision, settings, upstreamSummary)
       return {
         action: decision.action,
@@ -132,15 +131,24 @@ export function applyAccountErrorHandling(
         reason: accountErrorPolicyReason(statusCode, decision, upstreamSummary)
       }
     }
+
+    const reason = genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
+    const updated = applyAccountTemporaryUnavailableSideEffect(account, settings, reason)
+    return {
+      action: 'cooldown',
+      changed: Boolean(updated),
+      accountStatus: updated?.status ?? account.status,
+      reason
+    }
   }
 
+  const reason = genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
+  const updated = applyAccountTemporaryUnavailableSideEffect(account, settings, reason)
   return {
-    action: 'none',
-    changed: false,
-    accountStatus: account.status,
-    reason: statusCode !== undefined
-      ? '未配置处理策略的上游状态码 ' + statusCode
-      : '未配置处理策略的上游异常：' + sanitizeDiagnosticPayload(input.errorMessage ?? '请求失败')
+    action: 'cooldown',
+    changed: Boolean(updated),
+    accountStatus: updated?.status ?? account.status,
+    reason
   }
 }
 
@@ -156,16 +164,6 @@ export function decideAccountErrorPolicy(
   }
   const bodyText = body.toString('utf8')
   const errorPayload = parseErrorPayload(bodyText, headers)
-
-  const codexOAuthResetAt = openAIOAuthCodexResetAt(account, statusCode, headers, bodyText)
-  if (codexOAuthResetAt) {
-    return {
-      action: 'cooldown',
-      ruleName: 'OpenAI OAuth 官方限额',
-      cooldownUntil: codexOAuthResetAt,
-      cooldownStatus: 'rate_limited'
-    }
-  }
 
   const rules = accountErrorRules(account.credentials)
 
@@ -201,17 +199,11 @@ export function applyAccountErrorPolicySideEffect(
 ): { status: AccountStatus } | undefined {
   const reason = accountErrorPolicyReason(statusCode, decision, upstreamSummary)
   if (decision.action === 'cooldown') {
-    const minutes = Math.max(1, decision.cooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes)
-    const until = decision.cooldownUntil ?? new Date(Date.now() + minutes * 60_000).toISOString()
-    const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
-    return authorizedTarget
-      ? markAuthorizedAccountBindingCooldownByContext({
-          ...authorizedTarget,
-          cooldownUntil: until,
-          reason,
-          status: decision.cooldownStatus ?? 'temporary_unavailable'
-        })
-      : markAccountCooldown(account.id, until, reason, decision.cooldownStatus ?? 'temporary_unavailable')
+    return applyAccountCooldownSideEffect(account, settings, reason, {
+      cooldownMinutes: decision.cooldownMinutes,
+      cooldownUntil: decision.cooldownUntil,
+      cooldownStatus: decision.cooldownStatus
+    })
   }
   if (decision.action === 'disable') {
     const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
@@ -283,11 +275,48 @@ function accountErrorRules(credentials: Record<string, unknown>): AccountErrorHa
   return normalizeAccountErrorHandlingRules(credentials.error_handling_rules)
 }
 
-function openAIOAuthCodexResetAt(account: AccountErrorPolicyAccount, statusCode: number, headers: Headers, bodyText: string): string | undefined {
-  // OpenAI OAuth 是官方接入路径，Codex 限额会返回可解析的 reset 信息。
-  // 这属于供应商官方账号语义，不依赖每个账号的 error_handling_rules 默认配置。
-  if (account.providerCode !== 'openai' || statusCode !== 429 || account.type !== 'oauth') return undefined
-  return calculateOpenAICodexRateLimitResetAt(headers, bodyText)
+function applyAccountTemporaryUnavailableSideEffect(
+  account: AccountErrorPolicyAccount,
+  settings: GatewaySettings,
+  reason: string
+): { status: AccountStatus } | undefined {
+  return applyAccountCooldownSideEffect(account, settings, reason, {
+    cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
+    cooldownStatus: 'temporary_unavailable'
+  })
+}
+
+function applyAccountCooldownSideEffect(
+  account: AccountErrorPolicyAccount,
+  settings: GatewaySettings,
+  reason: string,
+  input: {
+    cooldownMinutes?: number
+    cooldownUntil?: string
+    cooldownStatus?: CooldownAccountStatus
+  } = {}
+): { status: AccountStatus } | undefined {
+  const minutes = Math.max(1, input.cooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes)
+  const until = input.cooldownUntil ?? new Date(Date.now() + minutes * 60_000).toISOString()
+  const status = input.cooldownStatus ?? 'temporary_unavailable'
+  const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+  return authorizedTarget
+    ? markAuthorizedAccountBindingCooldownByContext({
+        ...authorizedTarget,
+        cooldownUntil: until,
+        reason,
+        status
+      })
+    : markAccountCooldown(account.id, until, reason, status)
+}
+
+function genericUpstreamResponseFailureReason(statusCode: number, upstreamSummary?: string): string {
+  const base = `上游调用失败：HTTP ${statusCode}`
+  return upstreamSummary ? `${base}；${upstreamSummary}`.slice(0, 1000) : base
+}
+
+function genericUpstreamRequestFailureReason(message: string): string {
+  return `上游请求异常：${sanitizeDiagnosticPayload(message || '请求失败')}`.slice(0, 1000)
 }
 
 function resolveAccountErrorRuleCooldownUntil(rule: AccountErrorHandlingRule): string | undefined {

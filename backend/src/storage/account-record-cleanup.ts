@@ -11,6 +11,7 @@ import { subtractUsageStatsRecord } from './usage-stats-writers.js'
 export interface DeletedAccountRecordCleanupTarget {
   accountId: string
   systemAccountId: string
+  relatedAccountIds?: string[]
   authorizationIds?: string[]
   teamScopeIds?: string[]
 }
@@ -34,6 +35,7 @@ export interface PendingDeletedAccountRecordCleanupSummary {
 type PendingDeletedAccountRecordCleanupTargetRow = {
   account_id?: string | null
   system_account_id?: string | null
+  related_account_ids_json?: string | null
   authorization_ids_json?: string | null
   team_scope_ids_json?: string | null
 }
@@ -146,8 +148,8 @@ export async function cleanupPendingDeletedAccountRecordTargetsAsync(limit = 50)
 export function listDeletedAccountRecordCleanupTargets(limit = 50): DeletedAccountRecordCleanupTarget[] {
   const rows = getDatasetDatabase()
     .prepare(`
-      SELECT account_id, system_account_id
-        , authorization_ids_json, team_scope_ids_json
+      SELECT account_id, system_account_id,
+        related_account_ids_json, authorization_ids_json, team_scope_ids_json
       FROM account_record_cleanup_targets
       ORDER BY COALESCE(last_attempt_at, created_at) ASC, created_at ASC, account_id ASC
       LIMIT ?
@@ -157,6 +159,7 @@ export function listDeletedAccountRecordCleanupTargets(limit = 50): DeletedAccou
     .map((row) => ({
       accountId: String(row.account_id ?? ''),
       systemAccountId: String(row.system_account_id ?? ''),
+      relatedAccountIds: parseStringArrayJson(row.related_account_ids_json),
       authorizationIds: parseStringArrayJson(row.authorization_ids_json),
       teamScopeIds: parseStringArrayJson(row.team_scope_ids_json)
     }))
@@ -355,10 +358,14 @@ function accountCleanupSqliteBusyBlockedReason(): string {
 function upsertDeletedAccountRecordCleanupTarget(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget, updatedAt: string): void {
   database.prepare(`
     INSERT INTO account_record_cleanup_targets (
-      account_id, system_account_id, authorization_ids_json, team_scope_ids_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      account_id, system_account_id, related_account_ids_json, authorization_ids_json, team_scope_ids_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(account_id) DO UPDATE SET
       system_account_id = excluded.system_account_id,
+      related_account_ids_json = CASE
+        WHEN excluded.related_account_ids_json <> '[]' THEN excluded.related_account_ids_json
+        ELSE account_record_cleanup_targets.related_account_ids_json
+      END,
       authorization_ids_json = CASE
         WHEN excluded.authorization_ids_json <> '[]' THEN excluded.authorization_ids_json
         ELSE account_record_cleanup_targets.authorization_ids_json
@@ -371,6 +378,7 @@ function upsertDeletedAccountRecordCleanupTarget(database: DatabaseSync, input: 
   `).run(
     input.accountId,
     input.systemAccountId,
+    stringArrayJson(input.relatedAccountIds),
     stringArrayJson(input.authorizationIds),
     stringArrayJson(input.teamScopeIds),
     updatedAt,
@@ -407,8 +415,13 @@ function clearDeletedAccountRecordCleanupTarget(database: DatabaseSync, input: D
     .run(input.accountId, input.systemAccountId)
 }
 
+function deletedAccountCleanupAccountIds(input: DeletedAccountRecordCleanupTarget): string[] {
+  return uniqueNonEmpty([input.accountId, ...(input.relatedAccountIds ?? [])])
+}
+
 function hasAccountUsageRecords(input: DeletedAccountRecordCleanupTarget): boolean {
-  return listUsageRecordShardLocationsForAccount(input.accountId, 1).locations.length > 0
+  return deletedAccountCleanupAccountIds(input)
+    .some((accountId) => listUsageRecordShardLocationsForAccount(accountId, 1).locations.length > 0)
 }
 
 function selectAccountUsageRowsCoveredByShardCursors(
@@ -420,45 +433,49 @@ function selectAccountUsageRowsCoveredByShardCursors(
   const queryLimit = batchLimit + 1
   const rows: AccountUsageShardRow[] = []
   let hasUncoveredRows = false
-  const shardWindow = listUsageRecordShardLocationsForAccount(input.accountId, deletedAccountRecordCleanupShardLimit)
-  for (const location of shardWindow.locations) {
-    const shardDatabase = getUsageRecordShardDatabase(location)
-    const cursor = usageStatsShardCursor(statsDatabase, location.shardKey)
-    if (!cursor) {
-      hasUncoveredRows = true
-      continue
+  let hasMoreCoveredRows = false
+  for (const accountId of deletedAccountCleanupAccountIds(input)) {
+    const shardWindow = listUsageRecordShardLocationsForAccount(accountId, deletedAccountRecordCleanupShardLimit)
+    hasMoreCoveredRows = hasMoreCoveredRows || shardWindow.hasMore
+    for (const location of shardWindow.locations) {
+      const shardDatabase = getUsageRecordShardDatabase(location)
+      const cursor = usageStatsShardCursor(statsDatabase, location.shardKey)
+      if (!cursor) {
+        hasUncoveredRows = true
+        continue
+      }
+      const uncovered = shardDatabase
+        .prepare(`
+          SELECT id
+          FROM usage_records
+          WHERE account_id = ?
+            AND (created_at > ? OR (created_at = ? AND id > ?))
+          LIMIT 1
+        `)
+        .get(accountId, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId) as unknown as { id?: string } | undefined
+      if (uncovered?.id) {
+        hasUncoveredRows = true
+      }
+      rows.push(...(shardDatabase.prepare(`
+          SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
+          FROM usage_records
+          WHERE account_id = ?
+            AND (created_at < ? OR (created_at = ? AND id <= ?))
+          ORDER BY created_at ASC, id ASC
+          LIMIT ?
+        `).all(accountId, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId, queryLimit) as unknown as UsageStatsRecordRow[])
+        .map((row) => ({
+          ...row,
+          location,
+          source_shard_key: location.shardKey
+        })))
     }
-    const uncovered = shardDatabase
-      .prepare(`
-        SELECT id
-        FROM usage_records
-        WHERE account_id = ?
-          AND (created_at > ? OR (created_at = ? AND id > ?))
-        LIMIT 1
-      `)
-      .get(input.accountId, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId) as unknown as { id?: string } | undefined
-    if (uncovered?.id) {
-      hasUncoveredRows = true
-    }
-    rows.push(...(shardDatabase.prepare(`
-        SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
-        FROM usage_records
-        WHERE account_id = ?
-          AND (created_at < ? OR (created_at = ? AND id <= ?))
-        ORDER BY created_at ASC, id ASC
-        LIMIT ?
-      `).all(input.accountId, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId, queryLimit) as unknown as UsageStatsRecordRow[])
-      .map((row) => ({
-        ...row,
-        location,
-        source_shard_key: location.shardKey
-      })))
   }
   const sortedRows = rows
     .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))
   return {
     rows: sortedRows.slice(0, queryLimit),
-    hasMoreCoveredRows: sortedRows.length > batchLimit || shardWindow.hasMore,
+    hasMoreCoveredRows: sortedRows.length > batchLimit || hasMoreCoveredRows,
     hasUncoveredRows
   }
 }
@@ -512,7 +529,7 @@ function subtractAccountUsageRowsOnce(
       insertDeductionStatement.run(
         row.id,
         row.api_key_id ?? '',
-        input.accountId,
+        row.account_id ?? input.accountId,
         row.system_account_id ?? input.systemAccountId,
         row.source_shard_key,
         JSON.stringify(usageStatsRecordForCleanup(row)),
@@ -545,7 +562,7 @@ function deleteAccountUsageRows(rows: AccountUsageShardRow[], input: DeletedAcco
     try {
       const deleteStatement = database.prepare('DELETE FROM usage_records WHERE id = ? AND account_id = ?')
       for (const row of shardRows) {
-        deletedRows += changed(deleteStatement.run(row.id, input.accountId))
+        deletedRows += changed(deleteStatement.run(row.id, row.account_id ?? input.accountId))
       }
       commitDatabaseTransaction(database, transactionStarted)
     } catch (error) {
@@ -582,71 +599,83 @@ function markAccountUsageCleanupRowsDeleted(
 }
 
 function hasAccountAuditData(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): boolean {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return false
+  const placeholders = sqlPlaceholders(accountIds.length)
   const auditLog = database
-    .prepare('SELECT id FROM audit_logs WHERE account_id = ? LIMIT 1')
-    .get(input.accountId) as unknown as { id?: string } | undefined
+    .prepare(`SELECT id FROM audit_logs WHERE account_id IN (${placeholders}) LIMIT 1`)
+    .get(...accountIds) as unknown as { id?: string } | undefined
   if (auditLog?.id) return true
   const auditErrorGroup = database
-    .prepare('SELECT id FROM audit_error_groups WHERE account_id = ? LIMIT 1')
-    .get(input.accountId) as unknown as { id?: string } | undefined
+    .prepare(`SELECT id FROM audit_error_groups WHERE account_id IN (${placeholders}) LIMIT 1`)
+    .get(...accountIds) as unknown as { id?: string } | undefined
   return Boolean(auditErrorGroup?.id)
 }
 
 function deleteAccountAuditDataBatch(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget, limit: number): number {
   const batchLimit = Math.max(1, Math.trunc(limit))
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return 0
+  const accountPlaceholders = sqlPlaceholders(accountIds.length)
   const rows = database
     .prepare(`
       SELECT id
       FROM audit_logs
-      WHERE account_id = ?
+      WHERE account_id IN (${accountPlaceholders})
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(input.accountId, batchLimit) as unknown as Array<{ id?: string }>
+    .all(...accountIds, batchLimit) as unknown as Array<{ id?: string }>
   const auditLogIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   let deletedRows = 0
   if (auditLogIds.length > 0) {
     const placeholders = sqlPlaceholders(auditLogIds.length)
     deletedRows += changed(database.prepare(`DELETE FROM audit_payload_refs WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
     deletedRows += changed(database.prepare(`DELETE FROM audit_log_attempts WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
-    deletedRows += changed(database.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders}) AND account_id = ?`).run(...auditLogIds, input.accountId))
+    deletedRows += changed(database.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders}) AND account_id IN (${accountPlaceholders})`).run(...auditLogIds, ...accountIds))
   }
   const groupRows = database
     .prepare(`
       SELECT id
       FROM audit_error_groups
-      WHERE account_id = ?
+      WHERE account_id IN (${accountPlaceholders})
       ORDER BY updated_at ASC, id ASC
       LIMIT ?
     `)
-    .all(input.accountId, batchLimit) as unknown as Array<{ id?: string }>
+    .all(...accountIds, batchLimit) as unknown as Array<{ id?: string }>
   const groupIds = groupRows.map((row) => String(row.id ?? '')).filter(Boolean)
   if (groupIds.length > 0) {
     const placeholders = sqlPlaceholders(groupIds.length)
-    deletedRows += changed(database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders}) AND account_id = ?`).run(...groupIds, input.accountId))
+    deletedRows += changed(database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders}) AND account_id IN (${accountPlaceholders})`).run(...groupIds, ...accountIds))
   }
   return deletedRows
 }
 
 function hasAccountModelCheckRuns(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): boolean {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return false
+  const placeholders = sqlPlaceholders(accountIds.length)
   const row = database
-    .prepare("SELECT id FROM model_check_runs WHERE account_id = ? OR (target_type = 'account' AND target_id = ?) LIMIT 1")
-    .get(input.accountId, input.accountId) as unknown as { id?: string } | undefined
+    .prepare(`SELECT id FROM model_check_runs WHERE account_id IN (${placeholders}) OR (target_type = 'account' AND target_id IN (${placeholders})) LIMIT 1`)
+    .get(...accountIds, ...accountIds) as unknown as { id?: string } | undefined
   return Boolean(row?.id)
 }
 
 function deleteAccountModelCheckRunsBatch(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget, limit: number): number {
   const batchLimit = Math.max(1, Math.trunc(limit))
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  if (!accountIds.length) return 0
+  const placeholders = sqlPlaceholders(accountIds.length)
   const rows = database
     .prepare(`
       SELECT id
       FROM model_check_runs
-      WHERE account_id = ?
-        OR (target_type = 'account' AND target_id = ?)
+      WHERE account_id IN (${placeholders})
+        OR (target_type = 'account' AND target_id IN (${placeholders}))
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(input.accountId, input.accountId, batchLimit) as unknown as Array<{ id?: string }>
+    .all(...accountIds, ...accountIds, batchLimit) as unknown as Array<{ id?: string }>
   const runIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   if (!runIds.length) return 0
   let deletedRows = 0
@@ -666,12 +695,14 @@ function deleteAccountScopeStatsRows(
 ): void {
   const normalizedAuthorizationIds = uniqueNonEmpty(authorizationIds)
   const normalizedTeamScopeIds = uniqueNonEmpty(teamScopeIds)
-  const teamScopePrefix = `${escapeLikePrefix(input.accountId)}:%`
+  const accountIds = deletedAccountCleanupAccountIds(input)
   for (const tableName of accountScopeStatsTables) {
-    database.prepare(`DELETE FROM ${tableName} WHERE scope_type IN ('account', 'caller_account') AND scope_id = ?`)
-      .run(input.accountId)
-    database.prepare(`DELETE FROM ${tableName} WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'`)
-      .run(teamScopePrefix)
+    for (const accountId of accountIds) {
+      database.prepare(`DELETE FROM ${tableName} WHERE scope_type IN ('account', 'caller_account') AND scope_id = ?`)
+        .run(accountId)
+      database.prepare(`DELETE FROM ${tableName} WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'`)
+        .run(`${escapeLikePrefix(accountId)}:%`)
+    }
     for (const chunk of chunkValues(normalizedAuthorizationIds, 400)) {
       database.prepare(`DELETE FROM ${tableName} WHERE scope_type = 'account_authorization' AND scope_id IN (${sqlPlaceholders(chunk.length)})`)
         .run(...chunk)
@@ -681,10 +712,12 @@ function deleteAccountScopeStatsRows(
         .run(...chunk)
     }
   }
-  database.prepare("DELETE FROM stats_job_state WHERE scope_type IN ('account', 'caller_account') AND scope_id = ?")
-    .run(input.accountId)
-  database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'")
-    .run(teamScopePrefix)
+  for (const accountId of accountIds) {
+    database.prepare("DELETE FROM stats_job_state WHERE scope_type IN ('account', 'caller_account') AND scope_id = ?")
+      .run(accountId)
+    database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'")
+      .run(`${escapeLikePrefix(accountId)}:%`)
+  }
   for (const chunk of chunkValues(normalizedAuthorizationIds, 400)) {
     database.prepare(`DELETE FROM stats_job_state WHERE scope_type = 'account_authorization' AND scope_id IN (${sqlPlaceholders(chunk.length)})`)
       .run(...chunk)
@@ -693,11 +726,13 @@ function deleteAccountScopeStatsRows(
     database.prepare(`DELETE FROM stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id IN (${sqlPlaceholders(chunk.length)})`)
       .run(...chunk)
   }
-  database.prepare('DELETE FROM account_quality_scores WHERE account_id = ?').run(input.accountId)
-  database.prepare('DELETE FROM account_quality_dirty_accounts WHERE account_id = ?').run(input.accountId)
-  database.prepare('DELETE FROM account_quality_minute_stats WHERE account_id = ?').run(input.accountId)
-  database.prepare('DELETE FROM account_usage_snapshots WHERE account_id = ?').run(input.accountId)
-  deleteAccountAuthorizationReportRows(database, input.accountId)
+  for (const accountId of accountIds) {
+    database.prepare('DELETE FROM account_quality_scores WHERE account_id = ?').run(accountId)
+    database.prepare('DELETE FROM account_quality_dirty_accounts WHERE account_id = ?').run(accountId)
+    database.prepare('DELETE FROM account_quality_minute_stats WHERE account_id = ?').run(accountId)
+    database.prepare('DELETE FROM account_usage_snapshots WHERE account_id = ?').run(accountId)
+    deleteAccountAuthorizationReportRows(database, accountId)
+  }
 }
 
 function deleteAccountAuthorizationReportRows(database: DatabaseSync, accountId: string): void {
@@ -714,8 +749,10 @@ function deleteAccountAuthorizationReportRows(database: DatabaseSync, accountId:
 }
 
 function deleteAccountUsageCleanupDeductions(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): void {
-  database.prepare('DELETE FROM usage_record_cleanup_deductions WHERE account_id = ?')
-    .run(input.accountId)
+  for (const accountId of deletedAccountCleanupAccountIds(input)) {
+    database.prepare('DELETE FROM usage_record_cleanup_deductions WHERE account_id = ?')
+      .run(accountId)
+  }
 }
 
 function refreshDeletedAccountDerivedWindowsIfNeeded(input: DeletedAccountRecordCleanupTarget, shouldRefresh: boolean): string | undefined {

@@ -7,6 +7,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import { datasetDatabasePath, nowIso, statsDatabasePath } from '../../storage/database.js'
 import {
+  cleanupExpiredLogicallyDeletedAccounts,
   expireDueResourceAuthorizations,
   getSettings,
   listAccountsDueForCooldownRetest,
@@ -95,6 +96,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: runCooldownAccountRetest })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
   scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, initialDelayMs: 13 * minuteMs, task: runDataRetentionCleanup })
+  scheduler.schedule({ name: 'expired-deleted-account-cleanup', intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
 }
 
 export function getBackgroundJobRuntimeSnapshots() {
@@ -426,6 +428,21 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
 
 async function runDataRetentionCleanup(): Promise<void> {
   await cleanupExpiredRetainedData()
+}
+
+async function runExpiredDeletedAccountCleanup(): Promise<void> {
+  try {
+    const summary = cleanupExpiredLogicallyDeletedAccounts()
+    if (summary.attempted > 0 || summary.orphanedAuthorizationInstances > 0) {
+      logger.info({
+        event: 'background_expired_deleted_account_cleanup_completed',
+        ...summary
+      }, '逻辑删除 AI 账户过期物理清理与孤儿授权实例扫尾完成')
+    }
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_expired_deleted_account_cleanup_failed' }), '超过一个月的逻辑删除 AI 账户物理清理失败')
+    throw error
+  }
 }
 
 function settingsNumber(key: string, min: number, max: number): number {

@@ -6,7 +6,7 @@ import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import type { UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
 export function accountSystemAccountId(accountId: string): string | undefined {
-  const row = getBusinessDatabase().prepare('SELECT system_account_id FROM accounts WHERE id = ?').get(accountId) as unknown as { system_account_id?: string } | undefined
+  const row = getBusinessDatabase().prepare('SELECT system_account_id FROM accounts WHERE id = ? AND deleted_at IS NULL').get(accountId) as unknown as { system_account_id?: string } | undefined
   return row?.system_account_id
 }
 

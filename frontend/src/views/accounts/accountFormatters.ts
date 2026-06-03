@@ -19,6 +19,11 @@ export interface OAuthUsageBar {
   tone: string
 }
 
+export interface AccountStatusTagInfo {
+  color: string
+  label: string
+}
+
 export function statusColor(status: AccountStatus) {
   if (status === 'active') return 'green'
   if (status === 'error') return 'red'
@@ -85,6 +90,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   if (isAuthorizedAccount(account) && account.authorizationExpiresAt) {
     lines.push(`授权到期时间：${formatDateTime(account.authorizationExpiresAt)}`)
   }
+  lines.push(...authorizationSourceAccountTooltipLines(account))
   if (account.accountExpiresAt) {
     lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
   }
@@ -141,6 +147,58 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push(`原因：${account.lastErrorMessage}`)
   }
   return lines
+}
+
+export function authorizationSourceAccountStatusTag(account: AccountSummary): AccountStatusTagInfo | undefined {
+  if (!isAuthorizedAccount(account)) return undefined
+  if (isAuthorizationSourceAccountExpired(account)) return { color: 'red', label: '来源到期' }
+  const sourceStatus = account.authorizationInstanceSourceAccountStatus
+  if (sourceStatus === 'disabled') return { color: 'orange', label: '来源停用' }
+  if (sourceStatus === 'error') return { color: 'red', label: '来源异常' }
+  if (sourceStatus === 'rate_limited' || sourceStatus === 'temporary_unavailable') return { color: 'gold', label: '来源暂不可调度' }
+  if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) return { color: 'gold', label: '来源冷却' }
+  if (account.authorizationInstanceSourceAccountSchedulable === false) return { color: 'orange', label: '来源停调' }
+  return undefined
+}
+
+export function authorizationSourceAccountTooltipLines(account: AccountSummary): string[] {
+  if (!isAuthorizedAccount(account)) return []
+  const sourceStatus = account.authorizationInstanceSourceAccountStatus
+  const lines: string[] = []
+  if (isAuthorizationSourceAccountExpired(account)) {
+    lines.push('授权方原账户已到期；当前状态标签显示的是你的授权实例状态，不代表授权方原账户仍正常')
+  } else if (sourceStatus === 'disabled') {
+    lines.push('授权方原账户已停用；当前状态标签显示的是你的授权实例状态，不代表授权方原账户仍正常')
+  } else if (sourceStatus === 'error') {
+    lines.push('授权方原账户处于异常状态；当前状态标签显示的是你的授权实例状态')
+  } else if (sourceStatus === 'rate_limited' || sourceStatus === 'temporary_unavailable') {
+    lines.push(`授权方原账户状态：${statusText(sourceStatus)}；当前状态标签显示的是你的授权实例状态`)
+  } else if (sourceStatus && sourceStatus !== 'active') {
+    lines.push(`授权方原账户状态：${statusText(sourceStatus)}；当前状态标签显示的是你的授权实例状态`)
+  }
+  if (account.authorizationInstanceSourceAccountSchedulable === false) {
+    lines.push('授权方原账户已关闭调度；当前状态标签显示的是你的授权实例调度状态')
+  }
+  if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) {
+    lines.push(`授权方原账户冷却至 ${formatDateTime(account.authorizationInstanceSourceAccountCooldownUntil)}`)
+  }
+  if (account.authorizationInstanceSourceAccountExpiresAt) {
+    lines.push(`授权方原账户到期时间：${formatDateTime(account.authorizationInstanceSourceAccountExpiresAt)}`)
+  }
+  if (account.authorizationInstanceSourceAccountLastErrorMessage) {
+    lines.push(`授权方原账户原因：${account.authorizationInstanceSourceAccountLastErrorMessage}`)
+  } else if (account.authorizationInstanceSourceAccountLastErrorCode) {
+    lines.push(`授权方原账户异常类型：${accountErrorCodeText(account.authorizationInstanceSourceAccountLastErrorCode)}`)
+  }
+  return lines
+}
+
+function isAuthorizationSourceAccountExpired(account: AccountSummary): boolean {
+  if (!isAuthorizedAccount(account)) return false
+  if (account.authorizationInstanceSourceAccountLastErrorCode === 'account_expired') return true
+  if (!account.authorizationInstanceSourceAccountExpiresAt) return false
+  const time = serverDateTimeTimestamp(account.authorizationInstanceSourceAccountExpiresAt)
+  return time !== undefined && time <= Date.now()
 }
 
 function activeRuntimeAvailabilityStatus(account: AccountSummary) {

@@ -502,6 +502,7 @@ function loadGroupAccountStatsRows(
       LEFT JOIN resource_authorizations resource_authorization_rows
         ON resource_authorization_rows.id = group_accounts.account_authorization_id
       WHERE group_accounts.enabled = 1
+        AND accounts.deleted_at IS NULL
         ${where}
     `).all(...(chunk ?? [])) as unknown as typeof rows)
   }

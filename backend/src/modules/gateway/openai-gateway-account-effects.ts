@@ -4,7 +4,6 @@ import { requestDbService } from '../db-service/db-service-ipc.js'
 import { type GatewaySettings } from './account-error-policy.service.js'
 import {
   enqueueGatewayAccountErrorHandlingSideEffect,
-  enqueueGatewayStreamFailureSideEffect,
   recordGatewayAccountFailureForPrecheck
 } from './gateway-account-side-effects.service.js'
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
@@ -48,39 +47,11 @@ export function handleStreamFailure(
   usageContext?: GatewayUsageContext,
   accountStateMutationEnabled = true
 ): void {
-  if (!settings.streamCircuitBreakerEnabled) {
-    return
-  }
   if (!accountStateMutationEnabled) {
     return
   }
-  if (!context.outputReceived) {
-    getRequestLogger().warn({
-      event: 'gateway_stream_failure_account_side_effect_deferred',
-      accountId: account.id,
-      accountName: account.name,
-      errorCode,
-      reason,
-      downstreamBytesWritten: context.downstreamBytesWritten
-    }, '流式失败发生在模型内容输出前，暂不累计账号流失败计数')
-    return
-  }
 
-  const upstreamBucketFailure = recordGatewayUpstreamBucketFailure(account, '流式响应失败')
-  if (upstreamBucketFailure.suspected) {
-    getRequestLogger().warn({
-      event: 'gateway_stream_failure_upstream_bucket_absorbed',
-      accountId: account.id,
-      accountName: account.name,
-      bucketKeys: upstreamBucketFailure.suspectedBucketKeys,
-      distinctAccountCount: upstreamBucketFailure.distinctAccountCount,
-      errorCode,
-      reason,
-      downstreamBytesWritten: context.downstreamBytesWritten
-    }, '模型内容输出后流失败已被同上游桶多账号失败吸收，暂不累计账号流失败')
-    return
-  }
-
+  recordGatewayUpstreamBucketFailure(account, '流式响应失败')
   if (usageContext?.trafficSource === 'gateway') {
     recordGatewayAccountFailureForPrecheck(account, settings, {
       systemAccountId: usageContext.systemAccountId,
@@ -90,21 +61,23 @@ export function handleStreamFailure(
       endpoint: usageContext.endpoint,
       reason: `流式响应失败：${reason}`
     })
-    return
   }
-
-  enqueueGatewayStreamFailureSideEffect({
-    type: 'record_account_stream_failure',
-    input: {
-      accountId: account.id,
-      account,
-      thresholdCount: settings.streamFailureThresholdCount,
-      thresholdWindowMinutes: settings.streamFailureThresholdWindowMinutes,
-      action: 'cooldown',
-      cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
-      reason
-    }
+  applyAccountErrorHandlingWithCacheInvalidation(account, {
+    success: false,
+    errorMessage: errorCode ? `${errorCode}；${reason}` : reason,
+    settings,
+    trafficSource: usageContext?.trafficSource
   })
+  if (!context.outputReceived) {
+    getRequestLogger().warn({
+      event: 'gateway_stream_failure_account_side_effect_enqueued',
+      accountId: account.id,
+      accountName: account.name,
+      errorCode,
+      reason,
+      downstreamBytesWritten: context.downstreamBytesWritten
+    }, '流式失败已写入账号错误处理队列')
+  }
 }
 
 export function clearAccountStreamFailureStateWithCacheInvalidation(account: UpstreamAccount | string): void {

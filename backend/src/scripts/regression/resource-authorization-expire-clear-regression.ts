@@ -240,6 +240,8 @@ try {
   const ownerPausedAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerPausedAuthorizedInstance.id)
   assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '所有者停调不应影响授权实例状态')
   assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '所有者停调不应阻断被授权实例调度')
+  assert.equal(ownerPausedAuthorizedAccount?.authorizationInstanceSourceAccountStatus, 'active', '授权实例列表应返回来源账户状态供页面解释')
+  assert.equal(ownerPausedAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, false, '授权实例列表应返回来源账户调度开关供页面提示')
   const ownerPausedDispatch = repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAuthorizedInstance.id, {
     fallbackEnabled: true
   }, granteeAccess)
@@ -247,6 +249,28 @@ try {
   const ownerPausedTestAccount = repositories.findAccountForTest(ownerPausedAuthorizedInstance.id, granteeAccess)
   assert(ownerPausedTestAccount, '所有者停调账户仍应能被解析出来用于测试前置校验')
   assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), undefined, '测试接口不应因所有者停调拦截被授权账户')
+
+  const ownerDisabledAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权所有者停用账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-resource-authorization-owner-disabled', base_url: 'https://api.openai.com/v1' },
+    status: 'disabled',
+    groupId: ownerAccountGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: ownerDisabledAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeQuotaGroup.id,
+    expiresAt: validAuthorizationExpiresAt
+  }, ownerAccess)
+  const ownerDisabledAuthorizedInstance = authorizedInstanceForSource(ownerDisabledAccount.id, granteeAccess)
+  const ownerDisabledAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerDisabledAuthorizedInstance.id)
+  assert.equal(ownerDisabledAuthorizedAccount?.status, 'active', '所有者停用不应把授权实例列表状态覆盖成停用')
+  assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountStatus, 'disabled', '授权实例列表应返回来源账户停用状态供页面提示')
+  assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, false, '来源账户停用时应返回来源调度不可用提示字段')
 
   const teamQuotaAccount = repositories.createAccount({
     providerCode: 'openai',

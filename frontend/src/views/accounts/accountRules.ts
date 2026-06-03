@@ -6,6 +6,8 @@ import type { AccountMenuItem } from './accountActionTypes'
 import {
   formatDateTime,
   hasAccountRuntimeRecoveryState,
+  authorizationSourceAccountStatusTag,
+  authorizationSourceAccountTooltipLines,
   isAccountPackageExpiredStatus,
   isAuthorizationBindingUnavailable,
   isAuthorizationExpired,
@@ -28,6 +30,7 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
     `授权到期：${expiresText}`,
     `授权限额：${limitsText}`
   ]
+  lines.push(...authorizationSourceAccountTooltipLines(account))
   if (isAuthorizationExpired(account)) {
     lines.push('授权已到期，当前不可用。')
   }
@@ -61,6 +64,7 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
 
 export function authorizedAccountSourceTone(account: AccountSummary): AuthorizedAccountSourceTone {
   if (hasAuthorizedAccountSourceBlocker(account)) return 'danger'
+  if (authorizationSourceAccountStatusTag(account)) return 'warning'
   if (isAuthorizationExpiringSoon(account) || hasQuotaLimits(account.authorizationLimits)) return 'warning'
   return 'normal'
 }

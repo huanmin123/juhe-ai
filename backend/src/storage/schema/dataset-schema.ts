@@ -308,6 +308,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS account_record_cleanup_targets (
           account_id TEXT PRIMARY KEY,
           system_account_id TEXT NOT NULL,
+          related_account_ids_json TEXT NOT NULL DEFAULT '[]',
           authorization_ids_json TEXT NOT NULL DEFAULT '[]',
           team_scope_ids_json TEXT NOT NULL DEFAULT '[]',
           created_at TEXT NOT NULL,

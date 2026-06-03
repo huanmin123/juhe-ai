@@ -16,7 +16,6 @@ import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-s
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
-import { submitAccountRelatedCleanup } from './account-cleanup.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from './account-stream-intercept-policy-validation.js'
@@ -1035,11 +1034,6 @@ accountsRouter.delete('/:id', (req, res) => {
       }
       return {
         result: true,
-        afterCommit: () => {
-          if (deleteResult.cleanupTarget) {
-            submitAccountRelatedCleanup(deleteResult.cleanupTarget)
-          }
-        },
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),

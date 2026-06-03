@@ -241,7 +241,7 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
   filters: {
     direction: 'outbound',
     sourceType: 'all',
-    status: 'all',
+    status: 'active',
     resourceType: 'all',
     resourceOwnerSystemAccountId: allSystemAccountsValue,
     resourceOwnerSystemAccount: undefined,
@@ -257,7 +257,7 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
   pagination: { current: 1, pageSize }
 })
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
-  version: 7,
+  version: 8,
   sanitize: (value, fallback) => {
     const state = value as Partial<AuthorizationsPageState>
     const filters = state.filters && typeof state.filters === 'object'

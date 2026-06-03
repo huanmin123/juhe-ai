@@ -54,6 +54,7 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
           ON resource_authorization_rows.id = group_accounts.account_authorization_id
         WHERE group_accounts.enabled = 1
           AND group_accounts.group_id IN (${sqlPlaceholders(chunk.length)})
+          AND accounts.deleted_at IS NULL
           AND (
             accounts.system_account_id = groups.system_account_id
             OR (

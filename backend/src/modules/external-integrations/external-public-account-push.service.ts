@@ -24,7 +24,6 @@ import {
   updateGroup
 } from '../../storage/repositories.js'
 import { getBusinessDatabase, runInDatabaseTransaction } from '../../storage/database.js'
-import { submitAccountRelatedCleanup } from '../accounts/account-cleanup.service.js'
 import { submitApiKeyRelatedCleanup } from '../api-keys/api-key-cleanup.service.js'
 
 export interface PublicAccountPushInput {
@@ -403,9 +402,6 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
   const deleteResult = deleteAccountWithRelatedCleanup(account.id, access)
   if (!deleteResult.deleted) {
     throw new Error('目标账号无法删除，可能正在作为授权实例使用')
-  }
-  if (deleteResult.cleanupTarget) {
-    submitAccountRelatedCleanup(deleteResult.cleanupTarget)
   }
 
   return {

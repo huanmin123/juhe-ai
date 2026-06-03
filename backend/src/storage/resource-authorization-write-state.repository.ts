@@ -224,6 +224,7 @@ export function syncAccountAuthorizationInstanceNamesForSourceAccount(database: 
       SELECT id, system_account_id, authorization_instance_authorization_id, name
       FROM accounts
       WHERE authorization_instance_source_account_id = ?
+        AND deleted_at IS NULL
       ORDER BY system_account_id ASC, id ASC
     `)
     .all(sourceAccountId) as unknown as Array<{
@@ -253,15 +254,47 @@ export function syncAccountAuthorizationInstanceNamesForSourceAccount(database: 
 
 function ensureAccountAuthorizationInstance(database: DatabaseSync, authorization: ResourceAuthorizationRow, now: string): AccountRow | undefined {
   const existing = database
-    .prepare('SELECT * FROM accounts WHERE authorization_instance_authorization_id = ? LIMIT 1')
+    .prepare('SELECT * FROM accounts WHERE authorization_instance_authorization_id = ? AND deleted_at IS NULL LIMIT 1')
     .get(authorization.id) as unknown as AccountRow | undefined
   if (existing) {
     return existing
   }
   const source = database
-    .prepare('SELECT * FROM accounts WHERE id = ? LIMIT 1')
+    .prepare('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
     .get(authorization.resource_id) as unknown as AccountRow | undefined
   if (!source || source.system_account_id === authorization.grantee_system_account_id) return undefined
+  const deletedExisting = database
+    .prepare('SELECT * FROM accounts WHERE authorization_instance_authorization_id = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, updated_at DESC, id ASC LIMIT 1')
+    .get(authorization.id) as unknown as AccountRow | undefined
+  if (deletedExisting?.id) {
+    const restoredName = uniqueAuthorizedAccountInstanceName(database, source.name, authorization.grantee_system_account_id, source.provider_code, authorization.id, deletedExisting.id)
+    database
+      .prepare(`
+        UPDATE accounts
+        SET provider_code = ?,
+            name = ?,
+            type = ?,
+            status = 'active',
+            schedulable = 1,
+            cooldown_until = NULL,
+            last_error_code = NULL,
+            last_error_message = NULL,
+            cooldown_retest_failure_count = 0,
+            cooldown_retest_observation_started_at = NULL,
+            cooldown_retest_last_at = NULL,
+            cooldown_retest_last_status_code = NULL,
+            stream_failure_count = 0,
+            stream_failure_window_started_at = NULL,
+            authorization_instance_source_account_id = ?,
+            authorization_instance_owner_system_account_id = ?,
+            deleted_at = NULL,
+            deleted_by = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `)
+      .run(source.provider_code, restoredName, source.type, authorization.resource_id, authorization.resource_owner_system_account_id, now, deletedExisting.id)
+    return database.prepare('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1').get(deletedExisting.id) as unknown as AccountRow | undefined
+  }
   const id = newId('acc')
   const name = uniqueAuthorizedAccountInstanceName(database, source.name, authorization.grantee_system_account_id, source.provider_code, authorization.id)
   database
@@ -318,7 +351,7 @@ function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName:
 
 function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string, providerCode: string, name: string, exceptAccountId?: string): boolean {
   const row = database
-    .prepare('SELECT id FROM accounts WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?) LIMIT 1')
+    .prepare('SELECT id FROM accounts WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?) AND deleted_at IS NULL LIMIT 1')
     .get(systemAccountId, providerCode, name) as unknown as { id?: string } | undefined
   return !row?.id || row.id === exceptAccountId
 }

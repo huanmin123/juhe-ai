@@ -158,6 +158,12 @@ export interface AccountSummary {
   accountAuthorizationId?: string
   authorizationInstanceSourceAccountId?: string
   authorizationInstanceOwnerSystemAccountId?: string
+  authorizationInstanceSourceAccountStatus?: AccountStatus
+  authorizationInstanceSourceAccountSchedulable?: boolean
+  authorizationInstanceSourceAccountExpiresAt?: string
+  authorizationInstanceSourceAccountCooldownUntil?: string
+  authorizationInstanceSourceAccountLastErrorCode?: string
+  authorizationInstanceSourceAccountLastErrorMessage?: string
   boundGroupId?: string
   boundGroupName?: string
   groupBindStatus?: AccountGroupBindStatus

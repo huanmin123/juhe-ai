@@ -164,9 +164,10 @@ export function findOpenAIAccountForGroup(
       LEFT JOIN accounts source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
       WHERE accounts.id = ?
         AND accounts.provider_code = 'openai'
+        AND accounts.deleted_at IS NULL
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
-          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.type IN ('api_key', 'oauth'))
+          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.deleted_at IS NULL AND source_accounts.type IN ('api_key', 'oauth'))
         )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
     `)
@@ -387,13 +388,14 @@ function listOpenAIGroupAccountSelectionRows(
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
         AND accounts.provider_code = 'openai'
+        AND accounts.deleted_at IS NULL
         AND accounts.status = 'active'
         AND accounts.schedulable = 1
         AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         ${scheduleClause}
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
-          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.type IN ('api_key', 'oauth'))
+          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.deleted_at IS NULL AND source_accounts.type IN ('api_key', 'oauth'))
         )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       ORDER BY
@@ -424,9 +426,10 @@ export function hasOpenAIAccountAvailabilityScheduleForGroup(
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
         AND accounts.provider_code = 'openai'
+        AND accounts.deleted_at IS NULL
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
-          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.type IN ('api_key', 'oauth'))
+          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.deleted_at IS NULL AND source_accounts.type IN ('api_key', 'oauth'))
         )
         AND accounts.availability_schedule_json IS NOT NULL
       LIMIT 1

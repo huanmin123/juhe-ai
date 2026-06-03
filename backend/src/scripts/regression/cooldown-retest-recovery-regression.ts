@@ -17,9 +17,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, gatewayRuntimeCache] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../modules/gateway/gateway-runtime-cache.service.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -29,6 +30,10 @@ try {
     name: '冷却复测回归分组',
     providerCode: 'openai'
   }, access)
+  const workerGatewaySettings = await gatewayRuntimeCache.readCachedGatewaySettingsAsync()
+  assert.equal(typeof workerGatewaySettings.defaultTemporaryUnschedulableMinutes, 'number', 'worker 角色应能本地读取网关设置，不能误走 DB service IPC')
+  const workerGroupAccess = await gatewayRuntimeCache.resolveCachedGroupUsageAccessMetadataAsync(group.id, access.systemAccountId)
+  assert.equal(workerGroupAccess?.groupOwnerSystemAccountId, access.systemAccountId, 'worker 角色应能本地读取分组访问元数据，不能误走 DB service IPC')
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '冷却复测观察窗口回归',

@@ -6,7 +6,6 @@ import { getBusinessDatabase, getStatsDatabase } from '../../storage/database.js
 import { chunkValues, sqlPlaceholders } from '../../storage/query-utils.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
-import { requestDbService } from '../db-service/db-service-ipc.js'
 import { gatewayAuthorizationQuotaSnapshotVersion, isGatewayAuthorizationSnapshotIncomplete, readGatewayAuthorizationQuotaSnapshot } from './gateway-quota-snapshot-cache.service.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
 
@@ -105,8 +104,7 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
     })
     return decision
   }
-  const decision = await requestDbService({
-    type: 'check_authorization_quota',
+  const decision = checkGatewayAuthorizationQuotaByIds({
     groupAuthorizationId: input.groupAccess.groupAuthorizationId,
     accountAuthorizationId: input.account?.accountAuthorizationId
   })
@@ -198,8 +196,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     })
     return output
   }
-  const decisions = await requestDbService({
-    type: 'check_authorization_quota_batch',
+  const decisions = checkGatewayAuthorizationQuotaBatchByIds({
     groupAuthorizationId: input.groupAccess.groupAuthorizationId,
     accounts: missingAccounts.map((account) => ({
       accountId: account.id,

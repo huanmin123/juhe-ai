@@ -407,7 +407,7 @@ export function deleteProxy(id: string): boolean {
 
 function proxyUsageSummary(id: string): { accountCount: number; accountCountIsLowerBound: boolean; accountNames: string[] } {
   const rows = getBusinessDatabase()
-    .prepare('SELECT id, name FROM accounts WHERE proxy_profile_id = ? ORDER BY id ASC LIMIT ?')
+    .prepare('SELECT id, name FROM accounts WHERE proxy_profile_id = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?')
     .all(id, proxyUsageWindowLimit) as unknown as Array<{ id?: string; name?: string }>
   const accountCountIsLowerBound = rows.length >= proxyUsageWindowLimit
   const accountCount = rows.length

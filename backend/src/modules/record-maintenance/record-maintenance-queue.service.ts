@@ -25,6 +25,7 @@ export type RecordMaintenanceJob =
     id?: string
     accountId: string
     systemAccountId: string
+    relatedAccountIds?: string[]
     authorizationIds?: string[]
     teamScopeIds?: string[]
     createdAt?: string
@@ -292,6 +293,7 @@ async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<v
       const result = await cleanupDeletedAccountRelatedRecordDataAsync({
         accountId: job.accountId,
         systemAccountId: job.systemAccountId,
+        relatedAccountIds: job.relatedAccountIds,
         authorizationIds: job.authorizationIds,
         teamScopeIds: job.teamScopeIds
       })
@@ -436,6 +438,7 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
   if (record.type === 'account_related_cleanup') {
     return typeof record.accountId === 'string'
       && typeof record.systemAccountId === 'string'
+      && (record.relatedAccountIds === undefined || isStringArray(record.relatedAccountIds))
       && (record.authorizationIds === undefined || isStringArray(record.authorizationIds))
       && (record.teamScopeIds === undefined || isStringArray(record.teamScopeIds))
       && (record.id === undefined || typeof record.id === 'string')

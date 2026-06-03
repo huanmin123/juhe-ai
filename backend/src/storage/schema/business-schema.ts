@@ -166,6 +166,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       authorization_instance_source_account_id TEXT,
       authorization_instance_authorization_id TEXT,
       authorization_instance_owner_system_account_id TEXT,
+      deleted_at TEXT,
+      deleted_by TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code),
@@ -397,7 +399,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_system_accounts_username_lookup ON system_accounts(username COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(display_name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_provider_name_unique_lower ON accounts(system_account_id, provider_code, lower(name));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_provider_name_unique_lower ON accounts(system_account_id, provider_code, lower(name)) WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_name_lookup ON accounts(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_name_lookup ON accounts(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code COLLATE NOCASE, id);
@@ -418,6 +420,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due
       ON accounts(provider_code, type, oauth_refresh_token_present, oauth_access_token_expires_at, status, id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
+      ON accounts(deleted_at ASC, updated_at ASC, id ASC)
+      WHERE deleted_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_updated ON groups(updated_at DESC, id DESC);
@@ -529,6 +534,9 @@ function ensureAuthorizationInstanceIndexes(database: DatabaseSync): void {
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_authorization ON accounts(authorization_instance_authorization_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source ON accounts(authorization_instance_source_account_id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
+      ON accounts(deleted_at ASC, updated_at ASC, id ASC)
+      WHERE deleted_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_group_accounts_dispatch_priority ON group_accounts(group_id, enabled, local_fallback_enabled, local_super_priority_enabled, local_priority, created_at, account_id);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_dispatch_candidate_window
       ON group_accounts(group_id, system_account_id, enabled, local_fallback_enabled ASC, local_super_priority_enabled DESC, local_priority ASC, created_at ASC, account_id ASC);

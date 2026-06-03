@@ -3,6 +3,7 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
+  clearAccountFailureStateResult,
   findAccountForTest,
   findRecentOpenAIRequestShapeForAccount,
   recordCooldownAccountRetestFailure
@@ -77,12 +78,14 @@ async function runCooldownAccountRetestQueueItem(
     groupId,
     requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId),
     trafficSource: 'cooldown_retest',
+    disableAccountStateMutation: true,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
   })
   if (result.success) {
+    const restored = clearAccountFailureStateResult(account.id, undefined, { allowErrorRestore: false })
     logger.info({
       event: 'background_cooldown_account_retest_restored',
       accountId: account.id,
@@ -91,7 +94,8 @@ async function runCooldownAccountRetestQueueItem(
       retryNumber: context.retryNumber,
       statusCode: result.statusCode,
       durationMs: result.durationMs,
-      accountStatus: result.accountStatus
+      accountStatus: restored.account?.status ?? result.accountStatus,
+      restored: restored.changed
     }, '冷却账户复测通过，账号已尝试恢复到可用状态')
     return true
   }

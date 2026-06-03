@@ -736,10 +736,7 @@ async function handleImportCompleted() {
 
 async function removeAccount(id: string) {
   const account = accountById.value.get(id)
-  if (account?.accessType === 'authorized') {
-    message.warning('请到授权操作页归还授权账户')
-    return
-  }
+  const isAuthorizedAccountDelete = account?.accessType === 'authorized'
   try {
     if (isManagementView.value) {
       await api.accounts.delete(id, accountScopeParams.value)
@@ -748,7 +745,7 @@ async function removeAccount(id: string) {
     }
     removeLoadedAccount(id)
     selectedAccountIds.value = selectedAccountIds.value.filter((selectedId) => selectedId !== id)
-    message.success('账户已删除，关联记录将由后台继续清理')
+    message.success(isAuthorizedAccountDelete ? '授权账户已删除，个人授权已归还' : '账户已删除，关联记录将在一个月后由后台物理清理')
     void loadData({ quiet: true })
   } catch (error) {
     console.error(error)

@@ -180,8 +180,11 @@ function queryAccountRowsForAccess(
             ra.resource_id AS authorization_resource_id
           FROM accounts
           LEFT JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
-          WHERE accounts.authorization_instance_authorization_id IS NULL
-            OR ra.status IN ('active', 'paused', 'expired')
+          WHERE accounts.deleted_at IS NULL
+            AND (
+              accounts.authorization_instance_authorization_id IS NULL
+              OR ra.status IN ('active', 'paused', 'expired')
+            )
         ) account_rows
         ${accountQualityJoinClause(includeQualityInQuery)}
         LEFT JOIN ${accountBindingSubquery()} group_bindings
@@ -209,6 +212,7 @@ function queryAccountRowsForAccess(
         FROM accounts
         LEFT JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
         WHERE accounts.system_account_id = ?
+          AND accounts.deleted_at IS NULL
           AND (
             accounts.authorization_instance_authorization_id IS NULL
             OR ra.status IN ('active', 'paused', 'expired')
@@ -293,6 +297,8 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.authorization_instance_source_account_id',
     'accounts.authorization_instance_authorization_id',
     'accounts.authorization_instance_owner_system_account_id',
+    'accounts.deleted_at',
+    'accounts.deleted_by',
     'accounts.created_at',
     'accounts.updated_at'
   ]
@@ -332,6 +338,8 @@ function accountListOuterSelectColumns(): string {
     'authorization_instance_source_account_id',
     'authorization_instance_authorization_id',
     'authorization_instance_owner_system_account_id',
+    'deleted_at',
+    'deleted_by',
     'created_at',
     'updated_at',
     'access_type',
@@ -415,6 +423,12 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     id: string
     provider_code: AccountListRow['provider_code']
     type: AccountListRow['type']
+    status: AccountListRow['status']
+    schedulable: number
+    account_expires_at: string | null
+    cooldown_until: string | null
+    last_error_code: string | null
+    last_error_message: string | null
     credential_mask: string | null
     credentials_encrypted: string | null
     proxy_profile_id: string | null
@@ -425,11 +439,13 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
   for (const chunk of chunkValues(sourceIds, 900)) {
     sourceRows.push(...database
       .prepare(`
-        SELECT id, provider_code, type, credential_mask,
+        SELECT id, provider_code, type, status, schedulable, account_expires_at, cooldown_until,
+          last_error_code, last_error_message, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
           proxy_profile_id, concurrency_limit, error_policy_id
         FROM accounts
-        WHERE id IN (${sqlPlaceholders(chunk.length)})
+        WHERE deleted_at IS NULL
+          AND id IN (${sqlPlaceholders(chunk.length)})
       `)
       .all(...chunk) as unknown as typeof sourceRows)
   }
@@ -443,6 +459,12 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
       ...row,
       source_provider_code: source.provider_code,
       source_type: source.type,
+      source_status: source.status,
+      source_schedulable: source.schedulable,
+      source_account_expires_at: source.account_expires_at,
+      source_cooldown_until: source.cooldown_until,
+      source_last_error_code: source.last_error_code,
+      source_last_error_message: source.last_error_message,
       source_credential_mask: source.credential_mask,
       source_credentials_encrypted: source.credentials_encrypted,
       source_proxy_profile_id: source.proxy_profile_id,

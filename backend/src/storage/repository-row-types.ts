@@ -50,6 +50,8 @@ export interface AccountRow {
   authorization_instance_source_account_id: string | null
   authorization_instance_authorization_id: string | null
   authorization_instance_owner_system_account_id: string | null
+  deleted_at: string | null
+  deleted_by: string | null
   created_at: string
   updated_at: string
 }
@@ -182,6 +184,12 @@ export type AccountListRow = AccountRow & {
   bound_group_local_fallback_enabled?: number | null
   source_provider_code?: ProviderCode | null
   source_type?: AccountType | null
+  source_status?: AccountStatus | null
+  source_schedulable?: number | null
+  source_account_expires_at?: string | null
+  source_cooldown_until?: string | null
+  source_last_error_code?: string | null
+  source_last_error_message?: string | null
   source_credential_mask?: string | null
   source_credentials_encrypted?: string | null
   source_proxy_profile_id?: string | null

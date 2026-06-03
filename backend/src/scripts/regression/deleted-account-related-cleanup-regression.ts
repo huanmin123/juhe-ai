@@ -17,14 +17,12 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, usageStatsRepository, usageRecordShards, usageStatsHelpers, accountCleanupService, recordMaintenanceQueue] = await Promise.all([
+const [databaseModule, repositories, usageStatsRepository, usageRecordShards, usageStatsHelpers] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/usage-stats.repository.js'),
   import('../../storage/usage-record-shards.js'),
-  import('../../storage/usage-stats-helpers.js'),
-  import('../../modules/accounts/account-cleanup.service.js'),
-  import('../../modules/record-maintenance/record-maintenance-queue.service.js')
+  import('../../storage/usage-stats-helpers.js')
 ])
 
 const createdAt = new Date(Date.now() - 10 * 60 * 1000).toISOString()
@@ -109,60 +107,162 @@ try {
   assert.equal(authorizationUserUsageRangeWindowRequestCount(owner.id, account.id), 1, '删除前授权报表窗口应存在账户过滤统计')
   assert.equal(authorizationUserUsageRangeWindowRequestCount(owner.id, authorizedInstance.id), 0, '授权方报表资源过滤不应写成被授权实例 ID')
 
+  const directReturnAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '被授权人自删账户来源',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-deleted-account-direct-return',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: ownerGroup.id
+  }, ownerAccess)
+  const directReturnAuthorization = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: directReturnAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
+    remark: '被授权人自删回归'
+  }, ownerAccess)
+  const directReturnInstance = authorizedInstanceForSource(directReturnAccount.id, granteeAccess)
+  const directDeleteResult = repositories.deleteAccountWithRelatedCleanup(directReturnInstance.id, granteeAccess)
+  assert.equal(directDeleteResult.deleted, true, '被授权人应能删除自己的授权实例账户')
+  assert.equal(accountExists(directReturnAccount.id), true, '被授权人删除授权实例不应逻辑删除来源账户')
+  assert.equal(accountExists(directReturnInstance.id), false, '被授权人删除后授权实例不应继续出现在业务读取中')
+  assert.equal(rawAccountExists(directReturnInstance.id), true, '被授权人删除后授权实例业务行应暂时保留')
+  assert.ok(accountDeletedAt(directReturnInstance.id), '被授权人删除后授权实例应写入 deleted_at')
+  assert.equal(groupAccountCount(directReturnInstance.id), 1, '被授权人删除阶段不应同步删除授权实例分组绑定')
+  assert.equal(resourceAuthorizationCount(directReturnAccount.id), 1, '被授权人删除阶段运行时授权应保留历史记录')
+  assert.equal(resourceAuthorizationGrantCount(directReturnAccount.id), 1, '被授权人删除阶段授权 grant 应保留历史记录')
+  assert.equal(resourceAuthorizationStatus(directReturnAccount.id), 'returned', '被授权人删除后运行时授权应标记为已归还')
+  assert.equal(resourceAuthorizationGrantStatus(directReturnAccount.id), 'returned', '被授权人删除后个人授权 grant 应标记为已归还')
+  assert.equal(repositories.listResourceAuthorizations({ resourceId: directReturnAccount.id, status: 'active' }, ownerAccess).length, 0, '被授权人删除后生效授权列表不应继续展示该授权')
+  assert.equal(repositories.listResourceAuthorizations({ resourceId: directReturnAccount.id, status: 'all' }, ownerAccess).some((item) => item.id === directReturnAuthorization.id && item.status === 'returned'), true, '被授权人删除后全部状态仍可追溯已归还授权')
+  assert.equal(cleanupTargetExists(directReturnInstance.id), false, '被授权人逻辑删除阶段不应登记即时关联清理目标')
+  const directReauthorized = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: directReturnAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
+    remark: '被授权人自删后重新授权回归'
+  }, ownerAccess)
+  const directRestoredInstance = authorizedInstanceForSource(directReturnAccount.id, granteeAccess)
+  assert.equal(directReauthorized.id, directReturnAuthorization.id, '重新授权应复用已归还的个人授权记录')
+  assert.equal(directRestoredInstance.id, directReturnInstance.id, '重新授权应恢复同一个逻辑删除授权实例账户')
+  assert.equal(accountDeletedAt(directRestoredInstance.id), undefined, '重新授权恢复后授权实例不应仍处于逻辑删除状态')
+  assert.equal(resourceAuthorizationStatus(directReturnAccount.id), 'active', '重新授权后运行时授权应恢复生效')
+  assert.equal(resourceAuthorizationGrantStatus(directReturnAccount.id), 'active', '重新授权后个人授权 grant 应恢复生效')
+
   const deleteResult = repositories.deleteAccountWithRelatedCleanup(account.id, ownerAccess)
   assert.equal(deleteResult.deleted, true, 'AI 账户删除应成功')
-  assert.equal(deleteResult.cleanupTarget?.authorizationIds?.includes(runtimeAuthorizationId), false, '删除父账户不应把授权实例统计作为父账户清理目标')
-  assert.equal(deleteResult.cleanupTarget?.teamScopeIds?.includes(`${authorizedInstance.id}:${team.id}`), false, '删除父账户不应按授权实例 scope 清理团队统计')
-  assert.equal(accountExists(account.id), false, '账户主记录应被删除')
-  assert.equal(accountExists(authorizedInstance.id), true, '父账户删除后授权实例账户应继续存在')
-  assert.equal(groupAccountCount(account.id), 0, '账户绑定关系应随账户删除清理')
-  assert.equal(groupAccountCount(authorizedInstance.id), 1, '父账户删除后授权实例分组绑定不应被父账户清理影响')
-  assert.equal(resourceAuthorizationCount(account.id), 1, '父账户删除不应回收授权列表中的运行时授权')
-  assert.equal(resourceAuthorizationGrantCount(account.id), 1, '父账户删除不应回收授权列表中的授权规则')
+  assert.equal(accountExists(account.id), false, '逻辑删除后父账户不应继续出现在业务读取中')
+  assert.equal(accountExists(authorizedInstance.id), false, '逻辑删除后被授权实例不应继续出现在业务读取中')
+  assert.equal(rawAccountExists(account.id), true, '逻辑删除后父账户业务行应暂时保留')
+  assert.equal(rawAccountExists(authorizedInstance.id), true, '逻辑删除后被授权实例业务行应暂时保留')
+  assert.ok(accountDeletedAt(account.id), '逻辑删除后父账户应写入 deleted_at')
+  assert.ok(accountDeletedAt(authorizedInstance.id), '逻辑删除后被授权实例应写入 deleted_at')
+  assert.equal(groupAccountCount(account.id), 1, '逻辑删除阶段不应删除父账户分组绑定')
+  assert.equal(groupAccountCount(authorizedInstance.id), 1, '逻辑删除阶段不应删除被授权实例分组绑定')
+  assert.equal(resourceAuthorizationCount(account.id), 1, '逻辑删除阶段运行时授权应保留历史记录')
+  assert.equal(resourceAuthorizationGrantCount(account.id), 1, '逻辑删除阶段授权规则应保留历史记录')
+  assert.equal(resourceAuthorizationStatus(account.id), 'revoked', '父账户逻辑删除后运行时授权应标记为已回收')
+  assert.equal(resourceAuthorizationGrantStatus(account.id), 'revoked', '父账户逻辑删除后授权操作记录应标记为已回收')
+  assert.equal(repositories.listResourceAuthorizations({ resourceId: account.id, status: 'active' }, ownerAccess).length, 0, '父账户逻辑删除后默认生效授权列表不应继续展示该授权')
+  assert.equal(repositories.listResourceAuthorizations({ resourceId: account.id, status: 'all' }, ownerAccess).some((item) => item.status === 'revoked'), true, '父账户逻辑删除后全部状态仍可追溯已回收授权')
   const visibleAfterDelete = repositories.listAccounts(granteeAccess).find((item) => item.id === authorizedInstance.id)
-  assert(visibleAfterDelete, '父账户删除后被授权用户打开账户列表不应触发来源回填外键失败')
-  assert.equal(visibleAfterDelete.authorizationInstanceSourceAccountId, undefined, '父账户删除后授权实例来源账户应保持为空')
-  assert.equal(visibleAfterDelete.schedulable, false, '父账户删除后授权实例缺少来源资源事实，不应继续显示为可调度')
+  assert.equal(visibleAfterDelete, undefined, '父账户逻辑删除后，被授权用户默认账户列表不应继续展示授权实例')
+  assert.equal(authorizationInstanceSourceAccountId(authorizedInstance.id), account.id, '逻辑删除阶段不应断开授权实例来源账户引用')
   const dispatchableAfterDelete = repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id)
-  assert.equal(dispatchableAfterDelete.some((item) => item.id === authorizedInstance.id), false, '父账户删除后授权实例不应使用快照凭据或自身字段继续参与调度')
+  assert.equal(dispatchableAfterDelete.some((item) => item.id === authorizedInstance.id), false, '父账户逻辑删除后授权实例不应继续参与调度')
+  assert.equal(cleanupTargetExists(account.id), false, '逻辑删除阶段不应登记即时关联清理目标')
+  assert.equal(usageRecordExists(ownerUsageId), true, '逻辑删除阶段不应同步删除原账户关联使用记录')
+  assert.equal(usageRecordExists(instanceUsageId), true, '逻辑删除阶段不应同步删除授权实例使用记录')
+  assert.equal(auditDataCount(account.id), 2, '逻辑删除阶段不应同步删除账户关联原始审计数据')
+  assert.equal(auditDataCount(authorizedInstance.id), 2, '逻辑删除阶段不应同步删除授权实例原始审计数据')
+  assert.equal(modelCheckRunCount(account.id), 1, '逻辑删除阶段不应同步删除账户关联模型检测记录')
+  assert.equal(modelCheckRunCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例模型检测记录')
+  assert.equal(accountQualityScoreCount(account.id), 1, '逻辑删除阶段不应同步删除账户质量快照')
+  assert.equal(accountQualityScoreCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例质量快照')
+  assert.equal(accountUsageSnapshotCount(account.id), 1, '逻辑删除阶段不应同步删除账户外部用量快照')
+  assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例外部用量快照')
+  assert.equal(usageStatsTotal(owner.id, 'account', account.id), 1, '逻辑删除阶段原账户自用统计应保留')
+  assert.equal(usageStatsTotal(grantee.id, 'account', authorizedInstance.id), 1, '逻辑删除阶段授权实例账户统计应保留')
+  assert.equal(usageStatsTotal(grantee.id, 'account_authorization', runtimeAuthorizationId), 1, '逻辑删除阶段授权统计应保留')
 
-  assert.ok(deleteResult.cleanupTarget, '删除成功后应返回后台清理目标')
-  accountCleanupService.submitAccountRelatedCleanup(deleteResult.cleanupTarget)
-  assert.equal(cleanupTargetExists(account.id), true, '提交清理后应先登记后台清理目标')
-  assert.equal(usageRecordExists(ownerUsageId), true, '提交清理时不应同步删除原账户关联使用记录')
-  assert.equal(usageRecordExists(instanceUsageId), true, '提交清理时不应同步删除授权实例使用记录')
-  assert.equal(auditDataCount(account.id), 2, '提交清理时不应同步删除账户关联原始审计数据')
-  assert.equal(auditDataCount(authorizedInstance.id), 2, '提交清理时不应同步删除授权实例原始审计数据')
-  assert.equal(modelCheckRunCount(account.id), 1, '提交清理时不应同步删除账户关联模型检测记录')
-  assert.equal(modelCheckRunCount(authorizedInstance.id), 1, '提交清理时不应同步删除授权实例模型检测记录')
-  assert.equal(accountQualityScoreCount(account.id), 1, '提交清理时不应同步删除账户质量快照')
-  assert.equal(accountQualityScoreCount(authorizedInstance.id), 1, '提交清理时不应同步删除授权实例质量快照')
-  assert.equal(accountUsageSnapshotCount(account.id), 1, '提交清理时不应同步删除账户外部用量快照')
-  assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 1, '提交清理时不应同步删除授权实例外部用量快照')
-  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  ageDeletedAccountsForPhysicalCleanup([account.id, authorizedInstance.id])
+  const cleanupResult = repositories.cleanupExpiredLogicallyDeletedAccounts({ limit: 10 })
+  assert.equal(cleanupResult.attempted, 1, '过期物理清理应按父账户聚合处理一次')
+  assert.equal(cleanupResult.completed, 1, '过期物理清理应完成父账户和授权实例清理')
+  assert.equal(cleanupResult.deferred, 0, '统计游标已追平时不应延迟物理清理')
+  assert.equal(cleanupResult.failed, 0, '过期物理清理不应失败')
+  assert.equal(cleanupResult.physicallyDeletedAccounts, 2, '过期物理清理应删除父账户和被授权实例账户')
+  assert.equal(cleanupResult.physicallyDeletedAuthorizations, 1, '过期物理清理应删除账户授权记录')
+  assert.equal(cleanupResult.physicallyDeletedGrants, 1, '过期物理清理应删除账户授权 grant')
 
-  assert.equal(usageRecordExists(ownerUsageId), false, '后台清理应删除原账户关联使用记录')
-  assert.equal(usageRecordExists(instanceUsageId), true, '后台清理不应删除授权实例使用记录')
-  assert.equal(auditDataCount(account.id), 0, '后台清理应删除账户关联原始审计数据')
-  assert.equal(auditDataCount(authorizedInstance.id), 2, '后台清理不应删除授权实例原始审计数据')
-  assert.equal(modelCheckRunCount(account.id), 0, '后台清理应删除账户关联模型检测记录')
-  assert.equal(modelCheckRunCount(authorizedInstance.id), 1, '后台清理不应删除授权实例模型检测记录')
-  assert.equal(accountQualityScoreCount(account.id), 0, '后台清理应删除账户质量快照')
-  assert.equal(accountQualityScoreCount(authorizedInstance.id), 1, '后台清理不应删除授权实例质量快照')
-  assert.equal(accountUsageSnapshotCount(account.id), 0, '后台清理应删除账户外部用量快照')
-  assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 1, '后台清理不应删除授权实例外部用量快照')
-  assert.equal(usageStatsTotal(owner.id, 'account', account.id), 0, '后台清理后原账户自用统计不应残留')
-  assert.equal(usageStatsTotal(grantee.id, 'account', authorizedInstance.id), 1, '后台清理后授权实例账户统计应保留')
-  assert.equal(usageStatsTotal(grantee.id, 'caller_account', authorizedInstance.id), 1, '后台清理后授权实例调用方账户统计应保留')
-  assert.equal(usageStatsTotal(grantee.id, 'account_authorization', runtimeAuthorizationId), 1, '后台清理后授权统计应保留')
-  assert.equal(usageStatsTotal(grantee.id, 'account_authorization_team', `${authorizedInstance.id}:${team.id}`), 1, '后台清理后团队授权统计应保留')
-  assert.equal(usageScopeRangeWindowRequestCount(grantee.id, 'account', authorizedInstance.id), 1, '后台清理后范围窗口应保留授权实例账户统计')
-  assert.equal(usageQuotaHourlyWindowCost(grantee.id, 'account_authorization', runtimeAuthorizationId), 0.12, '后台清理后额度窗口应保留授权成本')
-  assert.equal(usageRankSnapshotMetric(grantee.id, 'account_authorization', runtimeAuthorizationId), 0.12, '后台清理后授权排行快照应保留')
-  assert.equal(authorizationUserUsageRangeWindowRequestCount(owner.id, account.id), 0, '后台清理后授权报表窗口不应残留账户过滤统计')
-  assert.equal(cleanupTargetExists(account.id), false, '后台清理完成后应移除账户清理目标')
+  assert.equal(rawAccountExists(account.id), false, '过期物理清理后父账户业务行应删除')
+  assert.equal(rawAccountExists(authorizedInstance.id), false, '过期物理清理后被授权实例业务行应删除')
+  assert.equal(groupAccountCount(account.id), 0, '过期物理清理后父账户分组绑定应删除')
+  assert.equal(groupAccountCount(authorizedInstance.id), 0, '过期物理清理后被授权实例分组绑定应删除')
+  assert.equal(resourceAuthorizationCount(account.id), 0, '过期物理清理后账户授权记录不应残留')
+  assert.equal(resourceAuthorizationGrantCount(account.id), 0, '过期物理清理后账户授权 grant 不应残留')
+  assert.equal(usageRecordExists(ownerUsageId), false, '过期物理清理应删除原账户关联使用记录')
+  assert.equal(usageRecordExists(instanceUsageId), false, '过期物理清理应删除授权实例使用记录')
+  assert.equal(auditDataCount(account.id), 0, '过期物理清理应删除账户关联原始审计数据')
+  assert.equal(auditDataCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例原始审计数据')
+  assert.equal(modelCheckRunCount(account.id), 0, '过期物理清理应删除账户关联模型检测记录')
+  assert.equal(modelCheckRunCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例模型检测记录')
+  assert.equal(accountQualityScoreCount(account.id), 0, '过期物理清理应删除账户质量快照')
+  assert.equal(accountQualityScoreCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例质量快照')
+  assert.equal(accountUsageSnapshotCount(account.id), 0, '过期物理清理应删除账户外部用量快照')
+  assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例外部用量快照')
+  assert.equal(usageStatsTotal(owner.id, 'account', account.id), 0, '过期物理清理后原账户自用统计不应残留')
+  assert.equal(usageStatsTotal(grantee.id, 'account', authorizedInstance.id), 0, '过期物理清理后授权实例账户统计不应残留')
+  assert.equal(usageStatsTotal(grantee.id, 'caller_account', authorizedInstance.id), 0, '过期物理清理后授权实例调用方账户统计不应残留')
+  assert.equal(usageStatsTotal(grantee.id, 'account_authorization', runtimeAuthorizationId), 0, '过期物理清理后授权统计不应残留')
+  assert.equal(usageStatsTotal(grantee.id, 'account_authorization_team', `${authorizedInstance.id}:${team.id}`), 0, '过期物理清理后团队授权统计不应残留')
+  assert.equal(usageScopeRangeWindowRequestCount(grantee.id, 'account', authorizedInstance.id), 0, '过期物理清理后范围窗口不应残留授权实例账户统计')
+  assert.equal(usageQuotaHourlyWindowCost(grantee.id, 'account_authorization', runtimeAuthorizationId), 0, '过期物理清理后额度窗口不应残留授权成本')
+  assert.equal(usageRankSnapshotMetric(grantee.id, 'account_authorization', runtimeAuthorizationId), 0, '过期物理清理后授权排行快照不应残留')
+  assert.equal(authorizationUserUsageRangeWindowRequestCount(owner.id, account.id), 0, '过期物理清理后授权报表窗口不应残留账户过滤统计')
+  assert.equal(cleanupTargetExists(account.id), false, '过期物理清理完成后不应残留账户清理目标')
 
-  console.log('已删除 AI 账户关联清理回归通过：父账户记录清理保留授权实例和授权列表，但缺少来源资源事实的实例不再参与调度')
+  const legacyDeletedSource = repositories.createAccount({
+    providerCode: 'openai',
+    name: '旧版本父账户已删授权实例',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-deleted-account-legacy-orphan',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: ownerGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: legacyDeletedSource.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
+    remark: '旧版本父账户删除遗留回归'
+  }, ownerAccess)
+  const legacyOrphanInstance = authorizedInstanceForSource(legacyDeletedSource.id, granteeAccess)
+  simulateLegacyDetachedAndDeletedSourceAccount(legacyDeletedSource.id, legacyOrphanInstance.id)
+  assert.equal(rawAccountExists(legacyDeletedSource.id), false, '旧版本脏数据应模拟来源账户已被物理删除')
+  assert.equal(accountExists(legacyOrphanInstance.id), true, '旧版本脏数据中授权实例仍处于未删除状态')
+  assert.equal(repositories.listAccounts(granteeAccess).some((item) => item.id === legacyOrphanInstance.id), true, '扫尾前旧授权实例仍会误显示在被授权人账户列表')
+
+  const orphanCleanupResult = repositories.cleanupExpiredLogicallyDeletedAccounts({ limit: 10 })
+  assert.equal(orphanCleanupResult.orphanedAuthorizationInstances, 1, '每日清理应先逻辑删除来源已缺失的旧授权实例')
+  assert.equal(orphanCleanupResult.attempted, 0, '刚逻辑删除的旧授权实例不应立刻进入一个月物理清理')
+  assert.equal(accountExists(legacyOrphanInstance.id), false, '旧授权实例扫尾后不应继续出现在业务读取中')
+  assert.equal(rawAccountExists(legacyOrphanInstance.id), true, '旧授权实例扫尾阶段仍应保留业务行等待一个月后物理清理')
+  assert.ok(accountDeletedAt(legacyOrphanInstance.id), '旧授权实例扫尾后应写入 deleted_at')
+  assert.equal(resourceAuthorizationStatus(legacyDeletedSource.id), 'revoked', '旧授权实例扫尾后运行时授权应标记为已回收')
+  assert.equal(resourceAuthorizationGrantStatus(legacyDeletedSource.id), 'revoked', '旧授权实例扫尾后授权 grant 应标记为已回收')
+  assert.equal(groupAccountCount(legacyOrphanInstance.id), 1, '旧授权实例扫尾阶段不应同步删除本地分组绑定')
+
+  console.log('已删除 AI 账户关联清理回归通过：删除时逻辑隐藏并保留数据，一个月后物理清理账户、授权、历史和统计')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -376,9 +476,50 @@ function usageRecordExists(id: string): boolean {
 
 function accountExists(accountId: string): boolean {
   const row = databaseModule.getBusinessDatabase()
+    .prepare('SELECT id FROM accounts WHERE id = ? AND deleted_at IS NULL')
+    .get(accountId) as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function rawAccountExists(accountId: string): boolean {
+  const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT id FROM accounts WHERE id = ?')
     .get(accountId) as { id?: string } | undefined
   return Boolean(row?.id)
+}
+
+function accountDeletedAt(accountId: string): string | undefined {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare('SELECT deleted_at FROM accounts WHERE id = ?')
+    .get(accountId) as { deleted_at?: string | null } | undefined
+  return row?.deleted_at ?? undefined
+}
+
+function ageDeletedAccountsForPhysicalCleanup(accountIds: string[]): void {
+  const deletedAt = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString()
+  const statement = databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL')
+  for (const accountId of accountIds) {
+    statement.run(deletedAt, deletedAt, accountId)
+  }
+}
+
+function authorizationInstanceSourceAccountId(accountId: string): string | null | undefined {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare('SELECT authorization_instance_source_account_id FROM accounts WHERE id = ?')
+    .get(accountId) as { authorization_instance_source_account_id?: string | null } | undefined
+  return row?.authorization_instance_source_account_id
+}
+
+function simulateLegacyDetachedAndDeletedSourceAccount(sourceAccountId: string, instanceAccountId: string): void {
+  const now = new Date().toISOString()
+  const database = databaseModule.getBusinessDatabase()
+  database
+    .prepare('UPDATE accounts SET authorization_instance_source_account_id = NULL, updated_at = ? WHERE id = ?')
+    .run(now, instanceAccountId)
+  database
+    .prepare('DELETE FROM accounts WHERE id = ?')
+    .run(sourceAccountId)
 }
 
 function groupAccountCount(accountId: string): number {
@@ -400,6 +541,20 @@ function resourceAuthorizationGrantCount(accountId: string): number {
     .prepare("SELECT COUNT(*) AS total FROM resource_authorization_grants WHERE resource_type = 'account' AND resource_id = ?")
     .get(accountId) as { total?: number } | undefined
   return Number(row?.total ?? 0)
+}
+
+function resourceAuthorizationStatus(accountId: string): string | undefined {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare("SELECT status FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? LIMIT 1")
+    .get(accountId) as { status?: string } | undefined
+  return row?.status
+}
+
+function resourceAuthorizationGrantStatus(accountId: string): string | undefined {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare("SELECT status FROM resource_authorization_grants WHERE resource_type = 'account' AND resource_id = ? LIMIT 1")
+    .get(accountId) as { status?: string } | undefined
+  return row?.status
 }
 
 function auditDataCount(accountId: string): number {

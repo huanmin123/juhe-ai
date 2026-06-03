@@ -614,6 +614,7 @@ function updateAccountLastUsedAt(accountLastUsedAt: Map<string, string>, databas
     UPDATE accounts
     SET last_used_at = ?, updated_at = ?
     WHERE id = ?
+      AND deleted_at IS NULL
       AND (last_used_at IS NULL OR last_used_at < ?)
   `)
   const transactionStarted = beginDatabaseTransaction(database)

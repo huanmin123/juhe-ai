@@ -8,12 +8,14 @@
       </template>
       <span class="status-tag-group">
         <StatusTag class="status-tag" :color="accountStatusColor(account)" :label="accountStatusText(account)" />
+        <StatusTag v-if="sourceStatusTag" class="status-tag source-status-tag" :color="sourceStatusTag.color" :label="sourceStatusTag.label" />
         <StatusTag v-if="account.superPriorityEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'gold' : 'default'" :label="dispatchFlagActive ? '超级优先' : '超级优先暂停'" />
         <StatusTag v-if="account.fallbackEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'purple' : 'default'" :label="dispatchFlagActive ? '降级备用' : '备用暂停'" />
       </span>
     </a-tooltip>
     <span v-else class="status-tag-group">
       <StatusTag class="status-tag" :color="accountStatusColor(account)" :label="accountStatusText(account)" />
+      <StatusTag v-if="sourceStatusTag" class="status-tag source-status-tag" :color="sourceStatusTag.color" :label="sourceStatusTag.label" />
       <a-tooltip v-if="account.superPriorityEnabled" :title="superPriorityTooltip">
         <StatusTag class="status-tag priority-tag" :color="dispatchFlagActive ? 'gold' : 'default'" :label="dispatchFlagActive ? '超级优先' : '超级优先暂停'" />
       </a-tooltip>
@@ -29,13 +31,14 @@ import { computed } from 'vue'
 
 import StatusTag from '@/components/StatusTag.vue'
 import type { AccountSummary } from '@/types/domain'
-import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from './accountFormatters'
+import { accountStatusColor, accountStatusText, accountStatusTooltipLines, authorizationSourceAccountStatusTag } from './accountFormatters'
 
 const props = defineProps<{
   account: AccountSummary
 }>()
 
 const dispatchFlagActive = computed(() => props.account.status === 'active' && props.account.schedulable)
+const sourceStatusTag = computed(() => authorizationSourceAccountStatusTag(props.account))
 const superPriorityTooltip = computed(() => dispatchFlagActive.value
   ? '超级优先：下次调度优先使用此账户'
   : '超级优先已保留；账户恢复正常并参与调度后自动生效'

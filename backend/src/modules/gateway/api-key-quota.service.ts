@@ -4,7 +4,6 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { getStatsDatabase } from '../../storage/database.js'
 import type { GatewayApiKeyRow } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
-import { requestDbService } from '../db-service/db-service-ipc.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCosts, requestQuotaCostKey } from './request-quota-checker.js'
 import { isGatewayQuotaCostSnapshotIncomplete, readGatewayQuotaCostsSnapshot } from './gateway-quota-snapshot-cache.service.js'
 
@@ -93,10 +92,7 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
     setApiKeyQuotaCacheEntry(apiKey.id, cacheKey, passiveDecision)
     return passiveDecision
   }
-  const decision = await requestDbService({
-    type: 'check_api_key_quota',
-    apiKey
-  })
+  const decision = checkGatewayApiKeyQuota(apiKey, now)
   setApiKeyQuotaCacheEntry(apiKey.id, cacheKey, {
     ...decision,
     checkedAtMs: Date.now()

@@ -76,15 +76,6 @@ function hasOwnEnumerableKey(value: Record<string, unknown>): boolean {
   return false
 }
 
-export function calculateOpenAICodexRateLimitResetAt(headers?: HeaderInput, bodyText?: string, now = new Date()): string | undefined {
-  const snapshot = parseOpenAICodexUsageHeaders(headers)
-  if (snapshot) {
-    const resetAt = calculateExhaustedSnapshotResetAt(snapshot, now)
-    if (resetAt) return resetAt
-  }
-  return parseOpenAIRateLimitResetBody(bodyText, now)
-}
-
 function buildOpenAICodexUsageSnapshotPayload(snapshot: OpenAICodexUsageSnapshot, fallbackNow: Date, source?: string): Record<string, unknown> {
   const baseTime = parseIsoDate(snapshot.updatedAt) ?? fallbackNow
   const payload: Record<string, unknown> = {
@@ -164,39 +155,6 @@ function assignNormalizedWindow(normalized: NormalizedCodexLimits, key: Normaliz
   normalized.window7dMinutes = candidate.windowMinutes
 }
 
-function calculateExhaustedSnapshotResetAt(snapshot: OpenAICodexUsageSnapshot, now: Date): string | undefined {
-  const normalized = normalizeOpenAICodexUsageSnapshot(snapshot)
-  if (!normalized) return undefined
-  if (normalized.used7dPercent !== undefined && normalized.used7dPercent >= 100 && normalized.reset7dSeconds !== undefined) {
-    return new Date(now.getTime() + Math.max(0, normalized.reset7dSeconds) * 1000).toISOString()
-  }
-  if (normalized.used5hPercent !== undefined && normalized.used5hPercent >= 100 && normalized.reset5hSeconds !== undefined) {
-    return new Date(now.getTime() + Math.max(0, normalized.reset5hSeconds) * 1000).toISOString()
-  }
-  return undefined
-}
-
-function parseOpenAIRateLimitResetBody(bodyText?: string, now = new Date()): string | undefined {
-  if (!bodyText?.trim()) return undefined
-  let payload: unknown
-  try {
-    payload = JSON.parse(bodyText)
-  } catch {
-    return undefined
-  }
-  const root = objectValue(payload)
-  const error = objectValue(root?.error)
-  if (!error) return undefined
-  const type = typeof error.type === 'string' ? error.type : ''
-  if (type !== 'usage_limit_reached' && type !== 'rate_limit_exceeded') return undefined
-
-  const resetsAt = numberValue(error.resets_at)
-  if (resetsAt !== undefined) return new Date(resetsAt * 1000).toISOString()
-  const resetsInSeconds = numberValue(error.resets_in_seconds)
-  if (resetsInSeconds !== undefined) return new Date(now.getTime() + Math.max(0, resetsInSeconds) * 1000).toISOString()
-  return undefined
-}
-
 function numberHeader(headers: HeaderInput, key: string): number | undefined {
   const value = headerValue(headers, key)
   if (!value) return undefined
@@ -227,10 +185,6 @@ function parseIsoDate(value: string): Date | undefined {
 function numberValue(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? number : undefined
-}
-
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
 function assertLocalGatewayDatabaseAccess(operation: string): void {

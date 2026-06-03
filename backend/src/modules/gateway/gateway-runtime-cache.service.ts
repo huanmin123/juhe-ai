@@ -68,6 +68,9 @@ export function readCachedGatewaySettings(): GatewaySettings {
 }
 
 export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings> {
+  if (runtimeConfig.processRole !== 'server') {
+    return { ...readCachedGatewaySettings() }
+  }
   const cached = gatewaySettingsCache.get('current')
   if (cached) {
     return { ...cached }
@@ -92,6 +95,9 @@ export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAcc
 }
 
 export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string, systemAccountId: string): Promise<GroupUsageAccessMetadata | undefined> {
+  if (runtimeConfig.processRole !== 'server') {
+    return resolveCachedGroupUsageAccessMetadata(groupId, systemAccountId)
+  }
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = groupUsageAccessCache.get(cacheKey)
   if (cached !== undefined) {
@@ -124,6 +130,9 @@ export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountI
 }
 
 export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, systemAccountId: string): Promise<OpenAIAccountSecret[]> {
+  if (runtimeConfig.processRole !== 'server') {
+    return listCachedOpenAIAccountsForGroup(groupId, systemAccountId)
+  }
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {

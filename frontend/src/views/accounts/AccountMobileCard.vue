@@ -171,6 +171,16 @@ const authorizedActions = computed<RowActionItem[]>(() => {
   if (props.canEdit) {
     list.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
   }
+  if (props.canDelete) {
+    list.push({
+      key: 'delete',
+      label: '删除',
+      icon: 'delete',
+      tone: 'danger',
+      confirmTitle: '确认删除这个授权账户？',
+      confirmOkText: '删除'
+    })
+  }
   return list
 })
 

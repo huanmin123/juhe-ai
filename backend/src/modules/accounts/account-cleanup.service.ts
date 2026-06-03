@@ -19,6 +19,7 @@ export function submitAccountRelatedCleanup(target: DeletedAccountRecordCleanupT
     type: 'account_related_cleanup',
     accountId: target.accountId,
     systemAccountId: target.systemAccountId,
+    relatedAccountIds: target.relatedAccountIds,
     authorizationIds: target.authorizationIds,
     teamScopeIds: target.teamScopeIds
   })
