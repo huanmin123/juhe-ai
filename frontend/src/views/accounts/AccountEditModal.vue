@@ -28,11 +28,6 @@
         @group-options-search="$emit('group-options-search', $event)"
       />
 
-      <AccountAvailabilityScheduleSection
-        v-if="hasAccountType && !authorizedEditing"
-        :form="form"
-      />
-
       <AccountApiKeySection
         v-if="isApiKeyForm && !authorizedEditing"
         :base-url-placeholder="baseUrlPlaceholder"
@@ -62,6 +57,11 @@
         :models-loading="modelsLoading"
         :proxy-options="proxyOptions"
         :authorized-editing="authorizedEditing"
+      />
+
+      <AccountAvailabilityScheduleSection
+        v-if="hasAccountType && !authorizedEditing"
+        :form="form"
       />
 
       <AccountErrorPolicyCard

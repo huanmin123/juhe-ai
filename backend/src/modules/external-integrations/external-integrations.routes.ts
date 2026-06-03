@@ -21,7 +21,6 @@ import {
   externalIntegrationGroupListReadScope,
   externalIntegrationGroupUpdateWriteScope,
   externalIntegrationIpUsageReadScope,
-  externalIntegrationMockRankingDemoScope,
   externalIntegrationSourceAuthDemoScope
 } from '../../storage/external-integration-source.repository.js'
 import { createOperationLog } from '../../storage/repositories.js'
@@ -224,24 +223,6 @@ externalIntegrationsRouter.get(
       tokenPrefix: context.tokenPrefix,
       authenticatedAt: context.authenticatedAt,
       mock: context.isTestToken
-    }))
-  }
-)
-
-externalIntegrationsRouter.get(
-  '/demo/mock-ranking',
-  requireExternalIntegrationSource(externalIntegrationMockRankingDemoScope),
-  (req, res) => {
-    const context = getExternalIntegrationSourceContext(res)
-    const limit = normalizeLimit(req.query.limit)
-    const range = normalizeRange(req.query.range)
-    res.json(ok({
-      mock: true,
-      testToken: context.isTestToken,
-      sourceName: context.sourceName,
-      range,
-      generatedAt: new Date().toISOString(),
-      items: mockRankingItems.slice(0, limit)
     }))
   }
 )
@@ -711,77 +692,4 @@ function recordPublicWelfareAccountDeleteOperation(
       accountId: result.account.id
     }), '账号删除操作日志写入失败')
   }
-}
-
-const mockRankingItems = [
-  {
-    rank: 1,
-    name: '公益体验入口',
-    provider: 'OpenAI',
-    requestCount: 1280,
-    totalTokens: 842000,
-    cachedTokens: 126000,
-    totalCostUsd: 12.36,
-    averageFirstTokenMs: 820,
-    averageDurationMs: 3160
-  },
-  {
-    rank: 2,
-    name: '校园社群入口',
-    provider: 'Azure OpenAI',
-    requestCount: 936,
-    totalTokens: 531400,
-    cachedTokens: 68420,
-    totalCostUsd: 8.42,
-    averageFirstTokenMs: 940,
-    averageDurationMs: 3440
-  },
-  {
-    rank: 3,
-    name: '志愿者测试入口',
-    provider: 'OpenAI',
-    requestCount: 648,
-    totalTokens: 304800,
-    cachedTokens: 38200,
-    totalCostUsd: 5.18,
-    averageFirstTokenMs: 760,
-    averageDurationMs: 2810
-  },
-  {
-    rank: 4,
-    name: '夜间低峰入口',
-    provider: 'OpenAI',
-    requestCount: 415,
-    totalTokens: 199600,
-    cachedTokens: 22150,
-    totalCostUsd: 3.64,
-    averageFirstTokenMs: 1010,
-    averageDurationMs: 3890
-  },
-  {
-    rank: 5,
-    name: '备用公益入口',
-    provider: 'OpenAI',
-    requestCount: 288,
-    totalTokens: 126900,
-    cachedTokens: 18300,
-    totalCostUsd: 2.16,
-    averageFirstTokenMs: 870,
-    averageDurationMs: 3020
-  }
-]
-
-function normalizeLimit(value: unknown): number {
-  const raw = Array.isArray(value) ? value[0] : value
-  const limit = Math.trunc(Number(raw ?? 5))
-  if (!Number.isFinite(limit)) {
-    return 5
-  }
-  return Math.max(1, Math.min(limit, 20))
-}
-
-function normalizeRange(value: unknown): string {
-  const raw = Array.isArray(value) ? value[0] : value
-  const range = typeof raw === 'string' ? raw.trim() : ''
-  return range || 'last7d'
 }

@@ -96,7 +96,7 @@ apiKeysRouter.post('/', mutationGuard({
             safeChange('groupRouteStrategy', '分组路由策略', undefined, apiKey.groupRouteStrategy),
             safeChange('groupBindings', '绑定分组路由', undefined, apiKey.groupBindings),
             safeChange('availabilitySchedule', '自动启停计划', undefined, apiKey.availabilitySchedule),
-            safeChange('key', '密钥', undefined, apiKey.keyPrefix)
+            safeChange('key', '密钥标识', undefined, `${apiKey.keyPrefix}...${apiKey.keySuffix}`)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }

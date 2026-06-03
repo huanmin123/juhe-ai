@@ -77,6 +77,16 @@ try {
       viewers: [{ systemAccountId: 'sys_user', visibilityReason: 'resource_owner' }]
     }),
     operationLog({
+      id: 'op_log_guard_structured_filter_only',
+      traceId: 'trace-op-list-guard-structured',
+      summary: '更新结构化筛选资源配置',
+      resourceId: 'resource_resourceonlyneedle',
+      resourceName: 'resourceonlyneedle 资源',
+      actorDisplayName: 'resourceonlyneedle 管理员',
+      createdAt: '2026-02-01T00:25:00.000Z',
+      viewers: [{ systemAccountId: 'sys_user', visibilityReason: 'resource_owner' }]
+    }),
+    operationLog({
       id: 'op_log_guard_short_keyword',
       traceId: 'trace-op-list-guard-short',
       summary: '造数资源变更',
@@ -104,7 +114,7 @@ try {
   datasetDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     const shouldCapture = /\bFROM\s+(audit_logs|audit_error_groups|operation_logs)\s+(al|aeg|ol)\b/i.test(sql)
-      || /\bFROM\s+operation_log_search_terms\s+search\b/i.test(sql)
+      || /\bFROM\s+operation_log_summary_search_terms\s+search\b/i.test(sql)
       || /\bFROM\s*\(\s*SELECT[\s\S]*\bFROM\s+operation_logs\s+ol\b/i.test(sql)
     if (shouldCapture) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
@@ -136,17 +146,23 @@ try {
     const errorGroups = repositories.listAuditErrorGroups({ path: '/v1/responses', model: 'gpt-5.5', statusCode: 503, pageSize: 10 })
     assert.equal(errorGroups.items.length, 1, '审计错误组 path/model/statusCode 应按结构化条件定位')
 
-    const operationKeyword = repositories.listOperationLogs({ keyword: 'keywordguardneedle', pageSize: 10 })
-    assert.deepEqual(operationKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '操作日志长关键词应通过倒排词项命中自由文本')
+    const operationKeyword = repositories.listOperationLogs({ summaryKeyword: 'keywordguardneedle', pageSize: 10 })
+    assert.deepEqual(operationKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '操作日志摘要搜索应通过倒排词项命中中文摘要')
 
-    const viewerKeyword = repositories.listOperationLogsForViewer('sys_user', { keyword: 'keywordguardneedle', pageSize: 10 })
-    assert.deepEqual(viewerKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '用户侧操作日志关键词也应通过倒排词项保留可见性过滤')
+    const viewerKeyword = repositories.listOperationLogsForViewer('sys_user', { summaryKeyword: 'keywordguardneedle', pageSize: 10 })
+    assert.deepEqual(viewerKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '用户侧操作日志摘要搜索也应通过倒排词项保留可见性过滤')
 
-    const shortKeywordWithoutWindow = repositories.listOperationLogs({ keyword: '造数', pageSize: 10 })
+    const resourceOnlySummaryKeyword = repositories.listOperationLogs({ summaryKeyword: 'resourceonlyneedle', pageSize: 10 })
+    assert.deepEqual(resourceOnlySummaryKeyword.items.map((item) => item.id), [], '操作日志摘要搜索不应命中资源名或操作人')
+
+    const resourceIdFilter = repositories.listOperationLogs({ resourceId: 'resource_resourceonlyneedle', pageSize: 10 })
+    assert.deepEqual(resourceIdFilter.items.map((item) => item.id), ['op_log_guard_structured_filter_only'], '资源 ID 应通过独立结构化筛选命中')
+
+    const shortKeywordWithoutWindow = repositories.listOperationLogs({ summaryKeyword: '造数', pageSize: 10 })
     assert.deepEqual(
       shortKeywordWithoutWindow.items.map((item) => item.id),
       ['op_log_guard_short_keyword_middle', 'op_log_guard_short_keyword'],
-      '短关键词不再走搜索影子表，应直接通过普通 SQL 模糊匹配操作日志表字段'
+      '短中文摘要搜索应通过倒排词项命中，不回退扫描操作日志表字段'
     )
   } finally {
     datasetDatabase.prepare = originalPrepare
@@ -160,12 +176,12 @@ try {
     assert(!/\bMATCH\s+\?/i.test(call.sql), '操作日志列表不应再使用 MATCH 查询')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '日志列表不应传入前导通配符参数')
   }
-  const keywordSearchCalls = capturedCalls.filter((call) => /\bFROM\s+operation_log_search_terms\s+search\b/i.test(call.sql))
-  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === 'keywordguardneedle')), '操作日志长关键词应使用倒排词项表定位')
-  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === '造数')), '操作日志短中文关键词应使用倒排词项表定位')
+  const keywordSearchCalls = capturedCalls.filter((call) => /\bFROM\s+operation_log_summary_search_terms\s+search\b/i.test(call.sql))
+  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === 'keywordguardneedle')), '操作日志摘要搜索应使用摘要倒排词项表定位')
+  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === '造数')), '操作日志短中文摘要搜索应使用摘要倒排词项表定位')
   for (const call of keywordSearchCalls) {
     const plan = explainQueryPlan(datasetDatabase, call.sql, call.params)
-    assertPlanUses(plan, 'idx_operation_log_search_terms_term_created', '操作日志关键词查询必须由 term + created_at 索引驱动')
+    assertPlanUses(plan, 'idx_operation_log_summary_search_terms_term_created', '操作日志摘要搜索必须由 term + created_at 索引驱动')
     if (!/\bUNION\s+ALL\b/i.test(call.sql)) {
       assertNoTempBtree(plan, '操作日志管理员关键词列表不应为排序建立临时 B-tree')
     }
@@ -178,7 +194,7 @@ try {
   const boundedOriginalPrepare = boundedDatasetDatabase.prepare.bind(boundedDatasetDatabase) as typeof boundedDatasetDatabase.prepare
   boundedDatasetDatabase.prepare = ((sql: string) => {
     const statement = boundedOriginalPrepare(sql)
-    if (/\bFROM\s+operation_logs\s+ol\b/i.test(sql) || /\bFROM\s+operation_log_search_terms\s+search\b/i.test(sql)) {
+    if (/\bFROM\s+operation_logs\s+ol\b/i.test(sql) || /\bFROM\s+operation_log_summary_search_terms\s+search\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
         boundedCalls.push({ sql, params })
@@ -189,7 +205,7 @@ try {
   }) as typeof boundedDatasetDatabase.prepare
   try {
     const shortKeywordWithWindow = repositories.listOperationLogs({
-      keyword: '造数',
+      summaryKeyword: '造数',
       startAt: '2026-02-01T00:00:00.000Z',
       endAt: '2026-02-01T01:00:00.000Z',
       pageSize: 10
@@ -197,11 +213,11 @@ try {
     assert.deepEqual(
       shortKeywordWithWindow.items.map((item) => item.id),
       ['op_log_guard_short_keyword_middle', 'op_log_guard_short_keyword'],
-      '短关键词带时间窗时仍直接通过普通 SQL 模糊匹配'
+      '短中文摘要搜索带时间窗时仍通过摘要倒排词项匹配'
     )
 
     const viewerShortKeywordWithWindow = repositories.listOperationLogsForViewer('sys_user', {
-      keyword: '造数',
+      summaryKeyword: '造数',
       startAt: '2026-02-01T00:00:00.000Z',
       endAt: '2026-02-01T01:00:00.000Z',
       pageSize: 10
@@ -209,21 +225,21 @@ try {
     assert.deepEqual(
       viewerShortKeywordWithWindow.items.map((item) => item.id),
       ['op_log_guard_short_keyword_middle', 'op_log_guard_short_keyword'],
-      '用户侧短关键词也应通过普通 SQL 模糊匹配并保留可见性过滤'
+      '用户侧短中文摘要搜索也应通过摘要倒排词项并保留可见性过滤'
     )
   } finally {
     boundedDatasetDatabase.prepare = boundedOriginalPrepare
   }
-  assert(boundedCalls.some((call) => /\boperation_log_search_terms\s+search\b/i.test(call.sql)
+  assert(boundedCalls.some((call) => /\boperation_log_summary_search_terms\s+search\b/i.test(call.sql)
     && /\bsearch\.term\s*=\s*\?/i.test(call.sql)
     && /\bol\.created_at\s+>=\s+\?/i.test(call.sql)
     && /\bol\.created_at\s+<=\s+\?/i.test(call.sql)
-    && call.params.some((param) => param === '造数')), '短关键词带时间窗时应同时绑定时间条件和倒排词项')
+    && call.params.some((param) => param === '造数')), '短中文摘要搜索带时间窗时应同时绑定时间条件和摘要倒排词项')
   for (const call of boundedCalls) {
-    assert(!/\bMATCH\s+\?/i.test(call.sql), '小时间窗操作日志关键词也不应使用 MATCH 查询')
+    assert(!/\bMATCH\s+\?/i.test(call.sql), '小时间窗操作日志摘要搜索也不应使用 MATCH 查询')
   }
 
-  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志关键词使用倒排词项索引，避免主表 LIKE 扫描')
+  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志摘要搜索使用倒排词项索引，避免主表 LIKE 扫描')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

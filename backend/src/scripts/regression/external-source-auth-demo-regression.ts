@@ -238,7 +238,7 @@ async function runChild(): Promise<void> {
     })
     assert.equal(success.status, 200)
     assert.equal(success.body.data.sourceName, sourceName)
-    assert.equal(success.body.data.tokenPrefix, validToken.slice(0, 12))
+    assert.equal(success.body.data.tokenPrefix, validToken.slice(0, 8))
     assert.equal(Object.prototype.hasOwnProperty.call(success.body.data, 'token'), false, '成功响应不能返回明文 token')
     assert.equal(Object.prototype.hasOwnProperty.call(success.body.data, 'scopes'), false, '成功响应不应返回授权能力明细')
 
@@ -249,20 +249,10 @@ async function runChild(): Promise<void> {
     assert.equal(testTokenSuccess.body.data.sourceName, '内置测试来源')
     assert.equal(testTokenSuccess.body.data.mock, true)
 
-    const mockRanking = await requestJson(baseUrl, '/__aipublic__/demo/mock-ranking?range=last7d&limit=3', {
+    const removedMockRanking = await requestJson(baseUrl, '/__aipublic__/demo/mock-ranking?range=last7d&limit=3', {
       Authorization: `Bearer ${externalIntegrationTestToken}`
     })
-    assert.equal(mockRanking.status, 200)
-    assert.equal(mockRanking.body.data.mock, true)
-    assert.equal(mockRanking.body.data.testToken, true)
-    assert.equal(mockRanking.body.data.items.length, 3)
-    assert.equal(Object.prototype.hasOwnProperty.call(mockRanking.body.data, 'token'), false, 'mock 响应不能返回明文 token')
-
-    const mockRankingNoScope = await requestJson(baseUrl, '/__aipublic__/demo/mock-ranking?range=last7d&limit=3', {
-      Authorization: `Bearer ${validToken}`
-    })
-    assert.equal(mockRankingNoScope.status, 403)
-    assert.equal(mockRankingNoScope.body.code, 'external_source_scope_forbidden', 'Mock Demo 必须使用自己的接口 scope')
+    assert.equal(removedMockRanking.status, 404, '公益榜 Mock Demo 已移除')
 
     const ipUsageNoScope = await requestJson(baseUrl, '/__aipublic__/ip/usage?range=today&pageSize=5', {
       Authorization: `Bearer ${validToken}`
@@ -522,7 +512,7 @@ async function runChild(): Promise<void> {
     const addLogDetail = getOperationLogDetail(addLogs.items[0].id)
     assert(addLogDetail, '正式账号新增操作日志应可读取详情')
     assert.equal(addLogDetail.metadata?.sourceRefId, accountWriteSource.id, '操作日志详情应记录来源系统 ID')
-    assert.equal(addLogDetail.metadata?.tokenPrefix, accountWriteToken.slice(0, 12), '操作日志详情应记录来源 token 前缀')
+    assert.equal(addLogDetail.metadata?.tokenPrefix, accountWriteToken.slice(0, 8), '操作日志详情应记录来源 token 前缀')
 
     const accountList = await requestJson(baseUrl, `/__aipublic__/account/list?targetUsername=huanmin&targetGroupName=${encodeURIComponent('福利')}&providerCode=openai&pageSize=10`, {
       Authorization: `Bearer ${accountWriteToken}`
@@ -807,7 +797,7 @@ async function runChild(): Promise<void> {
         JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
         WHERE sources.name = ? AND tokens.token_prefix = ?
       `)
-      .get(sourceName, validToken.slice(0, 12)) as { token_last_used_at?: string | null; source_last_used_at?: string | null } | undefined
+      .get(sourceName, validToken.slice(0, 8)) as { token_last_used_at?: string | null; source_last_used_at?: string | null } | undefined
     assert(lastUsedRow?.token_last_used_at, '成功鉴权后应低频记录 token 最近调用时间')
     assert(lastUsedRow?.source_last_used_at, '成功鉴权后应低频记录来源系统最近调用时间')
   } finally {

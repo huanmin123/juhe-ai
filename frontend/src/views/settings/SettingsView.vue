@@ -99,19 +99,19 @@
         <section class="settings-section">
           <div class="section-heading">
             <div>
-              <h3>流式超时与换号</h3>
-              <p>分别控制“首包前等多久换账号”和“单次响应输出中停多久算中断”；累计失败达到阈值后，账号会临时不可调用。</p>
+              <h3>首包等待与流式中断</h3>
+              <p>首包等待适用于非流式和流式请求；流式输出停顿和失败计数只作用于 SSE 响应。</p>
             </div>
             <a-switch v-model:checked="systemForm.streamCircuitBreakerEnabled" checked-children="启用" un-checked-children="关闭" />
           </div>
 
           <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>流式请求如果首包等待过久会自动换账号重试；单次流式响应开始后，超过阈值仍没有任何上游新数据，则记录为流式中断。</template>
+            <template #message>非流式和流式请求在上游响应开始前超过首包等待上限，会中断当前账号并尝试后续账号；单次流式响应开始后，超过阈值仍没有任何上游新数据，则记录为流式中断。</template>
           </a-alert>
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="首包等待上限（秒）" extra="发起流式请求后，超过这个时间还没有收到第一段内容，就中断当前账号并换下一个账号重试。">
+              <a-form-item label="首包等待上限（秒）" extra="发起上游请求后，超过这个时间仍未收到上游首个响应或非流式首个字节，就中断当前账号并尝试后续账号。">
                 <a-input-number v-model:value="systemForm.streamRequestTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>

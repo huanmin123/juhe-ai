@@ -19,6 +19,7 @@ import {
 import { suppressGatewayAccountLocallyForSeconds } from './gateway-account-side-effects.service.js'
 import { recordClientIpErrorCircuitSuccess } from './openai-gateway-client-ip-error-circuit.service.js'
 import {
+  NonStreamUpstreamBodyPipeError,
   pipeNonStreamUpstreamResponse,
   readUpstreamBodyLimited
 } from './openai-gateway-body.js'
@@ -41,6 +42,7 @@ import {
   copyResponseHeaders,
   isEffectiveOpenAIStreamRequest,
   isUpstreamRequestAbortedError,
+  upstreamRequestTimeoutMs,
   UpstreamRequestAbortedError,
   type GatewayUpstreamResponse
 } from './openai-gateway-upstream.js'
@@ -65,6 +67,7 @@ import {
   recordCompletedUpstreamAttempt,
   type GatewayUsageContext
 } from './openai-gateway-usage-records.js'
+import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true }
@@ -449,9 +452,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     upstreamUrl,
     auditAttemptId,
     auditCapture,
+    settings,
     usageContext,
     startedAt,
     signal,
+    sessionAffinityKey,
+    accountStateMutationEnabled,
     markFirstOutput
   } = input
 
@@ -469,6 +475,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       responseBody = Buffer.alloc(0)
       responseBodyText = ''
       firstTokenMs = Date.now() - startedAt
+      prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
       markFirstOutput?.()
       res.end()
     } else if (upstreamResponse.ok) {
@@ -476,7 +483,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         startedAt,
         captureBody: auditCapture.shouldCaptureSuccessPayloads(),
         signal,
-        onFirstByte: markFirstOutput
+        firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+        prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
+        onFirstByte: () => {
+          firstTokenMs = Date.now() - startedAt
+          markFirstOutput?.()
+        }
       })
       responseBody = pipeResult.capturedBody
       responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
@@ -510,6 +522,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           endpoint: usageContext.endpoint
         }, '上游错误响应体超过网关捕获上限，已截断用于诊断')
       }
+      prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
       res.send(readResult.body)
     }
   } catch (error) {
@@ -537,6 +550,79 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         errorPhase: 'client',
         errorMessage: downstreamConnectionClosedMessage
       })
+    } else if (error instanceof NonStreamUpstreamBodyPipeError && (res.headersSent || res.writableEnded || res.destroyed)) {
+      responseBody = error.partialResult.capturedBody
+      responseBodyText = error.partialResult.diagnosticBodyText ?? error.partialResult.usageTailText
+      responseUsageText = error.partialResult.usageTailText
+      firstTokenMs = error.partialResult.firstByteMs ?? firstTokenMs
+      const errorMessage = sanitizeDiagnosticPayload(error instanceof Error ? error.message : '上游非流式响应正文中断')
+      logger.warn({
+        event: 'gateway_non_stream_body_interrupted_after_output',
+        accountId: account.id,
+        accountName: account.name,
+        statusCode: upstreamResponse.status,
+        endpoint: usageContext.endpoint,
+        firstTokenMs,
+        transferredBytes: error.partialResult.transferredBytes,
+        captureTruncated: error.partialResult.captureTruncated,
+        errorMessage
+      }, '上游非流式响应正文已输出后中断，下游连接已按网络失败关闭')
+      forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      if (accountStateMutationEnabled !== false) {
+        const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
+        suppressGatewayAccountLocallyForSeconds(account, ttlSeconds, `上游非流式响应正文中断：${errorMessage}`)
+        auditCapture.addGatewayMetadata({
+          label: 'non_stream_body_interrupted_runtime_avoidance',
+          metadata: {
+            accountId: account.id,
+            ttlSeconds,
+            transferredBytes: error.partialResult.transferredBytes
+          }
+        })
+      }
+      recordCompletedUpstreamAttempt(req, {
+        ...usageContext,
+        account,
+        statusCode: upstreamResponse.status,
+        success: false,
+        stream: isEffectiveOpenAIStreamRequest(req, account),
+        firstTokenMs,
+        startedAt,
+        usage: emptyUsage(),
+        errorCode: 'upstream_body_interrupted',
+        errorMessage,
+        requestSnapshot: usageContext.requestSnapshot,
+        responseSnapshot: buildUsageResponseSnapshot({
+          upstreamUrl,
+          statusCode: upstreamResponse.status,
+          headers: upstreamResponse.headers,
+          bodyText: responseBodyText,
+          errorMessage
+        })
+      })
+      auditCapture.completeAttempt(auditAttemptId, {
+        statusCode: upstreamResponse.status,
+        responseHeaders: upstreamResponse.headers,
+        responseBody: responseBody ?? responseBodyText,
+        success: false,
+        errorPhase: 'upstream_response',
+        errorCode: 'upstream_body_interrupted',
+        errorMessage
+      })
+      auditCapture.finalize({
+        outcome: 'upstream_failed',
+        success: false,
+        statusCode: upstreamResponse.status,
+        responseHeaders: responseHeadersToObject(res),
+        responseBody: responseBodyText,
+        responsePartType: 'gateway_response',
+        errorPhase: 'upstream_response',
+        errorCode: 'upstream_body_interrupted',
+        errorMessage,
+        accountId: account.id,
+        firstTokenMs
+      })
+      return { alreadyFinalized: true }
     }
     throw error
   }

@@ -189,7 +189,7 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
       summary: `生成外部来源系统 Token：${source?.name ?? params.data.id}`,
       changes: [
         safeChange('tokenName', 'Token 名称', undefined, token.name),
-        safeChange('tokenPrefix', 'Token 前缀', undefined, token.tokenPrefix),
+        safeChange('tokenPreview', 'Token 标识', undefined, `${token.tokenPrefix}...${token.tokenSuffix}`),
         safeChange('expiresAt', '到期时间', undefined, token.expiresAt)
       ]
     })

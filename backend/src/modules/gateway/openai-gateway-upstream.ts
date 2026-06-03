@@ -126,7 +126,7 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
 
     if (options.requestTimeoutMs !== undefined) {
       const seconds = Math.ceil(options.requestTimeoutMs / 1000)
-      requestTimeout = setTimeout(() => request.destroy(new UpstreamRequestTimeoutError(`上游流式请求 ${seconds}s 后仍未返回首个响应`)), options.requestTimeoutMs)
+      requestTimeout = setTimeout(() => request.destroy(new UpstreamRequestTimeoutError(`上游请求 ${seconds}s 后仍未返回首个响应`)), options.requestTimeoutMs)
     }
     request.setTimeout(options.timeoutMs ?? 120000, abort)
     options.signal?.addEventListener('abort', abortBySignal, { once: true })
@@ -209,16 +209,14 @@ export async function readStreamChunkWithAbort(
 
 export function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number {
   const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
+  const requestTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
   if (!isStreamRequest || !settings.streamCircuitBreakerEnabled) {
-    return 120000
+    return Math.max(requestTimeoutSeconds, 30) * 1000
   }
-  return Math.max(settings.streamRequestTimeoutSeconds, settings.streamIdleTimeoutSeconds + 15, 30) * 1000
+  return Math.max(requestTimeoutSeconds, settings.streamIdleTimeoutSeconds + 15, 30) * 1000
 }
 
 export function upstreamRequestTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number | undefined {
-  if (!isEffectiveOpenAIStreamRequest(req, account) || !settings.streamCircuitBreakerEnabled) {
-    return undefined
-  }
   return Math.max(1, settings.streamRequestTimeoutSeconds) * 1000
 }
 

@@ -132,6 +132,7 @@ function apiKeyListColumns(options: { includeSecret?: boolean } = {}): string {
     'api_keys.name',
     'api_keys.description',
     'api_keys.key_prefix',
+    'api_keys.key_suffix',
     'api_keys.status',
     'api_keys.group_route_strategy',
     'system_accounts.display_name AS group_owner_system_account_name',
@@ -150,6 +151,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const now = nowIso()
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
+  const keySuffix = key.slice(-8)
   const scopedOwnerId = manageableSystemAccountId(access)
   let systemAccountId = scopedOwnerId ?? currentSystemAccountId(access)
   const rawBindings = apiKeyGroupBindingInputsFromRequest(input)
@@ -173,6 +175,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     name: normalizedApiKeyName(input.name),
     description: normalizeOptionalApiKeyDescription(input.description),
     keyPrefix,
+    keySuffix,
     status: normalizeApiKeyStatus(input.status, 'active'),
     groupRouteStrategy,
     groupBindings,
@@ -194,6 +197,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       'description',
       'key_hash',
       'key_prefix',
+      'key_suffix',
       'key_secret_encrypted',
       'status',
       'group_route_strategy',
@@ -210,6 +214,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       record.description ?? null,
       hashSecret(key),
       record.keyPrefix,
+      record.keySuffix,
       encryptJson({ key }),
       record.status,
       record.groupRouteStrategy,

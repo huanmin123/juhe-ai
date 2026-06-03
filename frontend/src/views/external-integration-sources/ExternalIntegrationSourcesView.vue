@@ -24,7 +24,7 @@
           <template #icon><book-outlined /></template>
           接入文档
         </a-button>
-        <a-button type="primary" @click="openCreateSource">新增来源授权</a-button>
+        <a-button type="primary" @click="openCreateSource">新增授权</a-button>
       </template>
       <template #filters>
         <a-form layout="vertical">
@@ -58,10 +58,25 @@
           <a-tag :color="sourceStatusColor(record.status)">{{ sourceStatusText(record.status) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'tokens'">
-          <span :class="primaryToken(record)?.tokenPrefix ? 'name-cell' : 'muted-cell'">{{ primaryToken(record)?.tokenPrefix ?? '未生成' }}</span>
+          <div class="token-preview-cell">
+            <span class="token-preview" :title="tokenDisplayTitle(primaryToken(record))">{{ formatTokenPreview(primaryToken(record)) }}</span>
+            <a-tooltip title="复制 Token 标识">
+              <span>
+                <a-button
+                  class="token-copy-button"
+                  type="text"
+                  size="small"
+                  :disabled="!primaryToken(record)"
+                  @click="copyTokenPreview(record)"
+                >
+                  <template #icon><copy-outlined /></template>
+                </a-button>
+              </span>
+            </a-tooltip>
+          </div>
         </template>
         <template v-else-if="column.key === 'scopes'">
-          <div class="tag-line">
+          <div class="scope-tag-line">
             <a-tag v-for="scope in record.scopes" :key="scope">{{ scopeLabel(scope) }}</a-tag>
             <span v-if="!record.scopes.length" class="muted-cell">未授权</span>
           </div>
@@ -90,7 +105,7 @@
           <div class="mobile-list-meta-grid">
             <div class="mobile-list-meta-item">
               <span>Token</span>
-              <strong>{{ primaryToken(record)?.tokenPrefix ?? '未生成' }}</strong>
+              <strong>{{ formatTokenPreview(primaryToken(record)) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>限频</span>
@@ -240,55 +255,91 @@
 
     <a-modal
       v-model:open="sourceModalOpen"
-      :title="editingSourceId ? '编辑来源授权' : '新增来源授权'"
+      :title="editingSourceId ? '编辑来源授权' : '新增授权'"
       width="760px"
       :confirm-loading="sourceSaving"
-      :ok-text="createdTokenPlain ? '已保存' : '保存'"
-      :cancel-text="createdTokenPlain ? '关闭' : '取消'"
-      :ok-button-props="{ disabled: Boolean(createdTokenPlain) }"
+      ok-text="保存"
+      cancel-text="取消"
+      :ok-button-props="{ disabled: sourceSaving }"
       @ok="saveSource"
     >
-      <a-alert
-        v-if="createdTokenPlain"
-        class="created-token-alert"
-        type="success"
-        show-icon
-        message="生产 Token 只展示这一次"
-        description="请把它配置到外部系统后端，不要放进前端包或公开文档。"
-      />
-      <a-input-group v-if="createdTokenPlain" compact class="created-token-input">
-        <a-input :value="createdTokenPlain" readonly />
-        <a-button @click="copyCreatedToken">复制</a-button>
-      </a-input-group>
-
       <a-form layout="vertical">
         <a-form-item label="授权名称" required>
-          <a-input v-model:value="sourceForm.name" placeholder="例如 公益站生产授权" :disabled="Boolean(createdTokenPlain)" />
+          <a-input v-model:value="sourceForm.name" placeholder="例如 公益站生产授权" />
         </a-form-item>
         <a-form-item label="状态">
-          <a-select v-model:value="sourceForm.status" :options="sourceStatusOptions" :disabled="Boolean(createdTokenPlain)" />
+          <a-select v-model:value="sourceForm.status" :options="sourceStatusOptions" />
         </a-form-item>
         <a-form-item label="接口资源授权">
-          <a-select v-model:value="sourceForm.scopes" mode="multiple" :options="scopeOptions" placeholder="选择允许调用的公开接口" :disabled="Boolean(createdTokenPlain)" />
+          <a-select v-model:value="sourceForm.scopes" mode="multiple" :options="scopeOptions" placeholder="选择允许调用的公开接口" />
         </a-form-item>
         <a-form-item label="到期时间">
-          <a-date-picker v-model:value="sourceForm.expiresAt" class="full-control" show-time allow-clear :disabled="Boolean(createdTokenPlain)" />
+          <a-date-picker v-model:value="sourceForm.expiresAt" class="full-control" show-time allow-clear />
         </a-form-item>
         <a-form-item label="限频规则">
           <div class="rate-limit-list">
             <div v-for="(rule, index) in sourceForm.rateLimits" :key="index" class="rate-limit-row">
-              <a-input-number v-model:value="rule.windowSeconds" :min="1" :max="86400" :precision="0" addon-after="秒内" :disabled="Boolean(createdTokenPlain)" />
-              <a-input-number v-model:value="rule.maxRequests" :min="1" :max="100000" :precision="0" addon-after="次" :disabled="Boolean(createdTokenPlain)" />
-              <a-button danger :disabled="Boolean(createdTokenPlain)" @click="removeRateLimit(index)">删除</a-button>
+              <a-input-number v-model:value="rule.windowSeconds" :min="1" :max="86400" :precision="0" addon-after="秒内" />
+              <a-input-number v-model:value="rule.maxRequests" :min="1" :max="100000" :precision="0" addon-after="次" />
+              <a-button danger @click="removeRateLimit(index)">删除</a-button>
             </div>
-            <a-button :disabled="Boolean(createdTokenPlain)" @click="addRateLimit">新增限频规则</a-button>
+            <a-button @click="addRateLimit">新增限频规则</a-button>
             <span v-if="!sourceForm.rateLimits.length" class="muted-cell">默认不限制。</span>
           </div>
         </a-form-item>
         <a-form-item label="备注">
-          <a-textarea v-model:value="sourceForm.notes" :rows="3" :maxlength="500" show-count :disabled="Boolean(createdTokenPlain)" />
+          <a-textarea v-model:value="sourceForm.notes" :rows="3" :maxlength="500" show-count />
         </a-form-item>
       </a-form>
+    </a-modal>
+
+    <a-modal
+      v-model:open="createdTokenOpen"
+      title="来源授权已创建"
+      width="600px"
+      :footer="null"
+      :mask-closable="false"
+      @cancel="closeCreatedTokenModal"
+    >
+      <div class="created-token-guide">
+        <a-alert
+          class="created-token-alert"
+          type="success"
+          show-icon
+          message="生产 Token 只展示这一次"
+          description="请复制后保存到外部系统后端，不要放进前端包或公开文档。"
+        />
+        <div class="created-token-guide-section">
+          <span class="created-token-step-title">1. 复制 Base URL</span>
+          <div class="created-token-copy-row">
+            <span class="created-token-label">Base URL</span>
+            <code class="created-token-value">{{ publicApiBaseUrl }}</code>
+            <a-button type="text" size="small" @click="copyPublicApiBaseUrl">
+              <template #icon><copy-outlined /></template>
+              复制
+            </a-button>
+          </div>
+        </div>
+        <div class="created-token-guide-section">
+          <span class="created-token-step-title">2. 保存生产 Token</span>
+          <a-input-group compact class="created-token-input">
+            <a-input :value="createdTokenPlain" readonly />
+            <a-button type="primary" @click="copyCreatedToken">复制</a-button>
+          </a-input-group>
+        </div>
+        <div class="created-token-guide-section">
+          <span class="created-token-step-title">3. 配置请求头</span>
+          <pre class="created-token-code">{{ createdTokenAuthHeader }}</pre>
+          <a-button size="small" @click="copyCreatedTokenAuthHeader">
+            <template #icon><copy-outlined /></template>
+            复制认证头
+          </a-button>
+        </div>
+        <div class="created-token-actions">
+          <a-button @click="openApiDocs">查看接入文档</a-button>
+          <a-button type="primary" @click="closeCreatedTokenModal">我已保存</a-button>
+        </div>
+      </div>
     </a-modal>
   </a-card>
 </template>
@@ -312,6 +363,7 @@ import type {
   ExternalIntegrationScopeOption,
   ExternalIntegrationSourceStatus,
   ExternalIntegrationSourceSummary,
+  ExternalIntegrationSourceTokenSummary,
   ExternalPublicApiDocItem,
   ExternalPublicApiField,
   ExternalPublicApiStatus,
@@ -319,6 +371,7 @@ import type {
 } from '@/types/domain'
 
 const pageSize = 20
+const sourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
 const loading = ref(false)
 const keyword = ref('')
 const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>('all')
@@ -341,6 +394,7 @@ const curlCommandPlatform = computed<CurlCommandPlatform>(() => detectCurlComman
 type CurlCommandPlatform = 'windows' | 'posix'
 
 const sourceModalOpen = ref(false)
+const createdTokenOpen = ref(false)
 const sourceSaving = ref(false)
 const editingSourceId = ref<string>()
 const sourceForm = reactive<{
@@ -360,6 +414,7 @@ const sourceForm = reactive<{
 })
 
 const createdTokenPlain = ref('')
+const createdTokenAuthHeader = computed(() => `Authorization: Bearer ${createdTokenPlain.value || '<source_token>'}`)
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -375,8 +430,8 @@ const sourceStatusOptions = [
 const columns = [
   { title: '来源授权', key: 'source', width: 180, fixed: 'left', align: 'left' },
   { title: '状态', key: 'status', width: 100, align: 'left' },
-  { title: 'Token 前缀', key: 'tokens', width: 130, align: 'left' },
-  { title: '接口资源授权', key: 'scopes', width: 260, align: 'left' },
+  { title: 'Token', key: 'tokens', width: 180, align: 'left' },
+  { title: '接口资源授权', key: 'scopes', width: 300, className: 'scope-column', align: 'left' },
   { title: '限频', key: 'rateLimits', width: 180, align: 'left' },
   { title: '到期时间', key: 'expiresAt', width: 180, align: 'left' },
   { title: '最近调用', key: 'lastUsedAt', width: 180, align: 'left' },
@@ -708,15 +763,22 @@ function handleTableChange(nextPagination: unknown): void {
 function openCreateSource(): void {
   editingSourceId.value = undefined
   createdTokenPlain.value = ''
+  createdTokenOpen.value = false
   Object.assign(sourceForm, {
     name: '',
     status: 'active',
-    scopes: scopeOptions.value.map((item) => item.value),
+    scopes: defaultCreateSourceScopes(),
     rateLimits: [],
     expiresAt: null,
     notes: ''
   })
   sourceModalOpen.value = true
+}
+
+function defaultCreateSourceScopes(): string[] {
+  return scopeOptions.value.some((item) => item.value === sourceAuthDemoScope)
+    ? [sourceAuthDemoScope]
+    : []
 }
 
 function openEditSource(record: ExternalIntegrationSourceSummary): void {
@@ -731,6 +793,7 @@ function openEditSource(record: ExternalIntegrationSourceSummary): void {
   }
   editingSourceId.value = record.id
   createdTokenPlain.value = ''
+  createdTokenOpen.value = false
   Object.assign(sourceForm, {
     name: record.name,
     status: record.status,
@@ -764,6 +827,8 @@ async function saveSource(): Promise<void> {
     } else {
       const result = await api.externalIntegrationSources.create(payload)
       createdTokenPlain.value = result.token.token
+      sourceModalOpen.value = false
+      createdTokenOpen.value = true
       message.success('来源授权已创建')
     }
     await loadData()
@@ -815,6 +880,25 @@ function copyCreatedToken(): void {
   void copyTextToClipboard(createdTokenPlain.value, 'Token 已复制')
 }
 
+function copyCreatedTokenAuthHeader(): void {
+  void copyTextToClipboard(createdTokenAuthHeader.value, '认证头已复制')
+}
+
+function copyPublicApiBaseUrl(): void {
+  void copyTextToClipboard(publicApiBaseUrl.value, 'Base URL 已复制')
+}
+
+function closeCreatedTokenModal(): void {
+  createdTokenOpen.value = false
+  createdTokenPlain.value = ''
+}
+
+function copyTokenPreview(record: ExternalIntegrationSourceSummary): void {
+  const preview = formatTokenPreview(primaryToken(record))
+  if (preview === '未生成') return
+  void copyTextToClipboard(preview, 'Token 标识已复制')
+}
+
 function normalizeRateLimits(rules: ExternalIntegrationRateLimitRule[]): ExternalIntegrationRateLimitRule[] {
   return rules.map((rule, index) => ({
     windowSeconds: normalizeRateLimitInteger(rule.windowSeconds, 1, 86400, `第 ${index + 1} 条限频窗口`),
@@ -848,7 +932,27 @@ function scopeLabel(scope: string): string {
   return scopeOptions.value.find((item) => item.value === scope)?.label ?? scope
 }
 
-function primaryToken(record: ExternalIntegrationSourceSummary) {
+function formatTokenPreview(token: ExternalIntegrationSourceTokenSummary | undefined): string {
+  if (!token) return '未生成'
+  return maskSecretPreview('', token.tokenPrefix, token.tokenSuffix)
+}
+
+function tokenDisplayTitle(token: ExternalIntegrationSourceTokenSummary | undefined): string {
+  return token ? '完整 Token 仅创建时显示' : '未生成'
+}
+
+function maskSecretPreview(value: string | undefined, prefix?: string, suffix?: string): string {
+  if (value) {
+    return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value
+  }
+  const head = prefix?.slice(0, 8) ?? ''
+  const tail = suffix?.slice(-8) ?? ''
+  if (head && tail) return `${head}...${tail}`
+  if (head) return `${head}...`
+  return '未生成'
+}
+
+function primaryToken(record: ExternalIntegrationSourceSummary): ExternalIntegrationSourceTokenSummary | undefined {
   return record.tokens[0]
 }
 </script>
@@ -879,6 +983,27 @@ function primaryToken(record: ExternalIntegrationSourceSummary) {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.scope-tag-line {
+  display: flex;
+  width: 300px;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 4px;
+  white-space: normal;
+}
+
+.scope-tag-line :deep(.ant-tag) {
+  max-width: 100%;
+  margin-inline-end: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.external-source-table :deep(.scope-column) {
+  max-width: 300px;
+  white-space: normal;
 }
 
 .link-button {
@@ -914,17 +1039,119 @@ function primaryToken(record: ExternalIntegrationSourceSummary) {
 }
 
 .created-token-alert {
-  margin-bottom: 12px;
+  margin-bottom: 0;
+}
+
+.created-token-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.created-token-guide-section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfdff;
+}
+
+.created-token-step-title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.created-token-copy-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.created-token-label {
+  flex: none;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.created-token-value {
+  min-width: 0;
+  flex: 1;
+  padding: 4px 10px;
+  overflow: hidden;
+  color: #0f766e;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 6px;
+  background: #ecfeff;
 }
 
 .created-token-input {
   display: flex;
-  margin-bottom: 16px;
+  margin-top: 2px;
 }
 
 .created-token-input :deep(.ant-input) {
   flex: 1;
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.created-token-code {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  color: #334155;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.created-token-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.token-preview-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.token-preview {
+  display: inline-flex;
+  align-items: center;
+  max-width: 138px;
+  padding: 3px 8px;
+  overflow: hidden;
+  color: #008b8b;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 4px;
+  background: #eefafa;
+}
+
+.token-copy-button {
+  color: #64748b;
+}
+
+.token-copy-button:hover:not(:disabled) {
+  color: #1677ff;
+  background: #eff6ff;
 }
 
 :global(.api-doc-modal-wrap .ant-modal) {
@@ -1150,6 +1377,12 @@ function primaryToken(record: ExternalIntegrationSourceSummary) {
   }
 
   .modal-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .created-token-copy-row,
+  .created-token-actions {
     align-items: stretch;
     flex-direction: column;
   }

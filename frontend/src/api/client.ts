@@ -295,7 +295,7 @@ export interface RuntimeLogListParams {
 export interface OperationLogListParams {
   page?: number
   pageSize?: number
-  keyword?: string
+  summaryKeyword?: string
   module?: string
   action?: string
   resourceType?: string

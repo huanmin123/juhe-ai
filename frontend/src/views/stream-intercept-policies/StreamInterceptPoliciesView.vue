@@ -41,7 +41,7 @@
           <a-tag :color="record.defaultRule ? 'blue' : 'purple'">{{ record.defaultRule ? '默认' : '自定义' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'priority'">
-          <span>P{{ record.priority }}</span>
+          <span>{{ record.priority }}</span>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
@@ -99,7 +99,7 @@
             </div>
             <div class="mobile-list-meta-item">
               <span>优先级</span>
-              <strong>P{{ record.priority }}</strong>
+              <strong>{{ record.priority }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>状态</span>
@@ -130,15 +130,15 @@
               <strong>{{ listText(record.match.errorTypes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>文本包含</span>
+              <span>SSE data文本包含</span>
               <strong>{{ listText(record.match.textIncludes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>文本不包含</span>
+              <span>SSE data文本不包含</span>
               <strong>{{ listText(record.match.textExcludes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>JSON 字段存在</span>
+              <span>JSON字段路径存在</span>
               <strong>{{ listText(record.match.jsonPathsExists) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
@@ -198,13 +198,13 @@
             <a-form-item label="error.type">
               <a-input v-model:value="form.errorTypes" :disabled="modalReadonly" placeholder="server_error" />
             </a-form-item>
-            <a-form-item label="文本包含">
-              <a-textarea v-model:value="form.textIncludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="多个关键词用逗号、分号或换行分隔" />
+            <a-form-item label="SSE data文本包含">
+              <a-textarea v-model:value="form.textIncludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="匹配当前单个 SSE 事件 data 文本，多个关键词用逗号、分号或换行分隔" />
             </a-form-item>
-            <a-form-item label="文本不包含">
-              <a-textarea v-model:value="form.textExcludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="减少误杀时填写" />
+            <a-form-item label="SSE data文本不包含">
+              <a-textarea v-model:value="form.textExcludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="当前事件 data 文本包含这些关键词时不命中，用于减少误杀" />
             </a-form-item>
-            <a-form-item label="JSON 字段存在">
+            <a-form-item label="JSON字段路径存在">
               <a-input v-model:value="form.jsonPathsExists" :disabled="modalReadonly" placeholder="response.error, error" />
             </a-form-item>
           </div>
@@ -360,9 +360,9 @@ const columns = [
   { title: 'data.type', key: 'dataTypes', width: 190 },
   { title: 'error.code', key: 'errorCodes', width: 160 },
   { title: 'error.type', key: 'errorTypes', width: 160 },
-  { title: '文本包含', key: 'textIncludes', width: 220 },
-  { title: '文本不包含', key: 'textExcludes', width: 220 },
-  { title: 'JSON 字段存在', key: 'jsonPathsExists', width: 190 },
+  { title: 'SSE data文本包含', key: 'textIncludes', width: 220 },
+  { title: 'SSE data文本不包含', key: 'textExcludes', width: 220 },
+  { title: 'JSON字段路径存在', key: 'jsonPathsExists', width: 190 },
   { title: '处置模板', key: 'action', width: 220 },
   { title: '避让秒数', key: 'avoidanceTtlSeconds', width: 120 },
   { title: '备注', key: 'notes', width: 220 },
@@ -719,8 +719,8 @@ function matchSummary(policy: StreamInterceptPolicySummary): string {
     scopedList('data.type', match.dataTypes),
     scopedList('code', match.errorCodes),
     scopedList('type', match.errorTypes),
-    scopedList('文本', match.textIncludes),
-    scopedList('字段', match.jsonPathsExists)
+    scopedList('data文本', match.textIncludes),
+    scopedList('JSON路径', match.jsonPathsExists)
   ].filter(Boolean)
   return parts.length ? parts.join('；') : '-'
 }

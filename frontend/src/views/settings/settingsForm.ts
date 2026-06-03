@@ -48,7 +48,7 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '临时状态重试间隔', 0, 3600),
     temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '临时状态重试次数', 0, 10),
     streamCircuitBreakerEnabled: booleanValue(settings.streamCircuitBreakerEnabled, '流式熔断开关'),
-    streamRequestTimeoutSeconds: integerValue(settings.streamRequestTimeoutSeconds, '首包等待上限', 10, 3600),
+    streamRequestTimeoutSeconds: integerValue(settings.streamRequestTimeoutSeconds, '上游首包等待上限', 10, 3600),
     streamIdleTimeoutSeconds: integerValue(settings.streamIdleTimeoutSeconds, '输出停顿上限', 1, 3600),
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '失败触发次数', 1, 100),
     streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '失败统计窗口', 1, 1440),

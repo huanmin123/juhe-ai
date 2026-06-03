@@ -15,6 +15,7 @@ export interface ApiKeyRow {
   name: string
   description: string | null
   key_prefix: string
+  key_suffix: string
   key_secret_encrypted?: string | null
   status: 'active' | 'disabled'
   group_route_strategy?: ApiKeySummary['groupRouteStrategy'] | null
@@ -44,6 +45,7 @@ export function apiKeySummariesFromRows(
       name: row.name,
       description: row.description ?? undefined,
       keyPrefix: row.key_prefix,
+      keySuffix: row.key_suffix,
       key: includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
       status: row.status,
       groupRouteStrategy: normalizeApiKeyGroupRouteStrategy(row.group_route_strategy),

@@ -1,7 +1,12 @@
 import type { Response } from 'express'
 
 import { getRequestLogger } from '../../shared/request-context.js'
-import { readStreamChunkWithAbort, UpstreamRequestAbortedError } from './openai-gateway-upstream.js'
+import {
+  isUpstreamRequestAbortedError,
+  readStreamChunkWithAbort,
+  readStreamChunkWithTimeout,
+  UpstreamRequestAbortedError
+} from './openai-gateway-upstream.js'
 
 export interface NonStreamPipeResult {
   firstByteMs?: number
@@ -29,6 +34,19 @@ export interface ResponseWriteResult {
   logLevel?: 'debug' | 'warn'
 }
 
+export class NonStreamUpstreamBodyPipeError extends Error {
+  constructor(
+    message: string,
+    readonly partialResult: NonStreamPipeResult,
+    readonly originalError: unknown
+  ) {
+    super(message)
+    this.name = 'NonStreamUpstreamBodyPipeError'
+  }
+}
+
+const gatewayForcedDownstreamCloseReasonKey = 'gatewayForcedDownstreamCloseReason'
+
 export const nonStreamResponseCaptureBytes = 2 * 1024 * 1024
 export const nonStreamUsageTailCaptureBytes = 256 * 1024
 export const upstreamErrorBodyCaptureBytes = 256 * 1024
@@ -44,6 +62,8 @@ export async function pipeNonStreamUpstreamResponse(
     captureBody?: boolean
     signal?: AbortSignal
     onFirstByte?: () => void
+    firstByteTimeoutMs?: number
+    prepareDownstream?: () => void
   }
 ): Promise<NonStreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
@@ -51,6 +71,7 @@ export async function pipeNonStreamUpstreamResponse(
   const usageTailCapture = new RollingBufferCapture(input.usageTailBytes ?? nonStreamUsageTailCaptureBytes)
   let transferredBytes = 0
   let firstByteMs: number | undefined
+  let downstreamPrepared = false
   let clientClosed = false
   const closeIterator = () => {
     clientClosed = true
@@ -64,7 +85,14 @@ export async function pipeNonStreamUpstreamResponse(
         throw new UpstreamRequestAbortedError('请求已取消', true)
       }
 
-      const result = await readStreamChunkWithAbort(iterator, input.signal)
+      const result = firstByteMs === undefined && input.firstByteTimeoutMs !== undefined
+        ? await readStreamChunkWithTimeout(
+          iterator,
+          Math.max(0.001, input.firstByteTimeoutMs / 1000),
+          () => new Error(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`),
+          input.signal
+        )
+        : await readStreamChunkWithAbort(iterator, input.signal)
       if (result.done) {
         break
       }
@@ -72,6 +100,10 @@ export async function pipeNonStreamUpstreamResponse(
       const buffer = Buffer.from(result.value)
       if (firstByteMs === undefined) {
         firstByteMs = Date.now() - input.startedAt
+        if (!downstreamPrepared) {
+          downstreamPrepared = true
+          input.prepareDownstream?.()
+        }
         input.onFirstByte?.()
       }
       transferredBytes += buffer.length
@@ -81,27 +113,30 @@ export async function pipeNonStreamUpstreamResponse(
     }
   } catch (error) {
     await closeAsyncIterator(iterator)
-    endResponse(res)
+    if (transferredBytes > 0 || res.headersSent) {
+      if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
+        endResponse(res)
+      } else {
+        const partialResult = buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
+        destroyResponseForUpstreamBodyError(res)
+        throw new NonStreamUpstreamBodyPipeError(
+          error instanceof Error ? error.message : '上游非流式响应正文中断',
+          partialResult,
+          error
+        )
+      }
+    }
     throw error
   } finally {
     res.off('close', closeIterator)
   }
 
-  endResponse(res)
-  const capturedBody = capture.completeBuffer()
-  const capturedBodyText = capturedBody ? capturedBody.toString('utf8') : capture.toText()
-  const captureTruncated = capture.isTruncated()
-  return {
-    firstByteMs,
-    capturedBody,
-    capturedBodyText,
-    diagnosticBodyText: capturedBodyText === undefined
-      ? undefined
-      : captureTruncated ? `${capturedBodyText}\n[truncated]` : capturedBodyText,
-    usageTailText: usageTailCapture.toText(),
-    captureTruncated,
-    transferredBytes
+  if (!downstreamPrepared) {
+    downstreamPrepared = true
+    input.prepareDownstream?.()
   }
+  endResponse(res)
+  return buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
 }
 
 export async function readUpstreamBodyLimited(
@@ -200,6 +235,23 @@ export function endResponse(res: Response): void {
   if (!res.writableEnded && !res.destroyed) {
     res.end()
   }
+}
+
+export function destroyResponseForUpstreamBodyError(res: Response): void {
+  if (res.writableEnded || res.destroyed) {
+    return
+  }
+  markGatewayForcedDownstreamClose(res, 'upstream_body_interrupted')
+  res.destroy()
+}
+
+export function isGatewayForcedDownstreamClose(res: Response): boolean {
+  return typeof (res.locals as Record<string, unknown>)[gatewayForcedDownstreamCloseReasonKey] === 'string'
+}
+
+function markGatewayForcedDownstreamClose(res: Response, reason: string): void {
+  const locals = res.locals as Record<string, unknown>
+  locals[gatewayForcedDownstreamCloseReasonKey] = reason
 }
 
 export async function closeAsyncIterator(iterator: AsyncIterator<Uint8Array>, timeoutMs = 1000): Promise<void> {
@@ -350,6 +402,28 @@ class RollingBufferCapture {
       this.chunks = this.chunks.slice(this.headIndex)
       this.headIndex = 0
     }
+  }
+}
+
+function buildNonStreamPipeResult(
+  capture: LimitedBufferCapture,
+  usageTailCapture: RollingBufferCapture,
+  firstByteMs: number | undefined,
+  transferredBytes: number
+): NonStreamPipeResult {
+  const capturedBody = capture.completeBuffer()
+  const capturedBodyText = capturedBody ? capturedBody.toString('utf8') : capture.toText()
+  const captureTruncated = capture.isTruncated()
+  return {
+    firstByteMs,
+    capturedBody,
+    capturedBodyText,
+    diagnosticBodyText: capturedBodyText === undefined
+      ? undefined
+      : captureTruncated ? `${capturedBodyText}\n[truncated]` : capturedBodyText,
+    usageTailText: usageTailCapture.toText(),
+    captureTruncated,
+    transferredBytes
   }
 }
 

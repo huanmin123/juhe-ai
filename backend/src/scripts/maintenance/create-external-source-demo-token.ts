@@ -26,7 +26,7 @@ const created = createExternalIntegrationSourceToken({
 console.log('外部来源系统 demo token 已创建。明文 token 只会在本次命令输出中展示，请保存到调用方后端配置。')
 console.log(`来源系统：${source.name}`)
 console.log(`Token 名称：${created.name}`)
-console.log(`Token 前缀：${created.tokenPrefix}`)
+console.log(`Token 标识：${created.tokenPrefix}...${created.tokenSuffix}`)
 console.log(`Scopes：${created.scopes.join(', ')}`)
 if (created.expiresAt) {
   console.log(`过期时间：${created.expiresAt}`)

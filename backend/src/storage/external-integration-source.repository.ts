@@ -7,7 +7,6 @@ import { normalizeListPage } from './query-utils.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
 export const externalIntegrationSourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
-export const externalIntegrationMockRankingDemoScope = 'external_integrations:mock_ranking_demo:read'
 export const externalIntegrationIpUsageReadScope = 'juhe_ai_public:ip_usage:read'
 export const externalIntegrationAccountUsageReadScope = 'juhe_ai_public:account_usage:read'
 export const externalIntegrationConsumptionRankingReadScope = 'juhe_ai_public:consumption_ranking:read'
@@ -25,11 +24,10 @@ export const externalIntegrationAccountAddWriteScope = 'juhe_ai_public:account_a
 export const externalIntegrationAccountUpdateWriteScope = 'juhe_ai_public:account_update:write'
 export const externalIntegrationAccountDeleteWriteScope = 'juhe_ai_public:account_delete:write'
 export const externalIntegrationTestToken = process.env.JUHE_AI_EXTERNAL_SOURCE_TEST_TOKEN?.trim() || 'juis_test_mock_public_token'
-export const externalIntegrationTestTokenPrefix = externalIntegrationTestToken.slice(0, 12)
+export const externalIntegrationTestTokenPrefix = externalIntegrationTestToken.slice(0, 8)
 
 export const externalIntegrationScopeOptions = [
   { value: externalIntegrationSourceAuthDemoScope, label: 'GET 来源鉴权 Demo' },
-  { value: externalIntegrationMockRankingDemoScope, label: 'GET 公益榜 Mock Demo' },
   { value: externalIntegrationIpUsageReadScope, label: 'GET IP 维度消费聚合' },
   { value: externalIntegrationAccountUsageReadScope, label: 'GET 账号维度实际消耗聚合' },
   { value: externalIntegrationConsumptionRankingReadScope, label: 'GET IP 维度消耗排行' },
@@ -95,6 +93,7 @@ export interface CreatedExternalIntegrationSourceToken {
   name: string
   token: string
   tokenPrefix: string
+  tokenSuffix: string
   scopes: string[]
   expiresAt?: string
 }
@@ -108,6 +107,7 @@ export interface ExternalIntegrationSourceTokenSummary {
   id: string
   name: string
   tokenPrefix: string
+  tokenSuffix: string
   status: ExternalIntegrationSourceTokenStatus
   scopes: string[]
   expiresAt?: string
@@ -175,6 +175,7 @@ interface ExternalIntegrationSourceTokenRow {
   token_id: string
   token_name: string
   token_prefix: string
+  token_suffix: string
   token_status: string
   token_scopes_json: string
   token_expires_at: string | null
@@ -204,6 +205,7 @@ interface ExternalIntegrationSourceTokenListRow {
   source_ref_id: string
   name: string
   token_prefix: string
+  token_suffix: string
   status: string
   scopes_json: string
   expires_at: string | null
@@ -221,6 +223,7 @@ const externalIntegrationSourceInputKeys = new Set(['name', 'status', 'scopes', 
 const externalIntegrationSourceTokenInputKeys = new Set(['sourceRefId', 'name', 'token', 'status', 'scopes', 'expiresAt'])
 const externalIntegrationSourceTokenUpdateInputKeys = new Set(['name', 'status', 'scopes', 'expiresAt'])
 const externalIntegrationRateLimitRuleKeys = ['windowSeconds', 'maxRequests'] as const
+const activeExternalIntegrationScopes = new Set<string>(externalIntegrationScopeOptions.map((item) => item.value))
 
 export function listExternalIntegrationSources(options: ExternalIntegrationSourceListOptions = {}): ExternalIntegrationSourceListResult {
   const pageSize = Math.max(1, Math.min(Math.trunc(options.pageSize ?? defaultPageSize), maxPageSize))
@@ -408,18 +411,20 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
   const scopes = normalizeScopes(input.scopes)
   const now = nowIso()
   const id = newId('exttok')
-  const tokenPrefix = token.slice(0, 12)
+  const tokenPrefix = token.slice(0, 8)
+  const tokenSuffix = token.slice(-8)
   try {
     getBusinessDatabase().prepare(`
       INSERT INTO external_integration_source_tokens (
-        id, source_ref_id, name, token_hash, token_prefix, status, scopes_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, source_ref_id, name, token_hash, token_prefix, token_suffix, status, scopes_json, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       source.id,
       name,
       hashExternalIntegrationSourceToken(token),
       tokenPrefix,
+      tokenSuffix,
       normalizeTokenStatusInput(input.status),
       JSON.stringify(scopes),
       normalizeNullableIso(input.expiresAt),
@@ -438,6 +443,7 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
     name,
     token,
     tokenPrefix,
+    tokenSuffix,
     scopes,
     expiresAt: normalizeNullableIso(input.expiresAt) ?? undefined
   }
@@ -531,6 +537,7 @@ export function validateExternalIntegrationSourceToken(input: {
       tokens.id AS token_id,
       tokens.name AS token_name,
       tokens.token_prefix,
+      tokens.token_suffix,
       tokens.status AS token_status,
       tokens.scopes_json AS token_scopes_json,
       tokens.expires_at AS token_expires_at,
@@ -714,6 +721,7 @@ function mapTokenSummary(row: ExternalIntegrationSourceTokenListRow): ExternalIn
     id: row.id,
     name: row.name,
     tokenPrefix: row.token_prefix,
+    tokenSuffix: row.token_suffix,
     status: normalizeTokenStatus(row.status),
     scopes: decodeScopes(row.scopes_json),
     expiresAt: row.expires_at ?? undefined,
@@ -811,6 +819,9 @@ function normalizeScopes(scopes: unknown): string[] {
     if (!value) {
       throw new Error('来源系统 scopes 不能为空')
     }
+    if (!activeExternalIntegrationScopes.has(value)) {
+      throw new Error(`来源系统 scope 不受支持：${value}`)
+    }
     values.add(value)
   }
   return [...values].sort()
@@ -818,6 +829,9 @@ function normalizeScopes(scopes: unknown): string[] {
 
 function decodeScopes(value: string): string[] {
   const parsed = JSON.parse(value) as unknown
+  if (Array.isArray(parsed)) {
+    return normalizeScopes(parsed.filter((scope) => typeof scope !== 'string' || activeExternalIntegrationScopes.has(scope.trim())))
+  }
   return normalizeScopes(parsed)
 }
 

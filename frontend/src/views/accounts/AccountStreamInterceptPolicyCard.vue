@@ -6,7 +6,7 @@
           <div class="policy-summary">
             <div class="policy-title-row">
               <h4>账户流式拦截规则</h4>
-              <a-space :size="6">
+              <a-space class="policy-title-tags" :size="6" wrap>
                 <a-tag color="purple">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
                 <a-tag color="blue">继承默认和管理端策略</a-tag>
               </a-space>
@@ -38,7 +38,7 @@
                 <div class="rule-summary">
                   <div class="rule-summary-main">
                     <a-switch v-model:checked="rule.enabled" size="small" checked-children="启" un-checked-children="停" @click.stop />
-                    <a-tag color="blue">P{{ rule.priority ?? '-' }}</a-tag>
+                    <a-tag color="blue">{{ rule.priority ?? '-' }}</a-tag>
                     <a-tag color="cyan">{{ actionLabel(rule) }}</a-tag>
                     <a-tag v-if="positiveInt(rule.avoidanceTtlSeconds)">{{ positiveInt(rule.avoidanceTtlSeconds) }}s</a-tag>
                     <strong>{{ rule.name || '未命名规则' }}</strong>
@@ -78,13 +78,13 @@
                   <a-form-item label="error.type">
                     <a-input v-model:value="rule.errorTypes" placeholder="server_error" />
                   </a-form-item>
-                  <a-form-item label="文本包含">
-                    <a-textarea v-model:value="rule.textIncludes" :rows="1" auto-size placeholder="多个关键词用逗号、分号或换行分隔" />
+                  <a-form-item label="SSE data文本包含">
+                    <a-textarea v-model:value="rule.textIncludes" :rows="1" auto-size placeholder="匹配当前单个 SSE 事件 data 文本，多个关键词用逗号、分号或换行分隔" />
                   </a-form-item>
-                  <a-form-item label="文本不包含">
-                    <a-textarea v-model:value="rule.textExcludes" :rows="1" auto-size placeholder="减少误杀时填写" />
+                  <a-form-item label="SSE data文本不包含">
+                    <a-textarea v-model:value="rule.textExcludes" :rows="1" auto-size placeholder="当前事件 data 文本包含这些关键词时不命中，用于减少误杀" />
                   </a-form-item>
-                  <a-form-item label="JSON 字段存在">
+                  <a-form-item label="JSON字段路径存在">
                     <a-input v-model:value="rule.jsonPathsExists" placeholder="response.error, error" />
                   </a-form-item>
                 </div>
@@ -309,8 +309,8 @@ function conditionSummary(rule: AccountStreamInterceptRuleForm): string {
     fieldSummary('data.type', rule.dataTypes),
     fieldSummary('code', rule.errorCodes),
     fieldSummary('type', rule.errorTypes),
-    fieldSummary('文本', rule.textIncludes),
-    fieldSummary('字段', rule.jsonPathsExists)
+    fieldSummary('data文本', rule.textIncludes),
+    fieldSummary('JSON路径', rule.jsonPathsExists)
   ].filter(Boolean)
   return parts.length ? parts.join('；') : '未配置匹配条件'
 }
@@ -324,7 +324,7 @@ function fieldSummary(label: string, value: string): string {
 <style scoped>
 .stream-policy-shell {
   border: 1px solid #e9d5ff;
-  border-radius: 8px;
+  border-radius: 16px;
   background: #fcfaff;
 }
 
@@ -359,13 +359,18 @@ function fieldSummary(label: string, value: string): string {
   gap: 10px;
 }
 
-.policy-title-row,
-.rule-summary {
+.policy-title-row {
   display: flex;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.policy-title-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .policy-title-row h4 {
@@ -383,11 +388,71 @@ function fieldSummary(label: string, value: string): string {
   gap: 6px;
 }
 
+.rule-actions {
+  justify-content: flex-end;
+}
+
+.rule-collapse {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rule-collapse :deep(.ant-collapse-item) {
+  overflow: hidden;
+  border: 1px solid #e8edf5;
+  border-radius: 12px !important;
+  background: #fff;
+}
+
+.rule-collapse :deep(.ant-collapse-header) {
+  align-items: flex-start !important;
+  min-height: 42px;
+  padding: 7px 10px !important;
+}
+
+.rule-collapse :deep(.ant-collapse-header-text) {
+  min-width: 0;
+}
+
+.rule-collapse :deep(.ant-collapse-extra) {
+  flex: 0 0 auto;
+  margin-inline-start: 12px;
+}
+
+.rule-collapse :deep(.ant-collapse-content-box) {
+  padding: 10px 12px 12px !important;
+  border-top: 1px solid #eef2f7;
+}
+
+.rule-summary {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.rule-summary-main {
+  min-width: 0;
+}
+
+.rule-summary-main strong {
+  overflow: hidden;
+  max-width: 180px;
+  color: #111827;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rule-condition-summary {
-  min-width: 160px;
+  display: block;
   overflow: hidden;
   color: #64748b;
-  text-align: right;
+  font-size: 12px;
+  line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -537,10 +602,15 @@ function fieldSummary(label: string, value: string): string {
 }
 
 @media (max-width: 720px) {
-  .policy-title-row,
-  .rule-summary {
+  .policy-title-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .policy-title-tags,
+  .policy-actions,
+  .rule-actions {
+    justify-content: flex-start;
   }
 
   .rule-condition-summary {

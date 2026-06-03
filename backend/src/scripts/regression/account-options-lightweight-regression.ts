@@ -52,8 +52,10 @@ interface ApiEnvelope<T> {
 interface AccountOptionSummary {
   id: string
   name: string
+  accessType?: string
   ownerSystemAccountId?: string
   systemAccountId?: string
+  status?: string
   permissions?: {
     canAuthorize?: boolean
   }
@@ -66,6 +68,7 @@ interface AccountOptionSummary {
 
 interface SeedState {
   adminCookie: string
+  authorizedAccountId: string
   firstUserAccountId: string
   groupMatchedAccountId: string
   matchedAccountId: string
@@ -92,7 +95,7 @@ try {
   const baseUrl = `http://127.0.0.1:${address.port}`
 
   const adminOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&limit=20`, seed.adminCookie)
-  assert.equal(adminOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '管理员按系统账户筛选账户选项时不应混入其他用户账户')
+  assert.equal(adminOptions.every((account) => account.systemAccountId === seed.userId), true, '管理员按系统账户筛选账户选项时不应混入其他用户作用域账户')
   assert.equal(adminOptions.length, 20, '账户选项应遵守 limit 查询参数')
   const adminTargetOption = adminOptions.find((account) => account.id === seed.firstUserAccountId)
   assert(adminTargetOption, '账户选项应包含目标账户')
@@ -103,26 +106,35 @@ try {
   const expandedAdminOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&limit=500`, seed.adminCookie)
   assert.equal(expandedAdminOptions.length, 50, '账户选项必须把调用方传入的超大 limit 压到 50')
   assert.equal(expandedAdminOptions.some((account) => account.id === seed.maxLimitAccountId), false, '账户选项不应因为超大 limit 一次性返回远端候选')
-  assert.equal(expandedAdminOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '压缩超大 limit 后仍不应混入其他用户账户')
+  assert.equal(expandedAdminOptions.every((account) => account.systemAccountId === seed.userId), true, '压缩超大 limit 后仍不应混入其他用户作用域账户')
 
   const sortedAdminOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&sorts=qualityScore:desc&limit=1`, seed.adminCookie)
   assert.equal(sortedAdminOptions.length, 1, '账户选项应忽略重型排序请求并继续遵守 limit')
-  assert.equal(sortedAdminOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '账户选项不应因重型排序请求混入其他账户')
+  assert.equal(sortedAdminOptions.every((account) => account.systemAccountId === seed.userId), true, '账户选项不应因重型排序请求混入其他用户作用域账户')
   assertLightweightAccountOption(sortedAdminOptions[0])
 
   const userOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/my-accounts/options?systemAccountId=sys_admin&limit=20`, seed.userCookie)
   assert.equal(userOptions.length, 20, '用户侧账户选项也应遵守 limit 查询参数')
   const userTargetOption = userOptions.find((account) => account.id === seed.firstUserAccountId)
   assert(userTargetOption, '用户侧账户选项应包含当前用户账户')
-  assert.equal(userOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '用户侧账户选项必须固定当前用户作用域，不能被查询参数改写')
+  assert.equal(userOptions.every((account) => account.accessType === 'authorized' || account.ownerSystemAccountId === seed.userId), true, '用户侧账户选项必须固定当前用户作用域，不能被查询参数改写')
+  assert.equal(userOptions.every((account) => account.systemAccountId === undefined), true, '用户侧账户选项不应暴露管理侧系统账户字段')
   assert.equal(userTargetOption.systemAccountId, undefined, '用户侧账户选项不应暴露管理侧系统账户字段')
   assertLightweightAccountOption(userTargetOption)
+
+  const modelCheckDropdownOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/my-accounts/options?status=active&schedulable=enabled&limit=50`, seed.userCookie)
+  const authorizedTargetOption = modelCheckDropdownOptions.find((account) => account.id === seed.authorizedAccountId)
+  assert(authorizedTargetOption, '模型检测账户下拉应能加载已绑定分组的授权账户')
+  assert.equal(authorizedTargetOption.accessType, 'authorized', '模型检测账户下拉应保留授权账户访问类型')
+  assert.equal(authorizedTargetOption.status, 'active', '模型检测账户下拉应返回可调度授权账户的有效状态')
+  assertLightweightAccountOption(authorizedTargetOption)
+
   const repositorySortedOptions = repositories.listAccountOptions(
     { systemAccountId: seed.userId, role: 'admin', systemAccountFilterId: seed.userId },
     { sorts: [{ field: 'qualityScore', order: 'desc' }], limit: 1 }
   )
   assert.equal(repositorySortedOptions.length, 1, '账户选项 repository 层应忽略重型质量分排序并继续遵守 limit')
-  assert.equal(repositorySortedOptions[0]?.ownerSystemAccountId, seed.userId, 'repository 层账户选项不应因重型排序请求混入其他账户')
+  assert.equal(repositorySortedOptions[0]?.systemAccountId, seed.userId, 'repository 层账户选项不应因重型排序请求混入其他用户作用域账户')
   assertLightweightAccountOption(repositorySortedOptions[0])
 
   const database = databaseModule.getBusinessDatabase()
@@ -205,6 +217,14 @@ function seedData(): SeedState {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
   repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
+  const owner = repositories.createSystemAccount({
+    username: 'account_options_owner',
+    displayName: '账户选项授权所有者',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
   const user = repositories.createSystemAccount({
     username: 'account_options_user',
     displayName: '账户选项用户',
@@ -240,6 +260,11 @@ function seedData(): SeedState {
   const wildcardAccountId = 'zzz_account_options_wildcard_literal'
   const wildcardNeighborAccountId = 'zzz_account_options_wildcard_neighbor'
   const groupMatchedAccountId = 'zzz_account_options_group_match'
+  const ownerGroupId = 'grp_account_options_authorization_owner'
+  const authorizedTargetGroupId = 'grp_account_options_authorization_target'
+  const authorizedSourceAccountId = 'acc_account_options_authorization_source'
+  const authorizedAccountId = 'acc_account_options_authorization_instance'
+  const accountAuthorizationId = 'ra_account_options_authorization'
   insertAccount.run(matchedAccountId, user.id, '账户选项检索目标', keywordCreatedAt, keywordCreatedAt)
   insertAccount.run(matchedPrefixAccountId, user.id, '账户选项检索目标扩展', keywordCreatedAt, keywordCreatedAt)
   insertAccount.run(middleAccountId, user.id, '普通账户选项检索目标', keywordCreatedAt, keywordCreatedAt)
@@ -247,6 +272,7 @@ function seedData(): SeedState {
   insertAccount.run(wildcardAccountId, user.id, 'percent%literal 账户选项', keywordCreatedAt, keywordCreatedAt)
   insertAccount.run(wildcardNeighborAccountId, user.id, 'percentXliteral 账户选项', keywordCreatedAt, keywordCreatedAt)
   insertAccount.run(groupMatchedAccountId, user.id, '分组搜索账户选项', keywordCreatedAt, keywordCreatedAt)
+  insertAccount.run(authorizedSourceAccountId, owner.id, '账户选项授权可检测源账户', keywordCreatedAt, keywordCreatedAt)
   const database = databaseModule.getBusinessDatabase()
   database
     .prepare('UPDATE accounts SET notes = ? WHERE id = ?')
@@ -264,8 +290,58 @@ function seedData(): SeedState {
       VALUES (?, ?, ?, NULL, 1, ?, ?)
     `)
     .run(user.id, groupId, groupMatchedAccountId, keywordCreatedAt, keywordCreatedAt)
+  database
+    .prepare(`
+      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'openai', NULL, 1, 0, ?, ?)
+    `)
+    .run(ownerGroupId, owner.id, '账户选项授权来源分组', keywordCreatedAt, keywordCreatedAt)
+  database
+    .prepare(`
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 1, ?, ?)
+    `)
+    .run(owner.id, ownerGroupId, authorizedSourceAccountId, keywordCreatedAt, keywordCreatedAt)
+  database
+    .prepare(`
+      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'openai', NULL, 1, 0, ?, ?)
+    `)
+    .run(authorizedTargetGroupId, user.id, '账户选项授权目标分组', keywordCreatedAt, keywordCreatedAt)
+  database
+    .prepare(`
+      INSERT INTO resource_authorizations (
+        id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
+        scope, status, effective_source_type, effective_source_team_id, activated_at, last_source_changed_at,
+        remark, expires_at, limits_json, created_by, created_at, revoked_by, revoked_at, revoked_reason, updated_at
+      ) VALUES (?, 'account', ?, ?, ?, 'use', 'active', 'manual', NULL, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, NULL, ?)
+    `)
+    .run(accountAuthorizationId, authorizedSourceAccountId, owner.id, user.id, keywordCreatedAt, keywordCreatedAt, '账户 options 模型检测下拉回归', owner.id, keywordCreatedAt, keywordCreatedAt)
+  database
+    .prepare(`
+      INSERT INTO accounts (
+        id, system_account_id, provider_code, name, notes, type, status, credential_mask, credentials_encrypted,
+        proxy_profile_id, concurrency_limit, error_policy_id, priority, super_priority_enabled,
+        fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
+        last_error_message, stream_failure_count, stream_failure_window_started_at,
+        authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
+        created_at, updated_at
+      ) VALUES (?, ?, 'openai', ?, NULL, 'api_key', 'active', '', '{}',
+        NULL, 20, NULL, 0, 0,
+        0, 1, NULL, NULL, NULL, NULL,
+        NULL, 0, NULL, ?, ?, ?,
+        ?, ?)
+    `)
+    .run(authorizedAccountId, user.id, '账户选项授权可检测账户', authorizedSourceAccountId, accountAuthorizationId, owner.id, keywordCreatedAt, keywordCreatedAt)
+  database
+    .prepare(`
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, ?, ?)
+    `)
+    .run(user.id, authorizedTargetGroupId, authorizedAccountId, accountAuthorizationId, keywordCreatedAt, keywordCreatedAt)
   return {
     adminCookie: sessionCookie(admin.id),
+    authorizedAccountId,
     firstUserAccountId: userAccountIds[0],
     groupMatchedAccountId,
     matchedAccountId,

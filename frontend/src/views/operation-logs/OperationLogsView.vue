@@ -1,8 +1,8 @@
 <template>
   <a-card class="page-card responsive-page-card">
     <ResponsiveListToolbar
-      v-model:keyword="keywordFilter"
-      search-placeholder="摘要 / 资源 / 操作人"
+      v-model:keyword="summaryKeywordFilter"
+      search-placeholder="搜索操作摘要"
       filter-title="操作日志筛选"
       :active-filter-count="activeFilterCount"
       :advanced-filter-count="advancedFilterCount"
@@ -19,7 +19,13 @@
           <a-form-item label="动作">
             <a-select v-model:value="actionFilter" :options="actionOptions" @change="applyFilters" />
           </a-form-item>
-          <a-form-item label="创建时间">
+          <a-form-item label="资源类型">
+            <a-select v-model:value="resourceTypeFilter" :options="resourceTypeOptions" @change="applyFilters" />
+          </a-form-item>
+          <a-form-item label="资源 ID">
+            <a-input v-model:value="resourceIdFilter" allow-clear placeholder="输入资源 ID 精确筛选" @press-enter="applyFilters" />
+          </a-form-item>
+          <a-form-item label="时间范围">
             <a-range-picker
               v-model:value="createdAtRange"
               allow-clear
@@ -102,7 +108,13 @@
           <a-form-item label="动作">
             <a-select v-model:value="actionFilter" :options="actionOptions" />
           </a-form-item>
-          <a-form-item label="创建时间">
+          <a-form-item label="资源类型">
+            <a-select v-model:value="resourceTypeFilter" :options="resourceTypeOptions" />
+          </a-form-item>
+          <a-form-item label="资源 ID">
+            <a-input v-model:value="resourceIdFilter" allow-clear placeholder="输入资源 ID 精确筛选" />
+          </a-form-item>
+          <a-form-item label="时间范围">
             <a-range-picker
               v-model:value="createdAtRange"
               allow-clear
@@ -359,7 +371,9 @@ type OperationLogsPageState = {
   affectedSystemAccountFilter: string
   affectedSystemAccountSelection?: PrincipalSelection
   createdAtRange?: [string, string]
-  keywordFilter: string
+  resourceIdFilter: string
+  resourceTypeFilter: string
+  summaryKeywordFilter: string
   moduleFilter: string
   operationScopeSystemAccountFilter: string
   operationScopeSystemAccountSelection?: PrincipalSelection
@@ -376,7 +390,9 @@ const defaultOperationLogsPageState = (): OperationLogsPageState => ({
   affectedSystemAccountFilter: allSystemAccountsValue,
   affectedSystemAccountSelection: undefined,
   createdAtRange: undefined,
-  keywordFilter: '',
+  resourceIdFilter: '',
+  resourceTypeFilter: 'all',
+  summaryKeywordFilter: '',
   moduleFilter: 'all',
   operationScopeSystemAccountFilter: allSystemAccountsValue,
   operationScopeSystemAccountSelection: undefined,
@@ -384,7 +400,7 @@ const defaultOperationLogsPageState = (): OperationLogsPageState => ({
   traceIdFilter: ''
 })
 
-const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defaultOperationLogsPageState, { version: 3 })
+const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defaultOperationLogsPageState, { version: 4 })
 const initialPageState = pageStateCache.read()
 const { isManagementView } = useScopedMenuView()
 const operationLogsApi = useScopedOperationLogsApi(isManagementView)
@@ -400,9 +416,11 @@ const detail = ref<OperationLogDetail>()
 const detailOpen = ref(false)
 let detailRequestId = 0
 let skipNextRouteTraceRestore = false
-const keywordFilter = ref(effectiveInitialPageState.keywordFilter)
+const summaryKeywordFilter = ref(effectiveInitialPageState.summaryKeywordFilter)
 const moduleFilter = ref(effectiveInitialPageState.moduleFilter)
 const actionFilter = ref(effectiveInitialPageState.actionFilter)
+const resourceTypeFilter = ref(effectiveInitialPageState.resourceTypeFilter)
+const resourceIdFilter = ref(effectiveInitialPageState.resourceIdFilter)
 const createdAtRange = ref<CreatedAtRangeValue>(parseCreatedAtRange(effectiveInitialPageState.createdAtRange))
 const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
 const actorSystemAccountFilter = ref(effectiveInitialPageState.actorSystemAccountFilter)
@@ -515,12 +533,28 @@ const actionOptions = [
   { label: '测试改状态', value: 'test_status_changed' },
   { label: '清理使用记录', value: 'cleanup_usage_records' }
 ]
+const resourceTypeOptions = [
+  { label: '全部资源类型', value: 'all' },
+  { label: 'AI 账户', value: 'account' },
+  { label: '公告', value: 'announcement' },
+  { label: 'API Key', value: 'api_key' },
+  { label: '授权', value: 'authorization' },
+  { label: '全局设置', value: 'global_settings' },
+  { label: '分组', value: 'group' },
+  { label: '代理', value: 'proxy' },
+  { label: '系统账户', value: 'system_account' },
+  { label: '系统设置', value: 'system_settings' },
+  { label: '系统团队', value: 'system_team' },
+  { label: '使用记录', value: 'usage_records' }
+]
 
 const activeFilterCount = computed(() => {
   let count = 0
-  if (keywordFilter.value.trim()) count += 1
+  if (summaryKeywordFilter.value.trim()) count += 1
   if (moduleFilter.value !== 'all') count += 1
   if (actionFilter.value !== 'all') count += 1
+  if (resourceTypeFilter.value !== 'all') count += 1
+  if (resourceIdFilter.value.trim()) count += 1
   if (normalizeCreatedAtRange(createdAtRange.value)) count += 1
   if (traceIdFilter.value.trim()) count += 1
   if (isManagementView.value && actorSystemAccountFilter.value !== allSystemAccountsValue) count += 1
@@ -532,6 +566,8 @@ const advancedFilterCount = computed(() => {
   let count = 0
   if (moduleFilter.value !== 'all') count += 1
   if (actionFilter.value !== 'all') count += 1
+  if (resourceTypeFilter.value !== 'all') count += 1
+  if (resourceIdFilter.value.trim()) count += 1
   if (normalizeCreatedAtRange(createdAtRange.value)) count += 1
   if (traceIdFilter.value.trim()) count += 1
   if (isManagementView.value && actorSystemAccountFilter.value !== allSystemAccountsValue) count += 1
@@ -591,9 +627,11 @@ function applyFilters(): void {
 }
 
 function applyPageState(state: OperationLogsPageState): void {
-  keywordFilter.value = state.keywordFilter
+  summaryKeywordFilter.value = state.summaryKeywordFilter
   moduleFilter.value = state.moduleFilter
   actionFilter.value = state.actionFilter
+  resourceTypeFilter.value = state.resourceTypeFilter
+  resourceIdFilter.value = state.resourceIdFilter
   createdAtRange.value = parseCreatedAtRange(state.createdAtRange)
   traceIdFilter.value = state.traceIdFilter
   actorSystemAccountFilter.value = state.actorSystemAccountFilter
@@ -629,9 +667,11 @@ function refreshRecords(): void {
 function resetFilters(): void {
   clearRouteTraceIdForManualState()
   const defaults = defaultOperationLogsPageState()
-  keywordFilter.value = defaults.keywordFilter
+  summaryKeywordFilter.value = defaults.summaryKeywordFilter
   moduleFilter.value = defaults.moduleFilter
   actionFilter.value = defaults.actionFilter
+  resourceTypeFilter.value = defaults.resourceTypeFilter
+  resourceIdFilter.value = defaults.resourceIdFilter
   createdAtRange.value = parseCreatedAtRange(defaults.createdAtRange)
   traceIdFilter.value = defaults.traceIdFilter
   actorSystemAccountFilter.value = defaults.actorSystemAccountFilter
@@ -682,9 +722,11 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
   const params: OperationLogListParams = {
     page: pageState.current,
     pageSize: pageState.pageSize,
-    keyword: keywordFilter.value.trim() || undefined,
+    summaryKeyword: summaryKeywordFilter.value.trim() || undefined,
     module: moduleFilter.value === 'all' ? undefined : moduleFilter.value,
     action: actionFilter.value === 'all' ? undefined : actionFilter.value,
+    resourceType: resourceTypeFilter.value === 'all' ? undefined : resourceTypeFilter.value,
+    resourceId: resourceIdFilter.value.trim() || undefined,
     startAt: range?.[0].toISOString(),
     endAt: range?.[1].toISOString(),
     traceId: traceIdFilter.value.trim() || undefined,
@@ -809,7 +851,9 @@ function snapshotPageState(): OperationLogsPageState {
     affectedSystemAccountFilter: affectedSystemAccountFilter.value,
     affectedSystemAccountSelection: affectedSystemAccountSelection.value,
     createdAtRange: range ? [range[0].toISOString(), range[1].toISOString()] : undefined,
-    keywordFilter: keywordFilter.value,
+    resourceIdFilter: resourceIdFilter.value,
+    resourceTypeFilter: resourceTypeFilter.value,
+    summaryKeywordFilter: summaryKeywordFilter.value,
     moduleFilter: moduleFilter.value,
     operationScopeSystemAccountFilter: operationScopeSystemAccountFilter.value,
     operationScopeSystemAccountSelection: operationScopeSystemAccountSelection.value,

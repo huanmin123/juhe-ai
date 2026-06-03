@@ -89,6 +89,7 @@ try {
     assert(!nameIds.includes(middleNameOnly.id), 'API Key 搜索不应命中名称中间包含值')
     assert.equal(nameResult.items.find((item) => item.id === matchedByName.id)?.key, '', 'API Key 列表不应重复返回完整本地密钥')
     assert.equal(matchedByName.key.startsWith(matchedByName.keyPrefix), true, 'API Key 创建响应仍应返回一次完整密钥供用户保存')
+    assert.equal(matchedByName.key.endsWith(matchedByName.keySuffix), true, 'API Key 创建响应应返回后缀供列表安全识别')
 
     const descriptionResult = repositories.listApiKeysPage(access, { keyword: '说明前缀', page: 1, pageSize: 20 })
     const descriptionIds = descriptionResult.items.map((item) => item.id)

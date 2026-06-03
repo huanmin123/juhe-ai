@@ -56,7 +56,7 @@
       <slot v-else name="advanced-filters" />
     </div>
     <div v-if="showReset || showFilterSearch" class="responsive-list-filter-actions" :class="{ single: !showReset || !showFilterSearch }">
-      <a-button v-if="showReset" @click="handleDrawerReset">重置筛选</a-button>
+      <a-button v-if="showReset" @click="handleDrawerReset">重置</a-button>
       <a-button v-if="showFilterSearch" type="primary" :loading="refreshLoading" @click="handleDrawerRefresh">
         <template #icon>
           <ReloadOutlined />

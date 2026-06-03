@@ -1338,12 +1338,16 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
       ra.resource_id AS authorization_resource_id
     FROM accounts
     INNER JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
+    LEFT JOIN group_accounts option_group_bindings
+      ON option_group_bindings.account_id = accounts.id
+      AND option_group_bindings.system_account_id = ?
+      AND option_group_bindings.enabled = 1
     WHERE accounts.system_account_id = ?
       AND ra.resource_type = 'account'
       AND ra.grantee_system_account_id = ?
       AND ra.status IN ('active', 'paused', 'expired')
       AND accounts.authorization_instance_authorization_id IS NOT NULL${authorizedFilters.clause}
-  `, [ownerId, ...ownerFilters.params, ownerId, viewerSystemAccountId, ...authorizedFilters.params])
+  `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, ownerId, viewerSystemAccountId, ...authorizedFilters.params])
 }
 
 function accountOptionSelectColumns(): string {

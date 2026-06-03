@@ -15,6 +15,7 @@ export interface ExternalIntegrationSourceTokenSummary {
   id: string
   name: string
   tokenPrefix: string
+  tokenSuffix: string
   status: ExternalIntegrationSourceTokenStatus
   scopes: string[]
   expiresAt?: string
@@ -69,6 +70,7 @@ export interface CreatedExternalIntegrationSourceToken {
   name: string
   token: string
   tokenPrefix: string
+  tokenSuffix: string
   scopes: string[]
   expiresAt?: string
 }

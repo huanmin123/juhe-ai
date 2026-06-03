@@ -104,9 +104,9 @@
         <template v-else-if="column.key === 'key'">
           <div class="key-preview-cell">
             <span class="key-preview" :title="keyDisplayTitle(record)">{{ formatKeyPreview(record) }}</span>
-            <a-tooltip title="完整密钥仅创建时显示">
+            <a-tooltip title="复制密钥标识">
               <span>
-                <a-button class="key-copy-button" type="text" size="small" disabled>
+                <a-button class="key-copy-button" type="text" size="small" @click="copyKeyPreview(record)">
                   <template #icon><copy-outlined /></template>
                 </a-button>
               </span>
@@ -209,7 +209,7 @@
         </div>
         <div class="gateway-help-section">
           <span class="gateway-step-title">2. 复制新建时显示的 API Key</span>
-          <span>完整密钥只在创建成功弹窗中显示一次，列表仅保留前缀用于识别。</span>
+          <span>完整密钥只在创建成功弹窗中显示一次，列表显示前8位和后8位用于识别。</span>
         </div>
         <div class="gateway-help-section">
           <span class="gateway-step-title">3. 填到客户端</span>
@@ -765,16 +765,28 @@ function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; da
   }
 }
 
-function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
-  const value = apiKey.key
-  if (!value) return apiKey.keyPrefix ? `${apiKey.keyPrefix}...` : '仅创建时显示'
-  if (value.length <= 14) return value
-  return `${value.slice(0, 6)}...${value.slice(-4)}`
+function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>) {
+  return maskSecretPreview(apiKey.key, apiKey.keyPrefix, apiKey.keySuffix, '仅创建时显示')
 }
 
-function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
+function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>) {
   if (apiKey.key) return apiKey.key
   return apiKey.keyPrefix ? '完整密钥仅创建时显示' : '完整密钥仅创建时显示'
+}
+
+function maskSecretPreview(value: string | undefined, prefix: string | undefined, suffix: string | undefined, fallback: string): string {
+  if (value) {
+    return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value
+  }
+  const head = prefix?.slice(0, 8) ?? ''
+  const tail = suffix?.slice(-8) ?? ''
+  if (head && tail) return `${head}...${tail}`
+  if (head) return `${head}...`
+  return fallback
+}
+
+function copyKeyPreview(apiKey: ApiKeySummary): void {
+  void copyTextToClipboard(formatKeyPreview(apiKey), '密钥标识已复制')
 }
 
 function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {

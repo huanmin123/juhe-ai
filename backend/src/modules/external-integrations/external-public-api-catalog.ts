@@ -15,7 +15,6 @@ import {
   externalIntegrationGroupListReadScope,
   externalIntegrationGroupUpdateWriteScope,
   externalIntegrationIpUsageReadScope,
-  externalIntegrationMockRankingDemoScope,
   externalIntegrationSourceAuthDemoScope,
   externalIntegrationTestToken
 } from '../../storage/external-integration-source.repository.js'
@@ -97,48 +96,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             tokenPrefix: 'juis_test_mo',
             authenticatedAt: '2026-05-30T00:00:00.000Z',
             mock: true
-          }
-        }
-      },
-      {
-        id: 'mock-ranking-demo',
-        name: '公益榜 Mock Demo',
-        summary: '返回一份固定 mock 排行数据，用于调用方验证请求头、路径和响应解析。',
-        status: 'mock',
-        method: 'GET',
-        path: '/__aipublic__/demo/mock-ranking',
-        headers: [authHeader],
-        query: [
-          {
-            name: 'range',
-            type: 'string',
-            required: false,
-            description: 'mock 统计范围，示例值 last7d。',
-            example: 'last7d'
-          },
-          {
-            name: 'limit',
-            type: 'number',
-            required: false,
-            description: '返回前 N 条 mock 排名，范围 1 到 20。',
-            example: 5
-          }
-        ],
-        responseExample: {
-          data: {
-            mock: true,
-            range: 'last7d',
-            generatedAt: '2026-05-30T00:00:00.000Z',
-            items: [
-              {
-                rank: 1,
-                name: '公益体验入口',
-                provider: 'OpenAI',
-                requestCount: 1280,
-                totalTokens: 842000,
-                totalCostUsd: 12.36
-              }
-            ]
           }
         }
       },
@@ -1044,7 +1001,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
 function scopeForPublicApiDocItem(id: string): string {
   const scopesById: Record<string, string> = {
     'source-auth-demo': externalIntegrationSourceAuthDemoScope,
-    'mock-ranking-demo': externalIntegrationMockRankingDemoScope,
     'ip-usage': externalIntegrationIpUsageReadScope,
     'consumption-ranking': externalIntegrationConsumptionRankingReadScope,
     'account-usage': externalIntegrationAccountUsageReadScope,

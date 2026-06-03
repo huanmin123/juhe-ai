@@ -28,10 +28,10 @@ import {
 import {
   finalizeHandledUpstreamResponse,
   handleNonStreamUpstreamResponse,
-  handleStreamUpstreamResponse,
-  prepareUpstreamResponseForDownstream
+  handleStreamUpstreamResponse
 } from './openai-gateway-response-finalization.js'
 import { sendGatewayFailureResponse } from './openai-gateway-failure-response.js'
+import { handleUpstreamRequestError } from './openai-gateway-failure-dispatch.js'
 import { handleGatewayRequestKnownErrorResponse } from './openai-gateway-request-error-response.js'
 import {
   prepareOpenAIGatewayDispatchContext,
@@ -49,6 +49,7 @@ import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import { recordClientIpErrorCircuitSample } from './openai-gateway-client-ip-error-circuit.service.js'
 import { transferClientIpAccountPendingFailures } from './openai-gateway-client-ip-account-avoidance.service.js'
 import type { GatewayFailureUsageContext } from './openai-gateway-usage-records.js'
+import { isGatewayForcedDownstreamClose } from './openai-gateway-body.js'
 import {
   normalizeOpenAIGatewayTrafficSource,
   type OpenAIGatewayTrafficSource
@@ -127,7 +128,7 @@ export async function handleOpenAIGatewayRequest(
     abortController.abort()
   })
   res.once('close', () => {
-    if (!res.writableEnded) {
+    if (!res.writableEnded && !isGatewayForcedDownstreamClose(res)) {
       auditCapture.markClientAborted()
       abortController.abort()
     }
@@ -154,6 +155,7 @@ export async function handleOpenAIGatewayRequest(
   let streamServerRetryCount = 0
   let maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
   const exhaustedAccountIds = new Set<string>()
+  const nonStreamResponseStartedFailedAccountIds = new Set<string>()
   const switchToFallbackGroup = async (
     reason: string,
     streamInterceptPolicies?: OpenAIGatewayDispatchContext['streamInterceptPolicies'],
@@ -248,6 +250,9 @@ export async function handleOpenAIGatewayRequest(
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
+          for (const accountId of nonStreamResponseStartedFailedAccountIds) {
+            exhaustedAccountIds.add(accountId)
+          }
           for (const accountId of error.failedAccountIds) {
             exhaustedAccountIds.add(accountId)
           }
@@ -264,16 +269,15 @@ export async function handleOpenAIGatewayRequest(
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
 
       try {
+        const responseHandlingStartedAt = Date.now()
         const contentType = upstreamResponse.headers.get('content-type') ?? ''
         const shouldHandleAsStream = isOpenAIStreamContentType(contentType)
           || (isEffectiveOpenAIStreamRequest(req, account) && !isJsonResponseContentType(contentType))
-        if (!shouldHandleAsStream) {
-          prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-        }
         persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
 
-        const handledResponse = shouldHandleAsStream
-          ? await handleStreamUpstreamResponse({
+        let handledResponse: Awaited<ReturnType<typeof handleStreamUpstreamResponse>>
+        if (shouldHandleAsStream) {
+          handledResponse = await handleStreamUpstreamResponse({
             req,
             res,
             account,
@@ -292,23 +296,56 @@ export async function handleOpenAIGatewayRequest(
             clientIpAccountAvoidanceTracker,
             accountStateMutationEnabled: options.disableAccountStateMutation !== true
           })
-          : await handleNonStreamUpstreamResponse({
-            req,
-            res,
-            account,
-            upstreamResponse,
-            upstreamUrl,
-            auditAttemptId,
-            auditCapture,
-            settings: activeGatewaySettings,
-            usageContext: gatewayUsageContext,
-            startedAt,
-            signal: abortController.signal,
-            sessionAffinityKey,
-            markFirstOutput,
-            clientIpAccountAvoidanceTracker,
-            accountStateMutationEnabled: options.disableAccountStateMutation !== true
-          })
+        } else {
+          try {
+            handledResponse = await handleNonStreamUpstreamResponse({
+              req,
+              res,
+              account,
+              upstreamResponse,
+              upstreamUrl,
+              auditAttemptId,
+              auditCapture,
+              settings: activeGatewaySettings,
+              usageContext: gatewayUsageContext,
+              startedAt,
+              signal: abortController.signal,
+              sessionAffinityKey,
+              markFirstOutput,
+              clientIpAccountAvoidanceTracker,
+              accountStateMutationEnabled: options.disableAccountStateMutation !== true
+            })
+          } catch (error) {
+            if (res.headersSent || res.writableEnded || res.destroyed) {
+              throw error
+            }
+            const requestErrorResult = await handleUpstreamRequestError({
+              req,
+              usageContext: gatewayUsageContext,
+              auditCapture,
+              auditAttemptId,
+              account,
+              upstreamUrl,
+              attemptStartedAt: responseHandlingStartedAt,
+              attemptIndex: 0,
+              auditAttemptIndex: 0,
+              settings: activeGatewaySettings,
+              sessionAffinityKey,
+              signal: abortController.signal,
+              lastAttempt: { accountId: account.id, accountName: account.name, upstreamUrl, status: upstreamResponse.status },
+              failedProxyDispatchKeys: new Map(),
+              error,
+              clientIpAccountAvoidanceTracker,
+              accountStateMutationEnabled: options.disableAccountStateMutation !== true
+            })
+            nonStreamResponseStartedFailedAccountIds.add(account.id)
+            if (requestErrorResult.action === 'skip_account') {
+              streamServerRetryExcludedAccountIds.add(account.id)
+              continue
+            }
+            throw error
+          }
+        }
         if (handledResponse.alreadyFinalized) {
           return
         }
@@ -378,6 +415,11 @@ export async function handleOpenAIGatewayRequest(
       }
     }
   } catch (error) {
+    if (error instanceof UpstreamAttemptError) {
+      for (const accountId of nonStreamResponseStartedFailedAccountIds) {
+        error.failedAccountIds.push(accountId)
+      }
+    }
     const gatewayUsageContext = currentPreflight.usageContext
     recordKnownClientIpRequestError(error, gatewayUsageContext, auditCapture)
     if (handleGatewayRequestKnownErrorResponse({

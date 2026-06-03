@@ -647,10 +647,20 @@ assert.match(gatewayBodySource, /gateway_response_backpressure_slow/)
 assert.match(gatewayBodySource, /gateway_response_backpressure_drained/)
 assert.match(gatewayBodySource, /logLevel\s*===\s*'warn'\s*\?\s*'gateway_response_backpressure_slow'\s*:\s*'gateway_response_backpressure_drained'/)
 assert.doesNotMatch(gatewayBodySource, /gateway_response_backpressure_started/)
+const nonStreamPipeSource = sourceFunctionBlock(gatewayBodySource, 'export async function pipeNonStreamUpstreamResponse')
+assert.match(nonStreamPipeSource, /destroyResponseForUpstreamBodyError\(res\)/, '非流式正文已输出后上游中断必须打断下游连接，让客户端按网络失败重试')
+assert.match(nonStreamPipeSource, /NonStreamUpstreamBodyPipeError/, '非流式正文已输出后上游中断必须携带部分捕获结果进入审计和使用记录')
+const gatewayForcedCloseSource = sourceFunctionBlock(gatewayBodySource, 'export function isGatewayForcedDownstreamClose')
+assert.match(gatewayForcedCloseSource, /gatewayForcedDownstreamCloseReasonKey/, '网关主动打断下游连接必须可被路由 close 监听识别，避免误记为客户端取消')
 
 const gatewayStreamSource = readSource('modules/gateway/openai-gateway-stream.ts')
 assert.match(gatewayStreamSource, /writeResult\.logLevel\s*===\s*'warn'/)
 assert.match(gatewayStreamSource, /responseBackpressureWarnThresholdMs/)
+
+const gatewayUpstreamSource = readSource('modules/gateway/openai-gateway-upstream.ts')
+const upstreamRequestTimeoutSource = sourceFunctionBlock(gatewayUpstreamSource, 'export function upstreamRequestTimeoutMs')
+assert.match(upstreamRequestTimeoutSource, /settings\.streamRequestTimeoutSeconds/, '首包等待上限应统一用于上游首个响应等待')
+assert.doesNotMatch(upstreamRequestTimeoutSource, /isEffectiveOpenAIStreamRequest|streamCircuitBreakerEnabled/, '非流式请求也必须应用首包等待上限，不能只在流式熔断开启时生效')
 
 const releaseStartScriptSource = readFileSync(resolve(backendSrcDirectory, '../../deploy/start.sh'), 'utf8')
 assert.match(releaseStartScriptSource, /JUHE_AI_LOG_CONSOLE_ENABLED="\$\{JUHE_AI_LOG_CONSOLE_ENABLED:-false\}"/)
@@ -660,6 +670,7 @@ assert.doesNotMatch(oauthRoutesSource, /refreshOpenAIOAuthUsageSnapshot/)
 
 const gatewayRoutesSource = readSource('modules/gateway/openai-gateway.routes.ts')
 assert.match(gatewayRoutesSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*upstreamResponse\.headers,\s*gatewayUsageContext\.trafficSource\)/)
+assert.match(gatewayRoutesSource, /!isGatewayForcedDownstreamClose\(res\)/, '网关主动关闭非流式半截响应时不应被 close 监听误判为客户端取消')
 assert.match(gatewayFailureDispatchSource, /usageContext\.trafficSource === 'gateway' \? 'gateway_error' : usageContext\.trafficSource/)
 
 const cooldownRetestRepositorySource = sourceFunctionBlock(repositoriesSource, 'export function listAccountsDueForCooldownRetest')

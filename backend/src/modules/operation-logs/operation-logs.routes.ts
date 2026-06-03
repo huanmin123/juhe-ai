@@ -56,7 +56,7 @@ function parseOperationLogListOptions(query: Record<string, unknown>, includeAdm
   return {
     page: finiteNumberQueryValue(query.page),
     pageSize: finiteNumberQueryValue(query.pageSize),
-    keyword: optionalQueryText(query.keyword),
+    summaryKeyword: optionalQueryText(query.summaryKeyword),
     module: optionalQueryText(query.module),
     action: optionalQueryText(query.action),
     resourceType: optionalQueryText(query.resourceType),

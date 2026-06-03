@@ -71,6 +71,7 @@ export interface ApiKeySummary {
   name: string
   description?: string
   keyPrefix: string
+  keySuffix: string
   key: string
   status: 'active' | 'disabled'
   groupRouteStrategy: ApiKeyGroupRouteStrategy

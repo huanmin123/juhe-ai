@@ -75,7 +75,7 @@ export interface OperationLogInput {
 export interface OperationLogListOptions {
   page?: number
   pageSize?: number
-  keyword?: string
+  summaryKeyword?: string
   module?: string
   action?: string
   resourceType?: string
@@ -299,7 +299,7 @@ function listOperationLogsWithFilters(filters: OperationLogWhereFilters, options
     ? database
       .prepare(`
         SELECT ${operationLogListSelectColumns('ol')}
-        FROM operation_log_search_terms search INDEXED BY idx_operation_log_search_terms_term_created
+        FROM operation_log_summary_search_terms search INDEXED BY idx_operation_log_summary_search_terms_term_created
         INNER JOIN operation_logs ol ON ol.id = search.operation_log_id
         WHERE search.term = ?
         ${searchWhereClause}
@@ -438,7 +438,7 @@ function loadVisibleTargetedOperationLogRows(
     return database
       .prepare(`
         SELECT ${operationLogListSelectColumns('ol')}
-        FROM operation_log_search_terms search INDEXED BY idx_operation_log_search_terms_term_created
+        FROM operation_log_summary_search_terms search INDEXED BY idx_operation_log_summary_search_terms_term_created
         INNER JOIN operation_logs ol ON ol.id = search.operation_log_id AND search.term = ?
         INNER JOIN operation_log_viewers visible INDEXED BY idx_operation_log_viewers_log_account
           ON visible.operation_log_id = ol.id AND visible.system_account_id = ?
@@ -488,7 +488,7 @@ function loadVisibleAllUsersOperationLogRows(
     return database
       .prepare(`
         SELECT ${operationLogListSelectColumns('ol')}
-        FROM operation_log_search_terms search INDEXED BY idx_operation_log_search_terms_term_created
+        FROM operation_log_summary_search_terms search INDEXED BY idx_operation_log_summary_search_terms_term_created
         INNER JOIN operation_logs ol ON ol.id = search.operation_log_id AND search.term = ?
         WHERE ol.visibility_scope = 'all_users'
         ${filterClause}
@@ -578,9 +578,9 @@ function buildOperationLogFilters(options: OperationLogListOptions): OperationLo
 function buildCommonOperationLogFilters(options: OperationLogListOptions): OperationLogSqlFilters {
   const clauses: string[] = []
   const params: OperationLogFilterValue[] = []
-  const searchTerm = operationLogSearchTermFromKeyword(options.keyword)
+  const searchTerm = operationLogSearchTermFromKeyword(options.summaryKeyword)
   pushCommonOperationLogFilters(clauses, params, options)
-  if (options.keyword?.trim() && !searchTerm) {
+  if (options.summaryKeyword?.trim() && !searchTerm) {
     clauses.push('0 = 1')
   }
   return {
@@ -654,19 +654,7 @@ function operationLogSearchTermFromKeyword(value?: string): string | undefined {
 function buildOperationLogSearchTerms(prepared: PreparedOperationLogInput): string[] {
   const input = prepared.input
   const terms = new Set<string>()
-  for (const value of [
-    input.summary,
-    input.resourceName,
-    input.resourceId,
-    input.actorDisplayName,
-    input.actorUsername,
-    input.operationKey,
-    input.module,
-    input.action
-  ]) {
-    collectOperationLogSearchTerms(terms, value)
-    if (terms.size >= operationLogSearchMaxTermsPerLog) break
-  }
+  collectOperationLogSearchTerms(terms, input.summary)
   return [...terms]
 }
 
@@ -769,7 +757,7 @@ function prepareOperationLogInsertStatements(database: ReturnType<typeof getData
       ) VALUES (?, ?, ?, ?, ?)
     `),
     insertSearchTerm: database.prepare(`
-      INSERT OR IGNORE INTO operation_log_search_terms (
+      INSERT OR IGNORE INTO operation_log_summary_search_terms (
         operation_log_id, term, created_at
       ) VALUES (?, ?, ?)
     `)

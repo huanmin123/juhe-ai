@@ -50,17 +50,24 @@ export const streamInterceptPolicyGuideFields = [
   },
   {
     key: 'textIncludes',
-    field: '文本包含',
-    source: '单个完整 SSE event 的文本内容',
+    field: 'SSE data文本包含',
+    source: '当前单个 SSE 事件里 data: 后面的文本',
     example: '广告, subscribe',
-    note: '只建议处理广告污染或固定文案；文本匹配会跳过图像和超大事件。'
+    note: '只匹配当前事件，不拼接整条响应；建议处理广告污染或固定文案，图像和超大事件会跳过文本扫描。'
+  },
+  {
+    key: 'textExcludes',
+    field: 'SSE data文本不包含',
+    source: '当前单个 SSE 事件里 data: 后面的文本',
+    example: '正常业务提示',
+    note: '作为排除条件使用；当前事件 data 文本包含这些关键词时，本规则不命中。'
   },
   {
     key: 'jsonPathsExists',
-    field: 'JSON 字段存在',
-    source: 'SSE data JSON 的字段路径',
+    field: 'JSON字段路径存在',
+    source: 'SSE data JSON 内的字段路径',
     example: 'response.error, error',
-    note: '适合判断某类结构是否出现。'
+    note: '只判断路径是否存在，不匹配字段值；适合判断某类错误结构是否出现。'
   }
 ]
 
@@ -68,7 +75,7 @@ export const streamInterceptPolicyGuideActions = [
   {
     key: 'observe',
     action: '先观察命中',
-    when: '新规则、文本包含、或不确定误杀范围时',
+    when: '新规则、SSE data文本包含、或不确定误杀范围时',
     note: '只记录命中，不改变下游响应，适合观察几轮真实流量。'
   },
   {

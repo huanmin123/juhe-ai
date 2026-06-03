@@ -313,6 +313,77 @@ async function main(): Promise<void> {
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
+    settingsRepository.updateSettings({
+      streamRequestTimeoutSeconds: 10,
+      temporaryUnschedulableRetryAttempts: 0
+    })
+    gatewayCache.clearGatewayRuntimeCache()
+    currentScenario = 'non_stream_first_byte_timeout_switch_account_success'
+    const nonStreamFirstByteTimeoutStartedAt = Date.now()
+    const nonStreamFirstByteTimeoutResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'non stream first byte timeout should switch account' }],
+        stream: false
+      })
+    })
+    const nonStreamFirstByteTimeoutText = await nonStreamFirstByteTimeoutResponse.text()
+    assert.equal(nonStreamFirstByteTimeoutResponse.status, 200, `非流式 2xx 首字节超时后应切号救回，实际 HTTP ${nonStreamFirstByteTimeoutResponse.status}: ${nonStreamFirstByteTimeoutText}`)
+    assert.equal(nonStreamFirstByteTimeoutText, nonStreamFirstByteTimeoutSuccessBody, `非流式首字节超时切号成功响应体异常：${nonStreamFirstByteTimeoutText}`)
+    assert.equal(nonStreamFirstByteTimeoutFirstAccountHitCount, 1, `非流式首账号首字节超时应命中 1 次，实际 ${nonStreamFirstByteTimeoutFirstAccountHitCount}`)
+    assert.equal(nonStreamFirstByteTimeoutSecondAccountHitCount, 1, `非流式首字节超时后应切到第二账号，实际 ${nonStreamFirstByteTimeoutSecondAccountHitCount}`)
+    assert(Date.now() - nonStreamFirstByteTimeoutStartedAt >= 9000, '非流式首字节超时应受首包等待上限控制，不应立即切号')
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
+
+    currentScenario = 'non_stream_body_interrupted_after_output_client_retry'
+    let interruptedRequestFailed = false
+    try {
+      const interruptedResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${apiKey.key}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: 'non stream body interruption should fail current connection' }],
+          stream: false
+        })
+      })
+      await interruptedResponse.text()
+    } catch {
+      interruptedRequestFailed = true
+    }
+    assert.equal(interruptedRequestFailed, true, '非流式首字节已输出后正文中断应表现为客户端读取失败，不能优雅结束半截响应')
+    assert.equal(nonStreamBodyInterruptedFirstAccountHitCount, 1, `非流式正文中断首请求应命中首账号 1 次，实际 ${nonStreamBodyInterruptedFirstAccountHitCount}`)
+    assert.equal(nonStreamBodyInterruptedSecondAccountHitCount, 0, `非流式正文已输出后不应在同一 HTTP 响应里透明切到第二账号，实际 ${nonStreamBodyInterruptedSecondAccountHitCount}`)
+
+    const interruptedRetryResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'client retry after non stream body interruption should switch account' }],
+        stream: false
+      })
+    })
+    const interruptedRetryText = await interruptedRetryResponse.text()
+    assert.equal(interruptedRetryResponse.status, 200, `客户端重试后应避开刚中断账号并成功，实际 HTTP ${interruptedRetryResponse.status}: ${interruptedRetryText}`)
+    assert.equal(interruptedRetryText, nonStreamBodyInterruptedRetrySuccessBody, `非流式正文中断客户端重试响应体异常：${interruptedRetryText}`)
+    assert.equal(nonStreamBodyInterruptedFirstAccountHitCount, 1, `客户端重试应避开已本地避让的首账号，实际首账号命中 ${nonStreamBodyInterruptedFirstAccountHitCount}`)
+    assert.equal(nonStreamBodyInterruptedSecondAccountHitCount, 1, `客户端重试应命中第二账号，实际 ${nonStreamBodyInterruptedSecondAccountHitCount}`)
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
+
     currentScenario = 'dispatch_loop_local_suppression_race'
     const dispatchRaceResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -390,7 +461,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝；未命中账号错误策略的上游响应失败只记录并切号，不默认本地屏蔽；全部失败返回统一网关错误；重复请求会重新探测上游；单账号屏蔽时会等待释放并支持续期等待')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝；未命中账号错误策略的上游响应失败只记录并切号，不默认本地屏蔽；非流式首字节超时可切号救回；非流式正文已输出后中断会让客户端读取失败并在客户端重试后避让账号；全部失败返回统一网关错误；重复请求会重新探测上游；单账号屏蔽时会等待释放并支持续期等待')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -412,6 +483,8 @@ type RegressionScenario =
   | 'same_signature_confirmation'
   | 'invalid_request_switch_account_success'
   | 'unknown_failure_switch_account_success'
+  | 'non_stream_first_byte_timeout_switch_account_success'
+  | 'non_stream_body_interrupted_after_output_client_retry'
   | 'dispatch_loop_local_suppression_race'
   | 'single_account_wait_recover_success'
   | 'single_account_wait_extended_recover_success'
@@ -424,6 +497,10 @@ let sameSignatureUpstreamHitCount = 0
 let invalidRequestSwitchUpstreamHitCount = 0
 let unknownSwitchFirstAccountHitCount = 0
 let unknownSwitchSecondAccountHitCount = 0
+let nonStreamFirstByteTimeoutFirstAccountHitCount = 0
+let nonStreamFirstByteTimeoutSecondAccountHitCount = 0
+let nonStreamBodyInterruptedFirstAccountHitCount = 0
+let nonStreamBodyInterruptedSecondAccountHitCount = 0
 let dispatchRaceFirstAccountHitCount = 0
 let dispatchRaceSecondAccountHitCount = 0
 let dispatchRaceThirdAccountHitCount = 0
@@ -484,6 +561,30 @@ const unknownSwitchSuccessBody = JSON.stringify({
     {
       index: 0,
       message: { role: 'assistant', content: 'ok from second account' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
+const nonStreamFirstByteTimeoutSuccessBody = JSON.stringify({
+  id: 'chatcmpl-non-stream-first-byte-timeout-regression',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok after non-stream first byte timeout' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
+const nonStreamBodyInterruptedRetrySuccessBody = JSON.stringify({
+  id: 'chatcmpl-non-stream-body-interrupted-client-retry-regression',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok after client retry' },
       finish_reason: 'stop'
     }
   ],
@@ -587,6 +688,34 @@ function createRejectedRequestUpstream(): http.Server {
       res.end(invalidRequestSwitchSuccessBody)
       return
     }
+    if (currentScenario === 'non_stream_first_byte_timeout_switch_account_success') {
+      const authorization = String(req.headers.authorization ?? '')
+      if (authorization.includes('sk-request-failure-1')) {
+        nonStreamFirstByteTimeoutFirstAccountHitCount += 1
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        return
+      }
+      nonStreamFirstByteTimeoutSecondAccountHitCount += 1
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(nonStreamFirstByteTimeoutSuccessBody)
+      return
+    }
+    if (currentScenario === 'non_stream_body_interrupted_after_output_client_retry') {
+      const authorization = String(req.headers.authorization ?? '')
+      if (authorization.includes('sk-request-failure-1')) {
+        nonStreamBodyInterruptedFirstAccountHitCount += 1
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.write('{"id":"chatcmpl-partial",')
+        setTimeout(() => {
+          res.destroy(new Error('non stream body interrupted regression'))
+        }, 20).unref()
+        return
+      }
+      nonStreamBodyInterruptedSecondAccountHitCount += 1
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(nonStreamBodyInterruptedRetrySuccessBody)
+      return
+    }
     if (currentScenario === 'same_signature_third_account_success') {
       thirdAccountSuccessHitCount += 1
       const authorization = String(req.headers.authorization ?? '')
@@ -620,6 +749,10 @@ function totalUpstreamHitCount(): number {
     + invalidRequestSwitchUpstreamHitCount
     + unknownSwitchFirstAccountHitCount
     + unknownSwitchSecondAccountHitCount
+    + nonStreamFirstByteTimeoutFirstAccountHitCount
+    + nonStreamFirstByteTimeoutSecondAccountHitCount
+    + nonStreamBodyInterruptedFirstAccountHitCount
+    + nonStreamBodyInterruptedSecondAccountHitCount
     + dispatchRaceFirstAccountHitCount
     + dispatchRaceSecondAccountHitCount
     + dispatchRaceThirdAccountHitCount
