@@ -151,7 +151,7 @@
       </template>
     </ResponsiveDataList>
 
-    <a-drawer v-model:open="detailOpen" width="min(960px, 96vw)" title="公开接口日志详情" :body-style="{ padding: '18px' }">
+    <a-drawer v-model:open="detailOpen" width="min(960px, 96vw)" title="公开接口日志详情" :body-style="{ padding: '18px' }" @close="closeDetail">
       <a-spin :spinning="detailLoading">
         <template v-if="detail">
           <a-descriptions bordered size="small" :column="2" class="detail-descriptions">
@@ -273,7 +273,7 @@ const {
       traceId: traceIdFilter.value.trim() || undefined,
       sourceRefId: sourceRefIdFilter.value.trim() || undefined,
       path: pathFilter.value.trim() || undefined,
-      statusCode: normalizedStatusCode(statusCodeFilter.value),
+      statusCode: normalizedStatusCodeFilter.value,
       clientIp: clientIpFilter.value.trim() || undefined,
       result: resultFilter.value,
       startAt: range?.[0].toISOString(),
@@ -311,19 +311,24 @@ const activeFilterCount = computed(() => {
   if (resultFilter.value !== 'all') count += 1
   if (sourceRefIdFilter.value.trim()) count += 1
   if (pathFilter.value.trim()) count += 1
-  if (statusCodeFilter.value.trim()) count += 1
+  if (normalizedStatusCodeFilter.value !== undefined) count += 1
   if (clientIpFilter.value.trim()) count += 1
   if (normalizeTimeRange(timeRange.value)) count += 1
   return count
 })
 const advancedFilterCount = computed(() => activeFilterCount.value - (traceIdFilter.value.trim() ? 1 : 0) - (resultFilter.value !== 'all' ? 1 : 0))
+const normalizedStatusCodeFilter = computed(() => normalizedStatusCode(statusCodeFilter.value))
+const hasInvalidStatusCodeFilter = computed(() => statusCodeFilter.value.trim() !== '' && normalizedStatusCodeFilter.value === undefined)
 
 function applyFilters(): void {
+  if (!validateStatusCodeFilter()) return
   resetPagination()
   void loadData()
 }
 
 function refreshRecords(): void {
+  if (!validateStatusCodeFilter()) return
+  resetPagination()
   void loadData()
 }
 
@@ -346,6 +351,7 @@ async function openDetail(record: PublicApiLogSummary): Promise<void> {
   detailRequestId = requestId
   detailOpen.value = true
   detailLoading.value = true
+  detail.value = undefined
   try {
     const nextDetail = await api.publicApiLogs.detail(record.id)
     if (requestId === detailRequestId) {
@@ -399,6 +405,12 @@ function normalizeTimeRange(value: TimeRangeValue): [Dayjs, Dayjs] | undefined {
 function normalizedStatusCode(value: string): number | undefined {
   const number = Number(value.trim())
   return Number.isInteger(number) && number >= 100 && number <= 599 ? number : undefined
+}
+
+function validateStatusCodeFilter(): boolean {
+  if (!hasInvalidStatusCodeFilter.value) return true
+  message.warning('状态码须为 100-599 的整数')
+  return false
 }
 
 function formatDuration(value?: number): string {

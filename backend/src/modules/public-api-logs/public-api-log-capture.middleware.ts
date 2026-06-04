@@ -20,10 +20,45 @@ const publicApiSnapshotMaxBytes = 32 * 1024
 export function capturePublicApiLog(req: Request, res: Response, next: NextFunction): void {
   const startedAt = new Date()
   const startedMs = Date.now()
+  const traceId = getTraceId()
+  const clientIp = getRequestContext()?.clientIp
   let responsePayload: ResponsePayload
   let responseSizeBytes = 0
   let responseCaptured = false
   let recorded = false
+  const socket = req.socket
+
+  const recordClosedPublicApiLog = () => {
+    if (recorded) return
+    recorded = true
+    req.off('aborted', recordClosedPublicApiLog)
+    req.off('close', recordIncompleteRequestClose)
+    socket.off('close', recordClosedPublicApiLog)
+    try {
+      enqueuePublicApiLog(buildPublicApiLogInput(req, res, {
+        startedAt,
+        durationMs: Date.now() - startedMs,
+        responsePayload,
+        responseSizeBytes,
+        closed: true,
+        traceId,
+        clientIp
+      }))
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'public_api_log_capture_failed',
+        method: req.method,
+        path: `${req.baseUrl}${req.path}`,
+        statusCode: 499
+      }), '公开接口日志采集失败')
+    }
+  }
+
+  const recordIncompleteRequestClose = () => {
+    if (!req.complete) {
+      recordClosedPublicApiLog()
+    }
+  }
 
   const originalJson = res.json.bind(res)
   res.json = ((body?: unknown) => {
@@ -48,13 +83,18 @@ export function capturePublicApiLog(req: Request, res: Response, next: NextFunct
   res.once('finish', () => {
     if (recorded) return
     recorded = true
+    req.off('aborted', recordClosedPublicApiLog)
+    req.off('close', recordIncompleteRequestClose)
+    socket.off('close', recordClosedPublicApiLog)
     try {
       enqueuePublicApiLog(buildPublicApiLogInput(req, res, {
         startedAt,
         durationMs: Date.now() - startedMs,
         responsePayload,
         responseSizeBytes,
-        closed: false
+        closed: false,
+        traceId,
+        clientIp
       }))
     } catch (error) {
       logger.warn(errorLogFields(error, {
@@ -66,26 +106,10 @@ export function capturePublicApiLog(req: Request, res: Response, next: NextFunct
     }
   })
 
-  res.once('close', () => {
-    if (recorded || res.writableEnded) return
-    recorded = true
-    try {
-      enqueuePublicApiLog(buildPublicApiLogInput(req, res, {
-        startedAt,
-        durationMs: Date.now() - startedMs,
-        responsePayload,
-        responseSizeBytes,
-        closed: true
-      }))
-    } catch (error) {
-      logger.warn(errorLogFields(error, {
-        event: 'public_api_log_capture_failed',
-        method: req.method,
-        path: `${req.baseUrl}${req.path}`,
-        statusCode: 499
-      }), '公开接口日志采集失败')
-    }
-  })
+  res.once('close', recordClosedPublicApiLog)
+  req.once('aborted', recordClosedPublicApiLog)
+  req.once('close', recordIncompleteRequestClose)
+  socket.once('close', recordClosedPublicApiLog)
 
   next()
 }
@@ -99,6 +123,8 @@ function buildPublicApiLogInput(
     responsePayload: ResponsePayload
     responseSizeBytes: number
     closed: boolean
+    traceId?: string
+    clientIp?: string
   }
 ): PublicApiLogInput {
   const endedAt = new Date()
@@ -107,14 +133,14 @@ function buildPublicApiLogInput(
   const queryString = queryParts.length ? queryParts.join('?') : undefined
   const sourceContext = publicApiSourceContext(res)
   const statusCode = input.closed ? 499 : res.statusCode
-  const requestSnapshot = buildRequestSnapshot(req, statusCode)
+  const requestSnapshot = buildRequestSnapshot(req, res, statusCode)
   const responseSnapshot = buildResponseSnapshot(input.responsePayload, statusCode)
   const errorInfo = input.closed
     ? { errorCode: 'public_api_client_closed', errorMessage: '客户端连接提前关闭' }
     : extractPublicApiErrorInfo(input.responsePayload, statusCode)
 
   return {
-    traceId: getTraceId(),
+    traceId: input.traceId,
     sourceRefId: sourceContext?.sourceRefId,
     sourceName: sourceContext?.sourceName,
     tokenId: sourceContext?.tokenId,
@@ -124,7 +150,7 @@ function buildPublicApiLogInput(
     method: req.method.toUpperCase(),
     path: path || `${req.baseUrl}${req.path}`,
     queryString,
-    clientIp: getRequestContext()?.clientIp,
+    clientIp: input.clientIp,
     userAgent: req.header('user-agent'),
     statusCode,
     success: !input.closed && statusCode >= 200 && statusCode < 400,
@@ -143,15 +169,15 @@ function buildPublicApiLogInput(
   }
 }
 
-function buildRequestSnapshot(req: Request, statusCode: number): CapturedSnapshot {
-  const bodyRejected = isRequestBodyRejectedByParser(req, statusCode)
+function buildRequestSnapshot(req: Request, res: Response, statusCode: number): CapturedSnapshot {
+  const bodyRejectedReason = requestBodyRejectedReason(req, res, statusCode)
   const contentType = req.header('content-type')
   const contentLength = req.header('content-length')
   const query = sanitizeDiagnosticPayload(req.query)
-  const body = bodyRejected
+  const body = bodyRejectedReason
     ? {
         dropped: true,
-        reason: statusCode === 413 ? 'request_body_too_large' : 'request_body_parse_failed'
+        reason: bodyRejectedReason
       }
     : req.body === undefined ? undefined : sanitizeDiagnosticPayload(req.body)
   const headers = {
@@ -168,7 +194,7 @@ function buildRequestSnapshot(req: Request, statusCode: number): CapturedSnapsho
   const bodySizeBytes = contentLengthBytes(req) ?? estimatePayloadSizeBytes(req.body)
   const querySizeBytes = req.originalUrl.includes('?') ? Buffer.byteLength(req.originalUrl.split('?').slice(1).join('?'), 'utf8') : 0
   const snapshot = boundedSnapshot(data, bodySizeBytes + querySizeBytes)
-  return bodyRejected ? { ...snapshot, status: 'dropped' } : snapshot
+  return bodyRejectedReason ? { ...snapshot, status: 'dropped' } : snapshot
 }
 
 function buildResponseSnapshot(payload: ResponsePayload, statusCode: number): CapturedSnapshot {
@@ -254,11 +280,20 @@ function contentLengthBytes(req: Request): number | undefined {
   return Number.isFinite(size) && size >= 0 ? Math.trunc(size) : undefined
 }
 
-function isRequestBodyRejectedByParser(req: Request, statusCode: number): boolean {
-  if (req.body !== undefined || statusCode < 400) return false
+function requestBodyRejectedReason(req: Request, res: Response, statusCode: number): string | undefined {
+  const bodyRejected = res.locals.publicApiRequestBodyRejected as { statusCode?: unknown; errorType?: unknown } | undefined
+  if (bodyRejected) {
+    return statusCode === 413 || bodyRejected.errorType === 'entity.too.large'
+      ? 'request_body_too_large'
+      : 'request_body_parse_failed'
+  }
+
+  if (req.body !== undefined || statusCode < 400) return undefined
   const method = req.method.toUpperCase()
-  if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') return false
+  if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') return undefined
   return (contentLengthBytes(req) ?? 0) > 0
+    ? statusCode === 413 ? 'request_body_too_large' : 'request_body_parse_failed'
+    : undefined
 }
 
 function normalizeSendPayload(value: unknown): ResponsePayload {

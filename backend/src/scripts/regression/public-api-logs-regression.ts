@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { Server } from 'node:http'
+import { request as httpRequest, type Server } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,6 +21,7 @@ const [
   {
     createPublicApiLog,
     createSession,
+    cleanupPublicApiLogsBefore,
     getPublicApiLogDetail,
     listPublicApiLogs,
     updateSystemAccount
@@ -28,14 +29,22 @@ const [
   { externalIntegrationTestToken },
   { cleanupExpiredRetainedData },
   { closeStorageDatabases },
-  { logger }
+  { logger },
+  { flushPublicApiLogQueueForTest },
+  { default: express },
+  { requestContextMiddleware },
+  { capturePublicApiLog }
 ] = await Promise.all([
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/repositories.js'),
   import('../../storage/external-integration-source.repository.js'),
   import('../../modules/background/data-retention-cleanup.service.js'),
   import('../../storage/database.js'),
-  import('../../shared/logger.js')
+  import('../../shared/logger.js'),
+  import('../../modules/public-api-logs/public-api-log-queue.service.js'),
+  import('express'),
+  import('../../shared/request-context.js'),
+  import('../../modules/public-api-logs/public-api-log-capture.middleware.js')
 ])
 
 logger.level = 'silent'
@@ -119,6 +128,27 @@ try {
     assert.equal(notFound.status, 404)
     assert.equal(singleLogByTraceId('trace-public-not-found').statusCode, 404, '公开前缀 404 也应写入公开接口日志')
 
+    const malformedJson = await requestRaw(baseUrl, '/__aipublic__/account/add', {
+      Authorization: `Bearer ${externalIntegrationTestToken}`,
+      'Content-Type': 'application/json',
+      'x-trace-id': 'trace-public-malformed-json'
+    }, 'POST', '{"targetUsername":')
+    assert.equal(malformedJson.status, 400)
+    const malformedJsonDetail = requiredDetail(singleLogByTraceId('trace-public-malformed-json').id)
+    assert.equal(malformedJsonDetail.requestCaptureStatus, 'dropped', '无效 JSON 请求体应标记为已丢弃')
+    assert.equal((malformedJsonDetail.requestData.body as Record<string, unknown>).reason, 'request_body_parse_failed')
+
+    const largeBody = JSON.stringify({ targetUsername: 'huanmin', note: 'x'.repeat(300 * 1024) })
+    const tooLarge = await requestRaw(baseUrl, '/__aipublic__/account/add', {
+      Authorization: `Bearer ${externalIntegrationTestToken}`,
+      'Content-Type': 'application/json',
+      'x-trace-id': 'trace-public-body-too-large'
+    }, 'POST', largeBody)
+    assert.equal(tooLarge.status, 413)
+    const tooLargeDetail = requiredDetail(singleLogByTraceId('trace-public-body-too-large').id)
+    assert.equal(tooLargeDetail.requestCaptureStatus, 'dropped', '超大请求体应标记为已丢弃')
+    assert.equal((tooLargeDetail.requestData.body as Record<string, unknown>).reason, 'request_body_too_large')
+
     const adminList = await requestJson(baseUrl, '/__aisys__/api/public-api-logs?traceId=trace-public-&pageSize=10', {
       Cookie: adminCookie
     })
@@ -134,12 +164,55 @@ try {
     await closeServer(server)
   }
 
-  const oldLog = createPublicApiLog(publicApiLogFixture('publog_old_retention', '2000-01-01T00:00:00.000Z'))
-  const recentLog = createPublicApiLog(publicApiLogFixture('publog_recent_retention', new Date().toISOString()))
+  const closeApp = express()
+  const slowRouteHit = deferred<void>()
+  closeApp.use(requestContextMiddleware)
+  closeApp.use('/__aipublic__', capturePublicApiLog)
+  closeApp.use('/__aipublic__/slow-close', (req, _res) => {
+    req.on('data', () => {})
+    slowRouteHit.resolve()
+  })
+  const closeServerInstance = await listen(closeApp)
+  const closeAddress = closeServerInstance.address()
+  assert(closeAddress && typeof closeAddress !== 'string', '客户端断开测试 HTTP 服务地址无效')
+  try {
+    const request = httpRequest({
+      hostname: '127.0.0.1',
+      port: closeAddress.port,
+      path: '/__aipublic__/slow-close',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': '1024',
+        'x-trace-id': 'trace-public-client-closed'
+      }
+    })
+    request.on('error', () => {})
+    request.write('{"partial":')
+    await slowRouteHit.promise
+    request.destroy()
+    const closedLog = await waitForSingleLogByTraceId('trace-public-client-closed')
+    assert.equal(closedLog.statusCode, 499, '客户端提前断开应写入 499 公开接口日志')
+    assert.equal(closedLog.success, false)
+    assert.equal(closedLog.errorCode, 'public_api_client_closed')
+  } finally {
+    await closeServer(closeServerInstance)
+  }
+
+  const now = Date.now()
+  const oldLog = createPublicApiLog(publicApiLogFixture('publog_old_retention', new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString()))
+  const recentLog = createPublicApiLog(publicApiLogFixture('publog_recent_retention', new Date(now - 7 * 24 * 60 * 60 * 1000 + 5 * 60 * 1000).toISOString()))
   const cleanupResult = await cleanupExpiredRetainedData()
   assert(cleanupResult.publicApiLogs >= 1, '数据保留清理应删除 7 天前的公开接口日志')
-  assert.equal(getPublicApiLogDetail(oldLog.id), undefined, '7 天前公开接口日志应被清理')
+  assert.equal(getPublicApiLogDetail(oldLog.id), undefined, '超过 7 天的公开接口日志应被清理')
   assert(getPublicApiLogDetail(recentLog.id), '7 天内公开接口日志应保留')
+
+  const batchCutoff = new Date().toISOString()
+  for (let index = 0; index < 12; index += 1) {
+    createPublicApiLog(publicApiLogFixture(`publog_bounded_${index}`, '2000-01-01T00:00:00.000Z'))
+  }
+  assert.equal(cleanupPublicApiLogsBefore(batchCutoff, 5), 5, '公开接口日志 repository 清理必须遵守传入 limit')
+  assert.equal(listPublicApiLogs({ traceId: 'publog_bounded_', pageSize: 20 }).items.length, 7, '限定批量清理不能一次删除全部过期记录')
 
   console.log('公开接口日志回归通过：公开请求记录、管理员查询、敏感字段脱敏和 7 天保留清理均符合预期')
 } finally {
@@ -151,9 +224,23 @@ try {
 }
 
 function singleLogByTraceId(traceId: string): ReturnType<typeof listPublicApiLogs>['items'][number] {
+  flushPublicApiLogQueueForTest()
   const result = listPublicApiLogs({ traceId, pageSize: 10 })
   assert.equal(result.items.length, 1, `应按 traceId 查到唯一公开接口日志：${traceId}`)
   return result.items[0]
+}
+
+async function waitForSingleLogByTraceId(traceId: string): Promise<ReturnType<typeof listPublicApiLogs>['items'][number]> {
+  const deadline = Date.now() + 1000
+  while (Date.now() < deadline) {
+    flushPublicApiLogQueueForTest()
+    const result = listPublicApiLogs({ traceId, pageSize: 10 })
+    if (result.items.length === 1) {
+      return result.items[0]
+    }
+    await sleep(20)
+  }
+  return singleLogByTraceId(traceId)
 }
 
 function requiredDetail(id: string): NonNullable<ReturnType<typeof getPublicApiLogDetail>> {
@@ -202,6 +289,20 @@ function closeServer(server: Server): Promise<void> {
   })
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function requestJson(
   baseUrl: string,
   path: string,
@@ -217,5 +318,23 @@ async function requestJson(
   return {
     status: response.status,
     body: await response.json()
+  }
+}
+
+async function requestRaw(
+  baseUrl: string,
+  path: string,
+  headers: Record<string, string> = {},
+  method = 'GET',
+  body?: string
+): Promise<{ status: number; body: string }> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers,
+    body
+  })
+  return {
+    status: response.status,
+    body: await response.text()
   }
 }

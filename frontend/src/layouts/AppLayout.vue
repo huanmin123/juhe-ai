@@ -51,6 +51,7 @@
 <script setup lang="ts">
 import {
   ApartmentOutlined,
+  ApiOutlined,
   BellOutlined,
   GlobalOutlined,
   BarChartOutlined,
@@ -196,6 +197,7 @@ const menuIconMap = {
   '/usage-records': HistoryOutlined,
   '/my-operation-logs': ProfileOutlined,
   '/operation-logs': ProfileOutlined,
+  '/public-api-logs': ApiOutlined,
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
   '/table-monitor': DatabaseOutlined,

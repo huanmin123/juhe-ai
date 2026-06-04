@@ -126,6 +126,11 @@ function handleJsonBodyError(error: BodyParserError, req: Request, res: Response
     return
   }
 
+  res.locals.publicApiRequestBodyRejected = {
+    statusCode,
+    errorType: error.type
+  }
+
   getRequestLogger().warn({
     event: 'system_api_json_body_rejected',
     method: req.method,
