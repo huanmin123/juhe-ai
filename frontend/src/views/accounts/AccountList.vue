@@ -27,7 +27,6 @@
     <template #bodyCell="{ column, record }">
       <AccountTableCell
         :account="record"
-        :authorized-tooltip="authorizedTooltip"
         :can-clone="canClone"
         :can-delete="canDelete"
         :can-edit="canEdit"
@@ -47,7 +46,6 @@
     <template #card="{ record }">
       <AccountMobileCard
         :account="record"
-        :authorized-tooltip="authorizedTooltip(record)"
         :can-clone="canClone(record)"
         :can-delete="canDelete(record)"
         :can-edit="canEdit(record)"
@@ -81,7 +79,6 @@ import { tableColumnKey } from './accountTableColumns'
 
 defineProps<{
   accounts: AccountSummary[]
-  authorizedTooltip: (account: AccountSummary) => string
   canClone: (account: AccountSummary) => boolean
   canDelete: (account: AccountSummary) => boolean
   canEdit: (account: AccountSummary) => boolean

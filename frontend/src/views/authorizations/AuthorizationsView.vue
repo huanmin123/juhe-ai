@@ -426,7 +426,6 @@ const activeFilterCount = computed(() => {
 })
 const advancedFilterCount = computed(() => {
   let count = 0
-  if (!isManagementView.value && filters.direction !== 'outbound') count += 1
   if (!isManagementView.value && filters.sourceType !== 'all') count += 1
   if (filters.status !== 'all') count += 1
   if (isManagementView.value && filters.resourceType !== 'all') count += 1

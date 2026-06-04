@@ -67,6 +67,7 @@
     "test:audit-log-batch-existing-lookup": "tsx src/scripts/regression/audit-log-batch-existing-lookup-regression.ts",
     "test:operation-log-queue": "tsx src/scripts/regression/operation-log-queue-regression.ts",
     "test:operation-log-db-service-ipc": "tsx src/scripts/regression/operation-log-db-service-ipc-regression.ts",
+    "test:public-api-logs": "tsx src/scripts/regression/public-api-logs-regression.ts",
     "test:background-parent-ipc-event-loop": "tsx src/scripts/regression/background-parent-ipc-event-loop-regression.ts",
     "test:background-ipc-protected-queue": "tsx src/scripts/regression/background-ipc-protected-queue-regression.ts",
     "test:background-ipc-payload-boundary": "tsx src/scripts/regression/background-ipc-payload-boundary-regression.ts",

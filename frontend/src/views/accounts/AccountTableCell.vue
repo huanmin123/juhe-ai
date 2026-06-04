@@ -1,13 +1,7 @@
 <template>
   <div v-if="columnKey === 'name'" class="resource-name-cell">
     <span class="resource-name-line">
-      <span>{{ account.name }}</span>
-      <a-tooltip v-if="isAuthorizedAccount(account)">
-        <template #title>
-          <span class="authorized-tooltip-text">{{ authorizedTooltip(account) }}</span>
-        </template>
-        <InfoCircleOutlined class="authorized-account-icon" :class="authorizedIconClass(account)" />
-      </a-tooltip>
+      <span>{{ accountDisplayName(account) }}</span>
     </span>
   </div>
   <a-tag v-else-if="columnKey === 'type'" color="processing">{{ accountTypeText(account.type) }}</a-tag>
@@ -65,7 +59,6 @@
 </template>
 
 <script setup lang="ts">
-import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
@@ -74,15 +67,14 @@ import AccountStatusTag from './AccountStatusTag.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
+  accountDisplayName,
   accountLastUsedAt,
   accountDisplayExpiresAt,
   accountTypeText,
   formatDateTime,
-  isAccountDisplayExpired,
-  isAuthorizedAccount
+  isAccountDisplayExpired
 } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
-import { authorizedAccountSourceToneClass } from './accountRules'
 
 defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
@@ -95,7 +87,6 @@ defineEmits<{
 
 const props = defineProps<{
   account: AccountSummary
-  authorizedTooltip: (account: AccountSummary) => string
   canClone: (account: AccountSummary) => boolean
   canDelete: (account: AccountSummary) => boolean
   canEdit: (account: AccountSummary) => boolean
@@ -108,7 +99,6 @@ const props = defineProps<{
 
 const currentGroupName = computed(() => props.groupName(props.account.id))
 const currentProxy = computed(() => props.proxy(props.account.proxyProfileId))
-const authorizedIconClass = authorizedAccountSourceToneClass
 
 const proxyText = computed(() => {
   if (!props.account.proxyProfileId) return ''
@@ -175,21 +165,4 @@ const concurrencyTooltip = computed(() => concurrencyAvailable.value
   min-width: 0;
 }
 
-.authorized-account-icon {
-  color: #08979c;
-  cursor: help;
-  font-size: 14px;
-}
-
-.authorized-account-icon.source-warning {
-  color: #d48806;
-}
-
-.authorized-account-icon.source-danger {
-  color: #cf1322;
-}
-
-.authorized-tooltip-text {
-  white-space: pre-line;
-}
 </style>

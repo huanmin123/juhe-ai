@@ -4,13 +4,7 @@
       <a-checkbox :checked="selected" :disabled="!canSelect" @change="$emit('toggle-selection')" />
       <div class="account-mobile-card-title">
         <div class="account-mobile-name-row">
-          <span class="account-mobile-name">{{ account.name }}</span>
-          <a-tooltip v-if="isAuthorizedAccount(account)">
-            <template #title>
-              <span class="authorized-tooltip-text">{{ authorizedTooltip }}</span>
-            </template>
-            <InfoCircleOutlined class="authorized-account-icon" :class="authorizedIconClass" />
-          </a-tooltip>
+          <span class="account-mobile-name">{{ accountDisplayName(account) }}</span>
         </div>
         <div class="account-mobile-tags">
           <a-tag color="processing">{{ accountTypeText(account.type) }}</a-tag>
@@ -79,7 +73,6 @@
 </template>
 
 <script setup lang="ts">
-import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import RowActions from '@/components/RowActions.vue'
@@ -89,6 +82,7 @@ import AccountStatusTag from './AccountStatusTag.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
+  accountDisplayName,
   accountLastUsedAt,
   accountDisplayExpiresAt,
   accountTypeText,
@@ -97,11 +91,10 @@ import {
   isAuthorizedAccount
 } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
-import { accountMenuItemsWithClone, authorizedAccountSourceToneClass } from './accountRules'
+import { accountMenuItemsWithClone } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
-  authorizedTooltip: string
   canClone: boolean
   canDelete: boolean
   canEdit: boolean
@@ -128,7 +121,6 @@ const proxyText = computed(() => {
   if (!props.account.proxyProfileId) return ''
   return props.proxy?.name ?? '代理已配置'
 })
-const authorizedIconClass = computed(() => authorizedAccountSourceToneClass(props.account))
 const proxyTooltip = computed(() => {
   if (props.account.proxyProfileErrorMessage) return props.account.proxyProfileErrorMessage
   if (props.account.proxyProfileUnavailable) return '代理不可用，请到代理管理确认配置'
@@ -300,24 +292,6 @@ function handleActionClick(key: string) {
 .account-mobile-card-actions :deep(.ant-dropdown-trigger),
 .account-mobile-card-actions :deep(.ant-popconfirm-open) {
   width: 100%;
-}
-
-.authorized-account-icon {
-  flex: none;
-  color: #1677ff;
-  font-size: 14px;
-}
-
-.authorized-account-icon.source-warning {
-  color: #fa8c16;
-}
-
-.authorized-account-icon.source-danger {
-  color: #cf1322;
-}
-
-.authorized-tooltip-text {
-  white-space: pre-line;
 }
 
 .expired-cell {

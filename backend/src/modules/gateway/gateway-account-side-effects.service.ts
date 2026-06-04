@@ -6,6 +6,7 @@ import type { GatewaySettings } from './account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { AccountSummary } from '../../domain/types.js'
+import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
 
 type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
 type StreamFailureOperation = Extract<DbServiceOperation, { type: 'record_account_stream_failure' }>
@@ -966,7 +967,7 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
     totalTokens: 0,
     totalCost: 0
   }
-  return {
+  return accountSummaryWithEffectiveAvailability({
     id: account.id,
     systemAccountId: gatewayAccountSummarySystemAccountId(account),
     ownerSystemAccountId: account.accountOwnerSystemAccountId,
@@ -980,6 +981,7 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
     priority: account.priority,
     superPriorityEnabled: account.superPriorityEnabled,
     fallbackEnabled: account.fallbackEnabled,
+    clientCompatibility: account.clientCompatibility,
     supportedModels: account.supportedModels,
     proxyProfileId: account.proxyProfileId,
     errorPolicyId: account.errorPolicyId,
@@ -1001,7 +1003,7 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
       canAuthorize: false,
       canViewCredentials: false
     }
-  }
+  })
 }
 
 function gatewayAccountSummarySystemAccountId(account: OpenAIAccountSecret): string {

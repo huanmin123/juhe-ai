@@ -1,6 +1,7 @@
 import type {
   AccountStatus,
   AccountType,
+  AccountClientCompatibility,
   AuthorizationStatus,
   GroupType,
   ProviderCode,
@@ -33,6 +34,7 @@ export interface AccountRow {
   priority: number
   super_priority_enabled: number
   fallback_enabled: number
+  client_compatibility: AccountClientCompatibility
   supported_models?: string[]
   schedulable: number
   availability_schedule_json: string | null
@@ -186,6 +188,7 @@ export type AccountListRow = AccountRow & {
   source_type?: AccountType | null
   source_status?: AccountStatus | null
   source_schedulable?: number | null
+  source_availability_schedule_json?: string | null
   source_account_expires_at?: string | null
   source_cooldown_until?: string | null
   source_last_error_code?: string | null
@@ -195,6 +198,7 @@ export type AccountListRow = AccountRow & {
   source_proxy_profile_id?: string | null
   source_concurrency_limit?: number | null
   source_error_policy_id?: string | null
+  source_client_compatibility?: AccountClientCompatibility | null
   quality_score?: number | null
   quality_state?: string | null
   quality_ewma_first_token_ms?: number | null

@@ -336,17 +336,16 @@ function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName:
   const shortId = authorizationId.split('_').pop()?.slice(0, 6) || authorizationId.slice(-6)
   const candidates = [
     baseName,
-    `${baseName}（授权）`,
-    `${baseName}（授权 ${shortId}）`
+    `${baseName}-${shortId}`
   ]
   for (const candidate of candidates) {
     if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate, exceptAccountId)) return candidate
   }
   for (let index = 2; index <= 1000; index += 1) {
-    const candidate = `${baseName}（授权 ${shortId}-${index}）`
+    const candidate = `${baseName}-${shortId}-${index}`
     if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate, exceptAccountId)) return candidate
   }
-  return `${baseName}（授权 ${shortId}-${Date.now()}）`
+  return `${baseName}-${shortId}-${Date.now()}`
 }
 
 function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string, providerCode: string, name: string, exceptAccountId?: string): boolean {

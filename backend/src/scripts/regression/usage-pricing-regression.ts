@@ -400,10 +400,11 @@ assert.doesNotMatch(gatewayDispatchHelpersSource, /temporaryUnschedulableRetryPo
 assert.doesNotMatch(gatewayDispatchHelpersSource, /gateway_temporary_unschedulable_same_account_retry/)
 
 const gatewayUpstreamDispatchSource = readSource('modules/gateway/openai-gateway-upstream-dispatch.ts')
-assert.match(gatewayUpstreamDispatchSource, /const maxAttemptCount = 1/)
+assert.match(gatewayUpstreamDispatchSource, /gateway_temporary_unschedulable_same_account_retry/)
 assert.doesNotMatch(gatewayUpstreamDispatchSource, /temporaryUnschedulableRetryPolicy/)
-assert.doesNotMatch(gatewayUpstreamDispatchSource, /retryAttemptCount\(retryPolicy\)/)
-assert.doesNotMatch(gatewayUpstreamDispatchSource, /normalizeRetryCount\(settings\.temporaryUnschedulableRetryAttempts\)/)
+assert.match(gatewayUpstreamDispatchSource, /retryAttemptCount\(sameAccountRetryPolicy\)/)
+assert.match(gatewayUpstreamDispatchSource, /shouldRetryPolicyAttempt\(attemptIndex, sameAccountRetryPolicy\)/)
+assert.match(gatewayUpstreamDispatchSource, /waitForSameAccountRetry/)
 
 const oauthAccessTokenRefreshSource = readSource('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')
 assert.match(oauthAccessTokenRefreshSource, /openAIOAuthRefreshRaceRetryPolicy/)

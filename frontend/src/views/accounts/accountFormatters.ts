@@ -7,7 +7,7 @@ import {
   parseStrictDatePickerValue,
   serverDateTimeTimestamp
 } from '@/shared/formatters'
-import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary } from '@/types/domain'
+import type { AccountClientCompatibility, AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary } from '@/types/domain'
 
 export interface OAuthUsageBar {
   key: string
@@ -56,6 +56,7 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountSummary) {
+  if (account.effectiveAvailability) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
   if (isAccountPackageExpiredStatus(account)) return 'red'
@@ -68,6 +69,10 @@ export function accountStatusColor(account: AccountSummary) {
 }
 
 export function accountStatusText(account: AccountSummary) {
+  if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
+    return directAccountStatusText(account)
+  }
+  if (account.effectiveAvailability) return account.effectiveAvailability.label
   if (isAuthorizationPaused(account)) return '授权暂停'
   if (isAuthorizationExpired(account)) return '授权到期'
   if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
@@ -87,10 +92,26 @@ export function accountCooldownText(account: AccountSummary) {
 
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
+  const effectiveAvailability = account.effectiveAvailability
+  const conciseOwnStatus = isAccountInstanceEffectiveAvailability(account)
+    && isConciseAccountStatus(account.effectiveAvailability.status)
+  if (conciseOwnStatus) {
+    return conciseAccountStatusTooltipLines(account)
+  }
+  if (effectiveAvailability && shouldShowEffectiveAvailabilitySummary(account)) {
+    lines.push(`实际状态：${effectiveAvailability.label}`)
+    if (effectiveAvailability.reason && effectiveAvailability.reason !== effectiveAvailability.label) {
+      lines.push(`实际原因：${effectiveAvailability.reason}`)
+    }
+    if (effectiveAvailability.retryAt) {
+      lines.push(`预计恢复：${formatDateTime(effectiveAvailability.retryAt)}`)
+    }
+  }
   if (isAuthorizedAccount(account) && account.authorizationExpiresAt) {
     lines.push(`授权到期时间：${formatDateTime(account.authorizationExpiresAt)}`)
   }
   lines.push(...authorizationSourceAccountTooltipLines(account))
+  lines.push(...authorizedInstanceLocalStatusTooltipLines(account))
   if (account.accountExpiresAt) {
     lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
   }
@@ -111,42 +132,165 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
   }
-  const cooldownText = accountCooldownText(account)
-  if (cooldownText) {
-    lines.push(cooldownText)
-    if (isTemporaryAccountStatus(account) && account.cooldownRetestFailureCount) {
-      lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+  if (!isAuthorizedInstanceLocalStatusHandledAsContext(account)) {
+    const cooldownText = accountCooldownText(account)
+    if (cooldownText) {
+      lines.push(cooldownText)
+      if (isTemporaryAccountStatus(account) && account.cooldownRetestFailureCount) {
+        lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+      }
+    } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
+      lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
+      lines.push(isAuthorizedAccount(account)
+        ? '可手动测试，测试通过后恢复正常；也可在更多菜单恢复正常'
+        : '等待后台复测；也可手动测试或在更多菜单恢复正常')
+      if (account.cooldownRetestFailureCount) {
+        lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+      }
+    } else if (account.status === 'disabled' && !accountExpired) {
+      lines.push('停用账户可手动测试诊断，但不会被测试结果或后台任务自动恢复')
+    } else if (account.status === 'error') {
+      lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
+      if (account.cooldownRetestFailureCount) {
+        lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+      }
+      lines.push(account.lastErrorCode === 'oauth_token_refresh_failed'
+        ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动恢复异常'
+        : '异常账户不会参与调度，仅保留测试和恢复异常')
     }
-  } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
-    lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
-    lines.push(isAuthorizedAccount(account)
-      ? '可手动测试，测试通过后恢复正常；也可在更多菜单恢复正常'
-      : '等待后台复测；也可手动测试或在更多菜单恢复正常')
-    if (account.cooldownRetestFailureCount) {
-      lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+    if (account.cooldownRetestLastAt) {
+      const suffix = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
+      lines.push(`最近后台复测：${formatDateTime(account.cooldownRetestLastAt)}${suffix}`)
     }
-  } else if (account.status === 'disabled' && !accountExpired) {
-    lines.push('停用账户可手动测试诊断，但不会被测试结果或后台任务自动恢复')
-  } else if (account.status === 'error') {
-    lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
-    if (account.cooldownRetestFailureCount) {
-      lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+    if (account.cooldownRetestObservationStartedAt && isTemporaryAccountStatus(account)) {
+      lines.push(`自动恢复观察开始：${formatDateTime(account.cooldownRetestObservationStartedAt)}`)
     }
-    lines.push(account.lastErrorCode === 'oauth_token_refresh_failed'
-      ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动恢复异常'
-      : '异常账户不会参与调度，仅保留测试和恢复异常')
-  }
-  if (account.cooldownRetestLastAt) {
-    const suffix = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
-    lines.push(`最近后台复测：${formatDateTime(account.cooldownRetestLastAt)}${suffix}`)
-  }
-  if (account.cooldownRetestObservationStartedAt && isTemporaryAccountStatus(account)) {
-    lines.push(`自动恢复观察开始：${formatDateTime(account.cooldownRetestObservationStartedAt)}`)
-  }
-  if (account.lastErrorMessage) {
-    lines.push(`原因：${account.lastErrorMessage}`)
+    if (account.lastErrorMessage) {
+      lines.push(`原因：${account.lastErrorMessage}`)
+    }
   }
   return lines
+}
+
+function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
+  const lines = [directAccountStatusText(account)]
+  const effectiveStatus = account.effectiveAvailability?.status
+  if (account.status === 'error') {
+    lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
+  }
+  if (effectiveStatus === 'instance_expired') {
+    lines.push(account.accountExpiresAt ? `到期时间：${formatDateTime(account.accountExpiresAt)}` : '账户已到期，当前不可用')
+  } else if (effectiveStatus === 'instance_disabled') {
+    lines.push('已停用，不参与调度')
+  } else if (effectiveStatus === 'instance_unschedulable') {
+    lines.push('已关闭调度，不参与调度')
+  } else if (effectiveStatus === 'instance_schedule_inactive') {
+    lines.push('当前不在允许使用时段')
+  }
+  if (isTemporaryAccountStatus(account)) {
+    const cooldownText = accountCooldownText(account)
+    if (cooldownText) {
+      lines.push(cooldownText)
+    } else if (account.cooldownUntil) {
+      lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
+    }
+  } else if (account.effectiveAvailability?.status === 'instance_cooldown') {
+    const cooldownText = accountCooldownText(account)
+    if (cooldownText) {
+      lines.push(cooldownText)
+    } else {
+      lines.push('正在冷却，不参与调度')
+    }
+  }
+  const retestText = conciseCooldownRetestText(account)
+  if (retestText) {
+    lines.push(retestText)
+  }
+  const lastError = conciseAccountLastError(account.lastErrorMessage, account.cooldownRetestLastStatusCode)
+  if (lastError) {
+    lines.push(`最后错误：${lastError}`)
+  }
+  return lines
+}
+
+function conciseCooldownRetestText(account: AccountSummary): string {
+  const parts: string[] = []
+  if (account.cooldownRetestFailureCount) {
+    parts.push(`连续失败 ${formatNumber(account.cooldownRetestFailureCount)} 次`)
+  }
+  if (account.cooldownRetestLastAt) {
+    const status = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
+    parts.push(`最近 ${formatDateTime(account.cooldownRetestLastAt)}${status}`)
+  }
+  return parts.length ? `后台复测：${parts.join('，')}` : ''
+}
+
+function conciseAccountLastError(message?: string, statusCode?: number): string {
+  const value = message?.trim()
+  if (!value) return ''
+  const lastErrorMarker = '最后错误：'
+  const markerIndex = value.lastIndexOf(lastErrorMarker)
+  const error = markerIndex >= 0
+    ? value.slice(markerIndex + lastErrorMarker.length).trim()
+    : value
+    .replace(/^账户测试失败，已自动标记为临时不可调用；/, '')
+    .replace(/^账户测试失败；/, '')
+    .trim()
+  if (!statusCode) return error
+  return error.replace(new RegExp(`^HTTP ${statusCode}[；;\\s]*`), '').trim()
+}
+
+function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolean {
+  const availability = account.effectiveAvailability
+  if (!availability || availability.available) return false
+  if (isDirectAccountStatus(availability.status)) return false
+  if (availability.blockerScope === 'source_account' || availability.blockerScope === 'runtime') return false
+  if (availability.status === 'authorization_expired'
+    || availability.status === 'authorization_paused'
+    || availability.status === 'authorization_quota_exceeded') {
+    return false
+  }
+  return true
+}
+
+function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): string[] {
+  if (!isAuthorizedInstanceLocalStatusHandledAsContext(account)) return []
+  const lines = [`授权实例本地状态：${localAccountStatusText(account)}`]
+  if (account.status === 'error') {
+    lines.push(`本地异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
+  }
+  if (isTemporaryAccountStatus(account)) {
+    const cooldownText = accountCooldownText(account)
+    if (cooldownText) {
+      lines.push(cooldownText)
+    } else if (account.cooldownUntil) {
+      lines.push(`本地冷却已到期：${formatDateTime(account.cooldownUntil)}`)
+    }
+    const retestText = conciseCooldownRetestText(account)
+    if (retestText) {
+      lines.push(retestText)
+    }
+  }
+  const lastError = conciseAccountLastError(account.lastErrorMessage, account.cooldownRetestLastStatusCode)
+  if (lastError) {
+    lines.push(`本地最后错误：${lastError}`)
+  }
+  return lines
+}
+
+function isAuthorizedInstanceLocalStatusHandledAsContext(account: AccountSummary): boolean {
+  return isAuthorizedAccount(account)
+    && !isAccountInstanceEffectiveAvailability(account)
+    && Boolean(localAccountStatusText(account))
+}
+
+function localAccountStatusText(account: AccountSummary): string {
+  if (isAccountPackageExpiredStatus(account)) return '账户到期'
+  if (account.status !== 'active') return statusText(account.status)
+  if (isFutureTime(account.cooldownUntil)) return '冷却中'
+  if (account.availabilityScheduleActive === false) return '计划停用'
+  if (!account.schedulable) return '停调'
+  return ''
 }
 
 export function authorizationSourceAccountStatusTag(account: AccountSummary): AccountStatusTagInfo | undefined {
@@ -155,9 +299,11 @@ export function authorizationSourceAccountStatusTag(account: AccountSummary): Ac
   const sourceStatus = account.authorizationInstanceSourceAccountStatus
   if (sourceStatus === 'disabled') return { color: 'orange', label: '来源停用' }
   if (sourceStatus === 'error') return { color: 'red', label: '来源异常' }
-  if (sourceStatus === 'rate_limited' || sourceStatus === 'temporary_unavailable') return { color: 'gold', label: '来源暂不可调度' }
+  if (sourceStatus === 'rate_limited') return { color: 'orange', label: '来源限流中' }
+  if (sourceStatus === 'temporary_unavailable') return { color: 'gold', label: '来源临时不可调用' }
   if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) return { color: 'gold', label: '来源冷却' }
   if (account.authorizationInstanceSourceAccountSchedulable === false) return { color: 'orange', label: '来源停调' }
+  if (account.authorizationInstanceSourceAccountScheduleActive === false) return { color: 'gold', label: '来源计划停用' }
   return undefined
 }
 
@@ -166,18 +312,21 @@ export function authorizationSourceAccountTooltipLines(account: AccountSummary):
   const sourceStatus = account.authorizationInstanceSourceAccountStatus
   const lines: string[] = []
   if (isAuthorizationSourceAccountExpired(account)) {
-    lines.push('授权方原账户已到期；当前状态标签显示的是你的授权实例状态，不代表授权方原账户仍正常')
+    lines.push('授权方原账户已到期，授权实例实际不可调用')
   } else if (sourceStatus === 'disabled') {
-    lines.push('授权方原账户已停用；当前状态标签显示的是你的授权实例状态，不代表授权方原账户仍正常')
+    lines.push('授权方原账户已停用，授权实例实际不可调用')
   } else if (sourceStatus === 'error') {
-    lines.push('授权方原账户处于异常状态；当前状态标签显示的是你的授权实例状态')
+    lines.push('授权方原账户处于异常状态，授权实例实际不可调用')
   } else if (sourceStatus === 'rate_limited' || sourceStatus === 'temporary_unavailable') {
-    lines.push(`授权方原账户状态：${statusText(sourceStatus)}；当前状态标签显示的是你的授权实例状态`)
+    lines.push(`授权方原账户状态：${statusText(sourceStatus)}，授权实例实际不可调用`)
   } else if (sourceStatus && sourceStatus !== 'active') {
-    lines.push(`授权方原账户状态：${statusText(sourceStatus)}；当前状态标签显示的是你的授权实例状态`)
+    lines.push(`授权方原账户状态：${statusText(sourceStatus)}，授权实例实际不可调用`)
   }
   if (account.authorizationInstanceSourceAccountSchedulable === false) {
-    lines.push('授权方原账户已关闭调度；当前状态标签显示的是你的授权实例调度状态')
+    lines.push('授权方原账户已关闭调度，授权实例实际不可调用')
+  }
+  if (account.authorizationInstanceSourceAccountScheduleActive === false) {
+    lines.push('授权方原账户当前不在允许使用时段，授权实例实际不可调用')
   }
   if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) {
     lines.push(`授权方原账户冷却至 ${formatDateTime(account.authorizationInstanceSourceAccountCooldownUntil)}`)
@@ -259,6 +408,32 @@ export function isTemporaryAccountStatus(account: AccountSummary) {
   return account.status === 'rate_limited' || account.status === 'temporary_unavailable'
 }
 
+function isDirectAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
+  return status.startsWith('instance_')
+}
+
+function isAccountInstanceEffectiveAvailability(account: AccountSummary): account is AccountSummary & { effectiveAvailability: NonNullable<AccountSummary['effectiveAvailability']> } {
+  const scope = account.effectiveAvailability?.blockerScope
+  return scope === 'account' || scope === 'authorized_instance'
+}
+
+function isConciseAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
+  return isDirectAccountStatus(status)
+}
+
+function directAccountStatusText(account: AccountSummary): string {
+  const status = account.effectiveAvailability?.status
+  if (status === 'instance_expired') return '账户到期'
+  if (status === 'instance_disabled') return '停用'
+  if (status === 'instance_error') return '异常'
+  if (status === 'instance_rate_limited') return '限流中'
+  if (status === 'instance_temporary_unavailable') return '临时不可调用'
+  if (status === 'instance_cooldown') return '冷却中'
+  if (status === 'instance_unschedulable') return '停调'
+  if (status === 'instance_schedule_inactive') return '计划停用'
+  return statusText(account.status)
+}
+
 export function isCoolingDown(account: AccountSummary) {
   if (!account.cooldownUntil) return false
   return isFutureTime(account.cooldownUntil)
@@ -314,10 +489,21 @@ export function isAccountDisplayExpired(account: AccountSummary): boolean {
   return time !== undefined && time <= Date.now()
 }
 
+export function accountDisplayName(account: AccountSummary): string {
+  if (!isAuthorizedAccount(account)) return account.name
+  const cleaned = account.name.replace(/（授权(?: [^）]+)?）$/, '')
+  return cleaned || account.name
+}
+
 export function accountTypeText(type: AccountType) {
   if (type === 'oauth') return 'OAuth'
   if (type === 'api_key') return 'API Key'
   return type || '-'
+}
+
+export function accountClientCompatibilityText(value?: AccountClientCompatibility): string {
+  if (value === 'codex_responses') return 'Codex Responses'
+  return 'OpenAI 标准'
 }
 
 export function accountTypeTitle(providerName: string, type: AccountType) {

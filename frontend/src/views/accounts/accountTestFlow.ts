@@ -1,14 +1,21 @@
-import type { AccountSummary, AccountTestResult } from '@/types/domain'
+import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '@/types/domain'
 import { extractApiErrorMessage } from '@/shared/apiError'
+
+export type AccountTestClientCompatibility = 'account_default' | AccountClientCompatibility
 
 export type AccountTestForm = {
   model: string
+  clientCompatibility: AccountTestClientCompatibility
 }
 
-export function buildAccountTestPayload(form: AccountTestForm): { model: string } {
-  return {
+export function buildAccountTestPayload(form: AccountTestForm): { model: string; clientCompatibility?: AccountClientCompatibility } {
+  const payload: { model: string; clientCompatibility?: AccountClientCompatibility } = {
     model: form.model
   }
+  if (form.clientCompatibility !== 'account_default') {
+    payload.clientCompatibility = form.clientCompatibility
+  }
+  return payload
 }
 
 export function accountTestSuccessMessage(account: AccountSummary, result: AccountTestResult): string {
@@ -27,14 +34,20 @@ export function failedAccountTestResult(input: {
   account: AccountSummary
   error: unknown
   model: string
+  clientCompatibility: AccountTestClientCompatibility
   startedAt: number
 }): AccountTestResult {
   const fallbackMessage = extractApiErrorMessage(input.error, '测试失败')
+  const testClientCompatibility = input.clientCompatibility === 'account_default'
+    ? input.account.clientCompatibility
+    : input.clientCompatibility
   return {
     accountId: input.account.id,
     accountName: input.account.name,
     providerCode: input.account.providerCode,
     type: input.account.type,
+    clientCompatibility: input.account.clientCompatibility,
+    testClientCompatibility,
     success: false,
     message: fallbackMessage,
     model: input.model,

@@ -2,6 +2,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { cleanupAuditLogsByRetentionAsync } from '../../storage/audit-logs.repository.js'
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
+import { cleanupPublicApiLogsBefore } from '../../storage/public-api-logs.repository.js'
 import {
   cleanupExpiredSystemSessions,
   cleanupModelCheckRunsBefore,
@@ -29,11 +30,13 @@ const systemMetricsRawRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
+const publicApiLogRetentionDays = 7
 const modelCheckRetentionMaxDays = 365
 let cleanupRunning = false
 
 export interface DataRetentionCleanupResult {
   operationLogs: number
+  publicApiLogs: number
   auditLogs: number
   runtimeLogs: number
   runtimeLogFileCursors: number
@@ -123,6 +126,8 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
 
     const result = emptyCleanupResult()
     result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
+    await yieldToEventLoop()
+    result.publicApiLogs = await cleanupInBatches(() => cleanupPublicApiLogsBefore(cutoffIso(now, publicApiLogRetentionDays), batchSize), batchSize, maxBatches)
     await yieldToEventLoop()
     result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
       successCutoffCreatedAt: cutoffIso(now, retention.auditLogSuccessDays),
@@ -320,6 +325,7 @@ function settingNumber(settings: Record<string, unknown>, key: string, min: numb
 function emptyCleanupResult(): DataRetentionCleanupResult {
   return {
     operationLogs: 0,
+    publicApiLogs: 0,
     auditLogs: 0,
     runtimeLogs: 0,
     runtimeLogFileCursors: 0,

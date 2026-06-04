@@ -183,6 +183,36 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           UNIQUE(fingerprint, window_started_at)
         );
 
+    CREATE TABLE IF NOT EXISTS public_api_logs (
+          id TEXT PRIMARY KEY,
+          trace_id TEXT,
+          source_ref_id TEXT,
+          source_name TEXT,
+          token_id TEXT,
+          token_name TEXT,
+          token_prefix TEXT,
+          is_test_token INTEGER NOT NULL DEFAULT 0,
+          method TEXT NOT NULL,
+          path TEXT NOT NULL,
+          query_string TEXT,
+          client_ip TEXT,
+          user_agent TEXT,
+          status_code INTEGER,
+          success INTEGER NOT NULL DEFAULT 0,
+          duration_ms INTEGER,
+          request_size_bytes INTEGER NOT NULL DEFAULT 0,
+          response_size_bytes INTEGER NOT NULL DEFAULT 0,
+          request_capture_status TEXT NOT NULL DEFAULT 'empty',
+          response_capture_status TEXT NOT NULL DEFAULT 'empty',
+          request_data_json TEXT NOT NULL DEFAULT '{}',
+          response_data_json TEXT NOT NULL DEFAULT '{}',
+          error_code TEXT,
+          error_message TEXT,
+          started_at TEXT NOT NULL,
+          ended_at TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+
     CREATE TABLE IF NOT EXISTS operation_logs (
           id TEXT PRIMARY KEY,
           trace_id TEXT,
@@ -451,6 +481,20 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_audit_error_groups_status_updated ON audit_error_groups(status_code, updated_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_audit_error_groups_api_key_account ON audit_error_groups(api_key_id, system_account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_public_api_logs_created ON public_api_logs(created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_public_api_logs_trace_id ON public_api_logs(trace_id);
+
+    CREATE INDEX IF NOT EXISTS idx_public_api_logs_source_created ON public_api_logs(source_ref_id, created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_public_api_logs_path_created ON public_api_logs(path, created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_public_api_logs_status_created ON public_api_logs(status_code, created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_public_api_logs_success_created ON public_api_logs(success, created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_public_api_logs_client_ip_created ON public_api_logs(client_ip, created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_operation_logs_created ON operation_logs(created_at, id);
 

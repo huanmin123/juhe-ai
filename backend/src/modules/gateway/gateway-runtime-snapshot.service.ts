@@ -1,4 +1,5 @@
 import type { AccountRuntimeAvailability, AccountSummary, GroupSummary } from '../../domain/types.js'
+import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
 import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 
 type AccountConcurrencySnapshot = Record<string, number>
@@ -123,10 +124,10 @@ function applyAccountRuntimeAvailability(
   }
   const runtimeStatus = runtimeAvailability[accountRuntimeAvailabilityKey(account)]
   return runtimeStatus
-    ? {
+    ? accountSummaryWithEffectiveAvailability({
         ...account,
         runtimeAvailability: runtimeStatus
-      }
+      })
     : account
 }
 

@@ -458,6 +458,7 @@ function createTestAccount(id: string): Parameters<typeof clientIpAvoidance.orde
     priority: 0,
     superPriorityEnabled: false,
     fallbackEnabled: false,
+    clientCompatibility: 'openai_standard',
     supportedModels: []
   }
 }

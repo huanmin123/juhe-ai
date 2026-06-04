@@ -93,6 +93,10 @@ export interface ApiKeyListResult {
 
 export interface CreatedApiKey extends ApiKeySummary {}
 
+export interface ApiKeySecretResult {
+  key: string
+}
+
 export type ApiKeyQuotaLimit = RequestQuotaLimit
 export type ApiKeyHourlyQuotaLimit = RequestHourlyQuotaLimit
 export type ApiKeyQuotaLimits = RequestQuotaLimits

@@ -19,6 +19,7 @@ export type AccountSavePayload = {
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
+  clientCompatibility: AccountFormModel['clientCompatibility']
   supportedModels: string[]
   proxyProfileId?: string | null
   accountExpiresAt: string | null
@@ -34,6 +35,7 @@ export type AccountOAuthCreateCommonPayload = {
   groupId?: string
   concurrencyLimit: number
   priority: number
+  clientCompatibility: AccountFormModel['clientCompatibility']
   supportedModels: string[]
   proxyProfileId?: string
   accountExpiresAt: string | null
@@ -85,6 +87,7 @@ export function buildAccountSavePayload(input: {
     credentials: accountCredentials(input),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
+    clientCompatibility: input.form.clientCompatibility,
     supportedModels: [...(input.form.supportedModels ?? [])],
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
@@ -100,6 +103,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
+    clientCompatibility: payload.clientCompatibility,
     supportedModels: payload.supportedModels,
     proxyProfileId: payload.proxyProfileId,
     accountExpiresAt: payload.accountExpiresAt,
@@ -122,6 +126,7 @@ export function buildOAuthCreateCommonPayload(input: {
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
+    clientCompatibility: input.form.clientCompatibility,
     supportedModels: [...(input.form.supportedModels ?? [])],
     proxyProfileId: input.form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),

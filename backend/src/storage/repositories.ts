@@ -1,7 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import { normalizeAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 export type { GroupOptionSummary } from '../domain/types.js'
+import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
 import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
 import { normalizeAccountStreamInterceptRules } from '../modules/accounts/account-stream-intercept-policy-validation.js'
@@ -29,7 +31,7 @@ import {
 } from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
 import { maxGroupDeleteAffectedApiKeyRoutes } from './api-key-group-binding-limits.js'
-import { createApiKeyRecord, deleteApiKey, findApiKeySummary, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
+import { createApiKeyRecord, deleteApiKey, findApiKeySecret, findApiKeySummary, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
 import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
@@ -153,6 +155,7 @@ interface OpenAIOAuthRefreshCandidateRow {
   priority: number
   super_priority_enabled: number
   fallback_enabled: number
+  client_compatibility: AccountClientCompatibility
   schedulable: number
   account_expires_at: string | null
   cooldown_until: string | null
@@ -222,6 +225,7 @@ export {
   createApiKeyRecord,
   deleteApiKey,
   deleteApiKeyWithRelatedCleanup,
+  findApiKeySecret,
   findApiKeySummary,
   listApiKeys,
   listApiKeysPage,
@@ -376,6 +380,19 @@ export {
   type OperationLogVisibilityReason,
   type OperationLogVisibilityScope
 } from './operation-logs.repository.js'
+export {
+  cleanupPublicApiLogsBefore,
+  createPublicApiLog,
+  getPublicApiLogDetail,
+  listPublicApiLogs,
+  type PublicApiLogCaptureStatus,
+  type PublicApiLogDetail,
+  type PublicApiLogInput,
+  type PublicApiLogListOptions,
+  type PublicApiLogListResult,
+  type PublicApiLogResultFilter,
+  type PublicApiLogSummary
+} from './public-api-logs.repository.js'
 export {
   cleanupRuntimeLogFileCursorsBefore,
   cleanupRuntimeLogIndex,
@@ -605,6 +622,13 @@ function accountResourceErrorPolicyId(row: AccountListRow): string | null {
   return row.access_type === 'authorized' ? row.source_error_policy_id ?? null : row.error_policy_id
 }
 
+function accountResourceClientCompatibility(row: AccountListRow): AccountClientCompatibility {
+  return normalizeAccountClientCompatibility(
+    row.access_type === 'authorized' ? row.source_client_compatibility : row.client_compatibility,
+    'openai_standard'
+  )
+}
+
 function accountRuntimeCredentialsFromRow(row: AccountListRow): Record<string, unknown> {
   if (row.access_type === 'authorized') {
     return row.source_credentials_encrypted ? decryptJson<Record<string, unknown>>(row.source_credentials_encrypted) : {}
@@ -640,46 +664,31 @@ function isAccountExpired(accountExpiresAt: string | null | undefined, now = Dat
 }
 
 function accountDispatchUnavailableMessage(account: AccountSummary, options: { requireAuthorizedBinding?: boolean } = {}): string | undefined {
-  if (account.permissions?.canUse === false) return '当前账户无可用权限'
-  if (account.accessType === 'authorized') {
-    if (options.requireAuthorizedBinding && !account.boundGroupId) return '授权账户需要先绑定到你的分组'
-    if (account.groupBindStatus === 'authorization_unavailable') return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
-    const authorizationUnavailableMessage = authorizedAuthorizationUnavailableMessage(account)
-    if (authorizationUnavailableMessage) return authorizationUnavailableMessage
-    if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
-    const instanceUnavailableMessage = authorizedAccountInstanceUnavailableMessage(account)
-    if (instanceUnavailableMessage) return instanceUnavailableMessage
-    if (account.status === 'disabled') return '授权账户已停用，当前不可用'
-    if (account.status === 'error') return '授权账户状态异常，当前不可用'
-    if (isCoolingAccountStatus(account.status) || isLaterIso(account.cooldownUntil, nowIso())) return '授权账户暂时不可调用，恢复前不会参与调度'
-    if (!account.schedulable) return '授权账户暂时不可调用，恢复前不会参与调度'
-    return undefined
+  if (account.accessType === 'authorized' && options.requireAuthorizedBinding && !account.boundGroupId) {
+    return '授权账户需要先绑定到你的分组'
   }
-  if (isAccountExpired(account.accountExpiresAt) || account.lastErrorCode === 'account_expired') return '账户已到期，当前不可用'
-  if (account.status === 'disabled') return '账户已停用，当前不可用'
-  if (account.status === 'error') return '账户处于异常状态，当前不可用'
-  if (isCoolingAccountStatus(account.status) || !account.schedulable || isLaterIso(account.cooldownUntil, nowIso())) return '账户暂时不可调用，恢复前不会参与调度'
+  if (account.effectiveAvailability.available === false) {
+    return account.effectiveAvailability.reason ?? account.effectiveAvailability.label
+  }
   return undefined
 }
 
 export function accountTestUnavailableMessage(account: AccountSummary): string | undefined {
   if (account.accessType !== 'authorized') return undefined
-  if (account.permissions?.canUse === false) return '当前账户无可用权限'
-  if (!account.boundGroupId) return '授权账户需要先绑定到你的分组'
-  if (account.groupBindStatus === 'authorization_unavailable') return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
-  const authorizationUnavailableMessage = authorizedAuthorizationUnavailableMessage(account)
-  if (authorizationUnavailableMessage) return authorizationUnavailableMessage
-  if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
-  const instanceUnavailableMessage = authorizedAccountInstanceUnavailableMessage(account, { includeRuntimeState: false })
-  if (instanceUnavailableMessage) return instanceUnavailableMessage
-  if (account.status === 'error') return '账户处于异常状态，当前不可用'
-  if (isCoolingAccountStatus(account.status) || isLaterIso(account.cooldownUntil, nowIso())) {
-    if (canTestAuthorizedInstanceFailureState(account)) {
+  if (account.effectiveAvailability.available !== false) return undefined
+  if (account.effectiveAvailability.blockerScope === 'runtime') return undefined
+  if (account.effectiveAvailability.blockerScope === 'authorized_instance') {
+    if (account.effectiveAvailability.status === 'instance_disabled') return undefined
+    if (
+      (account.effectiveAvailability.status === 'instance_rate_limited'
+        || account.effectiveAvailability.status === 'instance_temporary_unavailable'
+        || account.effectiveAvailability.status === 'instance_cooldown')
+      && canTestAuthorizedInstanceFailureState(account)
+    ) {
       return undefined
     }
-    return '账户暂时不可调用，恢复前不会参与调度'
   }
-  return undefined
+  return account.effectiveAvailability.reason ?? account.effectiveAvailability.label
 }
 
 function canTestAuthorizedInstanceFailureState(account: AccountSummary): boolean {
@@ -861,13 +870,6 @@ function authorizationRuntimeBlockingStatus(status?: AuthorizationStatus | null,
   return undefined
 }
 
-function authorizedAuthorizationUnavailableMessage(account: AccountSummary): string | undefined {
-  if (account.accessType !== 'authorized') return undefined
-  if (account.authorizationStatus === 'expired' || isResourceAuthorizationExpired(account.authorizationExpiresAt)) return '授权已到期，当前账户不能调用'
-  if (account.authorizationStatus === 'paused') return '授权已暂停，当前账户不能调用'
-  return undefined
-}
-
 function authorizedAccountInstanceUnavailableMessage(account: AccountSummary, options: { includeRuntimeState?: boolean } = {}): string | undefined {
   if (account.accessType !== 'authorized') return undefined
   if (isAccountExpired(account.accountExpiresAt)) return '授权账户已到期，当前不可用'
@@ -877,6 +879,19 @@ function authorizedAccountInstanceUnavailableMessage(account: AccountSummary, op
 
 function isAuthorizedInstanceAvailable(account: AccountSummary): boolean {
   return !authorizedAccountInstanceUnavailableMessage(account)
+}
+
+function isAuthorizedSourceAccountAvailableForDispatch(row: AccountListRow, now: string): boolean {
+  if (row.access_type !== 'authorized') return true
+  const nowMs = Date.parse(now)
+  const nowDate = Number.isFinite(nowMs) ? new Date(nowMs) : new Date()
+  return Boolean(row.source_status)
+    && row.source_status === 'active'
+    && row.source_schedulable === 1
+    && isAccountAvailabilityScheduleAllowed(row.source_availability_schedule_json, nowDate)
+    && row.source_last_error_code !== 'account_expired'
+    && !isAccountExpired(row.source_account_expires_at ?? undefined, Number.isFinite(nowMs) ? nowMs : undefined)
+    && !isLaterIso(row.source_cooldown_until ?? undefined, now)
 }
 
 function authorizedBindingSystemAccountId(access?: AccessScope): string {
@@ -1539,6 +1554,7 @@ function accountSummariesFromRows(
     const groupBinding = groupBindingSystemAccountId
       ? accountGroupBindingFromRow(row, groupBindingSystemAccountId) ?? accountGroupBinding(row.id, groupBindingSystemAccountId)
       : undefined
+    const currentNow = nowIso()
     const effectiveAuthorizedStatus = isAuthorizedView
       ? authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) ?? row.status
       : row.status
@@ -1546,9 +1562,11 @@ function accountSummariesFromRows(
       ? Boolean(groupBinding && groupBinding.groupBindStatus === 'bound')
         && authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) === undefined
         && Boolean(accountResourceFactAccountId(row))
+        && isAuthorizedSourceAccountAvailableForDispatch(row, currentNow)
         && row.status === 'active'
         && row.schedulable === 1
-        && !isLaterIso(row.cooldown_until ?? undefined, nowIso())
+        && isAccountAvailabilityScheduleAllowed(row.availability_schedule_json, new Date(Date.parse(currentNow)))
+        && !isLaterIso(row.cooldown_until ?? undefined, currentNow)
       : row.schedulable === 1
     const displayOwnerSystemAccountId = isAuthorizedView
       ? row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
@@ -1558,8 +1576,15 @@ function accountSummariesFromRows(
     const dispatchPriority = isAuthorizedView ? Number(row.bound_group_local_priority ?? row.priority ?? 0) : row.priority
     const dispatchSuperPriorityEnabled = isAuthorizedView ? row.bound_group_local_super_priority_enabled === 1 : row.super_priority_enabled === 1
     const dispatchFallbackEnabled = isAuthorizedView ? row.bound_group_local_fallback_enabled === 1 : row.fallback_enabled === 1
+    const clientCompatibility = accountResourceClientCompatibility(row)
     const availabilitySchedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
-    return {
+    const currentNowMs = Date.parse(currentNow)
+    const currentNowDate = Number.isFinite(currentNowMs) ? new Date(currentNowMs) : new Date()
+    const availabilityScheduleActive = isAccountAvailabilityScheduleAllowed(row.availability_schedule_json, currentNowDate)
+    const sourceAvailabilityScheduleActive = isAuthorizedView
+      ? isAccountAvailabilityScheduleAllowed(row.source_availability_schedule_json, currentNowDate)
+      : undefined
+    return accountSummaryWithEffectiveAvailability({
       id: row.id,
       systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
       systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
@@ -1576,6 +1601,7 @@ function accountSummariesFromRows(
       priority: dispatchPriority,
       superPriorityEnabled: dispatchSuperPriorityEnabled,
       fallbackEnabled: dispatchFallbackEnabled,
+      clientCompatibility,
       supportedModels: [...(row.supported_models ?? [])],
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
@@ -1588,6 +1614,7 @@ function accountSummariesFromRows(
       errorPolicyId: isAuthorizedView ? undefined : accountResourceErrorPolicyId(row) ?? undefined,
       schedulable: effectiveAuthorizedSchedulable,
       availabilitySchedule,
+      availabilityScheduleActive,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: isAuthorizedView ? undefined : row.last_error_code ?? undefined,
@@ -1608,6 +1635,8 @@ function accountSummariesFromRows(
       authorizationInstanceOwnerSystemAccountId: isAuthorizedView ? row.authorization_instance_owner_system_account_id ?? row.authorization_resource_owner_system_account_id ?? undefined : undefined,
       authorizationInstanceSourceAccountStatus: isAuthorizedView ? row.source_status ?? undefined : undefined,
       authorizationInstanceSourceAccountSchedulable: isAuthorizedView && typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
+      authorizationInstanceSourceAccountAvailabilitySchedule: isAuthorizedView ? parseAccountAvailabilityScheduleJson(row.source_availability_schedule_json) : undefined,
+      authorizationInstanceSourceAccountScheduleActive: sourceAvailabilityScheduleActive,
       authorizationInstanceSourceAccountExpiresAt: isAuthorizedView ? row.source_account_expires_at ?? undefined : undefined,
       authorizationInstanceSourceAccountCooldownUntil: isAuthorizedView ? row.source_cooldown_until ?? undefined : undefined,
       authorizationInstanceSourceAccountLastErrorCode: isAuthorizedView ? row.source_last_error_code ?? undefined : undefined,
@@ -1625,7 +1654,7 @@ function accountSummariesFromRows(
       authorizationUsageAvailable: !isAuthorizedView && authorizationStats.authorizationCount > 0 && canManageResourceOwner(row.system_account_id, access),
       authorizationCount: isAuthorizedView ? 0 : authorizationStats.authorizationCount,
       authorizationTeamCount: isAuthorizedView ? 0 : authorizationStats.authorizationTeamCount
-    }
+    })
   })
 }
 
@@ -1845,7 +1874,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
   const supportedModelsByAccountId = loadSupportedModelsByAccountIds(hydratedRows.map((row) => accountResourceFactAccountId(row)))
   return hydratedRows.map((row) => {
     const groupBinding = accountGroupBinding(row.id, row.system_account_id)
-    return {
+    return accountSummaryWithEffectiveAvailability({
       id: row.id,
       systemAccountId: row.system_account_id,
       systemAccountName: accountNames.get(row.system_account_id),
@@ -1862,6 +1891,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       priority: row.priority,
       superPriorityEnabled: row.super_priority_enabled === 1,
       fallbackEnabled: row.fallback_enabled === 1,
+      clientCompatibility: accountResourceClientCompatibility(row),
       supportedModels: supportedModelsByAccountId.get(accountResourceFactAccountId(row)) ?? [],
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       errorPolicyId: accountResourceErrorPolicyId(row) ?? undefined,
@@ -1884,7 +1914,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       boundGroupName: groupBinding?.groupName,
       groupBindStatus: groupBinding?.groupBindStatus,
       permissions: ownerPermissions()
-    }
+    })
   })
 }
 
@@ -1900,7 +1930,7 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
     .prepare(`
       SELECT id, system_account_id, provider_code, name, type, status, credentials_encrypted,
         proxy_profile_id, error_policy_id, concurrency_limit, priority,
-        super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
+        super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
         last_error_code, last_error_message
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
@@ -1942,7 +1972,7 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
 }
 
 function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateRow[]): AccountSummary[] {
-  return rows.map((row) => ({
+  return rows.map((row) => accountSummaryWithEffectiveAvailability({
     id: row.id,
     systemAccountId: row.system_account_id,
     providerCode: 'openai',
@@ -1955,6 +1985,7 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
     priority: row.priority,
     superPriorityEnabled: row.super_priority_enabled === 1,
     fallbackEnabled: row.fallback_enabled === 1,
+    clientCompatibility: normalizeAccountClientCompatibility(row.client_compatibility),
     supportedModels: [],
     proxyProfileId: row.proxy_profile_id ?? undefined,
     errorPolicyId: row.error_policy_id ?? undefined,
@@ -1997,6 +2028,7 @@ const accountCreateInputKeys = new Set([
   'priority',
   'superPriorityEnabled',
   'fallbackEnabled',
+  'clientCompatibility',
   'proxyProfileId',
   'errorPolicyId',
   'schedulable',
@@ -2015,6 +2047,7 @@ const accountUpdateInputKeys = new Set([
   'priority',
   'superPriorityEnabled',
   'fallbackEnabled',
+  'clientCompatibility',
   'proxyProfileId',
   'errorPolicyId',
   'schedulable',
@@ -2068,6 +2101,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const proxyProfileId = globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
   const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled, false)
   const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
+  const clientCompatibility = normalizeAccountClientCompatibility(input.clientCompatibility)
   if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
     throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
   }
@@ -2075,7 +2109,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw new Error('超级优先和降级备用不能同时开启')
   }
   const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
-  const account: AccountSummary = {
+  const account: AccountSummary = accountSummaryWithEffectiveAvailability({
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
@@ -2090,11 +2124,13 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     priority: normalizedOptionalDispatchPriority(input.priority, 0),
     superPriorityEnabled: createSuperPriorityEnabled,
     fallbackEnabled: createFallbackEnabled,
+    clientCompatibility,
     supportedModels,
     proxyProfileId,
     errorPolicyId: normalizeNullableIdInput(input.errorPolicyId, '错误处理策略'),
     schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
+    availabilityScheduleActive: isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(availabilitySchedule), new Date(nowMs)),
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorCode: expiredByPackage ? 'account_expired' : undefined,
@@ -2109,7 +2145,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     boundGroupId: groupId,
     boundGroupName: group.name ?? groupId,
     groupBindStatus: 'bound'
-  }
+  })
 
   const database = getBusinessDatabase()
   assertAccountNameAvailable(systemAccountId, providerCode, account.name)
@@ -2120,9 +2156,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit, error_policy_id,
-          priority, super_priority_enabled, fallback_enabled, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -2142,6 +2178,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.priority,
         account.superPriorityEnabled ? 1 : 0,
         account.fallbackEnabled ? 1 : 0,
+        account.clientCompatibility,
         account.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(account.availabilitySchedule),
         account.notes ?? null,
@@ -2306,9 +2343,13 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (hasFallbackInput && nextFallbackEnabled) {
     nextSuperPriorityEnabled = false
   }
+  const nextClientCompatibility = hasOwnInput(input, 'clientCompatibility')
+    ? normalizeAccountClientCompatibility(input.clientCompatibility, current.clientCompatibility)
+    : current.clientCompatibility
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
-  const next: AccountSummary = {
+  const updateNowMs = Date.now()
+  const next: AccountSummary = accountSummaryWithEffectiveAvailability({
     ...current,
     name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '账户名称'),
     notes: hasNotesInput ? normalizeNullableTextInput(input.notes, '账户备注') : current.notes,
@@ -2318,6 +2359,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     priority: normalizedOptionalDispatchPriority(input.priority, current.priority),
     superPriorityEnabled: nextSuperPriorityEnabled,
     fallbackEnabled: nextFallbackEnabled,
+    clientCompatibility: nextClientCompatibility,
     supportedModels: nextSupportedModels,
     proxyProfileId: hasOwnInput(input, 'proxyProfileId')
       ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
@@ -2329,6 +2371,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         ? true
         : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,
+    availabilityScheduleActive: isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(nextAvailabilitySchedule), new Date(updateNowMs)),
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
     lastErrorCode: nextLastErrorCode,
@@ -2339,7 +2382,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
     lastUsedAt: current.lastUsedAt,
     usage: current.usage
-  }
+  })
 
   assertAccountNameAvailable(systemAccountId, next.providerCode, next.name, id)
   const database = getBusinessDatabase()
@@ -2353,7 +2396,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
@@ -2372,6 +2415,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.priority,
         next.superPriorityEnabled ? 1 : 0,
         next.fallbackEnabled ? 1 : 0,
+        next.clientCompatibility,
         next.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(next.availabilitySchedule),
         next.accountExpiresAt ?? null,

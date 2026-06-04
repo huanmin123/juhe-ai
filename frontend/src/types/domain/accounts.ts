@@ -3,6 +3,8 @@ import type { RequestQuotaLimits } from './access'
 import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
+export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
+
 export interface AccountCredentials {
   api_key?: string
   base_url?: string
@@ -60,6 +62,54 @@ export interface AccountRuntimeAvailability {
   distinctClientIpCount?: number
   distinctApiKeyCount?: number
   precheckAttemptCount?: number
+}
+
+export type AccountEffectiveAvailabilityStatus =
+  | 'available'
+  | 'permission_denied'
+  | 'authorization_expired'
+  | 'authorization_paused'
+  | 'authorization_unavailable'
+  | 'authorization_quota_exceeded'
+  | 'source_deleted'
+  | 'source_expired'
+  | 'source_disabled'
+  | 'source_error'
+  | 'source_rate_limited'
+  | 'source_temporary_unavailable'
+  | 'source_cooldown'
+  | 'source_unschedulable'
+  | 'source_schedule_inactive'
+  | 'instance_expired'
+  | 'instance_disabled'
+  | 'instance_error'
+  | 'instance_rate_limited'
+  | 'instance_temporary_unavailable'
+  | 'instance_cooldown'
+  | 'instance_unschedulable'
+  | 'instance_schedule_inactive'
+  | 'binding_missing'
+  | 'runtime_local_suppressed'
+  | 'runtime_precheck_pending'
+  | 'runtime_precheck_failed'
+
+export type AccountEffectiveAvailabilityBlockerScope =
+  | 'permission'
+  | 'authorization'
+  | 'source_account'
+  | 'account'
+  | 'authorized_instance'
+  | 'binding'
+  | 'runtime'
+
+export interface AccountEffectiveAvailability {
+  available: boolean
+  status: AccountEffectiveAvailabilityStatus
+  label: string
+  color: string
+  blockerScope?: AccountEffectiveAvailabilityBlockerScope
+  reason?: string
+  retryAt?: string
 }
 
 export type AccountAvailabilityScheduleMode = 'allow_windows'
@@ -123,9 +173,11 @@ export interface AccountSummary {
   currentConcurrency: number
   currentConcurrencyAvailable?: boolean
   runtimeAvailability?: AccountRuntimeAvailability
+  effectiveAvailability?: AccountEffectiveAvailability
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
+  clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
   qualityScore?: number
   qualityState?: string
@@ -140,6 +192,7 @@ export interface AccountSummary {
   errorPolicyId?: string
   schedulable: boolean
   availabilitySchedule?: AccountAvailabilitySchedule
+  availabilityScheduleActive?: boolean
   accountExpiresAt?: string
   cooldownUntil?: string
   lastErrorCode?: string
@@ -160,6 +213,8 @@ export interface AccountSummary {
   authorizationInstanceOwnerSystemAccountId?: string
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
+  authorizationInstanceSourceAccountAvailabilitySchedule?: AccountAvailabilitySchedule
+  authorizationInstanceSourceAccountScheduleActive?: boolean
   authorizationInstanceSourceAccountExpiresAt?: string
   authorizationInstanceSourceAccountCooldownUntil?: string
   authorizationInstanceSourceAccountLastErrorCode?: string
@@ -239,6 +294,8 @@ export interface AccountTestResult {
   accountFailureEligible?: boolean
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable'
   errorPolicyReason?: string
+  clientCompatibility?: AccountClientCompatibility
+  testClientCompatibility?: AccountClientCompatibility
 }
 
 export interface AccountTrafficMigrationResult {

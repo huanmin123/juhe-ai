@@ -9,6 +9,7 @@
               <a-space class="policy-title-tags" :size="6" wrap>
                 <a-tag color="purple">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
                 <a-tag color="blue">继承默认和管理端策略</a-tag>
+                <a-tag v-if="readonly" color="default">只读</a-tag>
               </a-space>
             </div>
           </div>
@@ -20,16 +21,16 @@
               <template #icon><question-circle-outlined /></template>
               配置指南
             </a-button>
-            <a-button size="small" @click="addRule">添加规则</a-button>
+            <a-button v-if="!readonly" size="small" @click="addRule">添加规则</a-button>
             <a-button size="small" :disabled="rules.length === 0" @click="expandAll">展开全部</a-button>
             <a-button size="small" :disabled="rules.length === 0" @click="collapseAll">收起全部</a-button>
-            <a-popconfirm title="确定清空当前账户追加规则吗？" ok-text="清空" cancel-text="取消" @confirm="clearRules">
+            <a-popconfirm v-if="!readonly" title="确定清空当前账户追加规则吗？" ok-text="清空" cancel-text="取消" @confirm="clearRules">
               <a-button size="small" :disabled="rules.length === 0">清空规则</a-button>
             </a-popconfirm>
           </a-space>
 
           <a-empty v-if="rules.length === 0" class="compact-empty" description="当前账户没有追加流式拦截规则">
-            <a-button type="primary" @click="addRule">添加账户规则</a-button>
+            <a-button v-if="!readonly" type="primary" @click="addRule">添加账户规则</a-button>
           </a-empty>
 
           <a-collapse v-else v-model:activeKey="ruleKeys" class="rule-collapse" ghost>
@@ -37,7 +38,7 @@
               <template #header>
                 <div class="rule-summary">
                   <div class="rule-summary-main">
-                    <a-switch v-model:checked="rule.enabled" size="small" checked-children="启" un-checked-children="停" @click.stop />
+                    <a-switch v-model:checked="rule.enabled" size="small" checked-children="启" un-checked-children="停" :disabled="readonly" @click.stop />
                     <a-tag color="blue">{{ rule.priority ?? '-' }}</a-tag>
                     <a-tag color="cyan">{{ actionLabel(rule) }}</a-tag>
                     <a-tag v-if="positiveInt(rule.avoidanceTtlSeconds)">{{ positiveInt(rule.avoidanceTtlSeconds) }}s</a-tag>
@@ -47,7 +48,7 @@
                 </div>
               </template>
 
-              <template #extra>
+              <template v-if="!readonly" #extra>
                 <a-space class="rule-actions" wrap @click.stop>
                   <a-button size="small" :disabled="index === 0" @click="moveRule(index, -1)">上移</a-button>
                   <a-button size="small" :disabled="index === rules.length - 1" @click="moveRule(index, 1)">下移</a-button>
@@ -58,34 +59,34 @@
               <div class="rule-editor">
                 <div class="form-grid compact">
                   <a-form-item label="规则名称">
-                    <a-input v-model:value="rule.name" placeholder="例如 屏蔽某中转广告" />
+                    <a-input v-model:value="rule.name" :disabled="readonly" placeholder="例如 屏蔽某中转广告" />
                   </a-form-item>
                   <a-form-item label="优先级">
-                    <a-input-number v-model:value="rule.priority" :min="1" :max="9999" style="width: 100%" />
+                    <a-input-number v-model:value="rule.priority" :disabled="readonly" :min="1" :max="9999" style="width: 100%" />
                   </a-form-item>
                 </div>
 
                 <div class="form-grid matcher-grid">
                   <a-form-item label="SSE event 类型">
-                    <a-input v-model:value="rule.eventTypes" placeholder="response.failed, message" />
+                    <a-input v-model:value="rule.eventTypes" :disabled="readonly" placeholder="response.failed, message" />
                   </a-form-item>
                   <a-form-item label="data.type">
-                    <a-input v-model:value="rule.dataTypes" placeholder="response.output_text.delta" />
+                    <a-input v-model:value="rule.dataTypes" :disabled="readonly" placeholder="response.output_text.delta" />
                   </a-form-item>
                   <a-form-item label="error.code">
-                    <a-input v-model:value="rule.errorCodes" placeholder="cyber_policy" />
+                    <a-input v-model:value="rule.errorCodes" :disabled="readonly" placeholder="cyber_policy" />
                   </a-form-item>
                   <a-form-item label="error.type">
-                    <a-input v-model:value="rule.errorTypes" placeholder="server_error" />
+                    <a-input v-model:value="rule.errorTypes" :disabled="readonly" placeholder="server_error" />
                   </a-form-item>
                   <a-form-item label="SSE data文本包含">
-                    <a-textarea v-model:value="rule.textIncludes" :rows="1" auto-size placeholder="匹配当前单个 SSE 事件 data 文本，多个关键词用逗号、分号或换行分隔" />
+                    <a-textarea v-model:value="rule.textIncludes" :disabled="readonly" :rows="1" auto-size placeholder="匹配当前单个 SSE 事件 data 文本，多个关键词用逗号、分号或换行分隔" />
                   </a-form-item>
                   <a-form-item label="SSE data文本不包含">
-                    <a-textarea v-model:value="rule.textExcludes" :rows="1" auto-size placeholder="当前事件 data 文本包含这些关键词时不命中，用于减少误杀" />
+                    <a-textarea v-model:value="rule.textExcludes" :disabled="readonly" :rows="1" auto-size placeholder="当前事件 data 文本包含这些关键词时不命中，用于减少误杀" />
                   </a-form-item>
                   <a-form-item label="JSON字段路径存在">
-                    <a-input v-model:value="rule.jsonPathsExists" placeholder="response.error, error" />
+                    <a-input v-model:value="rule.jsonPathsExists" :disabled="readonly" placeholder="response.error, error" />
                   </a-form-item>
                 </div>
 
@@ -97,6 +98,7 @@
                         :key="template.action"
                         class="action-option"
                         :class="{ active: rule.action === template.action }"
+                        :disabled="readonly"
                         type="button"
                         @click="selectRuleAction(rule, template.action)"
                       >
@@ -112,12 +114,12 @@
                 </div>
                 <div v-if="actionUsesTtl(rule)" class="form-grid compact">
                   <a-form-item label="避让秒数">
-                    <a-input-number v-model:value="rule.avoidanceTtlSeconds" :min="1" :max="86400" style="width: 100%" />
+                    <a-input-number v-model:value="rule.avoidanceTtlSeconds" :disabled="readonly" :min="1" :max="86400" style="width: 100%" />
                   </a-form-item>
                 </div>
 
                 <a-form-item label="备注">
-                  <a-textarea v-model:value="rule.notes" :rows="1" auto-size placeholder="可写污染来源或排障线索" />
+                  <a-textarea v-model:value="rule.notes" :disabled="readonly" :rows="1" auto-size placeholder="可写污染来源或排障线索" />
                 </a-form-item>
               </div>
             </a-collapse-panel>
@@ -201,6 +203,12 @@ import type { StreamInterceptPolicyAction } from '@/types/domain'
 
 const rules = defineModel<AccountStreamInterceptRuleForm[]>('rules', { required: true })
 
+const props = withDefaults(defineProps<{
+  readonly?: boolean
+}>(), {
+  readonly: false
+})
+
 const activeKeys = ref<string[]>([])
 const ruleKeys = ref<string[]>([])
 const guideOpen = ref(false)
@@ -230,6 +238,7 @@ function ruleKey(index: number): string {
 }
 
 function addRule(): void {
+  if (props.readonly) return
   if (!activeKeys.value.includes('stream')) {
     activeKeys.value = ['stream']
   }
@@ -238,16 +247,19 @@ function addRule(): void {
 }
 
 function clearRules(): void {
+  if (props.readonly) return
   rules.value = []
   ruleKeys.value = []
 }
 
 function removeRule(index: number): void {
+  if (props.readonly) return
   rules.value.splice(index, 1)
   ruleKeys.value = []
 }
 
 function moveRule(index: number, offset: number): void {
+  if (props.readonly) return
   const nextIndex = index + offset
   if (nextIndex < 0 || nextIndex >= rules.value.length) return
   const [rule] = rules.value.splice(index, 1)
@@ -272,6 +284,7 @@ function handleRuleActionChange(rule: AccountStreamInterceptRuleForm): void {
 }
 
 function selectRuleAction(rule: AccountStreamInterceptRuleForm, action: StreamInterceptPolicyAction): void {
+  if (props.readonly) return
   rule.action = action
   handleRuleActionChange(rule)
 }

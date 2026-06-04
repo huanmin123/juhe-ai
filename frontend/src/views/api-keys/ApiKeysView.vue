@@ -104,9 +104,16 @@
         <template v-else-if="column.key === 'key'">
           <div class="key-preview-cell">
             <span class="key-preview" :title="keyDisplayTitle(record)">{{ formatKeyPreview(record) }}</span>
-            <a-tooltip title="复制密钥标识">
+            <a-tooltip title="复制完整密钥">
               <span>
-                <a-button class="key-copy-button" type="text" size="small" @click="copyKeyPreview(record)">
+                <a-button
+                  class="key-copy-button"
+                  type="text"
+                  size="small"
+                  :loading="keyCopyingId === record.id"
+                  :disabled="Boolean(keyCopyingId) && keyCopyingId !== record.id"
+                  @click="copyKeyPreview(record)"
+                >
                   <template #icon><copy-outlined /></template>
                 </a-button>
               </span>
@@ -208,8 +215,8 @@
           </div>
         </div>
         <div class="gateway-help-section">
-          <span class="gateway-step-title">2. 复制新建时显示的 API Key</span>
-          <span>完整密钥只在创建成功弹窗中显示一次，列表显示前8位和后8位用于识别。</span>
+          <span class="gateway-step-title">2. 复制 API Key</span>
+          <span>列表显示前8位和后8位用于识别，可通过复制按钮复制完整密钥。</span>
         </div>
         <div class="gateway-help-section">
           <span class="gateway-step-title">3. 填到客户端</span>
@@ -221,7 +228,7 @@
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑 API Key' : '新建 API Key'" width="640px" :confirm-loading="apiKeySaving" :ok-button-props="{ type: 'primary', disabled: apiKeySaving }" @ok="saveApiKey">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
-      <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建成功后仅显示一次，请立即复制保存。" type="info" show-icon />
+      <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建成功后请立即复制保存；后续可在列表按权限复制完整密钥。" type="info" show-icon />
       <a-form layout="vertical" class="modal-form">
         <a-form-item label="名称" required>
           <a-input v-model:value="form.name" />
@@ -391,6 +398,7 @@ const helpOpen = ref(false)
 const editingId = ref<string>()
 const createdKey = ref('')
 const statusUpdatingId = ref('')
+const keyCopyingId = ref('')
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const pageSize = 50
@@ -598,7 +606,7 @@ const activeFilterCount = computed(() => [
 ].filter(Boolean).length)
 const advancedFilterCount = computed(() => 0)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
-const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填创建成功时复制的完整密钥'].join('\n'))
+const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填复制到的完整密钥'].join('\n'))
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
   const systemAccountId = apiKeyScopeParams.value?.systemAccountId
@@ -766,12 +774,12 @@ function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; da
 }
 
 function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>) {
-  return maskSecretPreview(apiKey.key, apiKey.keyPrefix, apiKey.keySuffix, '仅创建时显示')
+  return maskSecretPreview(apiKey.key, apiKey.keyPrefix, apiKey.keySuffix, '密钥未返回')
 }
 
 function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>) {
   if (apiKey.key) return apiKey.key
-  return apiKey.keyPrefix ? '完整密钥仅创建时显示' : '完整密钥仅创建时显示'
+  return apiKey.keyPrefix ? '列表仅显示密钥标识，点击复制按钮复制完整密钥' : '密钥未返回'
 }
 
 function maskSecretPreview(value: string | undefined, prefix: string | undefined, suffix: string | undefined, fallback: string): string {
@@ -785,8 +793,20 @@ function maskSecretPreview(value: string | undefined, prefix: string | undefined
   return fallback
 }
 
-function copyKeyPreview(apiKey: ApiKeySummary): void {
-  void copyTextToClipboard(formatKeyPreview(apiKey), '密钥标识已复制')
+async function copyKeyPreview(apiKey: ApiKeySummary): Promise<void> {
+  if (keyCopyingId.value) return
+  keyCopyingId.value = apiKey.id
+  try {
+    const key = apiKey.key || (await apiKeysApi.secret(apiKey.id, apiKeyScopeParams.value)).key
+    await copyTextToClipboard(key, '完整密钥已复制')
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '复制完整密钥失败'))
+  } finally {
+    if (keyCopyingId.value === apiKey.id) {
+      keyCopyingId.value = ''
+    }
+  }
 }
 
 function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {

@@ -63,12 +63,12 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="临时状态重试间隔（秒）" extra="标记临时不可调用前，每次短暂重试之间等待多久。">
+              <a-form-item label="临时状态重试间隔（秒）" extra="普通上游失败切号前，同账号原地重试之间等待多久。">
                 <a-input-number v-model:value="systemForm.temporaryUnschedulableRetryIntervalSeconds" :min="0" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="临时状态重试次数" extra="未知失败会先按该次数短暂重试；仍失败则切换账号并记录失败，不默认冷却账号。">
+              <a-form-item label="临时状态重试次数" extra="普通上游失败会先按该次数原地重试当前账号；仍失败才切换账号并记录临时不可调用。">
                 <a-input-number v-model:value="systemForm.temporaryUnschedulableRetryAttempts" :min="0" :max="10" style="width: 100%" />
               </a-form-item>
             </div>

@@ -74,8 +74,14 @@ export function accountSelectOptionLabel(account: AccountOptionLike): string {
   if (account.accessType !== 'authorized') {
     return account.name
   }
+  const accountName = authorizedAccountDisplayName(account.name)
   const ownerName = account.ownerSystemAccountName?.trim()
-  return ownerName ? `${account.name}（来自：${ownerName}）` : `${account.name}（来自授权）`
+  return ownerName ? `${accountName}（来自：${ownerName}）` : `${accountName}（来自授权）`
+}
+
+function authorizedAccountDisplayName(name: string): string {
+  const cleaned = name.replace(/（授权(?: [^）]+)?）$/, '')
+  return cleaned || name
 }
 
 export function mergeSelectedAccountOptions(

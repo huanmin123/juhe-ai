@@ -1,5 +1,6 @@
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ResourceAuthorizationSourceType } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ResourceAuthorizationSourceType } from '../domain/types.js'
+import { normalizeAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
 import { decryptJson } from './crypto.js'
@@ -38,6 +39,7 @@ export interface OpenAIAccountSecret {
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
+  clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
   qualityScore?: number
   qualityState?: string
@@ -148,15 +150,22 @@ export function findOpenAIAccountForGroup(
 
   const row = getBusinessDatabase()
     .prepare(`
-      SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
+      SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.availability_schedule_json, accounts.account_expires_at, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.type AS resource_type,
+        source_accounts.status AS resource_status,
+        source_accounts.schedulable AS resource_schedulable,
+        source_accounts.availability_schedule_json AS resource_availability_schedule_json,
+        source_accounts.account_expires_at AS resource_account_expires_at,
+        source_accounts.cooldown_until AS resource_cooldown_until,
+        source_accounts.last_error_code AS resource_last_error_code,
         source_accounts.credentials_encrypted AS resource_credentials_encrypted,
         source_accounts.proxy_profile_id AS resource_proxy_profile_id,
         source_accounts.concurrency_limit AS resource_concurrency_limit,
         source_accounts.error_policy_id AS resource_error_policy_id,
+        source_accounts.client_compatibility AS resource_client_compatibility,
         NULL AS quality_score,
         NULL AS quality_state,
         NULL AS quality_ewma_first_token_ms
@@ -251,7 +260,7 @@ export function listOpenAIAccountsForGroupResult(
     ...listOpenAIGroupAccountSelectionRows(database, groupId, groupAccess.groupOwnerSystemAccountId, now, 'without_schedule'),
     ...listOpenAIGroupAccountSelectionRows(database, groupId, groupAccess.groupOwnerSystemAccountId, now, 'with_schedule')
   ]
-  const hasAccountAvailabilitySchedule = groupAccountRows.some((row) => Boolean(row.availability_schedule_json))
+  const hasAccountAvailabilitySchedule = groupAccountRows.some((row) => Boolean(row.availability_schedule_json || row.resource_availability_schedule_json))
   const accountAuthorizationsByIdOrResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
   const eligibleRows = groupAccountRows
     .map((row) => ({
@@ -363,21 +372,28 @@ function listOpenAIGroupAccountSelectionRows(
   scheduleFilter: AccountAvailabilityScheduleCandidateFilter
 ): OpenAIGroupAccountSelectionRow[] {
   const scheduleClause = scheduleFilter === 'with_schedule'
-    ? 'AND accounts.availability_schedule_json IS NOT NULL'
-    : 'AND accounts.availability_schedule_json IS NULL'
+    ? 'AND (accounts.availability_schedule_json IS NOT NULL OR source_accounts.availability_schedule_json IS NOT NULL)'
+    : 'AND accounts.availability_schedule_json IS NULL AND source_accounts.availability_schedule_json IS NULL'
   return database
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
-        accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
+        accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.availability_schedule_json, accounts.account_expires_at, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.type AS resource_type,
+        source_accounts.status AS resource_status,
+        source_accounts.schedulable AS resource_schedulable,
+        source_accounts.availability_schedule_json AS resource_availability_schedule_json,
+        source_accounts.account_expires_at AS resource_account_expires_at,
+        source_accounts.cooldown_until AS resource_cooldown_until,
+        source_accounts.last_error_code AS resource_last_error_code,
         source_accounts.credentials_encrypted AS resource_credentials_encrypted,
         source_accounts.proxy_profile_id AS resource_proxy_profile_id,
         source_accounts.concurrency_limit AS resource_concurrency_limit,
         source_accounts.error_policy_id AS resource_error_policy_id,
+        source_accounts.client_compatibility AS resource_client_compatibility,
         NULL AS quality_score,
         NULL AS quality_state,
         NULL AS quality_ewma_first_token_ms
@@ -395,7 +411,16 @@ function listOpenAIGroupAccountSelectionRows(
         ${scheduleClause}
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
-          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.deleted_at IS NULL AND source_accounts.type IN ('api_key', 'oauth'))
+          OR (
+            accounts.authorization_instance_authorization_id IS NOT NULL
+            AND source_accounts.deleted_at IS NULL
+            AND source_accounts.type IN ('api_key', 'oauth')
+            AND source_accounts.status = 'active'
+            AND source_accounts.schedulable = 1
+            AND (source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
+            AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
+            AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
+          )
         )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       ORDER BY
@@ -406,7 +431,7 @@ function listOpenAIGroupAccountSelectionRows(
         group_accounts.account_id ASC
       LIMIT ?
     `)
-    .all(groupId, groupOwnerSystemAccountId, now, now, gatewayDispatchAccountCandidateLimit) as unknown as OpenAIGroupAccountSelectionRow[]
+    .all(groupId, groupOwnerSystemAccountId, now, now, now, now, gatewayDispatchAccountCandidateLimit) as unknown as OpenAIGroupAccountSelectionRow[]
 }
 
 export function hasOpenAIAccountAvailabilityScheduleForGroup(
@@ -431,7 +456,10 @@ export function hasOpenAIAccountAvailabilityScheduleForGroup(
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
           OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.deleted_at IS NULL AND source_accounts.type IN ('api_key', 'oauth'))
         )
-        AND accounts.availability_schedule_json IS NOT NULL
+        AND (
+          accounts.availability_schedule_json IS NOT NULL
+          OR source_accounts.availability_schedule_json IS NOT NULL
+        )
       LIMIT 1
     `)
     .get(groupId, groupAccess.groupOwnerSystemAccountId) as unknown
@@ -449,6 +477,7 @@ interface OpenAIAccountRow {
   priority: number
   super_priority_enabled: number
   fallback_enabled: number
+  client_compatibility: AccountClientCompatibility
   credentials_encrypted: string
   proxy_profile_id: string | null
   error_policy_id: string | null
@@ -463,10 +492,17 @@ interface OpenAIAccountRow {
   authorization_instance_owner_system_account_id?: string | null
   resource_account_id?: string | null
   resource_type?: AccountType | null
+  resource_status?: AccountStatus | null
+  resource_schedulable?: number | null
+  resource_availability_schedule_json?: string | null
+  resource_account_expires_at?: string | null
+  resource_cooldown_until?: string | null
+  resource_last_error_code?: string | null
   resource_credentials_encrypted?: string | null
   resource_proxy_profile_id?: string | null
   resource_concurrency_limit?: number | null
   resource_error_policy_id?: string | null
+  resource_client_compatibility?: AccountClientCompatibility | null
   quality_score?: number | null
   quality_state?: string | null
   quality_ewma_first_token_ms?: number | null
@@ -494,6 +530,10 @@ function openAIAccountResourceConcurrencyLimit(row: OpenAIAccountRow): number {
 
 function openAIAccountResourceErrorPolicyId(row: OpenAIAccountRow): string | null {
   return row.resource_error_policy_id ?? row.error_policy_id
+}
+
+function openAIAccountResourceClientCompatibility(row: OpenAIAccountRow): AccountClientCompatibility {
+  return normalizeAccountClientCompatibility(row.resource_client_compatibility ?? row.client_compatibility)
 }
 
 function openAIAccountSecretFromRow(
@@ -563,6 +603,7 @@ function openAIAccountSecretFromRow(
     priority: dispatchPriority,
     superPriorityEnabled: runtimeStatus === 'active' && dispatchSuperPriorityEnabled,
     fallbackEnabled: runtimeStatus === 'active' && dispatchFallbackEnabled,
+    clientCompatibility: openAIAccountResourceClientCompatibility(row),
     supportedModels: [...(options.supportedModelsByAccountId?.get(resourceAccountId) ?? [])],
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
@@ -617,6 +658,31 @@ function isOpenAIPhysicalAccountAvailableForSelection(row: OpenAIAccountRow, now
   return row.status === 'active' && (!row.cooldown_until || row.cooldown_until <= now)
 }
 
+function isOpenAIResourceAccountAvailableForSelection(row: OpenAIAccountRow, now: string, includeUnavailable: boolean): boolean {
+  if (!row.authorization_instance_authorization_id) {
+    return true
+  }
+  if (!row.resource_account_id || !row.resource_status) {
+    return false
+  }
+  if (row.resource_account_expires_at && row.resource_account_expires_at <= now) {
+    return false
+  }
+  if (row.resource_last_error_code === 'account_expired') {
+    return false
+  }
+  if (row.resource_schedulable !== 1) {
+    return false
+  }
+  if (!isAccountAvailabilityScheduleAllowed(row.resource_availability_schedule_json, new Date(now))) {
+    return false
+  }
+  if (includeUnavailable) {
+    return row.resource_status === 'active' || row.resource_status === 'rate_limited' || row.resource_status === 'temporary_unavailable'
+  }
+  return row.resource_status === 'active' && (!row.resource_cooldown_until || row.resource_cooldown_until <= now)
+}
+
 function isOpenAIAccountAvailableForSelection(
   row: OpenAIAccountRow,
   groupAccount: GroupAccountRow | undefined,
@@ -625,6 +691,9 @@ function isOpenAIAccountAvailableForSelection(
   includeUnavailable: boolean
 ): boolean {
   if (!isOpenAIPhysicalAccountAvailableForSelection(row, now, includeUnavailable)) {
+    return false
+  }
+  if (!isOpenAIResourceAccountAvailableForSelection(row, now, includeUnavailable)) {
     return false
   }
   if (accountAccess.accountAccessType === 'account_authorized') {

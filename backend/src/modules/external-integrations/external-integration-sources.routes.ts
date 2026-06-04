@@ -6,8 +6,10 @@ import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import {
   createExternalIntegrationSourceAuthorization,
   createExternalIntegrationSourceToken,
+  deleteExternalIntegrationSource,
   externalIntegrationScopeOptions,
   findExternalIntegrationSource,
+  findExternalIntegrationSourceTokenSecret,
   listExternalIntegrationSources,
   updateExternalIntegrationSource,
   updateExternalIntegrationSourceToken
@@ -157,6 +159,36 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
   res.json(ok(source))
 })
 
+externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
+  operationKey: 'external_integration_sources.delete',
+  fingerprint: (req) => ({
+    id: req.params.id
+  })
+}), (req, res) => {
+  const params = idParamSchema.safeParse(req.params)
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
+    return
+  }
+  const before = findExternalIntegrationSource(params.data.id)
+  if (!deleteExternalIntegrationSource(params.data.id)) {
+    res.status(404).json({ message: '来源系统不存在' })
+    return
+  }
+  recordSourceOperation(req, {
+    action: 'delete',
+    operationKey: 'external_integration_sources.delete',
+    sourceRefId: params.data.id,
+    sourceName: before?.name ?? params.data.id,
+    summary: `删除外部来源系统：${before?.name ?? params.data.id}`,
+    changes: [
+      safeChange('deleted', '删除状态', false, true),
+      safeChange('tokenCount', '关联 Token 数量', before?.tokenCount ?? 0, 0)
+    ]
+  })
+  res.status(204).send()
+})
+
 externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
   operationKey: 'external_integration_sources.create_token',
   fingerprint: (req) => ({
@@ -199,6 +231,24 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
     }))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Token 创建失败'))
+  }
+})
+
+externalIntegrationSourcesRouter.get('/:id/tokens/:tokenId/secret', (req, res) => {
+  const params = tokenParamSchema.safeParse(req.params)
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, 'Token 不存在')))
+    return
+  }
+  try {
+    const token = findExternalIntegrationSourceTokenSecret(params.data.id, params.data.tokenId)
+    if (!token) {
+      res.status(404).json({ message: 'Token 不存在' })
+      return
+    }
+    res.json(ok(token))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '读取 Token 失败'))
   }
 })
 

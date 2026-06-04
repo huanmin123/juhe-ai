@@ -80,6 +80,10 @@ export interface CreatedExternalIntegrationSourceAuthorization {
   token: CreatedExternalIntegrationSourceToken
 }
 
+export interface ExternalIntegrationSourceTokenSecretResult {
+  token: string
+}
+
 export type ExternalPublicApiMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 export type ExternalPublicApiStatus = 'available' | 'mock'
 
@@ -88,7 +92,7 @@ export interface ExternalPublicApiField {
   type: string
   required: boolean
   description: string
-  example?: string | number | boolean
+  example?: unknown
 }
 
 export interface ExternalPublicApiHeader {
@@ -115,6 +119,7 @@ export interface ExternalPublicApiDocItem {
   headers: ExternalPublicApiHeader[]
   query: ExternalPublicApiField[]
   requestBody?: ExternalPublicApiBody
+  responseFields: ExternalPublicApiField[]
   responseExample: unknown
 }
 

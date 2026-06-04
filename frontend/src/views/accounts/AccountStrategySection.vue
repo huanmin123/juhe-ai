@@ -3,7 +3,7 @@
     <div class="form-section-head">
       <div>
         <h4>请求策略</h4>
-        <p>{{ authorizedEditing ? '授权账户只允许调整你自己的分组内优先级。' : '并发、优先级和代理会影响后续请求转发与账户选择。' }}</p>
+        <p>{{ authorizedEditing ? '上游模型、并发和代理来自授权方，只读展示；你只能调整自己的分组内优先级。' : '并发、优先级和代理会影响后续请求转发与账户选择。' }}</p>
       </div>
     </div>
     <a-form-item label="支持模型">
@@ -19,6 +19,14 @@
         show-search
       />
       <div class="form-help">不选择表示该账户不做模型限制。</div>
+    </a-form-item>
+    <a-form-item label="客户端兼容">
+      <a-select
+        v-model:value="form.clientCompatibility"
+        :disabled="authorizedEditing"
+        :options="clientCompatibilityOptions"
+      />
+      <div class="form-help">OpenAI 标准保持透传；Codex Responses 会补齐 Codex 风格 Responses 请求。</div>
     </a-form-item>
     <div class="strategy-grid">
       <a-form-item label="并发上限">
@@ -46,6 +54,11 @@
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import type { AccountFormModel } from './accountFormTypes'
+
+const clientCompatibilityOptions = [
+  { label: 'OpenAI 标准', value: 'openai_standard' },
+  { label: 'Codex Responses', value: 'codex_responses' }
+]
 
 defineProps<{
   authorizedEditing: boolean

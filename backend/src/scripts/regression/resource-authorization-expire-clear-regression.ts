@@ -127,6 +127,15 @@ try {
 
   const accountExpiresAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
   const validAuthorizationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  const inactiveSourceSchedule = {
+    enabled: true,
+    timezone: 'UTC',
+    mode: 'allow_windows',
+    windows: [
+      { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '23:59' }
+    ],
+    dateRange: { startDate: '2999-01-01' }
+  }
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '授权有效期边界账户',
@@ -197,6 +206,9 @@ try {
   assert.equal(authorizedAccount?.authorizationLimits?.daily?.limit, 12, '被授权账户列表应返回日限额')
   assert.equal(authorizedAccount?.authorizationLimits?.total?.limit, 30, '被授权账户列表应返回总限额')
   assert.equal(authorizedAccount?.authorizationQuotaExceeded, false, '未超限时被授权账户列表不应标记额度用完')
+  assert.equal(authorizedAccount?.schedulable, true, '来源账户未来到期时授权实例仍应实际可调度')
+  assert.equal(authorizedAccount?.effectiveAvailability.available, true, '来源账户未来到期时授权实例实际可用性应保持正常')
+  assert(repositories.listOpenAIAccountsForGroup(granteeQuotaGroup.id, grantee.id).some((item) => item.id === quotaAuthorizedAccount.id), '来源账户未来到期时授权实例应进入网关调度候选')
 
   const statsDatabase = databaseModule.getStatsDatabase()
   const statDate = usageStatsHelpers.todayDateKey(usageStatsHelpers.usageStatsTimezone())
@@ -239,16 +251,46 @@ try {
   assert.equal(ownerPausedBinding?.boundGroupId, granteeQuotaGroup.id, '所有者停调账户的授权实例应能绑定到被授权人的分组')
   const ownerPausedAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerPausedAuthorizedInstance.id)
   assert.equal(ownerPausedAuthorizedAccount?.status, 'active', '所有者停调不应影响授权实例状态')
-  assert.equal(ownerPausedAuthorizedAccount?.schedulable, true, '所有者停调不应阻断被授权实例调度')
+  assert.equal(ownerPausedAuthorizedAccount?.schedulable, false, '所有者停调应阻断被授权实例实际调度')
+  assert.equal(ownerPausedAuthorizedAccount?.effectiveAvailability.status, 'source_unschedulable', '所有者停调时授权实例实际状态应标记为来源停调')
   assert.equal(ownerPausedAuthorizedAccount?.authorizationInstanceSourceAccountStatus, 'active', '授权实例列表应返回来源账户状态供页面解释')
   assert.equal(ownerPausedAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, false, '授权实例列表应返回来源账户调度开关供页面提示')
-  const ownerPausedDispatch = repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAuthorizedInstance.id, {
+  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAuthorizedInstance.id, {
     fallbackEnabled: true
-  }, granteeAccess)
-  assert.equal(ownerPausedDispatch?.fallbackEnabled, true, '所有者停调后仍应允许被授权用户管理自己的授权实例调度标记')
+  }, granteeAccess), /授权方原账户已关闭调度/, '所有者停调后不应允许被授权用户开启调度标记')
   const ownerPausedTestAccount = repositories.findAccountForTest(ownerPausedAuthorizedInstance.id, granteeAccess)
   assert(ownerPausedTestAccount, '所有者停调账户仍应能被解析出来用于测试前置校验')
-  assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), undefined, '测试接口不应因所有者停调拦截被授权账户')
+  assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), '授权方原账户已关闭调度，当前账户不能调用', '测试接口应因所有者停调拦截被授权账户')
+
+  const ownerScheduleInactiveAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权所有者计划停用账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-resource-authorization-owner-schedule-inactive', base_url: 'https://api.openai.com/v1' },
+    availabilitySchedule: inactiveSourceSchedule,
+    groupId: ownerAccountGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: ownerScheduleInactiveAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeQuotaGroup.id,
+    expiresAt: validAuthorizationExpiresAt
+  }, ownerAccess)
+  const ownerScheduleInactiveAuthorizedInstance = authorizedInstanceForSource(ownerScheduleInactiveAccount.id, granteeAccess)
+  const ownerScheduleInactiveAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id)
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.status, 'active', '所有者计划停用不应覆盖授权实例状态')
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.schedulable, false, '所有者计划停用应阻断被授权实例实际调度')
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.effectiveAvailability.status, 'source_schedule_inactive', '所有者计划停用时授权实例实际状态应标记来源计划停用')
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.authorizationInstanceSourceAccountScheduleActive, false, '授权实例列表应返回来源账户计划当前不可用提示字段')
+  assert.equal(repositories.listOpenAIAccountsForGroup(granteeQuotaGroup.id, grantee.id).some((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id), false, '所有者计划停用后授权实例不应进入网关候选')
+  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerScheduleInactiveAuthorizedInstance.id, {
+    fallbackEnabled: true
+  }, granteeAccess), /授权方原账户当前不在允许使用时段/, '所有者计划停用后不应允许被授权用户开启调度标记')
+  const ownerScheduleInactiveTestAccount = repositories.findAccountForTest(ownerScheduleInactiveAuthorizedInstance.id, granteeAccess)
+  assert(ownerScheduleInactiveTestAccount, '所有者计划停用账户仍应能被解析出来用于测试前置校验')
+  assert.equal(repositories.accountTestUnavailableMessage(ownerScheduleInactiveTestAccount), '授权方原账户当前不在允许使用时段，当前账户不能调用', '测试接口应因所有者计划停用拦截被授权账户')
 
   const ownerDisabledAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -269,6 +311,8 @@ try {
   const ownerDisabledAuthorizedInstance = authorizedInstanceForSource(ownerDisabledAccount.id, granteeAccess)
   const ownerDisabledAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerDisabledAuthorizedInstance.id)
   assert.equal(ownerDisabledAuthorizedAccount?.status, 'active', '所有者停用不应把授权实例列表状态覆盖成停用')
+  assert.equal(ownerDisabledAuthorizedAccount?.schedulable, false, '所有者停用应阻断被授权实例实际调度')
+  assert.equal(ownerDisabledAuthorizedAccount?.effectiveAvailability.status, 'source_disabled', '所有者停用时授权实例实际状态应标记为来源停用')
   assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountStatus, 'disabled', '授权实例列表应返回来源账户停用状态供页面提示')
   assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, false, '来源账户停用时应返回来源调度不可用提示字段')
 

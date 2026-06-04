@@ -18,6 +18,8 @@ import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/op
 import { openAIOAuthRouter } from '../openai-oauth/openai-oauth.routes.js'
 import { providersRouter } from '../providers/providers.routes.js'
 import { proxiesRouter } from '../proxies/proxies.routes.js'
+import { capturePublicApiLog } from '../public-api-logs/public-api-log-capture.middleware.js'
+import { publicApiLogsRouter } from '../public-api-logs/public-api-logs.routes.js'
 import { runtimeLogsRouter } from '../runtime-logs/runtime-logs.routes.js'
 import { settingsRouter } from '../settings/settings.routes.js'
 import { statsRouter } from '../stats/stats.routes.js'
@@ -50,7 +52,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
 
   app.use(requestContextMiddleware)
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
-  app.use(publicApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
+  app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
 
   app.get(`${systemApiPrefix}/health`, (_req, res) => {
     res.json({ status: 'ok', service: 'juhe-ai-db-service' })
@@ -87,6 +89,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/usage-records`, requireAdmin, usageRecordsRouter)
   app.use(`${systemApiPrefix}/model-checks`, requireAdmin, modelChecksRouter)
   app.use(`${systemApiPrefix}/operation-logs`, requireAdmin, operationLogsRouter)
+  app.use(`${systemApiPrefix}/public-api-logs`, requireAdmin, publicApiLogsRouter)
   app.use(`${systemApiPrefix}/audit-logs`, requireAdmin, auditLogsRouter)
   app.use(`${systemApiPrefix}/runtime-logs`, requireAdmin, runtimeLogsRouter)
   app.use(`${systemApiPrefix}/stats`, requireAdmin, statsRouter)

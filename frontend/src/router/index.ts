@@ -348,6 +348,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/public-api-logs',
+    component: () => import('@/views/public-api-logs/PublicApiLogsView.vue'),
+    meta: {
+      title: '公开接口日志',
+      description: '查看外部来源系统公开接口的调用时间、耗时、状态码、请求摘要和响应摘要。',
+      menuGroup: 'log-management',
+      menuGroupTitle: '日志管理',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
     path: '/audit-logs',
     component: () => import('@/views/audit-logs/AuditLogsView.vue'),
     meta: {
@@ -417,7 +430,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/external-integration-sources/ExternalIntegrationSourcesView.vue'),
     meta: {
       title: '公开接口授权',
-      description: '管理允许调用公开接口的来源系统、Token、到期时间、启停状态和限频规则。',
+      description: '为外部来源后端签发来源 Token，并按接口资源授权控制公开接口访问、到期和限频。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

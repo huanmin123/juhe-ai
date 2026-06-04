@@ -31,7 +31,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testingAccount = ref<AccountSummary>()
   const testResult = ref<AccountTestResult>()
   const providerModels = ref<ProviderModelPricing[]>([])
-  const testForm = reactive<AccountTestForm>({ model: 'gpt-5.5' })
+  const testForm = reactive<AccountTestForm>({ model: 'gpt-5.5', clientCompatibility: 'account_default' })
   const testModelOptions = computed(() => buildTestModelOptions(providerModels.value, testingAccount.value))
   const defaultTestModel = computed(() => testModelOptions.value[0]?.value || 'gpt-5.5')
 
@@ -65,6 +65,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testingAccount.value = account
     testResult.value = undefined
     testForm.model = preferredTestModelForAccount(account, testForm.model, defaultTestModel.value)
+    testForm.clientCompatibility = 'account_default'
     testModalOpen.value = true
     void loadTestModels()
   }
@@ -95,7 +96,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         return
       }
       console.error(error)
-      testResult.value = failedAccountTestResult({ account, error, model: testForm.model, startedAt })
+      testResult.value = failedAccountTestResult({
+        account,
+        error,
+        model: testForm.model,
+        clientCompatibility: testForm.clientCompatibility,
+        startedAt
+      })
       message.error(`${account.name}: 测试失败`)
     } finally {
       testRunning.value = false
@@ -120,7 +127,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   async function testAccountSilently(account: AccountSummary) {
     if (!canTestAccount(account)) return undefined
     try {
-      const payload = buildAccountSpecificTestPayload(account)
+      const payload = buildAccountSpecificTestPayload(account, 'account_default')
       return options.isManagementView.value
         ? await api.accounts.test(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
         : await api.myAccounts.test(account.id, payload)
@@ -133,9 +140,10 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   onDeactivated(stopAccountTest)
   onBeforeUnmount(stopAccountTest)
 
-  function buildAccountSpecificTestPayload(account: AccountSummary) {
+  function buildAccountSpecificTestPayload(account: AccountSummary, clientCompatibility = testForm.clientCompatibility) {
     return buildAccountTestPayload({
       ...testForm,
+      clientCompatibility,
       model: preferredTestModelForAccount(account, testForm.model, defaultTestModel.value)
     })
   }

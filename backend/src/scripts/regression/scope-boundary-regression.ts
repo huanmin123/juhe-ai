@@ -91,9 +91,16 @@ interface AccountSummary {
   type?: string
   status?: string
   accessType?: string
+  concurrencyLimit?: number
+  supportedModels?: string[]
   proxyProfileId?: string
   accountAuthorizationId?: string
   authorizationInstanceSourceAccountId?: string
+  authorizationInstanceSourceAccountStatus?: string
+  authorizationInstanceSourceAccountSchedulable?: boolean
+  authorizationInstanceSourceAccountAvailabilitySchedule?: Record<string, unknown>
+  authorizationInstanceSourceAccountScheduleActive?: boolean
+  authorizationInstanceSourceAccountExpiresAt?: string
   boundGroupId?: string
   credentials?: Record<string, unknown>
 }
@@ -338,12 +345,26 @@ async function main(): Promise<void> {
       404,
       '用户 A 不应通过授权账户详情接口查看用户 B 原账户'
     )
-    await assertStatus(
-      `${baseUrl}/__aisys__/api/my-accounts/${seed.userAAuthorizedUserBAccountId}`,
-      seed.userACookie,
-      403,
-      '用户 A 不应通过授权实例详情接口查看克隆凭据'
-    )
+    const userAAuthorizedAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAuthorizedUserBAccountId}`, seed.userACookie)
+    assert(userAAuthorizedAccountDetail.accessType === 'authorized', '用户 A 应能打开自己的授权实例详情')
+    assert(userAAuthorizedAccountDetail.credentials?.base_url === 'https://api.openai.com/v1', '授权实例详情应返回来源账户公开 Base URL')
+    assert(userAAuthorizedAccountDetail.concurrencyLimit === 3, '授权实例详情应只读展示来源账户并发上限')
+    assert(userAAuthorizedAccountDetail.proxyProfileId === seed.userBProxyId, '授权实例详情应只读展示来源账户代理配置')
+    assert(userAAuthorizedAccountDetail.supportedModels?.includes('gpt-5.5'), '授权实例详情应只读展示来源账户模型限制')
+    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountStatus === 'active', '授权实例详情应返回来源账户状态')
+    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountSchedulable === true, '授权实例详情应返回来源账户调度开关')
+    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountExpiresAt === '2027-12-31T00:00:00.000Z', '授权实例详情应返回来源账户到期时间')
+    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountAvailabilitySchedule?.enabled === true, '授权实例详情应返回来源账户自动启停计划')
+    const authorizedDetailCredentials = userAAuthorizedAccountDetail.credentials ?? {}
+    const authorizedDetailSecretJson = JSON.stringify(authorizedDetailCredentials)
+    for (const secretKey of ['api_key', 'access_token', 'refresh_token', 'id_token']) {
+      assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, secretKey), `授权实例详情不应返回敏感凭据字段 ${secretKey}`)
+    }
+    assert(!authorizedDetailSecretJson.includes('sk-scope-user-b'), '授权实例详情不应泄露来源账户 API Key 明文')
+    const errorHandlingRules = authorizedDetailCredentials.error_handling_rules as Array<Record<string, unknown>> | undefined
+    assert(errorHandlingRules?.[0]?.name === '授权来源 429 限流', '授权实例详情应返回来源账户错误处理策略')
+    const streamInterceptRules = authorizedDetailCredentials.stream_intercept_rules as Array<Record<string, unknown>> | undefined
+    assert(streamInterceptRules?.[0]?.name === '授权来源流式异常', '授权实例详情应返回来源账户流式拦截规则')
     summary.push('我的账户自有作用域检查通过')
 
     const adminMyAccounts = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.adminCookie)
@@ -639,13 +660,55 @@ function seedData(): SeedState {
     groupId: userATargetGroup.id,
     credentials: { api_key: 'sk-scope-user-a', base_url: 'https://api.openai.com/v1' }
   }, userAAccess)
+  const userBErrorHandlingRules = [{
+    enabled: true,
+    name: '授权来源 429 限流',
+    priority: 10,
+    status_codes: [429],
+    action: 'rate_limited',
+    reset_strategy: 'duration',
+    duration_hours: 2
+  }]
+  const userBStreamInterceptRules = [{
+    enabled: true,
+    name: '授权来源流式异常',
+    priority: 20,
+    match: {
+      errorCodes: ['upstream_scope_error']
+    },
+    action: 'retry_next_account',
+    notes: '授权详情公开展示用'
+  }]
+  const userBAvailabilitySchedule = {
+    enabled: true,
+    timezone: 'Asia/Shanghai',
+    mode: 'allow_windows',
+    windows: [{
+      daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
+      start: '00:00',
+      end: '23:59'
+    }],
+    exceptions: [{
+      date: '2027-01-01',
+      action: 'deny'
+    }]
+  }
   const userBAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '用户 B 账户',
     type: 'api_key',
     groupId: userBGroup.id,
-    credentials: { api_key: 'sk-scope-user-b', base_url: 'https://api.openai.com/v1' },
-    proxyProfileId: userBProxy.id
+    credentials: {
+      api_key: 'sk-scope-user-b',
+      base_url: 'https://api.openai.com/v1',
+      error_handling_rules: userBErrorHandlingRules,
+      stream_intercept_rules: userBStreamInterceptRules
+    },
+    concurrencyLimit: 3,
+    supportedModels: ['gpt-5.5'],
+    proxyProfileId: userBProxy.id,
+    accountExpiresAt: '2027-12-31T00:00:00.000Z',
+    availabilitySchedule: userBAvailabilitySchedule
   }, userBAccess)
   repositories.createAccount({
     providerCode: 'openai',

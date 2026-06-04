@@ -223,6 +223,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       group: form.group,
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
+      clientCompatibility: form.clientCompatibility,
       supportedModels: form.supportedModels,
       concurrencyLimit: form.concurrencyLimit,
       priority: form.priority,
@@ -238,14 +239,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   async function openEdit(account: AccountSummary) {
     const requestToken = nextFormOpenRequestToken()
     const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
-    const sourceAccount = isAuthorizedAccount(account)
-      ? account
-      : await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
+    const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
     if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
     const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type)
-    const baseUrl = isAuthorizedAccount(sourceAccount)
-      ? defaults.baseUrl
-      : credentialBaseUrlForForm(sourceAccount.credentials, '账户详情凭据')
+    const baseUrl = credentialBaseUrlForForm(sourceAccount.credentials, '账户详情凭据')
     const policyRules = loadCredentialPolicyRules(sourceAccount.credentials, '账户详情策略')
     if (!baseUrl || !policyRules) return
     const selectedGroup = sourceAccount.boundGroupId
@@ -255,7 +252,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     let availabilitySchedule: AccountFormModel['availabilitySchedule']
     try {
       accountExpiresAt = parseStrictDatePickerValue(sourceAccount.accountExpiresAt, '账户过期时间')
-      availabilitySchedule = createAccountAvailabilityScheduleForm(sourceAccount.availabilitySchedule)
+      availabilitySchedule = createAccountAvailabilityScheduleForm(accountAvailabilityScheduleForForm(sourceAccount))
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '账户数据结构异常，请清理后再编辑'))
@@ -272,6 +269,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       type: sourceAccount.type,
       concurrencyLimit: sourceAccount.concurrencyLimit,
       priority: sourceAccount.priority,
+      clientCompatibility: sourceAccount.clientCompatibility ?? 'openai_standard',
       proxyProfileId: sourceAccount.proxyProfileId,
       accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(sourceAccount.id),
@@ -535,6 +533,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId,
     createScopeParams,
     editingId,
+    editingAccountDetail,
     editingAuthorizedAccount,
     ensureDefaultGroupSelected,
     form,
@@ -572,6 +571,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!normalizedName) return form.group?.id === normalizedId ? form.group : undefined
     rememberGroupLabel(normalizedId, normalizedName)
     return { id: normalizedId, name: normalizedName }
+  }
+
+  function accountAvailabilityScheduleForForm(account: AccountSummary) {
+    return isAuthorizedAccount(account)
+      ? account.authorizationInstanceSourceAccountAvailabilitySchedule
+      : account.availabilitySchedule
   }
 
   function credentialBaseUrlForForm(credentials: Record<string, unknown>, label: string): string | undefined {
@@ -621,6 +626,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       type: account.type,
       concurrencyLimit: account.concurrencyLimit,
       priority: account.priority,
+      clientCompatibility: account.clientCompatibility ?? 'openai_standard',
       proxyProfileId: account.proxyProfileId,
       accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),

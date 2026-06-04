@@ -28,6 +28,7 @@
     "test:stream-intercept-policy": "pnpm --filter juhe-ai-backend test:stream-intercept-policy",
     "test:codex-client-strategy": "pnpm --filter juhe-ai-backend test:codex-client-strategy",
     "test:external-source-auth": "pnpm --filter juhe-ai-backend test:external-source-auth",
+    "test:public-api-logs": "pnpm --filter juhe-ai-backend test:public-api-logs",
     "test:openai-oauth-credentials-patch": "pnpm --filter juhe-ai-backend test:openai-oauth-credentials-patch",
     "test:db-service-role-boundary": "pnpm --filter juhe-ai-backend test:db-service-role-boundary",
     "test:disabled-account-state-guard": "pnpm --filter juhe-ai-backend test:disabled-account-state-guard",

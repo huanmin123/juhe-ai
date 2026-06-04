@@ -2,6 +2,7 @@ import axios from 'axios'
 
 import type {
   AccountSummary,
+  AccountClientCompatibility,
   AccountExportResult,
   AccountImportOptions,
   AccountImportResult,
@@ -35,6 +36,7 @@ import type {
   ResourceAuthorizationSummary,
   ApiKeySummary,
   ApiKeyListResult,
+  ApiKeySecretResult,
   CaptchaChallengeSummary,
   CreatedApiKey,
   CurrentUserSummary,
@@ -47,6 +49,7 @@ import type {
   ExternalIntegrationSourceStatus,
   ExternalIntegrationSourceSummary,
   ExternalIntegrationSourceTokenPayload,
+  ExternalIntegrationSourceTokenSecretResult,
   ExternalIntegrationSourceTokenSummary,
   CreatedExternalIntegrationSourceAuthorization,
   CreatedExternalIntegrationSourceToken,
@@ -62,6 +65,9 @@ import type {
   OpenAIAuthURLResult,
   OperationLogDetail,
   OperationLogListResult,
+  PublicApiLogDetail,
+  PublicApiLogListResult,
+  PublicApiLogResultFilter,
   ProviderDefinition,
   ProviderModelOption,
   ProviderModelPricing,
@@ -223,6 +229,12 @@ export interface AccountOptionParams extends ListParams {
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
 }
 
+export interface AccountTestPayload {
+  model?: string
+  prompt?: string
+  clientCompatibility?: AccountClientCompatibility
+}
+
 export interface ApiKeyListParams extends ListParams {
   page?: number
   pageSize?: number
@@ -264,6 +276,19 @@ export interface AuditLogListParams extends ListParams {
 export interface AuditLogPayloadParams {
   offset?: number
   limit?: number
+}
+
+export interface PublicApiLogListParams {
+  page?: number
+  pageSize?: number
+  traceId?: string
+  sourceRefId?: string
+  path?: string
+  result?: PublicApiLogResultFilter
+  statusCode?: number
+  clientIp?: string
+  startAt?: string
+  endAt?: string
 }
 
 export interface AuditFullBodyCaptureUpdatePayload {
@@ -676,7 +701,7 @@ export const api = {
     updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
     bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
-    test: (id: string, payload?: { model?: string; prompt?: string }, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, timeout: 130000, signal: options?.signal })),
+    test: (id: string, payload?: AccountTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, timeout: 130000, signal: options?.signal })),
     delete: (id: string, params?: ListParams) => http.delete(`/accounts/${id}`, { params })
   },
   myAccounts: {
@@ -688,7 +713,7 @@ export const api = {
     updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
     bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
-    test: (id: string, payload?: { model?: string; prompt?: string }, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { timeout: 130000, signal: options?.signal })),
+    test: (id: string, payload?: AccountTestPayload, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { timeout: 130000, signal: options?.signal })),
     delete: (id: string) => http.delete(`/my-accounts/${id}`)
   },
   groups: {
@@ -765,12 +790,14 @@ export const api = {
     list: (params?: ApiKeyListParams) => unwrap<ApiKeyListResult>(http.get('/api-keys', { params })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<CreatedApiKey>(http.post('/api-keys', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<ApiKeySummary>(http.patch(`/api-keys/${id}`, payload, { params })),
+    secret: (id: string, params?: ListParams) => unwrap<ApiKeySecretResult>(http.get(`/api-keys/${id}/secret`, { params })),
     delete: (id: string, params?: ListParams) => http.delete(`/api-keys/${id}`, { params })
   },
   myApiKeys: {
     list: (params?: ApiKeyListParams) => unwrap<ApiKeyListResult>(http.get('/my-api-keys', { params: stripSystemAccountParam(params) })),
     create: (payload: Record<string, unknown>) => unwrap<CreatedApiKey>(http.post('/my-api-keys', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ApiKeySummary>(http.patch(`/my-api-keys/${id}`, payload)),
+    secret: (id: string) => unwrap<ApiKeySecretResult>(http.get(`/my-api-keys/${id}/secret`)),
     delete: (id: string) => http.delete(`/my-api-keys/${id}`)
   },
   openaiOAuth: {
@@ -824,6 +851,10 @@ export const api = {
     list: (params?: OperationLogListParams) => unwrap<OperationLogListResult>(http.get('/operation-logs', { params })),
     detail: (id: string) => unwrap<OperationLogDetail>(http.get(`/operation-logs/${id}`))
   },
+  publicApiLogs: {
+    list: (params?: PublicApiLogListParams) => unwrap<PublicApiLogListResult>(http.get('/public-api-logs', { params })),
+    detail: (id: string) => unwrap<PublicApiLogDetail>(http.get(`/public-api-logs/${id}`))
+  },
   myOperationLogs: {
     list: (params?: OperationLogListParams) => unwrap<OperationLogListResult>(http.get('/my-operation-logs', { params: stripAdminOperationLogParams(params) })),
     detail: (id: string) => unwrap<OperationLogDetail>(http.get(`/my-operation-logs/${id}`))
@@ -852,7 +883,9 @@ export const api = {
     list: (params?: ExternalIntegrationSourceListParams) => unwrap<ExternalIntegrationSourceListResult>(http.get('/external-integration-sources', { params })),
     create: (payload: ExternalIntegrationSourcePayload) => unwrap<CreatedExternalIntegrationSourceAuthorization>(http.post('/external-integration-sources', payload)),
     update: (id: string, payload: Partial<ExternalIntegrationSourcePayload>) => unwrap<ExternalIntegrationSourceSummary>(http.patch(`/external-integration-sources/${id}`, payload)),
+    delete: (id: string) => http.delete(`/external-integration-sources/${id}`),
     createToken: (id: string, payload: ExternalIntegrationSourceTokenPayload) => unwrap<{ token: CreatedExternalIntegrationSourceToken; source?: ExternalIntegrationSourceSummary }>(http.post(`/external-integration-sources/${id}/tokens`, payload)),
+    tokenSecret: (id: string, tokenId: string) => unwrap<ExternalIntegrationSourceTokenSecretResult>(http.get(`/external-integration-sources/${id}/tokens/${tokenId}/secret`)),
     updateToken: (id: string, tokenId: string, payload: Partial<ExternalIntegrationSourceTokenPayload>) => unwrap<ExternalIntegrationSourceTokenSummary>(http.patch(`/external-integration-sources/${id}/tokens/${tokenId}`, payload))
   },
   modelChecks: {

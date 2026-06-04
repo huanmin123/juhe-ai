@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 
-import { hashSecret } from './crypto.js'
+import { decryptJson, encryptJson, hashSecret } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
 import { normalizeListPage } from './query-utils.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
@@ -103,6 +103,10 @@ export interface CreatedExternalIntegrationSourceAuthorization {
   token: CreatedExternalIntegrationSourceToken
 }
 
+export interface ExternalIntegrationSourceTokenSecret {
+  token: string
+}
+
 export interface ExternalIntegrationSourceTokenSummary {
   id: string
   name: string
@@ -162,7 +166,7 @@ export interface ExternalIntegrationSourceAuthContext {
 
 export type ExternalIntegrationSourceAuthResult =
   | { ok: true; context: ExternalIntegrationSourceAuthContext }
-  | { ok: false; statusCode: 401 | 403; code: string; message: string }
+  | { ok: false; statusCode: 401 | 403; code: string; message: string; context?: ExternalIntegrationSourceAuthContext }
 
 interface ExternalIntegrationSourceTokenRow {
   source_row_id: string
@@ -204,6 +208,7 @@ interface ExternalIntegrationSourceTokenListRow {
   id: string
   source_ref_id: string
   name: string
+  token_secret_encrypted?: string | null
   token_prefix: string
   token_suffix: string
   status: string
@@ -403,6 +408,18 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
   return requiredSource(id)
 }
 
+export function deleteExternalIntegrationSource(id: string): boolean {
+  return runInDatabaseTransaction(() => {
+    if (!findSourceRow(id)) {
+      return false
+    }
+    const database = getBusinessDatabase()
+    database.prepare('DELETE FROM external_integration_source_tokens WHERE source_ref_id = ?').run(id)
+    const result = database.prepare('DELETE FROM external_integration_sources WHERE id = ?').run(id)
+    return Number(result.changes ?? 0) > 0
+  })
+}
+
 export function createExternalIntegrationSourceToken(input: ExternalIntegrationSourceTokenInput): CreatedExternalIntegrationSourceToken {
   assertKnownInputKeys(input, externalIntegrationSourceTokenInputKeys, '来源系统 token')
   const name = normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符')
@@ -416,13 +433,14 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
   try {
     getBusinessDatabase().prepare(`
       INSERT INTO external_integration_source_tokens (
-        id, source_ref_id, name, token_hash, token_prefix, token_suffix, status, scopes_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, source_ref_id, name, token_hash, token_secret_encrypted, token_prefix, token_suffix, status, scopes_json, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       source.id,
       name,
       hashExternalIntegrationSourceToken(token),
+      encryptJson({ token }),
       tokenPrefix,
       tokenSuffix,
       normalizeTokenStatusInput(input.status),
@@ -480,6 +498,19 @@ export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenI
     tokenId
   )
   return requiredSource(sourceRefId).tokens.find((token) => token.id === tokenId)
+}
+
+export function findExternalIntegrationSourceTokenSecret(sourceRefId: string, tokenId: string): ExternalIntegrationSourceTokenSecret | undefined {
+  const row = getBusinessDatabase().prepare(`
+    SELECT tokens.token_secret_encrypted
+    FROM external_integration_source_tokens AS tokens
+    JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
+    WHERE sources.id = ? AND tokens.id = ?
+  `).get(sourceRefId, tokenId) as Pick<ExternalIntegrationSourceTokenListRow, 'token_secret_encrypted'> | undefined
+  if (!row) {
+    return undefined
+  }
+  return { token: decryptExternalIntegrationSourceTokenSecret(row.token_secret_encrypted) }
 }
 
 function syncExternalIntegrationSourceTokenState(sourceRefId: string): void {
@@ -558,6 +589,10 @@ export function validateExternalIntegrationSourceToken(input: {
   }
 
   const now = nowIso()
+  const sourceScopes = decodeScopes(row.source_scopes_json)
+  const tokenScopes = decodeScopes(row.token_scopes_json)
+  const grantedScopes = tokenScopes.filter((scope) => sourceScopes.includes(scope))
+  const context = externalIntegrationAuthContextFromRow(row, grantedScopes, now)
   const sourceStatus = normalizeSourceStatus(row.source_status)
   const tokenStatus = normalizeTokenStatus(row.token_status)
   if (sourceStatus !== 'active') {
@@ -565,7 +600,8 @@ export function validateExternalIntegrationSourceToken(input: {
       ok: false,
       statusCode: 403,
       code: 'external_source_disabled',
-      message: '来源系统未启用'
+      message: '来源系统未启用',
+      context
     }
   }
   if (row.source_expires_at && row.source_expires_at <= now) {
@@ -573,7 +609,8 @@ export function validateExternalIntegrationSourceToken(input: {
       ok: false,
       statusCode: 403,
       code: 'external_source_expired',
-      message: '来源系统已过期'
+      message: '来源系统已过期',
+      context
     }
   }
   if (tokenStatus !== 'active' || (row.token_expires_at && row.token_expires_at <= now)) {
@@ -581,36 +618,43 @@ export function validateExternalIntegrationSourceToken(input: {
       ok: false,
       statusCode: 401,
       code: 'external_source_token_unavailable',
-      message: '来源系统 token 不可用'
+      message: '来源系统 token 不可用',
+      context
     }
   }
 
-  const sourceScopes = decodeScopes(row.source_scopes_json)
-  const tokenScopes = decodeScopes(row.token_scopes_json)
-  const grantedScopes = tokenScopes.filter((scope) => sourceScopes.includes(scope))
   if (input.requiredScope && !grantedScopes.includes(input.requiredScope)) {
     return {
       ok: false,
       statusCode: 403,
       code: 'external_source_scope_forbidden',
-      message: '来源系统没有调用该接口的权限'
+      message: '来源系统没有调用该接口的权限',
+      context
     }
   }
 
   touchExternalIntegrationSourceLastUsed(row, now)
   return {
     ok: true,
-    context: {
-      sourceRefId: row.source_row_id,
-      sourceName: row.source_name,
-      tokenId: row.token_id,
-      tokenName: row.token_name,
-      tokenPrefix: row.token_prefix,
-      scopes: grantedScopes,
-      rateLimits: decodeRateLimits(row.source_rate_limits_json),
-      authenticatedAt: now,
-      isTestToken: false
-    }
+    context
+  }
+}
+
+function externalIntegrationAuthContextFromRow(
+  row: ExternalIntegrationSourceTokenRow,
+  grantedScopes: string[],
+  authenticatedAt: string
+): ExternalIntegrationSourceAuthContext {
+  return {
+    sourceRefId: row.source_row_id,
+    sourceName: row.source_name,
+    tokenId: row.token_id,
+    tokenName: row.token_name,
+    tokenPrefix: row.token_prefix,
+    scopes: grantedScopes,
+    rateLimits: decodeRateLimits(row.source_rate_limits_json),
+    authenticatedAt,
+    isTestToken: false
   }
 }
 
@@ -730,6 +774,17 @@ function mapTokenSummary(row: ExternalIntegrationSourceTokenListRow): ExternalIn
     updatedAt: row.updated_at,
     revokedAt: row.revoked_at ?? undefined
   }
+}
+
+function decryptExternalIntegrationSourceTokenSecret(value: string | null | undefined): string {
+  if (!value) {
+    throw new Error('来源系统 Token 密文缺少完整 Token')
+  }
+  const decrypted = decryptJson<{ token?: unknown }>(value)
+  if (typeof decrypted.token !== 'string' || decrypted.token.length === 0) {
+    throw new Error('来源系统 Token 密文缺少完整 Token')
+  }
+  return decrypted.token
 }
 
 function normalizeNameOrThrow(value: unknown, message: string, maxLengthMessage = '来源系统名称不能超过 80 个字符'): string {

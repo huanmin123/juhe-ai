@@ -57,9 +57,21 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
   status: `CASE
     WHEN account_rows.access_type = 'authorized' THEN
       CASE
-        WHEN account_rows.authorization_status <> 'active'
+        WHEN group_bindings.group_id IS NULL
+          OR group_bindings.account_authorization_id IS NULL
+          OR group_bindings.account_authorization_id <> account_rows.authorization_id
+        THEN 'disabled'
+        WHEN account_rows.authorization_status IS NULL
+          OR account_rows.authorization_status <> 'active'
           OR (account_rows.authorization_expires_at IS NOT NULL AND account_rows.authorization_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         THEN 'disabled'
+        WHEN account_rows.source_status IS NULL THEN 'disabled'
+        WHEN account_rows.source_last_error_code = 'account_expired'
+          OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        THEN 'disabled'
+        WHEN account_rows.source_status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
+        WHEN account_rows.source_schedulable <> 1 THEN 'disabled'
+        WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'temporary_unavailable'
         WHEN account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'disabled'
         WHEN account_rows.status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
         WHEN account_rows.schedulable <> 1 THEN 'disabled'

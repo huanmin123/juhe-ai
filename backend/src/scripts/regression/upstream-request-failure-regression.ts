@@ -311,6 +311,28 @@ async function main(): Promise<void> {
       temporaryUnschedulableRetryIntervalSeconds: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
+    currentScenario = 'same_account_retry_success'
+    const sameAccountRetryResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'same account retry should recover before account switch' }],
+        stream: false
+      })
+    })
+    const sameAccountRetryResponseText = await sameAccountRetryResponse.text()
+
+    assert.equal(sameAccountRetryResponse.status, 200, `同账号原地重试成功时应直接返回成功，实际 HTTP ${sameAccountRetryResponse.status}: ${sameAccountRetryResponseText}`)
+    assert.equal(sameAccountRetryResponseText, sameAccountRetrySuccessBody, `同账号原地重试成功响应体异常：${sameAccountRetryResponseText}`)
+    assert.equal(sameAccountRetryFirstAccountHitCount, 2, `同账号原地重试成功场景首账号应命中 2 次，实际 ${sameAccountRetryFirstAccountHitCount}`)
+    assert.equal(sameAccountRetrySecondAccountHitCount, 0, `同账号原地重试成功后不应切到第二账号，实际 ${sameAccountRetrySecondAccountHitCount}`)
+    assertAccountsActive([firstAccount, secondAccount], '同账号原地重试救回后不应写账号状态或切号')
+    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
+
     currentScenario = 'unknown_failure_switch_account_success'
     const switchResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -327,7 +349,7 @@ async function main(): Promise<void> {
     const switchResponseText = await switchResponse.text()
 
     assert.equal(switchResponse.status, 200, `未知失败切到后续账号成功时应返回成功响应，实际 HTTP ${switchResponse.status}: ${switchResponseText}`)
-    assert.equal(unknownSwitchFirstAccountHitCount, 1, `即使配置了同账号重试次数，未知失败首账号也只应命中 1 次，实际 ${unknownSwitchFirstAccountHitCount}`)
+    assert.equal(unknownSwitchFirstAccountHitCount, 3, `未知失败应先按临时状态重试次数原地重试首账号，实际首账号命中 ${unknownSwitchFirstAccountHitCount} 次`)
     assert.equal(unknownSwitchSecondAccountHitCount, 1, `未知失败切号场景后续账号应命中 1 次，实际 ${unknownSwitchSecondAccountHitCount}`)
     assert.equal(switchResponseText, unknownSwitchSuccessBody, `未知失败切号成功响应体异常：${switchResponseText}`)
     await assertAccountsTemporaryUnavailable([firstAccount], /上游调用失败：HTTP 502|temporary first account upstream error/, '未知失败切到后续账号成功后也应写入首账号状态')
@@ -501,7 +523,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertAccountsActive([firstAccount, secondAccount, thirdAccount, waitAccount], '已恢复的主测试账号最终应保持正常')
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；所有命中上游账号的响应失败、请求异常和非流式正文中断都会写入临时不可调用；后续账号成功不掩盖前序账号失败；全部失败返回统一网关错误；单账号屏蔽时会等待释放并支持续期等待')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；普通上游失败会按临时状态配置原地重试，用尽后才切号并写入临时不可调用；后续账号成功不掩盖前序账号失败；全部失败返回统一网关错误；单账号屏蔽时会等待释放并支持续期等待')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -522,6 +544,7 @@ type RegressionScenario =
   | 'same_signature_third_account_success'
   | 'same_signature_confirmation'
   | 'invalid_request_switch_account_success'
+  | 'same_account_retry_success'
   | 'unknown_failure_switch_account_success'
   | 'non_stream_first_byte_timeout_switch_account_success'
   | 'non_stream_body_interrupted_after_output_client_retry'
@@ -536,6 +559,8 @@ let invalidRequestUpstreamHitCount = 0
 let thirdAccountSuccessHitCount = 0
 let sameSignatureUpstreamHitCount = 0
 let invalidRequestSwitchUpstreamHitCount = 0
+let sameAccountRetryFirstAccountHitCount = 0
+let sameAccountRetrySecondAccountHitCount = 0
 let unknownSwitchFirstAccountHitCount = 0
 let unknownSwitchSecondAccountHitCount = 0
 let nonStreamFirstByteTimeoutFirstAccountHitCount = 0
@@ -603,6 +628,18 @@ const unknownSwitchSuccessBody = JSON.stringify({
     {
       index: 0,
       message: { role: 'assistant', content: 'ok from second account' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
+const sameAccountRetrySuccessBody = JSON.stringify({
+  id: 'chatcmpl-same-account-retry-regression',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok after same account retry' },
       finish_reason: 'stop'
     }
   ],
@@ -718,6 +755,24 @@ function createRejectedRequestUpstream(): http.Server {
       res.end(unknownSwitchSuccessBody)
       return
     }
+    if (currentScenario === 'same_account_retry_success') {
+      const authorization = String(req.headers.authorization ?? '')
+      if (authorization.includes('sk-request-failure-1')) {
+        sameAccountRetryFirstAccountHitCount += 1
+        if (sameAccountRetryFirstAccountHitCount === 1) {
+          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: { message: 'temporary first account upstream error before same account retry', type: 'server_error', code: 'bad_gateway' } }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(sameAccountRetrySuccessBody)
+        return
+      }
+      sameAccountRetrySecondAccountHitCount += 1
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ id: 'should-not-switch-after-same-account-retry' }))
+      return
+    }
     if (currentScenario === 'invalid_request_switch_account_success') {
       invalidRequestSwitchUpstreamHitCount += 1
       const authorization = String(req.headers.authorization ?? '')
@@ -795,6 +850,8 @@ function totalUpstreamHitCount(): number {
     + thirdAccountSuccessHitCount
     + sameSignatureUpstreamHitCount
     + invalidRequestSwitchUpstreamHitCount
+    + sameAccountRetryFirstAccountHitCount
+    + sameAccountRetrySecondAccountHitCount
     + unknownSwitchFirstAccountHitCount
     + unknownSwitchSecondAccountHitCount
     + nonStreamFirstByteTimeoutFirstAccountHitCount

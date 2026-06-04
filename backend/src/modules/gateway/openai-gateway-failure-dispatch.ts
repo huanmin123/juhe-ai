@@ -66,6 +66,7 @@ interface HandleFailedUpstreamResponseInput {
   lastAttempt?: UpstreamAttempt
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
+  retrySameAccount?: boolean
 }
 
 interface HandleUpstreamRequestErrorInput {
@@ -86,6 +87,7 @@ interface HandleUpstreamRequestErrorInput {
   error: unknown
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
+  retrySameAccount?: boolean
 }
 
 export async function handleFailedUpstreamResponse(
@@ -185,6 +187,20 @@ export async function handleFailedUpstreamResponse(
   }
   const parsedErrorMessage = sanitizeDiagnosticPayload(stringValue(parsedError.message))
   const diagnosticErrorMessage = sanitizeDiagnosticPayload(diagnosticResponseBodyText)
+  if (input.retrySameAccount) {
+    auditCapture.addGatewayMetadata({
+      label: 'same_account_retry_response_failed',
+      metadata: {
+        accountId: account.id,
+        upstreamUrl: safeUpstreamUrl,
+        statusCode: response.status,
+        attemptIndex,
+        auditAttemptIndex
+      }
+    })
+    return { action: 'retry', lastAttempt }
+  }
+
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway') {
@@ -294,6 +310,20 @@ export async function handleUpstreamRequestError(
     startedAt: attemptStartedAt,
     errorMessage: message
   })
+  if (input.retrySameAccount) {
+    auditCapture.addGatewayMetadata({
+      label: 'same_account_retry_request_failed',
+      metadata: {
+        accountId: account.id,
+        upstreamUrl: safeUpstreamUrl,
+        attemptIndex,
+        auditAttemptIndex,
+        errorMessage: message
+      }
+    })
+    return { action: 'retry', lastAttempt }
+  }
+
   if (isRealUpstreamUrl(upstreamUrl)) {
     rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
       errorPhase: 'upstream_request',

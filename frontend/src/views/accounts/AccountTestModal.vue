@@ -38,6 +38,14 @@
             @update:value="$emit('update:model', String($event))"
           />
         </a-form-item>
+        <a-form-item label="客户端兼容">
+          <a-select
+            :value="clientCompatibility"
+            :disabled="running"
+            :options="clientCompatibilityOptions"
+            @update:value="handleCompatibilityUpdate"
+          />
+        </a-form-item>
       </a-form>
 
       <div class="test-terminal">
@@ -55,7 +63,7 @@
 
       <div class="test-modal-footer">
         <div class="test-footer-hint">
-          <span>测试模型</span>
+          <span>当前测试配置</span>
         </div>
         <a-space>
           <a-button :disabled="!result" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
@@ -72,7 +80,9 @@
 import { computed } from 'vue'
 
 import type { AccountSummary, AccountTestResult } from '@/types/domain'
+import type { AccountTestClientCompatibility } from './accountTestFlow'
 import {
+  accountClientCompatibilityText,
   accountStatusColor,
   accountStatusText,
   accountTypeText,
@@ -89,6 +99,7 @@ interface TestOutputLine {
 
 const props = defineProps<{
   account?: AccountSummary
+  clientCompatibility: AccountTestClientCompatibility
   model: string
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
@@ -103,12 +114,18 @@ const emit = defineEmits<{
   (event: 'copy-result', value: string): void
   (event: 'run'): void
   (event: 'stop'): void
+  (event: 'update:clientCompatibility', value: AccountTestClientCompatibility): void
   (event: 'update:model', value: string): void
   (event: 'update:open', value: boolean): void
 }>()
 
 const resultJson = computed(() => props.result ? JSON.stringify(props.result, null, 2) : '')
 const currentProviderName = computed(() => props.account ? providerLabel(props.account) : '')
+const clientCompatibilityOptions: Array<{ label: string; value: AccountTestClientCompatibility }> = [
+  { label: '跟随账户配置', value: 'account_default' },
+  { label: 'OpenAI 标准', value: 'openai_standard' },
+  { label: 'Codex Responses', value: 'codex_responses' }
+]
 const proxyTagText = computed(() => props.account?.proxyProfileId ? '有代理' : '无代理')
 const proxyTagColor = computed(() => {
   if (props.account?.proxyProfileUnavailable) return 'red'
@@ -120,7 +137,8 @@ const outputLines = computed<TestOutputLine[]>(() => {
   const lines: TestOutputLine[] = [
     { text: `开始测试账号：${account.name}`, tone: 'info' },
     { text: `供应商：${providerLabel(account)}`, tone: 'muted' },
-    { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' }
+    { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
+    { text: `测试兼容：${selectedCompatibilityText(account)}`, tone: 'muted' }
   ]
 
   if (props.running) {
@@ -136,6 +154,7 @@ const outputLines = computed<TestOutputLine[]>(() => {
 
   lines.push({ text: props.result.statusCode && props.result.statusCode >= 200 && props.result.statusCode < 300 ? '已连接到 API' : 'API 返回错误', tone: props.result.success ? 'success' : 'error' })
   lines.push({ text: `使用模型：${props.result.model || props.model}`, tone: 'success' })
+  lines.push({ text: `实际兼容：${accountClientCompatibilityText(props.result.testClientCompatibility ?? props.result.clientCompatibility ?? account.clientCompatibility)}`, tone: 'muted' })
   lines.push({ text: '响应：', tone: 'label' })
   const outputText = formatTestTerminalResult(props.result)
   if (outputText) {
@@ -172,6 +191,19 @@ function handleOpenUpdate(value: boolean) {
 
 function providerLabel(account: AccountSummary): string {
   return props.providerName?.(account.providerCode) ?? account.providerCode
+}
+
+function handleCompatibilityUpdate(value: string): void {
+  if (value === 'codex_responses' || value === 'openai_standard' || value === 'account_default') {
+    emit('update:clientCompatibility', value)
+  }
+}
+
+function selectedCompatibilityText(account: AccountSummary): string {
+  if (props.clientCompatibility === 'account_default') {
+    return `跟随账户配置（${accountClientCompatibilityText(account.clientCompatibility)}）`
+  }
+  return accountClientCompatibilityText(props.clientCompatibility)
 }
 </script>
 

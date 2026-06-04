@@ -105,6 +105,14 @@ export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySumma
   return row ? apiKeySummariesFromRows([row], access, { includeSecret: false })[0] : undefined
 }
 
+export function findApiKeySecret(id: string, access?: AccessScope): ApiKeySummary | undefined {
+  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
+  const row = getBusinessDatabase()
+    .prepare(`SELECT ${apiKeyListColumns({ includeSecret: true })} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id WHERE api_keys.id = ?${scope.clause}`)
+    .get(id, ...scope.params) as unknown as ApiKeyRow | undefined
+  return row ? apiKeySummariesFromRows([row], access, { includeSecret: true })[0] : undefined
+}
+
 function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
   const normalized = normalizeApiKeyListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')

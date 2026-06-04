@@ -60,13 +60,14 @@
         <template v-else-if="column.key === 'tokens'">
           <div class="token-preview-cell">
             <span class="token-preview" :title="tokenDisplayTitle(primaryToken(record))">{{ formatTokenPreview(primaryToken(record)) }}</span>
-            <a-tooltip title="复制 Token 标识">
+            <a-tooltip title="复制完整 Token">
               <span>
                 <a-button
                   class="token-copy-button"
                   type="text"
                   size="small"
-                  :disabled="!primaryToken(record)"
+                  :loading="tokenCopyingKey === tokenCopyKey(record)"
+                  :disabled="!primaryToken(record) || (Boolean(tokenCopyingKey) && tokenCopyingKey !== tokenCopyKey(record))"
                   @click="copyTokenPreview(record)"
                 >
                   <template #icon><copy-outlined /></template>
@@ -206,12 +207,14 @@
               <div class="api-doc-field-table">
                 <div class="api-doc-field-row head">
                   <span>名称</span>
+                  <span>类型</span>
                   <span>必填</span>
                   <span>说明</span>
                   <span>示例</span>
                 </div>
                 <div v-for="header in selectedApiDoc.headers" :key="header.name" class="api-doc-field-row">
                   <code>{{ header.name }}</code>
+                  <span>HTTP Header</span>
                   <span>{{ header.required ? '是' : '否' }}</span>
                   <span>{{ header.description }}</span>
                   <code>{{ header.example }}</code>
@@ -227,12 +230,14 @@
                   <span>类型</span>
                   <span>必填</span>
                   <span>说明</span>
+                  <span>示例</span>
                 </div>
                 <div v-for="field in selectedApiDoc.query" :key="field.name" class="api-doc-field-row">
                   <code>{{ field.name }}</code>
                   <span>{{ field.type }}</span>
                   <span>{{ field.required ? '是' : '否' }}</span>
                   <span>{{ field.description }}</span>
+                  <code>{{ formatFieldExample(field.example) }}</code>
                 </div>
               </div>
               <span v-else class="muted-cell">无</span>
@@ -240,7 +245,48 @@
 
             <div class="api-doc-section">
               <h4>请求体</h4>
-              <pre v-if="selectedApiDoc.requestBody" class="api-doc-code">{{ formatJson(selectedApiDoc.requestBody.example) }}</pre>
+              <template v-if="selectedApiDoc.requestBody">
+                <div class="api-doc-content-type">Content-Type：<code>{{ selectedApiDoc.requestBody.contentType }}</code></div>
+                <div v-if="selectedApiDoc.requestBody.fields.length" class="api-doc-field-table">
+                  <div class="api-doc-field-row head">
+                    <span>名称</span>
+                    <span>类型</span>
+                    <span>必填</span>
+                    <span>说明</span>
+                    <span>示例</span>
+                  </div>
+                  <div v-for="field in selectedApiDoc.requestBody.fields" :key="field.name" class="api-doc-field-row">
+                    <code>{{ field.name }}</code>
+                    <span>{{ field.type }}</span>
+                    <span>{{ field.required ? '是' : '否' }}</span>
+                    <span>{{ field.description }}</span>
+                    <code>{{ formatFieldExample(field.example) }}</code>
+                  </div>
+                </div>
+                <h5>请求体示例</h5>
+                <pre class="api-doc-code">{{ formatJson(selectedApiDoc.requestBody.example) }}</pre>
+              </template>
+              <span v-else class="muted-cell">无</span>
+            </div>
+
+            <div class="api-doc-section">
+              <h4>响应字段</h4>
+              <div v-if="selectedApiDoc.responseFields.length" class="api-doc-field-table">
+                <div class="api-doc-field-row head">
+                  <span>名称</span>
+                  <span>类型</span>
+                  <span>必填</span>
+                  <span>说明</span>
+                  <span>示例</span>
+                </div>
+                <div v-for="field in selectedApiDoc.responseFields" :key="field.name" class="api-doc-field-row">
+                  <code>{{ field.name }}</code>
+                  <span>{{ field.type }}</span>
+                  <span>{{ field.required ? '是' : '否' }}</span>
+                  <span>{{ field.description }}</span>
+                  <code>{{ formatFieldExample(field.example) }}</code>
+                </div>
+              </div>
               <span v-else class="muted-cell">无</span>
             </div>
 
@@ -306,8 +352,8 @@
           class="created-token-alert"
           type="success"
           show-icon
-          message="生产 Token 只展示这一次"
-          description="请复制后保存到外部系统后端，不要放进前端包或公开文档。"
+          message="生产 Token 已生成"
+          description="请复制后保存到外部系统后端；后续可在列表按权限复制完整 Token，不要放进前端包或公开文档。"
         />
         <div class="created-token-guide-section">
           <span class="created-token-step-title">1. 复制 Base URL</span>
@@ -414,6 +460,7 @@ const sourceForm = reactive<{
 })
 
 const createdTokenPlain = ref('')
+const tokenCopyingKey = ref('')
 const createdTokenAuthHeader = computed(() => `Authorization: Bearer ${createdTokenPlain.value || '<source_token>'}`)
 
 const statusOptions = [
@@ -576,7 +623,11 @@ function buildApiMarkdown(item: ExternalPublicApiDocItem): string {
     lines.push(
       `Content-Type：\`${item.requestBody.contentType}\``,
       '',
+      '### 请求体字段',
+      '',
       item.requestBody.fields.length ? markdownFieldTable(item.requestBody.fields) : '无字段说明',
+      '',
+      '### 请求体示例',
       '',
       markdownCodeBlock('json', formatJson(item.requestBody.example)),
       ''
@@ -585,6 +636,10 @@ function buildApiMarkdown(item: ExternalPublicApiDocItem): string {
     lines.push('无', '')
   }
   lines.push(
+    '## 响应字段',
+    '',
+    item.responseFields.length ? markdownFieldTable(item.responseFields) : '无',
+    '',
     '## 响应示例',
     '',
     markdownCodeBlock('json', formatResponseExample(item)),
@@ -602,7 +657,7 @@ function markdownFieldTable(fields: Array<ExternalPublicApiField | {
   type: string
   required: boolean
   description: string
-  example?: string | number | boolean
+  example?: unknown
 }>): string {
   const rows = [
     '| 名称 | 类型 | 必填 | 说明 | 示例 |',
@@ -614,14 +669,27 @@ function markdownFieldTable(fields: Array<ExternalPublicApiField | {
       markdownTableCell(field.type),
       field.required ? '是' : '否',
       markdownTableCell(field.description),
-      markdownTableCell(field.example ?? '-')
+      markdownTableCell(field.example === undefined ? '-' : field.example)
     ].join(' | ').replace(/^/, '| ').replace(/$/, ' |'))
   }
   return rows.join('\n')
 }
 
-function markdownTableCell(value: string | number | boolean): string {
-  return String(value).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>')
+function markdownTableCell(value: unknown): string {
+  return formatFieldExample(value).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>')
+}
+
+function formatFieldExample(value: unknown): string {
+  if (value === undefined || value === '') {
+    return '-'
+  }
+  if (value === null) {
+    return 'null'
+  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  return formatJson(value)
 }
 
 function markdownCodeBlock(language: string, content: string): string {
@@ -852,7 +920,8 @@ function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
     record.status === 'active'
       ? { key: 'disable', label: '停用', icon: 'disable', tone: 'danger' }
-      : { key: 'enable', label: '启用', icon: 'enable', tone: 'success' }
+      : { key: 'enable', label: '启用', icon: 'enable', tone: 'success' },
+    { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: `确认删除来源授权“${record.name}”？`, confirmOkText: '删除' }
   ]
 }
 
@@ -863,6 +932,10 @@ function handleSourceAction(key: string, record: ExternalIntegrationSourceSummar
   }
   if (key === 'enable' || key === 'disable') {
     void updateSourceStatus(record, key === 'enable' ? 'active' : 'disabled')
+    return
+  }
+  if (key === 'delete') {
+    void deleteSource(record)
   }
 }
 
@@ -873,6 +946,19 @@ async function updateSourceStatus(record: ExternalIntegrationSourceSummary, stat
     await loadData()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '更新来源授权状态失败'))
+  }
+}
+
+async function deleteSource(record: ExternalIntegrationSourceSummary): Promise<void> {
+  try {
+    await api.externalIntegrationSources.delete(record.id)
+    if (rows.value.length <= 1 && pagination.current > 1) {
+      pagination.current -= 1
+    }
+    message.success('来源授权已删除')
+    await loadData()
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '删除来源授权失败'))
   }
 }
 
@@ -893,10 +979,22 @@ function closeCreatedTokenModal(): void {
   createdTokenPlain.value = ''
 }
 
-function copyTokenPreview(record: ExternalIntegrationSourceSummary): void {
-  const preview = formatTokenPreview(primaryToken(record))
-  if (preview === '未生成') return
-  void copyTextToClipboard(preview, 'Token 标识已复制')
+async function copyTokenPreview(record: ExternalIntegrationSourceSummary): Promise<void> {
+  const token = primaryToken(record)
+  if (!token || tokenCopyingKey.value) return
+  const copyingKey = tokenCopyKey(record)
+  tokenCopyingKey.value = copyingKey
+  try {
+    const result = await api.externalIntegrationSources.tokenSecret(record.id, token.id)
+    await copyTextToClipboard(result.token, '完整 Token 已复制')
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '复制完整 Token 失败'))
+  } finally {
+    if (tokenCopyingKey.value === copyingKey) {
+      tokenCopyingKey.value = ''
+    }
+  }
 }
 
 function normalizeRateLimits(rules: ExternalIntegrationRateLimitRule[]): ExternalIntegrationRateLimitRule[] {
@@ -938,7 +1036,7 @@ function formatTokenPreview(token: ExternalIntegrationSourceTokenSummary | undef
 }
 
 function tokenDisplayTitle(token: ExternalIntegrationSourceTokenSummary | undefined): string {
-  return token ? '完整 Token 仅创建时显示' : '未生成'
+  return token ? '列表仅显示 Token 标识，点击复制按钮复制完整 Token' : '未生成'
 }
 
 function maskSecretPreview(value: string | undefined, prefix?: string, suffix?: string): string {
@@ -954,6 +1052,11 @@ function maskSecretPreview(value: string | undefined, prefix?: string, suffix?: 
 
 function primaryToken(record: ExternalIntegrationSourceSummary): ExternalIntegrationSourceTokenSummary | undefined {
   return record.tokens[0]
+}
+
+function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
+  const token = primaryToken(record)
+  return token ? `${record.id}:${token.id}` : ''
 }
 </script>
 
@@ -1298,8 +1401,20 @@ function primaryToken(record: ExternalIntegrationSourceSummary): ExternalIntegra
   margin-top: 16px;
 }
 
-.api-doc-section h4 {
+.api-doc-section h4,
+.api-doc-section h5 {
   margin: 0 0 8px;
+}
+
+.api-doc-section h5 {
+  margin-top: 12px;
+  color: #334155;
+  font-size: 13px;
+}
+
+.api-doc-content-type {
+  margin-bottom: 8px;
+  color: #475569;
 }
 
 .api-doc-field-table {
@@ -1312,10 +1427,15 @@ function primaryToken(record: ExternalIntegrationSourceSummary): ExternalIntegra
 
 .api-doc-field-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.9fr) 72px minmax(180px, 1.4fr) minmax(140px, 1fr);
+  grid-template-columns: minmax(150px, 1fr) minmax(110px, 0.7fr) 64px minmax(220px, 1.5fr) minmax(140px, 1fr);
   gap: 10px;
   padding: 9px 10px;
   background: #fff;
+}
+
+.api-doc-field-row > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .api-doc-field-row.head {

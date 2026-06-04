@@ -65,7 +65,6 @@
 
     <AccountList
       :accounts="filteredAccounts"
-      :authorized-tooltip="authorizedAccountTooltip"
       :can-clone="canCloneAccount"
       :can-delete="canDeleteAccount"
       :can-edit="canEditAccount"
@@ -101,6 +100,7 @@
     <AccountTestModal
       v-if="testModalOpen"
       v-model:open="testModalOpen"
+      v-model:client-compatibility="testForm.clientCompatibility"
       v-model:model="testForm.model"
       :account="testingAccount"
       :model-options="testModelOptions"
@@ -128,6 +128,7 @@
       :credential-title="selectedAccountTypeTitle"
       :cloning="Boolean(cloningSourceId)"
       :editing="Boolean(editingId)"
+      :account-detail="editingAccountDetail"
       :form="form"
       :group-options="groupOptions"
       :group-options-loading="groupOptionsLoading"
@@ -217,7 +218,6 @@ import {
 } from './accountTableColumns'
 import {
   accountMenuItems,
-  authorizedAccountTooltip,
   canBatchManageAccount,
   canCloneAccount,
   canDeleteAccount,
@@ -374,6 +374,7 @@ const {
   availableProviders,
   cloningSourceId,
   createScopeParams,
+  editingAccountDetail,
   editingId,
   editingAuthorizedAccount,
   ensureDefaultGroupSelected,

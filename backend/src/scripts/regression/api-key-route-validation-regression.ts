@@ -52,11 +52,18 @@ interface ApiEnvelope<T> {
 
 interface ApiKeySummary {
   id: string
+  key: string
+  keyPrefix: string
+  keySuffix: string
   expiresAt?: string
   availabilitySchedule?: {
     enabled?: boolean
     windows?: unknown[]
   }
+}
+
+interface ApiKeySecretResult {
+  key: string
 }
 
 async function main(): Promise<void> {
@@ -98,6 +105,10 @@ async function main(): Promise<void> {
       name: '更新校验回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }]
     })
+    const secretResult = await getEnvelope<ApiKeySecretResult>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}/secret`, adminCookie)
+    assert(secretResult.key === validApiKey.key, '复制完整密钥接口应返回创建时的完整 API Key')
+    assert(secretResult.key.startsWith(validApiKey.keyPrefix), '复制完整密钥接口返回值应匹配安全展示前缀')
+    assert(secretResult.key.endsWith(validApiKey.keySuffix), '复制完整密钥接口返回值应匹配安全展示后缀')
     await assertPatchBadRequestMessage(baseUrl, adminCookie, validApiKey.id, {
       groupRouteStrategy: 'random_strategy'
     }, '分组路由策略无效')
@@ -225,7 +236,7 @@ async function main(): Promise<void> {
     })
     assert(!clearedScheduleApiKey.availabilitySchedule, '更新 API Key 应支持 availabilitySchedule: null 清空自动启停计划')
 
-    console.log('API Key 路由校验回归通过：创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法过期时间、非法自动启停模式、非法时段、非法星期、空时区、非法例外、自动启停清空和清空过期时间均符合预期')
+    console.log('API Key 路由校验回归通过：完整密钥复制、创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法过期时间、非法自动启停模式、非法时段、非法星期、空时区、非法例外、自动启停清空和清空过期时间均符合预期')
   } finally {
     operationLogQueue.flushAllOperationLogQueue()
     await closeServer(appServer)

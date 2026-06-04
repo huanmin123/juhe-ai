@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySummary, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
+import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySecret, findApiKeySummary, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -38,6 +38,20 @@ const apiKeyUpdateSchema = apiKeyMutationSchema.partial().refine((value) => Obje
 
 apiKeysRouter.get('/', (req, res) => {
   res.json(ok(listApiKeysPage(getRequestAccessScope(req.query.systemAccountId), parseApiKeyListOptions(req.query))))
+})
+
+apiKeysRouter.get('/:id/secret', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const apiKey = findApiKeySecret(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+  if (!apiKey) {
+    res.status(404).json({ message: 'API Key 不存在' })
+    return
+  }
+  res.json(ok({ key: apiKey.key }))
 })
 
 function parseApiKeyListOptions(query: Record<string, unknown>): ApiKeyListOptions {

@@ -39,7 +39,7 @@
 
 | 目录 / 文件 | 职责 | 变更规则 |
 | --- | --- | --- |
-| `backend/src/server.ts` | Web/API/网关主进程启动、全局中间件、健康检查、系统 API 反向代理、网关挂载、前端静态资源兜底 | 只放应用装配、DB service / worker 看护和请求入口，不沉淀复杂业务逻辑，不直接执行后台任务 |
+| `backend/src/server.ts` | Web/API/网关主进程启动、全局中间件、健康检查、系统 API 反向代理、公开接口代理、网关挂载、前端静态资源兜底 | 只放应用装配、DB service / worker 看护和请求入口，不沉淀复杂业务逻辑，不直接执行后台任务 |
 | `backend/src/config/` | 运行配置读取、路径解析和默认配置 | 新增环境变量时同步 `.env.example`、开发和部署文档 |
 | `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
@@ -95,6 +95,7 @@ flowchart LR
 
 - 未登录只允许访问登录、公开设置和健康检查等明确入口。
 - `/__aisys__/api/*` 和 `/__aipublic__/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 / 公开系统 API JSON body，不直接导入管理路由或 repository。代理层只做流式转发，并保留最大 in-flight 请求数和内部超时，避免慢 DB service 把主进程 socket 无限堆积。
+- 独立 public-api 进程方案已评估但暂不实施，见 [公开接口独立进程设计](../../functions/公开接口独立进程设计.md) 和 `PLAN-0036`；当前仍以上述 DB service 代理描述为准。
 - DB service 内部系统 API 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
 - 账户测试、模型检测和代理检测会在 DB service 进程内发起外部网络探测；这些诊断入口共享固定 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
 - 同一 router 如果同时承载管理列表和登录用户可用的轻量辅助接口，不要把 `requireAdmin` 直接挂在整段 mount 上，应把管理员校验下沉到具体管理路由。例如供应商列表需要管理员权限，但供应商模型目录用于普通用户账户表单，必须允许登录用户读取。

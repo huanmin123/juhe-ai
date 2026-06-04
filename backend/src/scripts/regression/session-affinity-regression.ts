@@ -364,6 +364,7 @@ function createAccount(
     priority: options.priority,
     superPriorityEnabled: options.superPriorityEnabled ?? false,
     fallbackEnabled: options.fallbackEnabled ?? false,
+    clientCompatibility: 'openai_standard',
     qualityScore: options.qualityScore,
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-test',

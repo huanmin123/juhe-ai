@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import type { AccountSummary, AccountUsageSummary } from '../../domain/types.js'
+import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
 import { testOpenAIAccount } from '../../modules/accounts/account-test.service.js'
 
 const emptyUsage: AccountUsageSummary = {
@@ -13,7 +14,7 @@ const emptyUsage: AccountUsageSummary = {
   totalCost: 0
 }
 
-const account: AccountSummary = {
+const account: AccountSummary = accountSummaryWithEffectiveAvailability({
   id: 'acct_limited_diagnostics',
   providerCode: 'openai',
   name: '授权账户脱敏回归',
@@ -25,13 +26,14 @@ const account: AccountSummary = {
   priority: 0,
   superPriorityEnabled: false,
   fallbackEnabled: false,
+  clientCompatibility: 'openai_standard',
   schedulable: true,
   todayUsage: emptyUsage,
   usage: emptyUsage,
   accessType: 'authorized',
   bindingSystemAccountId: 'sys_limited_viewer',
   ownerSystemAccountId: 'sys_owner_only_secret'
-}
+})
 
 const fullResult = await testOpenAIAccount(account, { diagnostics: 'full' })
 assert.equal(fullResult.success, false)

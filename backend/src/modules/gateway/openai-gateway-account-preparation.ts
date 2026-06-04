@@ -55,7 +55,8 @@ export function handleUnavailableProxyProfile(
   usageContext: GatewayUsageContext,
   account: UpstreamAccount,
   settings: GatewaySettings,
-  failedProxyDispatchKeys: Map<string, string>
+  failedProxyDispatchKeys: Map<string, string>,
+  accountStateMutationEnabled = true
 ): UpstreamAttempt | undefined {
   if (!account.proxyProfileUnavailable) {
     return undefined
@@ -66,12 +67,14 @@ export function handleUnavailableProxyProfile(
   const lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl: 'proxy:configured', message }
   recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl: 'proxy:configured',
-    startedAt: attemptStartedAt,
-    errorMessage: message
-  })
-  applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
-  suppressGatewayAccountLocally(account, settings, message)
-  recordGatewayProxyFailure(account, message)
+      startedAt: attemptStartedAt,
+      errorMessage: message
+    })
+  if (accountStateMutationEnabled) {
+    applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
+    suppressGatewayAccountLocally(account, settings, message)
+    recordGatewayProxyFailure(account, message)
+  }
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return lastAttempt
 }

@@ -34,6 +34,7 @@ const accountCreateSchema = z.object({
   priority: z.number().int().optional(),
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
+  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
@@ -52,6 +53,7 @@ const accountUpdateSchema = z.object({
   priority: z.number().int().min(0).optional(),
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
+  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
   proxyProfileId: z.string().nullable().optional(),
   errorPolicyId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
@@ -64,7 +66,8 @@ const accountUpdateSchema = z.object({
 
 const accountTestSchema = z.object({
   model: z.string().trim().optional(),
-  prompt: z.string().trim().optional()
+  prompt: z.string().trim().optional(),
+  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional()
 }).strict().optional()
 
 const accountGroupSchema = z.object({
@@ -227,6 +230,11 @@ accountsRouter.get('/:id', async (req, res, next) => {
     const visibleAccount = findAccountSummary(req.params.id, requestAccess)
     if (!visibleAccount) {
       res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    if (visibleAccount.accessType === 'authorized') {
+      const hydratedAccount = await applyServerAccountRuntimeToAccount(visibleAccount)
+      res.json(ok(sanitizeAccountResponse(hydratedAccount)))
       return
     }
     if (visibleAccount.permissions?.canViewCredentials === false || visibleAccount.permissions?.canEdit === false) {
@@ -502,6 +510,7 @@ accountsRouter.post('/', mutationGuard({
             safeChange('providerCode', '供应商', undefined, account.providerCode),
             safeChange('type', '账户类型', undefined, account.type),
             safeChange('status', '状态', undefined, account.status),
+            safeChange('clientCompatibility', '客户端兼容', undefined, account.clientCompatibility),
             safeChange('credentials', '凭据', undefined, parsed.data.credentials),
             safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
             safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
@@ -820,6 +829,7 @@ accountsRouter.patch('/:id', async (req, res) => {
               priority: '优先级',
               superPriorityEnabled: '超级优先',
               fallbackEnabled: '降级备用',
+              clientCompatibility: '客户端兼容',
               supportedModels: '支持模型',
               proxyProfileId: '代理',
               errorPolicyId: '错误策略',

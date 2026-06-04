@@ -13,6 +13,7 @@ import {
 } from './openai-oauth-codex-adapter.js'
 import { type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
 import { requestStream } from './openai-gateway-usage.js'
+import { buildOpenAIClientCompatibilityBody, type OpenAIClientCompatibilityAccount } from './openai-api-key-client-compatibility.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -31,7 +32,7 @@ interface UpstreamRequestOptions {
   signal?: AbortSignal
 }
 
-interface UpstreamHeaderAccount {
+interface UpstreamHeaderAccount extends OpenAIClientCompatibilityAccount {
   id?: string
   apiKey: string
   type?: string
@@ -252,9 +253,10 @@ export async function buildUpstreamRequestParts(
   if (account.type === 'oauth') {
     return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal)
   }
+  const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal)
   return {
     headers: buildUpstreamHeaders(req.headers, account),
-    body: buildUpstreamRequestBody(req)
+    body: compatibilityBody ?? buildUpstreamRequestBody(req)
   }
 }
 

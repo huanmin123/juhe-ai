@@ -24,6 +24,9 @@ export function requireExternalIntegrationSource(requiredScope?: string) {
 
     const result = validateExternalIntegrationSourceToken({ token, requiredScope })
     if (!result.ok) {
+      if (result.context) {
+        res.locals.externalIntegrationSource = result.context
+      }
       res.status(result.statusCode).json({
         message: result.message,
         code: result.code
@@ -33,6 +36,7 @@ export function requireExternalIntegrationSource(requiredScope?: string) {
 
     const rateLimit = consumeExternalSourceRateLimit(result.context)
     if (!rateLimit.allowed) {
+      res.locals.externalIntegrationSource = result.context
       res.setHeader('Retry-After', String(rateLimit.retryAfterSeconds))
       res.status(429).json({
         message: '来源系统调用过于频繁，请稍后重试',

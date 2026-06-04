@@ -2,7 +2,8 @@ import { EventEmitter } from 'node:events'
 import type { IncomingHttpHeaders } from 'node:http'
 import type { Request, Response } from 'express'
 
-import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import { normalizeAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
+import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
@@ -30,18 +31,20 @@ export const accountTestResponsePreviewBytes = 256 * 1024
 
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; trafficSource?: OpenAIGatewayTrafficSource; gatewaySettingsOverride?: Partial<GatewaySettings>; disableAccountStateMutation?: boolean } = {}
+  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; trafficSource?: OpenAIGatewayTrafficSource; gatewaySettingsOverride?: Partial<GatewaySettings>; disableAccountStateMutation?: boolean; clientCompatibility?: AccountClientCompatibility } = {}
 ): Promise<AccountTestResult> {
   const explicitModel = stringValue(input.model)
   const model = explicitModel || defaultAccountTestModel(account)
   const prompt = stringValue(input.prompt) || defaultTestPrompt
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
+  const clientCompatibility = normalizeAccountClientCompatibility(input.clientCompatibility ?? account.clientCompatibility)
   const testRequest = createOpenAITestRequest({
     explicitModel,
     fallbackModel: model,
     prompt,
     isOAuth: account.type === 'oauth',
+    clientCompatibility,
     requestShape: input.requestShape
   })
   const requestBody = testRequest.body
@@ -50,7 +53,10 @@ export async function testOpenAIAccount(
   const modelsUrl = gatewayModelsPath
 
   try {
-    const resolved = resolveAccountTestCandidate(account, { groupId: stringValue(input.groupId) })
+    const resolved = resolveAccountTestCandidate(account, {
+      groupId: stringValue(input.groupId),
+      clientCompatibility
+    })
     const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal)
     const response = new MemoryGatewayResponse(startedAt)
     const traceId = createTraceId()
@@ -76,7 +82,7 @@ export async function testOpenAIAccount(
       exposeUpstreamDiagnostics: !limitedDiagnostics,
       trafficSource: input.trafficSource ?? 'manual_account_test',
       settingsOverride: input.gatewaySettingsOverride,
-      disableAccountStateMutation: input.disableAccountStateMutation
+      disableAccountStateMutation: input.disableAccountStateMutation ?? true
     })))
     if (input.signal?.aborted) {
       throw accountTestAbortError(input.signal)
@@ -102,6 +108,8 @@ export async function testOpenAIAccount(
       accountName: account.name,
       providerCode: account.providerCode,
       type: account.type,
+      clientCompatibility: account.clientCompatibility,
+      testClientCompatibility: clientCompatibility,
       success,
       statusCode: response.statusCode,
       errorCode: success ? undefined : upstreamErrorCode,
@@ -133,6 +141,8 @@ export async function testOpenAIAccount(
       accountName: account.name,
       providerCode: account.providerCode,
       type: account.type,
+      clientCompatibility: account.clientCompatibility,
+      testClientCompatibility: clientCompatibility,
       success: false,
       message,
       model: testRequest.model,
@@ -161,6 +171,8 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     accountName: result.accountName,
     providerCode: result.providerCode,
     type: result.type,
+    clientCompatibility: result.clientCompatibility,
+    testClientCompatibility: result.testClientCompatibility,
     success: result.success,
     statusCode: result.statusCode,
     errorCode: result.errorCode,
@@ -220,7 +232,7 @@ function accountTestProxyMarker(account: AccountSummary, resolved: OpenAIAccount
   return account.proxyProfileId || resolved.proxyUrl || resolved.proxyProfileUnavailable ? '[configured]' : undefined
 }
 
-function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?: string } = {}): {
+function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?: string; clientCompatibility?: AccountClientCompatibility } = {}): {
   systemAccountId: string
   groupId: string
   account: OpenAIAccountSecret
@@ -239,7 +251,14 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
   if (!candidate) {
     throw new AccountTestConfigurationError('账户不在当前分组或凭据不可用，无法执行网关测试')
   }
-  return { systemAccountId, groupId, account: candidate }
+  return {
+    systemAccountId,
+    groupId,
+    account: input.clientCompatibility ? {
+      ...candidate,
+      clientCompatibility: input.clientCompatibility
+    } : candidate
+  }
 }
 
 function createGatewayTestRequest(path: string, body: Record<string, unknown>, rawBodyText: string, isOAuth: boolean, signal?: AbortSignal): Request {
@@ -429,15 +448,16 @@ function createOpenAITestRequest(input: {
   fallbackModel: string
   prompt: string
   isOAuth: boolean
+  clientCompatibility: AccountClientCompatibility
   requestShape?: RecentOpenAIRequestShape
 }): { path: string; body: Record<string, unknown>; model: string } {
-  const path = testPathFromRecentShape(input.requestShape, input.isOAuth)
+  const path = testPathFromRecentShape(input.requestShape, input.isOAuth, input.clientCompatibility)
   const model = stringValue(input.explicitModel) || stringValue(input.requestShape?.model) || input.fallbackModel
   return {
     path,
     body: path === gatewayChatCompletionsPath
       ? createOpenAIChatCompletionsTestPayload(model, input.prompt, input.requestShape?.stream ?? true)
-      : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.requestShape?.stream ?? true),
+      : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.clientCompatibility, input.requestShape?.stream ?? true),
     model
   }
 }
@@ -446,8 +466,11 @@ function defaultAccountTestModel(account: AccountSummary): string {
   return account.supportedModels?.map((model) => stringValue(model)).find(Boolean) || defaultTestModel
 }
 
-function testPathFromRecentShape(shape: RecentOpenAIRequestShape | undefined, isOAuth: boolean): string {
+function testPathFromRecentShape(shape: RecentOpenAIRequestShape | undefined, isOAuth: boolean, clientCompatibility: AccountClientCompatibility): string {
   if (isOAuth) {
+    return gatewayTestPath
+  }
+  if (clientCompatibility === 'codex_responses') {
     return gatewayTestPath
   }
   const endpoint = stringValue(shape?.endpoint).toLowerCase()
@@ -457,7 +480,7 @@ function testPathFromRecentShape(shape: RecentOpenAIRequestShape | undefined, is
   return gatewayTestPath
 }
 
-function createOpenAIResponsesTestPayload(model: string, prompt: string, isOAuth: boolean, stream: boolean): Record<string, unknown> {
+function createOpenAIResponsesTestPayload(model: string, prompt: string, isOAuth: boolean, clientCompatibility: AccountClientCompatibility, stream: boolean): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     model,
     input: [
@@ -477,6 +500,11 @@ function createOpenAIResponsesTestPayload(model: string, prompt: string, isOAuth
   if (isOAuth) {
     payload.max_output_tokens = 1
     payload.store = false
+  }
+  if (clientCompatibility === 'codex_responses') {
+    payload.stream = true
+    payload.store = false
+    payload.include = ['reasoning.encrypted_content']
   }
   return payload
 }

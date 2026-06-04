@@ -24,9 +24,18 @@ const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
 function authorizedAccountEffectiveStatusExpression(): string {
   return `CASE
-    WHEN account_rows.authorization_status <> 'active'
+    WHEN ${authorizedBindingUnavailableExpression()} THEN 'disabled'
+    WHEN account_rows.authorization_status IS NULL
+      OR account_rows.authorization_status <> 'active'
       OR (account_rows.authorization_expires_at IS NOT NULL AND account_rows.authorization_expires_at <= ${currentIsoSql})
     THEN 'disabled'
+    WHEN account_rows.source_status IS NULL THEN 'disabled'
+    WHEN account_rows.source_last_error_code = 'account_expired'
+      OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= ${currentIsoSql})
+    THEN 'disabled'
+    WHEN account_rows.source_status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
+    WHEN account_rows.source_schedulable <> 1 THEN 'disabled'
+    WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql} THEN 'disabled'
     WHEN account_rows.status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
     WHEN account_rows.schedulable <> 1 THEN 'disabled'
@@ -60,15 +69,36 @@ function authorizedAccountAvailableExpression(): string {
     AND (account_rows.account_expires_at IS NULL OR account_rows.account_expires_at > ${currentIsoSql})`
 }
 
+function authorizedSourceAccountAvailableExpression(): string {
+  return `account_rows.source_status = 'active'
+    AND account_rows.source_schedulable = 1
+    AND (account_rows.source_cooldown_until IS NULL OR account_rows.source_cooldown_until <= ${currentIsoSql})
+    AND (account_rows.source_account_expires_at IS NULL OR account_rows.source_account_expires_at > ${currentIsoSql})
+    AND (account_rows.source_last_error_code IS NULL OR account_rows.source_last_error_code <> 'account_expired')`
+}
+
 function authorizedAccountHardUnavailableExpression(): string {
   return `account_rows.schedulable <> 1
     OR account_rows.status IN ('disabled', 'error')
     OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql})`
 }
 
+function authorizedSourceAccountHardUnavailableExpression(): string {
+  return `account_rows.source_status IS NULL
+    OR COALESCE(account_rows.source_schedulable, 0) <> 1
+    OR account_rows.source_status IN ('disabled', 'error')
+    OR COALESCE(account_rows.source_last_error_code, '') = 'account_expired'
+    OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= ${currentIsoSql})`
+}
+
 function authorizedAccountCoolingExpression(): string {
   return `account_rows.status IN ('rate_limited', 'temporary_unavailable')
     OR (account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql})`
+}
+
+function authorizedSourceAccountCoolingExpression(): string {
+  return `account_rows.source_status IN ('rate_limited', 'temporary_unavailable')
+    OR (account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${currentIsoSql})`
 }
 
 function authorizedBindingUnavailableExpression(): string {
@@ -83,6 +113,7 @@ function accountEffectiveSchedulableExpression(): string {
       CASE
         WHEN ${authorizedBindingAvailableExpression()}
           AND ${authorizedAuthorizationAvailableExpression()}
+          AND ${authorizedSourceAccountAvailableExpression()}
           AND ${authorizedAccountAvailableExpression()}
         THEN 1
         ELSE 0
@@ -101,8 +132,9 @@ function accountCoolingFilterExpression(): string {
       CASE
         WHEN ${authorizedBindingAvailableExpression()}
           AND ${authorizedAuthorizationAvailableExpression()}
+          AND NOT (${authorizedSourceAccountHardUnavailableExpression()})
           AND NOT (${authorizedAccountHardUnavailableExpression()})
-          AND (${authorizedAccountCoolingExpression()})
+          AND (${authorizedSourceAccountCoolingExpression()} OR ${authorizedAccountCoolingExpression()})
         THEN 1
         ELSE 0
       END
@@ -177,9 +209,12 @@ function queryAccountRowsForAccess(
             ra.limits_json AS authorization_limits_json, ra.effective_source_type AS authorization_effective_source_type,
             ra.effective_source_team_id AS authorization_effective_source_team_id,
             ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
-            ra.resource_id AS authorization_resource_id
+            ra.resource_id AS authorization_resource_id,
+            ${sourceAccountSelectColumns(normalizedSettings.includeCredentials ?? true)}
           FROM accounts
           LEFT JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
+          LEFT JOIN accounts source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
+            AND source_accounts.deleted_at IS NULL
           WHERE accounts.deleted_at IS NULL
             AND (
               accounts.authorization_instance_authorization_id IS NULL
@@ -208,9 +243,12 @@ function queryAccountRowsForAccess(
           ra.limits_json AS authorization_limits_json, ra.effective_source_type AS authorization_effective_source_type,
           ra.effective_source_team_id AS authorization_effective_source_team_id,
           ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
-          ra.resource_id AS authorization_resource_id
+          ra.resource_id AS authorization_resource_id,
+          ${sourceAccountSelectColumns(normalizedSettings.includeCredentials ?? true)}
         FROM accounts
         LEFT JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
+        LEFT JOIN accounts source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
+          AND source_accounts.deleted_at IS NULL
         WHERE accounts.system_account_id = ?
           AND accounts.deleted_at IS NULL
           AND (
@@ -281,6 +319,7 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.priority',
     'accounts.super_priority_enabled',
     'accounts.fallback_enabled',
+    'accounts.client_compatibility',
     'accounts.schedulable',
     'accounts.availability_schedule_json',
     'accounts.account_expires_at',
@@ -305,6 +344,26 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
   return columns.join(', ')
 }
 
+function sourceAccountSelectColumns(includeCredentials: boolean): string {
+  return [
+    'source_accounts.provider_code AS source_provider_code',
+    'source_accounts.type AS source_type',
+    'source_accounts.status AS source_status',
+    'source_accounts.schedulable AS source_schedulable',
+    'source_accounts.availability_schedule_json AS source_availability_schedule_json',
+    'source_accounts.account_expires_at AS source_account_expires_at',
+    'source_accounts.cooldown_until AS source_cooldown_until',
+    'source_accounts.last_error_code AS source_last_error_code',
+    'source_accounts.last_error_message AS source_last_error_message',
+    'source_accounts.credential_mask AS source_credential_mask',
+    includeCredentials ? 'source_accounts.credentials_encrypted AS source_credentials_encrypted' : "'' AS source_credentials_encrypted",
+    'source_accounts.proxy_profile_id AS source_proxy_profile_id',
+    'source_accounts.concurrency_limit AS source_concurrency_limit',
+    'source_accounts.error_policy_id AS source_error_policy_id',
+    'source_accounts.client_compatibility AS source_client_compatibility'
+  ].join(', ')
+}
+
 function accountListOuterSelectColumns(): string {
   return [
     'id',
@@ -322,6 +381,7 @@ function accountListOuterSelectColumns(): string {
     'priority',
     'super_priority_enabled',
     'fallback_enabled',
+    'client_compatibility',
     'schedulable',
     'availability_schedule_json',
     'account_expires_at',
@@ -350,7 +410,22 @@ function accountListOuterSelectColumns(): string {
     'authorization_effective_source_type',
     'authorization_effective_source_team_id',
     'authorization_resource_owner_system_account_id',
-    'authorization_resource_id'
+    'authorization_resource_id',
+    'source_provider_code',
+    'source_type',
+    'source_status',
+    'source_schedulable',
+    'source_availability_schedule_json',
+    'source_account_expires_at',
+    'source_cooldown_until',
+    'source_last_error_code',
+    'source_last_error_message',
+    'source_credential_mask',
+    'source_credentials_encrypted',
+    'source_proxy_profile_id',
+    'source_concurrency_limit',
+    'source_error_policy_id',
+    'source_client_compatibility'
   ].map((column) => `account_rows.${column}`).join(', ')
 }
 
@@ -409,8 +484,30 @@ export function accountCredentialsForList(row: AccountListRow, includeCredential
   if (row.access_type !== 'authorized') {
     return credentials
   }
-  return typeof credentials.base_url === 'string' && credentials.base_url ? { base_url: credentials.base_url } : {}
+  return publicAccountCredentials(credentials)
 }
+
+function publicAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {}
+  for (const key of publicAccountCredentialKeys) {
+    if (Object.prototype.hasOwnProperty.call(credentials, key)) {
+      output[key] = credentials[key]
+    }
+  }
+  return output
+}
+
+const publicAccountCredentialKeys = [
+  'base_url',
+  'expires_at',
+  'client_id',
+  'email',
+  'account_id',
+  'chatgpt_user_id',
+  'plan_type',
+  'error_handling_rules',
+  'stream_intercept_rules'
+] as const
 
 function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCredentials: boolean): AccountListRow[] {
   const sourceIds = [...new Set(rows
@@ -425,6 +522,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     type: AccountListRow['type']
     status: AccountListRow['status']
     schedulable: number
+    availability_schedule_json: string | null
     account_expires_at: string | null
     cooldown_until: string | null
     last_error_code: string | null
@@ -434,15 +532,16 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     proxy_profile_id: string | null
     concurrency_limit: number | null
     error_policy_id: string | null
+    client_compatibility: AccountListRow['client_compatibility']
   }> = []
   const database = getBusinessDatabase()
   for (const chunk of chunkValues(sourceIds, 900)) {
     sourceRows.push(...database
       .prepare(`
-        SELECT id, provider_code, type, status, schedulable, account_expires_at, cooldown_until,
+        SELECT id, provider_code, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
           last_error_code, last_error_message, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
-          proxy_profile_id, concurrency_limit, error_policy_id
+          proxy_profile_id, concurrency_limit, error_policy_id, client_compatibility
         FROM accounts
         WHERE deleted_at IS NULL
           AND id IN (${sqlPlaceholders(chunk.length)})
@@ -461,6 +560,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
       source_type: source.type,
       source_status: source.status,
       source_schedulable: source.schedulable,
+      source_availability_schedule_json: source.availability_schedule_json,
       source_account_expires_at: source.account_expires_at,
       source_cooldown_until: source.cooldown_until,
       source_last_error_code: source.last_error_code,
@@ -469,7 +569,8 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
       source_credentials_encrypted: source.credentials_encrypted,
       source_proxy_profile_id: source.proxy_profile_id,
       source_concurrency_limit: source.concurrency_limit,
-      source_error_policy_id: source.error_policy_id
+      source_error_policy_id: source.error_policy_id,
+      source_client_compatibility: source.client_compatibility
     }
   })
 }
@@ -560,6 +661,7 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
     clauses.push(`(
       (account_rows.access_type = 'authorized' AND (
         ${authorizedBindingUnavailableExpression()}
+        OR ${authorizedSourceAccountHardUnavailableExpression()}
         OR ${accountEffectiveStatusFilterExpression()} IN ('disabled', 'error')
       ))
       OR (account_rows.access_type <> 'authorized' AND (account_rows.status = 'disabled' OR account_rows.schedulable <> 1))

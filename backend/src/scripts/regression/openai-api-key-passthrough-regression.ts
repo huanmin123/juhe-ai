@@ -7,7 +7,7 @@ import {
   buildUpstreamUrl,
   isOpenAIModelsRequest
 } from '../../modules/gateway/openai-gateway-route-helpers.js'
-import { buildUpstreamHeaders, buildUpstreamRequestBody, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
+import { buildUpstreamHeaders, buildUpstreamRequestBody, buildUpstreamRequestParts, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
 import {
   createGatewayRequestBodyState,
   gatewayJsonBodyInlineParseMaxBytes,
@@ -36,6 +36,9 @@ const apiKeyAccount = {
 
 async function main(): Promise<void> {
   testRawBodyPassthrough()
+  await testOpenAIStandardRequestPartsPassthrough()
+  await testCodexResponsesCompatibilityRequestParts()
+  await testCodexResponsesCompatibilityDoesNotRewriteChatCompletions()
   testApiKeyHeaderFiltering()
   testOpenAIAccountHeadersAreNotClientOrCredentialControlled()
   testOpenAIBetaPreservedFromClient()
@@ -57,6 +60,71 @@ function testRawBodyPassthrough(): void {
 
   assert.ok(Buffer.isBuffer(body))
   assert.equal(Buffer.compare(body, rawBody), 0)
+}
+
+async function testOpenAIStandardRequestPartsPassthrough(): Promise<void> {
+  const rawBody = Buffer.from('{"model":"gpt-5.4","input":"hello","stream":false}')
+  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
+  const parts = await buildUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    clientCompatibility: 'openai_standard'
+  }, testIdentity)
+
+  assert.ok(Buffer.isBuffer(parts.body))
+  assert.equal(Buffer.compare(parts.body, rawBody), 0)
+  assert.equal(parts.headers.get('authorization'), 'Bearer sk-upstream')
+}
+
+async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.5',
+    input: '只输出 OK',
+    include: ['file_search_call.results'],
+    stream: false,
+    store: true,
+    max_output_tokens: 16,
+    max_completion_tokens: 16,
+    temperature: 0.2,
+    top_p: 0.9
+  }))
+  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
+  const parts = await buildUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    clientCompatibility: 'codex_responses'
+  }, testIdentity)
+  const body = parseJsonBuffer(parts.body)
+
+  assert.equal(body.model, 'gpt-5.5')
+  assert.equal(body.stream, true)
+  assert.equal(body.store, false)
+  assert.equal(body.instructions, '')
+  assert.deepEqual(body.include, ['file_search_call.results', 'reasoning.encrypted_content'])
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'max_output_tokens'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'max_completion_tokens'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'temperature'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'top_p'), false)
+
+  const input = body.input
+  assert.ok(Array.isArray(input))
+  assert.equal(input[0]?.role, 'user')
+  assert.equal(input[0]?.content?.[0]?.type, 'input_text')
+  assert.equal(input[0]?.content?.[0]?.text, '只输出 OK')
+}
+
+async function testCodexResponsesCompatibilityDoesNotRewriteChatCompletions(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: 'hello' }],
+    stream: false
+  }))
+  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/chat/completions')
+  const parts = await buildUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    clientCompatibility: 'codex_responses'
+  }, testIdentity)
+
+  assert.ok(Buffer.isBuffer(parts.body))
+  assert.equal(Buffer.compare(parts.body, rawBody), 0)
 }
 
 function testApiKeyHeaderFiltering(): void {
@@ -363,6 +431,16 @@ function createMockResponse(): MockResponse {
     }
   })
   return response
+}
+
+function parseJsonBuffer(value: Buffer | string | undefined): Record<string, any> {
+  assert.ok(value, 'upstream request body should exist')
+  return JSON.parse(Buffer.isBuffer(value) ? value.toString('utf8') : value) as Record<string, any>
+}
+
+const testIdentity = {
+  systemAccountId: 'sys_test',
+  groupId: 'grp_test'
 }
 
 try {

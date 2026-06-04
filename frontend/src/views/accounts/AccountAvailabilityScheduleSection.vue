@@ -1,8 +1,8 @@
 <template>
   <section class="form-section">
     <div class="schedule-toggle-row">
-      <span class="schedule-toggle-label">自动启停计划</span>
-      <a-switch v-model:checked="form.availabilitySchedule.enabled" />
+      <span class="schedule-toggle-label">{{ readonly ? '来源自动启停计划' : '自动启停计划' }}</span>
+      <a-switch v-model:checked="form.availabilitySchedule.enabled" :disabled="readonly" />
     </div>
     <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
       <div class="schedule-window-list">
@@ -13,17 +13,18 @@
             class="schedule-days-select"
             max-tag-count="responsive"
             :options="weekdayOptions"
+            :disabled="readonly"
             placeholder="重复日期"
           />
-          <a-time-picker v-model:value="window.start" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="开始" />
-          <a-time-picker v-model:value="window.end" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="停止" />
+          <a-time-picker v-model:value="window.start" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" :disabled="readonly" placeholder="开始" />
+          <a-time-picker v-model:value="window.end" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" :disabled="readonly" placeholder="停止" />
           <a-tooltip title="移除">
-            <a-button type="text" size="small" danger :disabled="form.availabilitySchedule.windows.length <= 1" @click="removeScheduleWindow(index)">
+            <a-button type="text" size="small" danger :disabled="readonly || form.availabilitySchedule.windows.length <= 1" @click="removeScheduleWindow(index)">
               <template #icon><DeleteOutlined /></template>
             </a-button>
           </a-tooltip>
         </div>
-        <a-button type="dashed" block @click="addScheduleWindow">
+        <a-button v-if="!readonly" type="dashed" block @click="addScheduleWindow">
           <template #icon><PlusOutlined /></template>
           添加时段
         </a-button>
@@ -40,13 +41,16 @@ import { createAccountScheduleWindowFormRow, weekdayOptions } from './accountAva
 
 const props = defineProps<{
   form: AccountFormModel
+  readonly?: boolean
 }>()
 
 function addScheduleWindow(): void {
+  if (props.readonly) return
   props.form.availabilitySchedule.windows.push(createAccountScheduleWindowFormRow())
 }
 
 function removeScheduleWindow(index: number): void {
+  if (props.readonly) return
   if (props.form.availabilitySchedule.windows.length <= 1) return
   props.form.availabilitySchedule.windows.splice(index, 1)
 }

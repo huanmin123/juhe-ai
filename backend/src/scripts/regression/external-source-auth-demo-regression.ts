@@ -68,6 +68,7 @@ async function runChild(): Promise<void> {
     upsertExternalIntegrationSource
   } = await import('../../storage/external-integration-source.repository.js')
   const {
+    createSession,
     createAccount,
     createGroup,
     findSystemAccountByUsername,
@@ -209,6 +210,8 @@ async function runChild(): Promise<void> {
   const address = server.address()
   assert(address && typeof address !== 'string', '测试 HTTP 服务地址无效')
   const baseUrl = `http://127.0.0.1:${address.port}`
+  assert.equal(updateSystemAccount('sys_admin', { mustChangePassword: false })?.mustChangePassword, false, '回归准备：管理员应可访问管理 API')
+  const adminCookie = `juhe_ai_session=${createSession('sys_admin', 1).token}`
 
   try {
     const missingToken = await requestJson(baseUrl, '/__aipublic__/demo/source-auth')
@@ -772,6 +775,47 @@ async function runChild(): Promise<void> {
     })
     assert.equal(publicGroupDelete.status, 200)
     assert.equal(publicGroupDelete.body.data.action, 'deleted')
+
+    const managementCreatedSource = await requestJson(baseUrl, '/__aisys__/api/external-integration-sources', {
+      Cookie: adminCookie
+    }, 'POST', {
+      name: '管理 API 删除回归来源',
+      status: 'active',
+      scopes: [externalIntegrationSourceAuthDemoScope],
+      rateLimits: [],
+      expiresAt: null,
+      notes: '用于覆盖公开接口授权新增和删除'
+    })
+    assert.equal(managementCreatedSource.status, 201, '管理员应能新增公开接口来源授权')
+    const managementSourceId = managementCreatedSource.body.data.source.id as string
+    const managementTokenId = managementCreatedSource.body.data.token.id as string
+    const managementToken = managementCreatedSource.body.data.token.token as string
+    assert(managementSourceId, '新增公开接口来源授权应返回来源 ID')
+    assert(managementTokenId, '新增公开接口来源授权应返回 token ID')
+    assert(managementToken, '新增公开接口来源授权应一次性返回明文 token')
+
+    const managementTokenSecret = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${managementSourceId}/tokens/${managementTokenId}/secret`, {
+      Cookie: adminCookie
+    })
+    assert.equal(managementTokenSecret.status, 200, '管理员应能按单条 Token 复制完整明文')
+    assert.equal(managementTokenSecret.body.data.token, managementToken, 'Token 复制接口应返回创建时的完整 Token')
+
+    const managementCreatedSourceAuth = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
+      Authorization: `Bearer ${managementToken}`
+    })
+    assert.equal(managementCreatedSourceAuth.status, 200, '新增来源授权生成的 token 应可访问公开接口')
+    assert.equal(managementCreatedSourceAuth.body.data.sourceName, '管理 API 删除回归来源')
+
+    const managementSourceDelete = await requestStatus(baseUrl, `/__aisys__/api/external-integration-sources/${managementSourceId}`, {
+      Cookie: adminCookie
+    }, 'DELETE')
+    assert.equal(managementSourceDelete, 204, '管理员应能删除公开接口来源授权')
+
+    const deletedSourceAuth = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
+      Authorization: `Bearer ${managementToken}`
+    })
+    assert.equal(deletedSourceAuth.status, 401, '删除来源授权后原 token 应立即失效')
+    assert.equal(deletedSourceAuth.body.code, 'external_source_unauthorized')
 
     await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
       Authorization: `Bearer ${limitedSourceToken}`

@@ -6,7 +6,10 @@
           <div class="policy-summary">
             <div class="policy-title-row">
               <h4>错误处理策略</h4>
-              <a-tag color="blue">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
+              <a-space :size="6" wrap>
+                <a-tag color="blue">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
+                <a-tag v-if="readonly" color="default">只读</a-tag>
+              </a-space>
             </div>
           </div>
         </template>
@@ -14,7 +17,7 @@
         <div class="policy-content">
           <a-space class="error-policy-actions" :size="6" wrap>
             <a-button size="small" :icon="h(QuestionCircleOutlined)" @click="guideOpen = true">配置指南</a-button>
-            <a-dropdown>
+            <a-dropdown v-if="!readonly">
               <a-button size="small">添加预设</a-button>
               <template #overlay>
                 <a-menu @click="handlePresetClick">
@@ -22,17 +25,17 @@
                 </a-menu>
               </template>
             </a-dropdown>
-            <a-button size="small" @click="addBlankRule">自定义规则</a-button>
+            <a-button v-if="!readonly" size="small" @click="addBlankRule">自定义规则</a-button>
             <a-button size="small" @click="expandAllRules">展开全部</a-button>
             <a-button size="small" @click="collapseAllRules">收起全部</a-button>
-            <a-button size="small" @click="normalizePriorities">重排优先级</a-button>
-            <a-popconfirm title="清空后账号只走通用失败处理，确定继续吗？" ok-text="清空" cancel-text="取消" @confirm="clearRules">
+            <a-button v-if="!readonly" size="small" @click="normalizePriorities">重排优先级</a-button>
+            <a-popconfirm v-if="!readonly" title="清空后账号只走通用失败处理，确定继续吗？" ok-text="清空" cancel-text="取消" @confirm="clearRules">
               <a-button size="small" :disabled="rules.length === 0">清空规则</a-button>
             </a-popconfirm>
           </a-space>
 
           <a-empty v-if="rules.length === 0" class="compact-empty" :description="contextGuide.emptyDescription">
-            <a-space>
+            <a-space v-if="!readonly">
               <a-button type="primary" @click="addBlankRule">添加专属规则</a-button>
             </a-space>
           </a-empty>
@@ -47,6 +50,7 @@
                       size="small"
                       checked-children="启"
                       un-checked-children="停"
+                      :disabled="readonly"
                       @click.stop
                     />
                     <a-tag class="priority-tag" color="blue">P{{ rule.priority ?? '-' }}</a-tag>
@@ -57,7 +61,7 @@
                 </div>
               </template>
 
-              <template #extra>
+              <template v-if="!readonly" #extra>
                 <a-space class="rule-actions" wrap @click.stop>
                   <a-button size="small" :disabled="index === 0" @click="moveRule(index, -1)">上移</a-button>
                   <a-button size="small" :disabled="index === rules.length - 1" @click="moveRule(index, 1)">下移</a-button>
@@ -68,57 +72,57 @@
               <div class="rule-editor">
                 <div class="form-grid error-rule-grid compact">
                   <a-form-item label="规则名称">
-                    <a-input v-model:value="rule.name" placeholder="例如 429 临时限流" />
+                    <a-input v-model:value="rule.name" :disabled="readonly" placeholder="例如 429 临时限流" />
                   </a-form-item>
                   <a-form-item label="优先级">
-                    <a-input-number v-model:value="rule.priority" :min="1" :max="9999" style="width: 100%" />
+                    <a-input-number v-model:value="rule.priority" :disabled="readonly" :min="1" :max="9999" style="width: 100%" />
                   </a-form-item>
                   <a-form-item label="处理动作">
-                    <a-select v-model:value="rule.action" :options="actionOptions" />
+                    <a-select v-model:value="rule.action" :disabled="readonly" :options="actionOptions" />
                   </a-form-item>
                 </div>
 
                 <div class="form-grid error-rule-grid matcher-grid">
                   <a-form-item label="状态码">
-                    <a-input v-model:value="rule.status_codes" placeholder="429, 502, 503" />
+                    <a-input v-model:value="rule.status_codes" :disabled="readonly" placeholder="429, 502, 503" />
                   </a-form-item>
                   <a-form-item label="错误码">
-                    <a-input v-model:value="rule.error_codes" placeholder="insufficient_quota" />
+                    <a-input v-model:value="rule.error_codes" :disabled="readonly" placeholder="insufficient_quota" />
                   </a-form-item>
                   <a-form-item label="错误类型">
-                    <a-input v-model:value="rule.error_types" placeholder="rate_limit_exceeded" />
+                    <a-input v-model:value="rule.error_types" :disabled="readonly" placeholder="rate_limit_exceeded" />
                   </a-form-item>
                   <a-form-item label="关键词">
-                    <a-textarea v-model:value="rule.keywords" :rows="1" auto-size placeholder="多个关键词用逗号、分号或换行分隔" />
+                    <a-textarea v-model:value="rule.keywords" :disabled="readonly" :rows="1" auto-size placeholder="多个关键词用逗号、分号或换行分隔" />
                   </a-form-item>
                 </div>
 
                 <div v-if="rule.action === 'temp_unschedulable'" class="form-grid error-rule-grid compact">
                   <a-form-item label="临时避让分钟数">
-                    <a-input-number v-model:value="rule.durationMinutes" :min="1" :max="1440" style="width: 100%" />
+                    <a-input-number v-model:value="rule.durationMinutes" :disabled="readonly" :min="1" :max="1440" style="width: 100%" />
                   </a-form-item>
                 </div>
 
                 <div v-else-if="rule.action === 'rate_limited'" class="form-grid error-rule-grid compact">
                   <a-form-item label="恢复策略">
-                    <a-select v-model:value="rule.reset_strategy" :options="accountErrorRecoveryStrategyOptions" />
+                    <a-select v-model:value="rule.reset_strategy" :disabled="readonly" :options="accountErrorRecoveryStrategyOptions" />
                   </a-form-item>
                   <a-form-item v-if="rule.reset_strategy === 'duration'" label="恢复小时数">
-                    <a-input-number v-model:value="rule.duration_hours" :min="1" :max="720" style="width: 100%" />
+                    <a-input-number v-model:value="rule.duration_hours" :disabled="readonly" :min="1" :max="720" style="width: 100%" />
                   </a-form-item>
                   <a-form-item v-if="rule.reset_strategy === 'daily'" label="每天恢复时间">
-                    <a-select v-model:value="rule.daily_reset_hour" :options="accountErrorHourOptions" />
+                    <a-select v-model:value="rule.daily_reset_hour" :disabled="readonly" :options="accountErrorHourOptions" />
                   </a-form-item>
                   <a-form-item v-if="rule.reset_strategy === 'weekly'" label="每周恢复日">
-                    <a-select v-model:value="rule.weekly_reset_day" :options="accountErrorWeekdayOptions" />
+                    <a-select v-model:value="rule.weekly_reset_day" :disabled="readonly" :options="accountErrorWeekdayOptions" />
                   </a-form-item>
                   <a-form-item v-if="rule.reset_strategy === 'weekly'" label="每周恢复时间">
-                    <a-select v-model:value="rule.weekly_reset_hour" :options="accountErrorHourOptions" />
+                    <a-select v-model:value="rule.weekly_reset_hour" :disabled="readonly" :options="accountErrorHourOptions" />
                   </a-form-item>
                 </div>
 
                 <a-form-item label="说明">
-                  <a-textarea v-model:value="rule.description" :rows="1" auto-size placeholder="可写为什么要这样处理" />
+                  <a-textarea v-model:value="rule.description" :disabled="readonly" :rows="1" auto-size placeholder="可写为什么要这样处理" />
                 </a-form-item>
               </div>
             </a-collapse-panel>
@@ -204,10 +208,12 @@ const props = withDefaults(defineProps<{
   accountType?: string
   baseUrl?: string
   providerCode?: string
+  readonly?: boolean
 }>(), {
   accountType: '',
   baseUrl: '',
-  providerCode: ''
+  providerCode: '',
+  readonly: false
 })
 
 const policyActiveKeys = ref<string[]>([])
@@ -239,12 +245,14 @@ function openPolicy() {
 }
 
 function addBlankRule() {
+  if (props.readonly) return
   openPolicy()
   rules.value.push(createBlankAccountErrorRule(getNextAccountErrorRulePriority(rules.value)))
   activeRuleKeys.value = [ruleKey(rules.value.length - 1)]
 }
 
 function handlePresetClick(event: { key: string | number }) {
+  if (props.readonly) return
   const preset = accountErrorPolicyPresets.find((item) => item.key === String(event.key))
   if (!preset) return
   openPolicy()
@@ -256,16 +264,19 @@ function handlePresetClick(event: { key: string | number }) {
 }
 
 function clearRules() {
+  if (props.readonly) return
   rules.value = []
   activeRuleKeys.value = []
 }
 
 function removeRule(index: number) {
+  if (props.readonly) return
   rules.value.splice(index, 1)
   activeRuleKeys.value = []
 }
 
 function moveRule(index: number, offset: number) {
+  if (props.readonly) return
   const nextIndex = index + offset
   if (nextIndex < 0 || nextIndex >= rules.value.length) return
   const [rule] = rules.value.splice(index, 1)
@@ -274,6 +285,7 @@ function moveRule(index: number, offset: number) {
 }
 
 function normalizePriorities() {
+  if (props.readonly) return
   rules.value = normalizeAccountErrorPolicyPriorities(rules.value)
 }
 

@@ -11,11 +11,17 @@
     @refresh="$emit('refresh')"
     @search="$emit('refresh')"
     >
+    <template #inline-filters>
+      <a-segmented
+        v-if="!isManagementView"
+        v-model:value="filters.direction"
+        :options="directionOptions"
+        class="direction-filter responsive-list-inline-filter"
+        @change="$emit('refresh')"
+      />
+    </template>
     <template #advanced-filters>
       <a-form layout="vertical" class="advanced-filter-form">
-        <a-form-item v-if="!isManagementView" label="授权方向">
-          <a-segmented v-model:value="filters.direction" :options="directionOptions" @change="$emit('refresh')" />
-        </a-form-item>
         <a-form-item v-if="!isManagementView" label="授权方式">
           <a-select v-model:value="filters.sourceType" :options="sourceOptions" @change="$emit('refresh')" />
         </a-form-item>

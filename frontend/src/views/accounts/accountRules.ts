@@ -6,7 +6,6 @@ import type { AccountMenuItem } from './accountActionTypes'
 import {
   formatDateTime,
   hasAccountRuntimeRecoveryState,
-  authorizationSourceAccountStatusTag,
   authorizationSourceAccountTooltipLines,
   isAccountPackageExpiredStatus,
   isAuthorizationBindingUnavailable,
@@ -64,7 +63,6 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
 
 export function authorizedAccountSourceTone(account: AccountSummary): AuthorizedAccountSourceTone {
   if (hasAuthorizedAccountSourceBlocker(account)) return 'danger'
-  if (authorizationSourceAccountStatusTag(account)) return 'warning'
   if (isAuthorizationExpiringSoon(account) || hasQuotaLimits(account.authorizationLimits)) return 'warning'
   return 'normal'
 }
@@ -91,6 +89,7 @@ function authorizedAccountSourceText(account: AccountSummary): string {
 }
 
 function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
+  if (account.effectiveAvailability?.available === false) return true
   return Boolean(
     account.authorizationQuotaExceeded
     || isAuthorizationExpired(account)
@@ -138,6 +137,7 @@ export function canBatchManageAccount(account: AccountSummary): boolean {
   if (isAuthorizedAccount(account)) {
     return Boolean(account.boundGroupId)
       && account.permissions?.canUse !== false
+      && account.effectiveAvailability?.available !== false
       && !isAuthorizationExpired(account)
       && !isAuthorizationBindingUnavailable(account)
       && !isAccountPackageExpiredStatus(account)
@@ -152,6 +152,9 @@ export function canRestoreException(account: AccountSummary): boolean {
 
 export function authorizedAccountUnavailableText(account: AccountSummary): string | undefined {
   if (!isAuthorizedAccount(account)) return undefined
+  if (account.effectiveAvailability?.available === false) {
+    return account.effectiveAvailability.reason ?? account.effectiveAvailability.label
+  }
   if (account.permissions?.canUse === false) return '当前授权账户无可用权限'
   if (!account.boundGroupId) return '授权账户需要先绑定到你的分组'
   if (isAuthorizationExpired(account)) return '授权已到期，当前账户不能调用'
@@ -182,8 +185,17 @@ export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
 export function canTestAccount(account: AccountSummary): boolean {
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
-    if (isAuthorizationExpired(account) || isAuthorizationPaused(account) || isAuthorizationBindingUnavailable(account) || isAccountPackageExpiredStatus(account)) return false
-    if (account.authorizationQuotaExceeded || account.status === 'error') return false
+    if (account.effectiveAvailability?.available === false) {
+      if (account.effectiveAvailability.blockerScope === 'runtime') return true
+      if (account.effectiveAvailability.blockerScope !== 'authorized_instance') return false
+      if (account.effectiveAvailability.status === 'instance_disabled') return true
+      const instanceFailureState = hasAuthorizedInstanceFailureState(account)
+      return instanceFailureState && (
+        account.effectiveAvailability.status === 'instance_rate_limited'
+        || account.effectiveAvailability.status === 'instance_temporary_unavailable'
+        || account.effectiveAvailability.status === 'instance_cooldown'
+      )
+    }
     const instanceFailureState = hasAuthorizedInstanceFailureState(account)
     if (isTemporaryAccountStatus(account) && !instanceFailureState) return false
     return account.schedulable || account.status === 'disabled' || instanceFailureState
