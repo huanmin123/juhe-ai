@@ -1,0 +1,388 @@
+import { getDatasetDatabase, newId, nowIso } from './database.js'
+import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { optionalString, optionalServerDateTimeIso } from './value-utils.js'
+
+export type PublicApiLogCaptureStatus = 'complete' | 'truncated' | 'empty' | 'dropped'
+export type PublicApiLogResultFilter = 'success' | 'failed' | 'all'
+
+export interface PublicApiLogInput {
+  id?: string
+  traceId?: string
+  sourceRefId?: string
+  sourceName?: string
+  tokenId?: string
+  tokenName?: string
+  tokenPrefix?: string
+  isTestToken?: boolean
+  method: string
+  path: string
+  queryString?: string
+  clientIp?: string
+  userAgent?: string
+  statusCode?: number
+  success?: boolean
+  durationMs?: number
+  requestSizeBytes?: number
+  responseSizeBytes?: number
+  requestCaptureStatus?: PublicApiLogCaptureStatus
+  responseCaptureStatus?: PublicApiLogCaptureStatus
+  requestData?: Record<string, unknown>
+  responseData?: Record<string, unknown>
+  errorCode?: string
+  errorMessage?: string
+  startedAt: string
+  endedAt: string
+  createdAt?: string
+}
+
+export interface PublicApiLogSummary {
+  id: string
+  traceId?: string
+  sourceRefId?: string
+  sourceName?: string
+  tokenId?: string
+  tokenName?: string
+  tokenPrefix?: string
+  isTestToken: boolean
+  method: string
+  path: string
+  queryString?: string
+  clientIp?: string
+  userAgent?: string
+  statusCode?: number
+  success: boolean
+  durationMs?: number
+  requestSizeBytes: number
+  responseSizeBytes: number
+  requestCaptureStatus: PublicApiLogCaptureStatus
+  responseCaptureStatus: PublicApiLogCaptureStatus
+  errorCode?: string
+  errorMessage?: string
+  startedAt: string
+  endedAt: string
+  createdAt: string
+}
+
+export interface PublicApiLogDetail extends PublicApiLogSummary {
+  requestData: Record<string, unknown>
+  responseData: Record<string, unknown>
+}
+
+export interface PublicApiLogListOptions {
+  page?: number
+  pageSize?: number
+  traceId?: string
+  sourceRefId?: string
+  path?: string
+  result?: PublicApiLogResultFilter
+  statusCode?: number
+  clientIp?: string
+  startAt?: string
+  endAt?: string
+}
+
+export interface PublicApiLogListResult {
+  items: PublicApiLogSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
+type PublicApiLogRow = Record<string, unknown>
+type PublicApiLogFilterValue = string | number
+
+const publicApiLogDefaultPageSize = 100
+const publicApiLogMaxPageSize = 100
+const publicApiLogMaxListWindowRows = 1001
+
+export function createPublicApiLog(input: PublicApiLogInput): PublicApiLogSummary {
+  const id = input.id ?? newId('publog')
+  const createdAt = input.createdAt ?? nowIso()
+  const statusCode = integerOrNull(input.statusCode)
+  const durationMs = integerOrNull(input.durationMs)
+  const requestSizeBytes = normalizeNonNegativeInteger(input.requestSizeBytes)
+  const responseSizeBytes = normalizeNonNegativeInteger(input.responseSizeBytes)
+  const requestCaptureStatus = normalizeCaptureStatus(input.requestCaptureStatus)
+  const responseCaptureStatus = normalizeCaptureStatus(input.responseCaptureStatus)
+  const success = input.success ? 1 : 0
+  getDatasetDatabase().prepare(`
+    INSERT INTO public_api_logs (
+      id, trace_id, source_ref_id, source_name, token_id, token_name, token_prefix, is_test_token,
+      method, path, query_string, client_ip, user_agent, status_code, success, duration_ms,
+      request_size_bytes, response_size_bytes, request_capture_status, response_capture_status,
+      request_data_json, response_data_json, error_code, error_message, started_at, ended_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.traceId ?? null,
+    input.sourceRefId ?? null,
+    input.sourceName ?? null,
+    input.tokenId ?? null,
+    input.tokenName ?? null,
+    input.tokenPrefix ?? null,
+    input.isTestToken ? 1 : 0,
+    input.method,
+    input.path,
+    input.queryString ?? null,
+    input.clientIp ?? null,
+    input.userAgent ?? null,
+    statusCode,
+    success,
+    durationMs,
+    requestSizeBytes,
+    responseSizeBytes,
+    requestCaptureStatus,
+    responseCaptureStatus,
+    safeJsonObjectStringify(input.requestData),
+    safeJsonObjectStringify(input.responseData),
+    input.errorCode ?? null,
+    input.errorMessage ?? null,
+    input.startedAt,
+    input.endedAt,
+    createdAt
+  )
+  return publicApiLogSummaryFromRow({
+    id,
+    trace_id: input.traceId,
+    source_ref_id: input.sourceRefId,
+    source_name: input.sourceName,
+    token_id: input.tokenId,
+    token_name: input.tokenName,
+    token_prefix: input.tokenPrefix,
+    is_test_token: input.isTestToken ? 1 : 0,
+    method: input.method,
+    path: input.path,
+    query_string: input.queryString,
+    client_ip: input.clientIp,
+    user_agent: input.userAgent,
+    status_code: statusCode,
+    success,
+    duration_ms: durationMs,
+    request_size_bytes: requestSizeBytes,
+    response_size_bytes: responseSizeBytes,
+    request_capture_status: requestCaptureStatus,
+    response_capture_status: responseCaptureStatus,
+    error_code: input.errorCode,
+    error_message: input.errorMessage,
+    started_at: input.startedAt,
+    ended_at: input.endedAt,
+    created_at: createdAt
+  })
+}
+
+export function listPublicApiLogs(options: PublicApiLogListOptions = {}): PublicApiLogListResult {
+  const pageSize = normalizePublicApiLogPageSize(options.pageSize)
+  const page = normalizeListPage(options.page, pageSize, publicApiLogMaxListWindowRows)
+  const offset = (page - 1) * pageSize
+  const filters = buildPublicApiLogFilters(options)
+  const whereClause = filters.clauses.length ? `WHERE ${filters.clauses.join(' AND ')}` : ''
+  const rows = getDatasetDatabase().prepare(`
+    SELECT ${publicApiLogSummarySelectColumns('pal')}
+    FROM public_api_logs pal
+    ${whereClause}
+    ORDER BY pal.created_at DESC, pal.id DESC
+    LIMIT ? OFFSET ?
+  `).all(...filters.params, pageSize + 1, offset) as PublicApiLogRow[]
+  const pageRows = takePageRows(rows, pageSize)
+  const items = pageRows.rows.map(publicApiLogSummaryFromRow)
+  return {
+    items,
+    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page,
+    pageSize
+  }
+}
+
+export function getPublicApiLogDetail(id: string): PublicApiLogDetail | undefined {
+  const row = getDatasetDatabase()
+    .prepare('SELECT * FROM public_api_logs WHERE id = ?')
+    .get(id) as PublicApiLogRow | undefined
+  return row ? publicApiLogDetailFromRow(row) : undefined
+}
+
+export function cleanupPublicApiLogsBefore(cutoffCreatedAt: string, limit = 1000): number {
+  const rows = getDatasetDatabase()
+    .prepare('SELECT id FROM public_api_logs WHERE created_at < ? ORDER BY created_at ASC, id ASC LIMIT ?')
+    .all(cutoffCreatedAt, Math.max(1, Math.trunc(limit))) as PublicApiLogRow[]
+  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (ids.length === 0) return 0
+  const result = getDatasetDatabase()
+    .prepare(`DELETE FROM public_api_logs WHERE id IN (${sqlPlaceholders(ids.length)})`)
+    .run(...ids)
+  return Number(result.changes ?? 0)
+}
+
+function buildPublicApiLogFilters(options: PublicApiLogListOptions): { clauses: string[]; params: PublicApiLogFilterValue[] } {
+  const clauses: string[] = []
+  const params: PublicApiLogFilterValue[] = []
+  pushPrefixFilter(clauses, params, 'pal.trace_id', options.traceId)
+  pushExactFilter(clauses, params, 'pal.source_ref_id', options.sourceRefId)
+  pushExactFilter(clauses, params, 'pal.path', options.path)
+  pushPrefixFilter(clauses, params, 'pal.client_ip', options.clientIp)
+  if (options.result === 'success') {
+    clauses.push('pal.success = 1')
+  } else if (options.result === 'failed') {
+    clauses.push('pal.success = 0')
+  }
+  if (isHttpStatusCode(options.statusCode)) {
+    clauses.push('pal.status_code = ?')
+    params.push(options.statusCode)
+  }
+  const startAt = normalizeDateTimeFilter(options.startAt)
+  if (startAt) {
+    clauses.push('pal.created_at >= ?')
+    params.push(startAt)
+  }
+  const endAt = normalizeDateTimeFilter(options.endAt)
+  if (endAt) {
+    clauses.push('pal.created_at <= ?')
+    params.push(endAt)
+  }
+  return { clauses, params }
+}
+
+function publicApiLogSummarySelectColumns(alias: string): string {
+  return [
+    'id',
+    'trace_id',
+    'source_ref_id',
+    'source_name',
+    'token_id',
+    'token_name',
+    'token_prefix',
+    'is_test_token',
+    'method',
+    'path',
+    'query_string',
+    'client_ip',
+    'user_agent',
+    'status_code',
+    'success',
+    'duration_ms',
+    'request_size_bytes',
+    'response_size_bytes',
+    'request_capture_status',
+    'response_capture_status',
+    "'{}' AS request_data_json",
+    "'{}' AS response_data_json",
+    'error_code',
+    'error_message',
+    'started_at',
+    'ended_at',
+    'created_at'
+  ].map((column) => column.includes(' AS ') ? column : `${alias}.${column}`).join(', ')
+}
+
+function publicApiLogSummaryFromRow(row: PublicApiLogRow): PublicApiLogSummary {
+  return {
+    id: String(row.id),
+    traceId: optionalString(row.trace_id),
+    sourceRefId: optionalString(row.source_ref_id),
+    sourceName: optionalString(row.source_name),
+    tokenId: optionalString(row.token_id),
+    tokenName: optionalString(row.token_name),
+    tokenPrefix: optionalString(row.token_prefix),
+    isTestToken: Number(row.is_test_token ?? 0) === 1,
+    method: String(row.method),
+    path: String(row.path),
+    queryString: optionalString(row.query_string),
+    clientIp: optionalString(row.client_ip),
+    userAgent: optionalString(row.user_agent),
+    statusCode: numberValue(row.status_code),
+    success: Number(row.success ?? 0) === 1,
+    durationMs: numberValue(row.duration_ms),
+    requestSizeBytes: nonNegativeNumberValue(row.request_size_bytes),
+    responseSizeBytes: nonNegativeNumberValue(row.response_size_bytes),
+    requestCaptureStatus: normalizeCaptureStatus(row.request_capture_status),
+    responseCaptureStatus: normalizeCaptureStatus(row.response_capture_status),
+    errorCode: optionalString(row.error_code),
+    errorMessage: optionalString(row.error_message),
+    startedAt: String(row.started_at),
+    endedAt: String(row.ended_at),
+    createdAt: String(row.created_at)
+  }
+}
+
+function publicApiLogDetailFromRow(row: PublicApiLogRow): PublicApiLogDetail {
+  return {
+    ...publicApiLogSummaryFromRow(row),
+    requestData: parseJsonObject(row.request_data_json),
+    responseData: parseJsonObject(row.response_data_json)
+  }
+}
+
+function normalizePublicApiLogPageSize(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value)
+    ? Math.min(publicApiLogMaxPageSize, Math.max(1, value))
+    : publicApiLogDefaultPageSize
+}
+
+function pushExactFilter(clauses: string[], params: PublicApiLogFilterValue[], column: string, value?: string): void {
+  const text = value?.trim()
+  if (!text || text === 'all') return
+  clauses.push(`${column} = ?`)
+  params.push(text)
+}
+
+function pushPrefixFilter(clauses: string[], params: PublicApiLogFilterValue[], column: string, value?: string): void {
+  const text = value?.trim()
+  if (!text) return
+  clauses.push(`${column} >= ? AND ${column} < ?`)
+  params.push(text, `${text}\uffff`)
+}
+
+function normalizeCaptureStatus(value: unknown): PublicApiLogCaptureStatus {
+  if (value === 'complete' || value === 'truncated' || value === 'empty' || value === 'dropped') {
+    return value
+  }
+  return 'empty'
+}
+
+function safeJsonObjectStringify(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '{}'
+  }
+  try {
+    return JSON.stringify(value) ?? '{}'
+  } catch {
+    return '{}'
+  }
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function normalizeDateTimeFilter(value: unknown): string | undefined {
+  return optionalServerDateTimeIso(value)
+}
+
+function isHttpStatusCode(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
+}
+
+function integerOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function nonNegativeNumberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
+}
