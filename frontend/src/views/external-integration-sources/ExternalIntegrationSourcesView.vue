@@ -42,7 +42,7 @@
       row-key="id"
       :loading="loading"
       :pagination="tablePagination"
-      :scroll-x="1340"
+      :scroll-x="1380"
       @change="handleTableChange"
     >
       <template #emptyText>
@@ -61,7 +61,7 @@
           <div class="token-preview-cell">
             <span class="token-preview" :title="tokenDisplayTitle(primaryToken(record))">{{ formatTokenPreview(primaryToken(record)) }}</span>
             <a-tooltip title="复制完整 Token">
-              <span>
+              <span class="token-copy-button-wrap">
                 <a-button
                   class="token-copy-button"
                   type="text"
@@ -477,7 +477,7 @@ const sourceStatusOptions = [
 const columns = [
   { title: '来源授权', key: 'source', width: 180, fixed: 'left', align: 'left' },
   { title: '状态', key: 'status', width: 100, align: 'left' },
-  { title: 'Token', key: 'tokens', width: 180, align: 'left' },
+  { title: 'Token', key: 'tokens', width: 220, align: 'left' },
   { title: '接口资源授权', key: 'scopes', width: 300, className: 'scope-column', align: 'left' },
   { title: '限频', key: 'rateLimits', width: 180, align: 'left' },
   { title: '到期时间', key: 'expiresAt', width: 180, align: 'left' },
@@ -1227,15 +1227,18 @@ function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
 }
 
 .token-preview-cell {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  width: 100%;
+  min-width: 0;
   gap: 8px;
 }
 
 .token-preview {
   display: inline-flex;
   align-items: center;
-  max-width: 138px;
+  max-width: calc(100% - 32px);
+  box-sizing: border-box;
   padding: 3px 8px;
   overflow: hidden;
   color: #008b8b;
@@ -1250,6 +1253,10 @@ function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
 
 .token-copy-button {
   color: #64748b;
+}
+
+.token-copy-button-wrap {
+  flex: none;
 }
 
 .token-copy-button:hover:not(:disabled) {

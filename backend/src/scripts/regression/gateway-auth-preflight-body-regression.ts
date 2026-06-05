@@ -134,10 +134,19 @@ try {
       rawBodyBytes: Buffer.byteLength(body)
     })
 
-    const oversizeBody = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(gatewayRequestBody.gatewayRawBodyHardLimitBytes) })
+    const oversizeBody = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(gatewayRequestBody.gatewayTextRawBodyHardLimitBytes) })
     const oversize = await postJson(`${baseUrl}/v1/responses`, oversizeBody, apiKey.key)
-    assert.equal(oversize.status, 413, '超过网关请求体硬上限应在进入业务解析前返回 413')
-    assert.equal(rawBodyMiddlewareHitCount, 1, '超过硬上限的合法请求也不应进入 raw body 后续解析链路')
+    assert.equal(oversize.status, 413, '超过文本请求体上限应在进入业务解析前返回 413')
+    assert.equal(rawBodyMiddlewareHitCount, 2, '超过文本上限但未超过入口上限的合法请求会进入 raw body 限额判定')
+
+    const largeImageBody = JSON.stringify({ model: 'gpt-image-1', input: 'x'.repeat(gatewayRequestBody.gatewayTextRawBodyHardLimitBytes) })
+    const largeImage = await postJson(`${baseUrl}/v1/responses`, largeImageBody, apiKey.key)
+    assert.equal(largeImage.status, 200, '图像模型请求超过文本上限但未超过图像上限时应继续进入业务链路')
+    assert.deepEqual(JSON.parse(largeImage.text), {
+      apiKeyId: apiKey.id,
+      rawBodyBytes: Buffer.byteLength(largeImageBody)
+    })
+    assert.equal(rawBodyMiddlewareHitCount, 3, '图像大请求应通过 raw body 限额判定并进入后续链路')
   } finally {
     await close(server)
   }

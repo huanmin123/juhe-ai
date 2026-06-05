@@ -2,8 +2,12 @@ import type { Request } from 'express'
 
 export const gatewayJsonBodyLargeWarningBytes = 2 * 1024 * 1024
 export const gatewayJsonBodyInlineParseMaxBytes = 256 * 1024
-export const gatewayRawBodyHardLimitBytes = 8 * 1024 * 1024
-export const gatewayRawBodyHardLimit = '8mb'
+export const gatewayTextRawBodyHardLimitBytes = 8 * 1024 * 1024
+export const gatewayTextRawBodyHardLimit = '8mb'
+export const gatewayImageRawBodyHardLimitBytes = 64 * 1024 * 1024
+export const gatewayImageRawBodyHardLimit = '64mb'
+export const gatewayRawBodyHardLimitBytes = gatewayImageRawBodyHardLimitBytes
+export const gatewayRawBodyHardLimit = gatewayImageRawBodyHardLimit
 
 export type GatewayJsonBodyParseStatus =
   | 'empty'

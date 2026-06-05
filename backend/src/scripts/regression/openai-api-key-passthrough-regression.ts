@@ -13,6 +13,7 @@ import {
   gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   gatewayRawBodyHardLimitBytes,
+  gatewayTextRawBodyHardLimitBytes,
   type GatewayRawBodyRequest
 } from '../../modules/gateway/openai-gateway-request-body.js'
 import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
   testParsedJsonBodyPassthroughForGatewayMetadata()
   await testMediumJsonBodyDeferredByGatewayMiddleware()
   await testOversizeJsonBodyRejectedByGatewayMiddleware()
+  await testLargeImageJsonBodyAllowedByGatewayMiddleware()
   await testDeferredJsonBodyImageToolMetadataScanned()
   await testDeferredInvalidJsonMarkedWithoutWorkerParse()
   await testDeferredInvalidJsonPrimitiveMarkedWithoutWorkerParse()
@@ -310,9 +312,10 @@ async function testOversizeJsonBodyRejectedByGatewayMiddleware(): Promise<void> 
   const rawBody = Buffer.from(JSON.stringify({
     model: 'gpt-5.4',
     stream: true,
-    input: 'x'.repeat(gatewayRawBodyHardLimitBytes)
+    input: 'x'.repeat(gatewayTextRawBodyHardLimitBytes)
   }))
-  assert.ok(rawBody.length > gatewayRawBodyHardLimitBytes)
+  assert.ok(rawBody.length > gatewayTextRawBodyHardLimitBytes)
+  assert.ok(rawBody.length < gatewayRawBodyHardLimitBytes)
   const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
   const res = createMockResponse()
   let nextCalled = false
@@ -332,6 +335,33 @@ async function testOversizeJsonBodyRejectedByGatewayMiddleware(): Promise<void> 
       type: 'request_too_large'
     }
   })
+}
+
+async function testLargeImageJsonBodyAllowedByGatewayMiddleware(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.4',
+    input: 'x'.repeat(gatewayTextRawBodyHardLimitBytes),
+    tools: [{ type: 'image_generation', output_format: 'png' }],
+    tool_choice: 'auto'
+  }))
+  assert.ok(rawBody.length > gatewayTextRawBodyHardLimitBytes)
+  assert.ok(rawBody.length < gatewayRawBodyHardLimitBytes)
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  const res = createMockResponse()
+  let nextCalled = false
+
+  await captureGatewayRawBody(req, res as never, () => {
+    nextCalled = true
+  })
+
+  assert.equal(nextCalled, true)
+  assert.equal(req.body, undefined)
+  assert.ok(req.rawBody)
+  assert.equal(Buffer.compare(req.rawBody, rawBody), 0)
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(req.gatewayRequestBody?.imageGeneration, true)
+  assert.equal(req.gatewayRequestBody?.imageGenerationForced, false)
+  assert.equal(res.statusCode, 200)
 }
 
 async function testDeferredJsonBodyImageToolMetadataScanned(): Promise<void> {

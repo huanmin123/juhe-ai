@@ -7,7 +7,8 @@ import { responseHeadersToObject, type AuditCaptureContext } from './audit-captu
 import {
   applyAccountErrorHandlingWithCacheInvalidation,
   clearAccountStreamFailureStateWithCacheInvalidation,
-  handleStreamFailure
+  handleStreamFailure,
+  markGatewayAccountTemporaryUnavailableWithCacheInvalidation
 } from './openai-gateway-account-effects.js'
 import { rememberCodexTurnStreamFailure } from './openai-gateway-codex-turn-retry.service.js'
 import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
@@ -256,9 +257,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       estimatedOutputTokens: streamUsageFallback.estimatedOutputTokens
     }, '上游流式响应缺少 usage，网关已按可见输出估算 token 成本')
   }
-  applyStreamInterceptObservationHandling(streamResult, account, settings, auditCapture, accountStateMutationEnabled !== false)
+  await applyStreamInterceptObservationHandling(streamResult, account, settings, auditCapture, accountStateMutationEnabled !== false)
   if (streamResult.streamIntercept) {
-    applyStreamInterceptPolicyRuntimeSideEffects(streamResult.streamIntercept, account, settings, accountStateMutationEnabled !== false)
+    await applyStreamInterceptPolicyRuntimeSideEffects(streamResult.streamIntercept, account, settings, accountStateMutationEnabled !== false)
     auditCapture.addGatewayMetadata({
       label: 'stream_intercept',
       metadata: streamInterceptAuditMetadata(streamResult.streamIntercept)
@@ -359,40 +360,40 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   }
 }
 
-function applyStreamInterceptPolicyRuntimeSideEffects(
+async function applyStreamInterceptPolicyRuntimeSideEffects(
   decision: NonNullable<GatewayStreamPipeResult['streamIntercept']>,
   account: UpstreamAccount,
   settings: GatewaySettings,
   accountStateMutationEnabled: boolean
-): void {
+): Promise<void> {
   if (!accountStateMutationEnabled || decision.reason !== 'configured_stream_policy' || decision.action === 'dry_run') {
     return
   }
   const reason = `流式拦截策略命中：${decision.policyName ?? decision.policyId ?? decision.matchedValue ?? '未命名策略'}`
-  const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
   if (decision.accountState === 'runtime_avoidance' || decision.accountSwitch === 'avoid_account_ttl') {
-    suppressGatewayAccountLocallyForSeconds(account, ttlSeconds, reason)
+    await markGatewayAccountTemporaryUnavailableWithCacheInvalidation(account, reason, 'stream_intercept_policy')
   }
   if (decision.accountSwitch === 'avoid_upstream_bucket_ttl') {
+    const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
     suppressGatewayUpstreamBucketLocallyForSeconds(account, ttlSeconds, reason)
   }
 }
 
 type GatewayStreamPipeResult = Awaited<ReturnType<typeof pipeUpstreamStream>>
 
-function applyStreamInterceptObservationHandling(
+async function applyStreamInterceptObservationHandling(
   streamResult: GatewayStreamPipeResult,
   account: UpstreamAccount,
   settings: GatewaySettings,
   auditCapture: AuditCaptureContext,
   accountStateMutationEnabled: boolean
-): void {
+): Promise<void> {
   const observations = streamResult.streamInterceptObservations ?? []
   if (observations.length === 0) {
     return
   }
   for (const observation of observations) {
-    applyStreamInterceptPolicyRuntimeSideEffects(observation, account, settings, accountStateMutationEnabled)
+    await applyStreamInterceptPolicyRuntimeSideEffects(observation, account, settings, accountStateMutationEnabled)
   }
   auditCapture.addGatewayMetadata({
     label: 'stream_intercept_observations',

@@ -3,14 +3,19 @@ import type { NextFunction, Response } from 'express'
 import { getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
 import {
   createGatewayRequestBodyState,
+  gatewayImageRawBodyHardLimitBytes,
   gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   gatewayRawBodyHardLimitBytes,
+  gatewayTextRawBodyHardLimitBytes,
   isGatewayJsonContentType,
   type GatewayJsonBodyMetadata,
   type GatewayRawBodyRequest
 } from './openai-gateway-request-body.js'
 import { extractGatewayJsonBodyMetadataInWorker, isGatewayJsonWorkerQueueFullError } from './openai-gateway-json-parser.js'
+import { resolveOpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
+
+type GatewayRawBodyLimitScope = 'gateway' | 'text' | 'image'
 
 export async function captureGatewayRawBody(
   req: GatewayRawBodyRequest,
@@ -22,16 +27,6 @@ export async function captureGatewayRawBody(
     const contentType = req.headers['content-type'] ?? ''
     const isJson = isGatewayJsonContentType(contentType)
     if (rawBody.length > gatewayRawBodyHardLimitBytes) {
-      getRequestLogger().warn({
-        event: 'gateway_raw_body_hard_limit_rejected',
-        method: req.method,
-        path: req.path,
-        originalUrl: sanitizeUrlForLog(req.originalUrl),
-        rawBodyBytes: rawBody.length,
-        rawBodyHardLimitBytes: gatewayRawBodyHardLimitBytes
-      }, '网关请求体超过硬上限，已拒绝以保护主进程')
-      req.rawBody = undefined
-      req.body = undefined
       req.gatewayRequestBody = {
         rawBodyBytes: rawBody.length,
         contentType: String(contentType ?? ''),
@@ -39,14 +34,7 @@ export async function captureGatewayRawBody(
         jsonParseStatus: isJson ? 'deferred_large_json' : 'not_json',
         jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
       }
-      if (!res.headersSent) {
-        res.status(413).json({
-          error: {
-            message: '请求体过大',
-            type: 'request_too_large'
-          }
-        })
-      }
+      rejectGatewayRawBodyTooLarge(req, res, rawBody, gatewayRawBodyHardLimitBytes, 'gateway')
       return
     }
 
@@ -58,6 +46,9 @@ export async function captureGatewayRawBody(
     } else if (!isJson) {
       req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'not_json' })
       req.body = undefined
+      if (rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+        return
+      }
     } else {
       if (rawBody.length > gatewayJsonBodyInlineParseMaxBytes) {
         const metadata = await extractLargeJsonBodyMetadata(req, res, rawBody)
@@ -93,6 +84,9 @@ export async function captureGatewayRawBody(
           imageGenerationForced: metadata.imageGenerationForced
         })
         req.body = undefined
+        if (rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+          return
+        }
       } else {
         try {
           const parsedBody = JSON.parse(rawBody.toString('utf8')) as unknown
@@ -101,6 +95,9 @@ export async function captureGatewayRawBody(
         } catch {
           req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'invalid_json' })
           req.body = undefined
+        }
+        if (rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+          return
         }
       }
     }
@@ -111,6 +108,58 @@ export async function captureGatewayRawBody(
     next()
   } catch (error) {
     next(error)
+  }
+}
+
+function rejectGatewayRawBodyByRequestLane(
+  req: GatewayRawBodyRequest,
+  res: Response,
+  rawBody: Buffer
+): boolean {
+  const requestLimit = resolveGatewayRawBodyRequestLimit(req)
+  if (rawBody.length <= requestLimit.limitBytes) {
+    return false
+  }
+  rejectGatewayRawBodyTooLarge(req, res, rawBody, requestLimit.limitBytes, requestLimit.scope)
+  return true
+}
+
+function resolveGatewayRawBodyRequestLimit(req: GatewayRawBodyRequest): { limitBytes: number; scope: GatewayRawBodyLimitScope } {
+  return resolveOpenAIGatewayRequestLane(req) === 'image'
+    ? { limitBytes: gatewayImageRawBodyHardLimitBytes, scope: 'image' }
+    : { limitBytes: gatewayTextRawBodyHardLimitBytes, scope: 'text' }
+}
+
+function rejectGatewayRawBodyTooLarge(
+  req: GatewayRawBodyRequest,
+  res: Response,
+  rawBody: Buffer,
+  limitBytes: number,
+  limitScope: GatewayRawBodyLimitScope
+): void {
+  getRequestLogger().warn({
+    event: limitScope === 'gateway' ? 'gateway_raw_body_hard_limit_rejected' : 'gateway_raw_body_request_limit_rejected',
+    method: req.method,
+    path: req.path,
+    originalUrl: sanitizeUrlForLog(req.originalUrl),
+    rawBodyBytes: rawBody.length,
+    rawBodyLimitBytes: limitBytes,
+    rawBodyLimitScope: limitScope,
+    rawBodyHardLimitBytes: gatewayRawBodyHardLimitBytes,
+    gatewayTextRawBodyHardLimitBytes,
+    gatewayImageRawBodyHardLimitBytes
+  }, limitScope === 'gateway'
+    ? '网关请求体超过硬上限，已拒绝以保护主进程'
+    : '网关请求体超过当前请求类型上限，已拒绝以保护主进程')
+  req.rawBody = undefined
+  req.body = undefined
+  if (!res.headersSent) {
+    res.status(413).json({
+      error: {
+        message: '请求体过大',
+        type: 'request_too_large'
+      }
+    })
   }
 }
 

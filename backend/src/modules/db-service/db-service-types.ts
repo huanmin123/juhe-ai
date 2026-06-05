@@ -255,6 +255,11 @@ export type DbServiceOperation =
     precheckStartedAt?: string
   }
   | {
+    type: 'mark_account_temporary_unavailable'
+    account: OpenAIAccountSecret
+    reason: string
+  }
+  | {
     type: 'clear_gateway_runtime_cache'
   }
   | {
@@ -300,6 +305,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'apply_account_error_handling' } ? AccountErrorHandlingResult :
   T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
   T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean; skippedReason?: string } :
+  T extends { type: 'mark_account_temporary_unavailable' } ? { updated: boolean } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'find_active_client_ip_policy' } ? ActiveClientIpPolicy | undefined :

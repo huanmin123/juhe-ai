@@ -26,7 +26,7 @@ export function normalizeAccountStreamInterceptRulePriorities(rules: AccountStre
 }
 
 function nextAvailablePriority(values: Array<number | null>): number {
-  const used = new Set(values.filter((value): value is number => Number.isInteger(value) && value > 0 && value <= 9999))
+  const used = new Set(values.filter((value): value is number => typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 9999))
   for (let priority = 1; priority <= 9999; priority += 1) {
     if (!used.has(priority)) return priority
   }

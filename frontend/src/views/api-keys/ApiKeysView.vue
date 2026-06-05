@@ -85,7 +85,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="managedColumns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 2020 : 1840" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="managedColumns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 2060 : 1880" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -105,7 +105,7 @@
           <div class="key-preview-cell">
             <span class="key-preview" :title="keyDisplayTitle(record)">{{ formatKeyPreview(record) }}</span>
             <a-tooltip title="复制完整密钥">
-              <span>
+              <span class="key-copy-button-wrap">
                 <a-button
                   class="key-copy-button"
                   type="text"
@@ -534,7 +534,7 @@ const {
 const rawColumns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
-    { title: '密钥', key: 'key', width: 180 }
+    { title: '密钥', key: 'key', width: 220 }
   ]
   if (isManagementView.value) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
@@ -1890,15 +1890,18 @@ onMounted(loadData)
 }
 
 .key-preview-cell {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  width: 100%;
+  min-width: 0;
   gap: 8px;
 }
 
 .key-preview {
   display: inline-flex;
   align-items: center;
-  max-width: 120px;
+  max-width: calc(100% - 32px);
+  box-sizing: border-box;
   padding: 3px 8px;
   overflow: hidden;
   color: #008b8b;
@@ -1913,6 +1916,10 @@ onMounted(loadData)
 
 .key-copy-button {
   color: #94a3b8;
+}
+
+.key-copy-button-wrap {
+  flex: none;
 }
 
 .key-copy-button:hover:not(:disabled) {

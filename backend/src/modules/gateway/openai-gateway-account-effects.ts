@@ -3,6 +3,7 @@ import { getRequestLogger } from '../../shared/request-context.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
 import { type GatewaySettings } from './account-error-policy.service.js'
 import {
+  clearGatewayAccountRuntimeAvailability,
   enqueueGatewayAccountErrorHandlingSideEffect,
   recordGatewayAccountFailureForPrecheck,
   suppressGatewayAccountLocally
@@ -36,6 +37,34 @@ export function applyAccountErrorHandlingWithCacheInvalidation(
     type: 'apply_account_error_handling',
     account,
     input: normalizedInput
+  })
+}
+
+export function markGatewayAccountTemporaryUnavailableWithCacheInvalidation(
+  account: UpstreamAccount,
+  reason: string,
+  source: string
+): Promise<boolean> {
+  return requestDbService({
+    type: 'mark_account_temporary_unavailable',
+    account,
+    reason: reason.slice(0, 1000)
+  }).then((result) => {
+    if (!result.updated) {
+      return false
+    }
+    const cleared = clearGatewayAccountRuntimeAvailability(account)
+    if (!cleared.cleared) {
+      clearGatewayRuntimeCache()
+    }
+    return true
+  }).catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_account_temporary_unavailable_side_effect_failed',
+      accountId: account.id,
+      source
+    }), '网关账号临时不可调用副作用写入失败')
+    return false
   })
 }
 

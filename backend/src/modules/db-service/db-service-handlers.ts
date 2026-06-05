@@ -169,6 +169,19 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       }
       return { updated: Boolean(updated) }
     }
+    case 'mark_account_temporary_unavailable': {
+      const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
+      const updated = authorizedTarget
+        ? markAuthorizedAccountBindingTemporaryUnavailableByContext({
+            ...authorizedTarget,
+            reason: operation.reason
+          })
+        : markAccountTemporaryUnavailable(operation.account.id, operation.reason)
+      if (updated) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { updated: Boolean(updated) }
+    }
     case 'clear_account_stream_failure_state': {
       const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
       const accountId = operation.account?.id ?? operation.accountId

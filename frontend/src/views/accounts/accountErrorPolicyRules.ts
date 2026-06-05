@@ -95,7 +95,7 @@ export const normalizeAccountErrorPolicyPriorities = (rules: AccountErrorPolicyR
 export const getNextAccountErrorRulePriority = (rules: AccountErrorPolicyRuleForm[]): number => {
   const used = new Set(rules
     .map((rule) => rule.priority)
-    .filter((priority): priority is number => Number.isInteger(priority) && priority > 0 && priority <= 9999))
+    .filter((priority): priority is number => typeof priority === 'number' && Number.isInteger(priority) && priority > 0 && priority <= 9999))
   for (let priority = 1; priority <= 9999; priority += 1) {
     if (!used.has(priority)) return priority
   }
