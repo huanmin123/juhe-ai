@@ -146,8 +146,7 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
       name: '测试 529 冷却',
       priority: 1,
       status_codes: [529],
-      action: 'temp_unschedulable',
-      durationMinutes: 1
+      action: 'temp_unschedulable'
     }]
   })
   gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 60_000, '写库前临时避让')
@@ -180,7 +179,7 @@ async function testStalePrecheckAfterManualRestoreIsSkipped(): Promise<void> {
   await delay(5)
   const precheckStartedAt = new Date().toISOString()
   await delay(5)
-  const cooled = repositories.markAccountCooldown(account.id, new Date(Date.now() + 60_000).toISOString(), '模拟较早预检查先写入冷却')
+  const cooled = repositories.markAccountTemporaryUnavailable(account.id, '模拟较早预检查先写入冷却')
   assert.equal(cooled?.status, 'temporary_unavailable', '测试账号应先被写入临时不可调用')
   const restored = repositories.clearAccountFailureState(account.id, adminAccess)
   assert.equal(restored?.status, 'active', '测试账号应已手动恢复正常')

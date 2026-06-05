@@ -22,6 +22,7 @@ assert.equal(validateAccountErrorHandlingRules([tempRule({ name: '200', status_c
 assert.equal(validateAccountErrorHandlingRules([tempRule({ name: 'error code 200', error_codes: ['200'] })]).valid, false)
 assert.equal(validateAccountErrorHandlingRules([tempRule({ name: '2xx', status_codes: '2xx' })]).valid, false)
 assert.equal(validateAccountErrorHandlingRules([tempRule({ name: 'range', status_codes: '200-299' })]).valid, false)
+assert.equal(validateAccountErrorHandlingRules([tempRule({ name: 'legacy duration', durationMinutes: 5 })]).valid, false)
 assert.equal(validateAccountErrorHandlingRules([tempRule({ enabled: false, name: 'disabled 429', status_codes: [429] })]).valid, true)
 assert.equal(validateAccountCredentialsErrorHandlingRules({ error_handling_rules: [{ name: '201', status_codes: [201] }] }).valid, false)
 
@@ -48,7 +49,6 @@ function tempRule(overrides: Record<string, unknown> = {}): Record<string, unkno
     priority: 10,
     status_codes: [429],
     action: 'temp_unschedulable',
-    durationMinutes: 5,
     ...overrides
   }
 }

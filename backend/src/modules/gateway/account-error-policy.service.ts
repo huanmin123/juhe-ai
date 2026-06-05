@@ -10,8 +10,10 @@ import {
   clearAuthorizedAccountBindingFailureStateByContext,
   getSettings,
   markAccountCooldown,
+  markAccountTemporaryUnavailable,
   markAccountDisabledByFailure,
   markAuthorizedAccountBindingCooldownByContext,
+  markAuthorizedAccountBindingTemporaryUnavailableByContext,
   markAuthorizedAccountBindingDisabledByFailure,
   type AuthorizedAccountBindingRuntimeTarget
 } from '../../storage/repositories.js'
@@ -51,7 +53,6 @@ export interface AccountErrorPolicyAccount {
 export interface AccountErrorPolicyDecision {
   action: 'retry_next' | 'cooldown' | 'disable'
   ruleName?: string
-  cooldownMinutes?: number
   cooldownUntil?: string
   cooldownStatus?: CooldownAccountStatus
 }
@@ -133,7 +134,7 @@ export function applyAccountErrorHandling(
     }
 
     const reason = genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
-    const updated = applyAccountTemporaryUnavailableSideEffect(account, settings, reason)
+    const updated = applyAccountTemporaryUnavailableSideEffect(account, reason)
     return {
       action: 'cooldown',
       changed: Boolean(updated),
@@ -143,7 +144,7 @@ export function applyAccountErrorHandling(
   }
 
   const reason = genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
-  const updated = applyAccountTemporaryUnavailableSideEffect(account, settings, reason)
+  const updated = applyAccountTemporaryUnavailableSideEffect(account, reason)
   return {
     action: 'cooldown',
     changed: Boolean(updated),
@@ -176,12 +177,12 @@ export function decideAccountErrorPolicy(
     const action = normalizePolicyAction(rule.action)
     const ruleName = rule.name
     if (action === 'cooldown') {
+      const cooldownStatus = policyCooldownStatus(rule.action)
       return {
         action,
         ruleName,
-        cooldownMinutes: rule.durationMinutes ?? settings.defaultTemporaryUnschedulableMinutes,
-        cooldownUntil: resolveAccountErrorRuleCooldownUntil(rule),
-        cooldownStatus: policyCooldownStatus(rule.action)
+        cooldownUntil: cooldownStatus === 'rate_limited' ? resolveAccountErrorRuleCooldownUntil(rule) : undefined,
+        cooldownStatus
       }
     }
     return { action, ruleName }
@@ -200,7 +201,6 @@ export function applyAccountErrorPolicySideEffect(
   const reason = accountErrorPolicyReason(statusCode, decision, upstreamSummary)
   if (decision.action === 'cooldown') {
     return applyAccountCooldownSideEffect(account, settings, reason, {
-      cooldownMinutes: decision.cooldownMinutes,
       cooldownUntil: decision.cooldownUntil,
       cooldownStatus: decision.cooldownStatus
     })
@@ -277,13 +277,12 @@ function accountErrorRules(credentials: Record<string, unknown>): AccountErrorHa
 
 function applyAccountTemporaryUnavailableSideEffect(
   account: AccountErrorPolicyAccount,
-  settings: GatewaySettings,
   reason: string
 ): { status: AccountStatus } | undefined {
-  return applyAccountCooldownSideEffect(account, settings, reason, {
-    cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
-    cooldownStatus: 'temporary_unavailable'
-  })
+  const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+  return authorizedTarget
+    ? markAuthorizedAccountBindingTemporaryUnavailableByContext({ ...authorizedTarget, reason })
+    : markAccountTemporaryUnavailable(account.id, reason)
 }
 
 function applyAccountCooldownSideEffect(
@@ -291,14 +290,15 @@ function applyAccountCooldownSideEffect(
   settings: GatewaySettings,
   reason: string,
   input: {
-    cooldownMinutes?: number
     cooldownUntil?: string
     cooldownStatus?: CooldownAccountStatus
   } = {}
 ): { status: AccountStatus } | undefined {
-  const minutes = Math.max(1, input.cooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes)
-  const until = input.cooldownUntil ?? new Date(Date.now() + minutes * 60_000).toISOString()
   const status = input.cooldownStatus ?? 'temporary_unavailable'
+  if (status === 'temporary_unavailable') {
+    return applyAccountTemporaryUnavailableSideEffect(account, reason)
+  }
+  const until = input.cooldownUntil ?? new Date(Date.now() + Math.max(1, settings.defaultTemporaryUnschedulableMinutes) * 60_000).toISOString()
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
   return authorizedTarget
     ? markAuthorizedAccountBindingCooldownByContext({

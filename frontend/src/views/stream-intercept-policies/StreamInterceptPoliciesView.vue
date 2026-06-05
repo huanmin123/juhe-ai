@@ -70,9 +70,6 @@
         <template v-else-if="column.key === 'action'">
           <a-tag color="cyan">{{ actionText(record.action) }}</a-tag>
         </template>
-        <template v-else-if="column.key === 'avoidanceTtlSeconds'">
-          <div class="compact-cell">{{ actionExtraSummary(record) }}</div>
-        </template>
         <template v-else-if="column.key === 'notes'">
           <div class="field-cell text-field-cell">{{ record.notes || '-' }}</div>
         </template>
@@ -108,10 +105,6 @@
             <div class="mobile-list-meta-item">
               <span>模板</span>
               <strong>{{ actionText(record.action) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>避让</span>
-              <strong>{{ actionExtraSummary(record) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>SSE event 类型</span>
@@ -232,11 +225,6 @@
               </button>
             </div>
           </a-form-item>
-          <div v-if="actionUsesTtl" class="form-grid three">
-            <a-form-item label="避让秒数">
-              <a-input-number v-model:value="form.avoidanceTtlSeconds" :disabled="modalReadonly" :min="1" :max="86400" style="width: 100%" />
-            </a-form-item>
-          </div>
           <a-form-item label="备注">
             <a-textarea v-model:value="form.notes" :disabled="modalReadonly" :rows="2" placeholder="可写污染来源或排障线索" />
           </a-form-item>
@@ -315,11 +303,9 @@ import {
   streamInterceptPolicyGuideSources
 } from './streamInterceptPolicyGuide'
 import {
-  defaultAvoidanceTtlSeconds,
   streamInterceptActionLabel,
   streamInterceptActionTemplates,
-  type StreamInterceptActionTemplate,
-  streamInterceptActionUsesTtl
+  type StreamInterceptActionTemplate
 } from './streamInterceptActionTemplates'
 
 interface StreamPolicyForm {
@@ -334,7 +320,6 @@ interface StreamPolicyForm {
   textExcludes: string
   jsonPathsExists: string
   action: StreamInterceptPolicyAction
-  avoidanceTtlSeconds: number | null
   notes: string
 }
 
@@ -364,7 +349,6 @@ const columns = [
   { title: 'SSE data文本不包含', key: 'textExcludes', width: 220 },
   { title: 'JSON字段路径存在', key: 'jsonPathsExists', width: 190 },
   { title: '处置模板', key: 'action', width: 220 },
-  { title: '避让秒数', key: 'avoidanceTtlSeconds', width: 120 },
   { title: '备注', key: 'notes', width: 220 },
   { title: '更新时间', key: 'updatedAt', width: 180 },
   { title: '操作', key: 'actions', width: 104, fixed: 'right', actionCount: 2 }
@@ -401,13 +385,11 @@ const modalTitle = computed(() => {
   return editingId.value ? '编辑流式拦截策略' : '新建流式拦截策略'
 })
 
-const actionUsesTtl = computed(() => streamInterceptActionUsesTtl(form.action))
-
 function defaultForm(): StreamPolicyForm {
   const next: StreamPolicyForm = {
     name: '',
     enabled: true,
-    priority: 100,
+    priority: 1,
     eventTypes: '',
     dataTypes: '',
     errorCodes: '',
@@ -416,7 +398,6 @@ function defaultForm(): StreamPolicyForm {
     textExcludes: '',
     jsonPathsExists: '',
     action: 'avoid_account_ttl',
-    avoidanceTtlSeconds: defaultAvoidanceTtlSeconds,
     notes: ''
   }
   return next
@@ -534,12 +515,6 @@ function actionsFor(policy: StreamInterceptPolicySummary): RowActionItem[] {
 }
 
 function fillForm(policy: StreamInterceptPolicySummary): boolean {
-  const usesTtl = streamInterceptActionUsesTtl(policy.action)
-  const avoidanceTtlSeconds = usesTtl ? positiveInt(policy.avoidanceTtlSeconds, 86400) : null
-  if (usesTtl && !avoidanceTtlSeconds) {
-    message.error('流式拦截策略缺少避让秒数，请清理数据后再查看或编辑')
-    return false
-  }
   Object.assign(form, {
     name: policy.name,
     enabled: policy.enabled,
@@ -552,7 +527,6 @@ function fillForm(policy: StreamInterceptPolicySummary): boolean {
     textExcludes: formatList(policy.match.textExcludes),
     jsonPathsExists: formatList(policy.match.jsonPathsExists),
     action: policy.action,
-    avoidanceTtlSeconds,
     notes: policy.notes ?? ''
   })
   return true
@@ -575,9 +549,6 @@ function buildPayload(): StreamInterceptPolicyPayload {
     action: form.action,
     notes: form.notes.trim() || undefined
   }
-  if (streamInterceptActionUsesTtl(form.action)) {
-    payload.avoidanceTtlSeconds = requiredPositiveInt(form.avoidanceTtlSeconds, '避让秒数', 86400)
-  }
   return payload
 }
 
@@ -587,22 +558,12 @@ function validateForm(): string | undefined {
   const listValidation = validateMatchLists()
   if (listValidation) return listValidation
   if (!hasAnyMatcher()) return '至少需要填写一个匹配条件'
-  if (streamInterceptActionUsesTtl(form.action) && !positiveInt(form.avoidanceTtlSeconds, 86400)) return '避让秒数必须是 1-86400 的整数'
   return undefined
-}
-
-function handleActionChange(): void {
-  if (streamInterceptActionUsesTtl(form.action)) {
-    form.avoidanceTtlSeconds = positiveInt(form.avoidanceTtlSeconds) ?? defaultAvoidanceTtlSeconds
-  } else {
-    form.avoidanceTtlSeconds = null
-  }
 }
 
 function selectAction(action: StreamInterceptPolicyAction): void {
   if (modalReadonly.value) return
   form.action = action
-  handleActionChange()
 }
 
 function applySearch(): void {
@@ -614,8 +575,13 @@ function resetSearch(): void {
 }
 
 function nextPriority(): number {
-  const max = Math.max(0, ...policies.value.map((policy) => policy.priority).filter(Number.isFinite))
-  return Math.min(9999, max + 10 || 100)
+  const used = new Set(policies.value
+    .map((policy) => policy.priority)
+    .filter((priority): priority is number => Number.isInteger(priority) && priority > 0 && priority <= 9999))
+  for (let priority = 1; priority <= 9999; priority += 1) {
+    if (!used.has(priority)) return priority
+  }
+  return 9999
 }
 
 function hasAnyMatcher(): boolean {
@@ -689,7 +655,6 @@ function searchableText(policy: StreamInterceptPolicySummary): string {
     String(policy.priority),
     policy.enabled ? '启用' : '停用',
     streamInterceptActionLabel(policy.action),
-    actionExtraSummary(policy),
     policy.notes
   ].filter(Boolean).join(' ').toLowerCase()
 }
@@ -701,14 +666,14 @@ function actionText(action: StreamInterceptPolicyAction): string {
 function actionTagText(template: StreamInterceptActionTemplate): string {
   if (template.action === 'observe') return '观察'
   if (template.action === 'drop_event' || template.action === 'fail_stream') return '不重试'
-  if (template.ttlRequired) return '短期避让'
+  if (template.runtimeAvoidance) return '短期避让'
   return '重试'
 }
 
 function actionTagColor(template: StreamInterceptActionTemplate): string {
   if (template.action === 'observe') return 'gold'
   if (template.action === 'drop_event' || template.action === 'fail_stream') return 'default'
-  if (template.ttlRequired) return 'orange'
+  if (template.runtimeAvoidance) return 'orange'
   return 'green'
 }
 
@@ -727,11 +692,6 @@ function matchSummary(policy: StreamInterceptPolicySummary): string {
 
 function listText(values?: string[]): string {
   return values?.length ? values.join(', ') : '-'
-}
-
-function actionExtraSummary(policy: StreamInterceptPolicySummary): string {
-  if (!streamInterceptActionUsesTtl(policy.action)) return '-'
-  return policy.avoidanceTtlSeconds ? `${policy.avoidanceTtlSeconds}s` : '未设置'
 }
 
 function scopedList(label: string, values?: string[]): string {

@@ -46,7 +46,7 @@ try {
     groupId: group.id
   }, access)
   assert(repositories.setAccountGroup(account.id, group.id, access), '冷却复测观察窗口账号应能绑定分组')
-  const cooled = repositories.markAccountCooldown(account.id, new Date(Date.now() + 60_000).toISOString(), '模拟临时不可调用')
+  const cooled = repositories.markAccountTemporaryUnavailable(account.id, '模拟临时不可调用')
   assert.equal(cooled?.status, 'temporary_unavailable', '临时不可调用应进入恢复通道')
   assert.ok(cooled?.cooldownRetestObservationStartedAt, '进入临时不可调用时应记录自动恢复观察起点')
   assert.ok(Date.parse(cooled.cooldownUntil ?? '') - Date.now() <= 10_000, '临时不可调用首次暂停应走秒级快速恢复')
@@ -88,7 +88,7 @@ try {
     groupId: group.id
   }, access)
   assert(repositories.setAccountGroup(freshAccount.id, group.id, access), '冷却复测未超观察窗口账号应能绑定分组')
-  repositories.markAccountCooldown(freshAccount.id, new Date(Date.now() + 60_000).toISOString(), '模拟临时不可调用')
+  repositories.markAccountTemporaryUnavailable(freshAccount.id, '模拟临时不可调用')
   databaseModule.getBusinessDatabase()
     .prepare(`
       UPDATE accounts
@@ -127,7 +127,7 @@ try {
     status: 'active',
     groupId: group.id
   }, access)
-  repositories.markAccountCooldown(disabledCleanupAccount.id, new Date(Date.now() + 60_000).toISOString(), '过期冷却错误')
+  repositories.markAccountTemporaryUnavailable(disabledCleanupAccount.id, '过期冷却错误')
   const disabledCleanup = repositories.updateAccount(disabledCleanupAccount.id, { status: 'disabled' }, access)
   assert.equal(disabledCleanup?.status, 'disabled', '冷却账号应允许手动停用')
   assert.equal(disabledCleanup?.lastErrorCode, undefined, '手动停用应清理既有错误码')

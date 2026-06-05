@@ -369,7 +369,7 @@ function applyStreamInterceptPolicyRuntimeSideEffects(
     return
   }
   const reason = `流式拦截策略命中：${decision.policyName ?? decision.policyId ?? decision.matchedValue ?? '未命名策略'}`
-  const ttlSeconds = decision.avoidanceTtlSeconds ?? settings.defaultTemporaryUnschedulableMinutes * 60
+  const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
   if (decision.accountState === 'runtime_avoidance' || decision.accountSwitch === 'avoid_account_ttl') {
     suppressGatewayAccountLocallyForSeconds(account, ttlSeconds, reason)
   }

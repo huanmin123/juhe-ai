@@ -614,12 +614,12 @@ assert.doesNotMatch(modelChecksRepositorySource, /providerCode\s*\?\?\s*'openai'
 const streamInterceptPoliciesRoutesSource = readSource('modules/stream-intercept-policies/stream-intercept-policies.routes.ts')
 const streamInterceptPolicyBodySchemaSource = sourceBetween(streamInterceptPoliciesRoutesSource, 'const policyBodySchema', 'streamInterceptPoliciesRouter.get')
 assert.match(streamInterceptPolicyBodySchemaSource, /priority:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(9999\)\.optional\(\)/)
-assert.match(streamInterceptPolicyBodySchemaSource, /avoidanceTtlSeconds:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(86400\)\.nullable\(\)\.optional\(\)/)
+assert.doesNotMatch(streamInterceptPolicyBodySchemaSource, /avoidanceTtlSeconds/)
 assert.doesNotMatch(streamInterceptPolicyBodySchemaSource, /z\.coerce\.number/)
 
 const accountStreamInterceptPolicyValidationSource = readSource('modules/accounts/account-stream-intercept-policy-validation.ts')
 assert.match(accountStreamInterceptPolicyValidationSource, /priority:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(9999\)/)
-assert.match(accountStreamInterceptPolicyValidationSource, /avoidanceTtlSeconds:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(86400\)\.optional\(\)/)
+assert.doesNotMatch(accountStreamInterceptPolicyValidationSource, /avoidanceTtlSeconds/)
 assert.doesNotMatch(accountStreamInterceptPolicyValidationSource, /z\.coerce\.number/)
 
 const externalIntegrationSourcesRoutesSource = readSource('modules/external-integrations/external-integration-sources.routes.ts')

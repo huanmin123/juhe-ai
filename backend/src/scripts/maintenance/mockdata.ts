@@ -403,16 +403,14 @@ function createErrorPolicies(adminId: string): { quota: string; strict: string; 
           name: '503 服务不可用',
           priority: 30,
           status_codes: [503],
-          action: 'temp_unschedulable',
-          durationMinutes: 15
+          action: 'temp_unschedulable'
         },
         {
           enabled: true,
           name: '500 上游错误',
           priority: 40,
           status_codes: [500],
-          action: 'temp_unschedulable',
-          durationMinutes: 8
+          action: 'temp_unschedulable'
         }
       ]
     }
@@ -643,12 +641,7 @@ function createAccounts(
     priority: 130,
     notes: 'Mockdata 临时不可调用状态账号'
   }, adminAccess)
-  repositories.markAccountCooldown(
-    temporary.id,
-    new Date(Date.now() + 25 * 60_000).toISOString(),
-    'Mockdata 模拟上游 503 维护',
-    'temporary_unavailable'
-  )
+  repositories.markAccountTemporaryUnavailable(temporary.id, 'Mockdata 模拟上游 503 维护')
 
   const error = repositories.createAccount({
     providerCode,
@@ -701,16 +694,14 @@ function apiKeyCredentials(suffix: string): Record<string, unknown> {
         name: '429 临时限流',
         priority: 40,
         status_codes: [429],
-        action: 'temp_unschedulable',
-        durationMinutes: 10
+        action: 'temp_unschedulable'
       },
       {
         enabled: true,
         name: '503 服务不可用',
         priority: 80,
         status_codes: [503],
-        action: 'temp_unschedulable',
-        durationMinutes: 8
+        action: 'temp_unschedulable'
       }
     ]
   }

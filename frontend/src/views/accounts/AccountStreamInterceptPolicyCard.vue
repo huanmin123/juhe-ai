@@ -24,6 +24,7 @@
             <a-button v-if="!readonly" size="small" @click="addRule">添加规则</a-button>
             <a-button size="small" :disabled="rules.length === 0" @click="expandAll">展开全部</a-button>
             <a-button size="small" :disabled="rules.length === 0" @click="collapseAll">收起全部</a-button>
+            <a-button v-if="!readonly" size="small" :disabled="rules.length === 0" @click="normalizePriorities">重排优先级</a-button>
             <a-popconfirm v-if="!readonly" title="确定清空当前账户追加规则吗？" ok-text="清空" cancel-text="取消" @confirm="clearRules">
               <a-button size="small" :disabled="rules.length === 0">清空规则</a-button>
             </a-popconfirm>
@@ -41,7 +42,7 @@
                     <a-switch v-model:checked="rule.enabled" size="small" checked-children="启" un-checked-children="停" :disabled="readonly" @click.stop />
                     <a-tag color="blue">{{ rule.priority ?? '-' }}</a-tag>
                     <a-tag color="cyan">{{ actionLabel(rule) }}</a-tag>
-                    <a-tag v-if="positiveInt(rule.avoidanceTtlSeconds)">{{ positiveInt(rule.avoidanceTtlSeconds) }}s</a-tag>
+                    <a-tag v-if="actionUsesRuntimeAvoidance(rule)" color="orange">系统短避让</a-tag>
                     <strong>{{ rule.name || '未命名规则' }}</strong>
                   </div>
                   <span class="rule-condition-summary">{{ conditionSummary(rule) }}</span>
@@ -112,12 +113,6 @@
                     </div>
                   </a-form-item>
                 </div>
-                <div v-if="actionUsesTtl(rule)" class="form-grid compact">
-                  <a-form-item label="避让秒数">
-                    <a-input-number v-model:value="rule.avoidanceTtlSeconds" :disabled="readonly" :min="1" :max="86400" style="width: 100%" />
-                  </a-form-item>
-                </div>
-
                 <a-form-item label="备注">
                   <a-textarea v-model:value="rule.notes" :disabled="readonly" :rows="1" auto-size placeholder="可写污染来源或排障线索" />
                 </a-form-item>
@@ -183,6 +178,7 @@ import { computed, ref } from 'vue'
 
 import {
   createBlankAccountStreamInterceptRule,
+  normalizeAccountStreamInterceptRulePriorities,
   nextStreamInterceptRulePriority
 } from './accountStreamInterceptPolicyOptions'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
@@ -193,11 +189,10 @@ import {
   streamInterceptPolicyGuideSources
 } from '../stream-intercept-policies/streamInterceptPolicyGuide'
 import {
-  defaultAvoidanceTtlSeconds,
   streamInterceptActionLabel,
   streamInterceptActionTemplates,
   type StreamInterceptActionTemplate,
-  streamInterceptActionUsesTtl
+  streamInterceptActionUsesRuntimeAvoidance
 } from '../stream-intercept-policies/streamInterceptActionTemplates'
 import type { StreamInterceptPolicyAction } from '@/types/domain'
 
@@ -267,6 +262,11 @@ function moveRule(index: number, offset: number): void {
   ruleKeys.value = [ruleKey(nextIndex)]
 }
 
+function normalizePriorities(): void {
+  if (props.readonly) return
+  rules.value = normalizeAccountStreamInterceptRulePriorities(rules.value)
+}
+
 function expandAll(): void {
   ruleKeys.value = rules.value.map((_, index) => ruleKey(index))
 }
@@ -275,22 +275,13 @@ function collapseAll(): void {
   ruleKeys.value = []
 }
 
-function handleRuleActionChange(rule: AccountStreamInterceptRuleForm): void {
-  if (streamInterceptActionUsesTtl(rule.action)) {
-    rule.avoidanceTtlSeconds = positiveInt(rule.avoidanceTtlSeconds) ?? defaultAvoidanceTtlSeconds
-  } else {
-    rule.avoidanceTtlSeconds = null
-  }
-}
-
 function selectRuleAction(rule: AccountStreamInterceptRuleForm, action: StreamInterceptPolicyAction): void {
   if (props.readonly) return
   rule.action = action
-  handleRuleActionChange(rule)
 }
 
-function actionUsesTtl(rule: AccountStreamInterceptRuleForm): boolean {
-  return streamInterceptActionUsesTtl(rule.action)
+function actionUsesRuntimeAvoidance(rule: AccountStreamInterceptRuleForm): boolean {
+  return streamInterceptActionUsesRuntimeAvoidance(rule.action)
 }
 
 function actionLabel(rule: AccountStreamInterceptRuleForm): string {
@@ -300,20 +291,15 @@ function actionLabel(rule: AccountStreamInterceptRuleForm): string {
 function actionTagText(template: StreamInterceptActionTemplate): string {
   if (template.action === 'observe') return '观察'
   if (template.action === 'drop_event' || template.action === 'fail_stream') return '不重试'
-  if (template.ttlRequired) return '短期避让'
+  if (template.runtimeAvoidance) return '短期避让'
   return '重试'
 }
 
 function actionTagColor(template: StreamInterceptActionTemplate): string {
   if (template.action === 'observe') return 'gold'
   if (template.action === 'drop_event' || template.action === 'fail_stream') return 'default'
-  if (template.ttlRequired) return 'orange'
+  if (template.runtimeAvoidance) return 'orange'
   return 'green'
-}
-
-function positiveInt(value: unknown): number | undefined {
-  const numberValue = Number(value)
-  return Number.isFinite(numberValue) && numberValue > 0 ? Math.trunc(numberValue) : undefined
 }
 
 function conditionSummary(rule: AccountStreamInterceptRuleForm): string {

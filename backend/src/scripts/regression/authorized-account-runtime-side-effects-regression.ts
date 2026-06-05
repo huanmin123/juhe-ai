@@ -70,8 +70,7 @@ try {
     enabled: true,
     priority: 1,
     status_codes: [500],
-    action: 'temp_unschedulable',
-    durationMinutes: 5
+    action: 'temp_unschedulable'
   }], ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
   const disableAccount = createAuthorizedAccount('授权副作用异常账户', 'sk-runtime-side-effect-disable', [{
     name: '授权副本 503 标记异常',
@@ -119,7 +118,6 @@ try {
       thresholdCount: 1,
       thresholdWindowMinutes: 10,
       action: 'cooldown',
-      cooldownMinutes: 5,
       reason: '模拟授权副本流式失败'
     }
   }))

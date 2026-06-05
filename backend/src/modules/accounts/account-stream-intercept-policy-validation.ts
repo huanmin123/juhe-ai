@@ -30,17 +30,8 @@ const accountStreamInterceptRuleSchema = z.object({
     jsonPathsExists: textListSchema
   }).strict(),
   action: actionSchema,
-  avoidanceTtlSeconds: z.number().int().min(1).max(86400).optional(),
   notes: z.string().trim().max(1000).optional()
-}).strict().superRefine((value, context) => {
-  if ((value.action === 'avoid_account_ttl' || value.action === 'avoid_upstream_bucket_ttl') && value.avoidanceTtlSeconds === undefined) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['avoidanceTtlSeconds'],
-      message: '短期避让模板需要配置避让秒数'
-    })
-  }
-})
+}).strict()
 
 export type AccountStreamInterceptRule = z.infer<typeof accountStreamInterceptRuleSchema>
 

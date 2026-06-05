@@ -22,7 +22,6 @@ export function streamInterceptAuditMetadata(decision: StreamInterceptDecision):
     retryEnabled: decision.retryEnabled,
     accountSwitch: decision.accountSwitch,
     accountState: decision.accountState,
-    avoidanceTtlSeconds: decision.avoidanceTtlSeconds,
     matchedField: decision.matchedField,
     matchedValue: decision.matchedValue,
     matchedSnippet: decision.matchedSnippet

@@ -8,8 +8,8 @@ import {
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listPublicGlobalSettings,
-  markAccountCooldown,
-  markAuthorizedAccountBindingCooldownByContext,
+  markAccountTemporaryUnavailable,
+  markAuthorizedAccountBindingTemporaryUnavailableByContext,
   recordAccountStreamFailure,
   recordAuthorizedAccountBindingStreamFailure,
   resolveGroupUsageAccessMetadata,
@@ -158,15 +158,12 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       if (staleReason) {
         return { updated: false, skippedReason: staleReason }
       }
-      const fallbackCooldownUntil = new Date(Date.now() + 60_000).toISOString()
       const updated = authorizedTarget
-        ? markAuthorizedAccountBindingCooldownByContext({
+        ? markAuthorizedAccountBindingTemporaryUnavailableByContext({
             ...authorizedTarget,
-            cooldownUntil: fallbackCooldownUntil,
-            reason: operation.reason,
-            status: 'temporary_unavailable'
+            reason: operation.reason
           })
-        : markAccountCooldown(operation.account.id, fallbackCooldownUntil, operation.reason, 'temporary_unavailable')
+        : markAccountTemporaryUnavailable(operation.account.id, operation.reason)
       if (updated) {
         clearGatewayRuntimeCacheLocal()
       }

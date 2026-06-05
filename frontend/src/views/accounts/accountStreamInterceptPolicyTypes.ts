@@ -12,7 +12,6 @@ export interface AccountStreamInterceptRuleForm {
   textExcludes: string
   jsonPathsExists: string
   action: StreamInterceptPolicyAction
-  avoidanceTtlSeconds: number | null
   notes: string
 }
 
@@ -30,7 +29,6 @@ export interface AccountStreamInterceptRulePayload {
     jsonPathsExists?: string[]
   }
   action: StreamInterceptPolicyAction
-  avoidanceTtlSeconds?: number
   notes?: string
 }
 

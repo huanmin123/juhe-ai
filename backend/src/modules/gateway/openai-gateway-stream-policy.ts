@@ -7,10 +7,7 @@ import type {
   StreamInterceptPolicyMatch,
   StreamInterceptPolicySummary
 } from '../../storage/stream-intercept-policy.repository.js'
-import {
-  actionUsesTtl,
-  streamInterceptPolicyActionRuntime
-} from '../../storage/stream-intercept-policy.repository.js'
+import { streamInterceptPolicyActionRuntime } from '../../storage/stream-intercept-policy.repository.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 import type { ParsedOpenAIStreamEvent } from './openai-gateway-stream-events.js'
 
@@ -30,7 +27,6 @@ export interface RuntimeStreamInterceptPolicy {
   retryEnabled: boolean
   accountSwitch: StreamInterceptPolicyAccountSwitch
   accountState: StreamInterceptPolicyAccountState
-  avoidanceTtlSeconds?: number
 }
 
 export interface StreamInterceptPolicyMatchResult {
@@ -90,8 +86,7 @@ function runtimePolicyFromSummary(policy: StreamInterceptPolicySummary): Runtime
     action: policy.action,
     priority: policy.priority,
     match: policy.match,
-    ...runtime,
-    avoidanceTtlSeconds: actionUsesTtl(policy.action) ? policy.avoidanceTtlSeconds : undefined
+    ...runtime
   }
 }
 
@@ -224,8 +219,7 @@ function accountStreamInterceptRule(value: unknown, index: number): RuntimeStrea
     action,
     priority: requiredPositiveInt(record.priority, `第 ${index + 1} 条账户流式拦截规则优先级`),
     match,
-    ...runtime,
-    avoidanceTtlSeconds: actionUsesTtl(action) ? requiredPositiveInt(record.avoidanceTtlSeconds, `第 ${index + 1} 条账户流式拦截规则避让秒数`) : undefined
+    ...runtime
   }
 }
 

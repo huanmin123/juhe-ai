@@ -184,11 +184,6 @@ function renderCaptchaImage(answer: string): string {
   const height = 46
   const pixels = createPixelBuffer(width, height)
 
-  for (let index = 0; index < 140; index += 1) {
-    const shade = randomInt(190, 232)
-    setPixel(pixels, width, randomInt(0, width), randomInt(0, height), shade, randomInt(210, 242), 255, randomInt(90, 180))
-  }
-
   for (let index = 0; index < 6; index += 1) {
     drawLine(
       pixels,
@@ -198,10 +193,26 @@ function renderCaptchaImage(answer: string): string {
       randomInt(0, height),
       randomInt(0, width),
       randomInt(0, height),
-      randomInt(70, 120),
-      randomInt(120, 190),
-      randomInt(180, 235),
-      randomInt(120, 190)
+      37,
+      99,
+      235,
+      randomInt(32, 72)
+    )
+  }
+
+  for (let index = 0; index < 28; index += 1) {
+    drawRect(
+      pixels,
+      width,
+      height,
+      randomInt(4, width - 4),
+      randomInt(4, height - 4),
+      randomInt(1, 3),
+      randomInt(1, 3),
+      14,
+      165,
+      233,
+      randomInt(42, 108)
     )
   }
 
@@ -287,9 +298,9 @@ function drawGlyph(
   for (const [rowIndex, row] of glyph.entries()) {
     for (const [columnIndex, value] of [...row].entries()) {
       if (value !== '1') continue
-      const blockX = startX + columnIndex * scale + randomInt(-1, 2)
-      const blockY = startY + rowIndex * scale + Math.trunc(Math.sin((columnIndex + rowIndex) / 2) * 1.5)
-      drawRect(pixels, width, height, blockX, blockY, scale - 1, scale, red, green, blue, 235)
+      const blockX = startX + columnIndex * scale
+      const blockY = startY + rowIndex * scale + Math.trunc(Math.sin((columnIndex + rowIndex) / 2))
+      drawRect(pixels, width, height, blockX, blockY, scale, scale, red, green, blue, 242)
     }
   }
 }
@@ -336,7 +347,7 @@ function drawLine(
   let error = dx + dy
 
   while (true) {
-    drawRect(pixels, width, height, currentX, currentY, 2, 2, red, green, blue, alpha)
+    setPixel(pixels, width, currentX, currentY, red, green, blue, alpha, height)
     if (currentX === x2 && currentY === y2) break
     const doubledError = 2 * error
     if (doubledError >= dy) {

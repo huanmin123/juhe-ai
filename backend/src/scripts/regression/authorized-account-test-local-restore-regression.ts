@@ -272,6 +272,49 @@ try {
   ], '账户测试再次失败写入最近错误前应清理上游敏感串')
   assert.equal(repositories.findAccountSummary(failingOwnerAccount.id, ownerAccess)?.status, 'active', '测试失败不应修改所有者原账户')
 
+  const errorOwnerAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权测试本地异常账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-authorized-local-error-success', base_url: mockBaseUrl },
+    groupId: ownerSourceGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: errorOwnerAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
+    remark: '授权账户异常测试入口回归'
+  }, ownerAccess)
+  const errorGranteeAccount = authorizedInstanceForSource(errorOwnerAccount.id, granteeAccess)
+  assert(repositories.setAccountGroup(errorGranteeAccount.id, granteeGroup.id, granteeAccess), '异常授权实例账户绑定到被授权用户分组失败')
+  assert(errorGranteeAccount.accountAuthorizationId, '异常授权实例应带有稳定授权 ID')
+  const disabledByFailure = repositories.markAuthorizedAccountBindingDisabledByFailure({
+    accountId: errorGranteeAccount.id,
+    systemAccountId: grantee.id,
+    groupId: granteeGroup.id,
+    accountAuthorizationId: errorGranteeAccount.accountAuthorizationId,
+    reason: '模拟授权实例异常'
+  })
+  assert.equal(disabledByFailure?.status, 'error', '授权实例应被标记为本地异常')
+  const errorView = repositories.findAccountSummary(errorGranteeAccount.id, granteeAccess)
+  assert(errorView, '被授权用户视角应能读取异常授权实例')
+  assert.equal(errorView.status, 'error', '被授权用户视角应看到授权实例异常')
+  assert.equal(repositories.accountTestUnavailableMessage(errorView), undefined, '授权实例异常时仍应允许手动测试诊断')
+
+  const errorRecoveryResult = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
+    appBaseUrl,
+    `/__aisys__/api/my-accounts/${errorGranteeAccount.id}/test`,
+    sessionCookie(grantee.id),
+    { model: 'gpt-5.5' }
+  ))
+  assert.equal(errorRecoveryResult.success, true, `授权实例异常时手动测试应允许进入探活：${errorRecoveryResult.message}`)
+  assert.equal(errorRecoveryResult.statusCode, 200, '授权实例异常探活成功应返回上游状态码')
+  assert.equal(errorRecoveryResult.accountStatusChanged, true, '授权实例异常探活成功应返回状态变化')
+  assert.equal(errorRecoveryResult.accountStatus, 'active', '授权实例异常探活成功后应恢复为正常')
+  assert.equal(repositories.findAccountSummary(errorOwnerAccount.id, ownerAccess)?.status, 'active', '测试恢复授权实例异常不应修改所有者原账户')
+
   console.log('授权账户测试实例状态恢复和失败隔离回归通过')
 } finally {
   await closeServer(appServer)

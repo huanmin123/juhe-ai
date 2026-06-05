@@ -136,7 +136,7 @@ async function main(): Promise<void> {
     assert(!serviceTest.message.includes('账户已停用'), `测试服务不应被停用状态短路：${serviceTest.message}`)
     assertAccountStatus(account.id, 'disabled', false, '测试服务不应改变停用状态')
 
-    const cooldownResult = repositories.markAccountCooldown(account.id, new Date(Date.now() + 60_000).toISOString(), '模拟冷却')
+    const cooldownResult = repositories.markAccountTemporaryUnavailable(account.id, '模拟冷却')
     assert(cooldownResult === undefined, '停用账户不应被标记为冷却')
     assertAccountStatus(account.id, 'disabled', false, '冷却写回不应改变停用状态')
 
@@ -170,7 +170,6 @@ async function main(): Promise<void> {
       thresholdCount: 1,
       thresholdWindowMinutes: 1,
       action: 'cooldown',
-      cooldownMinutes: 1,
       reason: '模拟流式异常'
     })
     assert(streamFailureResult.triggered === false, '停用账户不应触发流式熔断状态写回')
@@ -247,7 +246,7 @@ async function main(): Promise<void> {
       groupId: group.id
     }, access)
     assert(errorRaceAccount.boundGroupId === group.id, '异常竞态测试账户未绑定分组')
-    repositories.markAccountCooldown(errorRaceAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟过期冷却状态')
+    repositories.markAccountTemporaryUnavailable(errorRaceAccount.id, '模拟冷却状态')
     const staleCooldownGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, errorRaceAccount.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleCooldownGatewayAccount?.status === 'temporary_unavailable', '异常竞态前应能读取到过期冷却网关账号对象')
     repositories.markAccountException(errorRaceAccount.id, 'oauth_token_refresh_failed', '模拟复测期间进入异常')
@@ -276,7 +275,7 @@ async function main(): Promise<void> {
     assertAccountStatus(errorAccount.id, 'error', false, '过期失败回写不应改变异常账户状态')
     assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '过期失败回写不应覆盖异常类型')
 
-    const errorCooldownResult = repositories.markAccountCooldown(errorAccount.id, new Date(Date.now() + 60_000).toISOString(), '异常后模拟冷却')
+    const errorCooldownResult = repositories.markAccountTemporaryUnavailable(errorAccount.id, '异常后模拟冷却')
     assert(errorCooldownResult === undefined, '异常账户不应被标记为冷却')
     assertAccountStatus(errorAccount.id, 'error', false, '冷却写回不应改变异常账户状态')
     assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '冷却写回不应覆盖异常类型')
@@ -291,7 +290,6 @@ async function main(): Promise<void> {
       thresholdCount: 1,
       thresholdWindowMinutes: 1,
       action: 'disable',
-      cooldownMinutes: 1,
       reason: '异常后模拟流式异常'
     })
     assert(errorStreamFailureResult.triggered === false, '异常账户不应触发流式熔断状态写回')

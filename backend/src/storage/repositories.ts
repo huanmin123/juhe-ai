@@ -686,7 +686,8 @@ export function accountTestUnavailableMessage(account: AccountSummary): string |
   if (account.effectiveAvailability.blockerScope === 'authorized_instance') {
     if (account.effectiveAvailability.status === 'instance_disabled') return undefined
     if (
-      (account.effectiveAvailability.status === 'instance_rate_limited'
+      (account.effectiveAvailability.status === 'instance_error'
+        || account.effectiveAvailability.status === 'instance_rate_limited'
         || account.effectiveAvailability.status === 'instance_temporary_unavailable'
         || account.effectiveAvailability.status === 'instance_cooldown')
       && canTestAuthorizedInstanceFailureState(account)
@@ -1179,9 +1180,16 @@ function initialTemporaryUnavailableCooldownUntil(nowMs = Date.now()): string {
   return new Date(nowMs + temporaryUnavailableInitialBackoffSeconds * 1000).toISOString()
 }
 
+function temporaryUnavailableRuntimeState(nowMs = Date.now()): { cooldownUntil: string; observationStartedAt: string } {
+  return {
+    cooldownUntil: initialTemporaryUnavailableCooldownUntil(nowMs),
+    observationStartedAt: new Date(nowMs).toISOString()
+  }
+}
+
 function initialCooldownUntilForStatus(status: AccountStatus, nowMs = Date.now()): string | undefined {
   if (status === 'temporary_unavailable') {
-    return initialTemporaryUnavailableCooldownUntil(nowMs)
+    return temporaryUnavailableRuntimeState(nowMs).cooldownUntil
   }
   if (status === 'rate_limited') {
     return new Date(nowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
@@ -3468,17 +3476,32 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
   }
 }
 
+export function markAuthorizedAccountBindingTemporaryUnavailableByContext(
+  input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
+): AccountSummary | undefined {
+  return markAuthorizedAccountBindingCooldownByContext({
+    ...input,
+    status: 'temporary_unavailable'
+  })
+}
+
 export function markAuthorizedAccountBindingCooldownByContext(
-  input: AuthorizedAccountBindingRuntimeTarget & { cooldownUntil: string; reason: string; status?: AccountStatus }
+  input: AuthorizedAccountBindingRuntimeTarget & { cooldownUntil?: string; reason: string; status?: AccountStatus }
 ): AccountSummary | undefined {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
   if (!target) {
     return undefined
   }
   const cooldownStatus: AccountStatus = input.status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
+  const cooldownNowMs = Date.now()
+  const temporaryState = cooldownStatus === 'temporary_unavailable'
+    ? temporaryUnavailableRuntimeState(cooldownNowMs)
+    : undefined
   const cooldownUntil = cooldownStatus === 'temporary_unavailable'
-    ? initialTemporaryUnavailableCooldownUntil()
-    : input.cooldownUntil
+    ? temporaryState!.cooldownUntil
+    : input.cooldownUntil ?? initialCooldownUntilForStatus(cooldownStatus, cooldownNowMs) ?? new Date(cooldownNowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  const observationStartedAt = temporaryState?.observationStartedAt
+    ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
   const now = nowIso()
   const result = getBusinessDatabase()
     .prepare(`
@@ -3510,7 +3533,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
             AND group_accounts.account_authorization_id = ?
         )
     `)
-    .run(cooldownStatus, cooldownUntil, input.reason || null, cooldownRetestObservationStartedAtForStatus(cooldownStatus) ?? null, now, target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+    .run(cooldownStatus, cooldownUntil, input.reason || null, observationStartedAt ?? null, now, target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
@@ -3917,17 +3940,15 @@ export function markAccountTestTemporaryUnavailable(
   if (current.status === 'active' && !current.schedulable) {
     return undefined
   }
-  const cooldownUntil = initialTemporaryUnavailableCooldownUntil()
   const message = reason.slice(0, 1000)
   if (current.accessType === 'authorized') {
-    return markAuthorizedAccountBindingTemporaryUnavailable(current, cooldownUntil, message, access)
+    return markAuthorizedAccountBindingTemporaryUnavailable(current, message, access)
   }
-  return markAccountCooldown(current.id, cooldownUntil, message, 'temporary_unavailable')
+  return markAccountTemporaryUnavailable(current.id, message)
 }
 
 function markAuthorizedAccountBindingTemporaryUnavailable(
   account: AccountSummary,
-  cooldownUntil: string,
   reason: string,
   access?: AccessScope
 ): AccountSummary | undefined {
@@ -3935,18 +3956,20 @@ function markAuthorizedAccountBindingTemporaryUnavailable(
     return undefined
   }
   const systemAccountId = authorizedBindingSystemAccountId(access)
-  return markAuthorizedAccountBindingCooldownByContext({
+  return markAuthorizedAccountBindingTemporaryUnavailableByContext({
     accountId: account.id,
     systemAccountId,
     groupId: account.boundGroupId,
     accountAuthorizationId: account.accountAuthorizationId,
-    cooldownUntil,
-    reason,
-    status: 'temporary_unavailable'
+    reason
   })
 }
 
-export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
+export function markAccountTemporaryUnavailable(id: string, reason: string): AccountSummary | undefined {
+  return markAccountCooldown(id, undefined, reason, 'temporary_unavailable')
+}
+
+export function markAccountCooldown(id: string, until: string | undefined, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
   const current = findInternalAccountSummary(id)
   if (!current) {
     return undefined
@@ -3987,10 +4010,14 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
   const cooldownStatus: AccountStatus = status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
   const cooldownNowMs = Date.now()
   const cooldownNow = new Date(cooldownNowMs).toISOString()
+  const temporaryState = cooldownStatus === 'temporary_unavailable'
+    ? temporaryUnavailableRuntimeState(cooldownNowMs)
+    : undefined
   const cooldownUntil = cooldownStatus === 'temporary_unavailable'
-    ? initialTemporaryUnavailableCooldownUntil(cooldownNowMs)
-    : until
-  const cooldownObservationStartedAt = cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
+    ? temporaryState!.cooldownUntil
+    : until ?? initialCooldownUntilForStatus(cooldownStatus, cooldownNowMs) ?? new Date(cooldownNowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  const cooldownObservationStartedAt = temporaryState?.observationStartedAt
+    ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
 
   const result = getBusinessDatabase()
     .prepare(`
@@ -4060,12 +4087,11 @@ export function migrateAccountTraffic(input: {
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
   const reason = manualTrafficMigrationReason
-  const sourceCooldownUntil = input.sourceStatus === 'temporary_unavailable'
-    ? initialTemporaryUnavailableCooldownUntil(nowMs)
-    : null
-  const sourceObservationStartedAt = input.sourceStatus === 'temporary_unavailable'
-    ? cooldownRetestObservationStartedAtForStatus('temporary_unavailable', nowMs)
-    : null
+  const sourceTemporaryState = input.sourceStatus === 'temporary_unavailable'
+    ? temporaryUnavailableRuntimeState(nowMs)
+    : undefined
+  const sourceCooldownUntil = sourceTemporaryState?.cooldownUntil ?? null
+  const sourceObservationStartedAt = sourceTemporaryState?.observationStartedAt ?? null
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -4261,9 +4287,10 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   if (targetUnavailableMessage) {
     throw new Error(targetUnavailableMessage)
   }
-  const sourceCooldownUntil = input.sourceStatus === 'temporary_unavailable'
-    ? initialTemporaryUnavailableCooldownUntil()
-    : null
+  const sourceTemporaryState = input.sourceStatus === 'temporary_unavailable'
+    ? temporaryUnavailableRuntimeState()
+    : undefined
+  const sourceCooldownUntil = sourceTemporaryState?.cooldownUntil ?? null
   const now = nowIso()
   const sourceStatus: AccountStatus = input.sourceStatus === 'disabled' ? 'disabled' : 'temporary_unavailable'
   const result = getBusinessDatabase()
@@ -4300,7 +4327,7 @@ function migrateAuthorizedAccountBindingTraffic(input: {
       sourceStatus === 'disabled' ? 0 : 1,
       sourceCooldownUntil,
       manualTrafficMigrationReason,
-      cooldownRetestObservationStartedAtForStatus(sourceStatus) ?? null,
+      sourceTemporaryState?.observationStartedAt ?? null,
       now,
       sourceAccount.id,
       systemAccountId,
@@ -4375,7 +4402,6 @@ export function recordAccountStreamFailure(input: {
   thresholdCount: number
   thresholdWindowMinutes: number
   action: 'cooldown' | 'disable' | 'none'
-  cooldownMinutes: number
   reason: string
 }): { count: number; triggered: boolean; account?: AccountSummary } {
   const row = getBusinessDatabase().prepare('SELECT id, status, stream_failure_count, stream_failure_window_started_at FROM accounts WHERE id = ? AND deleted_at IS NULL').get(input.accountId) as unknown as AccountFailureRow | undefined
@@ -4412,8 +4438,7 @@ export function recordAccountStreamFailure(input: {
   }
 
   if (input.action === 'cooldown') {
-    const until = new Date(now.getTime() + Math.max(1, input.cooldownMinutes) * 60_000).toISOString()
-    markAccountCooldown(input.accountId, until, input.reason)
+    markAccountTemporaryUnavailable(input.accountId, input.reason)
   } else {
     markAccountDisabledByFailure(input.accountId, input.reason)
   }
@@ -4437,7 +4462,6 @@ export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAcc
   thresholdCount: number
   thresholdWindowMinutes: number
   action: 'cooldown' | 'disable' | 'none'
-  cooldownMinutes: number
   reason: string
 }): { count: number; triggered: boolean; account?: AccountSummary } {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
@@ -4449,7 +4473,6 @@ export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAcc
     thresholdCount: input.thresholdCount,
     thresholdWindowMinutes: input.thresholdWindowMinutes,
     action: input.action,
-    cooldownMinutes: input.cooldownMinutes,
     reason: input.reason
   })
   return {

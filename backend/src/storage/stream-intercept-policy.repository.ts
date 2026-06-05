@@ -34,7 +34,6 @@ export interface StreamInterceptPolicySummary {
   providerCode: string
   match: StreamInterceptPolicyMatch
   action: StreamInterceptPolicyAction
-  avoidanceTtlSeconds?: number
   notes?: string
   createdAt?: string
   updatedAt?: string
@@ -47,7 +46,6 @@ export interface StreamInterceptPolicyInput {
   providerCode: string
   match?: StreamInterceptPolicyMatch
   action?: StreamInterceptPolicyAction
-  avoidanceTtlSeconds?: number | null
   notes?: string | null
 }
 
@@ -59,7 +57,6 @@ interface StreamInterceptPolicyRow {
   provider_code: string
   match_json: string
   action: string
-  avoidance_ttl_seconds: number | null
   notes: string | null
   created_at: string
   updated_at: string
@@ -83,7 +80,6 @@ const streamInterceptPolicyInputKeys = new Set([
   'providerCode',
   'match',
   'action',
-  'avoidanceTtlSeconds',
   'notes'
 ])
 const streamInterceptPolicyMatchKeys = [
@@ -103,7 +99,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI response.failed',
     enabled: true,
-    priority: 10,
+    priority: 1,
     providerCode: 'openai',
     match: {
       eventTypes: ['response.failed']
@@ -117,7 +113,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI event:error',
     enabled: true,
-    priority: 11,
+    priority: 2,
     providerCode: 'openai',
     match: {
       eventTypes: ['error']
@@ -131,7 +127,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI data.error',
     enabled: true,
-    priority: 12,
+    priority: 3,
     providerCode: 'openai',
     match: {
       jsonPathsExists: ['error']
@@ -145,7 +141,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI response.error',
     enabled: true,
-    priority: 13,
+    priority: 4,
     providerCode: 'openai',
     match: {
       jsonPathsExists: ['response.error']
@@ -159,7 +155,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     editable: false,
     name: 'OpenAI cyber_policy',
     enabled: true,
-    priority: 14,
+    priority: 5,
     providerCode: 'openai',
     match: {
       errorCodes: ['cyber_policy']
@@ -215,8 +211,8 @@ export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): 
     .prepare(`
       INSERT INTO stream_intercept_policies (
         id, name, enabled, priority, provider_code, match_json,
-        action, avoidance_ttl_seconds, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        action, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       policy.id,
@@ -226,7 +222,6 @@ export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): 
       policy.providerCode,
       JSON.stringify(policy.match),
       policy.action,
-      policy.avoidanceTtlSeconds ?? null,
       policy.notes ?? null,
       policy.createdAt ?? now,
       policy.updatedAt ?? now
@@ -255,7 +250,6 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
           provider_code = ?,
           match_json = ?,
           action = ?,
-          avoidance_ttl_seconds = ?,
           notes = ?,
           updated_at = ?
       WHERE id = ?
@@ -267,7 +261,6 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
       policy.providerCode,
       JSON.stringify(policy.match),
       policy.action,
-      policy.avoidanceTtlSeconds ?? null,
       policy.notes ?? null,
       policy.updatedAt ?? now,
       id
@@ -336,7 +329,6 @@ function normalizePolicyInput(
     providerCode: normalizeProviderCode(input.providerCode),
     match: normalizeMatch(input.match === undefined ? fallback?.match : input.match),
     action,
-    avoidanceTtlSeconds: normalizePolicyTtl(input.avoidanceTtlSeconds, action, fallback?.avoidanceTtlSeconds),
     notes: normalizeOptionalTextInput(input.notes, fallback?.notes, 1000, '备注'),
     createdAt: metadata.createdAt,
     updatedAt: metadata.updatedAt
@@ -351,11 +343,10 @@ function policyFromRow(row: StreamInterceptPolicyRow): StreamInterceptPolicySumm
     editable: true,
     name: row.name,
     enabled: row.enabled === 1,
-    priority: normalizePriority(row.priority, 100),
+    priority: normalizePriority(row.priority, 1),
     providerCode: normalizeProviderCode(row.provider_code),
     match: normalizeMatch(parseJsonObject(row.match_json)),
     action,
-    avoidanceTtlSeconds: normalizePolicyTtl(row.avoidance_ttl_seconds, action, undefined),
     notes: row.notes ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -408,7 +399,7 @@ function normalizeProviderCode(value: unknown): string {
   return text
 }
 
-function normalizePriority(value: unknown, fallback = 100): number {
+function normalizePriority(value: unknown, fallback = 1): number {
   if (value === undefined) return fallback
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     throw new Error('流式拦截策略优先级必须是整数')
@@ -417,34 +408,6 @@ function normalizePriority(value: unknown, fallback = 100): number {
     throw new Error('流式拦截策略优先级必须在 1 到 9999 之间')
   }
   return value
-}
-
-function normalizeTtl(value: unknown): number | undefined {
-  if (value === null) return undefined
-  if (typeof value !== 'number' || !Number.isInteger(value)) {
-    throw new Error('流式拦截策略避让秒数必须是整数')
-  }
-  if (value < 1 || value > 86_400) {
-    throw new Error('流式拦截策略避让秒数必须在 1 到 86400 之间')
-  }
-  return value
-}
-
-function normalizePolicyTtl(value: unknown, action: StreamInterceptPolicyAction, fallback: number | undefined): number | undefined {
-  if (!actionUsesTtl(action)) return undefined
-  if (value === undefined) {
-    if (fallback !== undefined) return fallback
-    throw new Error('短期避让模板需要配置避让秒数')
-  }
-  const ttl = normalizeTtl(value)
-  if (ttl === undefined) {
-    throw new Error('短期避让模板需要配置避让秒数')
-  }
-  return ttl
-}
-
-export function actionUsesTtl(action: StreamInterceptPolicyAction): boolean {
-  return action === 'avoid_account_ttl' || action === 'avoid_upstream_bucket_ttl'
 }
 
 export function streamInterceptPolicyActionRuntime(action: StreamInterceptPolicyAction): {

@@ -10,7 +10,6 @@ export interface AccountErrorPolicyRuleForm {
   error_types: string
   keywords: string
   action: AccountErrorAction
-  durationMinutes: number | null
   reset_strategy: AccountErrorRecoveryStrategy
   duration_hours: number | null
   daily_reset_hour: number | null
@@ -40,7 +39,6 @@ export interface AccountErrorHandlingRulePayload {
   error_types?: string[]
   keywords?: string[]
   action: AccountErrorAction
-  durationMinutes?: number
   reset_strategy?: AccountErrorRecoveryStrategy
   duration_hours?: number
   daily_reset_hour?: number
@@ -59,7 +57,7 @@ export const accountErrorActionValues: AccountErrorAction[] = [
 export const accountErrorActionOptions = [
   { label: '只切号', value: 'retry_next', description: '本次请求切换下一个账号，不改变账号状态。' },
   { label: '限流', value: 'rate_limited', description: '按恢复策略暂停账号，到期后自动恢复。' },
-  { label: '临时不可调用', value: 'temp_unschedulable', description: '短暂避让指定分钟数，到期后自动恢复。' },
+  { label: '临时不可调用', value: 'temp_unschedulable', description: '进入系统统一恢复通道，到期后由后台复测恢复。' },
   { label: '异常', value: 'error_disabled', description: '只有显式配置这个动作才会把账号置为异常。' }
 ]
 

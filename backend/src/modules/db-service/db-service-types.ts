@@ -240,7 +240,6 @@ export type DbServiceOperation =
       thresholdCount: number
       thresholdWindowMinutes: number
       action: 'cooldown' | 'disable' | 'none'
-      cooldownMinutes: number
       reason: string
     }
   }

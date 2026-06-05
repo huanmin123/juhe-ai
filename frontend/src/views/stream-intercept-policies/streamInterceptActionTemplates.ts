@@ -4,53 +4,51 @@ export interface StreamInterceptActionTemplate {
   action: StreamInterceptPolicyAction
   label: string
   description: string
-  ttlRequired: boolean
+  runtimeAvoidance: boolean
 }
-
-export const defaultAvoidanceTtlSeconds = 300
 
 export const streamInterceptActionTemplates: StreamInterceptActionTemplate[] = [
   {
     action: 'observe',
     label: '先观察命中',
-    description: '只记录命中，不改变下游响应，适合新规则先看误杀范围。',
-    ttlRequired: false
+    description: '命中后只写日志，不拦截、不重试；适合先确认规则会命中哪些流。',
+    runtimeAvoidance: false
   },
   {
     action: 'drop_event',
     label: '只丢弃命中事件',
-    description: '只移除单个污染事件，继续读取后续流，不触发重试。',
-    ttlRequired: false
+    description: '只丢掉这一条命中的 SSE 事件，后面的流继续转发；不会重试。',
+    runtimeAvoidance: false
   },
   {
     action: 'fail_stream',
     label: '结束当前流',
-    description: '把当前流改写为普通失败事件，不触发重试或账号避让。',
-    ttlRequired: false
+    description: '立刻结束这次流并返回普通失败；不会重试，也不会避让账号。',
+    runtimeAvoidance: false
   },
   {
     action: 'retry_no_avoidance',
     label: '重试但不避让账号',
-    description: '当前结果不可接受，但不改变账号候选；适合弱证据失败。',
-    ttlRequired: false
+    description: '命中后在可行时重新请求一次，但不拉黑当前账号；重试时仍可能选到它。',
+    runtimeAvoidance: false
   },
   {
     action: 'retry_next_account',
     label: '本次重试避开当前账号',
-    description: '只在本次服务端重试中排除当前账号，不影响后续请求。',
-    ttlRequired: false
+    description: '命中后重试，并且这次重试不再选当前账号；后续请求仍可使用它。',
+    runtimeAvoidance: false
   },
   {
     action: 'avoid_account_ttl',
     label: '短期避让当前账号',
-    description: '当前账号短时间不再参与候选，并触发可行的重试。',
-    ttlRequired: true
+    description: '命中后按系统临时不可调用策略短期避让当前账号，并在可行时重试。',
+    runtimeAvoidance: true
   },
   {
     action: 'avoid_upstream_bucket_ttl',
     label: '短期避让上游桶',
-    description: '短时间避让同代理、baseUrl 或供应商桶，并触发可行的重试。',
-    ttlRequired: true
+    description: '命中后按系统临时不可调用策略避让同代理、同 baseUrl 或同供应商桶，并重试。',
+    runtimeAvoidance: true
   }
 ]
 
@@ -71,6 +69,6 @@ export function streamInterceptActionDescription(action: StreamInterceptPolicyAc
   return streamInterceptActionTemplateByAction(action).description
 }
 
-export function streamInterceptActionUsesTtl(action: StreamInterceptPolicyAction): boolean {
-  return streamInterceptActionTemplateByAction(action).ttlRequired
+export function streamInterceptActionUsesRuntimeAvoidance(action: StreamInterceptPolicyAction): boolean {
+  return streamInterceptActionTemplateByAction(action).runtimeAvoidance
 }

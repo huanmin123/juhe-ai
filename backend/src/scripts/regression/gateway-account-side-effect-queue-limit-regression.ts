@@ -39,7 +39,6 @@ function buildStreamFailureOperation(index: number): Parameters<typeof accountSi
       thresholdCount: 3,
       thresholdWindowMinutes: 1,
       action: 'cooldown',
-      cooldownMinutes: 1,
       reason: 'side effect queue limit regression'
     }
   }

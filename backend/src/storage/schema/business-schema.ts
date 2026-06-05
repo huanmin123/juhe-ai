@@ -95,7 +95,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       provider_code TEXT NOT NULL,
       match_json TEXT NOT NULL DEFAULT '{}',
       action TEXT NOT NULL DEFAULT 'avoid_account_ttl',
-      avoidance_ttl_seconds INTEGER,
       notes TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL

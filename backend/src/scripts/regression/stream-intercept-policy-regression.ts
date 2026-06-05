@@ -84,6 +84,19 @@ const settings: GatewaySettings = {
     }
   ])
   assert.equal(actionValidation.valid, true, '账户级流式规则应接受 action 模板')
+  const legacyTtlValidation = validateAccountStreamInterceptRules([
+    {
+      enabled: true,
+      name: '旧避让秒数字段',
+      priority: 10,
+      match: {
+        textIncludes: ['广告污染']
+      },
+      action: 'avoid_account_ttl',
+      avoidanceTtlSeconds: 300
+    }
+  ])
+  assert.equal(legacyTtlValidation.valid, false, '账户级流式规则不应再接受用户配置的避让秒数')
   const missingRuntimeFieldsValidation = validateAccountStreamInterceptRules([
     {
       action: 'fail_stream',
@@ -152,8 +165,7 @@ const settings: GatewaySettings = {
         dataHandling: 'discard_stream',
         retryEnabled: true,
         accountSwitch: 'avoid_account_ttl',
-        accountState: 'runtime_avoidance',
-        avoidanceTtlSeconds: 300
+        accountState: 'runtime_avoidance'
       })
     ]
   })
@@ -211,12 +223,18 @@ const settings: GatewaySettings = {
 }
 
 {
+  const defaultRules = listStreamInterceptPolicyDefaultRules()
+  assert.deepEqual(
+    defaultRules.map((policy) => policy.priority),
+    [1, 2, 3, 4, 5],
+    '默认流式拦截规则优先级应从 1 开始连续注册'
+  )
   const defaultPolicies = resolveRuntimeStreamInterceptPolicies({
     account: {
       providerCode: 'openai',
       credentials: {}
     } as never,
-    managementPolicies: listStreamInterceptPolicyDefaultRules()
+    managementPolicies: defaultRules
   })
   const interceptor = new OpenAIStreamInterceptBuffer({
     policies: defaultPolicies
@@ -426,6 +444,8 @@ console.log('流式拦截策略回归通过：策略读取上限、事件丢弃�
 
 function assertStreamInterceptPolicyRepositoryGuards(): void {
   const repositorySource = readFileSync(new URL('../../storage/stream-intercept-policy.repository.ts', import.meta.url), 'utf8')
+  const routesSource = readFileSync(new URL('../../modules/stream-intercept-policies/stream-intercept-policies.routes.ts', import.meta.url), 'utf8')
+  const schemaSource = readFileSync(new URL('../../storage/schema/business-schema.ts', import.meta.url), 'utf8')
   const gatewayListBody = sourceFunctionBlock(repositorySource, 'export function listActiveStreamInterceptPoliciesForGateway')
   const listBody = sourceFunctionBlock(repositorySource, 'function listStreamInterceptPolicyRows')
   const createBody = sourceFunctionBlock(repositorySource, 'export function createStreamInterceptPolicy')
@@ -436,7 +456,10 @@ function assertStreamInterceptPolicyRepositoryGuards(): void {
   assert(!repositorySource.includes("fallback = 'openai'"), '流式拦截策略不应缺省回填 OpenAI 供应商')
   assert(!repositorySource.includes("normalizeProviderCode(row.provider_code, 'openai')"), '流式拦截策略读取不应缺省回填 OpenAI 供应商')
   assert(repositorySource.includes('normalizePolicyAction'), '流式拦截策略必须显式校验 action 模板')
-  assert(repositorySource.includes('短期避让模板需要配置避让秒数'), '短期避让策略必须显式要求 TTL')
+  assert(!repositorySource.includes('avoidanceTtlSeconds'), '流式拦截策略不应保存用户配置的避让秒数字段')
+  assert(!repositorySource.includes('avoidance_ttl_seconds'), '流式拦截策略表不应保留用户配置的避让秒数字段')
+  assert(!routesSource.includes('avoidanceTtlSeconds'), '流式拦截策略 API 不应接受用户配置的避让秒数字段')
+  assert(!schemaSource.includes('avoidance_ttl_seconds'), '流式拦截策略 schema 不应包含用户配置的避让秒数字段')
   assert(gatewayListBody.includes('provider_code = ?'), '网关运行态读取流式拦截策略必须按供应商收窄')
   assert(gatewayListBody.includes('LIMIT ?'), '网关运行态读取流式拦截策略必须带固定上限')
   assert(gatewayListBody.includes('maxManagementStreamInterceptPolicies'), '网关运行态读取流式拦截策略必须复用管理端数量上限')

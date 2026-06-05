@@ -76,43 +76,43 @@ export const streamInterceptPolicyGuideActions = [
     key: 'observe',
     action: '先观察命中',
     when: '新规则、SSE data文本包含、或不确定误杀范围时',
-    note: '只记录命中，不改变下游响应，适合观察几轮真实流量。'
+    note: '只写日志，不拦截、不重试，适合先观察几轮真实流量。'
   },
   {
     key: 'drop_event',
     action: '只丢弃命中事件',
     when: '命中内容是独立广告事件或无害污染事件时',
-    note: '不触发重试，也不改变账号候选。'
+    note: '只丢掉这一条命中的 SSE 事件，后面的流继续转发；不会重试。'
   },
   {
     key: 'fail_stream',
     action: '结束当前流',
     when: '明确失败但不希望触发重试或账号避让时',
-    note: '向下游写普通失败事件。'
+    note: '立刻结束这次流，向下游返回普通失败；不会重试，也不会避让账号。'
   },
   {
     key: 'retry_no_avoidance',
     action: '重试但不避让账号',
     when: '当前结果不可接受，但证据不足以避让账号时',
-    note: '触发可行的重试，不改变后续账号候选。'
+    note: '在可行时重新请求一次，但不拉黑当前账号；重试和后续请求仍可能选到它。'
   },
   {
     key: 'retry_next_account',
     action: '本次重试避开当前账号',
     when: '当前账号本次结果不可接受，但不想影响后续请求时',
-    note: '只影响本次服务端重试，不写入短期避让状态。'
+    note: '这次重试不再选当前账号；不写短期避让，后续请求仍可使用它。'
   },
   {
     key: 'avoid_account_ttl',
     action: '短期避让当前账号',
     when: '确认当前账号短时间内持续返回污染或错误时',
-    note: '短期从候选中避让当前账号，并触发可行的重试。'
+    note: '按系统临时不可调用策略短期避让当前账号，并在可行时重试。'
   },
   {
     key: 'avoid_upstream_bucket_ttl',
     action: '短期避让上游桶',
     when: '同代理、baseUrl 或供应商桶内多个账号都可能受影响时',
-    note: '短期避让同桶候选，并触发可行的重试。'
+    note: '按系统临时不可调用策略避让同代理、同 baseUrl 或同供应商桶的账号，并在可行时重试。'
   }
 ]
 

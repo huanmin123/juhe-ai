@@ -229,7 +229,8 @@ export function canTestAccount(account: AccountSummary): boolean {
       if (account.effectiveAvailability.status === 'instance_disabled') return true
       const instanceFailureState = hasAuthorizedInstanceFailureState(account)
       return instanceFailureState && (
-        account.effectiveAvailability.status === 'instance_rate_limited'
+        account.effectiveAvailability.status === 'instance_error'
+        || account.effectiveAvailability.status === 'instance_rate_limited'
         || account.effectiveAvailability.status === 'instance_temporary_unavailable'
         || account.effectiveAvailability.status === 'instance_cooldown'
       )

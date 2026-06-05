@@ -41,7 +41,6 @@ const policyBodySchema = z.object({
     'avoid_account_ttl',
     'avoid_upstream_bucket_ttl'
   ]),
-  avoidanceTtlSeconds: z.number().int().min(1).max(86400).nullable().optional(),
   notes: z.string().trim().max(1000, '备注不能超过 1000 个字符').nullable().optional()
 }).strict().superRefine((value, context) => {
   const matcher = value.match ?? {}
@@ -58,16 +57,6 @@ const policyBodySchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['match'],
       message: '至少需要填写一个匹配条件'
-    })
-  }
-  if (
-    (value.action === 'avoid_account_ttl' || value.action === 'avoid_upstream_bucket_ttl')
-    && (value.avoidanceTtlSeconds === null || value.avoidanceTtlSeconds === undefined)
-  ) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['avoidanceTtlSeconds'],
-      message: '短期避让模板需要配置避让秒数'
     })
   }
 })

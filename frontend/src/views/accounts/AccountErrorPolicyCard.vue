@@ -97,13 +97,7 @@
                   </a-form-item>
                 </div>
 
-                <div v-if="rule.action === 'temp_unschedulable'" class="form-grid error-rule-grid compact">
-                  <a-form-item label="临时避让分钟数">
-                    <a-input-number v-model:value="rule.durationMinutes" :disabled="readonly" :min="1" :max="1440" style="width: 100%" />
-                  </a-form-item>
-                </div>
-
-                <div v-else-if="rule.action === 'rate_limited'" class="form-grid error-rule-grid compact">
+                <div v-if="rule.action === 'rate_limited'" class="form-grid error-rule-grid compact">
                   <a-form-item label="恢复策略">
                     <a-select v-model:value="rule.reset_strategy" :disabled="readonly" :options="accountErrorRecoveryStrategyOptions" />
                   </a-form-item>
@@ -534,4 +528,3 @@ function collapseAllRules() {
 
 }
 </style>
-

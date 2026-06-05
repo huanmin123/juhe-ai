@@ -15,7 +15,6 @@ export interface AccountErrorHandlingRule {
   error_codes?: string[]
   error_types?: string[]
   keywords?: string[]
-  durationMinutes?: number
   reset_strategy?: AccountErrorHandlingRuleResetStrategy
   duration_hours?: number
   daily_reset_hour?: number
@@ -74,7 +73,6 @@ function normalizeAccountErrorHandlingRule(value: unknown, index: number): Accou
     'error_types',
     'keywords',
     'action',
-    'durationMinutes',
     'reset_strategy',
     'duration_hours',
     'daily_reset_hour',
@@ -95,9 +93,6 @@ function normalizeAccountErrorHandlingRule(value: unknown, index: number): Accou
   }
   if (rule.enabled && !hasMatcher(rule)) {
     throw new Error(`第 ${index} 条规则至少需要一个匹配条件`)
-  }
-  if (rule.action === 'temp_unschedulable') {
-    rule.durationMinutes = requiredPositiveInteger(value.durationMinutes, `第 ${index} 条规则临时避让分钟数`)
   }
   if (rule.action === 'rate_limited') {
     rule.reset_strategy = requiredResetStrategy(value.reset_strategy, index)

@@ -1,7 +1,6 @@
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
-import { defaultAvoidanceTtlSeconds } from '../stream-intercept-policies/streamInterceptActionTemplates'
 
-export function createBlankAccountStreamInterceptRule(priority = 100): AccountStreamInterceptRuleForm {
+export function createBlankAccountStreamInterceptRule(priority = 1): AccountStreamInterceptRuleForm {
   return {
     enabled: true,
     name: '中转流污染拦截',
@@ -14,12 +13,22 @@ export function createBlankAccountStreamInterceptRule(priority = 100): AccountSt
     textExcludes: '',
     jsonPathsExists: '',
     action: 'avoid_account_ttl',
-    avoidanceTtlSeconds: defaultAvoidanceTtlSeconds,
     notes: ''
   }
 }
 
 export function nextStreamInterceptRulePriority(rules: AccountStreamInterceptRuleForm[]): number {
-  const max = Math.max(0, ...rules.map((rule) => Number(rule.priority ?? 0)).filter(Number.isFinite))
-  return Math.min(9999, max + 10 || 100)
+  return nextAvailablePriority(rules.map((rule) => rule.priority))
+}
+
+export function normalizeAccountStreamInterceptRulePriorities(rules: AccountStreamInterceptRuleForm[]): AccountStreamInterceptRuleForm[] {
+  return rules.map((rule, index) => ({ ...rule, priority: index + 1 }))
+}
+
+function nextAvailablePriority(values: Array<number | null>): number {
+  const used = new Set(values.filter((value): value is number => Number.isInteger(value) && value > 0 && value <= 9999))
+  for (let priority = 1; priority <= 9999; priority += 1) {
+    if (!used.has(priority)) return priority
+  }
+  return 9999
 }

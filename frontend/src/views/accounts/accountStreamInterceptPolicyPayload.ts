@@ -4,9 +4,6 @@ import type {
   AccountStreamInterceptValidationResult
 } from './accountStreamInterceptPolicyTypes'
 import { createBlankAccountStreamInterceptRule } from './accountStreamInterceptPolicyOptions'
-import {
-  streamInterceptActionUsesTtl
-} from '../stream-intercept-policies/streamInterceptActionTemplates'
 import type { StreamInterceptPolicyAction } from '@/types/domain'
 
 const listSeparators = /[,;，；\n]/
@@ -54,9 +51,6 @@ export function validateAccountStreamInterceptRules(rules: AccountStreamIntercep
     if (rule.enabled && !hasMatcher) {
       return { valid: false, index: ruleIndex, message: `第 ${ruleIndex} 条流式拦截规则至少需要一个匹配条件` }
     }
-    if (streamInterceptActionUsesTtl(action) && !positiveInt(rule.avoidanceTtlSeconds, 86400)) {
-      return { valid: false, index: ruleIndex, message: `第 ${ruleIndex} 条流式拦截规则需要配置避让秒数` }
-    }
   }
   return { valid: true }
 }
@@ -87,9 +81,6 @@ export function buildAccountStreamInterceptRulePayload(rules: AccountStreamInter
     addList(payload.match, 'textIncludes', rule.textIncludes, '包含文本')
     addList(payload.match, 'textExcludes', rule.textExcludes, '排除文本')
     addList(payload.match, 'jsonPathsExists', rule.jsonPathsExists, 'JSON 路径')
-    if (streamInterceptActionUsesTtl(action)) {
-      payload.avoidanceTtlSeconds = requiredPositiveInt(rule.avoidanceTtlSeconds, '避让秒数', 86400)
-    }
     if (rule.notes.trim()) payload.notes = rule.notes.trim()
     return payload
   })
@@ -104,9 +95,6 @@ function ruleFromPayload(value: unknown): AccountStreamInterceptRuleForm {
   const match = record.match as Record<string, unknown>
   const action = actionValue(record.action)
   if (!action) throw new Error('账户流式拦截规则动作无效')
-  const avoidanceTtlSeconds = streamInterceptActionUsesTtl(action)
-    ? requiredPositiveInt(record.avoidanceTtlSeconds, '避让秒数', 86400)
-    : null
   const rule: AccountStreamInterceptRuleForm = {
     ...createBlankAccountStreamInterceptRule(requiredPositiveInt(record.priority, '优先级', 9999)),
     enabled: booleanValue(record.enabled, '启用状态'),
@@ -119,7 +107,6 @@ function ruleFromPayload(value: unknown): AccountStreamInterceptRuleForm {
     textExcludes: formatPayloadList(match.textExcludes, '排除文本'),
     jsonPathsExists: formatPayloadList(match.jsonPathsExists, 'JSON 路径'),
     action,
-    avoidanceTtlSeconds,
     notes: stringValue(record.notes)
   }
   return rule

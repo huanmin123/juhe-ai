@@ -178,7 +178,6 @@ const buildRuleFromPayload = (value: unknown): AccountErrorPolicyRuleForm => {
     error_types: formatPayloadStringList(entry.error_types, '错误类型'),
     keywords: formatPayloadStringList(entry.keywords, '关键字'),
     action,
-    durationMinutes: payloadOptionalPositiveInt(entry.durationMinutes, '临时避让分钟数'),
     reset_strategy: resetStrategy,
     duration_hours: payloadOptionalPositiveInt(entry.duration_hours, '恢复小时数'),
     daily_reset_hour: payloadOptionalHour(entry.daily_reset_hour, '每日恢复小时'),
@@ -212,9 +211,6 @@ export const validateAccountErrorPolicyRules = (rules: AccountErrorPolicyRuleFor
     if (hasSuccessErrorCodeItems(rule.error_codes)) return { valid: false, message: `第 ${ruleIndex} 条规则的错误码不能填写 2xx 成功码，例如 200`, index: ruleIndex }
     const hasMatcher = statusCodes.length > 0 || splitList(rule.error_codes).length > 0 || splitList(rule.error_types).length > 0 || splitList(rule.keywords).length > 0
     if (rule.enabled && !hasMatcher) return { valid: false, message: `第 ${ruleIndex} 条规则至少需要一个匹配条件`, index: ruleIndex }
-    if (action === 'temp_unschedulable' && normalizeOptionalPositiveInt(rule.durationMinutes) === null) {
-      return { valid: false, message: `第 ${ruleIndex} 条规则需要填写临时避让分钟数`, index: ruleIndex }
-    }
     if (action === 'rate_limited') {
       const resetStrategy = normalizeOptionalRecoveryStrategy(rule.reset_strategy)
       if (!resetStrategy) return { valid: false, message: `第 ${ruleIndex} 条限流规则恢复策略无效`, index: ruleIndex }
@@ -257,9 +253,6 @@ export const buildAccountErrorPolicyPayload = (rules: AccountErrorPolicyRuleForm
     if (errorTypes.length > 0) payload.error_types = errorTypes
     if (keywords.length > 0) payload.keywords = keywords
     if (description) payload.description = description
-    if (payload.action === 'temp_unschedulable') {
-      payload.durationMinutes = payloadPositiveInt(rule.durationMinutes, '临时避让分钟数')
-    }
     if (payload.action === 'rate_limited') {
       payload.reset_strategy = payloadRecoveryStrategy(rule.reset_strategy)
       if (payload.reset_strategy === 'duration') {

@@ -26,7 +26,6 @@ export interface StreamInterceptPolicySummary {
   priority: number
   match: StreamInterceptPolicyMatch
   action: StreamInterceptPolicyAction
-  avoidanceTtlSeconds?: number
   notes?: string
   createdAt?: string
   updatedAt?: string

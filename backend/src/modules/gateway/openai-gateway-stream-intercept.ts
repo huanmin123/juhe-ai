@@ -35,7 +35,6 @@ export interface StreamInterceptDecision {
   retryEnabled?: boolean
   accountSwitch?: string
   accountState?: string
-  avoidanceTtlSeconds?: number
   matchedField?: string
   matchedValue?: string
   matchedSnippet?: string
@@ -315,7 +314,6 @@ function buildConfiguredPolicyDecision(
     retryEnabled: policy.retryEnabled,
     accountSwitch: policy.accountSwitch,
     accountState: policy.accountState,
-    avoidanceTtlSeconds: policy.avoidanceTtlSeconds,
     matchedField: match.matchedField,
     matchedValue: match.matchedValue,
     matchedSnippet: match.snippet
