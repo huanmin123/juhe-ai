@@ -5,7 +5,10 @@ export type AccountScopeParams = { systemAccountId: string } | undefined
 export function accountOperationSystemAccountId(account?: AccountSummary, fallback?: AccountScopeParams): string | undefined {
   if (!account) return fallback?.systemAccountId
   if (account.accessType === 'authorized') {
-    return account.bindingSystemAccountId ?? fallback?.systemAccountId
+    return account.bindingSystemAccountId
+      ?? account.systemAccountId
+      ?? account.ownerSystemAccountId
+      ?? fallback?.systemAccountId
   }
   return account.systemAccountId ?? account.ownerSystemAccountId ?? fallback?.systemAccountId
 }

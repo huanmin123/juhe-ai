@@ -91,7 +91,7 @@ import {
   isAuthorizedAccount
 } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
-import { accountMenuItemsWithClone } from './accountRules'
+import { accountMenuItemsWithClone, canReturnAuthorizedAccount } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
@@ -113,6 +113,7 @@ const emit = defineEmits<{
   (event: 'edit'): void
   (event: 'bind-group'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
+  (event: 'return-authorization'): void
   (event: 'test'): void
   (event: 'toggle-selection'): void
 }>()
@@ -163,14 +164,14 @@ const authorizedActions = computed<RowActionItem[]>(() => {
   if (props.canEdit) {
     list.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
   }
-  if (props.canDelete) {
+  if (canReturnAuthorizedAccount(props.account)) {
     list.push({
-      key: 'delete',
-      label: '删除',
-      icon: 'delete',
+      key: 'return-authorization',
+      label: '归还',
+      icon: 'revoke',
       tone: 'danger',
-      confirmTitle: '确认删除这个授权账户？',
-      confirmOkText: '删除'
+      confirmTitle: '确认归还这个授权账户？归还后你将不再看到或使用它，不影响授权方原账户。',
+      confirmOkText: '归还'
     })
   }
   return list
@@ -179,6 +180,10 @@ const authorizedActions = computed<RowActionItem[]>(() => {
 function handleActionClick(key: string) {
   if (key === 'bind-group') {
     emit('bind-group')
+    return
+  }
+  if (key === 'return-authorization') {
+    emit('return-authorization')
     return
   }
   if (key === 'delete') {

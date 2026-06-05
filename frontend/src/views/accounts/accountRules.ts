@@ -120,7 +120,14 @@ export function canEditAccount(account: AccountSummary): boolean {
 }
 
 export function canDeleteAccount(account: AccountSummary): boolean {
+  if (isAuthorizedAccount(account)) return false
   return account.permissions?.canDelete !== false
+}
+
+export function canReturnAuthorizedAccount(account: AccountSummary): boolean {
+  if (!isAuthorizedAccount(account)) return false
+  if (!account.accountAuthorizationId) return false
+  return account.permissions?.canReturnAuthorization === true
 }
 
 export function canCloneAccount(account: AccountSummary): boolean {
@@ -137,7 +144,6 @@ export function canBatchManageAccount(account: AccountSummary): boolean {
   if (isAuthorizedAccount(account)) {
     return Boolean(account.boundGroupId)
       && account.permissions?.canUse !== false
-      && account.effectiveAvailability?.available !== false
       && !isAuthorizationExpired(account)
       && !isAuthorizationBindingUnavailable(account)
       && !isAccountPackageExpiredStatus(account)
@@ -146,8 +152,40 @@ export function canBatchManageAccount(account: AccountSummary): boolean {
   return canEditAccount(account) && account.status !== 'error'
 }
 
+export function canSelectAccountForBatch(account: AccountSummary): boolean {
+  return canBatchManageAccount(account) || canBatchRestoreAccount(account) || canTestAccount(account)
+}
+
+export function canBatchRestoreAccount(account: AccountSummary): boolean {
+  if (isAccountPackageExpiredStatus(account)) return false
+  if (isAuthorizedAccount(account)) {
+    if (!account.boundGroupId || account.permissions?.canUse === false) return false
+    if (account.status === 'disabled') return false
+    if (isAuthorizationExpired(account) || isAuthorizationPaused(account) || isAuthorizationBindingUnavailable(account)) return false
+    return hasAccountRuntimeRecoveryState(account) || hasAuthorizedInstanceFailureState(account)
+  }
+  if (account.status === 'disabled') return false
+  if (account.status === 'error') return canRestoreException(account)
+  if (!canUseAccountActions(account)) return false
+  return hasAccountRuntimeRecoveryState(account) || isTemporaryAccountStatus(account) || hasPersistentFailureState(account)
+}
+
 export function canRestoreException(account: AccountSummary): boolean {
   return account.status === 'error' && hasAccountEditPermission(account)
+}
+
+function hasPersistentFailureState(account: AccountSummary): boolean {
+  return Boolean(
+    account.cooldownUntil
+    || account.lastErrorCode
+    || account.lastErrorMessage
+    || account.cooldownRetestFailureCount
+    || account.cooldownRetestObservationStartedAt
+    || account.cooldownRetestLastAt
+    || account.cooldownRetestLastStatusCode
+    || account.streamFailureCount
+    || account.streamFailureWindowStartedAt
+  )
 }
 
 export function authorizedAccountUnavailableText(account: AccountSummary): string | undefined {
@@ -240,6 +278,9 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       items.push({ key: 'test', label: '测试' })
     }
     if (account.status === 'error') {
+      if (canBatchRestoreAccount(account)) {
+        items.push({ key: 'restore-normal', label: '恢复异常' })
+      }
       pushDispatchFlagItems(items, account)
       return items.map(normalizeAccountMenuItem)
     }

@@ -146,6 +146,7 @@ import {
   extractApiErrorMessage,
   formatDateTime,
   formatServerDateTimeInput,
+  hasManualSource,
   parseStrictDatePickerValue
 } from './authorizationFormatters'
 import {
@@ -541,6 +542,7 @@ const hasReturnableInboundAuthorization = computed(() => {
 function canReturnAuthorization(authorization: ResourceAuthorizationSummary): boolean {
   if (isManagementView.value || filters.direction !== 'inbound') return false
   if (authorization.granteeType !== 'system_account') return false
+  if (!hasManualSource(authorization)) return false
   return authorization.status !== 'revoked' && authorization.status !== 'returned'
 }
 

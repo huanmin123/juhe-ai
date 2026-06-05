@@ -15,7 +15,7 @@ import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, OPENAI_PROVIDER } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
-import { canBatchManageAccount } from './accountRules'
+import { canSelectAccountForBatch } from './accountRules'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -102,7 +102,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       }
     },
     onLoaded: () => {
-      const selectableAccountIds = new Set(accounts.value.filter(canBatchManageAccount).map((account) => account.id))
+      const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)
     },
     onError: (error) => {

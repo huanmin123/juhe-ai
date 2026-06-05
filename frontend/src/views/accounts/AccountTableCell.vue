@@ -54,6 +54,7 @@
     @delete="$emit('delete', account)"
     @edit="$emit('edit', account)"
     @menu-click="$emit('menu-click', $event, account)"
+    @return-authorization="$emit('return-authorization', account)"
     @test="$emit('test', account)"
   />
 </template>
@@ -82,6 +83,7 @@ defineEmits<{
   (event: 'delete', account: AccountSummary): void
   (event: 'edit', account: AccountSummary): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
+  (event: 'return-authorization', account: AccountSummary): void
   (event: 'test', account: AccountSummary): void
 }>()
 

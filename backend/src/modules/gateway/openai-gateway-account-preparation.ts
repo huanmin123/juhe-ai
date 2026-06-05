@@ -70,8 +70,15 @@ export function handleUnavailableProxyProfile(
       startedAt: attemptStartedAt,
       errorMessage: message
     })
+  if (accountStateMutationEnabled && usageContext.trafficSource !== 'gateway') {
+    applyAccountErrorHandlingWithCacheInvalidation(account, {
+      success: false,
+      errorMessage: message,
+      settings,
+      trafficSource: usageContext.trafficSource
+    })
+  }
   if (accountStateMutationEnabled) {
-    applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
     suppressGatewayAccountLocally(account, settings, message)
     recordGatewayProxyFailure(account, message)
   }

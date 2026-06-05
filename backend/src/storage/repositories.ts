@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { normalizeAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
@@ -451,6 +451,7 @@ function ownerPermissions(): ResourcePermissions {
     canUse: true,
     canEdit: true,
     canDelete: true,
+    canReturnAuthorization: false,
     canAuthorize: true,
     canViewCredentials: true,
     canManageAccounts: true
@@ -462,6 +463,7 @@ function authorizedPermissions(): ResourcePermissions {
     canUse: true,
     canEdit: false,
     canDelete: false,
+    canReturnAuthorization: false,
     canAuthorize: false,
     canViewCredentials: false,
     canManageAccounts: false
@@ -566,11 +568,15 @@ function accountGroupBinding(accountId: string, systemAccountId: string): { grou
   }
 }
 
-function authorizedAccountPermissions(): ResourcePermissions {
+function authorizedAccountPermissions(canReturnAuthorization = false): ResourcePermissions {
   return {
     ...authorizedPermissions(),
-    canDelete: true
+    canReturnAuthorization
   }
+}
+
+function hasActiveManualAuthorizationSource(sources?: ResourceAuthorizationSourceSummary[]): boolean {
+  return sources?.some((source) => source.sourceType === 'manual' && source.status === 'active') ?? false
 }
 
 function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
@@ -1311,7 +1317,7 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
       authorizationStatus: row.authorization_status ?? undefined,
       authorizationExpiresAt: row.authorization_expires_at ?? undefined,
       accountExpiresAt: row.account_expires_at ?? undefined,
-      permissions: isAuthorizedView ? authorizedAccountPermissions() : ownerPermissions()
+      permissions: isAuthorizedView ? authorizedAccountPermissions(false) : ownerPermissions()
     }
   })
 }
@@ -1584,6 +1590,7 @@ function accountSummariesFromRows(
     const sourceAvailabilityScheduleActive = isAuthorizedView
       ? isAccountAvailabilityScheduleAllowed(row.source_availability_schedule_json, currentNowDate)
       : undefined
+    const authorizationSources = row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : []
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
       systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -1649,8 +1656,8 @@ function accountSummariesFromRows(
       authorizationExpiresAt: row.authorization_expires_at ?? undefined,
       authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
       authorizationQuotaExceeded: row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined,
-      authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(sourcesByAuthorization.get(row.authorization_id) ?? [], isAuthorizedView) : undefined,
-      permissions: isAuthorizedView ? authorizedAccountPermissions() : ownerPermissions(),
+      authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(authorizationSources, isAuthorizedView) : undefined,
+      permissions: isAuthorizedView ? authorizedAccountPermissions(hasActiveManualAuthorizationSource(authorizationSources)) : ownerPermissions(),
       authorizationUsageAvailable: !isAuthorizedView && authorizationStats.authorizationCount > 0 && canManageResourceOwner(row.system_account_id, access),
       authorizationCount: isAuthorizedView ? 0 : authorizationStats.authorizationCount,
       authorizationTeamCount: isAuthorizedView ? 0 : authorizationStats.authorizationTeamCount
@@ -2555,18 +2562,16 @@ export function deleteAccountWithRelatedCleanup(id: string, access?: AccessScope
   if (!row) {
     return { deleted: false }
   }
+  if (row.authorization_instance_authorization_id) {
+    throw new Error('授权账户请使用归还操作')
+  }
   const actor = currentSystemAccountId(access)
   const deletedAt = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     let deletedAccountIds: string[] = []
-    if (row.authorization_instance_authorization_id) {
-      revokeAuthorizationInstanceForDeletedAccount(database, row, actor, deletedAt)
-      deletedAccountIds = logicallyDeleteAccounts(database, [row.id], actor, deletedAt)
-    } else {
-      revokeAccountAuthorizationsForDeletedResource(database, row.id, actor, deletedAt)
-      deletedAccountIds = logicallyDeleteSourceAccountWithInstances(database, row, actor, deletedAt)
-    }
+    revokeAccountAuthorizationsForDeletedResource(database, row.id, actor, deletedAt)
+    deletedAccountIds = logicallyDeleteSourceAccountWithInstances(database, row, actor, deletedAt)
     commitDatabaseTransaction(database, transactionStarted)
     if (deletedAccountIds.length > 0) {
       refreshGroupAccountStatsAfterWrite({ all: true, reason: 'account_deleted' })
@@ -5487,90 +5492,112 @@ export function returnResourceAuthorizationForGrantee(authorizationId: string, a
   const granteeSystemAccountId = userVisibleSystemAccountId(access)
   if (!granteeSystemAccountId) return undefined
   const database = getBusinessDatabase()
-  const authorization = findReturnableRuntimeAuthorizationForGrant(authorizationId, granteeSystemAccountId, database)
+  const grant = findReturnableDirectGrantForGrantee(authorizationId, granteeSystemAccountId, database)
+  if (!grant) return undefined
+  const authorization = findRuntimeAuthorizationForDirectGrant(grant, granteeSystemAccountId, database)
   if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
+    return undefined
+  }
+  if (!hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
     return undefined
   }
   const now = nowIso()
   const actor = currentSystemAccountId(access)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    const directGrants = database
-      .prepare(`
-        SELECT *
-        FROM resource_authorization_grants
-        WHERE resource_type = ?
-          AND resource_id = ?
-          AND resource_owner_system_account_id = ?
-          AND grantee_type = 'system_account'
-          AND grantee_system_account_id = ?
-          AND status NOT IN ('revoked', 'returned')
-      `)
-      .all(
-        authorization.resource_type,
-        authorization.resource_id,
-        authorization.resource_owner_system_account_id,
-        granteeSystemAccountId
-      ) as unknown as ResourceAuthorizationGrantRow[]
-    for (const grant of directGrants) {
-      returnResourceAuthorizationGrant(grant, actor, database, now)
-    }
-    database
-      .prepare(`
-        UPDATE resource_authorization_sources
-        SET status = 'revoked',
-            ended_at = COALESCE(ended_at, ?),
-            ended_reason = COALESCE(ended_reason, 'grantee_returned'),
-            revoked_by = ?,
-            revoked_at = ?,
-            updated_at = ?
-        WHERE authorization_id = ?
-          AND status IN ('active', 'superseded')
-      `)
-      .run(now, actor, now, now, authorization.id)
-    database
-      .prepare(`
-        UPDATE resource_authorizations
-        SET status = 'returned',
-            effective_source_type = NULL,
-            effective_source_team_id = NULL,
-            revoked_by = ?,
-            revoked_at = ?,
-            revoked_reason = 'grantee_returned',
-            last_source_changed_at = ?,
-            updated_at = ?
-        WHERE id = ?
-          AND grantee_system_account_id = ?
-      `)
-      .run(actor, now, now, now, authorization.id, granteeSystemAccountId)
-    cleanupInactiveAuthorizationBindings(database, [authorization.id])
+    returnResourceAuthorizationGrant(grant, actor, database, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
-  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_returned' })
-  invalidateGroupAccountIdsCache()
-  clearResourceAuthorizationLookupCaches()
-  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_returned')
+  refreshAfterResourceAuthorizationReturnedWrite()
   return database
     .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
     .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
 }
 
-function findReturnableRuntimeAuthorizationForGrant(authorizationId: string, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationRow | undefined {
-  const grant = database
+export function returnAccountAuthorizationInstanceForGrantee(accountId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
+  expireDueResourceAuthorizations()
+  const granteeSystemAccountId = userVisibleSystemAccountId(access)
+  if (!granteeSystemAccountId) return undefined
+  const database = getBusinessDatabase()
+  const row = database
+    .prepare(`
+      SELECT id, system_account_id, authorization_instance_authorization_id
+      FROM accounts
+      WHERE id = ?
+        AND system_account_id = ?
+        AND deleted_at IS NULL
+        AND authorization_instance_authorization_id IS NOT NULL
+      LIMIT 1
+    `)
+    .get(accountId, granteeSystemAccountId) as unknown as { id?: string; system_account_id?: string; authorization_instance_authorization_id?: string | null } | undefined
+  if (!row?.authorization_instance_authorization_id) return undefined
+  const authorization = database
+    .prepare(`
+      SELECT ${resourceAuthorizationSelectColumns()}
+      FROM resource_authorizations
+      WHERE id = ?
+        AND grantee_system_account_id = ?
+      LIMIT 1
+    `)
+    .get(row.authorization_instance_authorization_id, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
+    return undefined
+  }
+  if (!hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
+    return undefined
+  }
+  const grant = findReturnableDirectGrantForRuntimeAuthorization(authorization, granteeSystemAccountId, database)
+  if (!grant) return undefined
+  const now = nowIso()
+  const actor = currentSystemAccountId(access)
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    returnResourceAuthorizationGrant(grant, actor, database, now)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  refreshAfterResourceAuthorizationReturnedWrite()
+  return database
+    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
+    .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
+}
+
+function findReturnableDirectGrantForGrantee(authorizationId: string, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationGrantRow | undefined {
+  return database
     .prepare(`
       SELECT *
       FROM resource_authorization_grants
       WHERE id = ?
         AND grantee_type = 'system_account'
         AND grantee_system_account_id = ?
-        AND status <> 'revoked'
+        AND status NOT IN ('revoked', 'returned')
       LIMIT 1
     `)
     .get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationGrantRow | undefined
-  if (!grant) return undefined
+}
+
+function findReturnableDirectGrantForRuntimeAuthorization(authorization: ResourceAuthorizationRow, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationGrantRow | undefined {
+  return database
+    .prepare(`
+      SELECT *
+      FROM resource_authorization_grants
+      WHERE resource_type = ?
+        AND resource_id = ?
+        AND resource_owner_system_account_id = ?
+        AND grantee_type = 'system_account'
+        AND grantee_system_account_id = ?
+        AND status NOT IN ('revoked', 'returned')
+      LIMIT 1
+    `)
+    .get(authorization.resource_type, authorization.resource_id, authorization.resource_owner_system_account_id, granteeSystemAccountId) as unknown as ResourceAuthorizationGrantRow | undefined
+}
+
+function findRuntimeAuthorizationForDirectGrant(grant: ResourceAuthorizationGrantRow, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationRow | undefined {
   return database
     .prepare(`
       SELECT ${resourceAuthorizationSelectColumns()}
@@ -5582,6 +5609,27 @@ function findReturnableRuntimeAuthorizationForGrant(authorizationId: string, gra
       LIMIT 1
     `)
     .get(grant.resource_type, grant.resource_id, grant.resource_owner_system_account_id, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+}
+
+function hasActiveManualRuntimeAuthorizationSource(authorizationId: string, database: DatabaseSync): boolean {
+  const row = database
+    .prepare(`
+      SELECT id
+      FROM resource_authorization_sources
+      WHERE authorization_id = ?
+        AND source_type = 'manual'
+        AND status = 'active'
+      LIMIT 1
+    `)
+    .get(authorizationId) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function refreshAfterResourceAuthorizationReturnedWrite(): void {
+  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_returned' })
+  invalidateGroupAccountIdsCache()
+  clearResourceAuthorizationLookupCaches()
+  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_returned')
 }
 
 export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {

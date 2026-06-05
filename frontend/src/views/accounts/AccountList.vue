@@ -40,6 +40,7 @@
         @delete="$emit('delete', $event.id)"
         @edit="$emit('edit', $event)"
         @menu-click="$emit('menu-click', $event, record)"
+        @return-authorization="$emit('return-authorization', $event.id)"
         @test="$emit('test', $event)"
       />
     </template>
@@ -61,6 +62,7 @@
         @edit="$emit('edit', record)"
         @bind-group="$emit('bind-group', record)"
         @menu-click="$emit('menu-click', $event, record)"
+        @return-authorization="$emit('return-authorization', record.id)"
         @test="$emit('test', record)"
         @toggle-selection="$emit('toggle-selection', record)"
       />
@@ -110,6 +112,7 @@ defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
+  (event: 'return-authorization', accountId: string): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
   (event: 'test', account: AccountSummary): void
   (event: 'toggle-selection', account: AccountSummary): void

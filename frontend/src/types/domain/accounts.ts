@@ -26,6 +26,7 @@ export interface ResourcePermissions {
   canUse: boolean
   canEdit: boolean
   canDelete: boolean
+  canReturnAuthorization?: boolean
   canAuthorize: boolean
   canViewCredentials: boolean
   canManageAccounts?: boolean

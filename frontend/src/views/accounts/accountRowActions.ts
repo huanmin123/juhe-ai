@@ -2,7 +2,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import type { AccountSummary } from '@/types/domain'
 import type { AccountMenuItem } from './accountActionTypes'
 import { isAuthorizedAccount } from './accountFormatters'
-import { accountMenuItemsWithClone } from './accountRules'
+import { accountMenuItemsWithClone, canReturnAuthorizedAccount } from './accountRules'
 
 export type AccountRowActionOptions = {
   account: AccountSummary
@@ -20,14 +20,14 @@ export function buildAccountRowActions(options: AccountRowActionOptions): RowAct
     if (options.canEdit) {
       authorizedList.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
     }
-    if (options.canDelete) {
+    if (canReturnAuthorizedAccount(account)) {
       authorizedList.push({
-        key: 'delete',
-        label: '删除',
-        icon: 'delete',
+        key: 'return-authorization',
+        label: '归还',
+        icon: 'revoke',
         tone: 'danger',
-        confirmTitle: '确认删除这个授权账户？',
-        confirmOkText: '删除'
+        confirmTitle: '确认归还这个授权账户？归还后你将不再看到或使用它，不影响授权方原账户。',
+        confirmOkText: '归还'
       })
     }
     return authorizedList

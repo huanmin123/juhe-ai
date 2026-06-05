@@ -109,7 +109,7 @@ try {
 
   const directReturnAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '被授权人自删账户来源',
+    name: '被授权人归还账户来源',
     type: 'api_key',
     credentials: {
       api_key: 'sk-deleted-account-direct-return',
@@ -123,35 +123,41 @@ try {
     granteeType: 'system_account',
     granteeId: grantee.id,
     targetGroupId: granteeGroup.id,
-    remark: '被授权人自删回归'
+    remark: '被授权人归还回归'
   }, ownerAccess)
   const directReturnInstance = authorizedInstanceForSource(directReturnAccount.id, granteeAccess)
-  const directDeleteResult = repositories.deleteAccountWithRelatedCleanup(directReturnInstance.id, granteeAccess)
-  assert.equal(directDeleteResult.deleted, true, '被授权人应能删除自己的授权实例账户')
-  assert.equal(accountExists(directReturnAccount.id), true, '被授权人删除授权实例不应逻辑删除来源账户')
-  assert.equal(accountExists(directReturnInstance.id), false, '被授权人删除后授权实例不应继续出现在业务读取中')
-  assert.equal(rawAccountExists(directReturnInstance.id), true, '被授权人删除后授权实例业务行应暂时保留')
-  assert.ok(accountDeletedAt(directReturnInstance.id), '被授权人删除后授权实例应写入 deleted_at')
-  assert.equal(groupAccountCount(directReturnInstance.id), 1, '被授权人删除阶段不应同步删除授权实例分组绑定')
-  assert.equal(resourceAuthorizationCount(directReturnAccount.id), 1, '被授权人删除阶段运行时授权应保留历史记录')
-  assert.equal(resourceAuthorizationGrantCount(directReturnAccount.id), 1, '被授权人删除阶段授权 grant 应保留历史记录')
-  assert.equal(resourceAuthorizationStatus(directReturnAccount.id), 'returned', '被授权人删除后运行时授权应标记为已归还')
-  assert.equal(resourceAuthorizationGrantStatus(directReturnAccount.id), 'returned', '被授权人删除后个人授权 grant 应标记为已归还')
-  assert.equal(repositories.listResourceAuthorizations({ resourceId: directReturnAccount.id, status: 'active' }, ownerAccess).length, 0, '被授权人删除后生效授权列表不应继续展示该授权')
-  assert.equal(repositories.listResourceAuthorizations({ resourceId: directReturnAccount.id, status: 'all' }, ownerAccess).some((item) => item.id === directReturnAuthorization.id && item.status === 'returned'), true, '被授权人删除后全部状态仍可追溯已归还授权')
-  assert.equal(cleanupTargetExists(directReturnInstance.id), false, '被授权人逻辑删除阶段不应登记即时关联清理目标')
+  assert.throws(
+    () => repositories.deleteAccountWithRelatedCleanup(directReturnInstance.id, granteeAccess),
+    /授权账户请使用归还操作/,
+    '授权实例账户不应再通过账户删除接口归还'
+  )
+  const directReturnResult = repositories.returnAccountAuthorizationInstanceForGrantee(directReturnInstance.id, granteeAccess)
+  assert.equal(directReturnResult?.status, 'returned', '被授权人应能通过授权归还入口归还个人直授权')
+  assert.equal(accountExists(directReturnAccount.id), true, '被授权人归还授权不应逻辑删除来源账户')
+  assert.equal(accountExists(directReturnInstance.id), true, '归还授权不应逻辑删除授权实例账户行')
+  assert.equal(repositories.listAccounts(granteeAccess).some((item) => item.id === directReturnInstance.id), false, '归还授权后授权实例不应继续出现在被授权人账户列表')
+  assert.equal(rawAccountExists(directReturnInstance.id), true, '归还授权后授权实例业务行应保留')
+  assert.equal(accountDeletedAt(directReturnInstance.id), undefined, '归还授权不应写入授权实例 deleted_at')
+  assert.equal(groupAccountCount(directReturnInstance.id), 1, '归还授权阶段不应同步删除授权实例分组绑定')
+  assert.equal(resourceAuthorizationCount(directReturnAccount.id), 1, '归还授权阶段运行时授权应保留历史记录')
+  assert.equal(resourceAuthorizationGrantCount(directReturnAccount.id), 1, '归还授权阶段授权 grant 应保留历史记录')
+  assert.equal(resourceAuthorizationStatus(directReturnAccount.id), 'returned', '归还后运行时授权应标记为已归还')
+  assert.equal(resourceAuthorizationGrantStatus(directReturnAccount.id), 'returned', '归还后个人授权 grant 应标记为已归还')
+  assert.equal(repositories.listResourceAuthorizations({ resourceId: directReturnAccount.id, status: 'active' }, ownerAccess).length, 0, '归还后生效授权列表不应继续展示该授权')
+  assert.equal(repositories.listResourceAuthorizations({ resourceId: directReturnAccount.id, status: 'all' }, ownerAccess).some((item) => item.id === directReturnAuthorization.id && item.status === 'returned'), true, '归还后全部状态仍可追溯已归还授权')
+  assert.equal(cleanupTargetExists(directReturnInstance.id), false, '归还授权阶段不应登记即时关联清理目标')
   const directReauthorized = repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: directReturnAccount.id,
     granteeType: 'system_account',
     granteeId: grantee.id,
     targetGroupId: granteeGroup.id,
-    remark: '被授权人自删后重新授权回归'
+    remark: '被授权人归还后重新授权回归'
   }, ownerAccess)
   const directRestoredInstance = authorizedInstanceForSource(directReturnAccount.id, granteeAccess)
   assert.equal(directReauthorized.id, directReturnAuthorization.id, '重新授权应复用已归还的个人授权记录')
-  assert.equal(directRestoredInstance.id, directReturnInstance.id, '重新授权应恢复同一个逻辑删除授权实例账户')
-  assert.equal(accountDeletedAt(directRestoredInstance.id), undefined, '重新授权恢复后授权实例不应仍处于逻辑删除状态')
+  assert.equal(directRestoredInstance.id, directReturnInstance.id, '重新授权应复用同一个授权实例账户')
+  assert.equal(accountDeletedAt(directRestoredInstance.id), undefined, '重新授权后授权实例不应处于逻辑删除状态')
   assert.equal(resourceAuthorizationStatus(directReturnAccount.id), 'active', '重新授权后运行时授权应恢复生效')
   assert.equal(resourceAuthorizationGrantStatus(directReturnAccount.id), 'active', '重新授权后个人授权 grant 应恢复生效')
 

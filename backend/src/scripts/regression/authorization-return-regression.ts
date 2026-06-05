@@ -20,12 +20,14 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const [
+  { accountsRouter },
   { authorizationsRouter },
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
   databaseModule,
   repositories
 ] = await Promise.all([
+  import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/authorizations/authorizations.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
@@ -37,7 +39,9 @@ const app = express()
 app.use(requestContextMiddleware)
 app.use(express.json({ limit: '1mb' }))
 app.use('/__aisys__/api', requireAuth)
+app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
 app.use('/__aisys__/api/my-authorizations', forceSelfAccessScope, authorizationsRouter)
+app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
 app.use('/__aisys__/api/authorizations', requireAdmin, authorizationsRouter)
 
 let server: ReturnType<typeof app.listen> | undefined
@@ -57,15 +61,17 @@ try {
   const authorizedAccount = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)
   const accountAuthorizationId = authorizedAccount?.accountAuthorizationId
   assert(accountAuthorizationId, '被授权账户应带运行态授权 ID')
+  assert.equal(authorizedAccount?.permissions?.canDelete, false, '个人直授权账户不应暴露删除权限')
+  assert.equal(authorizedAccount?.permissions?.canReturnAuthorization, true, '个人直授权账户应暴露归还授权权限')
   const initialAccountGrant = repositories
     .listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAccess)
     .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
   assert(initialAccountGrant, '被授权账户应能在授权操作列表读取授权业务记录')
-  await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${initialAccountGrant.id}/return`, seed.granteeCookie)
+  await postOk(baseUrl, `/__aisys__/api/my-accounts/${authorizedAccount.id}/return-authorization`, seed.granteeCookie)
   assert.equal(
     repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.ownerAccountId),
     false,
-    '被授权用户归还账户授权后不应继续看到该授权账户'
+    '被授权用户从账户列表归还账户授权后不应继续看到该授权账户'
   )
   assert.equal(
     repositories.listAccounts(ownerAccess).some((account) => account.id === seed.ownerAccountId),
@@ -93,8 +99,15 @@ try {
   assert.equal(pausedAccount?.authorizationStatus, 'paused', '暂停授权后被授权账户仍应可见但标记为暂停')
   repositories.updateResourceAuthorization(restoredAccountGrant.id, { status: 'active' }, ownerAccess)
   const reactivatedAccount = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)
+  assert(reactivatedAccount?.id, '恢复授权后应能重新看到被授权账户')
   assert.equal(reactivatedAccount?.authorizationStatus, 'active', '暂停后恢复授权应同步恢复运行态授权状态')
   assert.equal(reactivatedAccount?.status, 'active', '暂停后恢复授权应让被授权账户恢复可调用状态')
+  await deleteRejected(baseUrl, `/__aisys__/api/my-accounts/${reactivatedAccount.id}`, seed.granteeCookie, /授权账户请使用归还操作/)
+  assert.equal(
+    repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.ownerAccountId),
+    true,
+    '删除授权实例被拒绝后，被授权账户仍应可见'
+  )
   const inboundAccountGrant = repositories
     .listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAccess)
     .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
@@ -109,6 +122,28 @@ try {
     .listResourceAuthorizations({}, ownerAccess)
     .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
   assert.equal(returnedAccountGrantByListId?.status, 'returned', '个人授权列表归还后，授权方授权列表仍应保留已归还记录')
+
+  const teamAuthorizedAccount = authorizedAccountForSource(seed.teamAccountId, granteeAccess)
+  assert(teamAuthorizedAccount?.id, '团队授权账户应能在被授权用户账户列表中看到')
+  assert.equal(teamAuthorizedAccount?.permissions?.canDelete, false, '团队来源授权账户不应暴露删除权限')
+  assert.equal(teamAuthorizedAccount?.permissions?.canReturnAuthorization, false, '团队来源授权账户不应暴露个人归还权限')
+  await postRejected(baseUrl, `/__aisys__/api/my-accounts/${teamAuthorizedAccount.id}/return-authorization`, seed.granteeCookie, /授权账户不存在或不可归还/)
+  assert.equal(
+    repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.teamAccountId),
+    true,
+    '团队来源授权账户不能通过个人归还入口移除'
+  )
+  const mixedAuthorizedAccount = authorizedAccountForSource(seed.mixedAccountId, granteeAccess)
+  assert(mixedAuthorizedAccount?.id, '被团队覆盖的个人授权账户应仍能通过团队来源看到')
+  assert.equal(mixedAuthorizedAccount?.permissions?.canDelete, false, '被团队覆盖的个人授权账户不应暴露删除权限')
+  assert.equal(mixedAuthorizedAccount?.permissions?.canReturnAuthorization, false, '被团队覆盖的个人授权账户不应暴露账户归还权限')
+  await postRejected(baseUrl, `/__aisys__/api/my-accounts/${mixedAuthorizedAccount.id}/return-authorization`, seed.granteeCookie, /授权账户不存在或不可归还/)
+  await deleteRejected(baseUrl, `/__aisys__/api/my-authorizations/${seed.mixedDirectGrantId}/return`, seed.granteeCookie, /授权记录不存在/)
+  assert.equal(
+    repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.mixedAccountId),
+    true,
+    '被团队覆盖的个人授权不能通过归还入口移除团队来源账户'
+  )
 
   const groupAuthorizationId = repositories
     .listGroups({ systemAccountId: seed.granteeId, role: 'user' as const })
@@ -189,6 +224,7 @@ function seedData() {
     mustChangePassword: false
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const adminAccess = { systemAccountId: admin.id, role: 'admin' as const }
   const ownerGroup = repositories.createGroup({
     name: '授权归还分组',
     providerCode: 'openai'
@@ -204,6 +240,22 @@ function seedData() {
     type: 'api_key',
     credentials: { api_key: 'sk-authorization-return', base_url: 'https://api.openai.com/v1' }
   }, ownerAccess)
+  const teamAccount = repositories.createAccount({
+    providerCode: 'openai',
+    groupId: ownerGroup.id,
+    name: '授权归还团队来源账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-authorization-return-team', base_url: 'https://api.openai.com/v1' }
+  }, ownerAccess)
+  const mixedAccount = repositories.createAccount({
+    providerCode: 'openai',
+    groupId: ownerGroup.id,
+    name: '授权归还团队覆盖个人来源账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-authorization-return-mixed', base_url: 'https://api.openai.com/v1' }
+  }, ownerAccess)
+  const team = repositories.createSystemTeam({ name: '授权归还团队' }, adminAccess)
+  repositories.addSystemTeamMembers(team.id, { systemAccountIds: [grantee.id] }, adminAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: ownerAccount.id,
@@ -219,14 +271,39 @@ function seedData() {
     granteeId: grantee.id,
     remark: '授权分组归还回归'
   }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: teamAccount.id,
+    granteeType: 'team',
+    granteeId: team.id,
+    remark: '团队来源授权账户不可个人归还回归'
+  }, ownerAccess)
+  const mixedDirectGrant = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: mixedAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeTargetGroup.id,
+    remark: '团队覆盖个人来源前的直授权回归'
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: mixedAccount.id,
+    granteeType: 'team',
+    granteeId: team.id,
+    remark: '团队覆盖个人来源后不可个人归还回归'
+  }, ownerAccess)
   return {
     adminCookie: sessionCookie(admin.id),
     granteeCookie: sessionCookie(grantee.id),
     granteeId: grantee.id,
     granteeTargetGroupId: granteeTargetGroup.id,
+    mixedAccountId: mixedAccount.id,
+    mixedDirectGrantId: mixedDirectGrant.id,
     ownerAccountId: ownerAccount.id,
     ownerGroupId: ownerGroup.id,
-    ownerId: owner.id
+    ownerId: owner.id,
+    teamAccountId: teamAccount.id
   }
 }
 
@@ -244,6 +321,27 @@ async function returnOk(baseUrl: string, path: string, cookie: string): Promise<
   if (!response.ok) {
     throw new Error(`${path} HTTP ${response.status}: ${await response.text()}`)
   }
+}
+
+async function postOk(baseUrl: string, path: string, cookie: string): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { cookie } })
+  if (!response.ok) {
+    throw new Error(`${path} HTTP ${response.status}: ${await response.text()}`)
+  }
+}
+
+async function postRejected(baseUrl: string, path: string, cookie: string, pattern: RegExp): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { cookie } })
+  const text = await response.text()
+  assert.equal(response.ok, false, `${path} 应拒绝请求`)
+  assert.match(text, pattern, `${path} 应返回预期中文错误`)
+}
+
+async function deleteRejected(baseUrl: string, path: string, cookie: string, pattern: RegExp): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, { method: 'DELETE', headers: { cookie } })
+  const text = await response.text()
+  assert.equal(response.ok, false, `${path} 应拒绝请求`)
+  assert.match(text, pattern, `${path} 应返回预期中文错误`)
 }
 
 async function onceListening(listeningServer: ReturnType<typeof app.listen>): Promise<void> {

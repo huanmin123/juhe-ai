@@ -283,7 +283,7 @@ export async function fetchFirstAvailableUpstream(
                 lastAttempt,
                 clientIpAccountAvoidanceTracker,
                 accountStateMutationEnabled,
-                retrySameAccount: shouldRetryPolicyAttempt(attemptIndex, sameAccountRetryPolicy)
+                retrySameAccount: shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
               })
               lastAttempt = failedResponseResult.lastAttempt
               failedAccountIds.add(account.id)
@@ -312,7 +312,7 @@ export async function fetchFirstAvailableUpstream(
                 error,
                 clientIpAccountAvoidanceTracker,
                 accountStateMutationEnabled,
-                retrySameAccount: shouldRetryPolicyAttempt(attemptIndex, sameAccountRetryPolicy)
+                retrySameAccount: shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
               })
               lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
               failedAccountIds.add(account.id)
@@ -434,6 +434,17 @@ function localAccountSuppressionMaxWaitMs(policy?: GroupSchedulingPolicy): numbe
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.max(0, Math.trunc(value))
     : defaultLocalAccountSuppressionWaitMs
+}
+
+function shouldRetrySameAccountAfterFailure(
+  account: UpstreamAccount,
+  attemptIndex: number,
+  sameAccountRetryPolicy: RetryPolicy
+): boolean {
+  if (!shouldRetryPolicyAttempt(attemptIndex, sameAccountRetryPolicy)) {
+    return false
+  }
+  return !filterLocallySuppressedGatewayAccounts([account]).allSuppressed
 }
 
 function orderAccountsForRequestLane(

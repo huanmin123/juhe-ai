@@ -31,6 +31,7 @@ const canManageAuthorization = computed(() => props.isManagementView || props.au
 const canReturnAuthorization = computed(() => {
   if (props.isManagementView || props.direction !== 'inbound') return false
   if (props.authorization.granteeType !== 'system_account') return false
+  if (!hasManualSource(props.authorization)) return false
   return props.authorization.status !== 'revoked' && props.authorization.status !== 'returned'
 })
 const actions = computed<RowActionItem[]>(() => {

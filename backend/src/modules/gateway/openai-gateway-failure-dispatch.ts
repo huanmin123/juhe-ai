@@ -12,7 +12,10 @@ import {
 } from './openai-gateway-account-effects.js'
 import { readUpstreamBodyLimited } from './openai-gateway-body.js'
 import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
-import { suppressGatewayAccountLocally } from './gateway-account-side-effects.service.js'
+import {
+  recordGatewayAccountFailureForPrecheck,
+  suppressGatewayAccountLocally
+} from './gateway-account-side-effects.service.js'
 import { forgetOpenAIAccountForSession } from './openai-gateway-session-affinity.service.js'
 import {
   isEffectiveOpenAIStreamRequest,
@@ -207,14 +210,27 @@ export async function handleFailedUpstreamResponse(
     recordGatewayUpstreamBucketFailure(account, '上游响应失败')
   }
   if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource)) {
+    const reason = responseBodyRead.truncated
+      ? `上游账号返回非成功状态：HTTP ${response.status}`
+      : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`
     suppressGatewayAccountLocally(
       account,
       settings,
-      responseBodyRead.truncated
-        ? `上游账号返回非成功状态：HTTP ${response.status}`
-        : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`
+      reason
     )
-    applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
+    if (usageContext.trafficSource === 'gateway') {
+      recordGatewayAccountFailureForPrecheck(account, settings, {
+        systemAccountId: usageContext.systemAccountId,
+        groupId: usageContext.groupId,
+        apiKeyId: usageContext.apiKeyId,
+        clientIp: usageContext.clientIp,
+        endpoint: requestEndpoint(req),
+        reason,
+        statusCode: response.status
+      })
+    } else {
+      applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
+    }
   }
 
   rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
@@ -335,17 +351,29 @@ export async function handleUpstreamRequestError(
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {
     recordGatewayUpstreamBucketFailure(account, '上游请求异常', {
-        bucketScope: gatewayProxyKey(account) ? 'proxy' : 'upstream'
+      bucketScope: gatewayProxyKey(account) ? 'proxy' : 'upstream'
     })
   }
   if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource)) {
-    suppressGatewayAccountLocally(account, settings, `上游账号请求异常：${message}`)
-    applyAccountErrorHandlingWithCacheInvalidation(account, {
-      success: false,
-      errorMessage: message,
-      settings,
-      trafficSource: usageContext.trafficSource
-    })
+    const reason = `上游账号请求异常：${message}`
+    suppressGatewayAccountLocally(account, settings, reason)
+    if (usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {
+      recordGatewayAccountFailureForPrecheck(account, settings, {
+        systemAccountId: usageContext.systemAccountId,
+        groupId: usageContext.groupId,
+        apiKeyId: usageContext.apiKeyId,
+        clientIp: usageContext.clientIp,
+        endpoint: requestEndpoint(req),
+        reason
+      })
+    } else {
+      applyAccountErrorHandlingWithCacheInvalidation(account, {
+        success: false,
+        errorMessage: message,
+        settings,
+        trafficSource: usageContext.trafficSource
+      })
+    }
   }
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return { action: 'skip_account', lastAttempt }

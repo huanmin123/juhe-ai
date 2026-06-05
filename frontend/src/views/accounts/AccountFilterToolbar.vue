@@ -76,12 +76,14 @@
     </template>
     <template #actions>
       <slot name="actions" />
-      <a-button v-if="isManagementView" :loading="exportLoading" @click="emit('export')">
-        <template #icon>
-          <DownloadOutlined />
-        </template>
-        导出 JSON
-      </a-button>
+      <a-tooltip v-if="isManagementView" :title="exportTooltip">
+        <a-button :loading="exportLoading" @click="emit('export')">
+          <template #icon>
+            <DownloadOutlined />
+          </template>
+          导出 JSON
+        </a-button>
+      </a-tooltip>
       <a-button v-if="isManagementView" @click="emit('import')">
         <template #icon>
           <UploadOutlined />
@@ -190,6 +192,7 @@ const props = defineProps<{
   isManagementView: boolean
   providers: ProviderDefinition[]
   refreshLoading: boolean
+  selectedCount?: number
   statusOptions: Array<FilterOption<AccountStatus>>
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
@@ -219,6 +222,9 @@ const emit = defineEmits<{
 
 const accountStatusValues = new Set<AccountStatus>(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])
 const resolvedProviders = computed(() => props.providers.length ? props.providers : [OPENAI_PROVIDER])
+const exportTooltip = computed(() => props.selectedCount
+  ? `已选择 ${props.selectedCount} 个账户，将优先导出已选自有账户`
+  : '未选择账户时按当前筛选导出自有账户')
 const providerOptions = computed(() => [
   { label: '全部供应商', value: 'all' },
   ...resolvedProviders.value.map((provider) => ({ label: provider.name, value: provider.code }))

@@ -6,7 +6,7 @@ import type { AccountSummary, AccountTestResult } from '@/types/domain'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { batchTestSummary } from './accountTestFlow'
-import { canBatchManageAccount, canTestAccount } from './accountRules'
+import { canBatchManageAccount, canBatchRestoreAccount, canTestAccount } from './accountRules'
 
 const accountBatchConcurrency = 5
 const accountBatchTestConcurrency = 3
@@ -108,7 +108,25 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     )
   }
 
+  async function batchRestoreSelected() {
+    const selected = options.selectedAccounts.value.filter(canBatchRestoreAccount)
+    if (!selected.length) {
+      message.warning('所选账户里没有可恢复的异常或临时状态账户')
+      return
+    }
+    if (selected.length !== options.selectedAccounts.value.length) {
+      message.warning('已跳过不需要恢复或无权恢复的账户')
+    }
+    await batchUpdateAccounts(
+      () => ({ clearFailureState: true }),
+      '正在批量恢复账户',
+      '账户已批量恢复',
+      selected
+    )
+  }
+
   return {
+    batchRestoreSelected,
     batchSetStatus,
     batchTestSelected,
     batchUpdateAccounts

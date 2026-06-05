@@ -183,7 +183,7 @@ async function main(): Promise<void> {
     const directTransportFailureText = await directTransportFailureResponse.text()
     assert.equal(directTransportFailureResponse.status, 503, `直连上游传输失败仍应返回统一网关错误，实际 HTTP ${directTransportFailureResponse.status}: ${directTransportFailureText}`)
     assert.match(directTransportFailureText, /没有可用的上游账户/, `直连上游传输失败应返回网关统一错误：${directTransportFailureText}`)
-    await assertAccountsTemporaryUnavailable(directTransportFailureAccounts, /上游请求异常/, '直连上游传输失败应写入账号状态')
+    assertAccountsRuntimeSuppressedActive(directTransportFailureAccounts, /上游账号请求异常/, '直连上游传输失败应进入运行态屏障')
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
     const invalidJsonHitsBefore = totalUpstreamHitCount()
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     assert.match(featureResponseText, /没有可用的上游账户/, `所有账号失败不应透传上游原文，应返回网关统一错误：${featureResponseText}`)
     assert.notEqual(featureResponseText, invalidRequestRejectedRequestBody, '所有账号失败不应把上游原始错误体透传给客户端')
     assert.equal(invalidRequestUpstreamHitCount, 3, `通用失败流水线应尝试三个账号后再失败，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
-    await assertAccountsTemporaryUnavailable([firstAccount, secondAccount, thirdAccount], /上游调用失败：HTTP 422|Invalid value/, '未配置账号错误策略的上游失败也应写账号状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount, thirdAccount], /上游账号返回非成功状态：HTTP 422|Invalid value/, '未配置账号错误策略的上游失败应进入运行态屏障')
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
     currentScenario = 'same_signature_third_account_success'
@@ -240,7 +240,7 @@ async function main(): Promise<void> {
     assert.equal(thirdSuccessResponse.status, 200, `前两个账号返回相同上游错误但第三账号可用时应救回请求，实际 HTTP ${thirdSuccessResponse.status}: ${thirdSuccessResponseText}`)
     assert.equal(thirdSuccessResponseText, thirdAccountSuccessBody, `第三账号救回响应体异常：${thirdSuccessResponseText}`)
     assert.equal(thirdAccountSuccessHitCount, 3, `第三账号救回应尝试三个账号，实际 ${thirdAccountSuccessHitCount}`)
-    await assertAccountsTemporaryUnavailable([firstAccount, secondAccount], /上游调用失败：HTTP 422|Regression request payload is invalid/, '后续账号成功也不能掩盖前序失败账号状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount], /上游账号返回非成功状态：HTTP 422|Regression request payload is invalid/, '后续账号成功也不能掩盖前序账号运行态屏障')
     assertAccountsActive([thirdAccount], '成功救回请求的第三账号应保持正常')
     restoreRegressionAccounts([firstAccount, secondAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -265,7 +265,7 @@ async function main(): Promise<void> {
     assert.match(signatureResponseText, /没有可用的上游账户/, `相同上游错误失败不应返回上游原文：${signatureResponseText}`)
     assert.notEqual(signatureResponseText, sameSignatureRejectedRequestBody, '相同上游错误失败不应保留上游原始错误体')
     assert.equal(sameSignatureUpstreamHitCount, 3, `同一错误应尝试全部三个账号，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
-    await assertAccountsTemporaryUnavailable([firstAccount, secondAccount, thirdAccount], /上游调用失败：HTTP 422|Regression request payload is invalid/, '相同上游错误也应逐个写入账号状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount, thirdAccount], /上游账号返回非成功状态：HTTP 422|Regression request payload is invalid/, '相同上游错误也应逐个进入运行态屏障')
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
     const repeatedSignatureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -279,7 +279,7 @@ async function main(): Promise<void> {
     const repeatedSignatureResponseText = await repeatedSignatureResponse.text()
     assert.equal(repeatedSignatureResponse.status, 503, `重复相同上游错误请求必须重新探测上游，实际 HTTP ${repeatedSignatureResponse.status}: ${repeatedSignatureResponseText}`)
     assert.equal(sameSignatureUpstreamHitCount, 6, `重复相同上游错误请求清理本地屏蔽后应重新探测上游，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
-    await assertAccountsTemporaryUnavailable([firstAccount, secondAccount, thirdAccount], /上游调用失败：HTTP 422|Regression request payload is invalid/, '重复上游错误仍应写入账号状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount, thirdAccount], /上游账号返回非成功状态：HTTP 422|Regression request payload is invalid/, '重复上游错误仍应进入运行态屏障')
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -301,7 +301,7 @@ async function main(): Promise<void> {
     assert.equal(instructionsRequiredResponse.status, 200, `首账号 invalid_request_error 但后续账号可用时应切号成功，实际 HTTP ${instructionsRequiredResponse.status}: ${instructionsRequiredResponseText}`)
     assert.equal(instructionsRequiredResponseText, invalidRequestSwitchSuccessBody, `invalid_request_error 切号成功响应体异常：${instructionsRequiredResponseText}`)
     assert.equal(invalidRequestSwitchUpstreamHitCount, 2, `invalid_request_error 切号成功应命中两个账号，实际 ${invalidRequestSwitchUpstreamHitCount}`)
-    await assertAccountsTemporaryUnavailable([firstAccount], /上游调用失败：HTTP 400|Instructions are required/, '首账号 invalid_request_error 也应写入账号状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号返回非成功状态：HTTP 400|Instructions are required/, '首账号 invalid_request_error 也应进入运行态屏障')
     assertAccountsActive([secondAccount], '切号成功账号应保持正常')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -352,7 +352,7 @@ async function main(): Promise<void> {
     assert.equal(unknownSwitchFirstAccountHitCount, 3, `未知失败应先按临时状态重试次数原地重试首账号，实际首账号命中 ${unknownSwitchFirstAccountHitCount} 次`)
     assert.equal(unknownSwitchSecondAccountHitCount, 1, `未知失败切号场景后续账号应命中 1 次，实际 ${unknownSwitchSecondAccountHitCount}`)
     assert.equal(switchResponseText, unknownSwitchSuccessBody, `未知失败切号成功响应体异常：${switchResponseText}`)
-    await assertAccountsTemporaryUnavailable([firstAccount], /上游调用失败：HTTP 502|temporary first account upstream error/, '未知失败切到后续账号成功后也应写入首账号状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号返回非成功状态：HTTP 502|temporary first account upstream error/, '未知失败切到后续账号成功后应保留首账号运行态屏障')
     assertAccountsActive([secondAccount], '未知失败切号成功账号应保持正常')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -382,7 +382,7 @@ async function main(): Promise<void> {
     assert.equal(nonStreamFirstByteTimeoutFirstAccountHitCount, 1, `非流式首账号首字节超时应命中 1 次，实际 ${nonStreamFirstByteTimeoutFirstAccountHitCount}`)
     assert.equal(nonStreamFirstByteTimeoutSecondAccountHitCount, 1, `非流式首字节超时后应切到第二账号，实际 ${nonStreamFirstByteTimeoutSecondAccountHitCount}`)
     assert(Date.now() - nonStreamFirstByteTimeoutStartedAt >= 9000, '非流式首字节超时应受首包等待上限控制，不应立即切号')
-    await assertAccountsTemporaryUnavailable([firstAccount], /上游请求异常|仍未返回首个响应/, '非流式首字节超时应写入首账号状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号请求异常|仍未返回首个响应/, '非流式首字节超时应进入首账号运行态屏障')
     assertAccountsActive([secondAccount], '非流式首字节超时切号成功账号应保持正常')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -427,7 +427,7 @@ async function main(): Promise<void> {
     assert.equal(interruptedRetryText, nonStreamBodyInterruptedRetrySuccessBody, `非流式正文中断客户端重试响应体异常：${interruptedRetryText}`)
     assert.equal(nonStreamBodyInterruptedFirstAccountHitCount, 1, `客户端重试应避开已本地避让的首账号，实际首账号命中 ${nonStreamBodyInterruptedFirstAccountHitCount}`)
     assert.equal(nonStreamBodyInterruptedSecondAccountHitCount, 1, `客户端重试应命中第二账号，实际 ${nonStreamBodyInterruptedSecondAccountHitCount}`)
-    await assertAccountsTemporaryUnavailable([firstAccount], /上游调用失败：HTTP 200|non stream body interrupted/, '非流式正文已输出后中断也应写入首账号状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount], /上游非流式响应正文中断|non stream body interrupted/, '非流式正文已输出后中断应进入首账号运行态屏障')
     assertAccountsActive([secondAccount], '非流式正文中断后客户端重试成功账号应保持正常')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -452,7 +452,7 @@ async function main(): Promise<void> {
     assert.equal(dispatchRaceSecondAccountHitCount, 0, `第二账号在首账号失败后被本地屏蔽，不应继续命中，实际 ${dispatchRaceSecondAccountHitCount}`)
     assert.equal(dispatchRaceThirdAccountHitCount, 1, `第二账号被屏蔽后应切到第三账号成功，实际 ${dispatchRaceThirdAccountHitCount}`)
     assert(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount >= 1, '调度竞态后显式中途屏蔽账号应处于本地短期屏蔽')
-    await assertAccountsTemporaryUnavailable([firstAccount], /上游调用失败：HTTP 502|first account failed before dispatch race/, '调度竞态中真正上游失败的首账号应写入状态')
+    assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号返回非成功状态：HTTP 502|first account failed before dispatch race/, '调度竞态中真正上游失败的首账号应进入运行态屏障')
     assertAccountsActive([secondAccount, thirdAccount], '调度竞态中未命中或成功账号应保持正常')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -518,12 +518,12 @@ async function main(): Promise<void> {
     assert.equal(singleFailureResponse.status, 503, `单账号上游失败无后备账号时仍应返回统一网关错误，实际 HTTP ${singleFailureResponse.status}: ${singleFailureResponseText}`)
     assert.match(singleFailureResponseText, /没有可用的上游账户/, `单账号上游失败网关响应应保持统一错误：${singleFailureResponseText}`)
     assert.equal(singleFailureHitCount, 1, `单账号上游失败默认冷却场景应命中上游一次，实际 ${singleFailureHitCount}`)
-    await assertAccountsTemporaryUnavailable([singleFailureAccount], /上游调用失败：HTTP 418|generic upstream failure/, '单账号普通上游失败应默认写入临时不可调用')
+    assertAccountsRuntimeSuppressedActive([singleFailureAccount], /上游账号返回非成功状态：HTTP 418|generic upstream failure/, '单账号普通上游失败应进入运行态屏障而不是立即写库')
 
     usageRecordQueue.flushAllUsageRecordQueue()
     assertAccountsActive([firstAccount, secondAccount, thirdAccount, waitAccount], '已恢复的主测试账号最终应保持正常')
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；普通上游失败会按临时状态配置原地重试，用尽后才切号并写入临时不可调用；后续账号成功不掩盖前序账号失败；全部失败返回统一网关错误；单账号屏蔽时会等待释放并支持续期等待')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；普通上游失败会按临时状态配置原地重试，用尽后切号并进入运行态屏障；后续账号成功不掩盖前序账号屏障；全部失败返回统一网关错误；单账号屏蔽时会等待释放并支持续期等待')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -876,14 +876,22 @@ function createRegressionApiKey(groupId: string, key: string): { id: string; key
   return { id: apiKey.id, key: apiKey.key }
 }
 
-async function assertAccountsTemporaryUnavailable(accounts: RegressionAccount[], messagePattern: RegExp, reason: string): Promise<void> {
-  await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+function assertAccountsRuntimeSuppressedActive(accounts: RegressionAccount[], messagePattern: RegExp, reason: string): void {
+  const runtimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
   for (const account of accounts) {
     const updated = repositories.findAccountSummary(account.id, access)
     assert(updated, `账号 ${account.name} 不存在`)
-    assert.equal(updated.status, 'temporary_unavailable', `${reason}：${account.name} 应为临时不可调用`)
-    assert.ok(updated.cooldownUntil, `${reason}：${account.name} 应写入冷却结束时间`)
-    assert.match(updated.lastErrorMessage ?? '', messagePattern, `${reason}：${account.name} 应保留真实上游错误摘要，实际 ${updated.lastErrorMessage ?? ''}`)
+    assert.equal(updated.status, 'active', `${reason}：${account.name} 数据库状态应保持正常`)
+    assert.equal(updated.schedulable, true, `${reason}：${account.name} 数据库可调度状态应保持正常`)
+    assert.equal(updated.cooldownUntil, undefined, `${reason}：${account.name} 不应写入冷却结束时间`)
+    assert.equal(updated.lastErrorMessage, undefined, `${reason}：${account.name} 不应写入最近错误`)
+    const runtime = runtimeSnapshot[account.id]
+    assert(runtime, `${reason}：${account.name} 应存在账号运行态屏障`)
+    assert(
+      runtime.status === 'local_suppressed' || runtime.status === 'precheck_pending' || runtime.status === 'precheck_failed',
+      `${reason}：${account.name} 运行态应为本地避让或事前确认，实际 ${runtime.status}`
+    )
+    assert.match(runtime.reason ?? '', messagePattern, `${reason}：${account.name} 运行态原因应保留真实上游摘要，实际 ${runtime.reason ?? ''}`)
   }
 }
 

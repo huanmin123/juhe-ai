@@ -16,7 +16,10 @@ import {
   confirmClientIpAccountAvoidanceAfterSuccess,
   type ClientIpAccountAvoidanceTracker
 } from './openai-gateway-client-ip-account-avoidance.service.js'
-import { suppressGatewayAccountLocallyForSeconds } from './gateway-account-side-effects.service.js'
+import {
+  recordGatewayAccountFailureForPrecheck,
+  suppressGatewayAccountLocallyForSeconds
+} from './gateway-account-side-effects.service.js'
 import { recordClientIpErrorCircuitSuccess } from './openai-gateway-client-ip-error-circuit.service.js'
 import {
   NonStreamUpstreamBodyPipeError,
@@ -570,16 +573,29 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
       if (accountStateMutationEnabled !== false) {
         const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
-        suppressGatewayAccountLocallyForSeconds(account, ttlSeconds, `上游非流式响应正文中断：${errorMessage}`)
-        applyAccountErrorHandlingWithCacheInvalidation(account, {
-          success: false,
-          statusCode: upstreamResponse.status,
-          headers: upstreamResponse.headers,
-          bodyText: responseBodyText || errorMessage,
-          errorMessage,
-          settings,
-          trafficSource: usageContext.trafficSource
-        })
+        const runtimeReason = `上游非流式响应正文中断：${errorMessage}`
+        suppressGatewayAccountLocallyForSeconds(account, ttlSeconds, runtimeReason)
+        if (usageContext.trafficSource === 'gateway') {
+          recordGatewayAccountFailureForPrecheck(account, settings, {
+            systemAccountId: usageContext.systemAccountId,
+            groupId: usageContext.groupId,
+            apiKeyId: usageContext.apiKeyId,
+            clientIp: usageContext.clientIp,
+            endpoint: usageContext.endpoint,
+            reason: runtimeReason,
+            statusCode: upstreamResponse.status
+          })
+        } else {
+          applyAccountErrorHandlingWithCacheInvalidation(account, {
+            success: false,
+            statusCode: upstreamResponse.status,
+            headers: upstreamResponse.headers,
+            bodyText: responseBodyText || errorMessage,
+            errorMessage,
+            settings,
+            trafficSource: usageContext.trafficSource
+          })
+        }
         auditCapture.addGatewayMetadata({
           label: 'non_stream_body_interrupted_runtime_avoidance',
           metadata: {

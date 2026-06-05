@@ -98,7 +98,7 @@ import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns, type AuthorizationDirectionFilter } from './authorizationTableColumns'
-import { authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName } from './authorizationFormatters'
+import { authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName, hasManualSource } from './authorizationFormatters'
 import type { AuthorizationResourceType } from '@/types/domain'
 
 const props = defineProps<{
@@ -138,6 +138,7 @@ const tableScrollX = computed(() => props.isManagementView ? 1240 : 1320)
 function canReturnAuthorization(authorization: ResourceAuthorizationSummary): boolean {
   if (props.isManagementView || props.direction !== 'inbound') return false
   if (authorization.granteeType !== 'system_account') return false
+  if (!hasManualSource(authorization)) return false
   return authorization.status !== 'revoked' && authorization.status !== 'returned'
 }
 

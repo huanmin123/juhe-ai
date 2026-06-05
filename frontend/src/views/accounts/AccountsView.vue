@@ -10,11 +10,12 @@
       :is-management-view="isManagementView"
       :providers="availableProviders"
       :refresh-loading="loading"
+      :selected-count="selectedAccounts.length"
       :status-options="statusOptions"
       :system-accounts="systemAccounts"
       :system-accounts-loading="systemAccountOptionsLoading"
       @create="openCreate"
-      @export="exportFilteredAccounts"
+      @export="exportAccounts"
       @group-dropdown="handleFilterGroupOptionsDropdown"
       @group-search="handleFilterGroupOptionsSearch"
       @import="openImportModal"
@@ -45,13 +46,11 @@
     </AccountFilterToolbar>
 
     <AccountBatchToolbar
-      :can-export="isManagementView"
-      :export-loading="exportLoading"
       :selected-count="selectedAccounts.length"
       @clear="clearSelection"
       @disable="batchSetStatus('disabled')"
       @enable="batchSetStatus('active')"
-      @export="exportSelectedAccounts"
+      @restore="batchRestoreSelected"
       @test="batchTestSelected"
     />
 
@@ -68,7 +67,7 @@
       :can-clone="canCloneAccount"
       :can-delete="canDeleteAccount"
       :can-edit="canEditAccount"
-      :can-select="canBatchManageAccount"
+      :can-select="canSelectAccountForBatch"
       :columns="managedColumns"
       :group-name="groupNameForAccount"
       :is-management-view="isManagementView"
@@ -92,6 +91,7 @@
       @menu-click="handleAccountMenuClick"
       @mobile-load-more="loadMoreMobileAccounts"
       @mobile-refresh="refreshMobileAccounts"
+      @return-authorization="returnAuthorizationAccount"
       @sort-change="handleAccountSortChange"
       @test="openTestModal"
       @toggle-selection="toggleAccountSelection"
@@ -218,17 +218,17 @@ import {
 } from './accountTableColumns'
 import {
   accountMenuItems,
-  canBatchManageAccount,
   canCloneAccount,
   canDeleteAccount,
-  canEditAccount
+  canEditAccount,
+  canSelectAccountForBatch
 } from './accountRules'
 import { useAccountBatchActions } from './useAccountBatchActions'
 import { useAccountEditForm } from './useAccountEditForm'
 import { useAccountGroupOptions } from './useAccountGroupOptions'
 import { useAccountListData } from './useAccountListData'
 import { useAccountMenuActions } from './useAccountMenuActions'
-import { accountOperationSystemAccountId } from './accountOperationScope'
+import { accountOperationScopeParams, accountOperationSystemAccountId } from './accountOperationScope'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountTestModal } from './useAccountTestModal'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
@@ -494,6 +494,7 @@ watch([groupOptionProviderCode, groupOptionSystemAccountId], () => {
   resetGroupOptionsSearch()
 })
 const {
+  batchRestoreSelected,
   batchSetStatus,
   batchTestSelected
 } = useAccountBatchActions({
@@ -524,7 +525,7 @@ const rowSelection = computed(() => ({
   onChange: (selectedRowKeys: Array<string | number>) => {
     selectedAccountIds.value = selectedRowKeys.map((key) => String(key))
   },
-  getCheckboxProps: (account: AccountSummary) => ({ disabled: !canBatchManageAccount(account) })
+  getCheckboxProps: (account: AccountSummary) => ({ disabled: !canSelectAccountForBatch(account) })
 }))
 
 function isAccountSelected(accountId: string): boolean {
@@ -532,7 +533,7 @@ function isAccountSelected(accountId: string): boolean {
 }
 
 function toggleAccountSelection(account: AccountSummary) {
-  if (!canBatchManageAccount(account)) return
+  if (!canSelectAccountForBatch(account)) return
   selectedAccountIds.value = isAccountSelected(account.id)
     ? selectedAccountIds.value.filter((id) => id !== account.id)
     : [...selectedAccountIds.value, account.id]
@@ -629,10 +630,6 @@ function openImportModal() {
   importModalOpen.value = true
 }
 
-async function exportSelectedAccounts() {
-  await exportAccountsByIds(selectedAccounts.value)
-}
-
 async function exportFilteredAccounts() {
   if (!isManagementView.value) return
   exportLoading.value = true
@@ -651,11 +648,19 @@ async function exportFilteredAccounts() {
   }
 }
 
+async function exportAccounts() {
+  if (selectedAccounts.value.length) {
+    await exportAccountsByIds(selectedAccounts.value)
+    return
+  }
+  await exportFilteredAccounts()
+}
+
 async function exportAccountsByIds(sourceAccounts: AccountSummary[]) {
   if (!isManagementView.value) return
   const exportableAccounts = sourceAccounts.filter(canExportAccount)
   if (!exportableAccounts.length) {
-    message.warning('当前没有可导出的自有 AI 账户')
+    message.warning('所选账户没有可导出的自有 AI 账户')
     return
   }
   if (exportableAccounts.length > ACCOUNT_EXPORT_MAX_ACCOUNTS) {
@@ -669,7 +674,9 @@ async function exportAccountsByIds(sourceAccounts: AccountSummary[]) {
       accountScopeParams.value
     )
     downloadJsonFile(accountExportFilename(result.summary.accounts), result.document)
-    const skippedText = result.summary.skippedAccounts ? `，跳过 ${result.summary.skippedAccounts} 个` : ''
+    const skippedSelectedCount = sourceAccounts.length - exportableAccounts.length
+    const skippedCount = (result.summary.skippedAccounts ?? 0) + skippedSelectedCount
+    const skippedText = skippedCount ? `，跳过 ${skippedCount} 个不可导出账户` : ''
     message.success(`已导出 ${result.summary.accounts} 个账户${skippedText}`)
   } catch (error) {
     console.error(error)
@@ -735,19 +742,46 @@ async function handleImportCompleted() {
   await loadData({ forceOptions: true })
 }
 
+async function removeLoadedRemovedAccount(id: string): Promise<void> {
+  removeLoadedAccount(id)
+  selectedAccountIds.value = selectedAccountIds.value.filter((selectedId) => selectedId !== id)
+  void loadData({ quiet: true })
+}
+
+async function returnAuthorizationAccount(id: string) {
+  const account = accountById.value.get(id)
+  if (!account || account.accessType !== 'authorized') {
+    message.warning('只有授权账户可以归还')
+    return
+  }
+  try {
+    if (isManagementView.value) {
+      await api.accounts.returnAuthorization(id, accountOperationScopeParams(account, accountScopeParams.value))
+    } else {
+      await api.myAccounts.returnAuthorization(id)
+    }
+    await removeLoadedRemovedAccount(id)
+    message.success('授权账户已归还')
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '归还授权账户失败'))
+  }
+}
+
 async function removeAccount(id: string) {
   const account = accountById.value.get(id)
-  const isAuthorizedAccountDelete = account?.accessType === 'authorized'
+  if (account?.accessType === 'authorized') {
+    message.warning('授权账户请使用归还操作')
+    return
+  }
   try {
     if (isManagementView.value) {
       await api.accounts.delete(id, accountScopeParams.value)
     } else {
       await api.myAccounts.delete(id)
     }
-    removeLoadedAccount(id)
-    selectedAccountIds.value = selectedAccountIds.value.filter((selectedId) => selectedId !== id)
-    message.success(isAuthorizedAccountDelete ? '授权账户已删除，个人授权已归还' : '账户已删除，关联记录将在一个月后由后台物理清理')
-    void loadData({ quiet: true })
+    await removeLoadedRemovedAccount(id)
+    message.success('账户已删除，关联记录将在一个月后由后台物理清理')
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除账户失败'))

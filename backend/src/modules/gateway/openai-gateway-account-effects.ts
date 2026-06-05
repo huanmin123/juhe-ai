@@ -4,7 +4,8 @@ import { requestDbService } from '../db-service/db-service-ipc.js'
 import { type GatewaySettings } from './account-error-policy.service.js'
 import {
   enqueueGatewayAccountErrorHandlingSideEffect,
-  recordGatewayAccountFailureForPrecheck
+  recordGatewayAccountFailureForPrecheck,
+  suppressGatewayAccountLocally
 } from './gateway-account-side-effects.service.js'
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
 import { parseOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
@@ -52,22 +53,26 @@ export function handleStreamFailure(
   }
 
   recordGatewayUpstreamBucketFailure(account, '流式响应失败')
+  const reasonWithCode = errorCode ? `${errorCode}；${reason}` : reason
   if (usageContext?.trafficSource === 'gateway') {
+    const runtimeReason = `流式响应失败：${reason}`
+    suppressGatewayAccountLocally(account, settings, runtimeReason)
     recordGatewayAccountFailureForPrecheck(account, settings, {
       systemAccountId: usageContext.systemAccountId,
       groupId: usageContext.groupId,
       apiKeyId: usageContext.apiKeyId,
       clientIp: usageContext.clientIp,
       endpoint: usageContext.endpoint,
-      reason: `流式响应失败：${reason}`
+      reason: runtimeReason
+    })
+  } else {
+    applyAccountErrorHandlingWithCacheInvalidation(account, {
+      success: false,
+      errorMessage: reasonWithCode,
+      settings,
+      trafficSource: usageContext?.trafficSource
     })
   }
-  applyAccountErrorHandlingWithCacheInvalidation(account, {
-    success: false,
-    errorMessage: errorCode ? `${errorCode}；${reason}` : reason,
-    settings,
-    trafficSource: usageContext?.trafficSource
-  })
   if (!context.outputReceived) {
     getRequestLogger().warn({
       event: 'gateway_stream_failure_account_side_effect_enqueued',
@@ -76,7 +81,7 @@ export function handleStreamFailure(
       errorCode,
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten
-    }, '流式失败已写入账号错误处理队列')
+    }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态屏障' : '流式失败已写入账号错误处理队列')
   }
 }
 

@@ -26,6 +26,7 @@ const emit = defineEmits<{
   (event: 'delete'): void
   (event: 'edit'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
+  (event: 'return-authorization'): void
   (event: 'test'): void
 }>()
 
@@ -46,7 +47,11 @@ function handleActionClick(key: string) {
     emit('bind-group')
     return
   }
-  if (key === 'delete' || key === 'return') {
+  if (key === 'return-authorization') {
+    emit('return-authorization')
+    return
+  }
+  if (key === 'delete') {
     emit('delete')
     return
   }
