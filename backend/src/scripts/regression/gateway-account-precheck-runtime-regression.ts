@@ -21,11 +21,13 @@ logger.level = 'silent'
 
 const [
   gatewaySideEffects,
+  accountConcurrency,
   databaseModule,
   repositories,
   { handleDbServiceOperation }
 ] = await Promise.all([
   import('../../modules/gateway/gateway-account-side-effects.service.js'),
+  import('../../shared/account-concurrency.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/db-service/db-service-handlers.js')
@@ -40,9 +42,11 @@ try {
   await testStalePrecheckAfterManualRestoreIsSkipped()
   await testFailedUsageDoesNotMakePrecheckStale()
   await testFreshPrecheckStillMarksTemporaryUnavailable()
+  await testPrecheckWaitsForInFlightConcurrencyBeforeMarking()
 
   console.log('网关账号事前确认运行态与过期写回保护回归通过')
 } finally {
+  accountConcurrency.clearAccountConcurrency()
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   try {
     databaseModule.closeStorageDatabases()
@@ -245,6 +249,35 @@ async function testFreshPrecheckStillMarksTemporaryUnavailable(): Promise<void> 
   assert.match(afterPrecheck?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '当前预检查失败应按传入真实错误摘要写入最近错误')
 }
 
+async function testPrecheckWaitsForInFlightConcurrencyBeforeMarking(): Promise<void> {
+  const { account, group, gatewayAccount } = createGatewayAccount('预检查等待并发归零')
+  const concurrencySlot = accountConcurrency.tryAcquireAccountConcurrency(account.id, 10)
+  assert.equal(concurrencySlot.acquired, true, '测试应能先占用账号并发槽')
+
+  await withDbServiceRole(() => gatewaySideEffects.completeGatewayAccountPrecheckForTest(gatewayAccount, undefined, {
+    systemAccountId: 'sys_admin',
+    groupId: group.id,
+    apiKeyId: 'precheck-concurrency-key',
+    clientIp: '10.20.30.40',
+    endpoint: '/v1/responses',
+    reason: '模拟探针失败但仍有存量请求'
+  }))
+
+  assertActiveAccount(account.id, '账号仍有在途并发时，事前确认失败不能立刻写入临时不可调用')
+  const runtime = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]
+  assert.equal(runtime?.status, 'precheck_pending', '等待并发归零期间应保持事前确认运行态')
+  assert.match(runtime?.reason ?? '', /等待 1 个在途请求结束/, '运行态原因应说明正在等待并发归零')
+
+  await withDbServiceRole(async () => {
+    concurrencySlot.release()
+    await waitFor(() => repositories.findAccountSummary(account.id, adminAccess)?.status === 'temporary_unavailable', 1000)
+  })
+
+  const afterRelease = repositories.findAccountSummary(account.id, adminAccess)
+  assert.equal(afterRelease?.status, 'temporary_unavailable', '账号并发归零后，探针失败状态应允许写入临时不可调用')
+  assert.match(afterRelease?.lastErrorMessage ?? '', /模拟探针失败但仍有存量请求/, '并发归零后写库应保留探针失败原因')
+}
+
 function createGatewayAccount(name: string, credentialExtras: Record<string, unknown> = {}): {
   account: AccountSummary
   group: ReturnType<typeof repositories.createGroup>
@@ -334,4 +367,15 @@ async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (predicate()) {
+      return
+    }
+    await delay(20)
+  }
+  assert.fail(`等待条件超时 ${timeoutMs}ms`)
 }

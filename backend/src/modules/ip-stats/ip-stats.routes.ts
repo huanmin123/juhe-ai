@@ -22,6 +22,8 @@ const listQuerySchema = z.object({
   status: z.enum(['all', 'normal', 'blacklisted']).optional(),
   startDate: z.string().trim().optional(),
   endDate: z.string().trim().optional(),
+  lastUsedStartDate: z.string().trim().optional(),
+  lastUsedEndDate: z.string().trim().optional(),
   sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
   sortOrder: z.enum(['asc', 'desc']).optional()
 })
@@ -44,6 +46,7 @@ ipStatsRouter.get('/', (req, res) => {
   }
   res.json(ok(listClientIpStats({
     ...parsed.data,
+    lastUsedSortScope: 'global',
     sortField: parsed.data.sortField as ClientIpStatsSortField | undefined
   })))
 })

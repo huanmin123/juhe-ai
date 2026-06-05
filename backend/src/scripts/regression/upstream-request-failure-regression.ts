@@ -112,20 +112,20 @@ async function main(): Promise<void> {
     }, access)
     const apiKey = createRegressionApiKey(group.id, 'sk-request-failure-regression')
     dispatchRaceSecondAccountId = secondAccount.id
-    const waitGroup = repositories.createGroup({ name: '本地屏蔽等待回归分组', providerCode: 'openai', enabled: true }, access)
-    const waitAccount = repositories.createAccount({
+    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽快速失败回归分组', providerCode: 'openai', enabled: true }, access)
+    const fastFailAccount = repositories.createAccount({
       providerCode: 'openai',
-      name: '单账号等待回归账户',
+      name: '单账号快速失败回归账户',
       type: 'api_key',
       credentials: {
-        api_key: 'sk-request-failure-wait',
+        api_key: 'sk-request-failure-fast-fail',
         base_url: upstreamBaseUrl
       },
-      groupId: waitGroup.id,
+      groupId: fastFailGroup.id,
       status: 'active',
       schedulable: true
     }, access)
-    const waitApiKey = createRegressionApiKey(waitGroup.id, 'sk-request-failure-wait-key')
+    const fastFailApiKey = createRegressionApiKey(fastFailGroup.id, 'sk-request-failure-fast-fail-key')
     const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'openai', enabled: true }, access)
     const singleFailureAccount = repositories.createAccount({
       providerCode: 'openai',
@@ -457,48 +457,29 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'single_account_wait_recover_success'
-    accountSideEffects.suppressGatewayAccountLocallyForTest(waitAccount.id, 40, '单账号等待回归')
+    currentScenario = 'single_account_local_suppression_fast_fail'
+    accountSideEffects.suppressGatewayAccountLocallyForTest(fastFailAccount.id, 1_000, '单账号快速失败回归')
+    const fastFailStartedAtMs = Date.now()
     const waitResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${waitApiKey.key}`,
+        authorization: `Bearer ${fastFailApiKey.key}`,
         'content-type': 'application/json'
       },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'single account should wait until local suppression releases' }],
+        messages: [{ role: 'user', content: 'single account local suppression should fail fast' }],
         stream: false
       })
     })
     const waitResponseText = await waitResponse.text()
-    assert.equal(waitResponse.status, 200, `单账号处于本地屏蔽时应先等待释放再请求，实际 HTTP ${waitResponse.status}: ${waitResponseText}`)
-    assert.equal(waitResponseText, singleAccountWaitSuccessBody, `单账号等待释放后的响应体异常：${waitResponseText}`)
-    assert.equal(singleAccountWaitHitCount, 1, `单账号等待释放后应只命中一次上游，实际 ${singleAccountWaitHitCount}`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '单账号屏蔽释放后本地屏蔽计数应恢复为 0')
-
-    currentScenario = 'single_account_wait_extended_recover_success'
-    accountSideEffects.suppressGatewayAccountLocallyForTest(waitAccount.id, 60, '单账号等待续期回归')
-    const extendedWaitResponsePromise = fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${waitApiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'single account wait should continue after suppression extension' }],
-        stream: false
-      })
-    })
-    await delay(20)
-    accountSideEffects.suppressGatewayAccountLocallyForTest(waitAccount.id, 120, '单账号等待续期回归-续期')
-    const extendedWaitResponse = await extendedWaitResponsePromise
-    const extendedWaitResponseText = await extendedWaitResponse.text()
-    assert.equal(extendedWaitResponse.status, 200, `单账号本地屏蔽等待被续期时应继续等到释放，实际 HTTP ${extendedWaitResponse.status}: ${extendedWaitResponseText}`)
-    assert.equal(extendedWaitResponseText, singleAccountExtendedWaitSuccessBody, `单账号等待续期释放后的响应体异常：${extendedWaitResponseText}`)
-    assert.equal(singleAccountExtendedWaitHitCount, 1, `单账号续期等待释放后应只命中一次上游，实际 ${singleAccountExtendedWaitHitCount}`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '单账号续期屏蔽释放后本地屏蔽计数应恢复为 0')
+    const fastFailElapsedMs = Date.now() - fastFailStartedAtMs
+    assert.equal(waitResponse.status, 503, `单账号处于本地屏蔽时应立即返回 503，实际 HTTP ${waitResponse.status}: ${waitResponseText}`)
+    assert.match(waitResponseText, /所有上游账户正在临时隔离/, `单账号本地屏蔽快速失败应说明临时隔离：${waitResponseText}`)
+    assert.equal(waitResponse.headers.get('retry-after'), '1', '单账号本地屏蔽快速失败应返回最短 Retry-After')
+    assert(fastFailElapsedMs < 800, `单账号本地屏蔽不应等待释放，实际耗时 ${fastFailElapsedMs}ms`)
+    assert.equal(singleAccountLocalSuppressionFastFailHitCount, 0, `单账号本地屏蔽快速失败不应命中上游，实际 ${singleAccountLocalSuppressionFastFailHitCount}`)
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
     currentScenario = 'single_account_failure_default_cooldown'
     gatewayCache.clearGatewayRuntimeCache()
@@ -521,9 +502,9 @@ async function main(): Promise<void> {
     assertAccountsRuntimeSuppressedActive([singleFailureAccount], /上游账号返回非成功状态：HTTP 418|generic upstream failure/, '单账号普通上游失败应进入运行态屏障而不是立即写库')
 
     usageRecordQueue.flushAllUsageRecordQueue()
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount, waitAccount], '已恢复的主测试账号最终应保持正常')
+    assertAccountsActive([firstAccount, secondAccount, thirdAccount, fastFailAccount], '已恢复的主测试账号最终应保持正常')
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；普通上游失败会按临时状态配置原地重试，用尽后切号并进入运行态屏障；后续账号成功不掩盖前序账号屏障；全部失败返回统一网关错误；单账号屏蔽时会等待释放并支持续期等待')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；普通上游失败会按临时状态配置原地重试，用尽后切号并进入运行态屏障；后续账号成功不掩盖前序账号屏障；全部失败返回统一网关错误；单账号本地屏蔽耗尽时快速失败且不命中上游')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -549,8 +530,7 @@ type RegressionScenario =
   | 'non_stream_first_byte_timeout_switch_account_success'
   | 'non_stream_body_interrupted_after_output_client_retry'
   | 'dispatch_loop_local_suppression_race'
-  | 'single_account_wait_recover_success'
-  | 'single_account_wait_extended_recover_success'
+  | 'single_account_local_suppression_fast_fail'
   | 'single_account_failure_default_cooldown'
 
 let currentScenario: RegressionScenario = 'invalid_request_confirmation'
@@ -570,8 +550,7 @@ let nonStreamBodyInterruptedSecondAccountHitCount = 0
 let dispatchRaceFirstAccountHitCount = 0
 let dispatchRaceSecondAccountHitCount = 0
 let dispatchRaceThirdAccountHitCount = 0
-let singleAccountWaitHitCount = 0
-let singleAccountExtendedWaitHitCount = 0
+let singleAccountLocalSuppressionFastFailHitCount = 0
 let singleFailureHitCount = 0
 const invalidRequestRejectedRequestMessage = 'Invalid value for model level: expected one of low, medium, high.'
 const invalidRequestRejectedRequestBody = JSON.stringify({
@@ -669,25 +648,13 @@ const nonStreamBodyInterruptedRetrySuccessBody = JSON.stringify({
   ],
   usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
 })
-const singleAccountWaitSuccessBody = JSON.stringify({
-  id: 'chatcmpl-single-account-wait-regression',
+const singleAccountLocalSuppressionShouldNotHitBody = JSON.stringify({
+  id: 'chatcmpl-single-account-local-suppression-should-not-hit',
   object: 'chat.completion',
   choices: [
     {
       index: 0,
-      message: { role: 'assistant', content: 'ok after local suppression wait' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const singleAccountExtendedWaitSuccessBody = JSON.stringify({
-  id: 'chatcmpl-single-account-extended-wait-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok after extended local suppression wait' },
+      message: { role: 'assistant', content: 'should not hit upstream while locally suppressed' },
       finish_reason: 'stop'
     }
   ],
@@ -708,16 +675,10 @@ const dispatchRaceSuccessBody = JSON.stringify({
 
 function createRejectedRequestUpstream(): http.Server {
   return http.createServer((req, res) => {
-    if (currentScenario === 'single_account_wait_recover_success') {
-      singleAccountWaitHitCount += 1
+    if (currentScenario === 'single_account_local_suppression_fast_fail') {
+      singleAccountLocalSuppressionFastFailHitCount += 1
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(singleAccountWaitSuccessBody)
-      return
-    }
-    if (currentScenario === 'single_account_wait_extended_recover_success') {
-      singleAccountExtendedWaitHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(singleAccountExtendedWaitSuccessBody)
+      res.end(singleAccountLocalSuppressionShouldNotHitBody)
       return
     }
     if (currentScenario === 'dispatch_loop_local_suppression_race') {
@@ -861,8 +822,7 @@ function totalUpstreamHitCount(): number {
     + dispatchRaceFirstAccountHitCount
     + dispatchRaceSecondAccountHitCount
     + dispatchRaceThirdAccountHitCount
-    + singleAccountWaitHitCount
-    + singleAccountExtendedWaitHitCount
+    + singleAccountLocalSuppressionFastFailHitCount
     + singleFailureHitCount
 }
 
@@ -936,10 +896,6 @@ async function closeServer(server: http.Server | undefined): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.close((error) => error ? rejectPromise(error) : resolvePromise())
   })
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 }
 
 await main()

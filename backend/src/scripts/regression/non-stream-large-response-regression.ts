@@ -6,6 +6,7 @@ import http from 'node:http'
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { gatewayRawBodyHardLimit } from '../../modules/gateway/openai-gateway-request-body.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-large-response-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -37,10 +38,9 @@ const [
 ])
 
 const largeFieldSizeBytes = 8 * 1024 * 1024
-const gatewayRawBodyLimit = '2mb'
 const app = express()
 app.use(requestContextMiddleware)
-app.use('/v1', express.raw({ type: () => true, limit: gatewayRawBodyLimit }), captureGatewayRawBody, openAIGatewayRouter)
+app.use('/v1', express.raw({ type: () => true, limit: gatewayRawBodyHardLimit }), captureGatewayRawBody, openAIGatewayRouter)
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 

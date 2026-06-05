@@ -6,8 +6,8 @@ import type { AccountUsageStatsRange } from '../domain/types.js'
 import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders } from './query-utils.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
-import { dateKey, normalizeAccountUsageStatsRange, usageStatsTimezone } from './usage-stats-helpers.js'
-import { fixedUsageStatsDateKeys } from './usage-stats-window-helpers.js'
+import { dateKey, normalizeAccountUsageStatsRange, startOfZonedDateKeyIso, usageStatsTimezone } from './usage-stats-helpers.js'
+import { fixedUsageStatsDateKeys, nextDateKey } from './usage-stats-window-helpers.js'
 import {
   USAGE_STATS_RECORD_SELECT_COLUMNS,
   type StatsJobStateRow,
@@ -19,6 +19,7 @@ import { usageStatsAccumulatorFromRecord } from './usage-stats-aggregation.js'
 export type ClientIpPolicyStatus = 'active' | 'disabled'
 export type ClientIpStatsSortField = 'requestCount' | 'successCount' | 'errorCount' | 'errorRate' | 'totalTokens' | 'totalCost' | 'activeDays' | 'lastUsedAt'
 export type ClientIpPolicyFilter = 'all' | 'normal' | 'blacklisted'
+export type ClientIpLastUsedSortScope = 'range' | 'global'
 
 export interface NormalizedClientIp {
   clientIp: string
@@ -50,6 +51,7 @@ export interface ClientIpUsageSummary {
 export interface ClientIpStatsRow {
   ipHash: string
   aggregateIpKey: string
+  lastSeenAt?: string
   status: ClientIpPolicyFilter
   rangeUsage: ClientIpUsageSummary
 }
@@ -61,6 +63,9 @@ export interface ClientIpStatsListOptions {
   status?: ClientIpPolicyFilter
   startDate?: string
   endDate?: string
+  lastUsedStartDate?: string
+  lastUsedEndDate?: string
+  lastUsedSortScope?: ClientIpLastUsedSortScope
   sortField?: ClientIpStatsSortField
   sortOrder?: 'asc' | 'desc'
 }
@@ -363,7 +368,9 @@ function currentClientIpRangeWindows(): Array<{ startDate: string; endDate: stri
 
 export function listClientIpStats(options: ClientIpStatsListOptions = {}): ClientIpStatsListResult {
   const database = getStatsDatabase()
-  const range = normalizeAccountUsageStatsRange(options, usageStatsTimezone())
+  const timezone = usageStatsTimezone()
+  const range = normalizeAccountUsageStatsRange(options, timezone)
+  const lastUsedRange = normalizeClientIpLastUsedRange(options, timezone)
   const rangeReady = clientIpUsageRangeWindowReady(database, range.startDate, range.endDate)
   const pageSize = boundedPageSize(options.pageSize)
   const page = boundedPage(options.page, pageSize)
@@ -380,11 +387,12 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
   }
   const offset = (page - 1) * pageSize
   const policyNow = nowIso()
-  const where = buildClientIpRangeWhere(options, range, policyNow)
-  const orderBy = clientIpStatsOrderBy(options.sortField, options.sortOrder)
+  const where = buildClientIpRangeWhere(options, range, policyNow, lastUsedRange, timezone)
+  const orderBy = clientIpStatsOrderBy(options.sortField, options.sortOrder, options.lastUsedSortScope)
+  const fromClause = clientIpStatsFromClause(options)
   const rows = database.prepare(`
     SELECT
-      registry.ip_hash, registry.aggregate_ip_key,
+      registry.ip_hash, registry.aggregate_ip_key, registry.last_seen_at AS registry_last_seen_at,
       range_stats.request_count, range_stats.success_count, range_stats.error_count,
       range_stats.input_tokens, range_stats.output_tokens, range_stats.cache_read_tokens,
       range_stats.cache_read_cost_usd, range_stats.total_cost_usd,
@@ -394,10 +402,9 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
       range_stats.average_first_token_ms,
       range_stats.active_days, range_stats.last_used_at, range_stats.last_error_at,
       CASE WHEN ${activePolicyExistsSql('registry.ip_hash')} THEN 1 ELSE 0 END AS blacklisted
-    FROM client_ip_usage_range_windows range_stats
-    INNER JOIN client_ip_registry registry ON registry.ip_hash = range_stats.ip_hash
+    FROM ${fromClause}
     ${where.clause}
-    ORDER BY ${orderBy}, range_stats.ip_hash ASC
+    ORDER BY ${orderBy}
     LIMIT ? OFFSET ?
   `).all(policyNow, ...where.params, pageSize + 1, offset) as unknown as ClientIpStatsRangeRow[]
   const pageRows = rows.slice(0, pageSize)
@@ -1011,9 +1018,20 @@ function addAccumulatorToClientIpAggregate(target: ClientIpAggregate, accumulato
   }
 }
 
-function buildClientIpRangeWhere(options: ClientIpStatsListOptions, range: AccountUsageStatsRange, policyNow: string): ClientIpRangeWhere {
+function buildClientIpRangeWhere(
+  options: ClientIpStatsListOptions,
+  range: AccountUsageStatsRange,
+  policyNow: string,
+  lastUsedRange: AccountUsageStatsRange | undefined,
+  timezone: string
+): ClientIpRangeWhere {
   const clauses = ['range_stats.start_date = ?', 'range_stats.end_date = ?']
   const params: SQLInputValue[] = [range.startDate, range.endDate]
+  const lastUsedWindow = lastUsedRange ? clientIpLastUsedIsoWindow(lastUsedRange, timezone) : undefined
+  if (lastUsedWindow) {
+    clauses.push('registry.last_seen_at >= ? AND registry.last_seen_at < ?')
+    params.push(lastUsedWindow.startIso, lastUsedWindow.endExclusiveIso)
+  }
   const keyword = options.keyword?.trim()
   if (keyword) {
     const keywordPrefix = `${escapeSqlLike(keyword)}%`
@@ -1034,6 +1052,21 @@ function buildClientIpRangeWhere(options: ClientIpStatsListOptions, range: Accou
   }
 }
 
+function normalizeClientIpLastUsedRange(options: ClientIpStatsListOptions, timezone: string): AccountUsageStatsRange | undefined {
+  if (!options.lastUsedStartDate && !options.lastUsedEndDate) return undefined
+  return normalizeAccountUsageStatsRange({
+    startDate: options.lastUsedStartDate,
+    endDate: options.lastUsedEndDate
+  }, timezone)
+}
+
+function clientIpLastUsedIsoWindow(range: AccountUsageStatsRange, timezone: string): { startIso: string; endExclusiveIso: string } | undefined {
+  const startIso = startOfZonedDateKeyIso(range.startDate, timezone)
+  const endExclusiveIso = startOfZonedDateKeyIso(nextDateKey(range.endDate), timezone)
+  if (!startIso || !endExclusiveIso) return undefined
+  return { startIso, endExclusiveIso }
+}
+
 function activePolicyExistsSql(ipHashExpression: string): string {
   return `EXISTS (
     SELECT 1
@@ -1045,27 +1078,36 @@ function activePolicyExistsSql(ipHashExpression: string): string {
   )`
 }
 
-function clientIpStatsOrderBy(field: ClientIpStatsSortField | undefined, order: 'asc' | 'desc' | undefined): string {
+function clientIpStatsFromClause(options: ClientIpStatsListOptions): string {
+  if (options.sortField === 'lastUsedAt' && options.lastUsedSortScope === 'global') {
+    return 'client_ip_registry registry INDEXED BY idx_client_ip_registry_last_seen INNER JOIN client_ip_usage_range_windows range_stats ON registry.ip_hash = range_stats.ip_hash'
+  }
+  return 'client_ip_usage_range_windows range_stats INNER JOIN client_ip_registry registry ON registry.ip_hash = range_stats.ip_hash'
+}
+
+function clientIpStatsOrderBy(field: ClientIpStatsSortField | undefined, order: 'asc' | 'desc' | undefined, lastUsedSortScope: ClientIpLastUsedSortScope = 'range'): string {
   const direction = order === 'asc' ? 'ASC' : 'DESC'
   switch (field) {
     case 'successCount':
-      return `range_stats.success_count ${direction}`
+      return `range_stats.success_count ${direction}, range_stats.ip_hash ASC`
     case 'errorCount':
-      return `range_stats.error_count ${direction}`
+      return `range_stats.error_count ${direction}, range_stats.ip_hash ASC`
     case 'errorRate':
-      return `CASE WHEN range_stats.request_count > 0 THEN CAST(range_stats.error_count AS REAL) / range_stats.request_count ELSE 0 END ${direction}`
+      return `CASE WHEN range_stats.request_count > 0 THEN CAST(range_stats.error_count AS REAL) / range_stats.request_count ELSE 0 END ${direction}, range_stats.ip_hash ASC`
     case 'totalTokens':
-      return `(range_stats.input_tokens + range_stats.output_tokens) ${direction}`
+      return `(range_stats.input_tokens + range_stats.output_tokens) ${direction}, range_stats.ip_hash ASC`
     case 'activeDays':
-      return `range_stats.active_days ${direction}`
+      return `range_stats.active_days ${direction}, range_stats.ip_hash ASC`
     case 'lastUsedAt':
-      return `range_stats.last_used_at ${direction}`
+      return lastUsedSortScope === 'global'
+        ? `registry.last_seen_at ${direction}, registry.ip_hash ${direction === 'ASC' ? 'DESC' : 'ASC'}`
+        : `range_stats.last_used_at ${direction}, range_stats.ip_hash ASC`
     case 'requestCount':
-      return `range_stats.request_count ${direction}`
+      return `range_stats.request_count ${direction}, range_stats.ip_hash ASC`
     case 'totalCost':
-      return `range_stats.total_cost_usd ${direction}`
+      return `range_stats.total_cost_usd ${direction}, range_stats.ip_hash ASC`
     default:
-      return 'range_stats.request_count DESC'
+      return 'range_stats.request_count DESC, range_stats.ip_hash ASC'
   }
 }
 
@@ -1075,6 +1117,7 @@ function mapClientIpStatsRangeRow(row: ClientIpStatsRangeRow): ClientIpStatsRow 
   return {
     ipHash: row.ip_hash,
     aggregateIpKey: row.aggregate_ip_key,
+    lastSeenAt: row.registry_last_seen_at ?? undefined,
     status: blacklisted ? 'blacklisted' : 'normal',
     rangeUsage
   }
@@ -1343,6 +1386,7 @@ interface ClientIpStatsUsageRow {
 interface ClientIpStatsRangeRow extends ClientIpStatsUsageRow {
   ip_hash: string
   aggregate_ip_key: string
+  registry_last_seen_at: string | null
   blacklisted: number
 }
 

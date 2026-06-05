@@ -21,7 +21,6 @@ import {
 import { type AuditCaptureContext } from './audit-capture.service.js'
 import {
   filterLocallySuppressedGatewayAccounts,
-  waitForLocalAccountSuppressionRelease,
   type LocalAccountSuppressionFilterResult
 } from './gateway-account-side-effects.service.js'
 import {
@@ -88,7 +87,6 @@ import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source
 import type { GroupSchedulingPolicy } from '../../domain/types.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 
-const defaultLocalAccountSuppressionWaitMs = 60_000
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
   groupId: string
@@ -707,8 +705,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     systemAccountId,
     apiKeyId,
     groupId,
-    signal,
-    groupSchedulingPolicy: groupAccess.schedulingPolicy
+    signal
   })
   if (!localSuppressionFilter) {
     return undefined
@@ -1305,13 +1302,12 @@ async function resolveLocalSuppressionFilter(input: {
   apiKeyId?: string
   groupId: string
   signal?: AbortSignal
-  groupSchedulingPolicy?: GroupSchedulingPolicy
 }): Promise<LocalAccountSuppressionFilterResult<UpstreamAccount> | undefined> {
   const filter = filterLocallySuppressedGatewayAccounts(input.accounts)
   if (filter.suppressedCount > 0) {
     logger.warn({
       event: filter.allSuppressed
-        ? 'gateway_local_account_suppression_waiting'
+        ? 'gateway_local_account_suppression_exhausted'
         : 'gateway_local_account_suppression_applied',
       suppressedCount: filter.suppressedCount,
       suppressedAccountIds: filter.suppressedAccountIds,
@@ -1321,7 +1317,7 @@ async function resolveLocalSuppressionFilter(input: {
       systemAccountId: input.systemAccountId,
       apiKeyId: input.apiKeyId
     }, filter.allSuppressed
-      ? '候选上游账号均处于本地短期屏蔽，进入等待'
+      ? '候选上游账号均处于本地短期屏蔽，立即返回'
       : '网关本地短期屏蔽账号已应用到候选列表')
     input.auditCapture.addGatewayMetadata({
       label: 'local_account_suppression',
@@ -1338,40 +1334,14 @@ async function resolveLocalSuppressionFilter(input: {
     return filter
   }
 
-  const waitResult = await waitForLocalAccountSuppressionRelease(input.accounts, {
-    maxWaitMs: localAccountSuppressionMaxWaitMs(input.groupSchedulingPolicy),
-    signal: input.signal
-  })
-  input.auditCapture.addGatewayMetadata({
-    label: 'local_account_suppression_wait',
-    metadata: {
-      ready: waitResult.ready,
-      reason: waitResult.ready ? undefined : waitResult.reason,
-      waitedMs: waitResult.waitedMs,
-      remainingSuppressedCount: waitResult.filter.suppressedCount,
-      nextRetryAfterMs: waitResult.filter.nextRetryAfterMs
-    }
-  })
-
   if (input.signal?.aborted || input.res.writableEnded) {
     return undefined
-  }
-  if (waitResult.ready) {
-    logger.info({
-      event: 'gateway_local_account_suppression_released',
-      waitedMs: waitResult.waitedMs,
-      remainingSuppressedCount: waitResult.filter.suppressedCount,
-      groupId: input.groupId,
-      systemAccountId: input.systemAccountId,
-      apiKeyId: input.apiKeyId
-    }, '本地短期屏蔽等待结束，已有上游账号可重新调度')
-    return waitResult.filter
   }
 
   const statusCode = 503
   const responsePayload = gatewayErrorPayload('所有上游账户正在临时隔离，请稍后重试', 'service_unavailable')
-  if (!input.res.headersSent && waitResult.filter.nextRetryAfterMs !== undefined) {
-    input.res.setHeader('Retry-After', String(Math.max(1, Math.ceil(waitResult.filter.nextRetryAfterMs / 1000))))
+  if (!input.res.headersSent && filter.nextRetryAfterMs !== undefined) {
+    input.res.setHeader('Retry-After', String(Math.max(1, Math.ceil(filter.nextRetryAfterMs / 1000))))
   }
   sendGatewayFailureResponse({
     req: input.req,
@@ -1476,13 +1446,6 @@ function clientIpConcurrencyFailureMessage(decision: ClientIpConcurrencyDecision
     return '当前 IP 并发排队等待超时，请稍后重试'
   }
   return '当前 IP 并发已达到分组限制，请稍后重试'
-}
-
-function localAccountSuppressionMaxWaitMs(policy?: GroupSchedulingPolicy): number {
-  const value = policy?.maxQueueWaitMs
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.max(0, Math.trunc(value))
-    : defaultLocalAccountSuppressionWaitMs
 }
 
 function recordClientIpRequestErrorSample(input: {

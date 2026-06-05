@@ -12,12 +12,19 @@
     >
       <template #inline-filters>
         <a-range-picker
-          v-model:value="dateRange"
+          v-model:value="lastUsedDateRange"
           :allow-clear="false"
           :disabled="loading"
           :disabled-date="disabledDate"
           class="toolbar-select ip-stats-range responsive-list-inline-filter"
           format="YYYY-MM-DD"
+          @change="applyFilters"
+        />
+        <a-select
+          v-model:value="usageWindow"
+          class="toolbar-select ip-stats-window responsive-list-inline-filter"
+          :disabled="loading"
+          :options="usageWindowOptions"
           @change="applyFilters"
         />
         <a-select
@@ -30,14 +37,22 @@
       </template>
       <template #filters>
         <a-form layout="vertical">
-          <a-form-item label="日期范围">
+          <a-form-item label="最后使用日期">
             <a-range-picker
-              v-model:value="dateRange"
+              v-model:value="lastUsedDateRange"
               :allow-clear="false"
               :disabled="loading"
               :disabled-date="disabledDate"
               class="drawer-range-picker"
               format="YYYY-MM-DD"
+              @change="applyFilters"
+            />
+          </a-form-item>
+          <a-form-item label="用量统计窗口">
+            <a-select
+              v-model:value="usageWindow"
+              :disabled="loading"
+              :options="usageWindowOptions"
               @change="applyFilters"
             />
           </a-form-item>
@@ -117,7 +132,7 @@
           <span class="number-cell">{{ formatDuration(record.rangeUsage.maxDurationMs) }}</span>
         </template>
         <template v-else-if="column.key === 'lastUsedAt'">
-          <span :class="record.rangeUsage.lastUsedAt ? 'name-cell' : 'muted-cell'">{{ formatDateTime(record.rangeUsage.lastUsedAt) }}</span>
+          <span :class="clientIpLastUsedAt(record) ? 'name-cell' : 'muted-cell'">{{ formatDateTime(clientIpLastUsedAt(record)) }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <RowActions :actions="ipRowActions(record)" @action-click="handleRowAction($event, record)" />
@@ -184,7 +199,7 @@
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>最后使用</span>
-              <strong>{{ formatDateTime(record.rangeUsage.lastUsedAt) }}</strong>
+              <strong>{{ formatDateTime(clientIpLastUsedAt(record)) }}</strong>
             </div>
           </div>
           <div class="ip-mobile-actions">
@@ -262,6 +277,7 @@ import { formatCompactInteger, formatCost, formatDuration, formatInteger, format
 type TableSortOrder = 'ascend' | 'descend' | null
 type PolicyAction = 'blacklist' | 'unblock'
 type PolicyDurationMode = 'permanent' | 'minutes' | 'days'
+type UsageWindow = 'today' | 'last7d' | 'last31d'
 
 const columns = [
   { title: 'IP', key: 'ip', width: 180, fixed: 'left', align: 'left' },
@@ -289,6 +305,12 @@ const statusOptions = [
   { label: '已封禁', value: 'blacklisted' }
 ]
 
+const usageWindowOptions = [
+  { label: '今日用量', value: 'today' },
+  { label: '近 7 天用量', value: 'last7d' },
+  { label: '近 31 天用量', value: 'last31d' }
+]
+
 const policyDurationOptions = [
   { label: '永久', value: 'permanent' },
   { label: '分钟', value: 'minutes' },
@@ -298,7 +320,8 @@ const policyDurationOptions = [
 const loading = ref(false)
 const keyword = ref('')
 const statusFilter = ref<ClientIpStatus>('all')
-const dateRange = ref<[Dayjs, Dayjs]>([dayjs().subtract(6, 'day'), dayjs()])
+const usageWindow = ref<UsageWindow>('last7d')
+const lastUsedDateRange = ref<[Dayjs, Dayjs]>(defaultLastUsedDateRange())
 const rows = ref<ClientIpStatsRow[]>([])
 const paginationUpperBound = ref(0)
 const rangeReady = ref(true)
@@ -316,6 +339,8 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (keyword.value.trim()) count += 1
   if (statusFilter.value !== 'all') count += 1
+  if (usageWindow.value !== 'last7d') count += 1
+  if (!isDefaultLastUsedDateRange(lastUsedDateRange.value)) count += 1
   return count
 })
 
@@ -326,7 +351,7 @@ const tablePagination = computed(() => ({
   showSizeChanger: true
 }))
 
-const emptyDescription = computed(() => rangeReady.value ? '当前条件下没有 IP 统计数据。' : '当前日期窗口尚未完成预聚合，请稍后刷新。')
+const emptyDescription = computed(() => rangeReady.value ? '当前最后使用日期范围和用量窗口下没有 IP 统计数据。' : '当前用量统计窗口尚未完成预聚合，请稍后刷新。')
 
 const policyModalTitle = computed(() => {
   if (policyAction.value === 'blacklist') return '封禁 IP'
@@ -354,13 +379,16 @@ async function loadData(): Promise<void> {
 }
 
 function buildListParams(): ClientIpStatsListParams {
+  const usageRange = usageWindowDateRange(usageWindow.value)
   return {
     page: pagination.current,
     pageSize: pagination.pageSize,
     keyword: keyword.value.trim() || undefined,
     status: statusFilter.value,
-    startDate: formatDateKey(dateRange.value[0]),
-    endDate: formatDateKey(dateRange.value[1]),
+    startDate: formatDateKey(usageRange[0]),
+    endDate: formatDateKey(usageRange[1]),
+    lastUsedStartDate: formatDateKey(lastUsedDateRange.value[0]),
+    lastUsedEndDate: formatDateKey(lastUsedDateRange.value[1]),
     sortField: sortState.value.field,
     sortOrder: tableSortOrderToApi(sortState.value.order)
   }
@@ -374,7 +402,8 @@ function applyFilters(): void {
 function resetFilters(): void {
   keyword.value = ''
   statusFilter.value = 'all'
-  dateRange.value = [dayjs().subtract(6, 'day'), dayjs()]
+  usageWindow.value = 'last7d'
+  lastUsedDateRange.value = defaultLastUsedDateRange()
   pagination.current = 1
   sortState.value = { field: 'requestCount', order: 'descend' }
   void loadData()
@@ -496,6 +525,10 @@ function cacheReadRate(usage?: ClientIpUsageSummary): number {
   return ((usage?.cacheReadTokens ?? 0) / inputTokens) * 100
 }
 
+function clientIpLastUsedAt(record: ClientIpStatsRow): string | undefined {
+  return record.lastSeenAt ?? record.rangeUsage.lastUsedAt
+}
+
 function tableSortOrderToApi(order: TableSortOrder): SortDirection | undefined {
   if (order === 'ascend') return 'asc'
   if (order === 'descend') return 'desc'
@@ -515,17 +548,38 @@ function statusColor(status: ClientIpStatus): string {
 }
 
 function disabledDate(current: Dayjs): boolean {
-  return current.isAfter(dayjs(), 'day')
+  const today = dayjs()
+  return current.isAfter(today, 'day') || current.isBefore(today.subtract(30, 'day'), 'day')
 }
 
 function formatDateKey(value: Dayjs): string {
   return value.format('YYYY-MM-DD')
+}
+
+function defaultLastUsedDateRange(): [Dayjs, Dayjs] {
+  return [dayjs().subtract(6, 'day'), dayjs()]
+}
+
+function usageWindowDateRange(window: UsageWindow): [Dayjs, Dayjs] {
+  const today = dayjs()
+  if (window === 'today') return [today, today]
+  if (window === 'last31d') return [today.subtract(30, 'day'), today]
+  return [today.subtract(6, 'day'), today]
+}
+
+function isDefaultLastUsedDateRange(range: [Dayjs, Dayjs]): boolean {
+  const defaultRange = defaultLastUsedDateRange()
+  return range[0].isSame(defaultRange[0], 'day') && range[1].isSame(defaultRange[1], 'day')
 }
 </script>
 
 <style scoped>
 .ip-stats-range {
   width: 260px;
+}
+
+.ip-stats-window {
+  width: 150px;
 }
 
 .ip-stats-status {
@@ -590,6 +644,7 @@ function formatDateKey(value: Dayjs): string {
 
 @media (max-width: 768px) {
   .ip-stats-range,
+  .ip-stats-window,
   .ip-stats-status {
     width: 100%;
   }

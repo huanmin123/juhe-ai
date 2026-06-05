@@ -4,6 +4,10 @@ import type { AccountRuntimeAvailability, DbServiceOperation } from '../db-servi
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
+import {
+  getAccountCurrentConcurrency,
+  subscribeAccountConcurrencyRelease
+} from '../../shared/account-concurrency.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
@@ -55,7 +59,7 @@ export interface GatewayAccountRuntimeClearResult {
   clearedKeys: string[]
 }
 
-interface GatewayAccountFailurePrecheckInput {
+export interface GatewayAccountFailurePrecheckInput {
   systemAccountId: string
   groupId: string
   apiKeyId?: string
@@ -86,6 +90,7 @@ interface PrecheckState {
   distinctClientIpCount: number
   distinctApiKeyCount: number
   running: boolean
+  waitingForConcurrencyDrain?: boolean
 }
 
 export interface LocalAccountSuppressionFilterResult<T> {
@@ -96,19 +101,6 @@ export interface LocalAccountSuppressionFilterResult<T> {
   nextRetryAtMs?: number
   nextRetryAfterMs?: number
 }
-
-export type LocalAccountSuppressionWaitResult<T> =
-  | {
-    ready: true
-    waitedMs: number
-    filter: LocalAccountSuppressionFilterResult<T>
-  }
-  | {
-    ready: false
-    reason: 'timeout' | 'aborted'
-    waitedMs: number
-    filter: LocalAccountSuppressionFilterResult<T>
-  }
 
 export interface GatewayAccountSideEffectState {
   queueLength: number
@@ -133,6 +125,7 @@ const precheckMinIntervalMs = 60_000
 const precheckMaxAttempts = 2
 const precheckAttemptTimeoutMs = 45_000
 const precheckRetryDelayMs = 5_000
+const precheckConcurrencyDrainPollMs = 1_000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 const maxSideEffectQueueLength = 5000
 
@@ -140,6 +133,7 @@ const sideEffectQueue: QueuedAccountSideEffect[] = []
 const localAccountSuppressions = new Map<string, LocalAccountSuppression>()
 const failureStorms = new Map<string, FailureStormEntry>()
 const precheckStates = new Map<string, PrecheckState>()
+const precheckConcurrencyDrainWaits = new Map<string, { unsubscribe: () => void; timer: NodeJS.Timeout }>()
 let processingSideEffects = false
 let drainTimer: NodeJS.Timeout | undefined
 let drainTimerDueAtMs: number | undefined
@@ -194,6 +188,29 @@ export function recordGatewayAccountFailureForPrecheckForTest(
   input: GatewayAccountFailurePrecheckInput
 ): void {
   recordGatewayAccountFailureForPrecheckInternal(account, settings, input, false)
+}
+
+export async function completeGatewayAccountPrecheckForTest(
+  account: OpenAIAccountSecret,
+  settings: GatewaySettings | undefined,
+  input: GatewayAccountFailurePrecheckInput
+): Promise<void> {
+  const runtimeKey = gatewayAccountRuntimeKey(account)
+  const now = Date.now()
+  precheckStates.set(runtimeKey, {
+    account,
+    settings,
+    systemAccountId: input.systemAccountId,
+    groupId: input.groupId,
+    startedAtMs: now,
+    attemptCount: precheckMaxAttempts,
+    failureCount: failureStormThresholdCount,
+    reason: input.reason,
+    distinctClientIpCount: input.clientIp ? 1 : 0,
+    distinctApiKeyCount: input.apiKeyId ? 1 : 0,
+    running: false
+  })
+  await runGatewayAccountPrecheck(runtimeKey)
 }
 
 function recordGatewayAccountFailureForPrecheckInternal(
@@ -339,64 +356,6 @@ export function filterLocallySuppressedGatewayAccounts<T extends SuppressibleGat
   }
 }
 
-export async function waitForLocalAccountSuppressionRelease<T extends SuppressibleGatewayAccount>(
-  accounts: T[],
-  input: {
-    maxWaitMs: number
-    signal?: AbortSignal
-  }
-): Promise<LocalAccountSuppressionWaitResult<T>> {
-  const startedAtMs = Date.now()
-  let filter = filterLocallySuppressedGatewayAccounts(accounts)
-  if (!filter.allSuppressed) {
-    return {
-      ready: true,
-      waitedMs: 0,
-      filter
-    }
-  }
-
-  const maxWaitMs = Math.max(0, Math.trunc(input.maxWaitMs))
-  while (filter.allSuppressed) {
-    if (input.signal?.aborted) {
-      return {
-        ready: false,
-        reason: 'aborted',
-        waitedMs: Date.now() - startedAtMs,
-        filter
-      }
-    }
-    const elapsedMs = Date.now() - startedAtMs
-    const remainingWaitMs = maxWaitMs - elapsedMs
-    if (remainingWaitMs <= 0) {
-      return {
-        ready: false,
-        reason: 'timeout',
-        waitedMs: elapsedMs,
-        filter
-      }
-    }
-    const retryAfterMs = filter.nextRetryAfterMs ?? remainingWaitMs
-    const waitMs = Math.min(remainingWaitMs, Math.max(1, retryAfterMs))
-    await waitForRetryDelayMs(waitMs, { signal: input.signal })
-    filter = filterLocallySuppressedGatewayAccounts(accounts)
-  }
-
-  if (filter.accounts.length > 0) {
-    return {
-      ready: true,
-      waitedMs: Date.now() - startedAtMs,
-      filter
-    }
-  }
-  return {
-    ready: false,
-    reason: 'timeout',
-    waitedMs: Date.now() - startedAtMs,
-    filter
-  }
-}
-
 export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectState {
   cleanupExpiredLocalSuppressions()
   const nextAttemptAtMs = peekSideEffect()?.nextAttemptAtMs
@@ -438,6 +397,7 @@ export function suppressGatewayAccountLocallyForTest(
 }
 
 export function clearGatewayLocalAccountSuppressionsForTest(): void {
+  clearAllPrecheckConcurrencyDrainWaits()
   localAccountSuppressions.clear()
   failureStorms.clear()
   precheckStates.clear()
@@ -795,6 +755,7 @@ function suppressLocalAccount(
 
 function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean {
   let cleared = false
+  clearPrecheckConcurrencyDrainWait(accountId)
   cleared = localAccountSuppressions.delete(accountId) || cleared
   cleared = failureStorms.delete(accountId) || cleared
   cleared = precheckStates.delete(accountId) || cleared
@@ -839,6 +800,78 @@ function delay(ms: number): Promise<void> {
   return waitForRetryDelayMs(ms)
 }
 
+function clearPrecheckConcurrencyDrainWait(runtimeKey: string): void {
+  const wait = precheckConcurrencyDrainWaits.get(runtimeKey)
+  if (!wait) {
+    return
+  }
+  wait.unsubscribe()
+  clearInterval(wait.timer)
+  precheckConcurrencyDrainWaits.delete(runtimeKey)
+}
+
+function clearAllPrecheckConcurrencyDrainWaits(): void {
+  for (const runtimeKey of precheckConcurrencyDrainWaits.keys()) {
+    clearPrecheckConcurrencyDrainWait(runtimeKey)
+  }
+}
+
+function deferPrecheckMarkUntilConcurrencyDrained(runtimeKey: string, state: PrecheckState): boolean {
+  const currentConcurrency = getAccountCurrentConcurrency(state.account.id)
+  if (currentConcurrency <= 0) {
+    return false
+  }
+  const reason = `事前确认探针连续失败，等待 ${currentConcurrency} 个在途请求结束后再标记临时不可调用；${state.reason}`.slice(0, 1000)
+  state.reason = reason
+  state.running = false
+  state.waitingForConcurrencyDrain = true
+  suppressLocalAccount(runtimeKey, localSuppressionMs(state.settings), reason, 'precheck_pending', {
+    failureCount: state.failureCount,
+    distinctClientIpCount: state.distinctClientIpCount,
+    distinctApiKeyCount: state.distinctApiKeyCount,
+    precheckAttemptCount: state.attemptCount
+  })
+  schedulePrecheckAfterConcurrencyDrain(runtimeKey, state.account.id)
+  logger.warn({
+    event: 'gateway_account_precheck_mark_deferred_for_concurrency',
+    accountId: state.account.id,
+    accountName: state.account.name,
+    runtimeKey,
+    currentConcurrency
+  }, '账号事前确认探针连续失败，但仍有在途并发，已延后写入临时不可调用')
+  return true
+}
+
+function schedulePrecheckAfterConcurrencyDrain(runtimeKey: string, accountId: string): void {
+  if (precheckConcurrencyDrainWaits.has(runtimeKey)) {
+    return
+  }
+
+  const tryResume = (): void => {
+    const state = precheckStates.get(runtimeKey)
+    if (!state) {
+      clearPrecheckConcurrencyDrainWait(runtimeKey)
+      return
+    }
+    if (getAccountCurrentConcurrency(accountId) > 0) {
+      return
+    }
+    clearPrecheckConcurrencyDrainWait(runtimeKey)
+    state.waitingForConcurrencyDrain = false
+    void runGatewayAccountPrecheck(runtimeKey)
+  }
+
+  const unsubscribe = subscribeAccountConcurrencyRelease((event) => {
+    if (event.accountId === accountId) {
+      tryResume()
+    }
+  })
+  const timer = setInterval(tryResume, precheckConcurrencyDrainPollMs)
+  timer.unref()
+  precheckConcurrencyDrainWaits.set(runtimeKey, { unsubscribe, timer })
+  tryResume()
+}
+
 async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
   const state = precheckStates.get(runtimeKey)
   if (!state || state.running) {
@@ -881,6 +914,9 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
 
     const finalState = precheckStates.get(runtimeKey)
     if (!finalState) {
+      return
+    }
+    if (deferPrecheckMarkUntilConcurrencyDrained(runtimeKey, finalState)) {
       return
     }
     const reason = `事前确认探针连续失败 ${finalState.attemptCount} 次，已标记为临时不可调用；${finalState.reason}`.slice(0, 1000)

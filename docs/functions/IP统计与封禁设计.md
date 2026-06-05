@@ -346,7 +346,7 @@ else:
 | 活跃天数 | 范围内有请求的自然日数量 |
 | 速度 | 平均首 token、平均总耗时和最大总耗时，来自 IP 预聚合字段 |
 | 首次出现 | 注册表 `first_seen_at` |
-| 最近使用 | 窗口或注册表 `last_used_at / last_seen_at` |
+| 最近使用 | 注册表全局 `last_seen_at`；范围窗口内最近使用仍保留在 `rangeUsage.lastUsedAt` |
 | 最近错误 | `last_error_at` |
 | 操作 | 封禁、临时封禁、解封 |
 
@@ -354,7 +354,8 @@ else:
 
 筛选：
 
-- 日期范围，最大最近 31 天。
+- 最后使用日期范围，最大最近 31 天；管理页用 `client_ip_registry.last_seen_at` 做全局最后使用筛选。
+- 用量统计窗口：今天、最近 7 天、最近 31 天；请求数、Token、成本、失败率、活跃天数和速度指标只读取对应的预聚合范围窗口，不跟随最后使用筛选生成任意自然日窗口。
 - IP 关键词，精确或右侧前缀匹配。
 - 状态：全部、正常、已封禁。
 - 高消耗：成本或 token 大于阈值。
@@ -367,7 +368,7 @@ else:
 - Token 降序
 - 请求次数降序
 - 失败率降序
-- 最近使用时间降序
+- 最近使用时间降序；管理页按注册表全局 `last_seen_at` 排序，公开 IP 用量接口仍按窗口内 `rangeUsage.lastUsedAt` 排序。
 
 列表默认按请求次数降序，再按 IP hash 稳定排序；状态是否正常通过状态筛选解决，不参与默认排序。
 
@@ -386,6 +387,8 @@ POST /__aisys__/api/ip-stats/:ipHash/unblock
 ```text
 startDate=YYYY-MM-DD
 endDate=YYYY-MM-DD
+lastUsedStartDate=YYYY-MM-DD
+lastUsedEndDate=YYYY-MM-DD
 page=1
 pageSize=20
 keyword=1.2.3
@@ -414,6 +417,7 @@ interface ClientIpStatsListResponse {
 interface ClientIpStatsListItem {
   ipHash: string
   aggregateIpKey: string
+  lastSeenAt?: string
   status: 'normal' | 'blacklisted'
   rangeUsage: ClientIpUsageSummary
 }
@@ -494,7 +498,7 @@ GET /__aipublic__/access/info
 
 ### 查询影响
 
-- IP 列表按范围窗口表查询，配合排序索引。
+- IP 列表按范围窗口表查询，配合排序索引；管理页最后使用日期筛选只追加 `client_ip_registry.last_seen_at` 范围条件，不回扫使用明细；管理页按最后使用排序时走 `client_ip_registry(last_seen_at DESC, ip_hash)`，公开 IP 用量接口保持范围窗口 `last_used_at` 排序。
 - IP 管理不展示范围总统计卡片，也不在后端维护范围总聚合。
 - IP 速度指标只读窗口表中已经落表的 `average_first_token_ms`、`average_duration_ms` 和 `duration_ms_max`；`sum/count` 只作为后台刷新单个 IP 窗口行派生字段的输入，不回扫 `usage_records`。
 - 列表请求不触发窗口重建；未命中窗口或窗口已被新 daily 标记为 stale 时返回空列表和 `rangeReady=false`，等待后台 worker 生成。

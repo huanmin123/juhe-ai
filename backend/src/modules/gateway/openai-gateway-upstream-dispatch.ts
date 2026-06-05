@@ -25,8 +25,7 @@ import {
   throwIfRequestAborted
 } from './openai-gateway-dispatch-helpers.js'
 import {
-  filterLocallySuppressedGatewayAccounts,
-  waitForLocalAccountSuppressionRelease
+  filterLocallySuppressedGatewayAccounts
 } from './gateway-account-side-effects.service.js'
 import type { ClientIpAccountAvoidanceTracker } from './openai-gateway-client-ip-account-avoidance.service.js'
 import {
@@ -72,7 +71,6 @@ interface AccountConcurrencyAcquireResult {
 }
 
 const accountConcurrencyRetryBudgetMs = 1200
-const defaultLocalAccountSuppressionWaitMs = 60_000
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
 
 export async function fetchFirstAvailableUpstream(
@@ -100,8 +98,6 @@ export async function fetchFirstAvailableUpstream(
   const failedProxyDispatchKeys = new Map<string, string>()
   const failedAccountIds = new Set<string>()
   let dispatchAccounts = orderAccountsForRequestLane(accounts, requestLane, groupSchedulingPolicy)
-  const localSuppressionWaitBudgetMs = localAccountSuppressionMaxWaitMs(groupSchedulingPolicy)
-  let localSuppressionWaitStartedAtMs: number | undefined
 
   while (dispatchAccounts.length > 0) {
     let attemptedAccountCount = 0
@@ -339,39 +335,21 @@ export async function fetchFirstAvailableUpstream(
       break
     }
 
-    const waitStartedAtMs = localSuppressionWaitStartedAtMs ?? Date.now()
-    localSuppressionWaitStartedAtMs = waitStartedAtMs
-    const remainingWaitMs = localSuppressionWaitBudgetMs - (Date.now() - waitStartedAtMs)
-    const waitResult = await waitForLocalAccountSuppressionRelease(accounts, {
-      maxWaitMs: remainingWaitMs,
-      signal
-    })
     auditCapture.addGatewayMetadata({
-      label: 'local_account_suppression_dispatch_wait',
+      label: 'local_account_suppression_dispatch_exhausted',
       metadata: {
-        ready: waitResult.ready,
-        reason: waitResult.ready ? undefined : waitResult.reason,
-        waitedMs: waitResult.waitedMs,
-        remainingSuppressedCount: waitResult.filter.suppressedCount,
-        nextRetryAfterMs: waitResult.filter.nextRetryAfterMs
+        suppressedCount: localSuppressedSkipCount,
+        accountCount: accounts.length
       }
     })
     throwIfRequestAborted(signal)
-    if (!waitResult.ready) {
-      lastAttempt = {
-        accountId: accounts[0]?.id ?? 'local_suppression',
-        accountName: accounts.length === 1 ? accounts[0]?.name ?? '上游账户' : '上游账户',
-        upstreamUrl: 'account:locally_suppressed',
-        message: waitResult.reason === 'timeout'
-          ? '所有上游账户仍处于本地短期屏蔽'
-          : '本地短期屏蔽等待已取消'
-      }
-      break
+    lastAttempt = {
+      accountId: accounts[0]?.id ?? 'local_suppression',
+      accountName: accounts.length === 1 ? accounts[0]?.name ?? '上游账户' : '上游账户',
+      upstreamUrl: 'account:locally_suppressed',
+      message: '所有上游账户仍处于本地短期屏蔽'
     }
-    dispatchAccounts = orderAccountsForRequestLane(waitResult.filter.accounts, requestLane, groupSchedulingPolicy)
-    if (attemptedAccountCount === 0 && localSuppressedSkipCount === 0 && dispatchAccounts.length === 0) {
-      break
-    }
+    break
   }
 
   throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt, [...failedAccountIds])
@@ -427,13 +405,6 @@ function locallySuppressedAttempt(account: UpstreamAccount, nextRetryAfterMs?: n
     upstreamUrl: 'account:locally_suppressed',
     message: `账号处于本地短期屏蔽${suffix}`
   }
-}
-
-function localAccountSuppressionMaxWaitMs(policy?: GroupSchedulingPolicy): number {
-  const value = policy?.maxQueueWaitMs
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.max(0, Math.trunc(value))
-    : defaultLocalAccountSuppressionWaitMs
 }
 
 function shouldRetrySameAccountAfterFailure(

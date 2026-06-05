@@ -30,6 +30,7 @@ const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpP
 
 try {
   assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot()
+  assertIpStatsViewSeparatesUsageWindowAndLastUsedFilter()
   const createdAtBase = Date.now() - 60_000
   const today = usageStatsHelpers.dateKey(new Date(createdAtBase), usageStatsHelpers.usageStatsTimezone())
   const emptyWindowBeforeBuild = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
@@ -241,6 +242,57 @@ try {
   assert.equal(secondaryIpv4Row.aggregateIpKey, '198.51.100.25', 'IPv4 列表应展示规范化 IP')
   assert.equal(secondaryIpv4Row.rangeUsage.requestCount, 2, '同一 IPv4 来源在当前范围内应合并')
 
+  const previousDay = usageStatsHelpers.dateKey(new Date(createdAtBase - 24 * 60 * 60 * 1000), usageStatsHelpers.usageStatsTimezone())
+  const secondaryOriginalLastSeenAt = new Date(createdAtBase + 3).toISOString()
+  statsDatabase.prepare('UPDATE client_ip_registry SET last_seen_at = ? WHERE ip_hash = ?')
+    .run(new Date(createdAtBase - 24 * 60 * 60 * 1000).toISOString(), secondaryIpv4Identity.ipHash)
+  const lastUsedTodayList = clientIpStats.listClientIpStats({
+    startDate: today,
+    endDate: today,
+    lastUsedStartDate: today,
+    lastUsedEndDate: today,
+    pageSize: 10,
+    sortField: 'requestCount',
+    sortOrder: 'desc'
+  })
+  assert.equal(lastUsedTodayList.items.some((item) => item.ipHash === ipv4Identity.ipHash), true, 'IP 管理最后使用筛选应保留全局最后使用在今天的 IP')
+  assert.equal(lastUsedTodayList.items.some((item) => item.ipHash === secondaryIpv4Identity.ipHash), false, 'IP 管理最后使用筛选不应只看窗口内 last_used_at')
+  const lastUsedPreviousDayList = clientIpStats.listClientIpStats({
+    startDate: today,
+    endDate: today,
+    lastUsedStartDate: previousDay,
+    lastUsedEndDate: previousDay,
+    pageSize: 10
+  })
+  assert.deepEqual(lastUsedPreviousDayList.items.map((item) => item.ipHash), [secondaryIpv4Identity.ipHash], 'IP 管理最后使用筛选应按注册表全局 last_seen_at 命中')
+  const rangeLastUsedSortList = clientIpStats.listClientIpStats({
+    startDate: today,
+    endDate: today,
+    pageSize: 10,
+    sortField: 'lastUsedAt',
+    sortOrder: 'desc'
+  })
+  assert.deepEqual(
+    rangeLastUsedSortList.items.map((item) => item.ipHash),
+    [secondaryIpv4Identity.ipHash, ipv4Identity.ipHash],
+    '默认 lastUsedAt 排序应保持窗口内最近使用语义，避免影响公开 IP 用量接口'
+  )
+  const globalLastUsedSortList = clientIpStats.listClientIpStats({
+    startDate: today,
+    endDate: today,
+    pageSize: 10,
+    sortField: 'lastUsedAt',
+    sortOrder: 'desc',
+    lastUsedSortScope: 'global'
+  })
+  assert.deepEqual(
+    globalLastUsedSortList.items.map((item) => item.ipHash),
+    [ipv4Identity.ipHash, secondaryIpv4Identity.ipHash],
+    'IP 管理 lastUsedAt 排序应使用注册表全局 last_seen_at，与页面展示一致'
+  )
+  statsDatabase.prepare('UPDATE client_ip_registry SET last_seen_at = ? WHERE ip_hash = ?')
+    .run(secondaryOriginalLastSeenAt, secondaryIpv4Identity.ipHash)
+
   repositories.createUsageRecordsBatch([
     {
       id: 'client_ip_stats_ipv4_late_success',
@@ -312,6 +364,7 @@ try {
   assert.deepEqual(blacklistedList.items.map((item) => item.ipHash), [ipv4Identity.ipHash], 'IP 列表封禁筛选应只返回 active 封禁 IP')
   assertClientIpListPolicyQueryPlan(today)
   assertClientIpListSortQueryPlans(today)
+  assertClientIpListGlobalLastUsedSortQueryPlan(today)
   assert.equal(
     clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: policy.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
     1,
@@ -390,6 +443,32 @@ function assertClientIpListSortQueryPlans(today: string): void {
   }
 }
 
+function assertClientIpListGlobalLastUsedSortQueryPlan(today: string): void {
+  const descDetails = explainStatsQuery(`
+    SELECT registry.ip_hash
+    FROM client_ip_registry registry INDEXED BY idx_client_ip_registry_last_seen
+    INNER JOIN client_ip_usage_range_windows range_stats ON registry.ip_hash = range_stats.ip_hash
+    WHERE range_stats.start_date = ?
+      AND range_stats.end_date = ?
+    ORDER BY registry.last_seen_at DESC, registry.ip_hash ASC
+    LIMIT ? OFFSET ?
+  `, [today, today, 11, 0])
+  assert(descDetails.includes('idx_client_ip_registry_last_seen'), `IP 管理全局最后使用降序应使用注册表最近使用索引，实际计划：${descDetails}`)
+  assert(!/USE TEMP B-TREE/i.test(descDetails), `IP 管理全局最后使用降序不应创建临时排序树，实际计划：${descDetails}`)
+
+  const ascDetails = explainStatsQuery(`
+    SELECT registry.ip_hash
+    FROM client_ip_registry registry INDEXED BY idx_client_ip_registry_last_seen
+    INNER JOIN client_ip_usage_range_windows range_stats ON registry.ip_hash = range_stats.ip_hash
+    WHERE range_stats.start_date = ?
+      AND range_stats.end_date = ?
+    ORDER BY registry.last_seen_at ASC, registry.ip_hash DESC
+    LIMIT ? OFFSET ?
+  `, [today, today, 11, 0])
+  assert(ascDetails.includes('idx_client_ip_registry_last_seen'), `IP 管理全局最后使用升序应反向使用注册表最近使用索引，实际计划：${ascDetails}`)
+  assert(!/USE TEMP B-TREE/i.test(ascDetails), `IP 管理全局最后使用升序不应创建临时排序树，实际计划：${ascDetails}`)
+}
+
 function clientIpListOrderByForPlan(sortField: string): string {
   switch (sortField) {
     case 'successCount':
@@ -410,6 +489,18 @@ function clientIpListOrderByForPlan(sortField: string): string {
     default:
       return 'range_stats.request_count DESC'
   }
+}
+
+function assertIpStatsViewSeparatesUsageWindowAndLastUsedFilter(): void {
+  const source = readFileSync(resolve('..', 'frontend', 'src', 'views', 'ip-stats', 'IpStatsView.vue'), 'utf8')
+  const buildListParamsSource = sourceFunctionBlock(source, 'function buildListParams')
+  assert(buildListParamsSource.includes('const usageRange = usageWindowDateRange(usageWindow.value)'), 'IP 管理页面应使用固定用量窗口构造统计范围')
+  assert(buildListParamsSource.includes('startDate: formatDateKey(usageRange[0])'), 'IP 管理 startDate 应来自用量统计窗口')
+  assert(buildListParamsSource.includes('endDate: formatDateKey(usageRange[1])'), 'IP 管理 endDate 应来自用量统计窗口')
+  assert(buildListParamsSource.includes('lastUsedStartDate: formatDateKey(lastUsedDateRange.value[0])'), 'IP 管理最后使用开始日期应独立提交')
+  assert(buildListParamsSource.includes('lastUsedEndDate: formatDateKey(lastUsedDateRange.value[1])'), 'IP 管理最后使用结束日期应独立提交')
+  assert(!buildListParamsSource.includes('startDate: formatDateKey(lastUsedDateRange.value[0])'), 'IP 管理 startDate 不能直接绑定最后使用日期')
+  assert(!buildListParamsSource.includes('endDate: formatDateKey(lastUsedDateRange.value[1])'), 'IP 管理 endDate 不能直接绑定最后使用日期')
 }
 
 function assertClientIpPolicyLookupQueryPlan(ipHash: string): void {

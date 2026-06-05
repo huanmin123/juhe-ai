@@ -156,7 +156,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 按行读取只在完整换行结束后推进 offset；末尾半行保留到下一轮，轮转、截断或文件标识变化时重置游标。
 - 审计 payload blob 详情接口只能按 offset / limit 返回有限窗口；未压缩 blob 使用文件 offset 读取，gzip blob 通过解压流跳过到逻辑 offset 后只收集当前窗口，接口返回 `bodyOffset`、`bodyLimit`、`bodyTotalBytes`、`bodyNextOffset` 和 `bodyTruncated`。超过单次最大读取窗口的 payload 默认保持未压缩，避免读取后半段时反复从头解压 gzip。
 - 使用记录、操作日志、原始审计日志、审计错误组和运行日志索引这类高增长列表，默认只读取当前页 `pageSize + 1` 条来判断 `hasMore`，不在请求路径执行全量 `COUNT(*)`；返回的 `total` 只是前端分页器上界值，不代表精确全表总数。
-- 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；系统管理 API 和公开系统 API 由 DB service 承载，JSON 请求体硬上限为 `256KB`，超过上限直接返回 413，不能把大体积管理 payload 交给 DB service 事件循环同步解析。`/v1` raw body 当前使用 `2mb` 硬上限，认证预检通过后才读取 body，超过上限直接返回 413。网关 JSON body 小于等于 `256KB` 时可主线程内联解析；超过 `256KB` 且不超过 `2mb` 时进入 worker thread 做顶层元数据扫描，只有 OAuth Codex 归一化、禁用图像权限下移除 optional `image_generation` 工具等必须改写请求体的路径才完整解析；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
+- 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；系统管理 API 和公开系统 API 由 DB service 承载，JSON 请求体硬上限为 `256KB`，超过上限直接返回 413，不能把大体积管理 payload 交给 DB service 事件循环同步解析。`/v1` raw body 当前使用 `8mb` 硬上限，认证预检通过后才读取 body，超过上限直接返回 413。网关 JSON body 小于等于 `256KB` 时可主线程内联解析；超过 `256KB` 且不超过 `8mb` 时进入 worker thread 做顶层元数据扫描，其中超过 `2MB` 会按大 JSON 请求记录预警；只有 OAuth Codex 归一化、禁用图像权限下移除 optional `image_generation` 工具等必须改写请求体的路径才完整解析；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
 
 ## 统计缓存与监控存储
 
@@ -181,7 +181,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `ai_performance_summary_windows`：按 `system_account_id + window_key + start_date + end_date` 保存 AI 性能监控摘要，前端账户筛选只影响图表显隐，不重新计算摘要。
 - `usage_quota_hourly_windows`：按 `system_account_id + scope_type + scope_id + window_hours` 保存 n 小时额度成本，随 `statsAggregationIntervalSeconds` 刷新，网关额度判断不再 `SUM usage_stats_hourly`。
 - `usage_scope_range_windows`：按 `system_account_id + scope_type + scope_id + start_date + end_date` 保存最近 31 天范围内的范围总量，并包含成功数、错误数、耗时、首 token、活跃天数和最后错误时间等账号维度范围指标。用量统计、授权详情和公开账号用量接口只按范围 key 直读；账号用量页关键词先在业务库用账号 ID、名称、供应商、类型的索引范围查询解析为账号 ID，再用 `scope_id` 命中窗口表，不能在统计结果窗口查询中拼业务字段多列 `LIKE`，也不能在请求链路临时 `GROUP BY usage_stats_daily`。
-- `client_ip_registry`：按 `ip_hash` 保存来源 IPv4 注册事实，包括 `aggregate_ip_key`、最近样本 IP、IP 版本、首次出现、最近出现和分桶号；当前 IP 管理只写入 IPv4，`aggregate_ip_key` 与规范化 IPv4 一致。该表只由后台 IP 统计 job 注册和更新，页面不从 `usage_records` 扫描 IP。
+- `client_ip_registry`：按 `ip_hash` 保存来源 IPv4 注册事实，包括 `aggregate_ip_key`、最近样本 IP、IP 版本、首次出现、最近出现和分桶号；当前 IP 管理只写入 IPv4，`aggregate_ip_key` 与规范化 IPv4 一致。该表只由后台 IP 统计 job 注册和更新，页面不从 `usage_records` 扫描 IP；管理页最后使用日期筛选和“最后使用”列以 `last_seen_at` 为准。
 - `client_ip_stats_daily`：按 `ip_hash + stat_date` 保存 IP 自然日请求数、成功数、失败数、Token、缓存成本、总成本、首 token / 总耗时样本和、总耗时最大值和最近使用 / 最近错误时间。
 - `client_ip_usage_range_windows`：按 `ip_hash + start_date + end_date` 保存最近 31 天内 IP 范围窗口，系统运维 / IP管理 列表和 `/__aipublic__/ip/usage` 外部来源接口只读该窗口，不在请求路径聚合明细、重建窗口或计算范围总统计。IP 速度展示只读取窗口内已落表的平均首 token、平均总耗时和最大总耗时字段，不新增实时明细扫描。
 - `client_ip_policies`：保存管理员显式创建的 IP 封禁策略，解封或替换策略只把旧策略改为 `disabled`，不删除历史。
@@ -297,7 +297,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `client_ip_registry(aggregate_ip_key)`：IP 运维关键词按聚合 IP key 定位。
 - `client_ip_registry(client_ip)`：IP 运维关键词按最近样本明文 IP 定位。
 - `client_ip_stats_daily(stat_date, ip_hash)`：IP 范围窗口按日期读取 daily 桶。
-- `client_ip_usage_range_windows(start_date, end_date, total_cost_usd/request_count/active_days/last_used_at, ip_hash)`：IP 运维列表按范围窗口成本、请求数、活跃天数和最近使用排序；总 Token 和失败率排序使用表达式索引。平均首 token、平均总耗时和最大总耗时只展示不排序，避免新增高基数排序压力。
+- `client_ip_usage_range_windows(start_date, end_date, total_cost_usd/request_count/active_days/last_used_at, ip_hash)`：IP 运维列表按范围窗口成本、请求数和活跃天数排序，公开 IP 用量接口按范围窗口最近使用排序；管理页全局最近使用排序走 `client_ip_registry(last_seen_at DESC, ip_hash)`。总 Token 和失败率排序使用表达式索引。平均首 token、平均总耗时和最大总耗时只展示不排序，避免新增高基数排序压力。
 - `client_ip_usage_range_windows(end_date)`：数据保留任务按范围窗口结束日期分批清理过期 IP 窗口，避免保留清理退回全表排序。
 - `client_ip_range_window_dirty_ips(updated_at, ip_hash)`：持久记录等待刷新范围窗口的 dirty IP；刷新成功后删除，避免 worker 重启丢失内存 dirty Set 后只能靠全量重建恢复。
 - `stats_job_state(scope_type, scope_id, job_name)`：同时用于 IP 范围窗口 ready/stale 标记；新 IP daily 写入会把当前固定窗口标记为 stale，后台刷新完全部 dirty IP 后再标记 ready，列表不靠窗口表行数判断可读。
@@ -860,7 +860,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 错误兜底策略
 
-账户添加和编辑默认不写账号自己的 `credentials.error_handling_rules`；缺省或空数组都表示交给通用失败处理。用户在账号弹窗里显式添加账号专属规则时，网关按内嵌规则写入限流、临时不可调用或异常状态；未命中显式规则或命中 `retry_next` 时，真实命中上游账号后的错误统一写入 `temporary_unavailable`。状态码、错误码和错误文案只作为诊断摘要、审计字段和用户显式规则输入，代码不再内置 OAuth reset、余额不足、限流或固定状态码判断。自有账户、分组授权账户和账户授权实例都写各自 `accounts.status / cooldown_until / last_error_code / last_error_message`，不会写归属人原账户，也不会写 `group_accounts.local_*` 作为运行态。异常状态统一落到对应账户行的 `status = error`，异常类型或说明写入同一账户行的错误字段。停用和异常都是不可调度硬状态，网关异步成功/失败回写、冷却写入和 OAuth 刷新成功都不能自动恢复或降级覆盖这些硬状态；异常只能通过显式恢复清理。普通非 `2xx` 上游错误响应、上游请求异常、非流式正文中断和流式失败都会先把当前账号加入进程内短 TTL 本地屏蔽，并继续切换后续账号；后续账号请求成功时，本次请求救回，前序失败账号已写入本次失败状态并可进入来源级短期回避。全部候选账号失败时返回网关统一 `service_unavailable`，不把最后一个上游错误体返回给客户端。后续请求进入候选排序时先过滤本地屏蔽账号；若所有候选都被屏蔽，则等待最早屏蔽释放或等待预算耗尽，超时仍无账号可用时返回网关统一 `503`。本地屏蔽状态不写 SQLite，服务重启、进程重启或 TTL 到期后自然恢复；持久账号状态由真实上游账号失败、账号错误策略、后台复测或人工操作写入当前命中的账户行。完整流程见 [网关异常重试与兜底策略](网关异常重试与兜底策略.md)。凡是决定放行给客户端的上游成功响应，都必须透传上游状态码、可透传响应头和原始响应体，不改写。
+账户添加和编辑默认不写账号自己的 `credentials.error_handling_rules`；缺省或空数组都表示交给通用失败处理。用户在账号弹窗里显式添加账号专属规则时，规则只决定运行态确认失败后的目标状态是限流、临时不可调用还是异常；未命中显式规则或命中 `retry_next` 时，待确认目标为通用 `temporary_unavailable`。状态码、错误码和错误文案只作为诊断摘要、审计字段和用户显式规则输入，代码不再内置 OAuth reset、余额不足、限流或固定状态码判断。自有账户、分组授权账户和账户授权实例都只在确认失败后写各自 `accounts.status / cooldown_until / last_error_code / last_error_message`，不会写归属人原账户，也不会写 `group_accounts.local_*` 作为运行态。异常状态统一落到对应账户行的 `status = error`，异常类型或说明写入同一账户行的错误字段。停用和异常都是不可调度硬状态，网关异步成功/失败回写、冷却写入和 OAuth 刷新成功都不能自动恢复或降级覆盖这些硬状态；异常只能通过显式恢复清理。普通非 `2xx` 上游错误响应、上游请求异常、非流式正文中断和流式失败都会先把当前账号加入进程内短 TTL 本地屏蔽，并继续切换后续账号；后续账号请求成功时，本次请求救回，前序失败账号保留运行态屏障并可进入来源级短期回避，不立即写 SQLite。全部候选账号失败时返回网关统一 `service_unavailable`，不把最后一个上游错误体返回给客户端。后续请求进入候选排序时先过滤本地屏蔽账号；若当前分组所有候选都被屏蔽，则先按 API Key 分组绑定顺序尝试后续可承接分组，没有后续分组时立即返回网关统一 `503` 并写入 `Retry-After`。本地屏蔽状态不写 SQLite，服务重启、进程重启或 TTL 到期后自然恢复；持久账号状态由账号事前确认、显式账号策略确认失败、后台复测、手动账号测试或人工操作写入当前命中的账户行，并且事前确认连续失败后仍要等当前账号并发归零才能落库。完整流程见 [网关异常重试与兜底策略](网关异常重试与兜底策略.md)。凡是决定放行给客户端的上游成功响应，都必须透传上游状态码、可透传响应头和原始响应体，不改写。
 
 ## 默认运行策略
 
@@ -875,7 +875,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `defaultTemporaryUnschedulableMinutes = 5`：临时不可调用恢复流程中的最大单次暂停时间；账号进入 `temporary_unavailable` 后先 3 秒快速恢复，连续失败后翻倍，慢速恢复单次等待不超过该上限。
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试之间的等待间隔；冷却恢复复测会显式覆盖为不做同账号重试。
 - `temporaryUnschedulableRetryAttempts = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试次数；冷却恢复复测会显式覆盖为不做同账号重试。
-- `streamCircuitBreakerEnabled = true`：流式超时检测默认开启；真实网关流式失败单次即写当前账号状态。
+- `streamCircuitBreakerEnabled = true`：流式超时检测默认开启；真实网关流式失败先进入运行态屏障，确认失败且当前账号并发归零后才写持久账号状态。
 - `streamRequestTimeoutSeconds = 180`：上游首包等待上限；非流式和流式在响应头前、非流式在 `2xx` 响应首字节前超过该时间时按上游请求异常切换后续账号；流式拿到 `2xx + SSE` 后，超过该时间没有收到任何上游 chunk 时补发失败事件并结束本次 SSE。
 - `streamIdleTimeoutSeconds = 60`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；只把 raw chunk 完全停顿作为硬超时，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。
 - `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：历史流失败计数参数；真实网关流式失败已改为单次失败即写账号状态。

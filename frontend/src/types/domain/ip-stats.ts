@@ -26,6 +26,7 @@ export interface ClientIpUsageSummary {
 export interface ClientIpStatsRow {
   ipHash: string
   aggregateIpKey: string
+  lastSeenAt?: string
   status: ClientIpStatus
   rangeUsage: ClientIpUsageSummary
 }
