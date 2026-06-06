@@ -19,7 +19,23 @@ import type { AuditLogInput } from '../../storage/audit-logs.repository.js'
 import type { OperationLogInput } from '../../storage/operation-logs.repository.js'
 import type { RuntimeLogIndexInput } from '../../storage/runtime-logs.repository.js'
 import type { UsageRecordInput } from '../../storage/usage-records.repository.js'
-import { getUsageRecordShardDatabase, listUsageRecordShardLocations } from '../../storage/usage-record-shards.js'
+import { createPublicApiLog } from '../../storage/public-api-logs.repository.js'
+import { createStreamInterceptPolicy } from '../../storage/stream-intercept-policy.repository.js'
+import {
+  aggregateClientIpStatsBatch,
+  rebuildClientIpUsageRangeWindows,
+  recordClientIpPolicyHits
+} from '../../storage/client-ip-stats.repository.js'
+import {
+  builtInExternalIntegrationTestSourceId,
+  builtInExternalIntegrationTestTokenId,
+  createExternalIntegrationSourceAuthorization,
+  createExternalIntegrationSourceToken,
+  externalIntegrationScopeOptions,
+  findExternalIntegrationSource,
+  type CreatedExternalIntegrationSourceAuthorization
+} from '../../storage/external-integration-source.repository.js'
+import { deleteUsageRecordShardEntries, getUsageRecordShardDatabase, listUsageRecordShardLocations } from '../../storage/usage-record-shards.js'
 import {
   aggregateUsageStatsBatch,
   refreshGroupAccountStatsCache,
@@ -94,6 +110,11 @@ interface MockTeams {
   disabledTeam: SystemTeamSummary
 }
 
+interface MockExternalSources {
+  primary: CreatedExternalIntegrationSourceAuthorization
+  readonly: CreatedExternalIntegrationSourceAuthorization
+}
+
 interface CreatedMockdata {
   users: MockSystemAccounts
   groups: MockGroups
@@ -101,6 +122,8 @@ interface CreatedMockdata {
   apiKeys: MockApiKeys
   teams: MockTeams
   authorizations: ResourceAuthorizationSummary[]
+  externalSources: MockExternalSources
+  streamInterceptPolicies: number
 }
 
 interface UsageRecordSeed extends UsageRecordInput {
@@ -111,6 +134,31 @@ interface UsageRecordSeed extends UsageRecordInput {
 interface ModelCheckMockdataCounts {
   runs: number
   items: number
+}
+
+interface DerivedCacheCounts {
+  usageRecords: number
+  accountQualityAccounts: number
+  clientIpRecords: number
+}
+
+interface RecordCleanupMockdataCounts {
+  accountTargets: number
+  apiKeyTargets: number
+}
+
+interface ClientIpPolicyMockdataCounts {
+  policies: number
+  policyHits: number
+}
+
+interface ExtraMockdataCounts {
+  publicApiLogs: number
+  accountCleanupTargets: number
+  apiKeyCleanupTargets: number
+  clientIpAggregatedRecords: number
+  clientIpPolicies: number
+  clientIpPolicyHits: number
 }
 
 interface KeyScenario {
@@ -191,17 +239,34 @@ function main(): void {
   const created = createBusinessMockdata(admin, adminAccess)
   const usageRecords = createUsageMockdata(created, options)
   createAuditMockdata(usageRecords)
+  const publicApiLogs = createPublicApiLogMockdata(created, options)
   createOperationMockdata(created, usageRecords)
   createRuntimeLogMockdata(usageRecords)
   const modelCheckCounts = createModelCheckMockdata(created, options)
+  const cleanupCounts = createRecordCleanupMockdata(created)
   createMonitoringMockdata(options)
+
+  const derivedCounts = rebuildDerivedCaches(statsDatabase)
+  const clientIpPolicyCounts = createClientIpPolicyMockdata(created)
   createStorageMockdata(created, options)
-
-  rebuildDerivedCaches(statsDatabase)
   updateApiKeyLastUsedAt(usageRecords)
-  writeSummary(created, usageRecords, modelCheckCounts, options, Date.now() - startedAt)
+  writeSummary(
+    created,
+    usageRecords,
+    modelCheckCounts,
+    {
+      publicApiLogs,
+      accountCleanupTargets: cleanupCounts.accountTargets,
+      apiKeyCleanupTargets: cleanupCounts.apiKeyTargets,
+      clientIpAggregatedRecords: derivedCounts.clientIpRecords,
+      clientIpPolicies: clientIpPolicyCounts.policies,
+      clientIpPolicyHits: clientIpPolicyCounts.policyHits
+    },
+    options,
+    Date.now() - startedAt
+  )
 
-  console.log(`Mockdata 已生成：使用记录 ${usageRecords.length} 条，审计 ${Math.ceil(usageRecords.length / 4)} 条，模型检测 ${modelCheckCounts.runs} 次，耗时 ${Date.now() - startedAt}ms`)
+  console.log(`Mockdata 已生成：使用记录 ${usageRecords.length} 条，公开接口日志 ${publicApiLogs} 条，审计 ${Math.ceil(usageRecords.length / 4)} 条，模型检测 ${modelCheckCounts.runs} 次，耗时 ${Date.now() - startedAt}ms`)
   console.log(`业务库：${runtimeConfig.databasePath}`)
   console.log(`数据集目录库：${datasetDatabasePath()}`)
   console.log(`统计结果库：${statsDatabasePath()}`)
@@ -258,6 +323,8 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
   const authorizations = createAuthorizations(adminAccess, groups, accounts, users, teams)
   bindAuthorizedAccountToUserGroup(authorizationInstanceAccount(accounts.proxied, users.ops), groups.opsDefault, users.ops)
   const apiKeys = createApiKeys(adminAccess, groups, users)
+  const externalSources = createExternalSources()
+  const streamInterceptPolicies = createStreamInterceptPolicies()
   createAnnouncements(admin.id, users)
   seedOauthUsageSnapshots(accounts)
   tuneGroupAccountBindings(groups, accounts)
@@ -268,7 +335,9 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
     accounts,
     apiKeys,
     teams,
-    authorizations
+    authorizations,
+    externalSources,
+    streamInterceptPolicies
   }
 }
 
@@ -994,6 +1063,92 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
   }
 }
 
+function createExternalSources(): MockExternalSources {
+  const allScopes = externalIntegrationScopeOptions.map((option) => option.value)
+  const readScopes = allScopes.filter((scope) => scope.includes(':read'))
+  const primary = createExternalIntegrationSourceAuthorization({
+    name: `${namePrefix}公益站公开接口`,
+    status: 'active',
+    scopes: allScopes,
+    rateLimits: [
+      { windowSeconds: 60, maxRequests: 180 },
+      { windowSeconds: 3600, maxRequests: 6000 }
+    ],
+    expiresAt: new Date(Date.now() + 90 * dayMs).toISOString(),
+    notes: 'Mockdata 正式来源系统，用于公开接口日志、鉴权和写接口演示'
+  })
+  createExternalIntegrationSourceToken({
+    sourceRefId: primary.source.id,
+    name: `${namePrefix}公益站备用 Token`,
+    status: 'disabled',
+    scopes: readScopes,
+    expiresAt: new Date(Date.now() + 45 * dayMs).toISOString()
+  })
+
+  const readonly = createExternalIntegrationSourceAuthorization({
+    name: `${namePrefix}只读统计来源`,
+    status: 'active',
+    scopes: readScopes,
+    rateLimits: [
+      { windowSeconds: 60, maxRequests: 90 },
+      { windowSeconds: 3600, maxRequests: 2400 }
+    ],
+    notes: 'Mockdata 只读来源系统，用于公开统计读取接口演示'
+  })
+  return {
+    primary,
+    readonly
+  }
+}
+
+function createStreamInterceptPolicies(): number {
+  const policies = [
+    {
+      name: `${namePrefix}流式错误切换账户`,
+      enabled: true,
+      priority: 20,
+      providerCode,
+      match: {
+        eventTypes: ['response.failed', 'error'],
+        errorCodes: ['rate_limit_exceeded', 'server_error'],
+        textIncludes: ['Mockdata']
+      },
+      action: 'retry_next_account' as const,
+      notes: 'Mockdata 管理端策略：命中流式错误后请求下一个账号'
+    },
+    {
+      name: `${namePrefix}安全策略干跑观察`,
+      enabled: true,
+      priority: 35,
+      providerCode,
+      match: {
+        errorCodes: ['cyber_policy'],
+        jsonPathsExists: ['response.error'],
+        textIncludes: ['policy']
+      },
+      action: 'observe' as const,
+      notes: 'Mockdata 管理端策略：只观察安全策略命中，不改变流'
+    },
+    {
+      name: `${namePrefix}图像流异常账号避让`,
+      enabled: false,
+      priority: 55,
+      providerCode,
+      match: {
+        dataTypes: ['response.output_item.done'],
+        textIncludes: ['image_generation'],
+        textExcludes: ['completed']
+      },
+      action: 'avoid_account_ttl' as const,
+      notes: 'Mockdata 停用策略，用于流式拦截策略页面状态展示'
+    }
+  ]
+  for (const policy of policies) {
+    createStreamInterceptPolicy(policy)
+  }
+  return policies.length
+}
+
 function createAnnouncements(adminId: string, users: MockSystemAccounts): void {
   const announcements = [
     repositories.createAnnouncement({
@@ -1450,6 +1605,165 @@ function createAuditMockdata(records: UsageRecordSeed[]): void {
   }
 }
 
+function createPublicApiLogMockdata(created: CreatedMockdata, options: MockdataOptions): number {
+  const endpoints = [
+    { method: 'GET', path: '/__aipublic__/ip/usage', query: 'range=last_7_days&page=1&pageSize=20', scope: 'ip_usage' },
+    { method: 'GET', path: '/__aipublic__/account/usage', query: 'range=last_30_days&page=1&pageSize=20', scope: 'account_usage' },
+    { method: 'GET', path: '/__aipublic__/consumption/ranking', query: 'range=last_7_days&metric=cost', scope: 'ranking' },
+    { method: 'GET', path: '/__aipublic__/access/info', query: '', scope: 'access_info' },
+    { method: 'GET', path: '/__aipublic__/group/list', query: `targetUsername=${created.users.admin.username}&providerCode=openai`, scope: 'group_list' },
+    { method: 'GET', path: '/__aipublic__/api-key/list', query: `targetUsername=${created.users.admin.username}`, scope: 'api_key_list' },
+    { method: 'GET', path: '/__aipublic__/account/list', query: `targetUsername=${created.users.admin.username}&providerCode=openai`, scope: 'account_list' },
+    { method: 'POST', path: '/__aipublic__/group/add', query: '', scope: 'group_write' },
+    { method: 'POST', path: '/__aipublic__/group/update', query: '', scope: 'group_write' },
+    { method: 'POST', path: '/__aipublic__/group/del', query: '', scope: 'group_write' },
+    { method: 'POST', path: '/__aipublic__/api-key/add', query: '', scope: 'api_key_write' },
+    { method: 'POST', path: '/__aipublic__/api-key/update', query: '', scope: 'api_key_write' },
+    { method: 'POST', path: '/__aipublic__/api-key/del', query: '', scope: 'api_key_write' },
+    { method: 'POST', path: '/__aipublic__/account/add', query: '', scope: 'account_write' },
+    { method: 'POST', path: '/__aipublic__/account/update', query: '', scope: 'account_write' },
+    { method: 'POST', path: '/__aipublic__/account/del', query: '', scope: 'account_write' }
+  ]
+  const perDay = Math.min(60, Math.max(12, Math.ceil(options.dailyRequests / 20)))
+  const total = options.days * perDay
+  const endAt = Date.now() - 20 * minuteMs
+  const startAt = endAt - (options.days - 1) * dayMs
+  const builtInTestSource = findExternalIntegrationSource(builtInExternalIntegrationTestSourceId)
+  const builtInTestToken = builtInTestSource?.tokens.find((token) => token.id === builtInExternalIntegrationTestTokenId)
+  for (let index = 0; index < total; index += 1) {
+    const dayIndex = Math.floor(index / perDay)
+    const indexInDay = index % perDay
+    const endpoint = endpoints[index % endpoints.length]
+    const startedAtMs = startAt + dayIndex * dayMs + Math.floor((indexInDay / perDay) * (dayMs - minuteMs))
+    const durationMs = 40 + Math.floor(pseudoRandom(index, 70) * 1200)
+    const status = publicApiLogStatus(index, endpoint.method)
+    const success = status >= 200 && status < 300
+    const useTestToken = index % 6 === 0
+    const source = index % 5 === 0 ? created.externalSources.readonly : created.externalSources.primary
+    const token = source.token
+    createPublicApiLog({
+      id: `${idPrefix}public_api_log_${String(index + 1).padStart(5, '0')}`,
+      traceId: `${tracePrefix}public-api-${String(index + 1).padStart(5, '0')}`,
+      sourceRefId: useTestToken ? builtInExternalIntegrationTestSourceId : source.source.id,
+      sourceName: useTestToken ? builtInTestSource?.name ?? '内置测试来源' : source.source.name,
+      tokenId: useTestToken ? builtInExternalIntegrationTestTokenId : token.id,
+      tokenName: useTestToken ? '内置测试 Token' : token.name,
+      tokenPrefix: useTestToken ? builtInTestToken?.tokenPrefix ?? 'juis_...' : token.tokenPrefix,
+      isTestToken: useTestToken,
+      method: endpoint.method,
+      path: endpoint.path,
+      queryString: endpoint.query || undefined,
+      clientIp: `172.20.${index % 16}.${20 + (index % 180)}`,
+      userAgent: index % 7 === 0 ? 'mockdata-public-bot/1.0' : 'mockdata-public-client/1.0',
+      statusCode: status,
+      success,
+      durationMs,
+      requestSizeBytes: endpoint.method === 'POST' ? 320 + (index % 2048) : 80 + (index % 512),
+      responseSizeBytes: success ? 1200 + (index % 12000) : 220 + (index % 1200),
+      requestCaptureStatus: index % 19 === 0 ? 'truncated' : endpoint.method === 'POST' ? 'complete' : 'empty',
+      responseCaptureStatus: success ? (index % 23 === 0 ? 'truncated' : 'complete') : 'complete',
+      requestData: publicApiLogRequestData(endpoint, created, index),
+      responseData: publicApiLogResponseData(endpoint, success, index),
+      errorCode: success ? undefined : publicApiLogErrorCode(status),
+      errorMessage: success ? undefined : publicApiLogErrorMessage(status),
+      startedAt: new Date(startedAtMs).toISOString(),
+      endedAt: new Date(startedAtMs + durationMs).toISOString(),
+      createdAt: new Date(startedAtMs + durationMs).toISOString()
+    })
+  }
+  return total
+}
+
+function publicApiLogStatus(index: number, method: string): number {
+  if (index % 29 === 0) return 401
+  if (index % 23 === 0) return 403
+  if (index % 19 === 0) return 429
+  if (index % 17 === 0) return 400
+  if (index % 13 === 0) return 500
+  return method === 'POST' && index % 4 === 0 ? 201 : 200
+}
+
+function publicApiLogErrorCode(status: number): string {
+  if (status === 401) return 'external_source_token_invalid'
+  if (status === 403) return 'external_source_scope_denied'
+  if (status === 429) return 'external_source_rate_limited'
+  if (status === 400) return 'bad_request'
+  return 'public_api_internal_error'
+}
+
+function publicApiLogErrorMessage(status: number): string {
+  if (status === 401) return 'Mockdata 模拟来源 Token 无效'
+  if (status === 403) return 'Mockdata 模拟来源系统缺少接口权限'
+  if (status === 429) return 'Mockdata 模拟公开接口触发限流'
+  if (status === 400) return 'Mockdata 模拟公开接口参数无效'
+  return 'Mockdata 模拟公开接口内部错误'
+}
+
+function publicApiLogRequestData(
+  endpoint: { method: string; path: string; scope: string },
+  created: CreatedMockdata,
+  index: number
+): Record<string, unknown> {
+  if (endpoint.method === 'GET') {
+    return {
+      query: endpoint.scope,
+      page: 1 + (index % 5),
+      pageSize: 20
+    }
+  }
+  if (endpoint.path.includes('/group/')) {
+    return {
+      targetUsername: created.users.admin.username,
+      providerCode,
+      groupId: created.groups.main.id,
+      name: `${namePrefix}公开接口分组 ${index % 9}`
+    }
+  }
+  if (endpoint.path.includes('/api-key/')) {
+    return {
+      targetUsername: created.users.admin.username,
+      apiKeyId: created.apiKeys.adminMain.id,
+      groupBindings: [{ groupId: created.groups.main.id, priority: 1, status: 'active' }]
+    }
+  }
+  return {
+    targetUsername: created.users.admin.username,
+    providerCode,
+    accountId: created.accounts.primary.id,
+    targetGroupName: `${namePrefix}公开接口账号分组`
+  }
+}
+
+function publicApiLogResponseData(endpoint: { path: string; scope: string }, success: boolean, index: number): Record<string, unknown> {
+  if (!success) {
+    return {
+      message: publicApiLogErrorMessage(publicApiLogStatus(index, endpoint.path)),
+      code: publicApiLogErrorCode(publicApiLogStatus(index, endpoint.path))
+    }
+  }
+  if (endpoint.path.includes('/ranking')) {
+    return {
+      source: 'stats',
+      items: [
+        { rank: 1, clientIp: `172.20.1.${20 + (index % 20)}`, totalCost: roundCost(4.2 + index / 1000) }
+      ]
+    }
+  }
+  if (endpoint.path.includes('/list')) {
+    return {
+      source: 'stats',
+      page: 1,
+      pageSize: 20,
+      items: [{ id: `mockdata_public_item_${index}`, name: `${namePrefix}公开接口返回项` }]
+    }
+  }
+  return {
+    source: 'stats',
+    action: endpoint.scope.includes('write') ? 'created' : 'read',
+    mock: false
+  }
+}
+
 function createOperationMockdata(created: CreatedMockdata, usageRecords: UsageRecordSeed[]): void {
   const resources = [
     { module: 'accounts', resourceType: 'account', resourceId: created.accounts.primary.id, resourceName: created.accounts.primary.name, action: 'create', summary: '创建主力 API Key 账户' },
@@ -1805,6 +2119,158 @@ function modelCheckItemMessage(status: MockModelCheckItemStatus, itemType: strin
   return `Mockdata ${itemType} 探针已跳过`
 }
 
+function createRecordCleanupMockdata(created: CreatedMockdata): RecordCleanupMockdataCounts {
+  const database = getDatasetDatabase()
+  const now = nowIso()
+  const accountTargets = [
+    {
+      accountId: `${idPrefix}display_deleted_account_01`,
+      relatedAccountIds: [`${idPrefix}display_related_account_01`],
+      authorizationIds: [`${idPrefix}display_authorization_01`],
+      teamScopeIds: [`${idPrefix}display_team_scope_01`],
+      attemptCount: 2,
+      lastBlockedReason: `${namePrefix}等待 usage shard 短事务空闲`,
+      lastErrorMessage: 'Mockdata 模拟账号相关记录清理遇到 SQLite 写锁'
+    },
+    {
+      accountId: `${idPrefix}display_deleted_account_02`,
+      relatedAccountIds: [],
+      authorizationIds: [`${idPrefix}display_authorization_02`, `${idPrefix}display_authorization_03`],
+      teamScopeIds: [`${idPrefix}display_team_scope_02`],
+      attemptCount: 1,
+      lastBlockedReason: `${namePrefix}等待授权窗口扣减完成`,
+      lastErrorMessage: null
+    },
+    {
+      accountId: `${idPrefix}display_deleted_account_03`,
+      relatedAccountIds: [`${idPrefix}display_related_account_03`],
+      authorizationIds: [],
+      teamScopeIds: [],
+      attemptCount: 0,
+      lastBlockedReason: `${namePrefix}待后台维护任务处理`,
+      lastErrorMessage: null
+    }
+  ]
+  const apiKeyTargets = [
+    { apiKeyId: `${idPrefix}display_deleted_api_key_01`, attemptCount: 2, reason: `${namePrefix}等待统计扣减重试`, error: 'Mockdata 模拟 API Key 清理锁竞争' },
+    { apiKeyId: `${idPrefix}display_deleted_api_key_02`, attemptCount: 1, reason: `${namePrefix}等待数据集索引清理`, error: null },
+    { apiKeyId: `${idPrefix}display_deleted_api_key_03`, attemptCount: 0, reason: `${namePrefix}待后台维护任务处理`, error: null }
+  ]
+  const insertAccount = database.prepare(`
+    INSERT INTO account_record_cleanup_targets (
+      account_id, system_account_id, related_account_ids_json, authorization_ids_json, team_scope_ids_json,
+      created_at, updated_at, attempt_count, last_attempt_at, last_blocked_reason, last_error_message
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const insertApiKey = database.prepare(`
+    INSERT INTO api_key_record_cleanup_targets (
+      api_key_id, system_account_id, created_at, updated_at, attempt_count,
+      last_attempt_at, last_blocked_reason, last_error_message
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  database.exec('BEGIN')
+  try {
+    accountTargets.forEach((target, index) => {
+      const createdAt = new Date(Date.now() - (index + 1) * dayMs).toISOString()
+      insertAccount.run(
+        target.accountId,
+        '',
+        JSON.stringify(target.relatedAccountIds),
+        JSON.stringify(target.authorizationIds),
+        JSON.stringify(target.teamScopeIds),
+        createdAt,
+        now,
+        target.attemptCount,
+        target.attemptCount > 0 ? new Date(Date.now() - (index + 2) * 60 * minuteMs).toISOString() : null,
+        target.lastBlockedReason,
+        target.lastErrorMessage
+      )
+    })
+    apiKeyTargets.forEach((target, index) => {
+      const createdAt = new Date(Date.now() - (index + 1) * dayMs).toISOString()
+      insertApiKey.run(
+        target.apiKeyId,
+        '',
+        createdAt,
+        now,
+        target.attemptCount,
+        target.attemptCount > 0 ? new Date(Date.now() - (index + 3) * 60 * minuteMs).toISOString() : null,
+        target.reason,
+        target.error
+      )
+    })
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  return {
+    accountTargets: accountTargets.length,
+    apiKeyTargets: apiKeyTargets.length
+  }
+}
+
+function createClientIpPolicyMockdata(created: CreatedMockdata): ClientIpPolicyMockdataCounts {
+  const database = getStatsDatabase()
+  const rows = database.prepare(`
+    SELECT ip_hash, client_ip, aggregate_ip_key, last_seen_at
+    FROM client_ip_registry
+    WHERE client_ip LIKE '10.10.%'
+       OR client_ip LIKE '10.20.%'
+    ORDER BY last_seen_at DESC, ip_hash ASC
+    LIMIT 8
+  `).all() as Array<{ ip_hash: string; client_ip: string; aggregate_ip_key: string; last_seen_at?: string | null }>
+  if (!rows.length) {
+    return { policies: 0, policyHits: 0 }
+  }
+  const now = nowIso()
+  const insertPolicy = database.prepare(`
+    INSERT INTO client_ip_policies (
+      id, ip_hash, status, reason, expires_at, created_by_system_account_id,
+      created_at, updated_at, disabled_at, disabled_by_system_account_id, disabled_reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  database.exec('BEGIN')
+  try {
+    rows.forEach((row, index) => {
+      const status = index % 4 === 3 ? 'disabled' : 'active'
+      const createdAt = new Date(Date.now() - (index + 1) * 6 * 60 * minuteMs).toISOString()
+      insertPolicy.run(
+        `${idPrefix}client_ip_policy_${String(index + 1).padStart(2, '0')}`,
+        row.ip_hash,
+        status,
+        index % 3 === 0 ? `${namePrefix}高错误率自动封禁样例` : `${namePrefix}公益接口异常流量观察`,
+        status === 'active' && index % 2 === 0 ? new Date(Date.now() + (index + 1) * dayMs).toISOString() : null,
+        created.users.admin.id,
+        createdAt,
+        now,
+        status === 'disabled' ? new Date(Date.now() - index * 60 * minuteMs).toISOString() : null,
+        status === 'disabled' ? created.users.admin.id : null,
+        status === 'disabled' ? `${namePrefix}人工解除封禁样例` : null
+      )
+    })
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+
+  const hits = rows.flatMap((row, index) => {
+    const policyId = `${idPrefix}client_ip_policy_${String(index + 1).padStart(2, '0')}`
+    return Array.from({ length: Math.min(14, Math.max(4, Math.floor(index + 4))) }, (_, dayIndex) => ({
+      ipHash: row.ip_hash,
+      policyId,
+      hitCount: 1 + ((index + dayIndex) % 9),
+      hitAt: new Date(Date.now() - dayIndex * dayMs - index * 20 * minuteMs).toISOString()
+    }))
+  })
+  const recorded = recordClientIpPolicyHits(hits).recorded
+  return {
+    policies: rows.length,
+    policyHits: recorded
+  }
+}
+
 function createMonitoringMockdata(options: MockdataOptions): void {
   const database = getStatsDatabase()
   const now = Date.now() - 10 * minuteMs
@@ -1886,24 +2352,76 @@ function createStorageMockdata(created: CreatedMockdata, options: MockdataOption
       page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
+  const businessDatabase = getBusinessDatabase()
+  const datasetDatabase = getDatasetDatabase()
   const businessTables = [
-    ['accounts', Object.keys(created.accounts).length],
-    ['groups', Object.keys(created.groups).length],
-    ['api_keys', Object.keys(created.apiKeys).length],
-    ['resource_authorizations', created.authorizations.length],
-    ['system_accounts', Object.keys(created.users).length],
-    ['system_teams', Object.keys(created.teams).length]
+    'accounts',
+    'account_supported_models',
+    'groups',
+    'group_accounts',
+    'api_keys',
+    'api_key_group_bindings',
+    'proxy_profiles',
+    'error_policies',
+    'stream_intercept_policies',
+    'external_integration_sources',
+    'external_integration_source_tokens',
+    'resource_authorization_grants',
+    'resource_authorizations',
+    'resource_authorization_sources',
+    'system_accounts',
+    'system_teams',
+    'system_team_members',
+    'announcements',
+    'announcement_reads'
   ] as const
   const datasetTables = [
-    ['usage_record_shards', Math.min(16, Math.max(1, options.days))],
-    ['usage_record_shard_entries', options.days * options.dailyRequests],
-    ['audit_logs', Math.ceil(options.days * options.dailyRequests / 4)],
-    ['operation_logs', 90],
-    ['runtime_logs', Math.min(240, options.days * options.dailyRequests)]
+    'usage_record_shards',
+    'usage_record_shard_entries',
+    'usage_record_account_shards',
+    'usage_record_api_key_shards',
+    'audit_logs',
+    'audit_log_attempts',
+    'audit_payload_refs',
+    'audit_payload_blobs',
+    'audit_error_groups',
+    'operation_logs',
+    'operation_log_targets',
+    'operation_log_viewers',
+    'operation_log_summary_search_terms',
+    'runtime_logs',
+    'runtime_log_event_facets',
+    'runtime_log_level_facets',
+    'runtime_log_facet_summary',
+    'public_api_logs',
+    'model_check_runs',
+    'model_check_items',
+    'account_record_cleanup_targets',
+    'api_key_record_cleanup_targets'
   ] as const
   const statsTables = [
-    ['usage_stats_daily', options.days * 12],
-    ['system_metrics_samples', options.days * 24]
+    'usage_stats_daily',
+    'usage_stats_hourly',
+    'usage_stats_monthly',
+    'usage_model_rank_windows',
+    'usage_error_rank_windows',
+    'usage_overview_summary_windows',
+    'usage_scope_range_windows',
+    'authorization_team_usage_range_windows',
+    'authorization_user_usage_range_windows',
+    'ai_performance_summary_windows',
+    'usage_quota_hourly_windows',
+    'account_quality_scores',
+    'account_quality_minute_stats',
+    'client_ip_registry',
+    'client_ip_stats_daily',
+    'client_ip_usage_range_windows',
+    'client_ip_policies',
+    'client_ip_policy_hits',
+    'system_metrics_samples',
+    'system_metrics_hourly',
+    'process_event_loop_samples',
+    'process_event_loop_hourly'
   ] as const
   const databaseTargets = [
     { role: 'business', path: runtimeConfig.databasePath, baseBytes: 80_000_000, growthBytes: 1_200_000, tableCount: 20, indexCount: 38 },
@@ -1935,15 +2453,18 @@ function createStorageMockdata(created: CreatedMockdata, options: MockdataOption
           sampledAt
         )
       }
-      for (const [tableName, baseRows] of businessTables) {
+      for (const tableName of businessTables) {
+        const baseRows = tableRowCount(businessDatabase, tableName)
         const rows = baseRows + dayIndex * 2
         insertTable.run(...tableStorageValues('business', tableName, dayIndex, sampledAt, rows, 24_000 + rows * 900))
       }
-      for (const [tableName, baseRows] of datasetTables) {
+      for (const tableName of datasetTables) {
+        const baseRows = tableRowCount(datasetDatabase, tableName)
         const rows = baseRows + dayIndex * 12
         insertTable.run(...tableStorageValues('dataset', tableName, dayIndex, sampledAt, rows, 80_000 + rows * 1100))
       }
-      for (const [tableName, baseRows] of statsTables) {
+      for (const tableName of statsTables) {
+        const baseRows = tableRowCount(database, tableName)
         const rows = baseRows + dayIndex * 4
         insertTable.run(...tableStorageValues('stats', tableName, dayIndex, sampledAt, rows, 60_000 + rows * 700))
       }
@@ -1984,7 +2505,12 @@ function tableStorageValues(
   ]
 }
 
-function rebuildDerivedCaches(statsDatabase: Database): void {
+function tableRowCount(database: Database, tableName: string): number {
+  const row = database.prepare(`SELECT COUNT(*) AS total FROM ${tableName}`).get() as { total?: number } | undefined
+  return Number(row?.total ?? 0)
+}
+
+function rebuildDerivedCaches(statsDatabase: Database): DerivedCacheCounts {
   resetUsageStatsCache(statsDatabase)
   let totalProcessed = 0
   while (true) {
@@ -1996,7 +2522,19 @@ function rebuildDerivedCaches(statsDatabase: Database): void {
   refreshUsageQuotaHourlyWindowsCache()
   refreshGroupAccountStatsCache()
   const quality = refreshAccountQualityFromUsage(24 * 60)
-  console.log(`统计缓存已重建：聚合 ${totalProcessed} 条，用量质量刷新 ${quality.refreshed} 个账号`)
+  let clientIpProcessed = 0
+  while (true) {
+    const processed = aggregateClientIpStatsBatch(10000)
+    clientIpProcessed += processed
+    if (processed <= 0) break
+  }
+  rebuildClientIpUsageRangeWindows()
+  console.log(`统计缓存已重建：聚合 ${totalProcessed} 条，用量质量刷新 ${quality.refreshed} 个账号，IP 统计聚合 ${clientIpProcessed} 条`)
+  return {
+    usageRecords: totalProcessed,
+    accountQualityAccounts: quality.refreshed,
+    clientIpRecords: clientIpProcessed
+  }
 }
 
 function resetUsageStatsCache(database: Database): void {
@@ -2038,14 +2576,21 @@ function resetUsageStatsCache(database: Database): void {
     'system_metrics_trend_windows',
     'process_event_loop_trend_windows',
     'account_quality_minute_stats',
-    'account_quality_scores'
+    'account_quality_scores',
+    'client_ip_registry',
+    'client_ip_stats_daily',
+    'client_ip_usage_range_windows',
+    'client_ip_range_window_dirty_ips'
   ]
   database.exec('BEGIN')
   try {
     for (const tableName of usageStatsTables) {
       database.prepare(`DELETE FROM ${tableName}`).run()
     }
-    database.prepare("DELETE FROM stats_job_state WHERE job_name = 'usage_stats_aggregation'").run()
+    database.prepare(`
+      DELETE FROM stats_job_state
+      WHERE job_name IN ('usage_stats_aggregation', 'client_ip_stats_aggregation', 'client_ip_range_window_refresh')
+    `).run()
     database.prepare(`
       INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
       VALUES ('global', '', 'usage_stats_aggregation', '', '', NULL, NULL, 0, ?)
@@ -2060,7 +2605,8 @@ function resetUsageStatsCache(database: Database): void {
 function cleanupMockdata(businessDatabase: Database, datasetDatabase: Database, statsDatabase: Database, adminId: string): void {
   const mockUserIds = selectIds(businessDatabase, "SELECT id FROM system_accounts WHERE username LIKE 'mockdata_%'")
   const mockAccountIds = selectIds(businessDatabase, 'SELECT id FROM accounts WHERE name LIKE ?', `${namePrefix}%`)
-  cleanupDatasetMockdata(datasetDatabase)
+  const mockApiKeyIds = selectIds(businessDatabase, 'SELECT id FROM api_keys WHERE name LIKE ?', `${namePrefix}%`)
+  cleanupDatasetMockdata(datasetDatabase, mockAccountIds, mockApiKeyIds)
   cleanupStatsMockdata(statsDatabase, mockAccountIds)
   cleanupBusinessMockdata(businessDatabase, adminId, mockUserIds)
 }
@@ -2072,6 +2618,13 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     const mockAnnouncementIds = selectIds(database, 'SELECT id FROM announcements WHERE title LIKE ?', likeName)
     deleteWhereIn(database, 'announcement_reads', 'announcement_id', mockAnnouncementIds)
     deleteWhereIn(database, 'announcements', 'id', mockAnnouncementIds)
+
+    const mockExternalSourceIds = selectIds(database, 'SELECT id FROM external_integration_sources WHERE name LIKE ?', likeName)
+    deleteWhereIn(database, 'external_integration_source_tokens', 'source_ref_id', mockExternalSourceIds)
+    deleteWhereIn(database, 'external_integration_sources', 'id', mockExternalSourceIds)
+
+    const mockStreamInterceptPolicyIds = selectIds(database, 'SELECT id FROM stream_intercept_policies WHERE name LIKE ?', likeName)
+    deleteWhereIn(database, 'stream_intercept_policies', 'id', mockStreamInterceptPolicyIds)
 
     const mockRuntimeAuthorizationIds = selectIds(database, 'SELECT id FROM resource_authorizations WHERE created_by = ? AND remark LIKE ?', adminId, likeName)
     deleteWhereIn(database, 'resource_authorization_sources', 'authorization_id', mockRuntimeAuthorizationIds)
@@ -2117,10 +2670,31 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
   }
 }
 
-function cleanupDatasetMockdata(database: Database): void {
+function cleanupDatasetMockdata(database: Database, mockAccountIds: string[], mockApiKeyIds: string[]): void {
   database.exec('BEGIN')
   try {
     cleanupUsageRecordShardMockdata()
+
+    deleteWhereIn(database, 'account_record_cleanup_targets', 'account_id', mockAccountIds)
+    deleteWhereIn(database, 'api_key_record_cleanup_targets', 'api_key_id', mockApiKeyIds)
+
+    database.prepare(`
+      DELETE FROM public_api_logs
+      WHERE id LIKE ?
+         OR trace_id LIKE ?
+         OR source_name LIKE ?
+    `).run(`${idPrefix}%`, `${tracePrefix}%`, `${namePrefix}%`)
+
+    database.prepare(`
+      DELETE FROM account_record_cleanup_targets
+      WHERE last_blocked_reason LIKE ?
+         OR last_error_message LIKE ?
+    `).run(`${namePrefix}%`, 'Mockdata%')
+    database.prepare(`
+      DELETE FROM api_key_record_cleanup_targets
+      WHERE last_blocked_reason LIKE ?
+         OR last_error_message LIKE ?
+    `).run(`${namePrefix}%`, 'Mockdata%')
 
     database.prepare(`
       DELETE FROM audit_error_groups
@@ -2155,6 +2729,9 @@ function cleanupDatasetMockdata(database: Database): void {
 function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): void {
   database.exec('BEGIN')
   try {
+    const mockClientIpPolicyIds = selectIds(database, 'SELECT id FROM client_ip_policies WHERE id LIKE ? OR reason LIKE ? OR disabled_reason LIKE ?', `${idPrefix}%`, `${namePrefix}%`, `${namePrefix}%`)
+    deleteWhereIn(database, 'client_ip_policy_hits', 'policy_id', mockClientIpPolicyIds)
+    deleteWhereIn(database, 'client_ip_policies', 'id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'account_usage_snapshots', 'account_id', mockAccountIds)
     database.prepare('DELETE FROM system_metrics_samples WHERE id LIKE ?').run(`${idPrefix}%`)
     database.prepare('DELETE FROM process_event_loop_samples WHERE id LIKE ?').run(`${idPrefix}%`)
@@ -2168,11 +2745,17 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
 }
 
 function cleanupUsageRecordShardMockdata(): void {
+  const mockUsageIds = selectIds(
+    getDatasetDatabase(),
+    'SELECT usage_id AS id FROM usage_record_shard_entries WHERE usage_id LIKE ?',
+    `${idPrefix}%`
+  )
   for (const location of listUsageRecordShardLocations()) {
     getUsageRecordShardDatabase(location)
       .prepare("DELETE FROM usage_records WHERE id LIKE ? OR trace_id LIKE ?")
       .run(`${idPrefix}%`, `${tracePrefix}%`)
   }
+  deleteUsageRecordShardEntries(mockUsageIds)
 }
 
 function rebuildSystemMetricsHourly(database: Database): void {
@@ -2347,6 +2930,7 @@ function writeSummary(
   created: CreatedMockdata,
   records: UsageRecordSeed[],
   modelCheckCounts: ModelCheckMockdataCounts,
+  extraCounts: ExtraMockdataCounts,
   options: MockdataOptions,
   durationMs: number
 ): void {
@@ -2380,12 +2964,20 @@ function writeSummary(
       apiKeys: Object.keys(created.apiKeys).length,
       teams: Object.keys(created.teams).length,
       authorizations: created.authorizations.length,
+      externalSources: Object.keys(created.externalSources).length,
+      streamInterceptPolicies: created.streamInterceptPolicies,
       usageRecords: records.length,
+      publicApiLogs: extraCounts.publicApiLogs,
       auditLogs: Math.ceil(records.length / 4),
       operationLogs: 90,
       runtimeLogs: Math.min(240, records.length),
       modelCheckRuns: modelCheckCounts.runs,
-      modelCheckItems: modelCheckCounts.items
+      modelCheckItems: modelCheckCounts.items,
+      accountCleanupTargets: extraCounts.accountCleanupTargets,
+      apiKeyCleanupTargets: extraCounts.apiKeyCleanupTargets,
+      clientIpAggregatedRecords: extraCounts.clientIpAggregatedRecords,
+      clientIpPolicies: extraCounts.clientIpPolicies,
+      clientIpPolicyHits: extraCounts.clientIpPolicyHits
     }
   }
   const path = mockdataSummaryPath()

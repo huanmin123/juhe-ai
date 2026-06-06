@@ -51,7 +51,10 @@
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'source'">
           <div class="source-name-cell">
-            <strong>{{ record.name }}</strong>
+            <div class="source-name-line">
+              <strong>{{ record.name }}</strong>
+              <a-tag v-if="record.isBuiltIn" color="blue">内置</a-tag>
+            </div>
           </div>
         </template>
         <template v-else-if="column.key === 'status'">
@@ -99,7 +102,10 @@
         <article class="mobile-list-card">
           <div class="mobile-list-card-head">
             <div>
-              <div class="mobile-list-card-title">{{ record.name }}</div>
+              <div class="mobile-list-card-title">
+                {{ record.name }}
+                <a-tag v-if="record.isBuiltIn" color="blue">内置</a-tag>
+              </div>
             </div>
             <a-tag :color="sourceStatusColor(record.status)">{{ sourceStatusText(record.status) }}</a-tag>
           </div>
@@ -143,16 +149,7 @@
               allow-clear
               placeholder="搜索接口名称"
             />
-            <div class="test-token-box">
-              <div class="test-token-head">
-                <span>{{ apiCatalog.testTokenName }}</span>
-                <a-button size="small" @click="copyTestToken">
-                  <template #icon><copy-outlined /></template>
-                  复制
-                </a-button>
-              </div>
-              <code>{{ apiCatalog.testToken }}</code>
-            </div>
+            <a-alert class="api-doc-token-note" type="info" show-icon message="测试 Token 请在公开接口授权列表复制“内置测试来源”的完整 Token；文档和 curl 示例不展示明文 Token。" />
             <div class="api-doc-list">
               <button
                 v-for="item in filteredApiDocs"
@@ -554,10 +551,6 @@ function selectApiDoc(id: string): void {
   selectedApiDocId.value = id
 }
 
-function copyTestToken(): void {
-  void copyTextToClipboard(apiCatalog.value?.testToken ?? '', '测试 Token 已复制')
-}
-
 function copyCurl(item: ExternalPublicApiDocItem | undefined): void {
   void copyTextToClipboard(buildCurl(item), 'curl 已复制')
 }
@@ -578,7 +571,7 @@ function buildCurl(item: ExternalPublicApiDocItem | undefined): string {
     item.method,
     quoteShell(url, platform),
     '-H',
-    quoteShell(`Authorization: Bearer ${apiCatalog.value?.testToken ?? '<source_token>'}`, platform)
+    quoteShell('Authorization: Bearer <source_token>', platform)
   ]
   if (item.requestBody) {
     parts.push('-H', quoteShell(`Content-Type: ${item.requestBody.contentType}`, platform))
@@ -916,11 +909,25 @@ function removeRateLimit(index: number): void {
 }
 
 function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[] {
+  const statusAction: RowActionItem = record.status === 'active'
+    ? { key: 'disable', label: '停用', icon: 'disable', tone: 'danger' as const }
+    : { key: 'enable', label: '启用', icon: 'enable', tone: 'success' as const }
+  if (record.isBuiltIn) {
+    return [
+      statusAction,
+      {
+        key: 'resetToken',
+        label: '重置',
+        icon: 'reset',
+        tone: 'warning' as const,
+        confirmTitle: '确认重置内置测试 Token？旧 Token 会立即失效。',
+        confirmOkText: '重置'
+      }
+    ]
+  }
   return [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
-    record.status === 'active'
-      ? { key: 'disable', label: '停用', icon: 'disable', tone: 'danger' }
-      : { key: 'enable', label: '启用', icon: 'enable', tone: 'success' },
+    statusAction,
     { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: `确认删除来源授权“${record.name}”？`, confirmOkText: '删除' }
   ]
 }
@@ -936,6 +943,10 @@ function handleSourceAction(key: string, record: ExternalIntegrationSourceSummar
   }
   if (key === 'delete') {
     void deleteSource(record)
+    return
+  }
+  if (key === 'resetToken') {
+    void resetBuiltInTestToken()
   }
 }
 
@@ -959,6 +970,16 @@ async function deleteSource(record: ExternalIntegrationSourceSummary): Promise<v
     await loadData()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '删除来源授权失败'))
+  }
+}
+
+async function resetBuiltInTestToken(): Promise<void> {
+  try {
+    const result = await api.externalIntegrationSources.resetBuiltInTestToken()
+    await copyTextToClipboard(result.token.token, '内置测试 Token 已重置并复制')
+    await loadData()
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '重置内置测试 Token 失败'))
   }
 }
 
@@ -1074,6 +1095,19 @@ function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
   min-width: 0;
   flex-direction: column;
   gap: 2px;
+}
+
+.source-name-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.source-name-line strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .source-name-cell span {
@@ -1295,34 +1329,14 @@ function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
   padding-right: 16px;
 }
 
-.test-token-box {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 8px;
-  border: 1px solid #edf1f7;
-  border-radius: 8px;
-  padding: 10px;
-  background: #f8fafc;
-}
-
-.test-token-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.test-token-box code,
 .api-doc-code,
 .api-doc-field-row code,
 .api-doc-list-path {
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 }
 
-.test-token-box code {
-  overflow-wrap: anywhere;
-  color: #0f172a;
+.api-doc-token-note {
+  margin-bottom: 4px;
 }
 
 .api-doc-list {

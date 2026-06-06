@@ -848,7 +848,7 @@ function assertAccountsRuntimeSuppressedActive(accounts: RegressionAccount[], me
     const runtime = runtimeSnapshot[account.id]
     assert(runtime, `${reason}：${account.name} 应存在账号运行态屏障`)
     assert(
-      runtime.status === 'local_suppressed' || runtime.status === 'precheck_pending' || runtime.status === 'precheck_failed',
+      runtime.status === 'local_suppressed' || runtime.status === 'half_open' || runtime.status === 'precheck_pending' || runtime.status === 'precheck_failed',
       `${reason}：${account.name} 运行态应为本地避让或事前确认，实际 ${runtime.status}`
     )
     assert.match(runtime.reason ?? '', messagePattern, `${reason}：${account.name} 运行态原因应保留真实上游摘要，实际 ${runtime.reason ?? ''}`)

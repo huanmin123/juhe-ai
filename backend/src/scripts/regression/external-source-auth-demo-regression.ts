@@ -64,7 +64,9 @@ async function runChild(): Promise<void> {
     externalIntegrationGroupUpdateWriteScope,
     externalIntegrationIpUsageReadScope,
     externalIntegrationSourceAuthDemoScope,
-    externalIntegrationTestToken,
+    builtInExternalIntegrationTestSourceId,
+    builtInExternalIntegrationTestTokenId,
+    findExternalIntegrationSourceTokenSecret,
     upsertExternalIntegrationSource
   } = await import('../../storage/external-integration-source.repository.js')
   const {
@@ -92,6 +94,13 @@ async function runChild(): Promise<void> {
   const consumptionRankingToken = 'juis_valid_consumption_ranking_public_token_32'
   const accessInfoToken = 'juis_valid_access_info_public_token_32_chars'
   const accountWriteToken = 'juis_valid_account_write_public_token_32_chars'
+  const builtInTokenSecret = findExternalIntegrationSourceTokenSecret(
+    builtInExternalIntegrationTestSourceId,
+    builtInExternalIntegrationTestTokenId
+  )
+  assert(builtInTokenSecret?.token, '内置测试 Token 应写入数据库并可用于回归测试')
+  let builtInTestToken = builtInTokenSecret.token
+  let builtInSuccessfulPublicCallCount = 0
 
   const source = upsertExternalIntegrationSource({
     name: sourceName,
@@ -214,6 +223,89 @@ async function runChild(): Promise<void> {
   const adminCookie = `juhe_ai_session=${createSession('sys_admin', 1).token}`
 
   try {
+    const apiDocs = await requestJson(baseUrl, '/__aisys__/api/external-integration-sources/api-docs', {
+      Cookie: adminCookie
+    })
+    assert.equal(apiDocs.status, 200)
+    assert.equal(Object.prototype.hasOwnProperty.call(apiDocs.body.data, 'testToken'), false, '公开接口接入文档不能返回内置测试 Token 明文')
+    assert.equal(Object.prototype.hasOwnProperty.call(apiDocs.body.data, 'testTokenName'), false, '公开接口接入文档不能返回测试 Token 字段')
+    assert.equal(JSON.stringify(apiDocs.body.data).includes(builtInTestToken), false, '公开接口接入文档不能包含内置测试 Token 明文')
+
+    const builtInList = await requestJson(baseUrl, '/__aisys__/api/external-integration-sources?pageSize=100', {
+      Cookie: adminCookie
+    })
+    assert.equal(builtInList.status, 200)
+    const builtInSource = builtInList.body.data.items.find((item: any) => item.id === builtInExternalIntegrationTestSourceId)
+    assert(builtInSource, '外部来源授权列表应默认包含内置测试来源')
+    assert.equal(builtInSource.isBuiltIn, true, '内置测试来源应带只读标识')
+    assert.equal(builtInSource.name, '内置测试来源')
+    assert.deepEqual(builtInSource.rateLimits, [{ windowSeconds: 60, maxRequests: 10 }], '内置测试来源应固定为 1 分钟 10 次')
+    const builtInToken = builtInSource.tokens.find((token: any) => token.id === builtInExternalIntegrationTestTokenId)
+    assert(builtInToken, '内置测试来源应默认包含内置测试 Token')
+    assert.equal(builtInToken.isBuiltIn, true, '内置测试 Token 应带只读标识')
+
+    const builtInSourceEdit = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInExternalIntegrationTestSourceId}`, {
+      Cookie: adminCookie
+    }, 'PATCH', {
+      name: '不应允许改名'
+    })
+    assert.equal(builtInSourceEdit.status, 400, '内置测试来源不应允许编辑基础信息')
+
+    const builtInTokenCreate = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInExternalIntegrationTestSourceId}/tokens`, {
+      Cookie: adminCookie
+    }, 'POST', {
+      name: '不应新增的 Token',
+      status: 'active',
+      scopes: [externalIntegrationSourceAuthDemoScope]
+    })
+    assert.equal(builtInTokenCreate.status, 400, '内置测试来源不应允许新增 Token')
+
+    const builtInTokenEdit = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInExternalIntegrationTestSourceId}/tokens/${builtInExternalIntegrationTestTokenId}`, {
+      Cookie: adminCookie
+    }, 'PATCH', {
+      status: 'disabled'
+    })
+    assert.equal(builtInTokenEdit.status, 400, '内置测试 Token 不应允许直接编辑')
+
+    const builtInDelete = await requestStatus(baseUrl, `/__aisys__/api/external-integration-sources/${builtInExternalIntegrationTestSourceId}`, {
+      Cookie: adminCookie
+    }, 'DELETE')
+    assert.equal(builtInDelete, 400, '内置测试来源不应允许删除')
+
+    const disabledBuiltIn = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInExternalIntegrationTestSourceId}`, {
+      Cookie: adminCookie
+    }, 'PATCH', {
+      status: 'disabled'
+    })
+    assert.equal(disabledBuiltIn.status, 200, '内置测试来源应允许停用')
+    assert.equal(disabledBuiltIn.body.data.status, 'disabled')
+    const disabledBuiltInAuth = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
+      Authorization: `Bearer ${builtInTestToken}`
+    })
+    assert.equal(disabledBuiltInAuth.status, 403, '内置测试来源停用后公开接口应拒绝调用')
+    assert.equal(disabledBuiltInAuth.body.code, 'external_source_disabled')
+
+    const enabledBuiltIn = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInExternalIntegrationTestSourceId}`, {
+      Cookie: adminCookie
+    }, 'PATCH', {
+      status: 'active'
+    })
+    assert.equal(enabledBuiltIn.status, 200, '内置测试来源应允许重新启用')
+    assert.equal(enabledBuiltIn.body.data.status, 'active')
+
+    const previousBuiltInTestToken = builtInTestToken
+    const resetBuiltIn = await requestJson(baseUrl, '/__aisys__/api/external-integration-sources/built-in-test-token/reset', {
+      Cookie: adminCookie
+    }, 'POST')
+    assert.equal(resetBuiltIn.status, 200, '管理员应能重置内置测试 Token')
+    assert(resetBuiltIn.body.data.token.token, '重置内置测试 Token 应一次性返回明文')
+    assert.notEqual(resetBuiltIn.body.data.token.token, previousBuiltInTestToken, '重置内置测试 Token 应生成新明文')
+    builtInTestToken = resetBuiltIn.body.data.token.token
+    const oldBuiltInTokenAuth = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
+      Authorization: `Bearer ${previousBuiltInTestToken}`
+    })
+    assert.equal(oldBuiltInTokenAuth.status, 401, '重置后旧内置测试 Token 应立即失效')
+
     const missingToken = await requestJson(baseUrl, '/__aipublic__/demo/source-auth')
     assert.equal(missingToken.status, 401)
     assert.equal(missingToken.body.code, 'external_source_token_missing')
@@ -246,14 +338,15 @@ async function runChild(): Promise<void> {
     assert.equal(Object.prototype.hasOwnProperty.call(success.body.data, 'scopes'), false, '成功响应不应返回授权能力明细')
 
     const testTokenSuccess = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`
+      Authorization: `Bearer ${builtInTestToken}`
     })
     assert.equal(testTokenSuccess.status, 200)
+    builtInSuccessfulPublicCallCount += 1
     assert.equal(testTokenSuccess.body.data.sourceName, '内置测试来源')
     assert.equal(testTokenSuccess.body.data.mock, true)
 
     const removedMockRanking = await requestJson(baseUrl, '/__aipublic__/demo/mock-ranking?range=last7d&limit=3', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`
+      Authorization: `Bearer ${builtInTestToken}`
     })
     assert.equal(removedMockRanking.status, 404, '公益榜 Mock Demo 已移除')
 
@@ -264,9 +357,10 @@ async function runChild(): Promise<void> {
     assert.equal(ipUsageNoScope.body.code, 'external_source_scope_forbidden', 'IP 用量接口必须使用独立 scope')
 
     const mockIpUsage = await requestJson(baseUrl, '/__aipublic__/ip/usage?range=last7d&pageSize=2', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`
+      Authorization: `Bearer ${builtInTestToken}`
     })
     assert.equal(mockIpUsage.status, 200)
+    builtInSuccessfulPublicCallCount += 1
     assert.equal(mockIpUsage.body.data.source, 'mock')
     assert.equal(mockIpUsage.body.data.items.length, 2)
     assert.equal(mockIpUsage.body.data.items[0].dimension, 'client_ip')
@@ -305,9 +399,10 @@ async function runChild(): Promise<void> {
     assert.equal(accountUsageWithIpScope.body.code, 'external_source_scope_forbidden', '账号用量不能复用 IP 用量接口 scope')
 
     const mockAccountUsage = await requestJson(baseUrl, '/__aipublic__/account/usage?range=last7d&pageSize=2', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`
+      Authorization: `Bearer ${builtInTestToken}`
     })
     assert.equal(mockAccountUsage.status, 200)
+    builtInSuccessfulPublicCallCount += 1
     assert.equal(mockAccountUsage.body.data.source, 'mock')
     assert.equal(mockAccountUsage.body.data.items.length, 2)
     assert.equal(mockAccountUsage.body.data.items[0].dimension, 'account')
@@ -384,7 +479,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountDeleteNoScope.body.code, 'external_source_scope_forbidden', '账号删除接口必须使用独立写入 scope')
 
     const mockAccountAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`
+      Authorization: `Bearer ${builtInTestToken}`
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
@@ -396,11 +491,12 @@ async function runChild(): Promise<void> {
       supportedModels: ['gpt-5.5']
     })
     assert.equal(mockAccountAdd.status, 200)
+    builtInSuccessfulPublicCallCount += 1
     assert.equal(mockAccountAdd.body.data.source, 'mock')
     assert.equal(Object.prototype.hasOwnProperty.call(mockAccountAdd.body.data.account, 'credentials'), false, '账号新增响应不能返回凭据')
 
     const mockAccountDelete = await requestJson(baseUrl, '/__aipublic__/account/del', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`
+      Authorization: `Bearer ${builtInTestToken}`
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
@@ -408,6 +504,7 @@ async function runChild(): Promise<void> {
       accountId: 'acc_mock_delete'
     })
     assert.equal(mockAccountDelete.status, 200)
+    builtInSuccessfulPublicCallCount += 1
     assert.equal(mockAccountDelete.body.data.source, 'mock')
     assert.equal(mockAccountDelete.body.data.action, 'mock')
     assert.equal(Object.prototype.hasOwnProperty.call(mockAccountDelete.body.data.account, 'credentials'), false, '账号删除 mock 响应不能返回凭据')
@@ -816,6 +913,19 @@ async function runChild(): Promise<void> {
     })
     assert.equal(deletedSourceAuth.status, 401, '删除来源授权后原 token 应立即失效')
     assert.equal(deletedSourceAuth.body.code, 'external_source_unauthorized')
+
+    const remainingBuiltInRateLimitAllowance = Math.max(0, 10 - builtInSuccessfulPublicCallCount)
+    for (let index = 0; index < remainingBuiltInRateLimitAllowance; index += 1) {
+      const allowed = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
+        Authorization: `Bearer ${builtInTestToken}`
+      })
+      assert.equal(allowed.status, 200, `内置测试 Token 第 ${builtInSuccessfulPublicCallCount + index + 1} 次调用应在限频内`)
+    }
+    const builtInRateLimited = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
+      Authorization: `Bearer ${builtInTestToken}`
+    })
+    assert.equal(builtInRateLimited.status, 429, '内置测试 Token 第 11 次调用应被 1 分钟 10 次限频拦截')
+    assert.equal(builtInRateLimited.body.code, 'external_source_rate_limited')
 
     await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
       Authorization: `Bearer ${limitedSourceToken}`

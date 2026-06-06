@@ -19,7 +19,7 @@ import {
 } from './openai-gateway-client-ip-account-avoidance.service.js'
 import {
   recordGatewayAccountFailureForPrecheck,
-  suppressGatewayAccountLocallyForSeconds
+  suppressGatewayAccountLocally
 } from './gateway-account-side-effects.service.js'
 import { recordClientIpErrorCircuitSuccess } from './openai-gateway-client-ip-error-circuit.service.js'
 import {
@@ -573,9 +573,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       }, '上游非流式响应正文已输出后中断，下游连接已按网络失败关闭')
       forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
       if (accountStateMutationEnabled !== false) {
-        const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
         const runtimeReason = `上游非流式响应正文中断：${errorMessage}`
-        suppressGatewayAccountLocallyForSeconds(account, ttlSeconds, runtimeReason)
+        const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)
         if (usageContext.trafficSource === 'gateway') {
           recordGatewayAccountFailureForPrecheck(account, settings, {
             systemAccountId: usageContext.systemAccountId,
@@ -584,7 +583,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             clientIp: usageContext.clientIp,
             endpoint: usageContext.endpoint,
             reason: runtimeReason,
-            statusCode: upstreamResponse.status
+            statusCode: upstreamResponse.status,
+            forcePrecheck: localSuppression.action === 'precheck_required'
           })
         } else {
           applyAccountErrorHandlingWithCacheInvalidation(account, {
@@ -599,12 +599,13 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         }
         auditCapture.addGatewayMetadata({
           label: 'non_stream_body_interrupted_runtime_avoidance',
-          metadata: {
-            accountId: account.id,
-            ttlSeconds,
-            transferredBytes: error.partialResult.transferredBytes
-          }
-        })
+            metadata: {
+              accountId: account.id,
+              delayMs: localSuppression.delayMs,
+              localFailureCount: localSuppression.localFailureCount,
+              transferredBytes: error.partialResult.transferredBytes
+            }
+          })
       }
       recordCompletedUpstreamAttempt(req, {
         ...usageContext,

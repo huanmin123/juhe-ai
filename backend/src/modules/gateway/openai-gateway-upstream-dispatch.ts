@@ -25,7 +25,8 @@ import {
   throwIfRequestAborted
 } from './openai-gateway-dispatch-helpers.js'
 import {
-  filterLocallySuppressedGatewayAccounts
+  filterLocallySuppressedGatewayAccounts,
+  type GatewayAccountHalfOpenLease
 } from './gateway-account-side-effects.service.js'
 import type { ClientIpAccountAvoidanceTracker } from './openai-gateway-client-ip-account-avoidance.service.js'
 import {
@@ -105,7 +106,7 @@ export async function fetchFirstAvailableUpstream(
 
     for (const originalAccount of dispatchAccounts) {
       throwIfRequestAborted(signal)
-      const localSuppression = filterLocallySuppressedGatewayAccounts([originalAccount])
+      const localSuppression = filterLocallySuppressedGatewayAccounts([originalAccount], { acquireHalfOpenLease: true })
       if (localSuppression.allSuppressed) {
         localSuppressedSkipCount += 1
         lastAttempt = locallySuppressedAttempt(originalAccount, localSuppression.nextRetryAfterMs)
@@ -124,30 +125,40 @@ export async function fetchFirstAvailableUpstream(
         })
         continue
       }
+      const halfOpenLease = localSuppression.acquiredHalfOpenLeases[0]
       attemptedAccountCount += 1
       const skippedProxyAttempt = skipAccountForFailedProxyDispatch(failedProxyDispatchKeys, originalAccount)
       if (skippedProxyAttempt) {
+        halfOpenLease?.release()
         lastAttempt = skippedProxyAttempt
         failedAccountIds.add(originalAccount.id)
         continue
       }
       const unavailableProxyAttempt = handleUnavailableProxyProfile(req, usageContext, originalAccount, settings, failedProxyDispatchKeys, accountStateMutationEnabled)
       if (unavailableProxyAttempt) {
+        halfOpenLease?.release()
         lastAttempt = unavailableProxyAttempt
         failedAccountIds.add(originalAccount.id)
         continue
       }
-      const concurrencyAcquire = await acquireAccountConcurrencyWithShortRetry(
-        originalAccount.id,
-        originalAccount.concurrencyLimit,
-        concurrencyRetryWaitBudgetMs,
-        signal,
-        requestLane,
-        groupSchedulingPolicy
-      )
+      let concurrencyAcquire: AccountConcurrencyAcquireResult
+      try {
+        concurrencyAcquire = await acquireAccountConcurrencyWithShortRetry(
+          originalAccount.id,
+          originalAccount.concurrencyLimit,
+          concurrencyRetryWaitBudgetMs,
+          signal,
+          requestLane,
+          groupSchedulingPolicy
+        )
+      } catch (error) {
+        halfOpenLease?.release()
+        throw error
+      }
       concurrencyRetryWaitBudgetMs = concurrencyAcquire.remainingWaitBudgetMs
       const concurrencySlot = concurrencyAcquire.slot
       if (!concurrencySlot.acquired) {
+        halfOpenLease?.release()
         const message = concurrencyAcquire.waitedMs > 0
           ? accountConcurrencyLimitMessage(concurrencySlot, concurrencyAcquire.waitedMs)
           : accountConcurrencyLimitMessage(concurrencySlot)
@@ -257,7 +268,7 @@ export async function fetchFirstAvailableUpstream(
                   response,
                   upstreamUrl,
                   auditAttemptId,
-                  releaseConcurrency: concurrencySlot.release,
+                  releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release, halfOpenLease),
                   markFirstOutput: concurrencySlot.markFirstOutput
                 }
               }
@@ -327,6 +338,7 @@ export async function fetchFirstAvailableUpstream(
       } finally {
         if (!keepConcurrencySlot) {
           concurrencySlot.release()
+          halfOpenLease?.release()
         }
       }
     }
@@ -353,6 +365,18 @@ export async function fetchFirstAvailableUpstream(
   }
 
   throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt, [...failedAccountIds])
+}
+
+function releaseAccountDispatchSlot(releaseConcurrency: () => void, halfOpenLease?: GatewayAccountHalfOpenLease): () => void {
+  let released = false
+  return () => {
+    if (released) {
+      return
+    }
+    released = true
+    releaseConcurrency()
+    halfOpenLease?.release()
+  }
 }
 
 function buildUpstreamAttemptFailureMessage(accountCount: number, lastAttempt?: UpstreamAttempt): string {

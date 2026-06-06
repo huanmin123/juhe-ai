@@ -213,7 +213,7 @@ export async function handleFailedUpstreamResponse(
     const reason = responseBodyRead.truncated
       ? `上游账号返回非成功状态：HTTP ${response.status}`
       : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`
-    suppressGatewayAccountLocally(
+    const localSuppression = suppressGatewayAccountLocally(
       account,
       settings,
       reason
@@ -226,7 +226,8 @@ export async function handleFailedUpstreamResponse(
         clientIp: usageContext.clientIp,
         endpoint: requestEndpoint(req),
         reason,
-        statusCode: response.status
+        statusCode: response.status,
+        forcePrecheck: localSuppression.action === 'precheck_required'
       })
     } else {
       applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
@@ -356,7 +357,7 @@ export async function handleUpstreamRequestError(
   }
   if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource)) {
     const reason = `上游账号请求异常：${message}`
-    suppressGatewayAccountLocally(account, settings, reason)
+    const localSuppression = suppressGatewayAccountLocally(account, settings, reason)
     if (usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {
       recordGatewayAccountFailureForPrecheck(account, settings, {
         systemAccountId: usageContext.systemAccountId,
@@ -364,7 +365,8 @@ export async function handleUpstreamRequestError(
         apiKeyId: usageContext.apiKeyId,
         clientIp: usageContext.clientIp,
         endpoint: requestEndpoint(req),
-        reason
+        reason,
+        forcePrecheck: localSuppression.action === 'precheck_required'
       })
     } else {
       applyAccountErrorHandlingWithCacheInvalidation(account, {

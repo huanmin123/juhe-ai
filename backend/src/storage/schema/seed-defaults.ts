@@ -1,6 +1,17 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { hashPassword } from '../crypto.js'
+import { encryptJson, hashPassword } from '../crypto.js'
+import {
+  builtInExternalIntegrationTestRateLimits,
+  builtInExternalIntegrationTestSourceId,
+  builtInExternalIntegrationTestSourceName,
+  builtInExternalIntegrationTestTokenId,
+  builtInExternalIntegrationTestTokenName,
+  builtInExternalIntegrationTestTokenNotes,
+  createExternalIntegrationSourceTokenValue,
+  externalIntegrationScopeOptions,
+  hashExternalIntegrationSourceTokenValue
+} from '../external-integration-source-constants.js'
 import { defaultRequestQuotaHourlyWindowHours } from '../request-quota-limits.js'
 import { DEFAULT_GLOBAL_SETTINGS, DEFAULT_OPENAI_GROUP, DEFAULT_SYSTEM_SETTINGS, OPENAI_PROVIDER_SEED } from '../schema-defaults.js'
 
@@ -63,6 +74,7 @@ export function seedDefaults(database: DatabaseSync): void {
     )
 
   seedAdminDefaultOpenAIGroup(database, now)
+  seedBuiltInExternalIntegrationTestToken(database, now)
 
   const statement = database.prepare(`
     INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at)
@@ -93,4 +105,87 @@ function seedAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string):
   database
     .prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
     .run(DEFAULT_OPENAI_GROUP.id, DEFAULT_OPENAI_GROUP.systemAccountId)
+}
+
+function seedBuiltInExternalIntegrationTestToken(database: DatabaseSync, timestamp: string): void {
+  const scopesJson = JSON.stringify(externalIntegrationScopeOptions.map((item) => item.value).sort())
+  const rateLimitsJson = JSON.stringify(builtInExternalIntegrationTestRateLimits)
+  database
+    .prepare(`
+      INSERT OR IGNORE INTO external_integration_sources (
+        id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
+      ) VALUES (?, ?, 'active', ?, ?, NULL, ?, ?, ?)
+    `)
+    .run(
+      builtInExternalIntegrationTestSourceId,
+      builtInExternalIntegrationTestSourceName,
+      scopesJson,
+      rateLimitsJson,
+      builtInExternalIntegrationTestTokenNotes,
+      timestamp,
+      timestamp
+    )
+
+  database
+    .prepare(`
+      UPDATE external_integration_sources
+      SET name = ?,
+          scopes_json = ?,
+          rate_limits_json = ?,
+          expires_at = NULL,
+          notes = ?,
+          updated_at = ?
+      WHERE id = ?
+    `)
+    .run(
+      builtInExternalIntegrationTestSourceName,
+      scopesJson,
+      rateLimitsJson,
+      builtInExternalIntegrationTestTokenNotes,
+      timestamp,
+      builtInExternalIntegrationTestSourceId
+    )
+
+  const existingToken = database
+    .prepare('SELECT id FROM external_integration_source_tokens WHERE id = ?')
+    .get(builtInExternalIntegrationTestTokenId) as { id?: string } | undefined
+  if (!existingToken) {
+    const token = createExternalIntegrationSourceTokenValue()
+    database
+      .prepare(`
+        INSERT INTO external_integration_source_tokens (
+          id, source_ref_id, name, token_hash, token_secret_encrypted, token_prefix, token_suffix, status, scopes_json, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?)
+      `)
+      .run(
+        builtInExternalIntegrationTestTokenId,
+        builtInExternalIntegrationTestSourceId,
+        builtInExternalIntegrationTestTokenName,
+        hashExternalIntegrationSourceTokenValue(token),
+        encryptJson({ token }),
+        token.slice(0, 8),
+        token.slice(-8),
+        scopesJson,
+        timestamp,
+        timestamp
+      )
+  } else {
+    database
+      .prepare(`
+        UPDATE external_integration_source_tokens
+        SET source_ref_id = ?,
+            name = ?,
+            scopes_json = ?,
+            expires_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        builtInExternalIntegrationTestSourceId,
+        builtInExternalIntegrationTestTokenName,
+        scopesJson,
+        timestamp,
+        builtInExternalIntegrationTestTokenId
+      )
+  }
 }

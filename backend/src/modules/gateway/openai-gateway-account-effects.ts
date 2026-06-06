@@ -85,14 +85,15 @@ export function handleStreamFailure(
   const reasonWithCode = errorCode ? `${errorCode}；${reason}` : reason
   if (usageContext?.trafficSource === 'gateway') {
     const runtimeReason = `流式响应失败：${reason}`
-    suppressGatewayAccountLocally(account, settings, runtimeReason)
+    const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)
     recordGatewayAccountFailureForPrecheck(account, settings, {
       systemAccountId: usageContext.systemAccountId,
       groupId: usageContext.groupId,
       apiKeyId: usageContext.apiKeyId,
       clientIp: usageContext.clientIp,
       endpoint: usageContext.endpoint,
-      reason: runtimeReason
+      reason: runtimeReason,
+      forcePrecheck: localSuppression.action === 'precheck_required'
     })
   } else {
     applyAccountErrorHandlingWithCacheInvalidation(account, {

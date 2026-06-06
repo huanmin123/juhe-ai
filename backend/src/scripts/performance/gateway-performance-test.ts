@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     }
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
     await closeServer(appServer)
     await closeServer(upstreamServer)
     closeDatabases()
@@ -419,7 +419,7 @@ async function runScenario(input: {
       record: false
     })
     usageRecordQueue.flushAllUsageRecordQueue()
-    auditLogQueue.flushAllAuditLogQueue()
+    await auditLogQueue.flushAllAuditLogQueueAsync()
   }
 
   const usageRecordsBefore = countRows('usage_records')
@@ -444,7 +444,7 @@ async function runScenario(input: {
   const cpu = process.cpuUsage(cpuStart)
   const memoryEnd = process.memoryUsage()
   usageRecordQueue.flushAllUsageRecordQueue()
-  auditLogQueue.flushAllAuditLogQueue()
+  await auditLogQueue.flushAllAuditLogQueueAsync()
   const usageRecordsAfter = countRows('usage_records')
   const auditLogsAfter = countRows('audit_logs')
   const usageRecordBreakdownAfter = usageRecordBreakdown(usageRecordsAfter)

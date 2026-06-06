@@ -7,6 +7,8 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import type { AccountSummary } from '../../domain/types.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
+import type { GatewayUsageContext } from '../../modules/gateway/openai-gateway-usage-records.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-precheck-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -22,21 +24,37 @@ logger.level = 'silent'
 const [
   gatewaySideEffects,
   accountConcurrency,
+  accountPreparation,
   databaseModule,
+  usageRecordQueue,
   repositories,
   { handleDbServiceOperation }
 ] = await Promise.all([
   import('../../modules/gateway/gateway-account-side-effects.service.js'),
   import('../../shared/account-concurrency.js'),
+  import('../../modules/gateway/openai-gateway-account-preparation.js'),
   import('../../storage/database.js'),
+  import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../storage/repositories.js'),
   import('../../modules/db-service/db-service-handlers.js')
 ])
 
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const gatewaySettings: GatewaySettings = {
+  defaultTemporaryUnschedulableMinutes: 5,
+  temporaryUnschedulableRetryIntervalSeconds: 0,
+  temporaryUnschedulableRetryAttempts: 0,
+  streamCircuitBreakerEnabled: false,
+  streamRequestTimeoutSeconds: 180,
+  streamIdleTimeoutSeconds: 60,
+  streamFailureThresholdCount: 3,
+  streamFailureThresholdWindowMinutes: 10
+}
 
 try {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  testLocalSuppressionHalfOpenEscalation()
+  testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence()
   testRuntimePrecheckPendingAndSuccessRecovery()
   await testPersistedAccountErrorClearsRuntimeAvailability()
   await testStalePrecheckAfterManualRestoreIsSkipped()
@@ -48,6 +66,7 @@ try {
 } finally {
   accountConcurrency.clearAccountConcurrency()
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  usageRecordQueue.clearUsageRecordQueueForTest()
   try {
     databaseModule.closeStorageDatabases()
   } catch {
@@ -137,6 +156,147 @@ function testRuntimePrecheckPendingAndSuccessRecovery(): void {
   })
   assert.equal(clearAuthorizedResult.cleared, true, '手动恢复入口应能清理授权账号绑定维度运行态')
   assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[authorizedRuntimeKey], undefined, '授权账号绑定维度运行态清理后不应残留')
+}
+
+function testLocalSuppressionHalfOpenEscalation(): void {
+  const account = createRuntimeAccount('local-suppression-half-open-account')
+  const first = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第一轮上游失败')
+  assert.equal(first.action, 'suppressed', '首次上游失败应进入短暂避让')
+  assert.equal(first.localFailureCount, 1, '首次短暂避让应记录第 1 轮')
+  assert.equal(first.delayMs, 3_000, '首次短暂避让应从 3 秒开始')
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.localFailureCount,
+    1,
+    '运行态快照应展示短暂避让轮次'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第一轮到期', 'local_suppressed', { localFailureCount: 1 })
+  const firstHalfOpen = gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  assert.equal(firstHalfOpen.accounts.length, 1, '短暂避让到期后应允许一个真实请求半开探测')
+  assert.equal(firstHalfOpen.acquiredHalfOpenLeases.length, 1, '半开探测放行时应返回本次请求持有的租约')
+  assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.status, 'half_open', '获得租约后运行态应显示半开探测')
+  const blockedDuringHalfOpen = gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  assert.equal(blockedDuringHalfOpen.allSuppressed, true, '半开探测进行中应阻止其他请求同时打回该账号')
+
+  const second = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第一轮半开失败')
+  assert.equal(second.action, 'suppressed', '第一轮半开失败后仍应留在短暂避让')
+  assert.equal(second.localFailureCount, 2, '第一轮半开失败后应进入第 2 轮')
+  assert.equal(second.delayMs, 5_000, '第二轮短暂避让应为 5 秒')
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第二轮到期', 'local_suppressed', { localFailureCount: 2 })
+  gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  const third = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第二轮半开失败')
+  assert.equal(third.action, 'suppressed', '第二轮半开失败后仍应留在短暂避让')
+  assert.equal(third.localFailureCount, 3, '第二轮半开失败后应进入第 3 轮')
+  assert.equal(third.delayMs, 10_000, '第三轮短暂避让应为 10 秒')
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第三轮到期', 'local_suppressed', { localFailureCount: 3 })
+  gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  const precheck = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第三轮半开失败')
+  assert.equal(precheck.action, 'precheck_required', '第三轮半开失败后应要求进入事前确认')
+  assert.equal(precheck.localFailureCount, 4, '触发事前确认时应记录已超过短暂避让阶梯')
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '半开租约到期但请求仍在途', 'half_open', {
+    localFailureCount: 1,
+    halfOpenLeaseUntilMs: Date.now() - 1_000
+  })
+  const inFlightSlot = accountConcurrency.tryAcquireAccountConcurrency(account.id, 10)
+  assert.equal(inFlightSlot.acquired, true, '半开租约在途回归前应先占用账号并发槽')
+  const blockedByInFlightHalfOpen = gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  assert.equal(blockedByInFlightHalfOpen.allSuppressed, true, '半开租约 TTL 已过但请求仍在途时，不应放行第二个半开请求')
+  inFlightSlot.release()
+  const reacquiredAfterInFlightDone = gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  assert.equal(reacquiredAfterInFlightDone.accounts.length, 1, '半开在途请求结束后，过期租约应允许新的探测请求接管')
+  assert.equal(reacquiredAfterInFlightDone.acquiredHalfOpenLeases.length, 1, '重新接管半开探测时应返回新的租约')
+  assert.equal(reacquiredAfterInFlightDone.acquiredHalfOpenLeases[0]?.release(), true, '半开探测完成后应能按租约释放')
+  assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id], undefined, '释放未失败的半开租约后不应继续展示活跃屏蔽')
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+}
+
+function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
+  const account = {
+    ...createRuntimeAccount('preparation-proxy-half-open-account'),
+    proxyProfileId: 'proxy-profile-broken',
+    proxyProfileUnavailable: true,
+    proxyProfileErrorMessage: '代理配置不可用：回归测试'
+  }
+  const failedProxyDispatchKeys = new Map<string, string>()
+  const req = buildRuntimeGatewayRequest()
+
+  accountPreparation.handleUnavailableProxyProfile(
+    req,
+    buildRuntimeGatewayUsageContext('preparation-proxy-trace-1'),
+    account,
+    gatewaySettings,
+    failedProxyDispatchKeys,
+    true,
+    gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest
+  )
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.localFailureCount,
+    1,
+    '代理准备失败首次应进入第 1 轮短暂避让'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第一轮代理避让到期', 'local_suppressed', { localFailureCount: 1 })
+  gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  accountPreparation.handleUnavailableProxyProfile(
+    req,
+    buildRuntimeGatewayUsageContext('preparation-proxy-trace-2'),
+    account,
+    gatewaySettings,
+    failedProxyDispatchKeys,
+    true,
+    gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest
+  )
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.localFailureCount,
+    2,
+    '代理准备失败第一轮半开失败后应进入第 2 轮短暂避让'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第二轮代理避让到期', 'local_suppressed', { localFailureCount: 2 })
+  gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  accountPreparation.handleUnavailableProxyProfile(
+    req,
+    buildRuntimeGatewayUsageContext('preparation-proxy-trace-3'),
+    account,
+    gatewaySettings,
+    failedProxyDispatchKeys,
+    true,
+    gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest
+  )
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.localFailureCount,
+    3,
+    '代理准备失败第二轮半开失败后应进入第 3 轮短暂避让'
+  )
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 0, '第三轮代理避让到期', 'local_suppressed', { localFailureCount: 3 })
+  gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  accountPreparation.handleUnavailableProxyProfile(
+    req,
+    buildRuntimeGatewayUsageContext('preparation-proxy-trace-4'),
+    account,
+    gatewaySettings,
+    failedProxyDispatchKeys,
+    true,
+    gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest
+  )
+  const runtime = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]
+  assert.equal(runtime?.status, 'precheck_pending', '代理准备失败第三轮半开失败后应进入事前确认阶段')
+  assert.match(runtime?.reason ?? '', /短暂避让半开探测连续失败/, '代理准备失败升级原因应保留短暂避让连续失败语义')
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  usageRecordQueue.clearUsageRecordQueueForTest()
 }
 
 async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<void> {
@@ -351,6 +511,41 @@ function createRuntimeAuthorizedAccount(id: string): OpenAIAccountSecret {
     boundGroupId: 'group-authorized',
     accountAuthorizationId: 'auth-account-a',
     name: '授权事前确认运行态账号'
+  }
+}
+
+function buildRuntimeGatewayRequest(): Parameters<typeof accountPreparation.handleUnavailableProxyProfile>[0] {
+  return {
+    method: 'POST',
+    originalUrl: '/v1/responses',
+    path: '/responses',
+    body: {
+      model: 'gpt-5.5',
+      input: 'hi'
+    },
+    headers: { 'content-type': 'application/json' },
+    socket: { remoteAddress: '127.0.0.1' },
+    ip: '127.0.0.1'
+  } as Parameters<typeof accountPreparation.handleUnavailableProxyProfile>[0]
+}
+
+function buildRuntimeGatewayUsageContext(traceId: string): GatewayUsageContext {
+  return {
+    traceId,
+    trafficSource: 'gateway',
+    clientIp: '10.30.40.50',
+    systemAccountId: 'sys_admin',
+    apiKeyId: 'key-preparation-proxy',
+    groupId: 'group-preparation-proxy',
+    endpoint: 'POST /v1/responses',
+    requestSnapshot: {
+      method: 'POST',
+      path: '/v1/responses',
+      originalUrl: '/v1/responses',
+      traceId,
+      headers: {},
+      body: { model: 'gpt-5.5', input: 'hi' }
+    }
   }
 }
 

@@ -177,6 +177,9 @@ function runtimeAvailability(account: AccountEffectiveAvailabilityInput): Accoun
   if (status === 'local_suppressed') {
     return blocked('runtime_local_suppressed', '短暂避让', 'gold', 'runtime', runtime.reason || '当前网关短窗口内临时避让该账户', runtime.until)
   }
+  if (status === 'half_open') {
+    return blocked('runtime_half_open', '半开探测', 'blue', 'runtime', runtime.reason || '当前网关已放行一个请求确认账户是否恢复', runtime.until)
+  }
   if (status === 'precheck_failed') {
     return blocked('runtime_precheck_failed', '探针确认失败', 'gold', 'runtime', runtime.reason || '最近事前探针确认失败，当前网关暂不调度该账户', runtime.until)
   }

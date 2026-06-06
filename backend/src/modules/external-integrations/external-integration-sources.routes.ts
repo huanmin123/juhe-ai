@@ -6,11 +6,13 @@ import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import {
   createExternalIntegrationSourceAuthorization,
   createExternalIntegrationSourceToken,
+  builtInExternalIntegrationTestSourceId,
   deleteExternalIntegrationSource,
   externalIntegrationScopeOptions,
   findExternalIntegrationSource,
   findExternalIntegrationSourceTokenSecret,
   listExternalIntegrationSources,
+  resetBuiltInExternalIntegrationTestToken,
   updateExternalIntegrationSource,
   updateExternalIntegrationSourceToken
 } from '../../storage/external-integration-source.repository.js'
@@ -84,6 +86,34 @@ externalIntegrationSourcesRouter.get('/', (req, res) => {
   res.json(ok(listExternalIntegrationSources(parsed.data)))
 })
 
+externalIntegrationSourcesRouter.post('/built-in-test-token/reset', mutationGuard({
+  operationKey: 'external_integration_sources.reset_builtin_test_token',
+  fingerprint: () => ({
+    target: 'built_in_test_token'
+  })
+}), (req, res) => {
+  try {
+    const token = resetBuiltInExternalIntegrationTestToken()
+    const source = findExternalIntegrationSource(builtInExternalIntegrationTestSourceId)
+    recordSourceOperation(req, {
+      action: 'reset_builtin_test_token',
+      operationKey: 'external_integration_sources.reset_builtin_test_token',
+      sourceRefId: source?.id ?? 'built_in_test_token',
+      sourceName: source?.name ?? '内置测试 Token',
+      summary: '重置内置测试 Token',
+      changes: [
+        safeChange('tokenPreview', 'Token 标识', undefined, `${token.tokenPrefix}...${token.tokenSuffix}`)
+      ]
+    })
+    res.json(ok({
+      token,
+      source
+    }))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '重置内置测试 Token 失败'))
+  }
+})
+
 externalIntegrationSourcesRouter.post('/', mutationGuard({
   operationKey: 'external_integration_sources.create',
   fingerprint: (req) => ({
@@ -138,7 +168,13 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
     return
   }
   const before = findExternalIntegrationSource(params.data.id)
-  const source = updateExternalIntegrationSource(params.data.id, body.data)
+  let source: ReturnType<typeof updateExternalIntegrationSource>
+  try {
+    source = updateExternalIntegrationSource(params.data.id, body.data)
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统更新失败'))
+    return
+  }
   if (!source) {
     res.status(404).json({ message: '来源系统不存在' })
     return
@@ -171,8 +207,13 @@ externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
     return
   }
   const before = findExternalIntegrationSource(params.data.id)
-  if (!deleteExternalIntegrationSource(params.data.id)) {
-    res.status(404).json({ message: '来源系统不存在' })
+  try {
+    if (!deleteExternalIntegrationSource(params.data.id)) {
+      res.status(404).json({ message: '来源系统不存在' })
+      return
+    }
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '删除来源授权失败'))
     return
   }
   recordSourceOperation(req, {
@@ -272,7 +313,13 @@ externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(body.error, 'Token 参数无效')))
     return
   }
-  const token = updateExternalIntegrationSourceToken(params.data.id, params.data.tokenId, body.data)
+  let token: ReturnType<typeof updateExternalIntegrationSourceToken>
+  try {
+    token = updateExternalIntegrationSourceToken(params.data.id, params.data.tokenId, body.data)
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Token 更新失败'))
+    return
+  }
   if (!token) {
     res.status(404).json({ message: 'Token 不存在' })
     return

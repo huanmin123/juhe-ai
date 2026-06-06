@@ -6,7 +6,11 @@ import { runtimeOpenAIAccountCredentials } from '../../storage/repositories.js'
 import { shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
-import { suppressGatewayAccountLocally } from './gateway-account-side-effects.service.js'
+import {
+  type GatewayAccountFailurePrecheckInput,
+  recordGatewayAccountFailureForPrecheck,
+  suppressGatewayAccountLocally
+} from './gateway-account-side-effects.service.js'
 import { applyAccountErrorHandlingWithCacheInvalidation } from './openai-gateway-account-effects.js'
 import {
   failedProxyDispatchReason,
@@ -24,11 +28,18 @@ import {
   type GatewayUsageContext
 } from './openai-gateway-usage-records.js'
 import { recordGatewayProxyFailure } from './openai-gateway-proxy-health.service.js'
+import { requestEndpoint } from './openai-gateway-usage.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
   body?: Buffer | string
 }
+
+type GatewayAccountFailurePrecheckRecorder = (
+  account: UpstreamAccount,
+  settings: GatewaySettings | undefined,
+  input: GatewayAccountFailurePrecheckInput
+) => void
 
 export function skipAccountForFailedProxyDispatch(
   failedProxyDispatchKeys: Map<string, string>,
@@ -56,7 +67,8 @@ export function handleUnavailableProxyProfile(
   account: UpstreamAccount,
   settings: GatewaySettings,
   failedProxyDispatchKeys: Map<string, string>,
-  accountStateMutationEnabled = true
+  accountStateMutationEnabled = true,
+  recordPrecheckFailure: GatewayAccountFailurePrecheckRecorder = recordGatewayAccountFailureForPrecheck
 ): UpstreamAttempt | undefined {
   if (!account.proxyProfileUnavailable) {
     return undefined
@@ -79,7 +91,18 @@ export function handleUnavailableProxyProfile(
     })
   }
   if (accountStateMutationEnabled) {
-    suppressGatewayAccountLocally(account, settings, message)
+    const localSuppression = suppressGatewayAccountLocally(account, settings, message)
+    if (usageContext.trafficSource === 'gateway') {
+      recordPrecheckFailure(account, settings, {
+        systemAccountId: usageContext.systemAccountId,
+        groupId: usageContext.groupId,
+        apiKeyId: usageContext.apiKeyId,
+        clientIp: usageContext.clientIp,
+        endpoint: requestEndpoint(req),
+        reason: message,
+        forcePrecheck: localSuppression.action === 'precheck_required'
+      })
+    }
     recordGatewayProxyFailure(account, message)
   }
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)

@@ -11,7 +11,7 @@ import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traff
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { AuditFullBodyCaptureRuntimeConfig } from '../../config/runtime.js'
 
-export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'precheck_pending' | 'precheck_failed'
+export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
 export interface AccountRuntimeAvailability {
   status: AccountRuntimeAvailabilityStatus
@@ -22,6 +22,7 @@ export interface AccountRuntimeAvailability {
   distinctClientIpCount?: number
   distinctApiKeyCount?: number
   precheckAttemptCount?: number
+  localFailureCount?: number
 }
 
 export interface AccountRuntimeAvailabilityClearTarget {

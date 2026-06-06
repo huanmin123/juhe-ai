@@ -25,6 +25,7 @@ interface QueuedAccountSideEffect {
 }
 
 interface LocalAccountSuppression {
+  accountId: string
   untilMs: number
   reason: string
   sinceMs: number
@@ -33,6 +34,9 @@ interface LocalAccountSuppression {
   distinctClientIpCount?: number
   distinctApiKeyCount?: number
   precheckAttemptCount?: number
+  localFailureCount?: number
+  halfOpenLeaseUntilMs?: number
+  halfOpenLeaseId?: string
 }
 
 type SuppressibleGatewayAccount = {
@@ -59,6 +63,22 @@ export interface GatewayAccountRuntimeClearResult {
   clearedKeys: string[]
 }
 
+export interface GatewayAccountLocalSuppressionResult {
+  runtimeKey: string
+  action: 'suppressed' | 'precheck_required'
+  reason: string
+  localFailureCount: number
+  delayMs?: number
+  until?: string
+}
+
+export interface GatewayAccountHalfOpenLease {
+  runtimeKey: string
+  accountId: string
+  leaseId: string
+  release: () => boolean
+}
+
 export interface GatewayAccountFailurePrecheckInput {
   systemAccountId: string
   groupId: string
@@ -67,6 +87,7 @@ export interface GatewayAccountFailurePrecheckInput {
   endpoint?: string
   reason: string
   statusCode?: number
+  forcePrecheck?: boolean
 }
 
 interface FailureStormEntry {
@@ -98,8 +119,13 @@ export interface LocalAccountSuppressionFilterResult<T> {
   suppressedCount: number
   allSuppressed: boolean
   suppressedAccountIds: string[]
+  acquiredHalfOpenLeases: GatewayAccountHalfOpenLease[]
   nextRetryAtMs?: number
   nextRetryAfterMs?: number
+}
+
+interface LocalAccountSuppressionFilterOptions {
+  acquireHalfOpenLease?: boolean
 }
 
 export interface GatewayAccountSideEffectState {
@@ -118,6 +144,9 @@ export interface GatewayAccountSideEffectState {
 
 const sideEffectRetentionMs = 10 * 60_000
 const localSuppressionMaxMs = 10 * 60_000
+const localSuppressionDelayMs = [3_000, 5_000, 10_000] as const
+const localSuppressionHalfOpenLeaseMs = 180_000
+const localSuppressionIdleRetentionMs = 60_000
 const failureStormWindowMs = 10_000
 const failureStormThresholdCount = 5
 const failureStormDistinctIpThreshold = 2
@@ -125,6 +154,7 @@ const precheckMinIntervalMs = 60_000
 const precheckMaxAttempts = 2
 const precheckAttemptTimeoutMs = 45_000
 const precheckRetryDelayMs = 5_000
+const precheckSuppressionGuardMs = precheckMaxAttempts * precheckAttemptTimeoutMs + precheckRetryDelayMs + 15_000
 const precheckConcurrencyDrainPollMs = 1_000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 const maxSideEffectQueueLength = 5000
@@ -143,6 +173,7 @@ let skippedHealthySuccessCount = 0
 let failedAttemptCount = 0
 let droppedCount = 0
 let expiredCount = 0
+let localHalfOpenLeaseSequence = 0
 
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
   if (isHealthySuccessfulAccountSideEffect(operation)) {
@@ -159,10 +190,10 @@ export function enqueueGatewayStreamFailureSideEffect(operation: StreamFailureOp
 
 export function suppressGatewayAccountLocally(
   account: SuppressibleGatewayAccount | string,
-  settings: GatewaySettings | undefined,
+  _settings: GatewaySettings | undefined,
   reason = '上游账号请求失败'
-): void {
-  suppressLocalAccount(gatewayAccountRuntimeKey(account), localSuppressionMs(settings), reason, 'local_suppressed')
+): GatewayAccountLocalSuppressionResult {
+  return suppressLocalAccountForGatewayFailure(gatewayAccountRuntimeKey(account), gatewayAccountId(account), reason)
 }
 
 export function suppressGatewayAccountLocallyForSeconds(
@@ -171,7 +202,9 @@ export function suppressGatewayAccountLocallyForSeconds(
   reason = '流式拦截策略运行态避让'
 ): void {
   const value = typeof seconds === 'number' && Number.isFinite(seconds) ? Math.max(1, Math.trunc(seconds)) : 60
-  suppressLocalAccount(gatewayAccountRuntimeKey(account), Math.min(value * 1000, localSuppressionMaxMs), reason, 'local_suppressed')
+  suppressLocalAccount(gatewayAccountRuntimeKey(account), Math.min(value * 1000, localSuppressionMaxMs), reason, 'local_suppressed', {
+    accountId: gatewayAccountId(account)
+  })
 }
 
 export function recordGatewayAccountFailureForPrecheck(
@@ -188,6 +221,31 @@ export function recordGatewayAccountFailureForPrecheckForTest(
   input: GatewayAccountFailurePrecheckInput
 ): void {
   recordGatewayAccountFailureForPrecheckInternal(account, settings, input, false)
+}
+
+export function releaseGatewayAccountHalfOpenLease(
+  lease: Pick<GatewayAccountHalfOpenLease, 'runtimeKey' | 'accountId' | 'leaseId'>
+): boolean {
+  const current = localAccountSuppressions.get(lease.runtimeKey)
+  if (!current || current.status !== 'half_open' || current.halfOpenLeaseId !== lease.leaseId) {
+    return false
+  }
+  const now = Date.now()
+  localAccountSuppressions.set(lease.runtimeKey, {
+    ...current,
+    status: 'local_suppressed',
+    untilMs: now,
+    halfOpenLeaseUntilMs: undefined,
+    halfOpenLeaseId: undefined,
+    reason: `半开探测请求结束，等待下一次调度确认；${current.reason}`.slice(0, 1000)
+  })
+  logger.info({
+    event: 'gateway_account_local_half_open_released',
+    accountId: lease.accountId,
+    runtimeKey: lease.runtimeKey,
+    localFailureCount: current.localFailureCount
+  }, '账号短暂避让半开探测租约已释放')
+  return true
 }
 
 export async function completeGatewayAccountPrecheckForTest(
@@ -239,13 +297,15 @@ function recordGatewayAccountFailureForPrecheckInternal(
   if (input.apiKeyId) entry.apiKeyIds.add(input.apiKeyId)
   failureStorms.set(runtimeKey, entry)
 
-  if (entry.failureCount < failureStormThresholdCount || entry.clientIps.size < failureStormDistinctIpThreshold) {
+  const forcePrecheck = input.forcePrecheck === true
+  if (!forcePrecheck && (entry.failureCount < failureStormThresholdCount || entry.clientIps.size < failureStormDistinctIpThreshold)) {
     return
   }
 
   const existingPrecheck = precheckStates.get(runtimeKey)
   if (existingPrecheck && now - existingPrecheck.startedAtMs < precheckMinIntervalMs) {
-    suppressLocalAccount(runtimeKey, localSuppressionMs(settings), existingPrecheck.reason, 'precheck_pending', {
+    suppressLocalAccount(runtimeKey, precheckSuppressionMs(), existingPrecheck.reason, 'precheck_pending', {
+      accountId: account.id,
       failureCount: entry.failureCount,
       distinctClientIpCount: entry.clientIps.size,
       distinctApiKeyCount: entry.apiKeyIds.size,
@@ -254,7 +314,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
     return
   }
 
-  const reason = `多来源短窗口失败，等待事前确认；${input.reason}`.slice(0, 1000)
+  const reason = `${forcePrecheck ? '短暂避让半开探测连续失败' : '多来源短窗口失败'}，等待事前确认；${input.reason}`.slice(0, 1000)
   const state: PrecheckState = {
     account,
     settings,
@@ -269,7 +329,8 @@ function recordGatewayAccountFailureForPrecheckInternal(
     running: false
   }
   precheckStates.set(runtimeKey, state)
-  suppressLocalAccount(runtimeKey, localSuppressionMs(settings), reason, 'precheck_pending', {
+  suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
+    accountId: account.id,
     failureCount: entry.failureCount,
     distinctClientIpCount: entry.clientIps.size,
     distinctApiKeyCount: entry.apiKeyIds.size,
@@ -283,6 +344,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
     failureCount: entry.failureCount,
     distinctClientIpCount: entry.clientIps.size,
     distinctApiKeyCount: entry.apiKeyIds.size,
+    forcePrecheck,
     systemAccountId: input.systemAccountId,
     groupId: input.groupId,
     apiKeyId: input.apiKeyId,
@@ -297,17 +359,22 @@ function recordGatewayAccountFailureForPrecheckInternal(
 export function snapshotGatewayAccountRuntimeAvailability(): Record<string, AccountRuntimeAvailability> {
   cleanupExpiredLocalSuppressions()
   cleanupExpiredFailureStorms()
+  const now = Date.now()
   const snapshot: Record<string, AccountRuntimeAvailability> = {}
   for (const [runtimeKey, suppression] of localAccountSuppressions) {
+    if (!isLocalSuppressionVisible(runtimeKey, suppression, now)) {
+      continue
+    }
     snapshot[runtimeKey] = {
       status: suppression.status,
       reason: suppression.reason,
       since: new Date(suppression.sinceMs).toISOString(),
-      until: new Date(suppression.untilMs).toISOString(),
+      until: new Date(localSuppressionVisibleUntilMs(suppression, now)).toISOString(),
       failureCount: suppression.failureCount,
       distinctClientIpCount: suppression.distinctClientIpCount,
       distinctApiKeyCount: suppression.distinctApiKeyCount,
-      precheckAttemptCount: suppression.precheckAttemptCount
+      precheckAttemptCount: suppression.precheckAttemptCount,
+      localFailureCount: suppression.localFailureCount
     }
   }
   for (const [runtimeKey, state] of precheckStates) {
@@ -327,23 +394,32 @@ export function snapshotGatewayAccountRuntimeAvailability(): Record<string, Acco
 }
 
 export function filterLocallySuppressedGatewayAccounts<T extends SuppressibleGatewayAccount>(
-  accounts: T[]
+  accounts: T[],
+  options: LocalAccountSuppressionFilterOptions = {}
 ): LocalAccountSuppressionFilterResult<T> {
   cleanupExpiredLocalSuppressions()
   const now = Date.now()
   const filtered: T[] = []
   const suppressedAccountIds: string[] = []
+  const acquiredHalfOpenLeases: GatewayAccountHalfOpenLease[] = []
   let nextRetryAtMs: number | undefined
   for (const account of accounts) {
-    const suppression = localAccountSuppressions.get(gatewayAccountRuntimeKey(account))
-    if (!suppression) {
+    const runtimeKey = gatewayAccountRuntimeKey(account)
+    const suppression = localAccountSuppressions.get(runtimeKey)
+    if (isPrecheckRuntimeBlocking(runtimeKey)) {
+      suppressedAccountIds.push(account.id)
+      nextRetryAtMs = minRetryAtMs(nextRetryAtMs, Math.max(suppression?.untilMs ?? 0, now + 1000))
+      continue
+    }
+    if (!suppression || !isLocalSuppressionBlocking(suppression, now)) {
+      if (suppression && options.acquireHalfOpenLease && canAcquireLocalHalfOpenLease(suppression, now)) {
+        acquiredHalfOpenLeases.push(acquireLocalHalfOpenLease(runtimeKey, account, suppression, now))
+      }
       filtered.push(account)
       continue
     }
     suppressedAccountIds.push(account.id)
-    nextRetryAtMs = nextRetryAtMs === undefined
-      ? suppression.untilMs
-      : Math.min(nextRetryAtMs, suppression.untilMs)
+    nextRetryAtMs = minRetryAtMs(nextRetryAtMs, localSuppressionVisibleUntilMs(suppression, now))
   }
   const suppressedCount = suppressedAccountIds.length
   return {
@@ -351,6 +427,7 @@ export function filterLocallySuppressedGatewayAccounts<T extends SuppressibleGat
     suppressedCount,
     allSuppressed: filtered.length === 0 && accounts.length > 0,
     suppressedAccountIds,
+    acquiredHalfOpenLeases,
     nextRetryAtMs,
     nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - now)
   }
@@ -368,7 +445,7 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     failedAttemptCount,
     droppedCount,
     expiredCount,
-    localSuppressedAccountCount: localAccountSuppressions.size,
+    localSuppressedAccountCount: countVisibleLocalSuppressions(),
     precheckPendingAccountCount: precheckStates.size,
     nextAttemptAt: nextAttemptAtMs === undefined ? undefined : new Date(nextAttemptAtMs).toISOString()
   }
@@ -391,9 +468,13 @@ export function suppressGatewayAccountLocallyForTest(
   accountId: string,
   durationMs: number,
   reason = '测试本地屏蔽',
-  status: AccountRuntimeAvailability['status'] = 'local_suppressed'
+  status: AccountRuntimeAvailability['status'] = 'local_suppressed',
+  metadata: Partial<Pick<LocalAccountSuppression, 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
 ): void {
-  suppressLocalAccount(accountId, Math.max(0, Math.trunc(durationMs)), reason, status)
+  suppressLocalAccount(accountId, Math.max(0, Math.trunc(durationMs)), reason, status, {
+    accountId,
+    ...metadata
+  })
 }
 
 export function clearGatewayLocalAccountSuppressionsForTest(): void {
@@ -697,6 +778,14 @@ function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string):
   return account.id
 }
 
+function gatewayAccountId(account: SuppressibleGatewayAccount | string): string {
+  return typeof account === 'string' ? account : account.id
+}
+
+function runtimeAccountIdFromKey(runtimeKey: string): string {
+  return runtimeKey.split(':', 1)[0] || runtimeKey
+}
+
 function gatewayAccountRuntimeClearKeys(account: GatewayAccountRuntimeClearTarget | SuppressibleGatewayAccount | string): string[] {
   if (typeof account === 'string') {
     return account.trim() ? [account.trim()] : []
@@ -725,30 +814,93 @@ function gatewayAccountRuntimeClearKeys(account: GatewayAccountRuntimeClearTarge
   return [...keys]
 }
 
+function suppressLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): GatewayAccountLocalSuppressionResult {
+  const now = Date.now()
+  const current = localAccountSuppressions.get(runtimeKey)
+  const currentFailureCount = current?.localFailureCount ?? 0
+  const shouldAdvanceFailureCount = !current
+    || current.status === 'half_open'
+    || (current.status === 'local_suppressed' && current.untilMs <= now)
+  const localFailureCount = shouldAdvanceFailureCount ? currentFailureCount + 1 : Math.max(1, currentFailureCount)
+  if (localFailureCount > localSuppressionDelayMs.length) {
+    const fallbackDelayMs = localSuppressionDelayMs[localSuppressionDelayMs.length - 1]
+    suppressLocalAccount(runtimeKey, fallbackDelayMs, reason, 'local_suppressed', {
+      accountId,
+      localFailureCount: localSuppressionDelayMs.length
+    })
+    logger.warn({
+      event: 'gateway_account_local_suppression_precheck_required',
+      accountId,
+      runtimeKey,
+      localFailureCount,
+      reason
+    }, '账号短暂避让半开探测连续失败，要求进入事前确认')
+    return {
+      runtimeKey,
+      action: 'precheck_required',
+      reason,
+      localFailureCount
+    }
+  }
+
+  const delayMs = localSuppressionDelayMs[localFailureCount - 1]
+  suppressLocalAccount(runtimeKey, delayMs, reason, 'local_suppressed', {
+    accountId,
+    localFailureCount
+  })
+  return {
+    runtimeKey,
+    action: 'suppressed',
+    reason,
+    localFailureCount,
+    delayMs,
+    until: new Date(Date.now() + delayMs).toISOString()
+  }
+}
+
 function suppressLocalAccount(
-  accountId: string,
+  runtimeKey: string,
   durationMs: number,
   reason: string,
   status: AccountRuntimeAvailability['status'] = 'local_suppressed',
-  metadata: Pick<LocalAccountSuppression, 'failureCount' | 'distinctClientIpCount' | 'distinctApiKeyCount' | 'precheckAttemptCount'> = {}
+  metadata: Partial<Pick<LocalAccountSuppression, 'accountId' | 'failureCount' | 'distinctClientIpCount' | 'distinctApiKeyCount' | 'precheckAttemptCount' | 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
 ): void {
   const untilMs = Date.now() + durationMs
-  const current = localAccountSuppressions.get(accountId)
-  if (current && current.untilMs >= untilMs) {
-    localAccountSuppressions.set(accountId, {
+  const current = localAccountSuppressions.get(runtimeKey)
+  const accountId = metadata.accountId ?? current?.accountId ?? runtimeAccountIdFromKey(runtimeKey)
+  const shouldPreserveLongerUntil = current
+    && current.untilMs >= untilMs
+    && !(current.status === 'half_open' && status === 'local_suppressed')
+  if (shouldPreserveLongerUntil) {
+    localAccountSuppressions.set(runtimeKey, {
       ...current,
+      accountId,
       status,
       reason,
+      halfOpenLeaseUntilMs: metadata.halfOpenLeaseUntilMs,
+      halfOpenLeaseId: metadata.halfOpenLeaseId,
       ...metadata
     })
     return
   }
-  localAccountSuppressions.set(accountId, { untilMs, reason, sinceMs: current?.sinceMs ?? Date.now(), status, ...metadata })
+  localAccountSuppressions.set(runtimeKey, {
+    accountId,
+    untilMs,
+    reason,
+    sinceMs: current?.sinceMs ?? Date.now(),
+    status,
+    localFailureCount: current?.localFailureCount,
+    halfOpenLeaseUntilMs: metadata.halfOpenLeaseUntilMs,
+    halfOpenLeaseId: metadata.halfOpenLeaseId,
+    ...metadata
+  })
   logger.warn({
     event: 'gateway_account_local_suppressed',
     accountId,
+    runtimeKey,
     until: new Date(untilMs).toISOString(),
     runtimeStatus: status,
+    localFailureCount: metadata.localFailureCount,
     reason
   }, '网关账号已进入 Web 进程本地短期屏蔽')
 }
@@ -765,7 +917,14 @@ function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean
 function cleanupExpiredLocalSuppressions(): void {
   const now = Date.now()
   for (const [accountId, suppression] of localAccountSuppressions) {
-    if (suppression.untilMs <= now) {
+    if (isPrecheckRuntimeBlocking(accountId)) {
+      continue
+    }
+    if (suppression.status === 'half_open' && getAccountCurrentConcurrency(suppression.accountId) > 0) {
+      continue
+    }
+    const retainUntilMs = Math.max(suppression.untilMs, suppression.halfOpenLeaseUntilMs ?? 0) + localSuppressionIdleRetentionMs
+    if (retainUntilMs <= now) {
       localAccountSuppressions.delete(accountId)
     }
   }
@@ -780,14 +939,97 @@ function cleanupExpiredFailureStorms(): void {
   }
 }
 
-function localSuppressionMs(settings?: GatewaySettings): number {
-  return localSuppressionMsFromMinutes(settings?.defaultTemporaryUnschedulableMinutes)
+function isPrecheckRuntimeBlocking(runtimeKey: string): boolean {
+  return precheckStates.has(runtimeKey)
 }
 
-function localSuppressionMsFromMinutes(minutes: unknown): number {
-  const value = typeof minutes === 'number' ? minutes : typeof minutes === 'string' ? Number(minutes) : NaN
-  const boundedMinutes = Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 1
-  return Math.min(boundedMinutes * 60_000, localSuppressionMaxMs)
+function isLocalSuppressionVisible(runtimeKey: string, suppression: LocalAccountSuppression, now: number): boolean {
+  return isPrecheckRuntimeBlocking(runtimeKey) || isLocalSuppressionBlocking(suppression, now)
+}
+
+function isLocalSuppressionBlocking(suppression: LocalAccountSuppression, now: number): boolean {
+  if (suppression.status === 'half_open') {
+    return (suppression.halfOpenLeaseUntilMs ?? suppression.untilMs) > now
+      || getAccountCurrentConcurrency(suppression.accountId) > 0
+  }
+  if (suppression.status === 'precheck_pending' || suppression.status === 'precheck_failed') {
+    return suppression.untilMs > now
+  }
+  return suppression.untilMs > now
+}
+
+function canAcquireLocalHalfOpenLease(suppression: LocalAccountSuppression, now: number): boolean {
+  if (suppression.status === 'local_suppressed') {
+    return suppression.untilMs <= now
+  }
+  if (suppression.status === 'half_open') {
+    return (suppression.halfOpenLeaseUntilMs ?? suppression.untilMs) <= now
+      && getAccountCurrentConcurrency(suppression.accountId) <= 0
+  }
+  return false
+}
+
+function acquireLocalHalfOpenLease(
+  runtimeKey: string,
+  account: SuppressibleGatewayAccount,
+  suppression: LocalAccountSuppression,
+  now: number
+): GatewayAccountHalfOpenLease {
+  const leaseUntilMs = now + localSuppressionHalfOpenLeaseMs
+  localHalfOpenLeaseSequence += 1
+  const leaseId = `${now}:${localHalfOpenLeaseSequence}`
+  localAccountSuppressions.set(runtimeKey, {
+    ...suppression,
+    accountId: account.id,
+    status: 'half_open',
+    untilMs: leaseUntilMs,
+    halfOpenLeaseUntilMs: leaseUntilMs,
+    halfOpenLeaseId: leaseId,
+    reason: `短暂避让到期，允许一个请求半开探测；${suppression.reason}`.slice(0, 1000)
+  })
+  logger.info({
+    event: 'gateway_account_local_half_open_acquired',
+    accountId: account.id,
+    runtimeKey,
+    leaseUntil: new Date(leaseUntilMs).toISOString(),
+    localFailureCount: suppression.localFailureCount,
+    reason: suppression.reason
+  }, '账号短暂避让到期，已放行一个真实请求进行半开探测')
+  return {
+    runtimeKey,
+    accountId: account.id,
+    leaseId,
+    release: () => releaseGatewayAccountHalfOpenLease({ runtimeKey, accountId: account.id, leaseId })
+  }
+}
+
+function localSuppressionVisibleUntilMs(suppression: LocalAccountSuppression, now = Date.now()): number {
+  if (suppression.status !== 'half_open') {
+    return suppression.untilMs
+  }
+  const leaseUntilMs = suppression.halfOpenLeaseUntilMs ?? suppression.untilMs
+  return getAccountCurrentConcurrency(suppression.accountId) > 0
+    ? Math.max(leaseUntilMs, now + 1000)
+    : leaseUntilMs
+}
+
+function minRetryAtMs(current: number | undefined, candidate: number): number {
+  return current === undefined ? candidate : Math.min(current, candidate)
+}
+
+function precheckSuppressionMs(): number {
+  return Math.min(precheckSuppressionGuardMs, localSuppressionMaxMs)
+}
+
+function countVisibleLocalSuppressions(): number {
+  const now = Date.now()
+  let count = 0
+  for (const [runtimeKey, suppression] of localAccountSuppressions) {
+    if (isLocalSuppressionVisible(runtimeKey, suppression, now)) {
+      count += 1
+    }
+  }
+  return count
 }
 
 function operationAccountId(operation: AccountSideEffectOperation): string {
@@ -825,7 +1067,8 @@ function deferPrecheckMarkUntilConcurrencyDrained(runtimeKey: string, state: Pre
   state.reason = reason
   state.running = false
   state.waitingForConcurrencyDrain = true
-  suppressLocalAccount(runtimeKey, localSuppressionMs(state.settings), reason, 'precheck_pending', {
+  suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
+    accountId: state.account.id,
     failureCount: state.failureCount,
     distinctClientIpCount: state.distinctClientIpCount,
     distinctApiKeyCount: state.distinctApiKeyCount,
@@ -886,7 +1129,8 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       }
       latestState.attemptCount = attempt + 1
       latestState.lastAttemptAtMs = Date.now()
-      suppressLocalAccount(runtimeKey, localSuppressionMs(latestState.settings), latestState.reason, 'precheck_pending', {
+      suppressLocalAccount(runtimeKey, precheckSuppressionMs(), latestState.reason, 'precheck_pending', {
+        accountId: latestState.account.id,
         failureCount: latestState.failureCount,
         distinctClientIpCount: latestState.distinctClientIpCount,
         distinctApiKeyCount: latestState.distinctApiKeyCount,

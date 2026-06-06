@@ -293,7 +293,7 @@ export interface AccountOAuthUsageSnapshot {
   sevenDay?: AccountOAuthUsageWindow
 }
 
-export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'precheck_pending' | 'precheck_failed'
+export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
 export interface AccountRuntimeAvailability {
   status: AccountRuntimeAvailabilityStatus
@@ -304,6 +304,7 @@ export interface AccountRuntimeAvailability {
   distinctClientIpCount?: number
   distinctApiKeyCount?: number
   precheckAttemptCount?: number
+  localFailureCount?: number
 }
 
 export type AccountEffectiveAvailabilityStatus =
@@ -332,6 +333,7 @@ export type AccountEffectiveAvailabilityStatus =
   | 'instance_schedule_inactive'
   | 'binding_missing'
   | 'runtime_local_suppressed'
+  | 'runtime_half_open'
   | 'runtime_precheck_pending'
   | 'runtime_precheck_failed'
 

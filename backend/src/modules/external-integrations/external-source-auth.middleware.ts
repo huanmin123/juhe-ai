@@ -80,7 +80,7 @@ function consumeExternalSourceRateLimit(context: ExternalIntegrationSourceAuthCo
   for (const rule of context.rateLimits) {
     const windowMs = rule.windowSeconds * 1000
     const windowStartedAt = Math.floor(now / windowMs) * windowMs
-    const key = `${context.sourceRefId}:${context.tokenId}:${rule.windowSeconds}`
+    const key = `${context.sourceRefId}:${context.tokenId}:${context.tokenPrefix}:${rule.windowSeconds}`
     const state = rateLimitStates.get(key)
     if (!state || state.windowStartedAt !== windowStartedAt) {
       rateLimitStates.set(key, { windowStartedAt, count: 1 })

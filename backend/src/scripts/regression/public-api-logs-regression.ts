@@ -26,7 +26,11 @@ const [
     listPublicApiLogs,
     updateSystemAccount
   },
-  { externalIntegrationTestToken },
+  {
+    builtInExternalIntegrationTestSourceId,
+    builtInExternalIntegrationTestTokenId,
+    findExternalIntegrationSourceTokenSecret
+  },
   { cleanupExpiredRetainedData },
   { closeStorageDatabases },
   { logger },
@@ -48,6 +52,12 @@ const [
 ])
 
 logger.level = 'silent'
+const builtInTokenSecret = findExternalIntegrationSourceTokenSecret(
+  builtInExternalIntegrationTestSourceId,
+  builtInExternalIntegrationTestTokenId
+)
+assert(builtInTokenSecret?.token, '内置测试 Token 应写入数据库并可用于公开接口日志回归')
+const builtInTestToken = builtInTokenSecret.token
 
 try {
   const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' })
@@ -71,7 +81,7 @@ try {
     assert.equal(missingTokenLog.sourceName, undefined, '缺少 token 时不应伪造来源系统')
 
     const success = await requestJson(baseUrl, '/__aipublic__/demo/source-auth?token=public-query-secret&safe=ok', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`,
+      Authorization: `Bearer ${builtInTestToken}`,
       'x-trace-id': 'trace-public-success'
     })
     assert.equal(success.status, 200)
@@ -88,7 +98,7 @@ try {
     assert.equal(JSON.stringify(successDetail).includes('public-query-secret'), false, '公开接口日志详情不能保存 query token 原文')
 
     const apiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`,
+      Authorization: `Bearer ${builtInTestToken}`,
       'x-trace-id': 'trace-public-api-key-add'
     }, 'POST', {
       targetUsername: 'huanmin',
@@ -103,7 +113,7 @@ try {
     assert(apiKeySerialized.includes('[redacted]'), 'API Key 新增日志应保留脱敏占位')
 
     const accountAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`,
+      Authorization: `Bearer ${builtInTestToken}`,
       'x-trace-id': 'trace-public-account-add'
     }, 'POST', {
       targetUsername: 'huanmin',
@@ -122,14 +132,14 @@ try {
     assert(accountSerialized.includes('[redacted]'), '账号写入日志应保留脱敏占位')
 
     const notFound = await requestJson(baseUrl, '/__aipublic__/not-found', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`,
+      Authorization: `Bearer ${builtInTestToken}`,
       'x-trace-id': 'trace-public-not-found'
     })
     assert.equal(notFound.status, 404)
     assert.equal(singleLogByTraceId('trace-public-not-found').statusCode, 404, '公开前缀 404 也应写入公开接口日志')
 
     const malformedJson = await requestRaw(baseUrl, '/__aipublic__/account/add', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`,
+      Authorization: `Bearer ${builtInTestToken}`,
       'Content-Type': 'application/json',
       'x-trace-id': 'trace-public-malformed-json'
     }, 'POST', '{"targetUsername":')
@@ -140,7 +150,7 @@ try {
 
     const largeBody = JSON.stringify({ targetUsername: 'huanmin', note: 'x'.repeat(300 * 1024) })
     const tooLarge = await requestRaw(baseUrl, '/__aipublic__/account/add', {
-      Authorization: `Bearer ${externalIntegrationTestToken}`,
+      Authorization: `Bearer ${builtInTestToken}`,
       'Content-Type': 'application/json',
       'x-trace-id': 'trace-public-body-too-large'
     }, 'POST', largeBody)

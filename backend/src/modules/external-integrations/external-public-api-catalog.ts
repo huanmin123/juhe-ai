@@ -15,8 +15,7 @@ import {
   externalIntegrationGroupListReadScope,
   externalIntegrationGroupUpdateWriteScope,
   externalIntegrationIpUsageReadScope,
-  externalIntegrationSourceAuthDemoScope,
-  externalIntegrationTestToken
+  externalIntegrationSourceAuthDemoScope
 } from '../../storage/external-integration-source.repository.js'
 
 export type ExternalPublicApiMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE'
@@ -61,8 +60,6 @@ export interface ExternalPublicApiDocItem {
 export interface ExternalPublicApiCatalog {
   basePath: string
   authType: 'Bearer'
-  testTokenName: string
-  testToken: string
   items: ExternalPublicApiDocItem[]
 }
 
@@ -77,8 +74,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
   return {
     basePath: '/__aipublic__',
     authType: 'Bearer',
-    testTokenName: '内置测试 token',
-    testToken: externalIntegrationTestToken,
     items: ([
       {
         id: 'source-auth-demo',

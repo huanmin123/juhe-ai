@@ -64,6 +64,7 @@ export function accountStatusColor(account: AccountSummary) {
   const runtimeStatus = activeRuntimeAvailabilityStatus(account)
   if (runtimeStatus === 'precheck_pending') return 'blue'
   if (runtimeStatus === 'local_suppressed') return 'gold'
+  if (runtimeStatus === 'half_open') return 'blue'
   if (runtimeStatus === 'precheck_failed') return 'gold'
   return statusColor(account.status)
 }
@@ -81,6 +82,7 @@ export function accountStatusText(account: AccountSummary) {
   const runtimeStatus = activeRuntimeAvailabilityStatus(account)
   if (runtimeStatus === 'precheck_pending') return '待探针确认'
   if (runtimeStatus === 'local_suppressed') return '短暂避让'
+  if (runtimeStatus === 'half_open') return '半开探测'
   if (runtimeStatus === 'precheck_failed') return '探针确认失败'
   return statusText(account.status)
 }
@@ -388,6 +390,9 @@ function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string
   if (runtime.precheckAttemptCount) {
     lines.push(`事前探针：${formatNumber(runtime.precheckAttemptCount)} 次`)
   }
+  if (runtime.localFailureCount) {
+    lines.push(`短暂避让轮次：第 ${formatNumber(runtime.localFailureCount)} 轮`)
+  }
   if (runtime.reason) {
     lines.push(`原因：${runtime.reason}`)
   }
@@ -400,6 +405,7 @@ function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string
 function runtimeAvailabilityText(status: NonNullable<AccountSummary['runtimeAvailability']>['status']): string {
   if (status === 'precheck_pending') return '待探针确认'
   if (status === 'local_suppressed') return '短暂避让'
+  if (status === 'half_open') return '半开探测'
   if (status === 'precheck_failed') return '探针确认失败'
   return '正常'
 }

@@ -1,50 +1,58 @@
-import { randomBytes } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 
-import { decryptJson, encryptJson, hashSecret } from './crypto.js'
+import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
+import {
+  builtInExternalIntegrationTestSourceId,
+  builtInExternalIntegrationTestTokenId,
+  createExternalIntegrationSourceTokenValue,
+  externalIntegrationAccessInfoReadScope,
+  externalIntegrationAccountAddWriteScope,
+  externalIntegrationAccountDeleteWriteScope,
+  externalIntegrationAccountListReadScope,
+  externalIntegrationAccountUpdateWriteScope,
+  externalIntegrationAccountUsageReadScope,
+  externalIntegrationApiKeyAddWriteScope,
+  externalIntegrationApiKeyDeleteWriteScope,
+  externalIntegrationApiKeyListReadScope,
+  externalIntegrationApiKeyUpdateWriteScope,
+  externalIntegrationConsumptionRankingReadScope,
+  externalIntegrationGroupAddWriteScope,
+  externalIntegrationGroupDeleteWriteScope,
+  externalIntegrationGroupListReadScope,
+  externalIntegrationGroupUpdateWriteScope,
+  externalIntegrationIpUsageReadScope,
+  externalIntegrationScopeOptions,
+  externalIntegrationSourceAuthDemoScope,
+  hashExternalIntegrationSourceTokenValue,
+  isBuiltInExternalIntegrationTestSourceId,
+  isBuiltInExternalIntegrationTestTokenId
+} from './external-integration-source-constants.js'
 import { normalizeListPage } from './query-utils.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
-export const externalIntegrationSourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
-export const externalIntegrationIpUsageReadScope = 'juhe_ai_public:ip_usage:read'
-export const externalIntegrationAccountUsageReadScope = 'juhe_ai_public:account_usage:read'
-export const externalIntegrationConsumptionRankingReadScope = 'juhe_ai_public:consumption_ranking:read'
-export const externalIntegrationAccessInfoReadScope = 'juhe_ai_public:access_info:read'
-export const externalIntegrationGroupListReadScope = 'juhe_ai_public:group_list:read'
-export const externalIntegrationApiKeyListReadScope = 'juhe_ai_public:api_key_list:read'
-export const externalIntegrationAccountListReadScope = 'juhe_ai_public:account_list:read'
-export const externalIntegrationGroupAddWriteScope = 'juhe_ai_public:group_add:write'
-export const externalIntegrationGroupUpdateWriteScope = 'juhe_ai_public:group_update:write'
-export const externalIntegrationGroupDeleteWriteScope = 'juhe_ai_public:group_delete:write'
-export const externalIntegrationApiKeyAddWriteScope = 'juhe_ai_public:api_key_add:write'
-export const externalIntegrationApiKeyUpdateWriteScope = 'juhe_ai_public:api_key_update:write'
-export const externalIntegrationApiKeyDeleteWriteScope = 'juhe_ai_public:api_key_delete:write'
-export const externalIntegrationAccountAddWriteScope = 'juhe_ai_public:account_add:write'
-export const externalIntegrationAccountUpdateWriteScope = 'juhe_ai_public:account_update:write'
-export const externalIntegrationAccountDeleteWriteScope = 'juhe_ai_public:account_delete:write'
-export const externalIntegrationTestToken = process.env.JUHE_AI_EXTERNAL_SOURCE_TEST_TOKEN?.trim() || 'juis_test_mock_public_token'
-export const externalIntegrationTestTokenPrefix = externalIntegrationTestToken.slice(0, 8)
-
-export const externalIntegrationScopeOptions = [
-  { value: externalIntegrationSourceAuthDemoScope, label: 'GET 来源鉴权 Demo' },
-  { value: externalIntegrationIpUsageReadScope, label: 'GET IP 维度消费聚合' },
-  { value: externalIntegrationAccountUsageReadScope, label: 'GET 账号维度实际消耗聚合' },
-  { value: externalIntegrationConsumptionRankingReadScope, label: 'GET IP 维度消耗排行' },
-  { value: externalIntegrationAccessInfoReadScope, label: 'GET 公益接入信息' },
-  { value: externalIntegrationGroupListReadScope, label: 'GET 分组列表' },
-  { value: externalIntegrationApiKeyListReadScope, label: 'GET API Key 列表' },
-  { value: externalIntegrationAccountListReadScope, label: 'GET 账号列表' },
-  { value: externalIntegrationGroupAddWriteScope, label: 'POST 分组新增' },
-  { value: externalIntegrationGroupUpdateWriteScope, label: 'POST 分组修改' },
-  { value: externalIntegrationGroupDeleteWriteScope, label: 'POST 分组删除' },
-  { value: externalIntegrationApiKeyAddWriteScope, label: 'POST API Key 新增' },
-  { value: externalIntegrationApiKeyUpdateWriteScope, label: 'POST API Key 修改' },
-  { value: externalIntegrationApiKeyDeleteWriteScope, label: 'POST API Key 删除' },
-  { value: externalIntegrationAccountAddWriteScope, label: 'POST 账号新增' },
-  { value: externalIntegrationAccountUpdateWriteScope, label: 'POST 账号修改' },
-  { value: externalIntegrationAccountDeleteWriteScope, label: 'POST 账号删除' }
-] as const
+export {
+  builtInExternalIntegrationTestSourceId,
+  builtInExternalIntegrationTestTokenId,
+  externalIntegrationAccessInfoReadScope,
+  externalIntegrationAccountAddWriteScope,
+  externalIntegrationAccountDeleteWriteScope,
+  externalIntegrationAccountListReadScope,
+  externalIntegrationAccountUpdateWriteScope,
+  externalIntegrationAccountUsageReadScope,
+  externalIntegrationApiKeyAddWriteScope,
+  externalIntegrationApiKeyDeleteWriteScope,
+  externalIntegrationApiKeyListReadScope,
+  externalIntegrationApiKeyUpdateWriteScope,
+  externalIntegrationConsumptionRankingReadScope,
+  externalIntegrationGroupAddWriteScope,
+  externalIntegrationGroupDeleteWriteScope,
+  externalIntegrationGroupListReadScope,
+  externalIntegrationGroupUpdateWriteScope,
+  externalIntegrationIpUsageReadScope,
+  externalIntegrationScopeOptions,
+  externalIntegrationSourceAuthDemoScope
+} from './external-integration-source-constants.js'
 
 export type ExternalIntegrationSourceStatus = 'active' | 'disabled'
 export type ExternalIntegrationSourceTokenStatus = 'active' | 'disabled' | 'revoked'
@@ -119,6 +127,7 @@ export interface ExternalIntegrationSourceTokenSummary {
   createdAt: string
   updatedAt: string
   revokedAt?: string
+  isBuiltIn: boolean
 }
 
 export interface ExternalIntegrationSourceSummary {
@@ -135,6 +144,7 @@ export interface ExternalIntegrationSourceSummary {
   tokenCount: number
   activeTokenCount: number
   tokens: ExternalIntegrationSourceTokenSummary[]
+  isBuiltIn: boolean
 }
 
 export interface ExternalIntegrationSourceListResult {
@@ -220,7 +230,6 @@ interface ExternalIntegrationSourceTokenListRow {
   revoked_at: string | null
 }
 
-const generatedTokenPrefix = 'juis_'
 const touchLastUsedIntervalMs = 60_000
 const defaultPageSize = 20
 const maxPageSize = 100
@@ -390,6 +399,9 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
   if (!existing) {
     return undefined
   }
+  if (isBuiltInExternalIntegrationTestSourceId(id)) {
+    assertBuiltInSourceUpdateInput(input)
+  }
   const nextName = input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统名称不能为空')
   if (nextName !== existing.name) {
     ensureSourceNameAvailable(nextName, id)
@@ -404,11 +416,16 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
     SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
     WHERE id = ?
   `).run(nextName, nextStatus, nextScopes, nextRateLimits, nextExpiresAt, nextNotes, nowIso(), id)
-  syncExternalIntegrationSourceTokenState(id)
+  if (!isBuiltInExternalIntegrationTestSourceId(id)) {
+    syncExternalIntegrationSourceTokenState(id)
+  }
   return requiredSource(id)
 }
 
 export function deleteExternalIntegrationSource(id: string): boolean {
+  if (isBuiltInExternalIntegrationTestSourceId(id)) {
+    throw new Error('内置测试 Token 不支持删除')
+  }
   return runInDatabaseTransaction(() => {
     if (!findSourceRow(id)) {
       return false
@@ -424,6 +441,9 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
   assertKnownInputKeys(input, externalIntegrationSourceTokenInputKeys, '来源系统 token')
   const name = normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符')
   const source = resolveSourceForToken(input)
+  if (isBuiltInExternalIntegrationTestSourceId(source.id)) {
+    throw new Error('内置测试 Token 不支持新增 Token')
+  }
   const token = normalizeTokenValue(input.token)
   const scopes = normalizeScopes(input.scopes)
   const now = nowIso()
@@ -439,7 +459,7 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
       id,
       source.id,
       name,
-      hashExternalIntegrationSourceToken(token),
+      hashExternalIntegrationSourceTokenValue(token),
       encryptJson({ token }),
       tokenPrefix,
       tokenSuffix,
@@ -469,6 +489,9 @@ export function createExternalIntegrationSourceToken(input: ExternalIntegrationS
 
 export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenId: string, input: ExternalIntegrationSourceTokenUpdateInput): ExternalIntegrationSourceTokenSummary | undefined {
   assertKnownInputKeys(input, externalIntegrationSourceTokenUpdateInputKeys, '来源系统 token')
+  if (isBuiltInExternalIntegrationTestSourceId(sourceRefId) || isBuiltInExternalIntegrationTestTokenId(tokenId)) {
+    throw new Error('内置测试 Token 不支持编辑')
+  }
   const existing = getBusinessDatabase().prepare(`
     SELECT tokens.*
     FROM external_integration_source_tokens AS tokens
@@ -513,6 +536,49 @@ export function findExternalIntegrationSourceTokenSecret(sourceRefId: string, to
   return { token: decryptExternalIntegrationSourceTokenSecret(row.token_secret_encrypted) }
 }
 
+export function resetBuiltInExternalIntegrationTestToken(): CreatedExternalIntegrationSourceToken {
+  const source = findExternalIntegrationSource(builtInExternalIntegrationTestSourceId)
+  const tokenSummary = source?.tokens.find((token) => token.id === builtInExternalIntegrationTestTokenId)
+  if (!source || !tokenSummary) {
+    throw new Error('内置测试 Token 不存在')
+  }
+  const token = createExternalIntegrationSourceTokenValue()
+  const tokenPrefix = token.slice(0, 8)
+  const tokenSuffix = token.slice(-8)
+  const now = nowIso()
+  getBusinessDatabase().prepare(`
+    UPDATE external_integration_source_tokens
+    SET token_hash = ?,
+        token_secret_encrypted = ?,
+        token_prefix = ?,
+        token_suffix = ?,
+        status = 'active',
+        revoked_at = NULL,
+        updated_at = ?
+    WHERE id = ? AND source_ref_id = ?
+  `).run(
+    hashExternalIntegrationSourceTokenValue(token),
+    encryptJson({ token }),
+    tokenPrefix,
+    tokenSuffix,
+    now,
+    builtInExternalIntegrationTestTokenId,
+    builtInExternalIntegrationTestSourceId
+  )
+  getBusinessDatabase()
+    .prepare('UPDATE external_integration_sources SET updated_at = ? WHERE id = ?')
+    .run(now, builtInExternalIntegrationTestSourceId)
+  return {
+    id: builtInExternalIntegrationTestTokenId,
+    name: tokenSummary.name,
+    token,
+    tokenPrefix,
+    tokenSuffix,
+    scopes: [...source.scopes],
+    expiresAt: undefined
+  }
+}
+
 function syncExternalIntegrationSourceTokenState(sourceRefId: string): void {
   const source = findSourceRow(sourceRefId)
   if (!source) {
@@ -551,11 +617,6 @@ export function validateExternalIntegrationSourceToken(input: {
     }
   }
 
-  const testTokenResult = validateExternalIntegrationTestToken(token, input.requiredScope)
-  if (testTokenResult) {
-    return testTokenResult
-  }
-
   const row = getBusinessDatabase().prepare(`
     SELECT
       sources.id AS source_row_id,
@@ -577,7 +638,7 @@ export function validateExternalIntegrationSourceToken(input: {
     JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
     WHERE tokens.token_hash = ?
     LIMIT 1
-  `).get(hashExternalIntegrationSourceToken(token)) as ExternalIntegrationSourceTokenRow | undefined
+  `).get(hashExternalIntegrationSourceTokenValue(token)) as ExternalIntegrationSourceTokenRow | undefined
 
   if (!row) {
     return {
@@ -654,36 +715,7 @@ function externalIntegrationAuthContextFromRow(
     scopes: grantedScopes,
     rateLimits: decodeRateLimits(row.source_rate_limits_json),
     authenticatedAt,
-    isTestToken: false
-  }
-}
-
-function validateExternalIntegrationTestToken(token: string, requiredScope?: string): ExternalIntegrationSourceAuthResult | undefined {
-  if (token !== externalIntegrationTestToken) {
-    return undefined
-  }
-  const scopes = externalIntegrationScopeOptions.map((item) => item.value)
-  if (requiredScope && !scopes.includes(requiredScope as (typeof scopes)[number])) {
-    return {
-      ok: false,
-      statusCode: 403,
-      code: 'external_source_scope_forbidden',
-      message: '测试 token 没有调用该接口的权限'
-    }
-  }
-  return {
-    ok: true,
-    context: {
-      sourceRefId: 'mock_external_source',
-      sourceName: '内置测试来源',
-      tokenId: 'mock_external_source_token',
-      tokenName: '内置测试 token',
-      tokenPrefix: externalIntegrationTestTokenPrefix,
-      scopes,
-      rateLimits: [{ windowSeconds: 60, maxRequests: 120 }],
-      authenticatedAt: nowIso(),
-      isTestToken: true
-    }
+    isTestToken: isBuiltInExternalIntegrationTestSourceId(row.source_row_id) || isBuiltInExternalIntegrationTestTokenId(row.token_id)
   }
 }
 
@@ -756,7 +788,8 @@ function mapSourceSummary(row: ExternalIntegrationSourceListRow, tokens: Externa
     updatedAt: row.updated_at,
     tokenCount: Number(row.token_count ?? tokens.length),
     activeTokenCount: Number(row.active_token_count ?? tokens.filter((token) => token.status === 'active').length),
-    tokens
+    tokens,
+    isBuiltIn: isBuiltInExternalIntegrationTestSourceId(row.id)
   }
 }
 
@@ -772,7 +805,16 @@ function mapTokenSummary(row: ExternalIntegrationSourceTokenListRow): ExternalIn
     lastUsedAt: row.last_used_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    revokedAt: row.revoked_at ?? undefined
+    revokedAt: row.revoked_at ?? undefined,
+    isBuiltIn: isBuiltInExternalIntegrationTestTokenId(row.id)
+  }
+}
+
+function assertBuiltInSourceUpdateInput(input: ExternalIntegrationSourceUpdateInput): void {
+  const keys = Object.keys(input)
+  const disallowed = keys.filter((key) => key !== 'status')
+  if (disallowed.length) {
+    throw new Error('内置测试 Token 只支持启用或停用，不支持编辑名称、授权范围、限频、到期时间或备注')
   }
 }
 
@@ -808,14 +850,6 @@ function ensureSourceNameAvailable(name: string, currentId?: string): void {
   if (existing && existing.id !== currentId) {
     throw new Error('来源系统名称已存在')
   }
-}
-
-function hashExternalIntegrationSourceToken(token: string): string {
-  return hashSecret(`external-integration-source-token:${token}`)
-}
-
-function createExternalIntegrationSourceTokenValue(): string {
-  return `${generatedTokenPrefix}${randomBytes(32).toString('base64url')}`
 }
 
 function normalizeTokenValue(value: unknown): string {

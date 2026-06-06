@@ -23,6 +23,7 @@ export interface ExternalIntegrationSourceTokenSummary {
   createdAt: string
   updatedAt: string
   revokedAt?: string
+  isBuiltIn: boolean
 }
 
 export interface ExternalIntegrationSourceSummary {
@@ -39,6 +40,7 @@ export interface ExternalIntegrationSourceSummary {
   tokenCount: number
   activeTokenCount: number
   tokens: ExternalIntegrationSourceTokenSummary[]
+  isBuiltIn: boolean
 }
 
 export interface ExternalIntegrationSourceListResult {
@@ -126,7 +128,5 @@ export interface ExternalPublicApiDocItem {
 export interface ExternalPublicApiCatalog {
   basePath: string
   authType: 'Bearer'
-  testTokenName: string
-  testToken: string
   items: ExternalPublicApiDocItem[]
 }
