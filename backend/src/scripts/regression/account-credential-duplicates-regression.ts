@@ -116,7 +116,7 @@ try {
   assert.equal(preview.accounts[0]?.action, 'create', '导入预览中相同 Key 不同域名第一条应允许创建')
   assert.equal(preview.accounts[1]?.action, 'create', '导入预览中相同 Key 不同域名第二条应允许创建')
   assert.equal(preview.accounts[2]?.action, 'create', '导入预览中同域名同凭据也应允许创建')
-  assert.equal(preview.accounts[3]?.action, 'skip', '导入预览仍应按同一供应商下账户名称重复跳过')
+  assert.equal(preview.accounts[3]?.action, 'skip', '导入预览仍应按同一用户下账户名称重复跳过')
 
   const updatedDifferentHost = repositories.updateAccount(apiKeyDifferentHost.id, {
     credentials: { api_key: 'sk-fixed-upstream-key', base_url: 'https://site-a.example.com' }

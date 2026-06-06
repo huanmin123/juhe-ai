@@ -218,7 +218,7 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
   invalidateGroupAccountIdsCache(bindGroupId)
 }
 
-export function syncAccountAuthorizationInstanceNamesForSourceAccount(database: DatabaseSync, sourceAccountId: string, sourceName: string, providerCode: string, now = nowIso()): string[] {
+export function syncAccountAuthorizationInstanceNamesForSourceAccount(database: DatabaseSync, sourceAccountId: string, sourceName: string, now = nowIso()): string[] {
   const rows = database
     .prepare(`
       SELECT id, system_account_id, authorization_instance_authorization_id, name
@@ -241,7 +241,6 @@ export function syncAccountAuthorizationInstanceNamesForSourceAccount(database: 
       database,
       sourceName,
       row.system_account_id,
-      providerCode,
       row.authorization_instance_authorization_id,
       row.id
     )
@@ -267,7 +266,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
     .prepare('SELECT * FROM accounts WHERE authorization_instance_authorization_id = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, updated_at DESC, id ASC LIMIT 1')
     .get(authorization.id) as unknown as AccountRow | undefined
   if (deletedExisting?.id) {
-    const restoredName = uniqueAuthorizedAccountInstanceName(database, source.name, authorization.grantee_system_account_id, source.provider_code, authorization.id, deletedExisting.id)
+    const restoredName = uniqueAuthorizedAccountInstanceName(database, source.name, authorization.grantee_system_account_id, authorization.id, deletedExisting.id)
     database
       .prepare(`
         UPDATE accounts
@@ -296,7 +295,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
     return database.prepare('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1').get(deletedExisting.id) as unknown as AccountRow | undefined
   }
   const id = newId('acc')
-  const name = uniqueAuthorizedAccountInstanceName(database, source.name, authorization.grantee_system_account_id, source.provider_code, authorization.id)
+  const name = uniqueAuthorizedAccountInstanceName(database, source.name, authorization.grantee_system_account_id, authorization.id)
   database
     .prepare(`
       INSERT INTO accounts (
@@ -331,7 +330,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
   return database.prepare('SELECT * FROM accounts WHERE id = ? LIMIT 1').get(id) as unknown as AccountRow | undefined
 }
 
-function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName: string, systemAccountId: string, providerCode: string, authorizationId: string, exceptAccountId?: string): string {
+function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName: string, systemAccountId: string, authorizationId: string, exceptAccountId?: string): string {
   const baseName = sourceName.trim() || '授权账户'
   const shortId = authorizationId.split('_').pop()?.slice(0, 6) || authorizationId.slice(-6)
   const candidates = [
@@ -339,19 +338,19 @@ function uniqueAuthorizedAccountInstanceName(database: DatabaseSync, sourceName:
     `${baseName}-${shortId}`
   ]
   for (const candidate of candidates) {
-    if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate, exceptAccountId)) return candidate
+    if (isAccountNameAvailable(database, systemAccountId, candidate, exceptAccountId)) return candidate
   }
   for (let index = 2; index <= 1000; index += 1) {
     const candidate = `${baseName}-${shortId}-${index}`
-    if (isAccountNameAvailable(database, systemAccountId, providerCode, candidate, exceptAccountId)) return candidate
+    if (isAccountNameAvailable(database, systemAccountId, candidate, exceptAccountId)) return candidate
   }
   return `${baseName}-${shortId}-${Date.now()}`
 }
 
-function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string, providerCode: string, name: string, exceptAccountId?: string): boolean {
+function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string, name: string, exceptAccountId?: string): boolean {
   const row = database
-    .prepare('SELECT id FROM accounts WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?) AND deleted_at IS NULL LIMIT 1')
-    .get(systemAccountId, providerCode, name) as unknown as { id?: string } | undefined
+    .prepare('SELECT id FROM accounts WHERE system_account_id = ? AND lower(name) = lower(?) AND deleted_at IS NULL LIMIT 1')
+    .get(systemAccountId, name) as unknown as { id?: string } | undefined
   return !row?.id || row.id === exceptAccountId
 }
 

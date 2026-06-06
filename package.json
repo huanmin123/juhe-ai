@@ -36,6 +36,7 @@
     "test:account-response-credentials-redaction": "pnpm --filter juhe-ai-backend test:account-response-credentials-redaction",
     "test:account-list-visible": "pnpm --filter juhe-ai-backend test:account-list-visible",
     "test:account-options-lightweight": "pnpm --filter juhe-ai-backend test:account-options-lightweight",
+    "test:account-name-uniqueness": "pnpm --filter juhe-ai-backend test:account-name-uniqueness",
     "test:group-options-lightweight": "pnpm --filter juhe-ai-backend test:group-options-lightweight",
     "test:group-scheduling-policy": "pnpm --filter juhe-ai-backend test:group-scheduling-policy",
     "test:high-concurrency-queue": "pnpm --filter juhe-ai-backend test:high-concurrency-queue",

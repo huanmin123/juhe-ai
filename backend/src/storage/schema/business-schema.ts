@@ -400,7 +400,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_system_accounts_username_lookup ON system_accounts(username COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(display_name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_provider_name_unique_lower ON accounts(system_account_id, provider_code, lower(name)) WHERE deleted_at IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique_lower ON accounts(system_account_id, lower(name)) WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_name_lookup ON accounts(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_name_lookup ON accounts(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code COLLATE NOCASE, id);

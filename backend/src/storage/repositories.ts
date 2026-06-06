@@ -1125,20 +1125,21 @@ function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode
 
 function isDuplicateAccountNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_accounts_owner_provider_name_unique_lower')
+  return error.message.includes('idx_accounts_owner_name_unique_lower')
+    || error.message.includes('accounts.system_account_id, lower(name)')
 }
 
-function assertAccountNameAvailable(systemAccountId: string, providerCode: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, providerCode, name]
+function assertAccountNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {
+  const params: string[] = [systemAccountId, name]
   const excludeClause = excludeId ? ' AND id <> ?' : ''
   if (excludeId) {
     params.push(excludeId)
   }
   const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM accounts WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?) AND deleted_at IS NULL${excludeClause} LIMIT 1`)
+    .prepare(`SELECT id FROM accounts WHERE system_account_id = ? AND lower(name) = lower(?) AND deleted_at IS NULL${excludeClause} LIMIT 1`)
     .get(...params) as { id?: string } | undefined
   if (row?.id) {
-    throw new Error(`同一供应商下账户名称已存在：${name}`)
+    throw new Error(`同一用户下账户名称已存在：${name}`)
   }
 }
 
@@ -2163,7 +2164,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   })
 
   const database = getBusinessDatabase()
-  assertAccountNameAvailable(systemAccountId, providerCode, account.name)
+  assertAccountNameAvailable(systemAccountId, account.name)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
@@ -2230,7 +2231,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
     if (isDuplicateAccountNameError(error)) {
-      throw new Error(`同一供应商下账户名称已存在：${account.name}`)
+      throw new Error(`同一用户下账户名称已存在：${account.name}`)
     }
     throw error
   }
@@ -2399,7 +2400,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     usage: current.usage
   })
 
-  assertAccountNameAvailable(systemAccountId, next.providerCode, next.name, id)
+  assertAccountNameAvailable(systemAccountId, next.name, id)
   const database = getBusinessDatabase()
   const updatedAt = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2446,7 +2447,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         systemAccountId
     )
     if (Number(result.changes ?? 0) > 0 && next.name !== current.name) {
-      renamedAuthorizationInstanceIds = syncAccountAuthorizationInstanceNamesForSourceAccount(database, id, next.name, next.providerCode, updatedAt)
+      renamedAuthorizationInstanceIds = syncAccountAuthorizationInstanceNamesForSourceAccount(database, id, next.name, updatedAt)
     }
     if (Number(result.changes ?? 0) > 0 && hasSupportedModelsInput) {
       replaceAccountSupportedModels(id, next.providerCode, nextSupportedModels)
@@ -2482,7 +2483,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
     if (isDuplicateAccountNameError(error)) {
-      throw new Error(`同一供应商下账户名称已存在：${next.name}`)
+      throw new Error(`同一用户下账户名称已存在：${next.name}`)
     }
     throw error
   }

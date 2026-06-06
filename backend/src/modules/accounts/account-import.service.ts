@@ -673,7 +673,7 @@ function markDuplicateAccounts(accounts: AccountPlan[], skipDuplicates: boolean)
   const seenName = new Map<string, number>()
   for (const account of accounts) {
     if (account.item.action === 'failed') continue
-    const nameKey = `${account.source.providerCode}:${account.source.name.trim().toLowerCase()}`
+    const nameKey = account.source.name.trim().toLowerCase()
     const duplicatedByName = seenName.get(nameKey)
     if (duplicatedByName) {
       account.item.action = skipDuplicates ? 'skip' : 'failed'

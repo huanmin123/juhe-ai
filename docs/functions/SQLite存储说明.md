@@ -229,7 +229,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `system_accounts(display_name, id)`：系统账户管理列表只按用户名称精确 / 前缀匹配。
 - `system_accounts(username, id)`：保留给系统账户选项、授权候选用户 options 和 AI 性能账号选项解析 owner ID；系统账户管理列表不按用户名或 ID 搜索。
 - `accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL`：普通索引，用于排查相同凭据，不承担唯一约束。
-- `accounts(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下 AI 账户名称唯一。
+- `accounts(system_account_id, lower(name))`：保证同一用户下 AI 账户名称唯一。
 - `accounts(name, id)`、`accounts(system_account_id, name, id)`：AI 账户列表、账户选项和 AI 性能账号选项按账号名称精确 / 前缀定位。
 - `accounts(provider_code, id)`、`accounts(system_account_id, provider_code, id)`、`accounts(type, id)`、`accounts(system_account_id, type, id)`：保留给供应商、账户类型筛选或排序使用；AI 账户通用搜索不再匹配这些字段。
 - `accounts(account_expires_at, updated_at, id) WHERE account_expires_at IS NOT NULL`、`accounts(system_account_id, account_expires_at, updated_at, id) WHERE account_expires_at IS NOT NULL`：账户套餐到期清理只按到期时间读取固定批量 ID，再按主键更新，避免账户列表 / options / 详情请求触发全表扫描、临时排序或无界批量写。
