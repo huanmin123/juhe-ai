@@ -10,10 +10,11 @@ import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutat
 import { diffSafeFields, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const systemAccountsRouter = Router()
+const whitespacePattern = /\s/
 
 const createSchema = z.object({
-  username: z.string().trim().min(2),
-  displayName: z.string().trim().min(1),
+  username: z.string().min(2),
+  displayName: z.string().min(1),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4),
   role: z.enum(['admin', 'user']).optional(),
@@ -23,7 +24,7 @@ const createSchema = z.object({
 }).strict()
 
 const updateSchema = z.object({
-  displayName: z.string().trim().min(1).optional(),
+  displayName: z.string().min(1).optional(),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4).optional(),
   role: z.enum(['admin', 'user']).optional(),
@@ -73,6 +74,11 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
       res.status(400).json(badRequest('系统账户参数无效'))
       return
     }
+    const whitespaceError = systemAccountWhitespaceError(parsed.data)
+    if (whitespaceError) {
+      res.status(400).json(badRequest(whitespaceError))
+      return
+    }
     const passwordHash = await hashPasswordAsync(parsed.data.password)
     const account = runLoggedOperation(() => {
       const account = createSystemAccountWithPasswordHash(parsed.data, passwordHash)
@@ -115,6 +121,11 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
     const parsed = updateSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest('系统账户参数无效'))
+      return
+    }
+    const whitespaceError = systemAccountWhitespaceError(parsed.data)
+    if (whitespaceError) {
+      res.status(400).json(badRequest(whitespaceError))
       return
     }
     const passwordHash = parsed.data.password ? await hashPasswordAsync(parsed.data.password) : undefined
@@ -163,3 +174,14 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
     res.status(409).json({ message: error instanceof Error ? error.message : '更新系统账户失败' })
   }
 })
+
+function systemAccountWhitespaceError(input: { username?: string; displayName?: string; password?: string }): string | undefined {
+  if (input.username !== undefined && hasWhitespace(input.username)) return '用户名不能包含空格'
+  if (input.displayName !== undefined && hasWhitespace(input.displayName)) return '用户名称不能包含空格'
+  if (input.password !== undefined && hasWhitespace(input.password)) return '登录密码不能包含空格'
+  return undefined
+}
+
+function hasWhitespace(value: string): boolean {
+  return whitespacePattern.test(value)
+}

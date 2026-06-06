@@ -14,7 +14,7 @@
       <a-form-item v-if="requireOldPassword" label="当前密码">
         <a-input-password v-model:value="form.oldPassword" autocomplete="current-password" placeholder="请输入当前密码" />
       </a-form-item>
-      <a-form-item label="新密码" extra="至少 4 位，保存后会解除初始密码提醒。">
+      <a-form-item label="新密码" extra="至少 4 位，不能包含空格，保存后会解除初始密码提醒。">
         <a-input-password v-model:value="form.newPassword" autocomplete="new-password" placeholder="请输入新密码" />
       </a-form-item>
       <a-form-item label="确认密码">

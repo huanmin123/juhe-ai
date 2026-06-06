@@ -8,6 +8,7 @@ import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../s
 import type { GatewayQuotaSnapshot } from '../gateway/gateway-quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
+import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
 import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
 
 export interface BackgroundWorkerQueueRuntime {
@@ -66,6 +67,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   auditLogQueue: BackgroundWorkerQueueRuntime
   runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
   cooldownAccountRetestQueue?: BackgroundWorkerRetryQueueRuntime
+  manualAccountTestQueue?: BackgroundWorkerRetryQueueRuntime
 }
 
 type BackgroundWorkerMessage =
@@ -74,11 +76,14 @@ type BackgroundWorkerMessage =
   | { type: 'background_worker_audit_logs'; items: AuditLogInput[] }
   | { type: 'background_worker_operation_logs'; items: OperationLogInput[] }
   | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
+  | { type: 'background_worker_account_test_tasks'; taskIds: string[] }
+  | { type: 'background_worker_account_test_cancel'; taskId: string }
   | ({ type: 'background_worker_runtime_log_line'; line: string } & RuntimeLogLineIndexOptions)
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
   | { type: 'background_worker_process_event_loop_request'; requestId: string }
   | { type: 'background_worker_process_event_loop_response'; requestId: string; samples: ProcessEventLoopSample[] }
+  | { type: 'server_account_runtime_clear'; target: AccountRuntimeAvailabilityClearTarget }
   | { type: 'gateway_runtime_cache_invalidate' }
   | { type: 'gateway_quota_snapshot_update'; snapshot: GatewayQuotaSnapshot }
 
@@ -297,6 +302,36 @@ export function sendRecordMaintenanceJobsToWorker(items: RecordMaintenanceJob[])
   })
 }
 
+export function sendAccountTestTasksToWorker(taskIds: string[]): boolean {
+  if (runtimeConfig.processRole === 'worker') {
+    return false
+  }
+
+  const normalizedIds = taskIds.map(normalizedString).filter((id): id is string => Boolean(id))
+  if (normalizedIds.length === 0) {
+    return true
+  }
+  return sendBackgroundWorkerMessage({
+    type: 'background_worker_account_test_tasks',
+    taskIds: normalizedIds
+  })
+}
+
+export function sendAccountTestCancelToWorker(taskId: string): boolean {
+  if (runtimeConfig.processRole === 'worker') {
+    return false
+  }
+
+  const normalizedId = normalizedString(taskId)
+  if (!normalizedId) {
+    return false
+  }
+  return sendBackgroundWorkerMessage({
+    type: 'background_worker_account_test_cancel',
+    taskId: normalizedId
+  })
+}
+
 export function sendRuntimeLogLineToWorker(line: string, options: RuntimeLogLineIndexOptions = {}): boolean {
   return sendBackgroundWorkerMessage({
     type: 'background_worker_runtime_log_line',
@@ -316,6 +351,24 @@ export function sendGatewayQuotaSnapshotToServer(snapshot: GatewayQuotaSnapshot)
     process.send({
       type: 'gateway_quota_snapshot_update',
       snapshot
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) {
+        markParentIpcBroken(error)
+      }
+    })
+  } catch (error) {
+    markParentIpcBroken(error)
+  }
+}
+
+export function sendAccountRuntimeClearToServer(target: AccountRuntimeAvailabilityClearTarget): void {
+  if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
+    return
+  }
+  try {
+    process.send({
+      type: 'server_account_runtime_clear',
+      target
     } satisfies BackgroundWorkerMessage, (error) => {
       if (error) {
         markParentIpcBroken(error)
@@ -448,6 +501,11 @@ function handleWorkerMessage(message: unknown): void {
     case 'gateway_runtime_cache_invalidate':
       if (runtimeConfig.processRole !== 'worker') {
         void clearServerGatewayRuntimeCache()
+      }
+      break
+    case 'server_account_runtime_clear':
+      if (runtimeConfig.processRole === 'server' && isAccountRuntimeClearTarget(record.target)) {
+        void clearServerAccountRuntimeAvailability(record.target)
       }
       break
     case 'gateway_quota_snapshot_update':
@@ -619,6 +677,9 @@ function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueueKey {
       return 'operationLogs'
     case 'background_worker_record_maintenance':
       return 'recordMaintenance'
+    case 'background_worker_account_test_tasks':
+    case 'background_worker_account_test_cancel':
+      return 'other'
     case 'background_worker_runtime_log_line':
       return 'runtimeLogLines'
     case 'background_worker_status_request':
@@ -627,6 +688,8 @@ function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueueKey {
       return 'processEventLoopRequests'
     case 'background_worker_process_event_loop_response':
       return 'processEventLoopResponses'
+    case 'server_account_runtime_clear':
+      return 'other'
     case 'gateway_runtime_cache_invalidate':
       return 'gatewayRuntimeCacheInvalidations'
     case 'gateway_quota_snapshot_update':
@@ -737,9 +800,16 @@ function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
     case 'background_worker_record_maintenance':
       bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
       break
+    case 'background_worker_account_test_tasks':
+      bytes = message.taskIds.reduce((sum, taskId) => Math.min(workerMessageEstimateMaxBytes, sum + Buffer.byteLength(taskId, 'utf8') + 64), 128)
+      break
+    case 'background_worker_account_test_cancel':
+      bytes = Buffer.byteLength(message.taskId, 'utf8') + 128
+      break
     case 'background_worker_status_request':
     case 'background_worker_status_response':
     case 'background_worker_ready':
+    case 'server_account_runtime_clear':
     case 'gateway_runtime_cache_invalidate':
     case 'gateway_quota_snapshot_update':
       bytes = 512
@@ -846,9 +916,34 @@ async function clearServerGatewayRuntimeCache(): Promise<void> {
   dbServiceIpc.clearDbServiceGatewayRuntimeCache()
 }
 
+async function clearServerAccountRuntimeAvailability(target: AccountRuntimeAvailabilityClearTarget): Promise<void> {
+  const gatewaySideEffects = await import('../gateway/gateway-account-side-effects.service.js')
+  gatewaySideEffects.clearGatewayAccountRuntimeAvailability(target)
+}
+
 async function replaceServerGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): Promise<void> {
   const quotaSnapshotCache = await import('../gateway/gateway-quota-snapshot-cache.service.js')
   quotaSnapshotCache.replaceGatewayQuotaSnapshot(snapshot)
+}
+
+function isAccountRuntimeClearTarget(value: unknown): value is AccountRuntimeAvailabilityClearTarget {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  if (typeof record.accountId !== 'string' || !record.accountId.trim()) {
+    return false
+  }
+  if (record.authorizedBinding === undefined) {
+    return true
+  }
+  if (typeof record.authorizedBinding !== 'object' || record.authorizedBinding === null || Array.isArray(record.authorizedBinding)) {
+    return false
+  }
+  const binding = record.authorizedBinding as Record<string, unknown>
+  return optionalString(binding.systemAccountId) !== undefined
+    || optionalString(binding.groupId) !== undefined
+    || optionalString(binding.accountAuthorizationId) !== undefined
 }
 
 function isGatewayQuotaSnapshot(value: unknown): value is GatewayQuotaSnapshot {
@@ -859,6 +954,16 @@ function isGatewayQuotaSnapshot(value: unknown): value is GatewayQuotaSnapshot {
   return typeof record.generatedAt === 'string'
     && Array.isArray(record.costEntries)
     && Array.isArray(record.authorizationEntries)
+}
+
+function optionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  return text || undefined
+}
+
+function normalizedString(value: unknown): string | undefined {
+  return optionalString(value)
 }
 
 async function respondToProcessEventLoopRequest(requestId: string): Promise<void> {

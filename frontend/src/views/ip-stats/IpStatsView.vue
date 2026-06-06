@@ -21,13 +21,6 @@
           @change="applyFilters"
         />
         <a-select
-          v-model:value="usageWindow"
-          class="toolbar-select ip-stats-window responsive-list-inline-filter"
-          :disabled="loading"
-          :options="usageWindowOptions"
-          @change="applyFilters"
-        />
-        <a-select
           v-model:value="statusFilter"
           class="toolbar-select ip-stats-status responsive-list-inline-filter"
           :disabled="loading"
@@ -45,14 +38,6 @@
               :disabled-date="disabledDate"
               class="drawer-range-picker"
               format="YYYY-MM-DD"
-              @change="applyFilters"
-            />
-          </a-form-item>
-          <a-form-item label="用量统计窗口">
-            <a-select
-              v-model:value="usageWindow"
-              :disabled="loading"
-              :options="usageWindowOptions"
               @change="applyFilters"
             />
           </a-form-item>
@@ -277,7 +262,6 @@ import { formatCompactInteger, formatCost, formatDuration, formatInteger, format
 type TableSortOrder = 'ascend' | 'descend' | null
 type PolicyAction = 'blacklist' | 'unblock'
 type PolicyDurationMode = 'permanent' | 'minutes' | 'days'
-type UsageWindow = 'today' | 'last7d' | 'last31d'
 
 const columns = [
   { title: 'IP', key: 'ip', width: 180, fixed: 'left', align: 'left' },
@@ -305,12 +289,6 @@ const statusOptions = [
   { label: '已封禁', value: 'blacklisted' }
 ]
 
-const usageWindowOptions = [
-  { label: '今日用量', value: 'today' },
-  { label: '近 7 天用量', value: 'last7d' },
-  { label: '近 31 天用量', value: 'last31d' }
-]
-
 const policyDurationOptions = [
   { label: '永久', value: 'permanent' },
   { label: '分钟', value: 'minutes' },
@@ -320,7 +298,6 @@ const policyDurationOptions = [
 const loading = ref(false)
 const keyword = ref('')
 const statusFilter = ref<ClientIpStatus>('all')
-const usageWindow = ref<UsageWindow>('last7d')
 const lastUsedDateRange = ref<[Dayjs, Dayjs]>(defaultLastUsedDateRange())
 const rows = ref<ClientIpStatsRow[]>([])
 const paginationUpperBound = ref(0)
@@ -339,7 +316,6 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (keyword.value.trim()) count += 1
   if (statusFilter.value !== 'all') count += 1
-  if (usageWindow.value !== 'last7d') count += 1
   if (!isDefaultLastUsedDateRange(lastUsedDateRange.value)) count += 1
   return count
 })
@@ -351,7 +327,7 @@ const tablePagination = computed(() => ({
   showSizeChanger: true
 }))
 
-const emptyDescription = computed(() => rangeReady.value ? '当前最后使用日期范围和用量窗口下没有 IP 统计数据。' : '当前用量统计窗口尚未完成预聚合，请稍后刷新。')
+const emptyDescription = computed(() => rangeReady.value ? '当前最后使用日期范围下没有 IP 统计数据。' : '当前近 7 天用量窗口尚未完成预聚合，请稍后刷新。')
 
 const policyModalTitle = computed(() => {
   if (policyAction.value === 'blacklist') return '封禁 IP'
@@ -379,7 +355,7 @@ async function loadData(): Promise<void> {
 }
 
 function buildListParams(): ClientIpStatsListParams {
-  const usageRange = usageWindowDateRange(usageWindow.value)
+  const usageRange = defaultUsageDateRange()
   return {
     page: pagination.current,
     pageSize: pagination.pageSize,
@@ -402,7 +378,6 @@ function applyFilters(): void {
 function resetFilters(): void {
   keyword.value = ''
   statusFilter.value = 'all'
-  usageWindow.value = 'last7d'
   lastUsedDateRange.value = defaultLastUsedDateRange()
   pagination.current = 1
   sortState.value = { field: 'requestCount', order: 'descend' }
@@ -560,11 +535,8 @@ function defaultLastUsedDateRange(): [Dayjs, Dayjs] {
   return [dayjs().subtract(6, 'day'), dayjs()]
 }
 
-function usageWindowDateRange(window: UsageWindow): [Dayjs, Dayjs] {
-  const today = dayjs()
-  if (window === 'today') return [today, today]
-  if (window === 'last31d') return [today.subtract(30, 'day'), today]
-  return [today.subtract(6, 'day'), today]
+function defaultUsageDateRange(): [Dayjs, Dayjs] {
+  return defaultLastUsedDateRange()
 }
 
 function isDefaultLastUsedDateRange(range: [Dayjs, Dayjs]): boolean {
@@ -576,10 +548,6 @@ function isDefaultLastUsedDateRange(range: [Dayjs, Dayjs]): boolean {
 <style scoped>
 .ip-stats-range {
   width: 260px;
-}
-
-.ip-stats-window {
-  width: 150px;
 }
 
 .ip-stats-status {
@@ -644,7 +612,6 @@ function isDefaultLastUsedDateRange(range: [Dayjs, Dayjs]): boolean {
 
 @media (max-width: 768px) {
   .ip-stats-range,
-  .ip-stats-window,
   .ip-stats-status {
     width: 100%;
   }

@@ -98,6 +98,12 @@ export interface DbServiceServerRuntimeSnapshot {
         runningCount: number
         nextRunAt?: string
       }
+      manualAccountTestQueue?: {
+        name: string
+        pendingCount: number
+        runningCount: number
+        nextRunAt?: string
+      }
     }
   }
   dbService?: {
@@ -423,4 +429,12 @@ export type DbServiceChildMessage =
   | {
     type: 'background_worker_record_maintenance'
     items: RecordMaintenanceJob[]
+  }
+  | {
+    type: 'background_worker_account_test_tasks'
+    taskIds: string[]
+  }
+  | {
+    type: 'background_worker_account_test_cancel'
+    taskId: string
   }

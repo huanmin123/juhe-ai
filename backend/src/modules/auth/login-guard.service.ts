@@ -14,7 +14,7 @@ interface AttemptRecord {
 const windowMs = 10 * 60 * 1000
 const lockMs = 15 * 60 * 1000
 const ipFailureThreshold = 10
-const usernameFailureThreshold = 5
+const usernameFailureThreshold = 10
 const maxTrackedKeys = 2000
 const loginGuardCleanupIntervalMs = 30 * 1000
 const loginGuardCleanupBatchSize = 64

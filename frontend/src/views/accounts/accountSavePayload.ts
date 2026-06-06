@@ -35,7 +35,6 @@ export type AccountOAuthCreateCommonPayload = {
   groupId?: string
   concurrencyLimit: number
   priority: number
-  clientCompatibility: AccountFormModel['clientCompatibility']
   supportedModels: string[]
   proxyProfileId?: string
   accountExpiresAt: string | null
@@ -126,7 +125,6 @@ export function buildOAuthCreateCommonPayload(input: {
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
-    clientCompatibility: input.form.clientCompatibility,
     supportedModels: [...(input.form.supportedModels ?? [])],
     proxyProfileId: input.form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),

@@ -7,3 +7,15 @@ export function normalizeAccountClientCompatibility(value: unknown, fallback: Ac
   }
   throw new Error('客户端兼容模式无效')
 }
+
+export function normalizeOpenAIAccountClientCompatibility(
+  providerCode: unknown,
+  accountType: unknown,
+  value: unknown,
+  fallback: AccountClientCompatibility = 'openai_standard'
+): AccountClientCompatibility {
+  if (providerCode === 'openai' && accountType === 'oauth') {
+    return 'codex_responses'
+  }
+  return normalizeAccountClientCompatibility(value, fallback)
+}

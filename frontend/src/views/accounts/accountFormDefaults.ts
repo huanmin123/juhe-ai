@@ -25,7 +25,7 @@ export function defaultAccountForm(
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
-    clientCompatibility: 'openai_standard',
+    clientCompatibility: providerCode === 'openai' && type === 'oauth' ? 'codex_responses' : 'openai_standard',
     supportedModels: [],
     proxyProfileId: undefined,
     availabilitySchedule: createAccountAvailabilityScheduleForm(),

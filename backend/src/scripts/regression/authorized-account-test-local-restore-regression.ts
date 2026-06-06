@@ -8,6 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-test-local-restore-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorized-account-test-local-restore.sqlite3')
@@ -45,10 +46,6 @@ app.use(express.json({ limit: '1mb' }))
 app.use('/__aisys__/api', requireAuth)
 app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
 app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
-
-interface ApiEnvelope<T> {
-  data: T
-}
 
 interface AccountView {
   id: string
@@ -180,12 +177,12 @@ try {
     '授权实例失败态仍应允许测试链路按单账号诊断'
   )
 
-  const result = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
-    appBaseUrl,
-    `/__aisys__/api/my-accounts/${granteeAccount.id}/test`,
-    sessionCookie(grantee.id),
-    { model: 'gpt-5.5' }
-  ))
+  const result = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
+    baseUrl: appBaseUrl,
+    path: `/__aisys__/api/my-accounts/${granteeAccount.id}/test`,
+    cookie: sessionCookie(grantee.id),
+    body: { model: 'gpt-5.5' }
+  }))
   assert.equal(result.success, true, `授权实例临时不可调用时手动测试应允许探活：${result.message}`)
   assert.equal(result.statusCode, 200, '授权实例探活成功应返回上游状态码')
   assert.equal(result.accountStatusChanged, true, '授权实例状态恢复应在测试结果中标记状态变化')
@@ -215,12 +212,12 @@ try {
   const failingGranteeAccount = authorizedInstanceForSource(failingOwnerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(failingGranteeAccount.id, granteeGroup.id, granteeAccess), '失败授权实例账户绑定到被授权用户分组失败')
 
-  const failureResult = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
-    appBaseUrl,
-    `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
-    sessionCookie(admin.id),
-    { model: 'gpt-5.5' }
-  ))
+  const failureResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
+    baseUrl: appBaseUrl,
+    path: `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
+    cookie: sessionCookie(admin.id),
+    body: { model: 'gpt-5.5' }
+  }))
   assert.equal(failureResult.success, false, '授权账户测试收到上游失败时测试结果不应成功')
   assert.equal(failureResult.statusCode, 400, '授权账户测试应保留上游失败状态码用于诊断')
   assert.equal(failureResult.accountStatusChanged, true, '授权账户测试失败应返回实例状态已变更')
@@ -245,12 +242,12 @@ try {
     'account-test-url-password'
   ], '账户测试失败写入最近错误前应清理上游敏感串')
 
-  const secondFailureResult = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
-    appBaseUrl,
-    `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
-    sessionCookie(admin.id),
-    { model: 'gpt-5.5' }
-  ))
+  const secondFailureResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
+    baseUrl: appBaseUrl,
+    path: `/__aisys__/api/accounts/${failingGranteeAccount.id}/test?systemAccountId=${encodeURIComponent(grantee.id)}`,
+    cookie: sessionCookie(admin.id),
+    body: { model: 'gpt-5.5' }
+  }))
   assert.equal(secondFailureResult.success, false, '再次测试失败时结果仍不应成功')
   assert.equal(secondFailureResult.accountStatusChanged, true, '再次测试失败应覆盖上一条结果并返回状态变化')
   const secondFailedView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
@@ -303,12 +300,12 @@ try {
   assert.equal(errorView.status, 'error', '被授权用户视角应看到授权实例异常')
   assert.equal(repositories.accountTestUnavailableMessage(errorView), undefined, '授权实例异常时仍应允许手动测试诊断')
 
-  const errorRecoveryResult = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
-    appBaseUrl,
-    `/__aisys__/api/my-accounts/${errorGranteeAccount.id}/test`,
-    sessionCookie(grantee.id),
-    { model: 'gpt-5.5' }
-  ))
+  const errorRecoveryResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
+    baseUrl: appBaseUrl,
+    path: `/__aisys__/api/my-accounts/${errorGranteeAccount.id}/test`,
+    cookie: sessionCookie(grantee.id),
+    body: { model: 'gpt-5.5' }
+  }))
   assert.equal(errorRecoveryResult.success, true, `授权实例异常时手动测试应允许进入探活：${errorRecoveryResult.message}`)
   assert.equal(errorRecoveryResult.statusCode, 200, '授权实例异常探活成功应返回上游状态码')
   assert.equal(errorRecoveryResult.accountStatusChanged, true, '授权实例异常探活成功应返回状态变化')
@@ -389,23 +386,10 @@ function sessionCookie(systemAccountId: string): string {
   return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
 }
 
-async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, body: Record<string, unknown>): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: 'POST',
-    headers: { cookie, 'content-type': 'application/json' },
-    body: JSON.stringify(body)
-  })
-  const text = await response.text()
-  if (!response.ok) {
-    throw new Error(`${path} HTTP ${response.status}: ${text}`)
-  }
-  return (JSON.parse(text) as ApiEnvelope<T>).data
-}
-
-async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
+async function withWorkerRole<T>(action: () => Promise<T>): Promise<T> {
   const previousProcessRole = runtimeConfig.processRole
   try {
-    runtimeConfig.processRole = 'db-service'
+    runtimeConfig.processRole = 'worker'
     return await action()
   } finally {
     runtimeConfig.processRole = previousProcessRole

@@ -9,6 +9,7 @@ import express from 'express'
 import { runtimeConfig } from '../../config/runtime.js'
 import { ok } from '../../shared/http.js'
 import { logger } from '../../shared/logger.js'
+import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-disabled-account-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'disabled-account-guard.sqlite3')
@@ -116,14 +117,12 @@ async function main(): Promise<void> {
     assert(disabled?.status === 'disabled' && disabled.schedulable === false, '测试账户停用失败')
     assertAccountDispatchFlags(account.id, true, false, '停用账户应保留用户设置的超级优先')
 
-    const apiTestResponse = await fetch(`${baseUrl}/__aisys__/api/accounts/${account.id}/test`, {
-      method: 'POST',
-      headers: { cookie: adminCookie, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-4o-mini', prompt: 'hi' })
+    const apiTestResult = await submitAccountTestAndWait<AccountTestResult>({
+      baseUrl,
+      path: `/__aisys__/api/accounts/${account.id}/test`,
+      cookie: adminCookie,
+      body: { model: 'gpt-4o-mini', prompt: 'hi' }
     })
-    const apiTestText = await apiTestResponse.text()
-    assert(apiTestResponse.ok, `停用账户测试接口应允许诊断，实际 HTTP ${apiTestResponse.status}: ${apiTestText}`)
-    const apiTestResult = (JSON.parse(apiTestText) as ApiEnvelope<AccountTestResult>).data
     assert(apiTestResult.success === false, '停用账户测试接口应返回测试失败结果')
     assert(!apiTestResult.message.includes('账户已停用'), `停用账户测试不应被停用状态短路：${apiTestResult.message}`)
     assertAccountStatus(account.id, 'disabled', false, '测试接口不应改变停用状态')

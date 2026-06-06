@@ -22,17 +22,19 @@ logger.level = 'silent'
 const seenResponsesPayloads: Record<string, unknown>[] = []
 
 const [
-  { testOpenAIAccount },
+  { preferredSystemAccountTestModel, testOpenAIAccount },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue },
   databaseModule,
-  repositories
+  repositories,
+  { createAccountTestTask }
 ] = await Promise.all([
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/gateway-account-side-effects.service.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/account-test-tasks.repository.js')
 ])
 
 let mockOpenAIServer: http.Server | undefined
@@ -49,17 +51,51 @@ try {
 
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
+  const access = { systemAccountId: admin.id, role: 'admin' as const }
   const group = repositories.createGroup({
     name: '账户测试 Responses 当前契约分组',
     providerCode: 'openai'
-  }, { systemAccountId: admin.id, role: 'admin' })
+  }, access)
+  const oauthAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '测试 OAuth 固定 Codex 账户',
+    type: 'oauth',
+    groupId: group.id,
+    clientCompatibility: 'openai_standard',
+    credentials: {
+      base_url: 'https://chatgpt.com/backend-api/codex',
+      access_token: 'oauth-access-token',
+      refresh_token: 'oauth-refresh-token',
+      expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    }
+  }, access)
+  assert.equal(oauthAccount.clientCompatibility, 'codex_responses', 'OpenAI OAuth 账户创建时应固定 Codex Responses 兼容')
+  const updatedOAuthAccount = repositories.updateAccount(oauthAccount.id, {
+    clientCompatibility: 'openai_standard'
+  }, access)
+  assert.equal(updatedOAuthAccount?.clientCompatibility, 'codex_responses', 'OpenAI OAuth 账户更新时不应被切回 OpenAI 标准兼容')
+  const oauthTestTask = createAccountTestTask({
+    account: updatedOAuthAccount!,
+    access,
+    diagnostics: 'full',
+    model: 'gpt-5.5',
+    clientCompatibility: 'openai_standard'
+  })
+  assert.equal(oauthTestTask.clientCompatibility, 'codex_responses', 'OpenAI OAuth 测试任务入队时应固定 Codex Responses 兼容')
+
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '测试 Responses 当前契约账户',
     type: 'api_key',
     groupId: group.id,
     credentials: { api_key: 'sk-account-test-responses-contract', base_url: mockBaseUrl }
-  }, { systemAccountId: admin.id, role: 'admin' })
+  }, access)
+
+  assert.equal(preferredSystemAccountTestModel(account), 'gpt-5.5', '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
+  repositories.recordAccountSuccessfulTestModel(account.id, 'gpt-5.4', access)
+  const accountWithSuccessfulModel = repositories.findAccountSummary(account.id, access)
+  assert.equal(accountWithSuccessfulModel?.lastSuccessfulTestModel, 'gpt-5.4', '手动测试成功模型应写入账户')
+  assert.equal(preferredSystemAccountTestModel(accountWithSuccessfulModel!), 'gpt-5.4', '系统复测应优先使用手动测试通过模型')
 
   const tested = await testOpenAIAccount(account, { model: 'gpt-5.5' })
   await flushGatewayAccountSideEffects()
@@ -73,6 +109,27 @@ try {
     'API Key 账户 Responses 测试不应发送 max_output_tokens'
   )
   assert.equal(seenResponsesPayloads[0]?.model, 'gpt-5.5', '测试请求应保留显式模型')
+
+  const defaultModelAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '测试 Responses 默认模型账户',
+    type: 'api_key',
+    groupId: group.id,
+    credentials: { api_key: 'sk-account-test-default-model', base_url: mockBaseUrl }
+  }, access)
+  const defaultModelTested = await testOpenAIAccount(defaultModelAccount, {
+    requestShape: {
+      endpoint: '/v1/responses',
+      model: 'gpt-5.4',
+      stream: true,
+      createdAt: new Date().toISOString()
+    }
+  })
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(defaultModelTested.success, true, `默认模型账户测试应成功：${defaultModelTested.message}`)
+  assert.equal(defaultModelTested.model, 'gpt-5.5', '未显式指定测试模型时，应使用供应商默认测试模型而不是最近真实请求模型')
+  assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.5', '未显式指定测试模型时，上游请求应使用供应商默认测试模型')
 
   console.log('账户测试 Responses 当前契约回归通过：API Key 测试不发送 max_output_tokens')
 } finally {

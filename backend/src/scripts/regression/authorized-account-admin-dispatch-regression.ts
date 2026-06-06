@@ -8,6 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-admin-dispatch-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorized-account-admin-dispatch.sqlite3')
@@ -247,12 +248,12 @@ try {
   assert.equal(tested.success, true, `管理员应能代被授权用户测试授权账户：${tested.message}`)
   assert.equal(tested.statusCode, 200, '授权账户测试应通过被授权用户自己的分组绑定进入网关链路')
 
-  const granteeLimitedTest = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
+  const granteeLimitedTest = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
     baseUrl,
-    `/__aisys__/api/my-accounts/${seed.ownerAccountId}/test`,
-    seed.granteeCookie,
-    { model: 'gpt-5.5', prompt: 'hi' }
-  ))
+    path: `/__aisys__/api/my-accounts/${seed.ownerAccountId}/test`,
+    cookie: seed.granteeCookie,
+    body: { model: 'gpt-5.5', prompt: 'hi' }
+  }))
   assert.equal(granteeLimitedTest.success, true, `被授权用户应能测试已绑定且可用的授权账户：${granteeLimitedTest.message}`)
   assert.equal(granteeLimitedTest.statusCode, 200, '被授权用户测试应保留状态码')
   assert.equal(granteeLimitedTest.outputText, 'OK', '被授权用户测试成功时可看到模型输出')
@@ -304,12 +305,12 @@ try {
     { model: 'gpt-5.5', prompt: 'hi' }
   )), /授权方原账户已停用/, '归属人停用主账户后被授权用户测试应被前置拦截')
 
-  const granteeLimitedErrorTest = await withDbServiceRole(() => postEnvelope<AccountTestResult>(
+  const granteeLimitedErrorTest = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
     baseUrl,
-    `/__aisys__/api/my-accounts/${seed.ownerErrorAccountId}/test`,
-    seed.granteeCookie,
-    { model: 'gpt-5.5-diagnostic-error', prompt: 'hi' }
-  ))
+    path: `/__aisys__/api/my-accounts/${seed.ownerErrorAccountId}/test`,
+    cookie: seed.granteeCookie,
+    body: { model: 'gpt-5.5-diagnostic-error', prompt: 'hi' }
+  }))
   assert.equal(granteeLimitedErrorTest.success, false, '被授权用户测试上游错误时应返回测试失败')
   assert.equal(typeof granteeLimitedErrorTest.statusCode, 'number', '被授权用户测试上游错误时可保留 HTTP 状态码')
   assert.equal(granteeLimitedErrorTest.message, `账户测试未通过，上游返回 HTTP ${granteeLimitedErrorTest.statusCode}；请联系授权人或管理员查看完整诊断`)
@@ -541,6 +542,16 @@ async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
   const previousProcessRole = runtimeConfig.processRole
   try {
     runtimeConfig.processRole = 'db-service'
+    return await action()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
+}
+
+async function withWorkerRole<T>(action: () => Promise<T>): Promise<T> {
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'worker'
     return await action()
   } finally {
     runtimeConfig.processRole = previousProcessRole

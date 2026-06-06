@@ -55,6 +55,7 @@ const loading = ref(false)
 const captchaLoading = ref(false)
 const captcha = ref<CaptchaChallengeSummary>()
 const form = reactive({ username: '', password: '', captchaCode: '' })
+const whitespacePattern = /\s/
 
 const loginTitle = computed(() => `${appBrand.appName} 管理平台`)
 const loginSubtitle = '统一接入、统一调度、统一可观测。'
@@ -111,6 +112,10 @@ async function handleLogin() {
     message.warning('请输入账号、密码和验证码')
     return
   }
+  if (hasWhitespace(form.username) || hasWhitespace(form.password)) {
+    message.warning('用户名和密码不能包含空格')
+    return
+  }
   if (!captcha.value?.captchaId) {
     message.warning('验证码未加载，请刷新验证码')
     return
@@ -162,6 +167,10 @@ function resolveLoginRedirect(user: Awaited<ReturnType<typeof login>>): string {
     }
   }
   return getPreferredEntryPath(user)
+}
+
+function hasWhitespace(value: string): boolean {
+  return whitespacePattern.test(value)
 }
 
 onMounted(async () => {

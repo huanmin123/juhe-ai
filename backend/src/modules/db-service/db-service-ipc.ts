@@ -543,6 +543,16 @@ function handleDbServiceMessage(message: unknown): void {
         void forwardRecordMaintenanceJobsToWorker(record.items)
       }
       break
+    case 'background_worker_account_test_tasks':
+      if (runtimeConfig.processRole === 'server' && Array.isArray(record.taskIds)) {
+        void forwardAccountTestTasksToWorker(record.taskIds)
+      }
+      break
+    case 'background_worker_account_test_cancel':
+      if (runtimeConfig.processRole === 'server' && typeof record.taskId === 'string') {
+        void forwardAccountTestCancelToWorker(record.taskId)
+      }
+      break
     default:
       break
   }
@@ -833,6 +843,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue },
           cooldownAccountRetestQueue: workerSnapshot.cooldownAccountRetestQueue
             ? { ...workerSnapshot.cooldownAccountRetestQueue }
+            : undefined,
+          manualAccountTestQueue: workerSnapshot.manualAccountTestQueue
+            ? { ...workerSnapshot.manualAccountTestQueue }
             : undefined
         }
         : undefined
@@ -1049,4 +1062,32 @@ async function forwardRecordMaintenanceJobsToWorker(items: unknown[]): Promise<v
       itemCount: jobs.length
     }, 'DB service 转发数据维护任务到后台 worker 失败')
   }
+}
+
+async function forwardAccountTestTasksToWorker(taskIds: unknown[]): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  const normalizedIds = taskIds.map(normalizedString).filter((taskId): taskId is string => Boolean(taskId))
+  if (normalizedIds.length > 0 && !backgroundIpc.sendAccountTestTasksToWorker(normalizedIds)) {
+    logger.warn({
+      event: 'db_service_account_test_tasks_forward_failed',
+      itemCount: normalizedIds.length
+    }, 'DB service 转发账号测试任务到后台 worker 失败')
+  }
+}
+
+async function forwardAccountTestCancelToWorker(taskId: string): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  const normalizedId = normalizedString(taskId)
+  if (normalizedId && !backgroundIpc.sendAccountTestCancelToWorker(normalizedId)) {
+    logger.warn({
+      event: 'db_service_account_test_cancel_forward_failed',
+      taskId: normalizedId
+    }, 'DB service 转发账号测试取消到后台 worker 失败')
+  }
+}
+
+function normalizedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  return text || undefined
 }

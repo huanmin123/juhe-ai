@@ -235,7 +235,7 @@ function seedData(): SeedState {
   })
   const wildcardLiteralUser = repositories.createSystemAccount({
     username: 'percent%literal_user',
-    displayName: 'percent%literal 用户',
+    displayName: 'percent%literal用户',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -243,7 +243,7 @@ function seedData(): SeedState {
   })
   const wildcardNeighborUser = repositories.createSystemAccount({
     username: 'percentXliteral_user',
-    displayName: 'percentXliteral 用户',
+    displayName: 'percentXliteral用户',
     password: 'password',
     role: 'user',
     status: 'active',

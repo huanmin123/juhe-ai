@@ -9,6 +9,7 @@ import express, { type NextFunction, type Request, type Response as ExpressRespo
 import { runtimeConfig } from '../../config/runtime.js'
 import { ok } from '../../shared/http.js'
 import { logger } from '../../shared/logger.js'
+import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-proxy-negative-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'proxy-negative.sqlite3')
@@ -179,10 +180,15 @@ async function main(): Promise<void> {
     await patchEnvelope<ProxyProfileSummary>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, { enabled: false })
     gatewayCache.clearGatewayRuntimeCache()
 
-    const testResult = await postEnvelope<AccountTestResult>(baseUrl, `/__aisys__/api/accounts/${account.id}/test`, adminCookie, {
-      model: 'gpt-4o-mini',
-      prompt: 'hi'
-    })
+    const testResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
+      baseUrl,
+      path: `/__aisys__/api/accounts/${account.id}/test`,
+      cookie: adminCookie,
+      body: {
+        model: 'gpt-4o-mini',
+        prompt: 'hi'
+      }
+    }))
     assert(testResult.success === false, '账户测试在代理停用后不应成功')
     assert(testResult.proxyUrl === '[configured]', '账户测试失败结果应保留代理已配置标记')
     assert(testResult.message.includes('代理不存在或已停用'), `账户测试错误信息异常：${testResult.message}`)
@@ -331,6 +337,16 @@ async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, bo
     body: JSON.stringify(body)
   })
   return unwrapEnvelope<T>(response, path)
+}
+
+async function withWorkerRole<T>(action: () => Promise<T>): Promise<T> {
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'worker'
+    return await action()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
 }
 
 async function patchEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {

@@ -160,36 +160,33 @@ function normalizeOpenAIOAuthCodexInput(body: Record<string, unknown>): void {
 }
 
 function normalizeOpenAIOAuthCodexTools(body: Record<string, unknown>): void {
-  normalizeCodexBuiltinToolAtPath(body, ['tool_choice', 'type'])
+  normalizeOpenAICodexBuiltinTools(body)
+}
+
+export function normalizeOpenAICodexBuiltinTools(body: Record<string, unknown>): void {
+  normalizeOpenAICodexBuiltinToolAtPath(body, ['tool_choice', 'type'])
+
   const tools = Array.isArray(body.tools) ? body.tools : undefined
   if (tools) {
     for (const tool of tools) {
       if (isPlainObject(tool)) {
-        normalizeCodexBuiltinToolAtPath(tool, ['type'])
+        normalizeOpenAICodexBuiltinToolAtPath(tool, ['type'])
       }
     }
   }
+
   const toolChoice = isPlainObject(body.tool_choice) ? body.tool_choice : undefined
   const toolChoiceTools = Array.isArray(toolChoice?.tools) ? toolChoice.tools : undefined
   if (toolChoiceTools) {
     for (const tool of toolChoiceTools) {
       if (isPlainObject(tool)) {
-        normalizeCodexBuiltinToolAtPath(tool, ['type'])
+        normalizeOpenAICodexBuiltinToolAtPath(tool, ['type'])
       }
     }
   }
 }
 
-function normalizeOpenAIOAuthCodexServiceTier(body: Record<string, unknown>): void {
-  if (!Object.prototype.hasOwnProperty.call(body, 'service_tier')) {
-    return
-  }
-  if (body.service_tier !== 'priority') {
-    delete body.service_tier
-  }
-}
-
-function normalizeCodexBuiltinToolAtPath(source: Record<string, unknown>, path: string[]): void {
+function normalizeOpenAICodexBuiltinToolAtPath(source: Record<string, unknown>, path: string[]): void {
   const owner = objectAtPath(source, path.slice(0, -1))
   if (!owner) return
   const key = path[path.length - 1]
@@ -208,6 +205,15 @@ function objectAtPath(source: Record<string, unknown>, path: string[]): Record<s
     current = current[key]
   }
   return isPlainObject(current) ? current : undefined
+}
+
+function normalizeOpenAIOAuthCodexServiceTier(body: Record<string, unknown>): void {
+  if (!Object.prototype.hasOwnProperty.call(body, 'service_tier')) {
+    return
+  }
+  if (body.service_tier !== 'priority') {
+    delete body.service_tier
+  }
 }
 
 function resolveOpenAIOAuthCodexSession(

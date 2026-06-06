@@ -40,7 +40,7 @@
             <a-input v-model:value="traceIdFilter" allow-clear placeholder="输入 traceId" @press-enter="applyFilters" />
           </a-form-item>
           <template v-if="isManagementView">
-            <a-form-item label="操作人">
+            <a-form-item label="用户操作人">
               <SystemPrincipalSelect
                 v-model:value="actorSystemAccountFilter"
                 v-model:selected-principal="actorSystemAccountSelection"
@@ -49,8 +49,8 @@
                 :filter-option="false"
                 :loading="actorSystemAccountOptionsLoading"
                 include-all
-                all-label="全部用户"
-                placeholder="筛选操作人"
+                all-label="全部操作人"
+                placeholder="筛选用户操作人"
                 @change="handleActorSystemAccountChange"
                 @dropdown-visible-change="handleActorSystemAccountOptionsDropdown"
                 @search="handleActorSystemAccountOptionsSearch"
@@ -129,7 +129,7 @@
             <a-input v-model:value="traceIdFilter" allow-clear placeholder="输入 traceId" />
           </a-form-item>
           <template v-if="isManagementView">
-            <a-form-item label="操作人">
+            <a-form-item label="用户操作人">
               <SystemPrincipalSelect
                 v-model:value="actorSystemAccountFilter"
                 v-model:selected-principal="actorSystemAccountSelection"
@@ -138,8 +138,8 @@
                 :filter-option="false"
                 :loading="actorSystemAccountOptionsLoading"
                 include-all
-                all-label="全部用户"
-                placeholder="筛选操作人"
+                all-label="全部操作人"
+                placeholder="筛选用户操作人"
                 @change="handleActorSystemAccountChange"
                 @dropdown-visible-change="handleActorSystemAccountOptionsDropdown"
                 @search="handleActorSystemAccountOptionsSearch"

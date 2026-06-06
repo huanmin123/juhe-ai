@@ -38,6 +38,12 @@ import {
   installUsageRecordQueueShutdownHooks
 } from './modules/gateway/usage-record-queue.service.js'
 import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cooldown-account-retest.service.js'
+import {
+  cancelAccountTestTaskLocal,
+  enqueueAccountTestTaskLocal,
+  getManualAccountTestQueueSnapshot,
+  startAccountTestTaskQueue
+} from './modules/accounts/account-test-task-queue.service.js'
 import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
@@ -48,6 +54,8 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_audit_logs'; items: unknown[] }
   | { type: 'background_worker_operation_logs'; items: unknown[] }
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
+  | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
+  | { type: 'background_worker_account_test_cancel'; taskId: unknown }
   | { type: 'background_worker_runtime_log_line'; line: unknown; sourceKey?: unknown; logFile?: unknown; logOffset?: unknown; lineNumber?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
 
@@ -66,6 +74,7 @@ installWorkerSignalShutdownHooks()
 setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
 startRuntimeLogFileImport()
 startBackgroundJobs()
+startAccountTestTaskQueue()
 
 let workerSignalShutdownInProgress = false
 
@@ -86,6 +95,18 @@ process.on('message', (message: unknown) => {
       break
     case 'background_worker_record_maintenance':
       enqueueRecordMaintenanceJobsLocal(message.items.filter(isRecordMaintenanceJob))
+      break
+    case 'background_worker_account_test_tasks':
+      for (const taskId of message.taskIds) {
+        if (typeof taskId === 'string') {
+          enqueueAccountTestTaskLocal(taskId)
+        }
+      }
+      break
+    case 'background_worker_account_test_cancel':
+      if (typeof message.taskId === 'string') {
+        cancelAccountTestTaskLocal(message.taskId)
+      }
       break
     case 'background_worker_runtime_log_line':
       if (typeof message.line === 'string') {
@@ -149,7 +170,8 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       errorGroupRetentionDays: auditRuntime.errorGroupRetentionDays
     }),
     runtimeLogIndexQueue: runtimeLogQueueRuntime(runtimeLogRuntime),
-    cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot()
+    cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot(),
+    manualAccountTestQueue: getManualAccountTestQueueSnapshot()
   }
 }
 

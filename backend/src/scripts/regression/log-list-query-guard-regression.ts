@@ -105,6 +105,18 @@ try {
       actorDisplayName: '管理员丁',
       createdAt: '2026-02-01T00:40:00.000Z',
       viewers: [{ systemAccountId: 'sys_user', visibilityReason: 'resource_owner' }]
+    }),
+    operationLog({
+      id: 'op_log_guard_actor_operator',
+      traceId: 'trace-op-list-guard-actor',
+      summary: '用户操作人筛选资源变更',
+      resourceId: 'resource_actor_operator',
+      resourceName: '操作人筛选资源',
+      actorSystemAccountId: 'sys_operator',
+      actorUsername: 'operator',
+      actorDisplayName: '操作员甲',
+      createdAt: '2026-02-01T00:50:00.000Z',
+      viewers: [{ systemAccountId: 'sys_user', visibilityReason: 'resource_owner' }]
     })
   ])
 
@@ -158,6 +170,9 @@ try {
     const resourceIdFilter = repositories.listOperationLogs({ resourceId: 'resource_resourceonlyneedle', pageSize: 10 })
     assert.deepEqual(resourceIdFilter.items.map((item) => item.id), ['op_log_guard_structured_filter_only'], '资源 ID 应通过独立结构化筛选命中')
 
+    const actorSystemAccountFilter = repositories.listOperationLogs({ actorSystemAccountId: 'sys_operator', pageSize: 10 })
+    assert.deepEqual(actorSystemAccountFilter.items.map((item) => item.id), ['op_log_guard_actor_operator'], '操作日志管理应支持按用户操作人筛选')
+
     const shortKeywordWithoutWindow = repositories.listOperationLogs({ summaryKeyword: '造数', pageSize: 10 })
     assert.deepEqual(
       shortKeywordWithoutWindow.items.map((item) => item.id),
@@ -179,6 +194,8 @@ try {
   const keywordSearchCalls = capturedCalls.filter((call) => /\bFROM\s+operation_log_summary_search_terms\s+search\b/i.test(call.sql))
   assert(keywordSearchCalls.some((call) => call.params.some((param) => param === 'keywordguardneedle')), '操作日志摘要搜索应使用摘要倒排词项表定位')
   assert(keywordSearchCalls.some((call) => call.params.some((param) => param === '造数')), '操作日志短中文摘要搜索应使用摘要倒排词项表定位')
+  assert(capturedCalls.some((call) => /\bol\.actor_system_account_id\s*=\s*\?/i.test(call.sql)
+    && call.params.some((param) => param === 'sys_operator')), '操作日志用户操作人筛选应使用 actor_system_account_id 精确条件')
   for (const call of keywordSearchCalls) {
     const plan = explainQueryPlan(datasetDatabase, call.sql, call.params)
     assertPlanUses(plan, 'idx_operation_log_summary_search_terms_term_created', '操作日志摘要搜索必须由 term + created_at 索引驱动')
@@ -309,6 +326,8 @@ function operationLog(input: {
   summary: string
   resourceId: string
   resourceName: string
+  actorSystemAccountId?: string
+  actorUsername?: string
   actorDisplayName: string
   createdAt: string
   viewers: OperationLogInput['viewers']
@@ -316,8 +335,8 @@ function operationLog(input: {
   return {
     id: input.id,
     traceId: input.traceId,
-    actorSystemAccountId: 'sys_admin',
-    actorUsername: 'admin',
+    actorSystemAccountId: input.actorSystemAccountId ?? 'sys_admin',
+    actorUsername: input.actorUsername ?? 'admin',
     actorDisplayName: input.actorDisplayName,
     actorRole: 'admin',
     operationScopeSystemAccountId: 'sys_admin',
