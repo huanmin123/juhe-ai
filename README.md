@@ -152,6 +152,25 @@ API Key : `API Key 管理` 或 `我的 API Key` 页面生成的本地 sk-... 密
 
 ## 最快部署
 
+Docker 单容器启动：
+
+```powershell
+pnpm install
+pnpm build
+Set-Location docker
+docker compose up -d --build
+```
+
+启动后访问：
+
+```text
+http://localhost:3000/__aisys__/
+```
+
+需要改端口、公网访问地址或复用旧数据时，复制并修改 `docker/.env.example` 为 `docker/.env`。完整说明见 [Docker 部署指南](docs/deploy/Docker部署指南.md)。
+
+发布包部署：
+
 先在构建机器打包：
 
 ```powershell
@@ -224,6 +243,7 @@ pnpm test:smoke
 - [测试与验证说明](docs/develop/测试与验证说明.md)
 - [构建指南](docs/deploy/构建指南.md)
 - [部署指南](docs/deploy/部署指南.md)
+- [Docker 部署指南](docs/deploy/Docker部署指南.md)
 - [整体架构](docs/architecture/架构总览.md)
 - [核心功能设计](docs/functions/核心功能设计.md)
 - [高并发分组调度设计](docs/functions/高并发分组调度设计.md)

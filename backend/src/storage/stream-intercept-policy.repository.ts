@@ -8,7 +8,6 @@ export type StreamInterceptPolicyAccountState = 'none' | 'runtime_avoidance'
 export type StreamInterceptPolicyAction =
   | 'observe'
   | 'drop_event'
-  | 'fail_stream'
   | 'retry_no_avoidance'
   | 'retry_next_account'
   | 'avoid_account_ttl'
@@ -67,7 +66,6 @@ export const maxManagementStreamInterceptPolicies = 100
 const policyActions = new Set<StreamInterceptPolicyAction>([
   'observe',
   'drop_event',
-  'fail_stream',
   'retry_no_avoidance',
   'retry_next_account',
   'avoid_account_ttl',
@@ -430,14 +428,6 @@ export function streamInterceptPolicyActionRuntime(action: StreamInterceptPolicy
       return {
         executionMode: 'intercept',
         dataHandling: 'discard_event',
-        retryEnabled: false,
-        accountSwitch: 'none',
-        accountState: 'none'
-      }
-    case 'fail_stream':
-      return {
-        executionMode: 'intercept',
-        dataHandling: 'replace_with_failure',
         retryEnabled: false,
         accountSwitch: 'none',
         accountState: 'none'

@@ -244,7 +244,6 @@ function normalizeAction(value: unknown): StreamInterceptPolicyAction | undefine
   if (
     value === 'observe'
     || value === 'drop_event'
-    || value === 'fail_stream'
     || value === 'retry_no_avoidance'
     || value === 'retry_next_account'
     || value === 'avoid_account_ttl'

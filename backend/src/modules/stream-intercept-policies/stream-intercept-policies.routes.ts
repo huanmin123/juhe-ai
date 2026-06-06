@@ -35,7 +35,6 @@ const policyBodySchema = z.object({
   action: z.enum([
     'observe',
     'drop_event',
-    'fail_stream',
     'retry_no_avoidance',
     'retry_next_account',
     'avoid_account_ttl',

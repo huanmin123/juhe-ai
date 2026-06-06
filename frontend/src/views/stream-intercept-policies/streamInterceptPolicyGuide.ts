@@ -85,12 +85,6 @@ export const streamInterceptPolicyGuideActions = [
     note: '只丢掉这一条命中的 SSE 事件，后面的流继续转发；不会重试。'
   },
   {
-    key: 'fail_stream',
-    action: '结束当前流',
-    when: '明确失败但不希望触发重试或账号避让时',
-    note: '立刻结束这次流，向下游返回普通失败；不会重试，也不会避让账号。'
-  },
-  {
     key: 'retry_no_avoidance',
     action: '重试但不避让账号',
     when: '当前结果不可接受，但证据不足以避让账号时',

@@ -22,7 +22,7 @@ function policy(overrides: Partial<RuntimeStreamInterceptPolicy>): RuntimeStream
     source: 'management',
     name: '测试流式拦截策略',
     enabled: true,
-    action: 'fail_stream',
+    action: 'retry_no_avoidance',
     executionMode: 'intercept',
     priority: 10,
     match: {},
@@ -99,7 +99,7 @@ const settings: GatewaySettings = {
   assert.equal(legacyTtlValidation.valid, false, '账户级流式规则不应再接受用户配置的避让秒数')
   const missingRuntimeFieldsValidation = validateAccountStreamInterceptRules([
     {
-      action: 'fail_stream',
+      action: 'retry_no_avoidance',
       match: {
         textIncludes: ['广告污染']
       }
@@ -114,7 +114,7 @@ const settings: GatewaySettings = {
       match: {
         textIncludes: Array.from({ length: 51 }, (_, index) => `污染-${index}`)
       },
-      action: 'fail_stream'
+      action: 'retry_no_avoidance'
     }
   ])
   assert.equal(tooManyMatchersValidation.valid, false, '账户级流式规则不应静默截断超过 50 项的匹配列表')
@@ -131,7 +131,7 @@ const settings: GatewaySettings = {
               match: {
                 textIncludes: Array.from({ length: 51 }, (_, index) => `污染-${index}`)
               },
-              action: 'fail_stream'
+              action: 'retry_no_avoidance'
             }
           ]
         }
@@ -403,7 +403,7 @@ const settings: GatewaySettings = {
             enabled: true,
             priority: 9999,
             match: { textIncludes: ['广告污染'] },
-            action: 'fail_stream'
+            action: 'retry_no_avoidance'
           }
         ]
       }

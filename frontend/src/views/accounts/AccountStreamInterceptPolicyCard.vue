@@ -290,14 +290,14 @@ function actionLabel(rule: AccountStreamInterceptRuleForm): string {
 
 function actionTagText(template: StreamInterceptActionTemplate): string {
   if (template.action === 'observe') return '观察'
-  if (template.action === 'drop_event' || template.action === 'fail_stream') return '不重试'
+  if (template.action === 'drop_event') return '不重试'
   if (template.runtimeAvoidance) return '短期避让'
   return '重试'
 }
 
 function actionTagColor(template: StreamInterceptActionTemplate): string {
   if (template.action === 'observe') return 'gold'
-  if (template.action === 'drop_event' || template.action === 'fail_stream') return 'default'
+  if (template.action === 'drop_event') return 'default'
   if (template.runtimeAvoidance) return 'orange'
   return 'green'
 }

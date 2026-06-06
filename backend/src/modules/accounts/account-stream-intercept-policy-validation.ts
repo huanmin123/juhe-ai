@@ -9,7 +9,6 @@ const textListSchema = z.array(z.string().trim().min(1).max(200)).max(50).option
 const actionSchema = z.enum([
   'observe',
   'drop_event',
-  'fail_stream',
   'retry_no_avoidance',
   'retry_next_account',
   'avoid_account_ttl',

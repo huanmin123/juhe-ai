@@ -1,0 +1,45 @@
+services:
+  juhe-ai:
+    image: ${JUHE_AI_IMAGE:-juhe-ai:local}
+    container_name: ${JUHE_AI_CONTAINER_NAME:-juhe-ai}
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        NODE_IMAGE: ${JUHE_AI_NODE_IMAGE:-node:22-bookworm-slim}
+        PNPM_VERSION: ${JUHE_AI_PNPM_VERSION:-10.32.1}
+    ports:
+      - "${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
+      JUHE_AI_PORT: ${JUHE_AI_PORT:-3000}
+      JUHE_AI_PUBLIC_PORT: ${JUHE_AI_PUBLIC_PORT:-3000}
+      JUHE_AI_PUBLIC_ORIGIN: ${JUHE_AI_PUBLIC_ORIGIN:-}
+      JUHE_AI_ALLOWED_ORIGINS: ${JUHE_AI_ALLOWED_ORIGINS:-}
+      JUHE_AI_SECRET: ${JUHE_AI_SECRET:-}
+      JUHE_AI_COOKIE_SECURE: ${JUHE_AI_COOKIE_SECURE:-false}
+      JUHE_AI_COOKIE_SAME_SITE: ${JUHE_AI_COOKIE_SAME_SITE:-lax}
+      JUHE_AI_TRUST_PROXY: ${JUHE_AI_TRUST_PROXY:-false}
+      JUHE_AI_DB_SERVICE_HTTP_HOST: ${JUHE_AI_DB_SERVICE_HTTP_HOST:-127.0.0.1}
+      JUHE_AI_DB_SERVICE_HTTP_PORT: ${JUHE_AI_DB_SERVICE_HTTP_PORT:-0}
+      JUHE_AI_DATABASE_PATH: ${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
+      JUHE_AI_DATASET_DATABASE_PATH: ${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}
+      JUHE_AI_STATS_DATABASE_PATH: ${JUHE_AI_STATS_DATABASE_PATH:-/app/backend/data/juhe-ai-stats.sqlite3}
+      JUHE_AI_USAGE_SHARD_ROOT: ${JUHE_AI_USAGE_SHARD_ROOT:-/app/backend/data/usage-shards}
+      JUHE_AI_USAGE_SHARD_COUNT: ${JUHE_AI_USAGE_SHARD_COUNT:-16}
+      JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
+      JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
+      JUHE_AI_LOG_CONSOLE_ENABLED: ${JUHE_AI_LOG_CONSOLE_ENABLED:-true}
+      JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: ${JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS:-false}
+      JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST: ${JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST:-}
+      JUHE_AI_OAUTH_PROXY_URL: ${JUHE_AI_OAUTH_PROXY_URL:-}
+      JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED: ${JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED:-false}
+    volumes:
+      - juhe-ai-data:/app/backend/data
+      - juhe-ai-logs:/app/backend/logs
+
+volumes:
+  juhe-ai-data:
+  juhe-ai-logs:

@@ -21,12 +21,6 @@ export const streamInterceptActionTemplates: StreamInterceptActionTemplate[] = [
     runtimeAvoidance: false
   },
   {
-    action: 'fail_stream',
-    label: '结束当前流',
-    description: '立刻结束这次流并返回普通失败；不会重试，也不会避让账号。',
-    runtimeAvoidance: false
-  },
-  {
     action: 'retry_no_avoidance',
     label: '重试但不避让账号',
     description: '命中后在可行时重新请求一次，但不拉黑当前账号；重试时仍可能选到它。',
