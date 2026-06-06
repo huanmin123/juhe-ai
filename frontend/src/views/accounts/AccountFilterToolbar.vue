@@ -76,7 +76,7 @@
     </template>
     <template #actions>
       <slot name="actions" />
-      <a-tooltip v-if="isManagementView" :title="exportTooltip">
+      <a-tooltip :title="exportTooltip">
         <a-button :loading="exportLoading" @click="emit('export')">
           <template #icon>
             <DownloadOutlined />
@@ -84,7 +84,7 @@
           导出 JSON
         </a-button>
       </a-tooltip>
-      <a-button v-if="isManagementView" @click="emit('import')">
+      <a-button @click="emit('import')">
         <template #icon>
           <UploadOutlined />
         </template>

@@ -44,6 +44,7 @@
       :announcements="announcements"
       :loading="announcementsLoading"
     />
+    <DisplayNameModal v-model:open="displayNameModalOpen" :form="displayNameForm" :saving="displayNameSaving" @ok="handleUpdateDisplayName" />
     <ChangePasswordModal v-model:open="passwordModalOpen" :forced="mustChangePassword" :form="passwordForm" :require-old-password="requireOldPasswordForPasswordChange" :saving="passwordSaving" @ok="handleChangePassword" />
   </a-layout>
 </template>
@@ -77,7 +78,7 @@ import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'v
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
-import { authState, changePassword, logout } from '@/composables/useAuth'
+import { authState, changePassword, logout, updateProfile } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings, syncDocumentTitle } from '@/composables/useAppBrand'
 import {
   appMenuMode,
@@ -95,15 +96,20 @@ import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
 import ChangePasswordModal from './ChangePasswordModal.vue'
+import DisplayNameModal from './DisplayNameModal.vue'
 
 const router = useRouter()
 const route = useRoute()
 const isMobile = ref(false)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
+const displayNameModalOpen = ref(false)
+const displayNameSaving = ref(false)
+const displayNameForm = reactive({ displayName: '' })
 const passwordModalOpen = ref(false)
 const passwordSaving = ref(false)
 const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
+const whitespacePattern = /\s/
 const keepAliveMax = 48
 const announcementModalOpen = ref(false)
 const announcementsLoading = ref(false)
@@ -282,6 +288,10 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
     await switchMenuMode()
     return
   }
+  if (event.key === 'display-name') {
+    openDisplayNameModal()
+    return
+  }
   if (event.key === 'password') {
     openPasswordModal()
     return
@@ -376,9 +386,41 @@ async function switchMenuMode() {
   }
 }
 
+async function handleUpdateDisplayName() {
+  if (displayNameSaving.value) return
+  const displayName = displayNameForm.displayName.trim()
+  if (!displayName) {
+    message.warning('请输入显示名称')
+    return
+  }
+  if (hasWhitespace(displayNameForm.displayName)) {
+    message.warning('显示名称不能包含空格')
+    return
+  }
+  if (displayName === currentUser.value?.displayName) {
+    displayNameModalOpen.value = false
+    return
+  }
+  displayNameSaving.value = true
+  try {
+    await updateProfile({ displayName })
+    message.success('显示名称已修改')
+    displayNameModalOpen.value = false
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '修改显示名称失败'))
+  } finally {
+    displayNameSaving.value = false
+  }
+}
+
 async function handleChangePassword() {
   if (requireOldPasswordForPasswordChange.value && !passwordForm.oldPassword) {
     message.warning('请输入当前密码')
+    return
+  }
+  if ((passwordForm.oldPassword && hasWhitespace(passwordForm.oldPassword)) || hasWhitespace(passwordForm.newPassword) || hasWhitespace(passwordForm.confirmPassword)) {
+    message.warning('登录密码不能包含空格')
     return
   }
   if (passwordForm.newPassword.length < 4) {
@@ -405,6 +447,11 @@ async function handleChangePassword() {
   }
 }
 
+function openDisplayNameModal() {
+  displayNameForm.displayName = currentUser.value?.displayName ?? ''
+  displayNameModalOpen.value = true
+}
+
 function resetPasswordForm() {
   passwordForm.oldPassword = ''
   passwordForm.newPassword = ''
@@ -416,6 +463,10 @@ function openPasswordModal(resetForm = true) {
     resetPasswordForm()
   }
   passwordModalOpen.value = true
+}
+
+function hasWhitespace(value: string): boolean {
+  return whitespacePattern.test(value)
 }
 
 function updateViewport() {

@@ -55,6 +55,13 @@ interface AccountTestResult {
   tokenRefreshed?: boolean
 }
 
+interface AccountTestTask {
+  id: string
+  status: 'queued' | 'running' | 'success' | 'failed' | 'canceled'
+  message?: string
+  result?: AccountTestResult
+}
+
 interface TestedAccount {
   account: AccountSummary
   test: AccountTestResult
@@ -127,7 +134,6 @@ interface SystemSettings {
   accountQualityWindowMinutes?: number
   cooldownAccountRetestIntervalSeconds?: number
   cooldownAccountRetestBatchSize?: number
-  cooldownAccountRetestModel?: string
   cooldownAccountRetestMaxBackoffHours?: number
   oauthAccessTokenRefreshIntervalSeconds?: number
   oauthAccessTokenRefreshLeadSeconds?: number
@@ -200,7 +206,6 @@ async function main(): Promise<void> {
     assert(typeof settings.accountQualityWindowMinutes === 'number', '系统设置缺少 accountQualityWindowMinutes')
     assert(typeof settings.cooldownAccountRetestIntervalSeconds === 'number', '系统设置缺少 cooldownAccountRetestIntervalSeconds')
     assert(typeof settings.cooldownAccountRetestBatchSize === 'number', '系统设置缺少 cooldownAccountRetestBatchSize')
-    assert(typeof settings.cooldownAccountRetestModel === 'string', '系统设置缺少 cooldownAccountRetestModel')
     assert(typeof settings.cooldownAccountRetestMaxBackoffHours === 'number', '系统设置缺少 cooldownAccountRetestMaxBackoffHours')
     assert(typeof settings.oauthAccessTokenRefreshIntervalSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshIntervalSeconds')
     assert(typeof settings.oauthAccessTokenRefreshLeadSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshLeadSeconds')
@@ -528,10 +533,29 @@ async function selectFirstUsableOpenAIAccount(accounts: AccountSummary[]): Promi
 
 async function testAccount(account: AccountSummary): Promise<AccountTestResult> {
   assert(account.ownerSystemAccountId, `账户 ${account.name} 缺少 ownerSystemAccountId`)
-  return postEnvelope<AccountTestResult>(apiPath(`/accounts/${account.id}/test?systemAccountId=${encodeURIComponent(account.ownerSystemAccountId)}`), {
+  const ownerScope = `systemAccountId=${encodeURIComponent(account.ownerSystemAccountId)}`
+  const task = await postEnvelope<AccountTestTask>(apiPath(`/accounts/${account.id}/test?${ownerScope}`), {
     model,
     prompt
   }, accountTestTimeoutMs)
+  return waitForAccountTestTask(task, apiPath(`/accounts/test-tasks/${encodeURIComponent(task.id)}?${ownerScope}`))
+}
+
+async function waitForAccountTestTask(initialTask: AccountTestTask, taskPath: string): Promise<AccountTestResult> {
+  const startedAt = Date.now()
+  let task = initialTask
+  while (Date.now() - startedAt < accountTestTimeoutMs) {
+    if (task.status === 'success' || task.status === 'failed') {
+      assert(task.result, `账户测试任务已结束但缺少结果：${task.message ?? task.status}`)
+      return task.result
+    }
+    if (task.status === 'canceled') {
+      throw new Error(`账户测试任务已取消：${task.message ?? '已停止测试'}`)
+    }
+    await sleep(1000)
+    task = await getEnvelope<AccountTestTask>(taskPath)
+  }
+  throw new Error(`账户测试任务等待超时：${task.id}，当前状态 ${task.status}`)
 }
 
 function assertAccountCanBeTested(account: AccountSummary, prefix: string): void {

@@ -268,7 +268,7 @@ const groupFilter = computed({
     groupFilterSelection.value = selectedGroupSelection(id)
   }
 })
-const groupFilterDisabled = computed(() => isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value))
+const groupFilterDisabled = computed(() => false)
 const groups = ref<GroupOptionSummary[]>([])
 const groupOptionsLoading = ref(false)
 const modelOptions = ref<ProviderModelOption[]>([])
@@ -425,13 +425,6 @@ function selectedGroupSelection(id: string | undefined): GroupSelection | undefi
 async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): Promise<void> {
   groupOptionsKeyword = keyword
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
-  if (isManagementView.value && !systemAccountId) {
-    groups.value = []
-    groupOptionsLoading.value = false
-    groupOptionsLoadingKey = undefined
-    groupOptionsLoadingPromise = undefined
-    return
-  }
   const requestKeyword = normalizeOptionKeyword(keyword)
   const requestKey = JSON.stringify([
     isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self',
@@ -581,10 +574,6 @@ function groupOptionWindowKey(systemAccountId: string | undefined, requestKeywor
 
 function syncSelectedGroupSelection(nextGroups = groups.value): void {
   if (!groupFilter.value) return
-  if (groupFilterDisabled.value) {
-    groupFilterSelection.value = undefined
-    return
-  }
   groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
 }
 
@@ -703,7 +692,7 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     clientIp: clientIpFilter.value.trim() || undefined,
     startDate: dateRange?.[0],
     endDate: dateRange?.[1],
-    groupId: groupFilterDisabled.value ? undefined : groupFilter.value,
+    groupId: groupFilter.value,
     model: modelFilter.value.trim() || undefined,
     result: resultFilter.value,
     statusCode: normalizedStatusCode(statusCodeFilter.value),

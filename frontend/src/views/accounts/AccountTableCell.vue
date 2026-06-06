@@ -1,7 +1,14 @@
 <template>
   <div v-if="columnKey === 'name'" class="resource-name-cell">
     <span class="resource-name-line">
-      <span>{{ accountDisplayName(account) }}</span>
+      <span class="resource-name-text">{{ accountDisplayName(account) }}</span>
+      <span v-if="isAuthorizedAccount(account)" class="authorized-account-badge">（{{ authorizedAccountOwnerBadgeText(account) }}）</span>
+      <a-tooltip v-if="isAuthorizedAccount(account)">
+        <template #title>
+          <span class="authorized-account-tooltip-text">{{ authorizedAccountTooltip(account) }}</span>
+        </template>
+        <InfoCircleOutlined class="authorized-account-icon" :class="authorizedAccountSourceToneClass(account)" />
+      </a-tooltip>
     </span>
   </div>
   <a-tag v-else-if="columnKey === 'type'" color="processing">{{ accountTypeText(account.type) }}</a-tag>
@@ -60,6 +67,7 @@
 </template>
 
 <script setup lang="ts">
+import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
@@ -73,9 +81,11 @@ import {
   accountDisplayExpiresAt,
   accountTypeText,
   formatDateTime,
-  isAccountDisplayExpired
+  isAccountDisplayExpired,
+  isAuthorizedAccount
 } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
+import { authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip } from './accountRules'
 
 defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
@@ -165,6 +175,44 @@ const concurrencyTooltip = computed(() => concurrencyAvailable.value
   align-items: center;
   gap: 6px;
   min-width: 0;
+  max-width: 100%;
+}
+
+.resource-name-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.authorized-account-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.authorized-account-icon {
+  flex: none;
+  color: #08979c;
+  cursor: help;
+  font-size: 14px;
+}
+
+.authorized-account-icon.source-danger {
+  color: #cf1322;
+}
+
+.authorized-account-icon.source-warning {
+  color: #d48806;
+}
+
+.authorized-account-tooltip-text {
+  white-space: pre-line;
 }
 
 </style>

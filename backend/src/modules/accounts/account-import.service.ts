@@ -429,18 +429,16 @@ function planProxy(value: unknown, index: number, context: ImportContext): Proxy
   if (!proxyTypeInput) item.messages.push('代理 type 不能为空')
   if (!source.host) item.messages.push('代理 host 不能为空')
   if (source.port < 1 || source.port > 65535) item.messages.push('代理 port 必须是 1 到 65535 的整数')
-  if (!context.options.createMissingProxies) {
+  const existing = findProxyOptionByName(source.name, context)
+  if (existing) {
+    item.action = 'reuse'
+    item.proxyProfileId = existing.id
+  } else if (!context.options.createMissingProxies) {
     item.action = 'skip'
     item.warnings.push('当前导入选项未启用代理创建')
   } else if (!isAdminRole(context.access?.role)) {
     item.action = 'failed'
     item.messages.push('用户侧导入不能创建代理，请由管理员先创建代理')
-  } else {
-    const existing = findProxyOptionByName(source.name, context)
-    if (existing) {
-      item.action = 'reuse'
-      item.proxyProfileId = existing.id
-    }
   }
   if (item.messages.length > 0) {
     item.action = 'failed'

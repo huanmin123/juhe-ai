@@ -59,7 +59,7 @@ export function createAccountScheduleWindowFormRow(daysOfWeek = [1, 2, 3, 4, 5, 
 export function validateAccountAvailabilityScheduleForm(schedule: AccountAvailabilityScheduleForm): string | undefined {
   if (!schedule.enabled) return undefined
   const invalidIndex = normalizedScheduleWindows(schedule).findIndex((window) => hasInvalidScheduleDays(window.daysOfWeek) || !window.start || !window.end || window.start === window.end)
-  return invalidIndex >= 0 ? `请完整填写第 ${invalidIndex + 1} 个自动启停时段` : undefined
+  return invalidIndex >= 0 ? `请完整填写第 ${invalidIndex + 1} 个可用时段` : undefined
 }
 
 export function buildAccountAvailabilitySchedulePayload(schedule: AccountAvailabilityScheduleForm): AccountAvailabilitySchedulePayload | null {
@@ -104,15 +104,14 @@ export function accountScheduleSummary(schedule?: AccountAvailabilitySchedule): 
     .slice(0, 2)
     .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
   const suffix = schedule.windows.length > 2 ? ` 等 ${schedule.windows.length} 段` : ''
-  const current = isScheduleCurrentlyAllowed(schedule) ? '当前可用' : '计划停用'
-  return `${current}：${windows.join(' / ')}${suffix}`
+  return `${windows.join(' / ')}${suffix}`
 }
 
 export function accountScheduleTagColor(schedule?: AccountAvailabilitySchedule): string {
   if (!schedule?.enabled) return 'default'
   try {
     assertAccountAvailabilitySchedule(schedule)
-    return isScheduleCurrentlyAllowed(schedule) ? 'green' : 'orange'
+    return 'blue'
   } catch {
     return 'red'
   }
@@ -131,50 +130,50 @@ function normalizedScheduleDays(days: number[]): number[] {
 }
 
 function assertAccountAvailabilitySchedule(schedule: AccountAvailabilitySchedule): void {
-  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], '账户自动启停计划')
-  if (schedule.enabled !== true) throw new Error('账户自动启停计划启用状态异常，请清理后再编辑')
-  if (schedule.mode !== 'allow_windows') throw new Error('账户自动启停计划模式异常，请清理后再编辑')
-  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('账户自动启停计划时区异常，请清理后再编辑')
-  assertScheduleTimezone(schedule.timezone, '账户自动启停计划时区')
-  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('账户自动启停计划时段异常，请清理后再编辑')
+  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], '账户可用时段计划')
+  if (schedule.enabled !== true) throw new Error('账户可用时段计划启用状态异常，请清理后再编辑')
+  if (schedule.mode !== 'allow_windows') throw new Error('账户可用时段计划模式异常，请清理后再编辑')
+  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('账户可用时段计划时区异常，请清理后再编辑')
+  assertScheduleTimezone(schedule.timezone, '账户可用时段计划时区')
+  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('账户可用时段计划时段异常，请清理后再编辑')
   for (const window of schedule.windows) {
-    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], '账户自动启停计划时段')
-    assertScheduleDays(window.daysOfWeek, '账户自动启停计划重复日期')
-    assertScheduleTime(window.start, '账户自动启停计划开始时间')
-    assertScheduleTime(window.end, '账户自动启停计划停止时间')
-    if (window.start === window.end) throw new Error('账户自动启停计划开始时间和停止时间不能相同')
+    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], '账户可用时段计划时段')
+    assertScheduleDays(window.daysOfWeek, '账户可用时段计划重复日期')
+    assertScheduleTime(window.start, '账户可用时段计划开始时间')
+    assertScheduleTime(window.end, '账户可用时段计划结束时间')
+    if (window.start === window.end) throw new Error('账户可用时段计划开始时间和结束时间不能相同')
   }
   if (schedule.dateRange) {
     assertScheduleDateRange(schedule.dateRange)
   }
   if (schedule.exceptions !== undefined) {
-    if (!Array.isArray(schedule.exceptions)) throw new Error('账户自动启停计划例外日期异常，请清理后再编辑')
+    if (!Array.isArray(schedule.exceptions)) throw new Error('账户可用时段计划例外日期异常，请清理后再编辑')
     for (const exception of schedule.exceptions) {
-      assertObjectKeys(exception, ['date', 'action', 'windows'], '账户自动启停计划例外日期')
-      assertScheduleDate(exception.date, '账户自动启停计划例外日期')
+      assertObjectKeys(exception, ['date', 'action', 'windows'], '账户可用时段计划例外日期')
+      assertScheduleDate(exception.date, '账户可用时段计划例外日期')
       if (exception.action === 'allow') {
-        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('账户自动启停计划允许例外时段异常，请清理后再编辑')
+        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('账户可用时段计划允许例外时段异常，请清理后再编辑')
         for (const window of exception.windows) {
-          assertObjectKeys(window, ['start', 'end'], '账户自动启停计划例外时段')
-          assertScheduleTime(window.start, '账户自动启停计划例外开始时间')
-          assertScheduleTime(window.end, '账户自动启停计划例外停止时间')
-          if (window.start === window.end) throw new Error('账户自动启停计划例外开始时间和停止时间不能相同')
+          assertObjectKeys(window, ['start', 'end'], '账户可用时段计划例外时段')
+          assertScheduleTime(window.start, '账户可用时段计划例外开始时间')
+          assertScheduleTime(window.end, '账户可用时段计划例外结束时间')
+          if (window.start === window.end) throw new Error('账户可用时段计划例外开始时间和结束时间不能相同')
         }
       } else if (exception.action === 'deny') {
-        if ('windows' in exception) throw new Error('账户自动启停计划拒绝例外不能带允许时段')
+        if ('windows' in exception) throw new Error('账户可用时段计划拒绝例外不能带允许时段')
       } else {
-        throw new Error('账户自动启停计划例外动作异常，请清理后再编辑')
+        throw new Error('账户可用时段计划例外动作异常，请清理后再编辑')
       }
     }
   }
 }
 
 function assertScheduleDateRange(dateRange: NonNullable<AccountAvailabilitySchedule['dateRange']>): void {
-  assertObjectKeys(dateRange, ['startDate', 'endDate'], '账户自动启停计划日期范围')
-  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, '账户自动启停计划开始日期')
-  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, '账户自动启停计划结束日期')
+  assertObjectKeys(dateRange, ['startDate', 'endDate'], '账户可用时段计划日期范围')
+  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, '账户可用时段计划开始日期')
+  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, '账户可用时段计划结束日期')
   if (dateRange.startDate && dateRange.endDate && dateRange.startDate > dateRange.endDate) {
-    throw new Error('账户自动启停计划开始日期不能晚于结束日期')
+    throw new Error('账户可用时段计划开始日期不能晚于结束日期')
   }
 }
 
@@ -222,67 +221,6 @@ function daysOfWeekText(days: number[]): string {
   if (normalized === '6,7') return '周末'
   const labels = new Map(weekdayOptions.map((item) => [item.value, item.label]))
   return [...new Set(days)].sort((left, right) => left - right).map((day) => labels.get(day) ?? `周${day}`).join('、')
-}
-
-function isScheduleCurrentlyAllowed(schedule: AccountAvailabilitySchedule): boolean {
-  if (!schedule.enabled) return true
-  const current = zonedScheduleParts(new Date(), schedule.timezone)
-  if (schedule.dateRange?.startDate && current.dateKey < schedule.dateRange.startDate) return false
-  if (schedule.dateRange?.endDate && current.dateKey > schedule.dateRange.endDate) return false
-  const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
-  if (exception?.action === 'deny') return false
-  if (exception?.action === 'allow') {
-    return (exception.windows ?? []).some((window) => isCurrentMinuteInScheduleWindow(current, { daysOfWeek: [current.dayOfWeek], start: window.start, end: window.end }))
-  }
-  return schedule.windows.some((window) => isCurrentMinuteInScheduleWindow(current, window))
-}
-
-function isCurrentMinuteInScheduleWindow(
-  current: { dayOfWeek: number; minuteOfDay: number },
-  window: { daysOfWeek: number[]; start: string; end: string }
-): boolean {
-  const start = scheduleMinuteOfDay(window.start)
-  const end = scheduleMinuteOfDay(window.end)
-  const days = new Set(window.daysOfWeek)
-  if (start < end) {
-    return days.has(current.dayOfWeek) && current.minuteOfDay >= start && current.minuteOfDay < end
-  }
-  return (days.has(current.dayOfWeek) && current.minuteOfDay >= start)
-    || (days.has(previousScheduleDayOfWeek(current.dayOfWeek)) && current.minuteOfDay < end)
-}
-
-function scheduleMinuteOfDay(value: string): number {
-  const [hour, minute] = value.split(':').map((item) => Number(item))
-  return Math.max(0, Math.min(23, hour || 0)) * 60 + Math.max(0, Math.min(59, minute || 0))
-}
-
-function previousScheduleDayOfWeek(dayOfWeek: number): number {
-  return dayOfWeek === 1 ? 7 : dayOfWeek - 1
-}
-
-function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; dayOfWeek: number; minuteOfDay: number } {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23'
-  })
-  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
-  const year = Number(parts.year)
-  const month = Number(parts.month)
-  const day = Number(parts.day)
-  const hour = Number(parts.hour)
-  const minute = Number(parts.minute)
-  const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-  const utcDay = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
-  return {
-    dateKey,
-    dayOfWeek: utcDay === 0 ? 7 : utcDay,
-    minuteOfDay: hour * 60 + minute
-  }
 }
 
 function defaultScheduleTimezone(): string {

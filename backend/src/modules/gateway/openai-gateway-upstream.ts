@@ -13,7 +13,13 @@ import {
 } from './openai-oauth-codex-adapter.js'
 import { type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
 import { requestStream } from './openai-gateway-usage.js'
-import { buildOpenAIClientCompatibilityBody, type OpenAIClientCompatibilityAccount } from './openai-api-key-client-compatibility.js'
+import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody, type OpenAIClientCompatibilityAccount } from './openai-api-key-client-compatibility.js'
+import {
+  openAICodexOriginator,
+  openAICodexResponsesBetaHeader,
+  openAICodexUserAgent,
+  openAICodexVersion
+} from './openai-codex-client-headers.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -254,8 +260,10 @@ export async function buildUpstreamRequestParts(
     return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal)
   }
   const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal)
+  const headers = buildUpstreamHeaders(req.headers, account)
+  applyOpenAIClientCompatibilityHeaders(req, account, headers)
   return {
-    headers: buildUpstreamHeaders(req.headers, account),
+    headers,
     body: compatibilityBody ?? buildUpstreamRequestBody(req)
   }
 }
@@ -331,13 +339,13 @@ function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccoun
     headers.set('user-agent', openAICodexUserAgent)
   }
   if (!headers.get('originator')) {
-    headers.set('originator', 'codex_cli_rs')
+    headers.set('originator', openAICodexOriginator)
   }
   if (!headers.get('version')) {
     headers.set('version', openAICodexVersion)
   }
   if (!headers.get('openai-beta')) {
-    headers.set('openai-beta', 'responses=experimental')
+    headers.set('openai-beta', openAICodexResponsesBetaHeader)
   }
   const accountId = stringCredential(account.credentials, 'account_id')
   if (accountId && !headers.get('chatgpt-account-id')) {
@@ -464,9 +472,6 @@ const skippedUpstreamRequestHeaderPrefixes = [
   'x-stainless-',
   'x-vercel-'
 ]
-
-const openAICodexVersion = '0.125.0'
-const openAICodexUserAgent = `codex_cli_rs/${openAICodexVersion}`
 
 const skippedUpstreamResponseHeaders = new Set([
   'connection',

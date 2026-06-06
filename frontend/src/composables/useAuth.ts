@@ -53,6 +53,11 @@ export async function changePassword(payload: { oldPassword?: string; newPasswor
   return currentUser.value
 }
 
+export async function updateProfile(payload: { displayName: string }): Promise<CurrentUserSummary> {
+  currentUser.value = await api.auth.updateProfile(payload)
+  return currentUser.value
+}
+
 export function clearAuthState(): void {
   currentUser.value = undefined
   authChecked.value = true

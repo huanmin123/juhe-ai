@@ -50,6 +50,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       base_url TEXT NOT NULL,
+      default_test_model TEXT NOT NULL,
       account_types_json TEXT NOT NULL,
       capabilities_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -162,6 +163,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_observation_started_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
+      last_successful_test_model TEXT,
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
       stream_failure_window_started_at TEXT,
       authorization_instance_source_account_id TEXT,
@@ -186,6 +188,31 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       PRIMARY KEY (account_id, model),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (provider_code) REFERENCES providers(code)
+    );
+
+    CREATE TABLE IF NOT EXISTS account_test_tasks (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      account_name TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      account_type TEXT NOT NULL,
+      request_system_account_id TEXT NOT NULL,
+      request_role TEXT NOT NULL,
+      request_system_account_filter_id TEXT,
+      diagnostics TEXT NOT NULL DEFAULT 'full',
+      model TEXT,
+      client_compatibility TEXT,
+      status TEXT NOT NULL DEFAULT 'queued',
+      status_message TEXT,
+      result_json TEXT,
+      error_message TEXT,
+      cancel_requested INTEGER NOT NULL DEFAULT 0,
+      queued_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id)
     );
 
     CREATE TABLE IF NOT EXISTS system_teams (
@@ -425,6 +452,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_test_tasks_request_updated ON account_test_tasks(request_system_account_id, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_account_test_tasks_status_queued ON account_test_tasks(status, queued_at ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_account_test_tasks_finished_cleanup ON account_test_tasks(finished_at ASC, id ASC) WHERE finished_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_updated ON groups(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_updated ON groups(system_account_id, updated_at DESC, id DESC);

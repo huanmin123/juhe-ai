@@ -1,10 +1,16 @@
 <template>
   <section class="form-section">
     <div class="schedule-toggle-row">
-      <span class="schedule-toggle-label">{{ readonly ? '来源自动启停计划' : '自动启停计划' }}</span>
+      <span class="schedule-toggle-label">{{ readonly ? '来源可用时段计划' : '可用时段计划' }}</span>
       <a-switch v-model:checked="form.availabilitySchedule.enabled" :disabled="readonly" />
     </div>
     <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
+      <a-alert
+        class="schedule-help"
+        type="info"
+        show-icon
+        message="按重复日期和起止时间设置使用范围。"
+      />
       <div class="schedule-window-list">
         <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
           <a-select
@@ -17,7 +23,7 @@
             placeholder="重复日期"
           />
           <a-time-picker v-model:value="window.start" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" :disabled="readonly" placeholder="开始" />
-          <a-time-picker v-model:value="window.end" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" :disabled="readonly" placeholder="停止" />
+          <a-time-picker v-model:value="window.end" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" :disabled="readonly" placeholder="结束" />
           <a-tooltip title="移除">
             <a-button type="text" size="small" danger :disabled="readonly || form.availabilitySchedule.windows.length <= 1" @click="removeScheduleWindow(index)">
               <template #icon><DeleteOutlined /></template>
@@ -86,6 +92,10 @@ function removeScheduleWindow(index: number): void {
 
 .schedule-config {
   margin-top: 12px;
+}
+
+.schedule-help {
+  font-size: 12px;
 }
 
 .schedule-window-row {

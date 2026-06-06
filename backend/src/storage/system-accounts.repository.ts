@@ -24,6 +24,7 @@ const sessionTouchMinIntervalMs = 60 * 1000
 const defaultSystemAccountOptionLimit = 50
 const defaultSystemAccountPageSize = 20
 const maxSystemAccountPageSize = 100
+const whitespacePattern = /\s/
 const systemAccountCreateInputKeys = new Set(['username', 'displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled'])
 const systemAccountUpdateInputKeys = new Set(['displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled'])
 
@@ -102,10 +103,12 @@ function buildSystemAccountListKeywordFilter(keyword?: string): { clause: string
   const prefix = `${escapeLikePrefix(text)}%`
   return {
     clause: `WHERE (
-      display_name COLLATE NOCASE = ?
+      username COLLATE NOCASE = ?
+      OR username LIKE ? ESCAPE '\\'
+      OR display_name COLLATE NOCASE = ?
       OR display_name LIKE ? ESCAPE '\\'
     )`,
-    params: [text, prefix]
+    params: [text, prefix, text, prefix]
   }
 }
 
@@ -267,6 +270,9 @@ export function createSystemAccountWithPasswordHash(input: {
   imageGenerationEnabled?: boolean
 }, passwordHash: string): SystemAccountSummary {
   assertKnownInputKeys(input, systemAccountCreateInputKeys, '系统账户')
+  if (input.password !== undefined) {
+    normalizeSystemAccountPassword(input.password)
+  }
   const now = nowIso()
   const id = newId('sysacc')
   const username = normalizeRequiredText(input.username, '用户账户')
@@ -343,6 +349,9 @@ export function updateSystemAccountWithPasswordHash(id: string, input: {
   password?: string
 }, passwordHash?: string): SystemAccountSummary | undefined {
   assertKnownInputKeys(input, systemAccountUpdateInputKeys, '系统账户')
+  if (input.password !== undefined) {
+    normalizeSystemAccountPassword(input.password)
+  }
   if (Object.prototype.hasOwnProperty.call(input, 'password') && input.password !== undefined && !passwordHash) {
     throw new Error('登录密码不能为空')
   }
@@ -478,9 +487,13 @@ function normalizeRequiredText(value: unknown, label: string): string {
   if (typeof value !== 'string') {
     throw new Error(`${label}不能为空`)
   }
-  const text = value.trim()
+  const rawText = value
+  const text = rawText.trim()
   if (!text) {
     throw new Error(`${label}不能为空`)
+  }
+  if (rawText !== text || hasWhitespace(text)) {
+    throw new Error(`${label}不能包含空格`)
   }
   return text
 }
@@ -541,7 +554,14 @@ function normalizeSystemAccountPassword(value: unknown): string {
   if (typeof value !== 'string' || value.length < 4) {
     throw new Error('登录密码不能少于 4 个字符')
   }
+  if (hasWhitespace(value)) {
+    throw new Error('登录密码不能包含空格')
+  }
   return value
+}
+
+function hasWhitespace(value: string): boolean {
+  return whitespacePattern.test(value)
 }
 
 function assertKnownInputKeys(input: object, allowedKeys: ReadonlySet<string>, label: string): void {

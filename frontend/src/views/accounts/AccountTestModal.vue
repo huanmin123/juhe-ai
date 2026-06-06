@@ -1,8 +1,8 @@
 <template>
   <a-modal
     :open="open"
-    title="测试账号连接"
-    width="620px"
+    :title="modalTitle"
+    :width="modalWidth"
     :footer="null"
     :closable="true"
     :keyboard="true"
@@ -10,24 +10,30 @@
     @cancel="close"
     @update:open="handleOpenUpdate"
   >
-    <div v-if="account" class="test-modal">
+    <div v-if="hasTestTarget" class="test-modal">
       <div class="test-account-card">
         <div class="test-account-main">
           <div class="test-account-icon">▶</div>
           <div class="test-account-detail">
-            <div class="test-account-name">{{ account.name }}</div>
-            <div class="test-account-meta">
+            <div class="test-account-name">{{ headerTitle }}</div>
+            <div v-if="!isBatchMode && account" class="test-account-meta">
               <a-tag color="processing">{{ accountTypeText(account.type) }}</a-tag>
               <a-tag :color="proxyTagColor">{{ proxyTagText }}</a-tag>
               <a-tag color="geekblue">{{ currentProviderName }}</a-tag>
             </div>
+            <div v-else class="test-account-meta">
+              <a-tag color="processing">{{ batchItems.length }} 个账户</a-tag>
+              <a-tag color="geekblue">{{ batchSelectedCompatibilityText }}</a-tag>
+              <a-tag color="cyan">优先模型 {{ model }}</a-tag>
+            </div>
           </div>
         </div>
-        <a-tag :color="accountStatusColor(account)">{{ accountStatusText(account) }}</a-tag>
+        <a-tag v-if="!isBatchMode && account" :color="accountStatusColor(account)">{{ accountStatusText(account) }}</a-tag>
+        <a-tag v-else :color="batchStatusColor">{{ batchStatusText }}</a-tag>
       </div>
 
       <a-form layout="vertical" class="test-form">
-        <a-form-item label="选择测试模型">
+        <a-form-item :label="isBatchMode ? '优先测试模型' : '选择测试模型'">
           <a-select
             :value="model"
             show-search
@@ -38,13 +44,16 @@
             @update:value="$emit('update:model', String($event))"
           />
         </a-form-item>
-        <a-form-item label="客户端兼容">
+        <a-form-item v-if="showClientCompatibilityControl" label="客户端兼容">
           <a-select
             :value="clientCompatibility"
             :disabled="running"
             :options="clientCompatibilityOptions"
             @update:value="handleCompatibilityUpdate"
           />
+        </a-form-item>
+        <a-form-item v-else label="客户端兼容">
+          <a-input :value="fixedOAuthCompatibilityText" disabled />
         </a-form-item>
       </a-form>
 
@@ -53,9 +62,41 @@
         <div v-for="(line, index) in outputLines" :key="index" class="test-output-line" :class="line.tone">{{ line.text }}</div>
       </div>
 
-      <div v-if="result" class="test-result-meta">
+      <div v-if="isBatchMode" class="batch-test-results">
+        <div class="batch-test-results-header">
+          <div>
+            <div class="batch-test-results-title">测试结果</div>
+            <div class="batch-test-results-summary">
+              已完成 {{ batchCompletedCount }} / {{ batchItems.length }}，成功 {{ batchSuccessCount }}，失败 {{ batchFailedCount }}<span v-if="batchStoppedCount">，已停止 {{ batchStoppedCount }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="batch-test-result-list">
+          <div v-for="item in batchItems" :key="item.account.id" class="batch-test-result-row">
+            <div class="batch-test-result-main">
+              <div class="batch-test-result-title">
+                <a-tag :color="batchItemStatusColor(item)">{{ batchItemStatusText(item) }}</a-tag>
+                <span class="batch-test-result-name">{{ item.account.name }}</span>
+              </div>
+              <div class="batch-test-result-meta">
+                <span>{{ accountTypeText(item.account.type) }}</span>
+                <span>{{ providerLabel(item.account) }}</span>
+                <span>模型：{{ batchItemModelText(item) }}</span>
+                <span v-if="batchItemDurationText(item)">耗时：{{ batchItemDurationText(item) }}</span>
+                <span v-if="item.result?.statusCode">HTTP {{ item.result.statusCode }}</span>
+              </div>
+              <div class="batch-test-result-message" :class="{ failed: item.status === 'failed', success: item.status === 'success' }">
+                {{ batchItemMessage(item) }}
+              </div>
+            </div>
+            <a-button size="small" :disabled="!item.result" @click="$emit('copy-result', batchItemJson(item))">复制结果</a-button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showResultJson" class="test-result-meta">
         <a-collapse class="test-result-collapse" ghost>
-          <a-collapse-panel key="result" header="完整测试结果 JSON">
+          <a-collapse-panel key="result" :header="isBatchMode ? '完整批量测试结果 JSON' : '完整测试结果 JSON'">
             <a-textarea :value="resultJson" :rows="8" readonly />
           </a-collapse-panel>
         </a-collapse>
@@ -66,10 +107,10 @@
           <span>当前测试配置</span>
         </div>
         <a-space>
-          <a-button :disabled="!result" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
+          <a-button :disabled="!showResultJson" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
           <a-button danger v-if="running" @click="$emit('stop')">停止测试</a-button>
           <a-button @click="close">{{ running ? '停止并关闭' : '关闭' }}</a-button>
-          <a-button v-if="!running" type="primary" @click="$emit('run')">{{ result ? '重试' : '开始测试' }}</a-button>
+          <a-button v-if="!running" type="primary" @click="$emit('run')">{{ runButtonText }}</a-button>
         </a-space>
       </div>
     </div>
@@ -80,7 +121,7 @@
 import { computed } from 'vue'
 
 import type { AccountSummary, AccountTestResult } from '@/types/domain'
-import type { AccountTestClientCompatibility } from './accountTestFlow'
+import type { AccountBatchTestItem, AccountTestClientCompatibility, AccountTestMode } from './accountTestFlow'
 import {
   accountClientCompatibilityText,
   accountStatusColor,
@@ -99,7 +140,10 @@ interface TestOutputLine {
 
 const props = defineProps<{
   account?: AccountSummary
+  accounts: AccountSummary[]
+  batchItems: AccountBatchTestItem[]
   clientCompatibility: AccountTestClientCompatibility
+  mode: AccountTestMode
   model: string
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
@@ -119,7 +163,48 @@ const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
 }>()
 
-const resultJson = computed(() => props.result ? JSON.stringify(props.result, null, 2) : '')
+const isBatchMode = computed(() => props.mode === 'batch')
+const hasTestTarget = computed(() => isBatchMode.value ? props.accounts.length > 0 : Boolean(props.account))
+const modalTitle = computed(() => isBatchMode.value ? '批量测试账号连接' : '测试账号连接')
+const modalWidth = computed(() => isBatchMode.value ? '860px' : '620px')
+const headerTitle = computed(() => isBatchMode.value ? '批量测试账号连接' : props.account?.name ?? '')
+const batchSuccessCount = computed(() => props.batchItems.filter((item) => item.status === 'success').length)
+const batchFailedCount = computed(() => props.batchItems.filter((item) => item.status === 'failed').length)
+const batchStoppedCount = computed(() => props.batchItems.filter((item) => item.status === 'stopped').length)
+const batchCompletedCount = computed(() => props.batchItems.filter((item) => item.status === 'success' || item.status === 'failed' || item.status === 'stopped').length)
+const batchRunningCount = computed(() => props.batchItems.filter((item) => item.status === 'running').length)
+const testTargetAccounts = computed(() => isBatchMode.value ? props.accounts : props.account ? [props.account] : [])
+const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some((account) => account.type === 'api_key'))
+const fixedOAuthCompatibilityText = computed(() => 'Codex Responses（OAuth 固定）')
+const batchSelectedCompatibilityText = computed(() => (
+  showClientCompatibilityControl.value
+    ? props.clientCompatibility === 'account_default' ? '跟随账户配置' : accountClientCompatibilityText(props.clientCompatibility)
+    : fixedOAuthCompatibilityText.value
+))
+const batchStatusColor = computed(() => {
+  if (props.running || batchRunningCount.value) return 'blue'
+  if (batchFailedCount.value) return 'red'
+  if (batchStoppedCount.value) return 'orange'
+  if (batchSuccessCount.value && batchSuccessCount.value === props.batchItems.length) return 'green'
+  return 'default'
+})
+const batchStatusText = computed(() => {
+  const total = props.batchItems.length
+  if (props.running || batchRunningCount.value) return `测试中 ${batchCompletedCount.value} / ${total}`
+  if (!batchCompletedCount.value) return '等待开始'
+  if (batchFailedCount.value) return `成功 ${batchSuccessCount.value}，失败 ${batchFailedCount.value}`
+  if (batchStoppedCount.value) return `已停止 ${batchStoppedCount.value}`
+  return '全部通过'
+})
+const showResultJson = computed(() => isBatchMode.value ? batchCompletedCount.value > 0 : Boolean(props.result))
+const resultJson = computed(() => {
+  if (isBatchMode.value) return JSON.stringify(batchResultSnapshot(), null, 2)
+  return props.result ? JSON.stringify(props.result, null, 2) : ''
+})
+const runButtonText = computed(() => {
+  if (isBatchMode.value) return batchCompletedCount.value ? '重新批量测试' : '开始批量测试'
+  return props.result ? '重试' : '开始测试'
+})
 const currentProviderName = computed(() => props.account ? providerLabel(props.account) : '')
 const clientCompatibilityOptions: Array<{ label: string; value: AccountTestClientCompatibility }> = [
   { label: '跟随账户配置', value: 'account_default' },
@@ -132,6 +217,7 @@ const proxyTagColor = computed(() => {
   return props.account?.proxyProfileId ? 'cyan' : 'default'
 })
 const outputLines = computed<TestOutputLine[]>(() => {
+  if (isBatchMode.value) return batchOutputLines()
   const account = props.account
   if (!account || (!props.running && !props.result)) return []
   const lines: TestOutputLine[] = [
@@ -194,16 +280,121 @@ function providerLabel(account: AccountSummary): string {
 }
 
 function handleCompatibilityUpdate(value: string): void {
+  if (!showClientCompatibilityControl.value) return
   if (value === 'codex_responses' || value === 'openai_standard' || value === 'account_default') {
     emit('update:clientCompatibility', value)
   }
 }
 
 function selectedCompatibilityText(account: AccountSummary): string {
+  if (account.type === 'oauth') {
+    return fixedOAuthCompatibilityText.value
+  }
   if (props.clientCompatibility === 'account_default') {
     return `跟随账户配置（${accountClientCompatibilityText(account.clientCompatibility)}）`
   }
   return accountClientCompatibilityText(props.clientCompatibility)
+}
+
+function batchOutputLines(): TestOutputLine[] {
+  const total = props.batchItems.length
+  if (!total) return []
+  const lines: TestOutputLine[] = [
+    { text: `批量测试账号：${total} 个`, tone: 'info' },
+    { text: `优先测试模型：${props.model}`, tone: 'muted' },
+    { text: `测试兼容：${batchSelectedCompatibilityText.value}`, tone: 'muted' }
+  ]
+  if (props.running || batchRunningCount.value) {
+    const runningNames = props.batchItems
+      .filter((item) => item.status === 'running')
+      .map((item) => item.account.name)
+      .slice(0, 3)
+      .join('、')
+    lines.push({ text: `正在执行：已完成 ${batchCompletedCount.value} / ${total}`, tone: 'warning' })
+    if (runningNames) lines.push({ text: `当前账户：${runningNames}`, tone: 'success' })
+    return lines
+  }
+  if (!batchCompletedCount.value) {
+    lines.push({ text: '点击「开始批量测试」后会逐个显示结果。', tone: 'muted' })
+    return lines
+  }
+  lines.push({ text: `测试完成：成功 ${batchSuccessCount.value} 个，失败 ${batchFailedCount.value} 个，已停止 ${batchStoppedCount.value} 个`, tone: batchFailedCount.value ? 'warning' : 'success' })
+  const failedItems = props.batchItems.filter((item) => item.status === 'failed').slice(0, 5)
+  if (failedItems.length) {
+    lines.push({ text: '失败摘要：', tone: 'label' })
+    for (const item of failedItems) {
+      lines.push({ text: `${item.account.name}: ${batchItemMessage(item)}`, tone: 'error' })
+    }
+  }
+  return lines
+}
+
+function batchItemStatusColor(item: AccountBatchTestItem): string {
+  if (item.status === 'success') return 'green'
+  if (item.status === 'failed') return 'red'
+  if (item.status === 'running') return 'blue'
+  if (item.status === 'stopped') return 'orange'
+  return 'default'
+}
+
+function batchItemStatusText(item: AccountBatchTestItem): string {
+  if (item.status === 'success') return '通过'
+  if (item.status === 'failed') return '失败'
+  if (item.status === 'running') return '测试中'
+  if (item.status === 'stopped') return '已停止'
+  return '等待'
+}
+
+function batchItemModelText(item: AccountBatchTestItem): string {
+  if (item.result?.model) return item.result.model
+  return item.status === 'pending' ? `优先 ${props.model}` : props.model
+}
+
+function batchItemDurationText(item: AccountBatchTestItem): string {
+  if (item.result?.durationMs !== undefined) return formatAccountTestDuration(item.result.durationMs)
+  if (item.startedAt && item.finishedAt) return formatAccountTestDuration(item.finishedAt - item.startedAt)
+  return ''
+}
+
+function batchItemMessage(item: AccountBatchTestItem): string {
+  if (item.message) return item.message
+  if (item.result?.message) return item.result.message
+  if (item.status === 'running') return '正在连接 OpenAI API'
+  if (item.status === 'stopped') return '已停止测试'
+  return '等待开始测试'
+}
+
+function batchItemJson(item: AccountBatchTestItem): string {
+  return JSON.stringify(batchItemSnapshot(item), null, 2)
+}
+
+function batchResultSnapshot() {
+  return {
+    model: props.model,
+    clientCompatibility: props.clientCompatibility,
+    summary: {
+      total: props.batchItems.length,
+      completed: batchCompletedCount.value,
+      success: batchSuccessCount.value,
+      failed: batchFailedCount.value,
+      stopped: batchStoppedCount.value
+    },
+    results: props.batchItems.map(batchItemSnapshot)
+  }
+}
+
+function batchItemSnapshot(item: AccountBatchTestItem) {
+  return {
+    accountId: item.account.id,
+    accountName: item.account.name,
+    providerCode: item.account.providerCode,
+    type: item.account.type,
+    status: item.status,
+    message: batchItemMessage(item),
+    startedAt: item.startedAt,
+    finishedAt: item.finishedAt,
+    result: item.result
+  }
 }
 </script>
 
@@ -324,6 +515,101 @@ function selectedCompatibilityText(account: AccountSummary): string {
   gap: 10px;
 }
 
+.batch-test-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.batch-test-results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.batch-test-results-title {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.batch-test-results-summary {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.batch-test-result-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.batch-test-result-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.batch-test-result-row:last-child {
+  border-bottom: 0;
+}
+
+.batch-test-result-main {
+  min-width: 0;
+}
+
+.batch-test-result-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.batch-test-result-name {
+  overflow: hidden;
+  color: #0f172a;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-test-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.batch-test-result-message {
+  display: -webkit-box;
+  max-width: 680px;
+  margin-top: 6px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.batch-test-result-message.success {
+  color: #047857;
+}
+
+.batch-test-result-message.failed {
+  color: #b91c1c;
+}
+
 .test-result-collapse {
   border-radius: 12px;
   background: #f8fafc;
@@ -344,5 +630,22 @@ function selectedCompatibilityText(account: AccountSummary): string {
   gap: 16px;
   color: #64748b;
   font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .test-account-card,
+  .batch-test-result-row,
+  .test-modal-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .test-account-meta {
+    flex-wrap: wrap;
+  }
+
+  .batch-test-result-row :deep(.ant-btn) {
+    align-self: flex-start;
+  }
 }
 </style>

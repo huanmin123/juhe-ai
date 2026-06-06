@@ -7,6 +7,7 @@ export interface ProviderDefinition {
   description?: string
   enabled: boolean
   baseUrl: string
+  defaultTestModel: string
   accountTypes: AccountType[]
   capabilities: string[]
 }

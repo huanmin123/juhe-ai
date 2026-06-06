@@ -2,15 +2,30 @@ import type { AccountClientCompatibility, AccountSummary, AccountTestResult } fr
 import { extractApiErrorMessage } from '@/shared/apiError'
 
 export type AccountTestClientCompatibility = 'account_default' | AccountClientCompatibility
+export type AccountTestMode = 'single' | 'batch'
+
+export type AccountBatchTestStatus = 'pending' | 'running' | 'success' | 'failed' | 'stopped'
 
 export type AccountTestForm = {
   model: string
   clientCompatibility: AccountTestClientCompatibility
 }
 
-export function buildAccountTestPayload(form: AccountTestForm): { model: string; clientCompatibility?: AccountClientCompatibility } {
-  const payload: { model: string; clientCompatibility?: AccountClientCompatibility } = {
-    model: form.model
+export interface AccountBatchTestItem {
+  account: AccountSummary
+  status: AccountBatchTestStatus
+  taskId?: string
+  result?: AccountTestResult
+  message?: string
+  startedAt?: number
+  finishedAt?: number
+}
+
+export function buildAccountTestPayload(form: AccountTestForm): { model?: string; clientCompatibility?: AccountClientCompatibility } {
+  const payload: { model?: string; clientCompatibility?: AccountClientCompatibility } = {}
+  const model = form.model.trim()
+  if (model) {
+    payload.model = model
   }
   if (form.clientCompatibility !== 'account_default') {
     payload.clientCompatibility = form.clientCompatibility
@@ -38,15 +53,13 @@ export function failedAccountTestResult(input: {
   startedAt: number
 }): AccountTestResult {
   const fallbackMessage = extractApiErrorMessage(input.error, '测试失败')
-  const testClientCompatibility = input.clientCompatibility === 'account_default'
-    ? input.account.clientCompatibility
-    : input.clientCompatibility
+  const testClientCompatibility = effectiveAccountTestClientCompatibility(input.account, input.clientCompatibility)
   return {
     accountId: input.account.id,
     accountName: input.account.name,
     providerCode: input.account.providerCode,
     type: input.account.type,
-    clientCompatibility: input.account.clientCompatibility,
+    clientCompatibility: effectiveAccountTestClientCompatibility(input.account, 'account_default'),
     testClientCompatibility,
     success: false,
     message: fallbackMessage,
@@ -54,6 +67,13 @@ export function failedAccountTestResult(input: {
     responseText: fallbackMessage,
     durationMs: Date.now() - input.startedAt
   }
+}
+
+function effectiveAccountTestClientCompatibility(account: AccountSummary, clientCompatibility: AccountTestClientCompatibility): AccountClientCompatibility {
+  if (account.providerCode === 'openai' && account.type === 'oauth') {
+    return 'codex_responses'
+  }
+  return clientCompatibility === 'account_default' ? account.clientCompatibility : clientCompatibility
 }
 
 export function nextTestModel(currentModel: string, modelOptions: Array<{ value: string }>, defaultModel: string): string {

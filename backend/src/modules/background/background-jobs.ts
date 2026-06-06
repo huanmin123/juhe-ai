@@ -387,7 +387,6 @@ async function runAccountQualityRefresh(): Promise<void> {
 
 async function runCooldownAccountRetest(): Promise<void> {
   const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
-  const model = settingsString('cooldownAccountRetestModel')
   const maxPauseMinutes = settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const candidates = listAccountsDueForCooldownRetest(batchSize)
@@ -395,7 +394,7 @@ async function runCooldownAccountRetest(): Promise<void> {
   let enqueuedCount = 0
   let skippedQueuedCount = 0
   for (const account of candidates) {
-    if (enqueueCooldownAccountRetest(account, model, { maxPauseMinutes, maxRecoveryHours })) {
+    if (enqueueCooldownAccountRetest(account, { maxPauseMinutes, maxRecoveryHours })) {
       enqueuedCount += 1
     } else {
       skippedQueuedCount += 1
@@ -454,14 +453,6 @@ function settingsNumber(key: string, min: number, max: number): number {
     throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)
   }
   return value
-}
-
-function settingsString(key: string): string {
-  const value = getSettings()[key]
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`系统设置 ${key} 必须是非空字符串`)
-  }
-  return value.trim()
 }
 
 async function databaseFileBytes(): Promise<number | undefined> {

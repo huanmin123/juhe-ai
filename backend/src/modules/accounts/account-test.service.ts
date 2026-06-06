@@ -2,12 +2,13 @@ import { EventEmitter } from 'node:events'
 import type { IncomingHttpHeaders } from 'node:http'
 import type { Request, Response } from 'express'
 
-import { normalizeAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
+import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
+  findProviderDefaultTestModel,
   findAccountForTest,
   findOpenAIAccountForGroup,
   type RecentOpenAIRequestShape,
@@ -21,7 +22,6 @@ import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
 
-const defaultTestModel = 'gpt-5.5'
 const defaultTestPrompt = '只输出 OK'
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
@@ -38,7 +38,18 @@ export async function testOpenAIAccount(
   const prompt = stringValue(input.prompt) || defaultTestPrompt
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
-  const clientCompatibility = normalizeAccountClientCompatibility(input.clientCompatibility ?? account.clientCompatibility)
+  const accountClientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    account.providerCode,
+    account.type,
+    account.clientCompatibility,
+    account.clientCompatibility
+  )
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    account.providerCode,
+    account.type,
+    input.clientCompatibility ?? accountClientCompatibility,
+    accountClientCompatibility
+  )
   const testRequest = createOpenAITestRequest({
     explicitModel,
     fallbackModel: model,
@@ -108,7 +119,7 @@ export async function testOpenAIAccount(
       accountName: account.name,
       providerCode: account.providerCode,
       type: account.type,
-      clientCompatibility: account.clientCompatibility,
+      clientCompatibility: accountClientCompatibility,
       testClientCompatibility: clientCompatibility,
       success,
       statusCode: response.statusCode,
@@ -141,7 +152,7 @@ export async function testOpenAIAccount(
       accountName: account.name,
       providerCode: account.providerCode,
       type: account.type,
-      clientCompatibility: account.clientCompatibility,
+      clientCompatibility: accountClientCompatibility,
       testClientCompatibility: clientCompatibility,
       success: false,
       message,
@@ -157,6 +168,13 @@ export async function testOpenAIAccount(
       accountFailureEligible
     }), limitedDiagnostics)
   }
+}
+
+export function preferredSystemAccountTestModel(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel'>): string {
+  return stringValue(account.lastSuccessfulTestModel)
+    || findProviderDefaultTestModel(account.providerCode)
+    || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
+    || ''
 }
 
 function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult {
@@ -452,7 +470,7 @@ function createOpenAITestRequest(input: {
   requestShape?: RecentOpenAIRequestShape
 }): { path: string; body: Record<string, unknown>; model: string } {
   const path = testPathFromRecentShape(input.requestShape, input.isOAuth, input.clientCompatibility)
-  const model = stringValue(input.explicitModel) || stringValue(input.requestShape?.model) || input.fallbackModel
+  const model = stringValue(input.explicitModel) || input.fallbackModel
   return {
     path,
     body: path === gatewayChatCompletionsPath
@@ -463,7 +481,9 @@ function createOpenAITestRequest(input: {
 }
 
 function defaultAccountTestModel(account: AccountSummary): string {
-  return account.supportedModels?.map((model) => stringValue(model)).find(Boolean) || defaultTestModel
+  return findProviderDefaultTestModel(account.providerCode)
+    || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
+    || ''
 }
 
 function testPathFromRecentShape(shape: RecentOpenAIRequestShape | undefined, isOAuth: boolean, clientCompatibility: AccountClientCompatibility): string {

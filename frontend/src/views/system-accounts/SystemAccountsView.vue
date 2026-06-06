@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card system-account-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索用户名称" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchAccounts" @reset="resetSearch" @refresh="refreshAccounts">
+    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索用户名或显示名称" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchAccounts" @reset="resetSearch" @refresh="refreshAccounts">
       <template #actions>
         <a-button v-if="canManageSystemAccounts" type="primary" @click="openCreate">新增系统账户</a-button>
       </template>
@@ -68,7 +68,7 @@
           <a-input v-model:value="form.username" :disabled="Boolean(editingId)" placeholder="例如 user01" />
         </a-form-item>
         <a-form-item label="显示名称" required>
-          <a-input v-model:value="form.displayName" placeholder="例如 业务用户" />
+          <a-input v-model:value="form.displayName" placeholder="例如业务用户" />
         </a-form-item>
         <a-form-item label="说明">
           <a-textarea v-model:value="form.description" :rows="3" placeholder="可选，填写账户用途或归属说明" />
@@ -94,9 +94,9 @@
     <a-modal v-model:open="passwordModalOpen" title="重置系统账户密码" :confirm-loading="resetPasswordSaving" :ok-button-props="{ disabled: resetPasswordSaving }" @ok="handleResetPassword">
       <a-form layout="vertical">
         <a-form-item label="新密码" required>
-          <a-input-password v-model:value="resetPassword" placeholder="请输入新密码" />
+          <a-input-password v-model:value="resetPassword" placeholder="请输入不含空格的新密码" />
         </a-form-item>
-        <a-alert type="info" show-icon message="保存后该账户下次登录会收到修改密码提醒。" />
+        <a-alert type="info" show-icon message="密码不能包含空格，保存后该账户下次登录会收到修改密码提醒。" />
       </a-form>
     </a-modal>
   </a-card>
@@ -130,6 +130,7 @@ const resettingId = ref<string>()
 const resetPassword = ref('')
 const keyword = ref('')
 const canManageSystemAccounts = computed(() => isSuperAdminRole(authState.currentUser.value?.role))
+const whitespacePattern = /\s/
 
 const form = reactive({
   username: '',
@@ -255,8 +256,16 @@ const handleSave = submitAction('system_accounts.save', async () => {
     message.warning('请填写用户名和显示名称')
     return
   }
+  if (hasWhitespace(form.username) || hasWhitespace(form.displayName)) {
+    message.warning('用户名和显示名称不能包含空格')
+    return
+  }
   if (!editingId.value && form.password.length < 4) {
     message.warning('初始密码至少 4 位')
+    return
+  }
+  if (!editingId.value && hasWhitespace(form.password)) {
+    message.warning('初始密码不能包含空格')
     return
   }
   try {
@@ -305,6 +314,10 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
     message.warning('新密码至少 4 位')
     return
   }
+  if (hasWhitespace(resetPassword.value)) {
+    message.warning('新密码不能包含空格')
+    return
+  }
   try {
     await api.systemAccounts.update(resettingId.value, { password: resetPassword.value, mustChangePassword: true })
     message.success('密码已重置')
@@ -330,6 +343,10 @@ function resetSearch() {
 
 function refreshAccounts() {
   void loadData()
+}
+
+function hasWhitespace(value: string): boolean {
+  return whitespacePattern.test(value)
 }
 
 onMounted(loadData)

@@ -4,7 +4,7 @@
       :active-filter-count="activeAdvancedFilterCount"
       :export-loading="exportLoading"
       :filters="filters"
-      :group-filter-disabled="isManagementView && !accountScopeParams?.systemAccountId"
+      :group-filter-disabled="false"
       :group-options="filterGroupOptions"
       :group-options-loading="filterGroupOptionsLoading"
       :is-management-view="isManagementView"
@@ -46,8 +46,10 @@
     </AccountFilterToolbar>
 
     <AccountBatchToolbar
+      :deletable-count="selectedDeletableAccountCount"
       :selected-count="selectedAccounts.length"
       @clear="clearSelection"
+      @delete="batchDeleteSelected"
       @disable="batchSetStatus('disabled')"
       @enable="batchSetStatus('active')"
       @restore="batchRestoreSelected"
@@ -57,6 +59,7 @@
     <AccountImportModal
       v-if="importModalOpen"
       v-model:open="importModalOpen"
+      :is-management-view="isManagementView"
       :scope-params="accountScopeParams"
       :target-system-account-label="targetSystemAccountLabel"
       @imported="handleImportCompleted"
@@ -103,6 +106,9 @@
       v-model:client-compatibility="testForm.clientCompatibility"
       v-model:model="testForm.model"
       :account="testingAccount"
+      :accounts="batchTestingAccounts"
+      :batch-items="batchTestItems"
+      :mode="testMode"
       :model-options="testModelOptions"
       :models-loading="testModelsLoading"
       :provider-name="providerName"
@@ -219,6 +225,7 @@ import {
 import {
   accountMenuItems,
   canCloneAccount,
+  canBatchDeleteAccount,
   canDeleteAccount,
   canEditAccount,
   canSelectAccountForBatch
@@ -287,6 +294,7 @@ const {
   resetSearch: resetFilterGroupOptionsSearch
 } = useAccountGroupOptions({
   allowAllProviders: true,
+  allowGlobalManagement: true,
   errorMessage: '加载筛选分组选项失败',
   isManagementView: () => isManagementView.value,
   limit: 50,
@@ -347,6 +355,7 @@ function tableChangeAction(value: unknown): string | undefined {
 const accountById = computed(() => accountByIdMap(accounts.value))
 const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIdSet.value.has(account.id)))
+const selectedDeletableAccountCount = computed(() => selectedAccounts.value.filter(canBatchDeleteAccount).length)
 const groupOptionProviderCode = ref('')
 const groupOptionSystemAccountId = ref('')
 const selectedGroupIds = ref<Array<string | undefined>>([])
@@ -418,13 +427,16 @@ const {
   systemAccounts
 })
 const {
+  batchTestItems,
+  batchTestingAccounts,
   closeTestModal,
+  openBatchTestModal,
   openTestModal,
   runAccountTest,
   stopAccountTest,
-  testAccountSilently,
   testForm,
   testModalOpen,
+  testMode,
   testModelOptions,
   testModelsLoading,
   testResult,
@@ -432,8 +444,10 @@ const {
   testingAccount
 } = useAccountTestModal({
   accountScopeParams,
+  clearSelection,
   isManagementView,
-  loadData
+  loadData,
+  providers: availableProviders
 })
 const {
   openTrafficMigration,
@@ -494,6 +508,7 @@ watch([groupOptionProviderCode, groupOptionSystemAccountId], () => {
   resetGroupOptionsSearch()
 })
 const {
+  batchDeleteSelected,
   batchRestoreSelected,
   batchSetStatus,
   batchTestSelected
@@ -502,8 +517,8 @@ const {
   clearSelection,
   isManagementView,
   loadData,
-  selectedAccounts,
-  testAccountSilently
+  openBatchTestModal,
+  selectedAccounts
 })
 const {
   handleAccountMenuClick
@@ -631,13 +646,12 @@ function openImportModal() {
 }
 
 async function exportFilteredAccounts() {
-  if (!isManagementView.value) return
   exportLoading.value = true
   try {
-    const result = await api.accounts.export(
-      { filters: currentAccountExportFilters() },
-      accountScopeParams.value
-    )
+    const payload = { filters: currentAccountExportFilters() }
+    const result = isManagementView.value
+      ? await api.accounts.export(payload, accountScopeParams.value)
+      : await api.myAccounts.export(payload)
     downloadJsonFile(accountExportFilename(result.summary.accounts), result.document)
     message.success(accountFilterExportSuccessMessage(result.summary))
   } catch (error) {
@@ -657,7 +671,6 @@ async function exportAccounts() {
 }
 
 async function exportAccountsByIds(sourceAccounts: AccountSummary[]) {
-  if (!isManagementView.value) return
   const exportableAccounts = sourceAccounts.filter(canExportAccount)
   if (!exportableAccounts.length) {
     message.warning('所选账户没有可导出的自有 AI 账户')
@@ -669,10 +682,10 @@ async function exportAccountsByIds(sourceAccounts: AccountSummary[]) {
   }
   exportLoading.value = true
   try {
-    const result = await api.accounts.export(
-      { accountIds: exportableAccounts.map((account) => account.id) },
-      accountScopeParams.value
-    )
+    const payload = { accountIds: exportableAccounts.map((account) => account.id) }
+    const result = isManagementView.value
+      ? await api.accounts.export(payload, accountScopeParams.value)
+      : await api.myAccounts.export(payload)
     downloadJsonFile(accountExportFilename(result.summary.accounts), result.document)
     const skippedSelectedCount = sourceAccounts.length - exportableAccounts.length
     const skippedCount = (result.summary.skippedAccounts ?? 0) + skippedSelectedCount
@@ -692,7 +705,7 @@ function currentAccountExportFilters(): AccountExportFilters {
     keyword: filters.keyword.trim() || undefined,
     providerCode: filters.providerCode && filters.providerCode !== 'all' ? filters.providerCode : undefined,
     type: filters.type && filters.type !== 'all' ? filters.type : undefined,
-    groupId: isManagementView.value && !accountScopeParams.value?.systemAccountId ? undefined : filters.groupId || undefined,
+    groupId: filters.groupId || undefined,
     status: filters.status.length ? filters.status : undefined
   }
 }

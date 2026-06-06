@@ -20,7 +20,6 @@ export interface SystemSettings {
   accountQualityWindowMinutes: number
   cooldownAccountRetestIntervalSeconds: number
   cooldownAccountRetestBatchSize: number
-  cooldownAccountRetestModel: string
   cooldownAccountRetestMaxBackoffHours: number
   oauthAccessTokenRefreshIntervalSeconds: number
   oauthAccessTokenRefreshLeadSeconds: number

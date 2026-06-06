@@ -133,6 +133,7 @@ export interface ProviderDefinition {
   description?: string
   enabled: boolean
   baseUrl: string
+  defaultTestModel: string
   accountTypes: AccountType[]
   capabilities: string[]
 }
@@ -390,6 +391,7 @@ export interface AccountSummary {
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
+  lastSuccessfulTestModel?: string
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -533,6 +535,27 @@ export interface AccountTestResult {
   errorPolicyReason?: string
   clientCompatibility?: AccountClientCompatibility
   testClientCompatibility?: AccountClientCompatibility
+}
+
+export type AccountTestTaskStatus = 'queued' | 'running' | 'success' | 'failed' | 'canceled'
+
+export interface AccountTestTask {
+  id: string
+  accountId: string
+  accountName: string
+  providerCode: ProviderCode
+  type: AccountType
+  status: AccountTestTaskStatus
+  message?: string
+  model?: string
+  clientCompatibility?: AccountClientCompatibility
+  result?: AccountTestResult
+  cancelRequested?: boolean
+  createdAt: string
+  queuedAt: string
+  startedAt?: string
+  finishedAt?: string
+  updatedAt: string
 }
 
 export type ModelCheckTargetType = 'account'

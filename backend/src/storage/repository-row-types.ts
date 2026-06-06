@@ -47,6 +47,7 @@ export interface AccountRow {
   cooldown_retest_observation_started_at: string | null
   cooldown_retest_last_at: string | null
   cooldown_retest_last_status_code: number | null
+  last_successful_test_model: string | null
   stream_failure_count: number
   stream_failure_window_started_at: string | null
   authorization_instance_source_account_id: string | null
@@ -193,6 +194,7 @@ export type AccountListRow = AccountRow & {
   source_cooldown_until?: string | null
   source_last_error_code?: string | null
   source_last_error_message?: string | null
+  source_last_successful_test_model?: string | null
   source_credential_mask?: string | null
   source_credentials_encrypted?: string | null
   source_proxy_profile_id?: string | null

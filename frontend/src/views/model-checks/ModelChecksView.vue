@@ -10,6 +10,7 @@
                 v-model:selected-principal="systemAccountFilterSelection"
                 :accounts="systemAccounts"
                 :active-only="false"
+                include-all
                 allow-clear
                 :disabled="submitting"
                 :filter-option="false"
@@ -117,6 +118,7 @@
             v-model:selected-principal="systemAccountFilterSelection"
             :accounts="systemAccounts"
             :active-only="false"
+            include-all
             allow-clear
             class="history-filter history-system-account-filter"
             :filter-option="false"
@@ -135,7 +137,7 @@
             show-search
             allow-clear
             class="history-target-filter"
-            :disabled="managementScopeRequired"
+            :disabled="submitting"
             :filter-option="false"
             :loading="historyTargetOptionsLoading"
             :options="historyTargetOptions"
@@ -377,7 +379,7 @@ type SelectValue = string | string[] | undefined
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
 const accountsApi = useScopedAccountsApi(isManagementView)
-const systemAccountFilter = ref<string>()
+const systemAccountFilter = ref<string>(allSystemAccountsValue)
 const systemAccountFilterSelection = ref<PrincipalSelection>()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
@@ -389,7 +391,7 @@ const {
   enabled: () => isManagementView.value,
   onMissingSelectedIds: (ids) => {
     if (!systemAccountFilter.value || !ids.includes(systemAccountFilter.value)) return
-    systemAccountFilter.value = undefined
+    systemAccountFilter.value = allSystemAccountsValue
     systemAccountFilterSelection.value = undefined
     resetModelCheckScopedState()
     void loadOptions()
@@ -450,15 +452,6 @@ const {
     ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 条检测记录，还有更多`
     : `共 ${formatNumber(total)} 条检测记录`,
   fetchPage: (_options, pageState) => {
-    if (managementScopeRequired.value) {
-      return Promise.resolve({
-        items: [],
-        page: pageState.current,
-        pageSize: pageState.pageSize,
-        total: 0,
-        hasMore: false
-      })
-    }
     return modelChecksApi.list({
       ...modelCheckScopeParams.value,
       page: pageState.current,
@@ -487,12 +480,11 @@ const modelCheckScopeParams = computed(() => {
   const systemAccountId = selectedManagementSystemAccountId.value
   return isManagementView.value && systemAccountId ? { systemAccountId } : undefined
 })
-const managementScopeRequired = computed(() => isManagementView.value && !selectedManagementSystemAccountId.value)
-const accountSelectDisabled = computed(() => submitting.value || managementScopeRequired.value)
-const accountSelectPlaceholder = computed(() => managementScopeRequired.value ? '请先选择系统账户' : '输入账户名称搜索')
-const comparisonSelectPlaceholder = computed(() => managementScopeRequired.value ? '请先选择系统账户' : '可信对比账户（可选）')
-const historyAccountSelectPlaceholder = computed(() => managementScopeRequired.value ? '请先选择系统账户' : '全部账户')
-const modelCheckHistoryEmptyText = computed(() => managementScopeRequired.value ? '请先选择系统账户后查看模型检测历史' : '暂无模型检测历史')
+const accountSelectDisabled = computed(() => submitting.value)
+const accountSelectPlaceholder = computed(() => '输入账户名称搜索')
+const comparisonSelectPlaceholder = computed(() => '可信对比账户（可选）')
+const historyAccountSelectPlaceholder = computed(() => '全部账户')
+const modelCheckHistoryEmptyText = computed(() => '暂无模型检测历史')
 const detailDescriptionColumns = computed(() => (window.innerWidth < 900 ? 1 : 2))
 const terminalStatusText = computed(() => submitting.value ? '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
 const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalLines.value.length ? 'green' : 'default')
@@ -527,11 +519,6 @@ async function loadOptions() {
 }
 
 async function loadTargetOptions(keyword = '') {
-  if (managementScopeRequired.value) {
-    targetOptions.value = []
-    targetOptionsLoading.value = false
-    return
-  }
   const normalizedKeyword = keyword.trim()
   const systemAccountId = modelCheckScopeParams.value?.systemAccountId
   const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword])
@@ -570,11 +557,6 @@ async function loadTargetOptions(keyword = '') {
 }
 
 async function loadComparisonOptions(keyword = '') {
-  if (managementScopeRequired.value) {
-    comparisonOptions.value = []
-    comparisonOptionsLoading.value = false
-    return
-  }
   const normalizedKeyword = keyword.trim()
   const systemAccountId = modelCheckScopeParams.value?.systemAccountId
   const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword, form.targetId])
@@ -613,11 +595,6 @@ async function loadComparisonOptions(keyword = '') {
 }
 
 async function loadHistoryTargetOptions(keyword = '') {
-  if (managementScopeRequired.value) {
-    historyTargetOptions.value = []
-    historyTargetOptionsLoading.value = false
-    return
-  }
   const normalizedKeyword = keyword.trim()
   const systemAccountId = modelCheckScopeParams.value?.systemAccountId
   const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword])
@@ -654,10 +631,6 @@ async function loadHistoryTargetOptions(keyword = '') {
 }
 
 async function submitRun() {
-  if (managementScopeRequired.value) {
-    message.warning('请先选择系统账户')
-    return
-  }
   const targetId = form.targetId.trim()
   const trustedComparisonAccountId = form.trustedComparisonAccountId?.trim()
   if (!targetId) {
@@ -723,10 +696,6 @@ async function reloadRuns() {
 }
 
 async function loadRunDetail(id: string) {
-  if (managementScopeRequired.value) {
-    message.warning('请先选择系统账户')
-    return
-  }
   detailOpen.value = true
   detailLoading.value = true
   try {
@@ -742,6 +711,7 @@ async function loadRunDetail(id: string) {
 
 function handleSystemAccountFilterChange() {
   if (!systemAccountFilter.value) {
+    systemAccountFilter.value = allSystemAccountsValue
     systemAccountFilterSelection.value = undefined
   }
   resetSystemAccountOptionsSearch()

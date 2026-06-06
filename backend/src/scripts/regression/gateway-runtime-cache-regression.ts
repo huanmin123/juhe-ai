@@ -161,10 +161,10 @@ try {
   assert.equal(fakeChild.sentOperationCount, 7, '计划边界前重复读取应命中缓存')
   const scheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
   assert.equal(scheduledAfterBoundary.apiKey?.availability_schedule_active, 0, '计划边界后应重新计算为停用')
-  assert.equal(scheduledAfterBoundary.accounts.length, 0, '计划停用后不应返回候选账号')
+  assert.equal(scheduledAfterBoundary.accounts.length, 0, '时段外后不应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, 8, '即使缓存被高频命中，计划边界后也应重新请求 DB service')
   const groupAccountsAfterInactiveKeySchedule = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.listCachedOpenAIAccountsForGroupAsync(apiKey.accountGroupId, 'sys_admin'))
-  assert.equal(groupAccountsAfterInactiveKeySchedule.length, 2, 'API Key 计划停用不应污染同分组账户候选缓存')
+  assert.equal(groupAccountsAfterInactiveKeySchedule.length, 2, 'API Key 时段外不应污染同分组账户候选缓存')
 
   gatewayCache.clearGatewayRuntimeCacheLocal()
   const unscheduledGroupListOperationCount = fakeChild.sentOperationCount
@@ -178,20 +178,20 @@ try {
   const accountScheduleOperationCount = fakeChild.sentOperationCount
   const accountScheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountScheduledKey))
   assert.equal(accountScheduledFirst.apiKey?.availability_schedule_json, null, '账户计划用例不应依赖 API Key 自身计划')
-  assert.equal(accountScheduledFirst.hasAccountAvailabilitySchedule, true, '运行配置应标记分组内存在账户自动启停计划')
+  assert.equal(accountScheduledFirst.hasAccountAvailabilitySchedule, true, '运行配置应标记分组内存在账户可用时段计划')
   assert.equal(accountScheduledFirst.accounts.length, 1, '账户计划允许时段内应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, accountScheduleOperationCount + 1, '首次读取账户计划 API Key 应请求 DB service')
   const accountScheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountScheduledKey))
   assert.equal(accountScheduledSecond.accounts.length, 1, '账户计划边界前应继续命中可用缓存')
   assert.equal(fakeChild.sentOperationCount, accountScheduleOperationCount + 1, '账户计划边界前重复读取应命中缓存')
   const accountScheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountScheduledKey))
-  assert.equal(accountScheduledAfterBoundary.accounts.length, 0, '账户计划停用后不应返回候选账号')
+  assert.equal(accountScheduledAfterBoundary.accounts.length, 0, '账户时段外后不应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, accountScheduleOperationCount + 2, '只有账户计划存在时，计划边界后也应重新请求 DB service')
 
   const multiGroupAccountScheduleOperationCount = fakeChild.sentOperationCount
   const multiGroupAccountScheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.multiGroupAccountScheduledKey))
-  assert.equal(multiGroupAccountScheduledFirst.hasAccountAvailabilitySchedule, true, '多分组全部因账户计划停用时仍应保留账户计划重校验标记')
-  assert.equal(multiGroupAccountScheduledFirst.accounts.length, 0, '多分组全部因账户计划停用时应返回空候选')
+  assert.equal(multiGroupAccountScheduledFirst.hasAccountAvailabilitySchedule, true, '多分组全部因账户时段外时仍应保留账户计划重校验标记')
+  assert.equal(multiGroupAccountScheduledFirst.accounts.length, 0, '多分组全部因账户时段外时应返回空候选')
   assert.equal(fakeChild.sentOperationCount, multiGroupAccountScheduleOperationCount + 1, '首次读取多分组账户计划 API Key 应请求 DB service')
   const multiGroupAccountScheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.multiGroupAccountScheduledKey))
   assert.equal(multiGroupAccountScheduledSecond.accounts.length, 0, '多分组账户计划边界前应继续命中空候选缓存')
@@ -564,3 +564,5 @@ async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T):
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+
+

@@ -3,10 +3,10 @@ import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import type { AccountMenuItem } from './accountActionTypes'
+import { OPENAI_PROVIDER_CODE } from './accountOptions'
 import {
   formatDateTime,
   hasAccountRuntimeRecoveryState,
-  authorizationSourceAccountTooltipLines,
   isAccountPackageExpiredStatus,
   isAuthorizationBindingUnavailable,
   isAuthorizationExpired,
@@ -18,46 +18,20 @@ import {
 export type AccountGroupIdResolver = (accountId: string) => string | undefined
 export type AuthorizedAccountSourceTone = 'normal' | 'warning' | 'danger'
 
+export function authorizedAccountOwnerBadgeText(account: AccountSummary): string {
+  return `${account.ownerSystemAccountName || '其他用户'}授权`
+}
+
 export function authorizedAccountTooltip(account: AccountSummary): string {
   const ownerName = account.ownerSystemAccountName || '其他用户'
   const expiresText = account.authorizationExpiresAt ? formatDateTime(account.authorizationExpiresAt) : '长期有效'
   const limitsText = quotaLimitSummaryText(account.authorizationLimits)
-  const hasBlocker = hasAuthorizedAccountSourceBlocker(account)
   const lines = [
     `授权自 ${ownerName}。`,
     `授权来源：${authorizedAccountSourceText(account)}`,
     `授权到期：${expiresText}`,
     `授权限额：${limitsText}`
   ]
-  lines.push(...authorizationSourceAccountTooltipLines(account))
-  if (isAuthorizationExpired(account)) {
-    lines.push('授权已到期，当前不可用。')
-  }
-  if (isAuthorizationPaused(account)) {
-    lines.push('授权已暂停，当前不可用。')
-  }
-  if (account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
-    lines.push('授权额度已用完，当前调用会被拦截。')
-  }
-  if (isAccountPackageExpiredStatus(account)) {
-    lines.push('账户已到期，当前不可用。')
-  } else if (isAuthorizedAccount(account) && account.status === 'disabled') {
-    lines.push('账户已停用，当前不可用。')
-  } else if (isAuthorizedAccount(account) && account.status === 'error') {
-    lines.push('授权账户状态异常，当前不可用。')
-  } else if (isTemporaryAccountStatus(account) || (isAuthorizedAccount(account) && !account.schedulable)) {
-    lines.push(isAuthorizedAccount(account) ? '授权账户实例暂时不可调用，恢复前不会参与调度。' : '账户暂时不可调用，恢复前不会参与调度。')
-  }
-  if (isAuthorizationBindingUnavailable(account)) {
-    lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人。')
-  }
-  if (authorizedAccountSourceTone(account) === 'warning' && !hasBlocker) {
-    if (isAuthorizationExpiringSoon(account)) {
-      lines.push('授权即将到期，请提前续期。')
-    } else {
-      lines.push('该授权配置了额度限制，达到限额后会停止调度。')
-    }
-  }
   return lines.join('\n')
 }
 
@@ -91,7 +65,9 @@ function authorizedAccountSourceText(account: AccountSummary): string {
 function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
   if (account.effectiveAvailability?.available === false) return true
   return Boolean(
-    account.authorizationQuotaExceeded
+    account.permissions?.canUse === false
+    || !account.boundGroupId
+    || account.authorizationQuotaExceeded
     || isAuthorizationExpired(account)
     || isAuthorizationPaused(account)
     || isAuthorizationBindingUnavailable(account)
@@ -124,6 +100,10 @@ export function canDeleteAccount(account: AccountSummary): boolean {
   return account.permissions?.canDelete !== false
 }
 
+export function canBatchDeleteAccount(account: AccountSummary): boolean {
+  return canDeleteAccount(account)
+}
+
 export function canReturnAuthorizedAccount(account: AccountSummary): boolean {
   if (!isAuthorizedAccount(account)) return false
   if (!account.accountAuthorizationId) return false
@@ -153,7 +133,7 @@ export function canBatchManageAccount(account: AccountSummary): boolean {
 }
 
 export function canSelectAccountForBatch(account: AccountSummary): boolean {
-  return canBatchManageAccount(account) || canBatchRestoreAccount(account) || canTestAccount(account)
+  return canBatchManageAccount(account) || canBatchRestoreAccount(account) || canBatchDeleteAccount(account) || canTestAccount(account)
 }
 
 export function canBatchRestoreAccount(account: AccountSummary): boolean {
@@ -221,6 +201,7 @@ export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
 }
 
 export function canTestAccount(account: AccountSummary): boolean {
+  if (account.providerCode !== OPENAI_PROVIDER_CODE) return false
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
     if (account.effectiveAvailability?.available === false) {

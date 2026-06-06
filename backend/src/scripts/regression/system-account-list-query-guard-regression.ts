@@ -104,7 +104,10 @@ try {
     assert(!searchIds.includes(descriptionOnlyUser.id), '系统账户列表搜索不应命中说明字段')
 
     const usernameResult = repositories.listSystemAccountsPage({ keyword: 'system_account_list_user', page: 1, pageSize: 20 })
-    assert(!usernameResult.items.some((account) => account.id === exactUser.id), '系统账户管理列表搜索不应通过用户名命中')
+    const usernameIds = usernameResult.items.map((account) => account.id)
+    assert(usernameIds.includes(exactUser.id), '系统账户列表搜索应命中用户名精确值')
+    assert(usernameIds.includes(prefixUser.id), '系统账户列表搜索应命中用户名前缀值')
+    assert(!usernameIds.includes(middleUser.id), '系统账户列表搜索不应命中用户名中间包含')
 
     const wildcardResult = repositories.listSystemAccountsPage({ keyword: 'sysacc_percent%', page: 1, pageSize: 20 })
     const wildcardIds = wildcardResult.items.map((account) => account.id)
@@ -119,7 +122,6 @@ try {
     assert(/\bLIMIT\s+\?\s+OFFSET\s+\?/i.test(call.sql), '系统账户列表必须分页查询')
     assert(!/\bpassword_hash\b/i.test(call.sql), '系统账户列表不应读取 password_hash')
     assert(!/\bid\s+(?:=|LIKE)\s+\?/i.test(call.sql), '系统账户管理列表搜索不应把 ID 放进通用关键词 WHERE')
-    assert(!/\busername\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '系统账户管理列表搜索不应把用户名放进通用关键词 WHERE')
     assert(!/\bdescription\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '系统账户列表关键词搜索不应扫描 description')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '系统账户列表搜索不应传入前导通配符参数')
     if (/\bLIKE\s+\?/i.test(call.sql)) {
@@ -130,7 +132,7 @@ try {
   assertBusinessIndexExists('idx_system_accounts_username_lookup')
   assertBusinessIndexExists('idx_system_accounts_display_name_lookup')
 
-  console.log('系统账户列表查询防护回归通过：列表分页读取，关键词仅按用户名称精确/前缀匹配且不读取密码哈希')
+  console.log('系统账户列表查询防护回归通过：列表分页读取，关键词按用户名和用户名称精确/前缀匹配且不读取密码哈希')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

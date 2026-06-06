@@ -18,6 +18,7 @@ export const OPENAI_PROVIDER_SEED = {
   description: '当前内置供应商，支持 OAuth 与 API Key 两种账户接入方式',
   enabled: 1,
   baseUrl: 'https://api.openai.com/v1',
+  defaultTestModel: 'gpt-5.5',
   accountTypes: ['oauth', 'api_key'],
   capabilities: ['models', 'responses', 'stream', 'passthrough']
 } as const
@@ -44,7 +45,6 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['accountQualityWindowMinutes', 10],
   ['cooldownAccountRetestIntervalSeconds', 3],
   ['cooldownAccountRetestBatchSize', 10],
-  ['cooldownAccountRetestModel', 'gpt-5.5'],
   ['cooldownAccountRetestMaxBackoffHours', 24],
   ['oauthAccessTokenRefreshIntervalSeconds', 60],
   ['oauthAccessTokenRefreshLeadSeconds', 300],

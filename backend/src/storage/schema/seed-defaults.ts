@@ -57,8 +57,8 @@ export function seedDefaults(database: DatabaseSync): void {
   database
     .prepare(`
       INSERT OR IGNORE INTO providers (
-        id, code, name, description, enabled, base_url, account_types_json, capabilities_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, code, name, description, enabled, base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       OPENAI_PROVIDER_SEED.id,
@@ -67,6 +67,7 @@ export function seedDefaults(database: DatabaseSync): void {
       OPENAI_PROVIDER_SEED.description,
       OPENAI_PROVIDER_SEED.enabled,
       OPENAI_PROVIDER_SEED.baseUrl,
+      OPENAI_PROVIDER_SEED.defaultTestModel,
       JSON.stringify(OPENAI_PROVIDER_SEED.accountTypes),
       JSON.stringify(OPENAI_PROVIDER_SEED.capabilities),
       now,

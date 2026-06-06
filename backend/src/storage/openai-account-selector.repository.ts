@@ -1,6 +1,6 @@
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
 import type { AccountClientCompatibility, AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ResourceAuthorizationSourceType } from '../domain/types.js'
-import { normalizeAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
 import { decryptJson } from './crypto.js'
@@ -41,6 +41,7 @@ export interface OpenAIAccountSecret {
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
+  lastSuccessfulTestModel?: string
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -152,7 +153,7 @@ export function findOpenAIAccountForGroup(
     .prepare(`
       SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-        accounts.availability_schedule_json, accounts.account_expires_at, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+        accounts.availability_schedule_json, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.type AS resource_type,
         source_accounts.status AS resource_status,
@@ -380,7 +381,7 @@ function listOpenAIGroupAccountSelectionRows(
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
         accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-        accounts.availability_schedule_json, accounts.account_expires_at, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+        accounts.availability_schedule_json, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.type AS resource_type,
         source_accounts.status AS resource_status,
@@ -487,6 +488,7 @@ interface OpenAIAccountRow {
   stream_failure_window_started_at: string | null
   availability_schedule_json: string | null
   account_expires_at: string | null
+  last_successful_test_model: string | null
   authorization_instance_source_account_id?: string | null
   authorization_instance_authorization_id?: string | null
   authorization_instance_owner_system_account_id?: string | null
@@ -533,7 +535,7 @@ function openAIAccountResourceErrorPolicyId(row: OpenAIAccountRow): string | nul
 }
 
 function openAIAccountResourceClientCompatibility(row: OpenAIAccountRow): AccountClientCompatibility {
-  return normalizeAccountClientCompatibility(row.resource_client_compatibility ?? row.client_compatibility)
+  return normalizeOpenAIAccountClientCompatibility('openai', openAIAccountResourceType(row), row.resource_client_compatibility ?? row.client_compatibility)
 }
 
 function openAIAccountSecretFromRow(
@@ -605,6 +607,7 @@ function openAIAccountSecretFromRow(
     fallbackEnabled: runtimeStatus === 'active' && dispatchFallbackEnabled,
     clientCompatibility: openAIAccountResourceClientCompatibility(row),
     supportedModels: [...(options.supportedModelsByAccountId?.get(resourceAccountId) ?? [])],
+    lastSuccessfulTestModel: row.last_successful_test_model?.trim() || undefined,
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,

@@ -53,7 +53,7 @@ try {
   }, access)
   const denied = repositories.createAccount({
     providerCode: 'openai',
-    name: '账户计划停用回归',
+    name: '账户时段外回归',
     type: 'api_key',
     credentials: { api_key: 'sk-account-schedule-deny', base_url: 'https://api.openai.com/v1' },
     availabilitySchedule: futureSchedule,
@@ -64,14 +64,14 @@ try {
   assert.equal(groupId, group.id, '测试账户应加入指定分组')
   const runtimeAccounts = repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId)
   assert.equal(runtimeAccounts.some((account) => account.id === allowed.id), true, '计划允许时账户应进入网关候选')
-  assert.equal(runtimeAccounts.some((account) => account.id === denied.id), false, '计划停用时账户不应进入网关候选')
+  assert.equal(runtimeAccounts.some((account) => account.id === denied.id), false, '时段外时账户不应进入网关候选')
 
   const deniedSummary = repositories.findAccountSummary(denied.id, access)
-  assert.equal(deniedSummary?.availabilitySchedule?.enabled, true, '账户详情应返回自动启停计划')
-  assert.equal(deniedSummary?.schedulable, true, '计划停用不应改写持久参与调度开关')
+  assert.equal(deniedSummary?.availabilitySchedule?.enabled, true, '账户详情应返回可用时段计划')
+  assert.equal(deniedSummary?.schedulable, true, '时段外不应改写持久参与调度开关')
 
   const cleared = repositories.updateAccount(denied.id, { availabilitySchedule: null }, access)
-  assert.equal(cleared?.availabilitySchedule, undefined, '提交 null 应清空账户自动启停计划')
+  assert.equal(cleared?.availabilitySchedule, undefined, '提交 null 应清空账户可用时段计划')
   const runtimeAfterClear = repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId)
   assert.equal(runtimeAfterClear.some((account) => account.id === denied.id), true, '清空计划后账户应重新进入网关候选')
 
@@ -84,11 +84,11 @@ try {
         windows: [{ daysOfWeek: [8], start: '10:00', end: '11:00' }]
       }
     }),
-    /账户自动启停计划重复日期无效/,
-    '账户自动启停计划非法参数应返回账户语义错误'
+    /账户可用时段计划重复日期无效/,
+    '账户可用时段计划非法参数应返回账户语义错误'
   )
 
-  console.log('账户自动启停计划回归通过：保存、列表展示、网关候选过滤和清空计划符合预期')
+  console.log('账户可用时段计划回归通过：保存、列表展示、网关候选过滤和清空计划符合预期')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -97,3 +97,5 @@ try {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
+
+

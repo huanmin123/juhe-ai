@@ -3,7 +3,8 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
-import { createSession, findSessionByToken, revokeOtherSessionsForAccount, revokeSession, touchSession, updateSystemAccountAsync, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
+import { createSession, findSessionByToken, findSystemAccountById, revokeOtherSessionsForAccount, revokeSession, touchSession, updateSystemAccount, updateSystemAccountAsync, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
+import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
 import { consumeCaptchaIssueAllowance, createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
 import { checkLoginAllowed, getLoginClientIp, recordFailedLogin, recordSuccessfulLogin } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
@@ -12,9 +13,10 @@ export const authRouter = Router()
 
 const sessionCookieName = 'juhe_ai_session'
 const sessionMaxAgeMs = 14 * 24 * 60 * 60 * 1000
+const whitespacePattern = /\s/
 
 const loginSchema = z.object({
-  username: z.string().trim().min(1),
+  username: z.string().min(1),
   password: z.string().min(1),
   captchaId: z.string().trim().min(1),
   captchaCode: z.string().trim().min(1)
@@ -23,6 +25,10 @@ const loginSchema = z.object({
 const passwordSchema = z.object({
   oldPassword: z.string().min(1).optional(),
   newPassword: z.string().min(4)
+}).strict()
+
+const profileSchema = z.object({
+  displayName: z.string().min(1)
 }).strict()
 
 authRouter.get('/captcha', (req, res) => {
@@ -47,6 +53,11 @@ authRouter.post('/login', async (req, res, next) => {
     }
 
     const clientIp = getLoginClientIp(req)
+
+    if (hasWhitespace(parsed.data.username) || hasWhitespace(parsed.data.password)) {
+      res.status(400).json(badRequest('用户名和密码不能包含空格'))
+      return
+    }
 
     if (!verifyCaptchaChallenge(parsed.data.captchaId, parsed.data.captchaCode)) {
       res.status(400).json({ message: '验证码错误或已过期' })
@@ -110,6 +121,61 @@ authRouter.get('/me', requireSessionContext, (_req, res) => {
   }))
 })
 
+authRouter.patch('/me', requireSessionContext, (req, res) => {
+  const context = getRequestAuthContext()
+  if (!context) {
+    res.status(401).json({ message: '请先登录' })
+    return
+  }
+  if (context.mustChangePassword) {
+    res.status(403).json({ message: '请先修改初始密码', code: 'must_change_password' })
+    return
+  }
+  const parsed = profileSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('用户资料参数无效'))
+    return
+  }
+  if (hasWhitespace(parsed.data.displayName)) {
+    res.status(400).json(badRequest('显示名称不能包含空格'))
+    return
+  }
+  const displayName = parsed.data.displayName.trim()
+  const before = findSystemAccountById(context.systemAccountId)
+  if (!before) {
+    res.status(404).json({ message: '系统账户不存在' })
+    return
+  }
+  if (before.displayName === displayName) {
+    res.json(ok(currentUserSummary(before)))
+    return
+  }
+  try {
+    const account = updateSystemAccount(context.systemAccountId, {
+      displayName
+    })
+    if (!account) {
+      res.status(404).json({ message: '系统账户不存在' })
+      return
+    }
+    recordOperationLog({
+      operationScopeSystemAccountId: account.id,
+      mode: 'self',
+      module: 'system_accounts',
+      action: 'update',
+      operationKey: 'auth.update_profile',
+      resourceType: 'system_account',
+      resourceId: account.id,
+      resourceName: account.displayName,
+      summary: `修改显示名称：${account.displayName}`,
+      changes: [safeChange('displayName', '显示名称', before.displayName, account.displayName)]
+    }, req)
+    res.json(ok(currentUserSummary(account)))
+  } catch (error) {
+    res.status(409).json({ message: error instanceof Error ? error.message : '修改显示名称失败' })
+  }
+})
+
 authRouter.post('/change-password', requireSessionContext, async (req, res, next) => {
   try {
     const context = getRequestAuthContext()
@@ -120,6 +186,10 @@ authRouter.post('/change-password', requireSessionContext, async (req, res, next
     const parsed = passwordSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest('密码参数无效'))
+      return
+    }
+    if (hasWhitespace(parsed.data.newPassword) || (parsed.data.oldPassword !== undefined && hasWhitespace(parsed.data.oldPassword))) {
+      res.status(400).json(badRequest('登录密码不能包含空格'))
       return
     }
     if (!context.mustChangePassword) {
@@ -188,6 +258,26 @@ function requireSessionContext(req: Request, res: Response, next: NextFunction):
     mustChangePassword: session.account.mustChangePassword,
     sessionId: session.sessionId
   }, next)
+}
+
+function currentUserSummary(account: {
+  id: string
+  username: string
+  displayName: string
+  role: 'super_admin' | 'admin' | 'user'
+  mustChangePassword: boolean
+}) {
+  return {
+    id: account.id,
+    username: account.username,
+    displayName: account.displayName,
+    role: account.role,
+    mustChangePassword: account.mustChangePassword
+  }
+}
+
+function hasWhitespace(value: string): boolean {
+  return whitespacePattern.test(value)
 }
 
 export { sessionCookieName }

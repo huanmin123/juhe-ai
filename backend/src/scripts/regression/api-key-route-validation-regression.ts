@@ -141,7 +141,7 @@ async function main(): Promise<void> {
     assert(!clearedExpiringApiKey.expiresAt, '更新 API Key 时 expiresAt: null 应清空已有过期时间')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '非法自动启停计划回归 Key',
+      name: '非法可用时段计划回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
@@ -151,10 +151,10 @@ async function main(): Promise<void> {
           { daysOfWeek: [1], start: '22:00', end: '22:00' }
         ]
       }
-    }, 'API Key 自动启停计划开始时间和停止时间不能相同')
+    }, 'API Key 可用时段计划开始时间和停止时间不能相同')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '非法自动启停星期回归 Key',
+      name: '非法可用时段星期回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
@@ -164,10 +164,10 @@ async function main(): Promise<void> {
           { daysOfWeek: [1, 9], start: '22:00', end: '23:55' }
         ]
       }
-    }, 'API Key 自动启停计划重复日期无效')
+    }, 'API Key 可用时段计划重复日期无效')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '缺失自动启停模式回归 Key',
+      name: '缺失可用时段模式回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
@@ -176,10 +176,10 @@ async function main(): Promise<void> {
           { daysOfWeek: [1], start: '22:00', end: '23:55' }
         ]
       }
-    }, 'API Key 自动启停计划模式必须为 allow_windows')
+    }, 'API Key 可用时段计划模式必须为 allow_windows')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '非法自动启停模式回归 Key',
+      name: '非法可用时段模式回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
@@ -189,10 +189,10 @@ async function main(): Promise<void> {
           { daysOfWeek: [1], start: '22:00', end: '23:55' }
         ]
       }
-    }, 'API Key 自动启停计划模式必须为 allow_windows')
+    }, 'API Key 可用时段计划模式必须为 allow_windows')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '空时区自动启停回归 Key',
+      name: '空时区可用时段回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
@@ -202,10 +202,10 @@ async function main(): Promise<void> {
           { daysOfWeek: [1], start: '22:00', end: '23:55' }
         ]
       }
-    }, 'API Key 自动启停计划时区不能为空')
+    }, 'API Key 可用时段计划时区不能为空')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '空允许例外自动启停回归 Key',
+      name: '空允许例外可用时段回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
@@ -216,10 +216,10 @@ async function main(): Promise<void> {
         ],
         exceptions: [{ date: '2026-06-01', action: 'allow' }]
       }
-    }, 'API Key 自动启停计划允许例外至少需要一个允许时段')
+    }, 'API Key 可用时段计划允许例外至少需要一个允许时段')
 
     const scheduleApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
-      name: '自动启停计划清空回归 Key',
+      name: '可用时段计划清空回归 Key',
       groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
@@ -229,14 +229,14 @@ async function main(): Promise<void> {
         ]
       }
     })
-    assert(scheduleApiKey.availabilitySchedule?.enabled === true, '创建 API Key 应保存 availabilitySchedule 自动启停计划字段')
-    assert(scheduleApiKey.availabilitySchedule.windows?.length === 1, '自动启停计划字段应保存时段配置')
+    assert(scheduleApiKey.availabilitySchedule?.enabled === true, '创建 API Key 应保存 availabilitySchedule 可用时段计划字段')
+    assert(scheduleApiKey.availabilitySchedule.windows?.length === 1, '可用时段计划字段应保存时段配置')
     const clearedScheduleApiKey = await patchEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys/${scheduleApiKey.id}`, adminCookie, {
       availabilitySchedule: null
     })
-    assert(!clearedScheduleApiKey.availabilitySchedule, '更新 API Key 应支持 availabilitySchedule: null 清空自动启停计划')
+    assert(!clearedScheduleApiKey.availabilitySchedule, '更新 API Key 应支持 availabilitySchedule: null 清空可用时段计划')
 
-    console.log('API Key 路由校验回归通过：完整密钥复制、创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法过期时间、非法自动启停模式、非法时段、非法星期、空时区、非法例外、自动启停清空和清空过期时间均符合预期')
+    console.log('API Key 路由校验回归通过：完整密钥复制、创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法过期时间、非法可用时段模式、非法时段、非法星期、空时区、非法例外、可用时段清空和清空过期时间均符合预期')
   } finally {
     operationLogQueue.flushAllOperationLogQueue()
     await closeServer(appServer)
@@ -364,3 +364,5 @@ main().catch((error) => {
   console.error(error instanceof Error ? error.message : error)
   process.exitCode = 1
 })
+
+

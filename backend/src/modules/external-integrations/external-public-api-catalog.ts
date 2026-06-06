@@ -660,7 +660,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled，默认 active。', example: 'active' },
             { name: 'expiresAt', type: 'string', required: false, description: 'API Key 到期时间，ISO 8601 字符串；未填写表示不过期。', example: '2026-12-31T23:59:59.000Z' },
             { name: 'quotaLimits', type: 'object|null', required: false, description: '请求成本额度限制；支持 hourly、daily、weekly、monthly、total，传 null 表示清空。', example: { daily: { enabled: true, limit: 10 } } },
-            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示不限制。' }
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '可用时段计划；null 表示清空计划，未填写表示不限制。' }
           ],
           example: {
             targetUsername: 'huanmin',
@@ -719,7 +719,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'groupRouteStrategy', type: 'string', required: false, description: '分组路由策略：priority_failover、round_robin 或 weighted_round_robin。', example: 'round_robin' },
             { name: 'expiresAt', type: 'string|null', required: false, description: '新的到期时间；传 null 表示清空到期时间。', example: null },
             { name: 'quotaLimits', type: 'object|null', required: false, description: '新的请求成本额度限制；传 null 表示清空。', example: null },
-            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示保留。' }
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '可用时段计划；null 表示清空计划，未填写表示保留。' }
           ],
           example: {
             targetUsername: 'huanmin',
@@ -886,7 +886,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               name: 'availabilitySchedule',
               type: 'object|null',
               required: false,
-              description: '自动启停计划；null 表示清空计划，未填写表示不限制。'
+              description: '可用时段计划；null 表示清空计划，未填写表示不限制。'
             },
             {
               name: 'notes',
@@ -970,7 +970,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'concurrencyLimit', type: 'number', required: false, description: '单账号并发限制，范围 1 到 100000。', example: 20 },
             { name: 'priority', type: 'number', required: false, description: '账号调度优先级，范围 0 到 100000。', example: 0 },
             { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled。', example: 'disabled' },
-            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '自动启停计划；null 表示清空计划，未填写表示保留。' },
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '可用时段计划；null 表示清空计划，未填写表示保留。' },
             { name: 'notes', type: 'string', required: false, description: '账号备注，最多 1000 个字符。' }
           ],
           example: {
@@ -1388,7 +1388,7 @@ function publicApiKeyFields(prefix: string): ExternalPublicApiField[] {
     apiDocField(`${prefix}.groupBindings[].status`, 'string', false, '绑定状态：active 或 disabled。', 'active'),
     apiDocField(`${prefix}.groupBindings[].groupEnabled`, 'boolean', false, '绑定分组当前是否启用。', true),
     apiDocField(`${prefix}.expiresAt`, 'string', false, 'API Key 到期时间，ISO 8601 字符串；未设置时缺省。', '2026-12-31T23:59:59.000Z'),
-    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, 'API Key 自动启停计划；未设置时缺省。')
+    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, 'API Key 可用时段计划；未设置时缺省。')
   ]
 }
 
@@ -1403,6 +1403,6 @@ function publicAccountFields(prefix: string): ExternalPublicApiField[] {
     apiDocField(`${prefix}.boundGroupId`, 'string', false, '账号绑定分组 ID。', 'grp_xxx'),
     apiDocField(`${prefix}.boundGroupName`, 'string', false, '账号绑定分组名称。', '福利'),
     apiDocField(`${prefix}.schedulable`, 'boolean', false, '账号当前是否可调度。', true),
-    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, '账号自动启停计划；未设置时缺省。')
+    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, '账号可用时段计划；未设置时缺省。')
   ]
 }

@@ -12,6 +12,13 @@ import {
   parseGatewayJsonBodyInWorker
 } from './openai-gateway-json-parser.js'
 import { splitPathAndQuery } from './openai-gateway-route-helpers.js'
+import {
+  openAICodexOriginator,
+  openAICodexResponsesBetaHeader,
+  openAICodexUserAgent,
+  openAICodexVersion
+} from './openai-codex-client-headers.js'
+import { normalizeOpenAICodexBuiltinTools } from './openai-oauth-codex-normalizer.js'
 
 export interface OpenAIClientCompatibilityAccount {
   clientCompatibility?: AccountClientCompatibility
@@ -31,6 +38,27 @@ export async function buildOpenAIClientCompatibilityBody(
   const body = await parseOpenAIClientCompatibilityJsonBody(req, signal)
   applyCodexResponsesCompatibility(body)
   return Buffer.from(JSON.stringify(body), 'utf8')
+}
+
+export function applyOpenAIClientCompatibilityHeaders(
+  req: Request,
+  account: OpenAIClientCompatibilityAccount,
+  headers: Headers
+): void {
+  if (normalizeAccountClientCompatibility(account.clientCompatibility) !== 'codex_responses') {
+    return
+  }
+  if (!isOpenAIResponsesPostRequest(req)) {
+    return
+  }
+  headers.set('accept', 'text/event-stream')
+  headers.set('content-type', 'application/json')
+  setHeaderIfMissing(headers, 'originator', openAICodexOriginator)
+  setHeaderIfMissing(headers, 'user-agent', openAICodexUserAgent)
+  setHeaderIfMissing(headers, 'version', openAICodexVersion)
+  if (!headers.get('openai-beta')?.toLowerCase().includes('responses')) {
+    headers.set('openai-beta', openAICodexResponsesBetaHeader)
+  }
 }
 
 function isOpenAIResponsesPostRequest(req: Request): boolean {
@@ -91,9 +119,21 @@ function applyCodexResponsesCompatibility(body: Record<string, unknown>): void {
         ]
       }
     ]
+  } else if (Array.isArray(body.input)) {
+    body.input = normalizeCodexResponsesInputItems(body.input)
   }
   if (!Object.prototype.hasOwnProperty.call(body, 'instructions')) {
     body.instructions = ''
+  }
+  if (!Array.isArray(body.tools)) {
+    body.tools = []
+  }
+  if (typeof body.tool_choice !== 'string' && !isPlainObject(body.tool_choice)) {
+    body.tool_choice = 'auto'
+  }
+  normalizeOpenAICodexBuiltinTools(body)
+  if (typeof body.parallel_tool_calls !== 'boolean') {
+    body.parallel_tool_calls = true
   }
   body.stream = true
   body.store = false
@@ -102,6 +142,9 @@ function applyCodexResponsesCompatibility(body: Record<string, unknown>): void {
   delete body.max_completion_tokens
   delete body.temperature
   delete body.top_p
+  delete body.context_management
+  delete body.truncation
+  delete body.user
 }
 
 function ensureReasoningEncryptedContent(value: unknown): string[] {
@@ -111,6 +154,24 @@ function ensureReasoningEncryptedContent(value: unknown): string[] {
   return include.includes('reasoning.encrypted_content')
     ? include
     : [...include, 'reasoning.encrypted_content']
+}
+
+function normalizeCodexResponsesInputItems(input: unknown[]): unknown[] {
+  return input.map((item) => {
+    if (!isPlainObject(item) || item.role !== 'system') {
+      return item
+    }
+    return {
+      ...item,
+      role: 'developer'
+    }
+  })
+}
+
+function setHeaderIfMissing(headers: Headers, name: string, value: string): void {
+  if (!headers.get(name)) {
+    headers.set(name, value)
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

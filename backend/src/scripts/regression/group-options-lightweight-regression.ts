@@ -326,8 +326,8 @@ function seedProvider(code: string): void {
   databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT OR IGNORE INTO providers (
-        id, code, name, description, enabled, base_url, account_types_json, capabilities_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        id, code, name, description, enabled, base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       `provider_${code}`,
@@ -335,6 +335,7 @@ function seedProvider(code: string): void {
       code,
       `${code} provider`,
       'https://example.invalid/v1',
+      `${code}-test-model`,
       JSON.stringify(['api_key']),
       JSON.stringify({ chatCompletions: true }),
       now,

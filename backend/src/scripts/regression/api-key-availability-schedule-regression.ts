@@ -22,7 +22,7 @@ assert.equal(
 assert.equal(
   evaluateApiKeyAvailabilitySchedule(dailySchedule, new Date('2026-05-31T15:56:00.000Z')).allowed,
   false,
-  '每天 23:55 后应进入计划停用'
+  '每天 23:55 后应进入时段外'
 )
 
 const crossDaySchedule = normalizeApiKeyAvailabilitySchedule({
@@ -42,7 +42,7 @@ assert.equal(
 assert.equal(
   evaluateApiKeyAvailabilitySchedule(crossDaySchedule, new Date('2026-05-31T19:00:00.000Z')).allowed,
   false,
-  '跨天时段结束后应进入计划停用'
+  '跨天时段结束后应进入时段外'
 )
 
 assert.throws(
@@ -80,7 +80,7 @@ assert.throws(
     ]
   }),
   /模式必须为 allow_windows/,
-  '自动启停计划必须显式提交当前模式'
+  '可用时段计划必须显式提交当前模式'
 )
 
 assert.throws(
@@ -93,7 +93,7 @@ assert.throws(
     ]
   }),
   /时区不能为空/,
-  '自动启停计划显式空时区不能静默回退默认时区'
+  '可用时段计划显式空时区不能静默回退默认时区'
 )
 
 assert.throws(
@@ -107,7 +107,7 @@ assert.throws(
     dateRange: null
   }),
   /生效日期范围无效/,
-  '自动启停计划显式 null 日期范围不能静默当作未配置'
+  '可用时段计划显式 null 日期范围不能静默当作未配置'
 )
 
 assert.throws(
@@ -121,7 +121,7 @@ assert.throws(
     exceptions: ''
   }),
   /例外日期无效/,
-  '自动启停计划显式空字符串例外日期不能静默当作未配置'
+  '可用时段计划显式空字符串例外日期不能静默当作未配置'
 )
 
 assert.throws(
@@ -167,4 +167,6 @@ assert.equal(
   '合法允许例外应按例外时段放行'
 )
 
-console.log('API Key 自动启停计划回归通过：日常时段、跨天时段、模式、空值、例外和非法参数校验符合预期')
+console.log('API Key 可用时段计划回归通过：日常时段、跨天时段、模式、空值、例外和非法参数校验符合预期')
+
+

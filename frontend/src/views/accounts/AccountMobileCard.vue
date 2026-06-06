@@ -5,6 +5,13 @@
       <div class="account-mobile-card-title">
         <div class="account-mobile-name-row">
           <span class="account-mobile-name">{{ accountDisplayName(account) }}</span>
+          <span v-if="isAuthorizedAccount(account)" class="authorized-account-badge">（{{ authorizedAccountOwnerBadgeText(account) }}）</span>
+          <a-tooltip v-if="isAuthorizedAccount(account)">
+            <template #title>
+              <span class="authorized-account-tooltip-text">{{ authorizedAccountTooltip(account) }}</span>
+            </template>
+            <InfoCircleOutlined class="authorized-account-icon" :class="authorizedAccountSourceToneClass(account)" />
+          </a-tooltip>
         </div>
         <div class="account-mobile-tags">
           <a-tag color="processing">{{ accountTypeText(account.type) }}</a-tag>
@@ -73,6 +80,7 @@
 </template>
 
 <script setup lang="ts">
+import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import RowActions from '@/components/RowActions.vue'
@@ -91,7 +99,7 @@ import {
   isAuthorizedAccount
 } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
-import { accountMenuItemsWithClone, canReturnAuthorizedAccount } from './accountRules'
+import { accountMenuItemsWithClone, authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip, canReturnAuthorizedAccount } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
@@ -237,12 +245,43 @@ function handleActionClick(key: string) {
 }
 
 .account-mobile-name {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: #0f172a;
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.authorized-account-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.authorized-account-icon {
+  flex: none;
+  color: #08979c;
+  cursor: help;
+  font-size: 14px;
+}
+
+.authorized-account-icon.source-danger {
+  color: #cf1322;
+}
+
+.authorized-account-icon.source-warning {
+  color: #d48806;
+}
+
+.authorized-account-tooltip-text {
+  white-space: pre-line;
 }
 
 .account-mobile-tags {

@@ -1207,9 +1207,11 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState): Promise<{
   durationMs?: number
   accountFailureEligible?: boolean
 }> {
-  const { testOpenAIAccount } = await import('../accounts/account-test.service.js')
+  const { preferredSystemAccountTestModel, testOpenAIAccount } = await import('../accounts/account-test.service.js')
   const signal = AbortSignal.timeout(precheckAttemptTimeoutMs)
-  return await testOpenAIAccount(accountSummaryFromUpstreamAccount(state.account, state), {
+  const account = accountSummaryFromUpstreamAccount(state.account, state)
+  return await testOpenAIAccount(account, {
+    model: preferredSystemAccountTestModel(account),
     diagnostics: 'full',
     groupId: state.groupId,
     trafficSource: 'cooldown_retest',
@@ -1263,6 +1265,7 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
     fallbackEnabled: account.fallbackEnabled,
     clientCompatibility: account.clientCompatibility,
     supportedModels: account.supportedModels,
+    lastSuccessfulTestModel: account.lastSuccessfulTestModel,
     proxyProfileId: account.proxyProfileId,
     errorPolicyId: account.errorPolicyId,
     schedulable: true,

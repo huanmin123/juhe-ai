@@ -213,8 +213,8 @@ function seedTestProvider(): void {
   databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO providers (
-        id, code, name, description, enabled, base_url, account_types_json, capabilities_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        id, code, name, description, enabled, base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       'provider_account_name_unique',
@@ -222,6 +222,7 @@ function seedTestProvider(): void {
       '账户名称唯一测试供应商',
       '仅用于账号名称唯一回归',
       'https://other-provider.example.com/v1',
+      'test-model',
       JSON.stringify(['api_key']),
       JSON.stringify(['chat_completions']),
       now,

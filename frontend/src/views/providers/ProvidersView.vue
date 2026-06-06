@@ -1,7 +1,7 @@
 <template>
   <a-card class="page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadProviders" />
-    <ResponsiveDataList table-class="page-table provider-table" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :scroll-x="1200" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
+    <ResponsiveDataList table-class="page-table provider-table" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :scroll-x="1320" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
       <template #emptyText>
         <a-empty class="page-empty-card" description="当前仅内置 OpenAI 供应商，后续新供应商会在这里扩展。" />
       </template>
@@ -25,6 +25,9 @@
         </template>
         <template v-else-if="column.key === 'baseUrl'">
           <span class="mono-cell">{{ record.baseUrl }}</span>
+        </template>
+        <template v-else-if="column.key === 'defaultTestModel'">
+          <span class="mono-cell">{{ record.defaultTestModel }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <RowActions :actions="providerActions" @action-click="handleProviderAction($event, record)" />
@@ -55,6 +58,10 @@
               <span>默认 Base URL</span>
               <strong class="mono-cell">{{ record.baseUrl }}</strong>
             </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>默认测试模型</span>
+              <strong class="mono-cell">{{ record.defaultTestModel }}</strong>
+            </div>
           </div>
           <div class="mobile-list-card-actions">
             <RowActions variant="button" :actions="providerActions" @action-click="handleProviderAction($event, record)" />
@@ -63,98 +70,99 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modelModalOpen" :title="modelModalTitle" width="1180px" :footer="null" @cancel="resetModelModal">
-      <div class="model-toolbar">
-        <a-input-search v-model:value="modelKeyword" allow-clear placeholder="搜索模型名称、用途或接口协议" class="model-search" />
-        <a-space wrap>
-          <a-button :disabled="modelLoading" @click="resetModelFilters">重置</a-button>
-          <a-tag color="blue">{{ filteredModels.length }} / {{ currentCategoryModels.length }} 个模型</a-tag>
-          <a-tag color="purple">价格单位：USD / 1M tokens</a-tag>
-        </a-space>
-      </div>
-      <a-tabs v-model:activeKey="selectedModelCategory" class="model-tabs" size="small">
-        <a-tab-pane v-for="tab in modelCategoryTabs" :key="tab.key" :tab="tab.label" />
-      </a-tabs>
-      <ResponsiveDataList
-        class="model-table"
-        table-class="model-table"
-        size="small"
-        :columns="modelColumns"
-        :data-source="filteredModels"
-        row-key="model"
-        :loading="modelLoading"
-        :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
-        :scroll-x="1500"
-        :lock-body-scroll="false"
-      >
-        <template #emptyText>
-          <a-empty class="page-empty-card" description="这个供应商暂未配置模型价格。" />
-        </template>
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'model'">
-            <a-space size="small">
-              <span class="mono-cell">{{ record.model }}</span>
-              <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
-            </a-space>
+    <a-modal v-model:open="modelModalOpen" :title="modelModalTitle" width="1180px" wrap-class-name="model-price-modal-wrap" :footer="null" @cancel="resetModelModal">
+      <div class="model-modal-content">
+        <div class="model-toolbar">
+          <a-input-search v-model:value="modelKeyword" allow-clear placeholder="搜索模型名称、用途或接口协议" class="model-search" />
+          <a-space wrap>
+            <a-tag color="blue">{{ filteredModels.length }} / {{ currentCategoryModels.length }} 个模型</a-tag>
+            <a-tag color="purple">价格单位：USD / 1M tokens</a-tag>
+          </a-space>
+        </div>
+        <a-tabs v-model:activeKey="selectedModelCategory" class="model-tabs" size="small">
+          <a-tab-pane v-for="tab in modelCategoryTabs" :key="tab.key" :tab="tab.label" />
+        </a-tabs>
+        <ResponsiveDataList
+          class="model-table"
+          table-class="model-table"
+          size="small"
+          :columns="modelColumns"
+          :data-source="filteredModels"
+          row-key="model"
+          :loading="modelLoading"
+          :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
+          :scroll-x="1500"
+          :lock-body-scroll="false"
+        >
+          <template #emptyText>
+            <a-empty class="page-empty-card" description="这个供应商暂未配置模型价格。" />
           </template>
-          <template v-else-if="column.key === 'releaseDate'">
-            <span>{{ record.releaseDate || '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'category'">
-            <a-tag>{{ formatModelCategory(record) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'protocols'">
-            <a-space wrap size="small">
-              <a-tag v-for="protocol in record.supportedApiProtocols" :key="protocol" :color="getApiProtocolTagColor(protocol)">{{ formatApiProtocol(protocol) }}</a-tag>
-              <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
-            </a-space>
-          </template>
-          <template v-else-if="column.key === 'prices'">
-            <div class="price-cell">
-              <span>输入 {{ formatPrice(record.inputUsdPer1M) }}</span>
-              <span>输出 {{ formatPrice(record.outputUsdPer1M) }}</span>
-              <span>缓存读 {{ formatPrice(record.cachedInputUsdPer1M) }}</span>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'cacheWrite'">
-            <div class="price-cell">
-              <span>写入 {{ formatPrice(record.cacheWriteUsdPer1M) }}</span>
-              <span>1h {{ formatPrice(record.cacheWrite1hUsdPer1M) }}</span>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'imageTokenPrice'">
-            <div class="price-cell">
-              <span>输入 {{ formatPrice(record.imageInputUsdPer1M) }}</span>
-              <span>输出 {{ formatPrice(record.imageOutputUsdPer1M) }}</span>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'imageUnitPrice'">
-            <span>{{ formatUnitPrice(record.outputUsdPerImage) }}</span>
-          </template>
-          <template v-else-if="column.key === 'context'">
-            <div class="price-cell">
-              <span>输入 {{ formatTokens(record.maxInputTokens) }}</span>
-              <span>输出 {{ formatTokens(record.maxOutputTokens) }}</span>
-            </div>
-          </template>
-        </template>
-        <template #card="{ record }">
-          <article class="model-mobile-card">
-            <div class="model-mobile-card-head">
-              <strong class="mono-cell">{{ record.model }}</strong>
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'model'">
+              <a-space size="small">
+                <span class="mono-cell">{{ record.model }}</span>
+                <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
+              </a-space>
+            </template>
+            <template v-else-if="column.key === 'releaseDate'">
+              <span>{{ record.releaseDate || '-' }}</span>
+            </template>
+            <template v-else-if="column.key === 'category'">
               <a-tag>{{ formatModelCategory(record) }}</a-tag>
-            </div>
-            <div class="model-mobile-card-grid">
-              <span>发布时间</span>
-              <strong>{{ record.releaseDate || '-' }}</strong>
-              <span>接口协议</span>
-              <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
-              <span>上下文</span>
-              <strong>{{ formatTokens(record.maxInputTokens) }} / {{ formatTokens(record.maxOutputTokens) }}</strong>
-            </div>
-          </article>
-        </template>
-      </ResponsiveDataList>
+            </template>
+            <template v-else-if="column.key === 'protocols'">
+              <a-space wrap size="small">
+                <a-tag v-for="protocol in record.supportedApiProtocols" :key="protocol" :color="getApiProtocolTagColor(protocol)">{{ formatApiProtocol(protocol) }}</a-tag>
+                <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
+              </a-space>
+            </template>
+            <template v-else-if="column.key === 'prices'">
+              <div class="price-cell">
+                <span>输入 {{ formatPrice(record.inputUsdPer1M) }}</span>
+                <span>输出 {{ formatPrice(record.outputUsdPer1M) }}</span>
+                <span>缓存读 {{ formatPrice(record.cachedInputUsdPer1M) }}</span>
+              </div>
+            </template>
+            <template v-else-if="column.key === 'cacheWrite'">
+              <div class="price-cell">
+                <span>写入 {{ formatPrice(record.cacheWriteUsdPer1M) }}</span>
+                <span>1h {{ formatPrice(record.cacheWrite1hUsdPer1M) }}</span>
+              </div>
+            </template>
+            <template v-else-if="column.key === 'imageTokenPrice'">
+              <div class="price-cell">
+                <span>输入 {{ formatPrice(record.imageInputUsdPer1M) }}</span>
+                <span>输出 {{ formatPrice(record.imageOutputUsdPer1M) }}</span>
+              </div>
+            </template>
+            <template v-else-if="column.key === 'imageUnitPrice'">
+              <span>{{ formatUnitPrice(record.outputUsdPerImage) }}</span>
+            </template>
+            <template v-else-if="column.key === 'context'">
+              <div class="price-cell">
+                <span>输入 {{ formatTokens(record.maxInputTokens) }}</span>
+                <span>输出 {{ formatTokens(record.maxOutputTokens) }}</span>
+              </div>
+            </template>
+          </template>
+          <template #card="{ record }">
+            <article class="model-mobile-card">
+              <div class="model-mobile-card-head">
+                <strong class="mono-cell">{{ record.model }}</strong>
+                <a-tag>{{ formatModelCategory(record) }}</a-tag>
+              </div>
+              <div class="model-mobile-card-grid">
+                <span>发布时间</span>
+                <strong>{{ record.releaseDate || '-' }}</strong>
+                <span>接口协议</span>
+                <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
+                <span>上下文</span>
+                <strong>{{ formatTokens(record.maxInputTokens) }} / {{ formatTokens(record.maxOutputTokens) }}</strong>
+              </div>
+            </article>
+          </template>
+        </ResponsiveDataList>
+      </div>
     </a-modal>
   </a-card>
 </template>
@@ -212,6 +220,7 @@ const columns = [
   { title: '账户类型', key: 'accountTypes', width: 180 },
   { title: '能力', key: 'capabilities', width: 360 },
   { title: '默认 Base URL', dataIndex: 'baseUrl', key: 'baseUrl', width: 240 },
+  { title: '默认测试模型', dataIndex: 'defaultTestModel', key: 'defaultTestModel', width: 160 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
   { title: '操作', key: 'actions', fixed: 'right' }
 ]
@@ -339,11 +348,6 @@ function resetModelModal() {
   providerModels.value = []
 }
 
-function resetModelFilters() {
-  modelKeyword.value = ''
-  selectedModelCategory.value = findFirstModelCategory(providerModels.value)
-}
-
 function findFirstModelCategory(models: ProviderModelPricing[]): ModelCategoryKey {
   for (const key of modelCategoryOrder) {
     if (models.some((item) => getModelCategory(item) === key)) {
@@ -458,15 +462,35 @@ onMounted(loadProviders)
   white-space: nowrap;
 }
 
+:global(.model-price-modal-wrap .ant-modal) {
+  top: 30px;
+  max-width: calc(100vw - 60px);
+  padding-bottom: 30px;
+}
+
+:global(.model-price-modal-wrap .ant-modal-body) {
+  max-height: none;
+  overflow: hidden;
+}
+
+.model-modal-content {
+  display: flex;
+  height: calc(100dvh - 156px);
+  min-height: 0;
+  flex-direction: column;
+}
+
 .model-toolbar {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
 }
 
 .model-tabs {
+  flex: 0 0 auto;
   margin-bottom: 8px;
 }
 
@@ -480,6 +504,11 @@ onMounted(loadProviders)
 
 .model-search {
   width: 320px;
+}
+
+.model-table {
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .price-cell {
@@ -525,6 +554,16 @@ onMounted(loadProviders)
 }
 
 @media (max-width: 768px) {
+  :global(.model-price-modal-wrap .ant-modal) {
+    top: 12px;
+    max-width: calc(100vw - 24px);
+    padding-bottom: 12px;
+  }
+
+  .model-modal-content {
+    height: calc(100dvh - 140px);
+  }
+
   .model-toolbar {
     align-items: stretch;
     flex-direction: column;

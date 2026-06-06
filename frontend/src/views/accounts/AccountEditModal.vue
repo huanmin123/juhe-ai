@@ -70,6 +70,7 @@
         v-if="hasAccountType"
         :form="form"
         :is-management-view="isManagementView"
+        :is-o-auth-form="isOAuthForm"
         :model-options="modelOptions"
         :models-loading="modelsLoading"
         :proxy-options="proxyOptions"
@@ -186,8 +187,7 @@ const sourceAccountStatusText = computed(() => {
   const status = detail?.authorizationInstanceSourceAccountStatus
   const parts = [
     status ? statusText(status) : '-',
-    detail?.authorizationInstanceSourceAccountSchedulable === false ? '已关闭调度' : '',
-    detail?.authorizationInstanceSourceAccountScheduleActive === false ? '当前计划停用' : ''
+    detail?.authorizationInstanceSourceAccountSchedulable === false ? '已关闭调度' : ''
   ].filter(Boolean)
   return parts.join(' / ')
 })

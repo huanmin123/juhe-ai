@@ -8,12 +8,11 @@ import {
   findRecentOpenAIRequestShapeForAccount,
   recordCooldownAccountRetestFailure
 } from '../../storage/repositories.js'
-import { testOpenAIAccount } from '../accounts/account-test.service.js'
+import { preferredSystemAccountTestModel, testOpenAIAccount } from '../accounts/account-test.service.js'
 
 interface CooldownAccountRetestQueueItem {
   accountId: string
   accountName: string
-  model: string
   maxPauseMinutes: number
   maxRecoveryHours: number
 }
@@ -37,13 +36,11 @@ const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueIt
 
 export function enqueueCooldownAccountRetest(
   account: AccountSummary,
-  model: string,
   strategy: { maxPauseMinutes: number; maxRecoveryHours: number }
 ): boolean {
   return cooldownAccountRetestQueue.enqueue(account.id, {
     accountId: account.id,
     accountName: account.name,
-    model,
     maxPauseMinutes: strategy.maxPauseMinutes,
     maxRecoveryHours: strategy.maxRecoveryHours
   })
@@ -73,7 +70,7 @@ async function runCooldownAccountRetestQueueItem(
 
   const groupId = account.boundGroupId
   const result = await testOpenAIAccount(account, {
-    model: item.model,
+    model: preferredSystemAccountTestModel(account),
     diagnostics: 'full',
     groupId,
     requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId),

@@ -4,22 +4,21 @@ import { z } from 'zod'
 import { isAdminRole, type AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, clearAuthorizedAccountBindingFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
-import { requireAdmin } from '../auth/auth.middleware.js'
+import { ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
-import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, ownerTarget, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { cancelAccountTestTask, createAccountTestTask, failAccountTestTask, getAccountTestTask, listAccountTestTasks } from '../../storage/account-test-tasks.repository.js'
 import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from './account-stream-intercept-policy-validation.js'
-import { testOpenAIAccount } from './account-test.service.js'
+import { dispatchAccountTestCancel, dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 
 export const accountsRouter = Router()
 
@@ -170,7 +169,7 @@ accountsRouter.get('/options', (req, res, next) => {
   }
 })
 
-accountsRouter.post('/export', requireAdmin, (req, res) => {
+accountsRouter.post('/export', (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -200,7 +199,7 @@ accountsRouter.post('/export', requireAdmin, (req, res) => {
       resourceType: 'account',
       resourceName: 'AI 账户导出',
       summary: `导出 AI 账户：${result.summary.accounts} 个账户，${result.summary.proxies} 个代理${matchedText}${truncatedText}`,
-      visibilityScope: 'admin_only',
+      visibilityScope: isAdminRole(requestAccess.role) ? 'admin_only' : 'targeted',
       changes: [
         safeChange('accountExported', '导出账户数', undefined, result.summary.accounts),
         safeChange('proxyExported', '导出代理数', undefined, result.summary.proxies),
@@ -211,12 +210,55 @@ accountsRouter.post('/export', requireAdmin, (req, res) => {
         ...(result.summary.truncated
           ? [safeChange('accountExportTruncated', '导出结果截断', false, true)]
           : [])
-      ]
+      ],
+      ...(!isAdminRole(requestAccess.role) ? { viewers: viewer(ownerSystemAccountId, 'resource_owner') } : {})
     }, req)
     res.json(ok(result))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '导出账户失败'))
   }
+})
+
+accountsRouter.get('/test-tasks', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const taskIds = queryTextList(req.query.ids, 200)
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  res.json(ok(listAccountTestTasks(taskIds, requestAccess)))
+})
+
+accountsRouter.get('/test-tasks/:taskId', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const task = getAccountTestTask(req.params.taskId, requestAccess)
+  if (!task) {
+    res.status(404).json({ message: '账户测试任务不存在' })
+    return
+  }
+  res.json(ok(task))
+})
+
+accountsRouter.post('/test-tasks/:taskId/cancel', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const task = cancelAccountTestTask(req.params.taskId, requestAccess)
+  if (!task) {
+    res.status(404).json({ message: '账户测试任务不存在' })
+    return
+  }
+  dispatchAccountTestCancel(task.id)
+  res.json(ok(task))
 })
 
 accountsRouter.get('/:id', async (req, res, next) => {
@@ -362,7 +404,7 @@ function accountExportAllFilter(value: string | undefined): string | undefined {
   return text && text !== 'all' ? text : undefined
 }
 
-accountsRouter.post('/import/preview', requireAdmin, (req, res) => {
+accountsRouter.post('/import/preview', (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -377,7 +419,7 @@ accountsRouter.post('/import/preview', requireAdmin, (req, res) => {
   res.json(ok(previewAccountImport(parsed.data.data, parsed.data.options, requestAccess)))
 })
 
-accountsRouter.post('/import/confirm', requireAdmin, mutationGuard({
+accountsRouter.post('/import/confirm', mutationGuard({
   operationKey: 'accounts.import',
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
   fingerprint: (req) => ({
@@ -517,7 +559,7 @@ accountsRouter.post('/', mutationGuard({
             safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
             safeChange('errorPolicyId', '错误策略', undefined, account.errorPolicyId),
             safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
-            safeChange('availabilitySchedule', '自动启停计划', undefined, account.availabilitySchedule),
+            safeChange('availabilitySchedule', '可用时段计划', undefined, account.availabilitySchedule),
             safeChange('notes', '备注', undefined, account.notes)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -835,7 +877,7 @@ accountsRouter.patch('/:id', async (req, res) => {
               errorPolicyId: '错误策略',
               schedulable: '参与调度',
               accountExpiresAt: '过期时间',
-              availabilitySchedule: '自动启停计划',
+              availabilitySchedule: '可用时段计划',
               boundGroupId: '绑定分组',
               cooldownUntil: '冷却结束时间',
               lastErrorCode: '异常类型',
@@ -876,6 +918,10 @@ accountsRouter.post('/:id/test', async (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  if (!requestAccess) {
+    res.status(403).json({ message: '缺少系统账户上下文' })
+    return
+  }
   const parsed = accountTestSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('账户测试参数无效'))
@@ -896,85 +942,24 @@ accountsRouter.post('/:id/test', async (req, res) => {
     return
   }
 
-  const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
-  if (!releaseDiagnosticSlot) {
-    res.setHeader('Retry-After', String(diagnosticTaskRetryAfterSeconds))
-    res.status(503).json({ message: diagnosticTaskBusyMessage })
-    return
-  }
-
-  const abortController = new AbortController()
-  req.once('aborted', () => abortController.abort())
-  res.once('close', () => {
-    if (!res.writableEnded) {
-      abortController.abort()
-    }
-  })
   try {
     const diagnostics = isAdminRole(requestAccess?.role) || account.accessType !== 'authorized' ? 'full' : 'limited'
     const { prompt: _ignoredPrompt, ...testOptions } = parsed.data ?? {}
-    let accountTestStatusChanges: ReturnType<typeof safeChange>[] | undefined
-    let result = await testOpenAIAccount(account, {
-      ...testOptions,
-      signal: abortController.signal,
+    const task = createAccountTestTask({
+      account,
+      access: requestAccess,
       diagnostics,
-      requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId)
+      model: testOptions.model,
+      clientCompatibility: testOptions.clientCompatibility
     })
-    if (abortController.signal.aborted || res.writableEnded) {
+    if (!dispatchAccountTestTasks([task.id])) {
+      failAccountTestTask(task.id, '后台 worker 暂不可用，账号测试任务未能投递')
+      res.status(503).json({ message: '后台 worker 暂不可用，账号测试任务未能投递' })
       return
     }
-    if (result.success && shouldClearAuthorizedAccountTestInstanceFailure(account)) {
-      const restored = clearAuthorizedAccountBindingFailureState(account.id, requestAccess)
-      if (restored.changed && restored.account) {
-        accountTestStatusChanges = accountTestStatusLogChanges(account, restored.account)
-        result = {
-          ...result,
-          accountStatusChanged: accountTestStatusChanges.length > 0,
-          accountStatus: restored.account.status
-        }
-      }
-    }
-    if (result.success) {
-      await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
-    }
-    if (shouldMarkAccountTestFailureAsTemporaryUnavailable(account, result)) {
-      const updatedAccount = markAccountTestTemporaryUnavailable(account, accountTestFailureCooldownReason(result), requestAccess)
-      if (updatedAccount) {
-        accountTestStatusChanges = accountTestStatusLogChanges(account, updatedAccount)
-        if (accountTestStatusChanges.length > 0 || updatedAccount.status !== result.accountStatus) {
-          result = {
-            ...result,
-            accountStatusChanged: accountTestStatusChanges.length > 0,
-            accountStatus: updatedAccount.status
-          }
-        }
-      }
-    }
-    if (result.accountStatusChanged) {
-      const ownerSystemAccountId = authorizedLocalOperationOwner(account, requestAccess)
-        ?? resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
-      recordOperationLog({
-        operationScopeSystemAccountId: ownerSystemAccountId,
-        mode: operationMode(requestAccess),
-        module: 'accounts',
-        action: 'test_status_changed',
-        operationKey: 'accounts.test_status_changed',
-        resourceType: 'account',
-        resourceId: account.id,
-        resourceName: account.name,
-        summary: `账户测试更新状态：${account.name}`,
-        changes: accountTestStatusChanges ?? [safeChange('status', '状态', account.status, result.accountStatus)],
-        viewers: viewer(ownerSystemAccountId, 'resource_owner')
-      }, req)
-    }
-    res.json(ok(result))
+    res.status(202).json(ok(task))
   } catch (error) {
-    if (abortController.signal.aborted || res.writableEnded) {
-      return
-    }
-    throw error
-  } finally {
-    releaseDiagnosticSlot()
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '创建账户测试任务失败'))
   }
 })
 
@@ -1043,55 +1028,6 @@ accountsRouter.post('/:id/return-authorization', mutationGuard({
     res.status(400).json(badRequest(error instanceof Error ? error.message : '归还授权账户失败'))
   }
 })
-
-function shouldClearAuthorizedAccountTestInstanceFailure(account: AccountSummary): boolean {
-  if (account.accessType !== 'authorized') return false
-  if (account.status === 'disabled') return false
-  return Boolean(
-    account.status !== 'active'
-    || account.cooldownUntil
-    || account.lastErrorMessage
-  )
-}
-
-function accountTestStatusLogChanges(before: AccountSummary, after: AccountSummary): ReturnType<typeof safeChange>[] {
-  const changes: ReturnType<typeof safeChange>[] = []
-  if (before.status !== after.status) {
-    changes.push(safeChange('status', '状态', before.status, after.status))
-  }
-  if ((before.cooldownUntil ?? null) !== (after.cooldownUntil ?? null)) {
-    changes.push(safeChange('cooldownUntil', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例冷却结束时间' : '冷却结束时间', before.cooldownUntil, after.cooldownUntil))
-  }
-  if ((before.lastErrorMessage ?? null) !== (after.lastErrorMessage ?? null)) {
-    changes.push(safeChange('lastErrorMessage', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例错误信息' : '错误信息', before.lastErrorMessage, after.lastErrorMessage))
-  }
-  return changes
-}
-
-function shouldMarkAccountTestFailureAsTemporaryUnavailable(account: AccountSummary, result: { success: boolean; accountFailureEligible?: boolean; accountStatusChanged?: boolean; accountStatus?: string }): boolean {
-  if (result.success) return false
-  if (result.accountStatusChanged) return false
-  if (result.accountFailureEligible === false) return false
-  if (account.status !== 'active' && account.status !== 'rate_limited' && account.status !== 'temporary_unavailable') return false
-  if (account.status === 'active' && !account.schedulable) return false
-  const observedStatus = result.accountStatus ?? account.status
-  if (observedStatus !== 'active' && observedStatus !== 'rate_limited' && observedStatus !== 'temporary_unavailable') return false
-  return true
-}
-
-function accountTestFailureCooldownReason(result: { statusCode?: number; errorCode?: string; message?: string }): string {
-  const parts = ['账户测试失败，已自动标记为临时不可调用']
-  if (typeof result.statusCode === 'number') {
-    parts.push(`HTTP ${Math.trunc(result.statusCode)}`)
-  }
-  if (result.errorCode) {
-    parts.push(result.errorCode)
-  }
-  if (result.message) {
-    parts.push(result.message)
-  }
-  return parts.join('；')
-}
 
 accountsRouter.delete('/:id', (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)

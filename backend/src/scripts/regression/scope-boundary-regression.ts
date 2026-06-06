@@ -112,6 +112,29 @@ interface AccountListResult {
   pageSize: number
 }
 
+interface AccountImportResult {
+  canImport: boolean
+  imported: boolean
+  summary: {
+    accounts: {
+      create: number
+      failed: number
+      skip: number
+      total: number
+    }
+  }
+}
+
+interface AccountExportResult {
+  document: {
+    accounts: Array<{ name: string }>
+  }
+  summary: {
+    accounts: number
+    skippedAccounts: number
+  }
+}
+
 interface GroupSummary {
   id: string
   ownerSystemAccountId?: string
@@ -302,6 +325,8 @@ async function main(): Promise<void> {
     await assertForbidden(`${baseUrl}/__aisys__/api/system-teams`, seed.userACookie, '普通用户不能访问系统团队管理接口')
     await assertForbidden(`${baseUrl}/__aisys__/api/authorizations`, seed.userACookie, '普通用户不能访问统一授权管理接口')
     await assertForbidden(`${baseUrl}/__aisys__/api/providers`, seed.userACookie, '普通用户不能访问供应商管理接口')
+    const userProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', seed.userACookie)
+    assert(userProviderOptions.some((item) => item.code === 'openai' && typeof item.defaultTestModel === 'string'), '普通用户应能读取供应商安全选项')
     const userProviderModels = await getEnvelope<Array<{ model: string }>>(baseUrl, '/__aisys__/api/providers/openai/models', seed.userACookie)
     assert(userProviderModels.some((item) => item.model === 'gpt-5.5'), '普通用户应能查询 OpenAI 模型列表用于账户模型限制下拉')
     const userProviderModelOptions = await getEnvelope<Array<{ providerCode: string; model: string }>>(baseUrl, '/__aisys__/api/providers/models/options', seed.userACookie)
@@ -323,22 +348,46 @@ async function main(): Promise<void> {
     const userAOwnAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}`, seed.userACookie)
     assert(userAOwnAccountDetail.credentials?.base_url === 'https://api.openai.com/v1', '用户 A 应能打开自有账户详情并读取非敏感 Base URL')
     assert(userAOwnAccountDetail.credentials?.api_key === 'sk-scope-user-a', '用户 A 自有账户详情应返回明文 API Key 供编辑弹窗查看')
-    await assertJsonStatus(
-      `${baseUrl}/__aisys__/api/my-accounts/import/preview`,
+    const userAExport = await postEnvelope<AccountExportResult>(
+      baseUrl,
+      `/__aisys__/api/my-accounts/export?systemAccountId=${seed.userBId}`,
       seed.userACookie,
-      'POST',
-      { data: [], options: {} },
-      403,
-      '账户导入虽然复用 my-accounts 路由命名空间，但仍是管理员能力，普通用户不可预览导入'
+      { accountIds: [seed.userAAccountId, seed.userBAccountId] }
     )
-    await assertJsonStatus(
-      `${baseUrl}/__aisys__/api/my-accounts/import/confirm`,
+    assert(userAExport.summary.accounts === 1 && userAExport.summary.skippedAccounts === 1, '普通用户导出应只导出自己的自有账户并跳过不可见账户')
+    assert(userAExport.document.accounts[0]?.name === '用户 A 账户', '普通用户导出不应混入其他用户账户')
+    const userAImportDocument = {
+      type: 'juhe-ai-account-import',
+      version: 1,
+      accounts: [{
+        ref: 'scope-user-a-import',
+        name: '用户 A 导入账户',
+        providerCode: 'openai',
+        type: 'api_key',
+        status: 'disabled',
+        groupId: seed.userATargetGroupId,
+        credentials: {
+          api_key: 'sk-scope-user-a-import',
+          base_url: 'https://api.openai.com/v1'
+        }
+      }]
+    }
+    const userAImportPreview = await postEnvelope<AccountImportResult>(
+      baseUrl,
+      `/__aisys__/api/my-accounts/import/preview?systemAccountId=${seed.userBId}`,
       seed.userACookie,
-      'POST',
-      { data: [], options: {} },
-      403,
-      '账户导入虽然复用 my-accounts 路由命名空间，但仍是管理员能力，普通用户不可确认导入'
+      { data: userAImportDocument, options: {} }
     )
+    assert(userAImportPreview.canImport && userAImportPreview.summary.accounts.create === 1, '普通用户应能在我的 AI 账户预览导入自己的账户')
+    const userAImportConfirm = await postEnvelope<AccountImportResult>(
+      baseUrl,
+      `/__aisys__/api/my-accounts/import/confirm?systemAccountId=${seed.userBId}`,
+      seed.userACookie,
+      { data: userAImportDocument, options: {} }
+    )
+    assert(userAImportConfirm.imported && userAImportConfirm.summary.accounts.create === 1, '普通用户应能在我的 AI 账户确认导入自己的账户')
+    const userAImportedAccounts = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?keyword=${encodeURIComponent('用户 A 导入账户')}`, seed.userACookie)
+    assert(userAImportedAccounts.length === 1 && userAImportedAccounts[0].ownerSystemAccountId === seed.userAId, '普通用户导入账户应固定写入当前用户作用域')
     await assertStatus(
       `${baseUrl}/__aisys__/api/my-accounts/${seed.userBAccountId}`,
       seed.userACookie,
@@ -354,7 +403,7 @@ async function main(): Promise<void> {
     assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountStatus === 'active', '授权实例详情应返回来源账户状态')
     assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountSchedulable === true, '授权实例详情应返回来源账户调度开关')
     assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountExpiresAt === '2027-12-31T00:00:00.000Z', '授权实例详情应返回来源账户到期时间')
-    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountAvailabilitySchedule?.enabled === true, '授权实例详情应返回来源账户自动启停计划')
+    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountAvailabilitySchedule?.enabled === true, '授权实例详情应返回来源账户可用时段计划')
     const authorizedDetailCredentials = userAAuthorizedAccountDetail.credentials ?? {}
     const authorizedDetailSecretJson = JSON.stringify(authorizedDetailCredentials)
     for (const secretKey of ['api_key', 'access_token', 'refresh_token', 'id_token']) {
@@ -380,7 +429,12 @@ async function main(): Promise<void> {
     const userBDisabledAccounts = await getEnvelope<AccountListResult>(baseUrl, `/__aisys__/api/accounts?systemAccountId=${seed.userBId}&status=disabled&page=1&pageSize=10`, seed.adminCookie)
     assert(userBDisabledAccounts.total === 0, '管理账户状态筛选异常')
     const userAApiKeyAccounts = await getEnvelope<AccountListResult>(baseUrl, '/__aisys__/api/my-accounts?type=api_key&page=1&pageSize=10', seed.userACookie)
-    assert(userAApiKeyAccounts.total === userAMyAccounts.length && userAApiKeyAccounts.items.every((account) => account.type === 'api_key'), '用户侧账户类型筛选异常')
+    assert(
+      userAApiKeyAccounts.items.every((account) => account.type === 'api_key')
+        && userAApiKeyAccounts.items.some((account) => account.id === seed.userAAccountId)
+        && userAApiKeyAccounts.items.some((account) => account.name === '用户 A 导入账户'),
+      '用户侧账户类型筛选异常'
+    )
     const userAAccountOptions = await getEnvelope<AccountSummary[]>(baseUrl, '/__aisys__/api/my-accounts/options?limit=50', seed.userACookie)
     assert(userAAccountOptions.some((account) => account.id === seed.userAAccountId), '普通用户应能查询自有账户选项用于用户侧下拉')
     assert(userAAccountOptions.some((account) => account.id === seed.userAAuthorizedUserBAccountId && account.accessType === 'authorized'), '普通用户应能查询授权实例账户选项用于用户侧下拉')

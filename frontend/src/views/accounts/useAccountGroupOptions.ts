@@ -22,6 +22,7 @@ export interface AccountGroupOptionsScope {
 
 interface UseAccountGroupOptionsConfig {
   allowAllProviders?: boolean
+  allowGlobalManagement?: boolean
   errorMessage?: string
   isManagementView: () => boolean
   limit?: number
@@ -49,7 +50,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   async function load(nextKeyword = keyword.value, force = false, scopeOverride?: Partial<AccountGroupOptionsScope>): Promise<void> {
     keyword.value = nextKeyword
     const scope = normalizedScope(scopeOverride)
-    if ((config.isManagementView() && !scope.systemAccountId) || (!config.allowAllProviders && !scope.providerCode && !scope.selectedIds.length)) {
+    if ((config.isManagementView() && !scope.systemAccountId && !config.allowGlobalManagement) || (!config.allowAllProviders && !scope.providerCode && !scope.selectedIds.length)) {
       requestId += 1
       groups.value = []
       loadingKey = undefined

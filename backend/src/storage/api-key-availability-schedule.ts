@@ -33,19 +33,19 @@ export function normalizeApiKeyAvailabilitySchedule(input: unknown): ApiKeyAvail
     return undefined
   }
   if (!isRecord(input)) {
-    throw new Error('API Key 自动启停计划参数无效')
+    throw new Error('API Key 可用时段计划参数无效')
   }
-  assertOnlyKeys(input, scheduleInputKeys, 'API Key 自动启停计划')
+  assertOnlyKeys(input, scheduleInputKeys, 'API Key 可用时段计划')
   if (input.enabled !== true) {
-    throw new Error('API Key 自动启停计划启用状态必须为 true')
+    throw new Error('API Key 可用时段计划启用状态必须为 true')
   }
   if (input.mode !== 'allow_windows') {
-    throw new Error('API Key 自动启停计划模式必须为 allow_windows')
+    throw new Error('API Key 可用时段计划模式必须为 allow_windows')
   }
   const timezone = normalizeScheduleTimezone(input.timezone)
   const windows = normalizeScheduleWindows(input.windows, true)
   if (!windows.length) {
-    throw new Error('API Key 自动启停计划至少需要一个允许时段')
+    throw new Error('API Key 可用时段计划至少需要一个允许时段')
   }
   return {
     enabled: true,
@@ -115,13 +115,13 @@ function normalizeScheduleTimezone(value: unknown): string {
       ? value.trim()
       : undefined
   if (!timezone) {
-    throw new Error('API Key 自动启停计划时区不能为空')
+    throw new Error('API Key 可用时段计划时区不能为空')
   }
   try {
     new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date())
     return timezone
   } catch {
-    throw new Error('API Key 自动启停计划时区无效')
+    throw new Error('API Key 可用时段计划时区无效')
   }
 }
 
@@ -135,23 +135,23 @@ function defaultScheduleTimezone(): string {
 
 function normalizeScheduleWindows(input: unknown, requireDays: boolean): ApiKeyAvailabilityScheduleWindow[] {
   if (!Array.isArray(input)) {
-    throw new Error('API Key 自动启停计划时段无效')
+    throw new Error('API Key 可用时段计划时段无效')
   }
   if (input.length > maxScheduleWindows) {
-    throw new Error(`API Key 自动启停计划最多支持 ${maxScheduleWindows} 个时段`)
+    throw new Error(`API Key 可用时段计划最多支持 ${maxScheduleWindows} 个时段`)
   }
   return input.map((item) => normalizeScheduleWindow(item, requireDays))
 }
 
 function normalizeScheduleWindow(input: unknown, requireDays: boolean): ApiKeyAvailabilityScheduleWindow {
   if (!isRecord(input)) {
-    throw new Error('API Key 自动启停计划时段无效')
+    throw new Error('API Key 可用时段计划时段无效')
   }
-  assertOnlyKeys(input, requireDays ? scheduleWindowInputKeys : scheduleExceptionWindowInputKeys, 'API Key 自动启停计划时段')
+  assertOnlyKeys(input, requireDays ? scheduleWindowInputKeys : scheduleExceptionWindowInputKeys, 'API Key 可用时段计划时段')
   const start = normalizeScheduleTime(input.start, '开始时间')
   const end = normalizeScheduleTime(input.end, '停止时间')
   if (start === end) {
-    throw new Error('API Key 自动启停计划开始时间和停止时间不能相同')
+    throw new Error('API Key 可用时段计划开始时间和停止时间不能相同')
   }
   return {
     daysOfWeek: requireDays ? normalizeDaysOfWeek(input.daysOfWeek) : allDaysOfWeek,
@@ -162,27 +162,27 @@ function normalizeScheduleWindow(input: unknown, requireDays: boolean): ApiKeyAv
 
 function normalizeScheduleTime(value: unknown, label: string): string {
   if (typeof value !== 'string' || !timePattern.test(value.trim())) {
-    throw new Error(`API Key 自动启停计划${label}格式应为 HH:mm`)
+    throw new Error(`API Key 可用时段计划${label}格式应为 HH:mm`)
   }
   return value.trim()
 }
 
 function normalizeDaysOfWeek(value: unknown): number[] {
   if (!Array.isArray(value)) {
-    throw new Error('API Key 自动启停计划重复日期无效')
+    throw new Error('API Key 可用时段计划重复日期无效')
   }
   const rawDays = value.map((item) => {
     if (typeof item !== 'number') {
-      throw new Error('API Key 自动启停计划重复日期必须是数字')
+      throw new Error('API Key 可用时段计划重复日期必须是数字')
     }
     return item
   })
   if (rawDays.some((item) => !Number.isInteger(item) || item < 1 || item > 7)) {
-    throw new Error('API Key 自动启停计划重复日期无效')
+    throw new Error('API Key 可用时段计划重复日期无效')
   }
   const days = [...new Set(rawDays)].sort((left, right) => left - right)
   if (!days.length) {
-    throw new Error('API Key 自动启停计划至少需要选择一个重复日期')
+    throw new Error('API Key 可用时段计划至少需要选择一个重复日期')
   }
   return days
 }
@@ -192,13 +192,13 @@ function normalizeScheduleDateRange(input: unknown): ApiKeyAvailabilitySchedule[
     return undefined
   }
   if (!isRecord(input)) {
-    throw new Error('API Key 自动启停计划生效日期范围无效')
+    throw new Error('API Key 可用时段计划生效日期范围无效')
   }
-  assertOnlyKeys(input, scheduleDateRangeInputKeys, 'API Key 自动启停计划生效日期范围')
+  assertOnlyKeys(input, scheduleDateRangeInputKeys, 'API Key 可用时段计划生效日期范围')
   const startDate = normalizeDateKey(input.startDate, '开始日期')
   const endDate = normalizeDateKey(input.endDate, '结束日期')
   if (startDate && endDate && startDate > endDate) {
-    throw new Error('API Key 自动启停计划开始日期不能晚于结束日期')
+    throw new Error('API Key 可用时段计划开始日期不能晚于结束日期')
   }
   return startDate || endDate ? { startDate, endDate } : undefined
 }
@@ -208,10 +208,10 @@ function normalizeScheduleExceptions(input: unknown): ApiKeyAvailabilitySchedule
     return undefined
   }
   if (!Array.isArray(input)) {
-    throw new Error('API Key 自动启停计划例外日期无效')
+    throw new Error('API Key 可用时段计划例外日期无效')
   }
   if (input.length > maxScheduleExceptions) {
-    throw new Error(`API Key 自动启停计划最多支持 ${maxScheduleExceptions} 个例外日期`)
+    throw new Error(`API Key 可用时段计划最多支持 ${maxScheduleExceptions} 个例外日期`)
   }
   const exceptions = input.map(normalizeScheduleException)
   return exceptions.length ? exceptions : undefined
@@ -219,27 +219,27 @@ function normalizeScheduleExceptions(input: unknown): ApiKeyAvailabilitySchedule
 
 function normalizeScheduleException(input: unknown): ApiKeyAvailabilityScheduleException {
   if (!isRecord(input)) {
-    throw new Error('API Key 自动启停计划例外日期无效')
+    throw new Error('API Key 可用时段计划例外日期无效')
   }
-  assertOnlyKeys(input, scheduleExceptionInputKeys, 'API Key 自动启停计划例外日期')
+  assertOnlyKeys(input, scheduleExceptionInputKeys, 'API Key 可用时段计划例外日期')
   const date = normalizeDateKey(input.date, '例外日期')
   if (!date) {
-    throw new Error('API Key 自动启停计划例外日期不能为空')
+    throw new Error('API Key 可用时段计划例外日期不能为空')
   }
   const action = input.action === 'allow' || input.action === 'deny' ? input.action : undefined
   if (!action) {
-    throw new Error('API Key 自动启停计划例外动作无效')
+    throw new Error('API Key 可用时段计划例外动作无效')
   }
   if (action === 'deny' && input.windows !== undefined) {
-    throw new Error('API Key 自动启停计划拒绝例外不能配置允许时段')
+    throw new Error('API Key 可用时段计划拒绝例外不能配置允许时段')
   }
   if (action === 'allow' && input.windows === undefined) {
-    throw new Error('API Key 自动启停计划允许例外至少需要一个允许时段')
+    throw new Error('API Key 可用时段计划允许例外至少需要一个允许时段')
   }
   if (action === 'allow') {
     const windows = normalizeScheduleWindows(input.windows, false).map((window) => ({ start: window.start, end: window.end }))
     if (!windows.length) {
-      throw new Error('API Key 自动启停计划允许例外至少需要一个允许时段')
+      throw new Error('API Key 可用时段计划允许例外至少需要一个允许时段')
     }
     return { date, action, windows }
   }
@@ -249,12 +249,12 @@ function normalizeScheduleException(input: unknown): ApiKeyAvailabilityScheduleE
 function normalizeDateKey(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'string' || !datePattern.test(value.trim())) {
-    throw new Error(`API Key 自动启停计划${label}格式应为 YYYY-MM-DD`)
+    throw new Error(`API Key 可用时段计划${label}格式应为 YYYY-MM-DD`)
   }
   const date = value.trim()
   const parsed = new Date(`${date}T00:00:00.000Z`)
   if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
-    throw new Error(`API Key 自动启停计划${label}无效`)
+    throw new Error(`API Key 可用时段计划${label}无效`)
   }
   return date
 }
@@ -327,3 +327,4 @@ function assertOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly st
     throw new Error(`${label}包含不支持字段：${unexpected}`)
   }
 }
+

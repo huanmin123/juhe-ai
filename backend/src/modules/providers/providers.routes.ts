@@ -16,6 +16,10 @@ providersRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(listProviders()))
 })
 
+providersRouter.get('/options', (_req, res) => {
+  res.json(ok(listProviders().filter((provider) => provider.enabled)))
+})
+
 providersRouter.get('/models/options', (_req, res) => {
   const options = dedupeProviderModelOptions(
     listProviders()

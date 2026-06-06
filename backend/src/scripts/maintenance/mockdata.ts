@@ -68,6 +68,7 @@ interface MockSystemAccounts {
 
 interface MockGroups {
   main: GroupSummary
+  highConcurrency: GroupSummary
   backup: GroupSummary
   oauth: GroupSummary
   experiment: GroupSummary
@@ -75,12 +76,17 @@ interface MockGroups {
   devDefault: GroupSummary
   opsDefault: GroupSummary
   testerDefault: GroupSummary
+  financeDefault: GroupSummary
+  viewerDefault: GroupSummary
 }
 
 interface MockAccounts {
   primary: AccountSummary
   proxied: AccountSummary
   normal: AccountSummary
+  burstFast: AccountSummary
+  burstImage: AccountSummary
+  burstFallback: AccountSummary
   fallback: AccountSummary
   oauth: AccountSummary
   oauthBackup: AccountSummary
@@ -94,6 +100,7 @@ type ApiKeyWithSecret = ApiKeySummary & { key: string }
 
 interface MockApiKeys {
   adminMain: ApiKeyWithSecret
+  adminHighConcurrency: ApiKeyWithSecret
   adminHighFrequency: ApiKeyWithSecret
   adminBackup: ApiKeyWithSecret
   adminOAuth: ApiKeyWithSecret
@@ -102,6 +109,8 @@ interface MockApiKeys {
   devGroupAuthorized: ApiKeyWithSecret
   testerTeamAuthorized: ApiKeyWithSecret
   opsAccountAuthorized: ApiKeyWithSecret
+  financeAuthorized: ApiKeyWithSecret
+  viewerAuthorized: ApiKeyWithSecret
 }
 
 interface MockTeams {
@@ -170,6 +179,14 @@ interface KeyScenario {
   clientIpBase: string
 }
 
+interface ModelCheckTargetSeed {
+  account: AccountSummary
+  group: GroupSummary
+  apiKey: ApiKeyWithSecret
+  actor: SystemAccountSummary
+  comparisonAccount?: AccountSummary
+}
+
 interface AccountMetricRow {
   sample_count: number
   cpu_percent_sum: number
@@ -204,10 +221,11 @@ const idPrefix = 'mockdata_'
 const tracePrefix = 'mockdata-'
 const namePrefix = '造数-'
 const mockPassword = 'mockdata123456'
+const apiKeyAuthorizedGroupBindingRule = '分组授权可在分组列表 / 我的授权中查看；API Key 绑定下拉只显示调用方自己的本地分组，不能直接绑定授权方分组。'
 const dayMs = 24 * 60 * 60 * 1000
 const minuteMs = 60 * 1000
 const defaultDays = 31
-const defaultDailyRequests = 80
+const defaultDailyRequests = 120
 
 const adminUsername = 'admin'
 const providerCode = 'openai'
@@ -304,7 +322,7 @@ function printHelp(): void {
   console.log(`
 用法：
   pnpm mockdata
-  pnpm mockdata -- --days 31 --daily-requests 80
+  pnpm mockdata -- --days 31 --daily-requests 120
 
 说明：
   - 默认清理上一批 Mockdata，仅重建 ${namePrefix} 前缀和 ${idPrefix} ID 前缀的数据。
@@ -321,6 +339,7 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
   const accounts = createAccounts(adminAccess, groups, policies, proxies)
   const teams = createTeams(adminAccess, users)
   const authorizations = createAuthorizations(adminAccess, groups, accounts, users, teams)
+  assertNoMockSelfAuthorizations(admin.id)
   bindAuthorizedAccountToUserGroup(authorizationInstanceAccount(accounts.proxied, users.ops), groups.opsDefault, users.ops)
   const apiKeys = createApiKeys(adminAccess, groups, users)
   const externalSources = createExternalSources()
@@ -552,6 +571,20 @@ function createGroups(adminAccess: AccessScope, users: MockSystemAccounts): Mock
     providerCode,
     enabled: true
   }, adminAccess)
+  const highConcurrency = repositories.createGroup({
+    name: `${namePrefix}高并发 AI 分组`,
+    description: '高并发调度分组，用于分组管理页展示软并发、短队列和单 IP 并发限制',
+    providerCode,
+    enabled: true,
+    groupType: 'high_concurrency',
+    schedulingPolicy: {
+      defaultSoftConcurrency: 12,
+      maxQueueWaitMs: 45_000,
+      clientIpConcurrencyLimit: 8,
+      clientIpConcurrencyOverflowMode: 'queue',
+      imageLaneMaxConcurrency: 6
+    }
+  }, adminAccess)
   const backup = repositories.createGroup({
     name: `${namePrefix}备用分组`,
     description: '备用调度分组，包含降级账户和冷却样例',
@@ -579,13 +612,16 @@ function createGroups(adminAccess: AccessScope, users: MockSystemAccounts): Mock
 
   return {
     main,
+    highConcurrency,
     backup,
     oauth,
     experiment,
     empty,
     devDefault: defaultOpenAIGroup(users.dev.id),
     opsDefault: defaultOpenAIGroup(users.ops.id),
-    testerDefault: defaultOpenAIGroup(users.tester.id)
+    testerDefault: defaultOpenAIGroup(users.tester.id),
+    financeDefault: defaultOpenAIGroup(users.finance.id),
+    viewerDefault: defaultOpenAIGroup(users.viewer.id)
   }
 }
 
@@ -635,6 +671,47 @@ function createAccounts(
     concurrencyLimit: 35,
     priority: 30,
     notes: 'Mockdata 普通账号'
+  }, adminAccess)
+
+  const burstFast = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}高并发快响账户`,
+    type: 'api_key',
+    groupId: groups.highConcurrency.id,
+    credentials: apiKeyCredentials('burst-fast'),
+    errorPolicyId: policies.temporary,
+    supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+    concurrencyLimit: 180,
+    priority: 2,
+    superPriorityEnabled: true,
+    notes: 'Mockdata 高并发分组快响账号，用于高并发调度策略展示'
+  }, adminAccess)
+
+  const burstImage = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}高并发图像账户`,
+    type: 'api_key',
+    groupId: groups.highConcurrency.id,
+    credentials: apiKeyCredentials('burst-image'),
+    errorPolicyId: policies.quota,
+    supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1-mini'],
+    concurrencyLimit: 120,
+    priority: 12,
+    notes: 'Mockdata 高并发分组图像 / 长请求账号，用于图像 lane 并发展示'
+  }, adminAccess)
+
+  const burstFallback = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}高并发备用账户`,
+    type: 'api_key',
+    groupId: groups.highConcurrency.id,
+    credentials: apiKeyCredentials('burst-fallback'),
+    errorPolicyId: policies.temporary,
+    supportedModels: ['gpt-5.4', 'gpt-5.4-mini'],
+    concurrencyLimit: 90,
+    priority: 70,
+    fallbackEnabled: true,
+    notes: 'Mockdata 高并发分组备用账号，用于软并发触发后的 fallback 展示'
   }, adminAccess)
 
   const fallback = repositories.createAccount({
@@ -743,6 +820,9 @@ function createAccounts(
     primary,
     proxied,
     normal,
+    burstFast,
+    burstImage,
+    burstFallback,
     fallback,
     oauth,
     oauthBackup,
@@ -854,6 +934,39 @@ function createAuthorizations(
   }, adminAccess))
   result.push(repositories.createResourceAuthorization({
     resourceType: 'group',
+    resourceId: groups.highConcurrency.id,
+    granteeType: 'system_account',
+    granteeId: users.ops.id,
+    remark: `${namePrefix}运维用户可调用高并发分组`,
+    limits: quotaLimits(20, 160, 620)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.backup.id,
+    granteeType: 'system_account',
+    granteeId: users.viewer.id,
+    remark: `${namePrefix}观察用户可调用备用分组`,
+    limits: quotaLimits(6, 36, 120)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.experiment.id,
+    granteeType: 'system_account',
+    granteeId: users.tester.id,
+    remark: `${namePrefix}测试用户可调用实验分组`,
+    expiresAt: new Date(Date.now() + 14 * dayMs).toISOString(),
+    limits: quotaLimits(8, 48, 160)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.oauth.id,
+    granteeType: 'system_account',
+    granteeId: users.finance.id,
+    remark: `${namePrefix}财务用户可调用 OAuth 分组`,
+    limits: quotaLimits(7, 42, 140)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'group',
     resourceId: groups.backup.id,
     granteeType: 'team',
     granteeId: teams.devTeam.id,
@@ -869,6 +982,14 @@ function createAuthorizations(
     limits: quotaLimits(12, 80, 300)
   }, adminAccess))
   result.push(repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.highConcurrency.id,
+    granteeType: 'team',
+    granteeId: teams.devTeam.id,
+    remark: `${namePrefix}研发团队可调用高并发分组`,
+    limits: quotaLimits(22, 180, 720)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: accounts.proxied.id,
     granteeType: 'system_account',
@@ -879,11 +1000,46 @@ function createAuthorizations(
   }, adminAccess))
   result.push(repositories.createResourceAuthorization({
     resourceType: 'account',
+    resourceId: accounts.burstFast.id,
+    granteeType: 'system_account',
+    granteeId: users.dev.id,
+    targetGroupId: groups.devDefault.id,
+    remark: `${namePrefix}研发用户可调用高并发快响账户`,
+    limits: quotaLimits(14, 110, 420)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.oauth.id,
+    granteeType: 'system_account',
+    granteeId: users.finance.id,
+    targetGroupId: groups.financeDefault.id,
+    remark: `${namePrefix}财务用户可调用 OAuth 主力账户`,
+    limits: quotaLimits(6, 40, 150)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.burstImage.id,
+    granteeType: 'system_account',
+    granteeId: users.viewer.id,
+    targetGroupId: groups.viewerDefault.id,
+    remark: `${namePrefix}观察用户可调用高并发图像账户`,
+    limits: quotaLimits(5, 28, 90)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'account',
     resourceId: accounts.primary.id,
     granteeType: 'team',
     granteeId: teams.devTeam.id,
     remark: `${namePrefix}研发团队可调用主力账户`,
     limits: quotaLimits(10, 80, 240)
+  }, adminAccess))
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.burstFallback.id,
+    granteeType: 'team',
+    granteeId: teams.opsTeam.id,
+    remark: `${namePrefix}运维团队可调用高并发备用账户`,
+    limits: quotaLimits(9, 66, 220)
   }, adminAccess))
 
   const pausedTeam = repositories.createResourceAuthorization({
@@ -931,6 +1087,21 @@ function createAuthorizations(
   repositories.updateResourceAuthorization(paused.id, { status: 'paused' }, adminAccess)
   result.push(refreshAuthorization(paused.id, adminAccess))
 
+  const expiredGroup = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.main.id,
+    granteeType: 'system_account',
+    granteeId: users.finance.id,
+    remark: `${namePrefix}财务用户已过期主力分组授权`,
+    expiresAt: new Date(Date.now() + 2 * dayMs).toISOString(),
+    limits: quotaLimits(3, 18, 60)
+  }, adminAccess)
+  repositories.updateResourceAuthorization(expiredGroup.id, {
+    status: 'expired',
+    expiresAt: new Date(Date.now() - 2 * dayMs).toISOString()
+  }, adminAccess)
+  result.push(refreshAuthorization(expiredGroup.id, adminAccess))
+
   const expired = repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: accounts.fallback.id,
@@ -958,6 +1129,18 @@ function createAuthorizations(
   }, adminAccess)
   repositories.revokeResourceAuthorization(revoked.id, adminAccess)
   result.push(refreshAuthorization(revoked.id, adminAccess))
+
+  const revokedTemporary = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.temporary.id,
+    granteeType: 'system_account',
+    granteeId: users.viewer.id,
+    targetGroupId: groups.viewerDefault.id,
+    remark: `${namePrefix}观察用户已回收临时账户授权`,
+    limits: quotaLimits(1, 8, 24)
+  }, adminAccess)
+  repositories.revokeResourceAuthorization(revokedTemporary.id, adminAccess)
+  result.push(refreshAuthorization(revokedTemporary.id, adminAccess))
   return result
 }
 
@@ -984,6 +1167,17 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
     groupBindings: [{ groupId: groups.main.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(35, 260, 1000)
+  }, adminAccess)
+  const adminHighConcurrency = repositories.createApiKeyRecord({
+    name: `${namePrefix}高并发 AI Key`,
+    description: 'Mockdata 高并发本地网关 Key，绑定高并发 AI 分组，用于分组管理和调度验收',
+    groupBindings: [{ groupId: groups.highConcurrency.id, priority: 1, status: 'active' }],
+    status: 'active',
+    quotaLimits: {
+      hourly: { enabled: true, hours: 1, limit: 160 },
+      daily: { enabled: true, limit: 1200 },
+      monthly: { enabled: true, limit: 5200 }
+    }
   }, adminAccess)
   const adminHighFrequency = repositories.createApiKeyRecord({
     name: `${namePrefix}高频限额 Key`,
@@ -1028,7 +1222,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
 
   const devGroupAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}研发授权调用 Key`,
-    description: 'Mockdata 研发用户使用被授权账户的 Key，绑定研发用户自己的默认分组',
+    description: 'Mockdata 研发用户使用授权账户的 Key，绑定研发用户自己的默认分组',
     groupBindings: [{ groupId: groups.devDefault.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(8, 50, 180)
@@ -1036,7 +1230,7 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
 
   const testerTeamAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}团队授权调用 Key`,
-    description: 'Mockdata 测试用户通过团队账号授权使用自己的默认分组',
+    description: 'Mockdata 测试用户使用团队授权账户的 Key，绑定测试用户自己的默认分组',
     groupBindings: [{ groupId: groups.testerDefault.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(6, 40, 150)
@@ -1044,14 +1238,31 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
 
   const opsAccountAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}账户授权调用 Key`,
-    description: 'Mockdata 运维用户使用被授权账户的 Key',
+    description: 'Mockdata 运维用户使用授权账户的 Key，绑定运维用户自己的默认分组',
     groupBindings: [{ groupId: groups.opsDefault.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(6, 36, 120)
   }, { systemAccountId: users.ops.id, role: 'user' })
 
+  const financeAuthorized = repositories.createApiKeyRecord({
+    name: `${namePrefix}财务授权调用 Key`,
+    description: 'Mockdata 财务用户使用授权账户的 Key，绑定财务用户自己的默认分组',
+    groupBindings: [{ groupId: groups.financeDefault.id, priority: 1, status: 'active' }],
+    status: 'active',
+    quotaLimits: quotaLimits(5, 30, 100)
+  }, { systemAccountId: users.finance.id, role: 'user' })
+
+  const viewerAuthorized = repositories.createApiKeyRecord({
+    name: `${namePrefix}观察授权调用 Key`,
+    description: 'Mockdata 观察用户使用授权账户的 Key，绑定观察用户自己的默认分组',
+    groupBindings: [{ groupId: groups.viewerDefault.id, priority: 1, status: 'active' }],
+    status: 'active',
+    quotaLimits: quotaLimits(4, 24, 80)
+  }, { systemAccountId: users.viewer.id, role: 'user' })
+
   return {
     adminMain,
+    adminHighConcurrency,
     adminHighFrequency,
     adminBackup,
     adminOAuth,
@@ -1059,7 +1270,9 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
     adminExpired,
     devGroupAuthorized,
     testerTeamAuthorized,
-    opsAccountAuthorized
+    opsAccountAuthorized,
+    financeAuthorized,
+    viewerAuthorized
   }
 }
 
@@ -1237,6 +1450,9 @@ function tuneGroupAccountBindings(groups: MockGroups, accounts: MockAccounts): v
     [1, 0, groups.main, accounts.primary],
     [0, 0, groups.main, accounts.proxied],
     [0, 0, groups.main, accounts.normal],
+    [1, 0, groups.highConcurrency, accounts.burstFast],
+    [0, 0, groups.highConcurrency, accounts.burstImage],
+    [0, 1, groups.highConcurrency, accounts.burstFallback],
     [0, 1, groups.backup, accounts.fallback],
     [0, 0, groups.oauth, accounts.oauth],
     [0, 1, groups.oauth, accounts.oauthBackup]
@@ -1254,9 +1470,14 @@ function tuneGroupAccountBindings(groups: MockGroups, accounts: MockAccounts): v
 
 function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions): UsageRecordSeed[] {
   const devPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.dev)
+  const devBurstFastInstance = authorizationInstanceAccount(created.accounts.burstFast, created.users.dev)
   const testerPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.tester)
   const opsPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.ops)
   const opsProxiedInstance = authorizationInstanceAccount(created.accounts.proxied, created.users.ops)
+  const opsBurstFallbackInstance = authorizationInstanceAccount(created.accounts.burstFallback, created.users.ops)
+  const financeOauthInstance = authorizationInstanceAccount(created.accounts.oauth, created.users.finance)
+  const viewerBurstImageInstance = authorizationInstanceAccount(created.accounts.burstImage, created.users.viewer)
+  const viewerBurstFallbackInstance = authorizationInstanceAccount(created.accounts.burstFallback, created.users.viewer)
   const scenarios: KeyScenario[] = [
     {
       key: created.apiKeys.adminMain,
@@ -1273,6 +1494,14 @@ function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions)
       accounts: [created.accounts.primary, created.accounts.normal],
       label: 'admin-high',
       clientIpBase: '10.10.2.'
+    },
+    {
+      key: created.apiKeys.adminHighConcurrency,
+      owner: created.users.admin,
+      group: created.groups.highConcurrency,
+      accounts: [created.accounts.burstFast, created.accounts.burstImage, created.accounts.burstFallback],
+      label: 'admin-high-concurrency',
+      clientIpBase: '10.10.7.'
     },
     {
       key: created.apiKeys.adminBackup,
@@ -1307,6 +1536,14 @@ function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions)
       clientIpBase: '10.20.2.'
     },
     {
+      key: created.apiKeys.devGroupAuthorized,
+      owner: created.users.dev,
+      group: created.groups.devDefault,
+      accounts: [devBurstFastInstance],
+      label: 'dev-direct-burst-account-auth',
+      clientIpBase: '10.20.7.'
+    },
+    {
       key: created.apiKeys.testerTeamAuthorized,
       owner: created.users.tester,
       group: created.groups.backup,
@@ -1323,6 +1560,14 @@ function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions)
       clientIpBase: '10.20.4.'
     },
     {
+      key: created.apiKeys.testerTeamAuthorized,
+      owner: created.users.tester,
+      group: created.groups.experiment,
+      accounts: [created.accounts.temporary, created.accounts.error],
+      label: 'tester-direct-experiment-group-auth',
+      clientIpBase: '10.20.8.'
+    },
+    {
       key: created.apiKeys.opsAccountAuthorized,
       owner: created.users.ops,
       group: created.groups.oauth,
@@ -1337,6 +1582,70 @@ function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions)
       accounts: [opsProxiedInstance, opsPrimaryInstance],
       label: 'ops-account-auth',
       clientIpBase: '10.20.6.'
+    },
+    {
+      key: created.apiKeys.opsAccountAuthorized,
+      owner: created.users.ops,
+      group: created.groups.highConcurrency,
+      accounts: [created.accounts.burstFast, created.accounts.burstImage, created.accounts.burstFallback],
+      label: 'ops-direct-high-concurrency-group-auth',
+      clientIpBase: '10.20.9.'
+    },
+    {
+      key: created.apiKeys.opsAccountAuthorized,
+      owner: created.users.ops,
+      group: created.groups.opsDefault,
+      accounts: [opsBurstFallbackInstance],
+      label: 'ops-team-burst-account-auth',
+      clientIpBase: '10.20.10.'
+    },
+    {
+      key: created.apiKeys.financeAuthorized,
+      owner: created.users.finance,
+      group: created.groups.oauth,
+      accounts: [created.accounts.oauth, created.accounts.oauthBackup],
+      label: 'finance-direct-oauth-group-auth',
+      clientIpBase: '10.21.1.'
+    },
+    {
+      key: created.apiKeys.financeAuthorized,
+      owner: created.users.finance,
+      group: created.groups.financeDefault,
+      accounts: [financeOauthInstance],
+      label: 'finance-direct-oauth-account-auth',
+      clientIpBase: '10.21.2.'
+    },
+    {
+      key: created.apiKeys.viewerAuthorized,
+      owner: created.users.viewer,
+      group: created.groups.backup,
+      accounts: [created.accounts.fallback, created.accounts.rateLimited],
+      label: 'viewer-direct-backup-group-auth',
+      clientIpBase: '10.22.1.'
+    },
+    {
+      key: created.apiKeys.viewerAuthorized,
+      owner: created.users.viewer,
+      group: created.groups.oauth,
+      accounts: [created.accounts.oauth, created.accounts.oauthBackup],
+      label: 'viewer-team-oauth-group-auth',
+      clientIpBase: '10.22.2.'
+    },
+    {
+      key: created.apiKeys.viewerAuthorized,
+      owner: created.users.viewer,
+      group: created.groups.viewerDefault,
+      accounts: [viewerBurstImageInstance],
+      label: 'viewer-direct-burst-image-account-auth',
+      clientIpBase: '10.22.3.'
+    },
+    {
+      key: created.apiKeys.viewerAuthorized,
+      owner: created.users.viewer,
+      group: created.groups.viewerDefault,
+      accounts: [viewerBurstFallbackInstance],
+      label: 'viewer-team-burst-account-auth',
+      clientIpBase: '10.22.4.'
     }
   ]
 
@@ -1892,24 +2201,33 @@ function createRuntimeLogMockdata(usageRecords: UsageRecordSeed[]): void {
 }
 
 function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOptions): ModelCheckMockdataCounts {
-  const targets = [
-    { account: created.accounts.primary, group: created.groups.main, apiKey: created.apiKeys.adminMain, actor: created.users.admin },
-    { account: created.accounts.primary, group: created.groups.devDefault, apiKey: created.apiKeys.devGroupAuthorized, actor: created.users.dev },
-    { account: created.accounts.normal, group: created.groups.main, apiKey: created.apiKeys.adminHighFrequency, actor: created.users.admin },
-    { account: created.accounts.primary, group: created.groups.testerDefault, apiKey: created.apiKeys.testerTeamAuthorized, actor: created.users.tester },
-    { account: created.accounts.oauth, group: created.groups.oauth, apiKey: created.apiKeys.adminOAuth, actor: created.users.admin },
-    { account: created.accounts.oauthBackup, group: created.groups.oauth, apiKey: created.apiKeys.adminOAuth, actor: created.users.admin },
-    { account: created.accounts.rateLimited, group: created.groups.backup, apiKey: created.apiKeys.adminBackup, actor: created.users.admin },
-    { account: created.accounts.temporary, group: created.groups.experiment, apiKey: created.apiKeys.adminExpired, actor: created.users.admin }
+  const devPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.dev)
+  const testerPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.tester)
+  const opsProxiedInstance = authorizationInstanceAccount(created.accounts.proxied, created.users.ops)
+  const financeOauthInstance = authorizationInstanceAccount(created.accounts.oauth, created.users.finance)
+  const viewerBurstImageInstance = authorizationInstanceAccount(created.accounts.burstImage, created.users.viewer)
+  const targets: ModelCheckTargetSeed[] = [
+    { account: created.accounts.primary, group: created.groups.main, apiKey: created.apiKeys.adminMain, actor: created.users.admin, comparisonAccount: created.accounts.oauth },
+    { account: created.accounts.burstFast, group: created.groups.highConcurrency, apiKey: created.apiKeys.adminHighConcurrency, actor: created.users.admin, comparisonAccount: created.accounts.burstImage },
+    { account: devPrimaryInstance, group: created.groups.devDefault, apiKey: created.apiKeys.devGroupAuthorized, actor: created.users.dev },
+    { account: created.accounts.normal, group: created.groups.main, apiKey: created.apiKeys.adminHighFrequency, actor: created.users.admin, comparisonAccount: created.accounts.burstFast },
+    { account: testerPrimaryInstance, group: created.groups.testerDefault, apiKey: created.apiKeys.testerTeamAuthorized, actor: created.users.tester },
+    { account: opsProxiedInstance, group: created.groups.opsDefault, apiKey: created.apiKeys.opsAccountAuthorized, actor: created.users.ops },
+    { account: created.accounts.oauth, group: created.groups.oauth, apiKey: created.apiKeys.adminOAuth, actor: created.users.admin, comparisonAccount: created.accounts.oauthBackup },
+    { account: created.accounts.oauthBackup, group: created.groups.oauth, apiKey: created.apiKeys.adminOAuth, actor: created.users.admin, comparisonAccount: created.accounts.oauth },
+    { account: financeOauthInstance, group: created.groups.financeDefault, apiKey: created.apiKeys.financeAuthorized, actor: created.users.finance },
+    { account: viewerBurstImageInstance, group: created.groups.viewerDefault, apiKey: created.apiKeys.viewerAuthorized, actor: created.users.viewer },
+    { account: created.accounts.rateLimited, group: created.groups.backup, apiKey: created.apiKeys.adminBackup, actor: created.users.admin, comparisonAccount: created.accounts.primary },
+    { account: created.accounts.temporary, group: created.groups.experiment, apiKey: created.apiKeys.adminExpired, actor: created.users.admin, comparisonAccount: created.accounts.normal }
   ]
-  const runCount = Math.min(120, Math.max(30, options.days))
+  const runCount = Math.min(120, Math.max(36, options.days))
   let itemCount = 0
 
   for (let index = 0; index < runCount; index += 1) {
     const target = targets[index % targets.length]
     const model = index % 3 === 0 ? 'gpt-5.5' : 'gpt-5.4'
     const runStatus = modelCheckRunStatusForIndex(index)
-    const trustedComparison = index % 3 === 0
+    const trustedComparison = Boolean(target.comparisonAccount) && index % 3 === 0
     const startedAtMs = Date.now() - 20 * minuteMs - Math.floor((index / Math.max(1, runCount - 1)) * options.days * dayMs)
     const startedAt = new Date(startedAtMs).toISOString()
     const runId = `${idPrefix}model_check_run_${String(index + 1).padStart(4, '0')}`
@@ -1922,7 +2240,7 @@ function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOpt
       trustedComparison,
       runStatus
     })
-    const level = runStatus === 'completed' ? modelCheckLevelForScore(checks.score, checks.maxScore) : 'unavailable'
+    const level = modelCheckLevelForRun(index, runStatus, checks.score, checks.maxScore)
     const message = modelCheckRunMessage(runStatus, level, checks.score, checks.maxScore)
 
     repositories.createModelCheckRun({
@@ -1933,7 +2251,7 @@ function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOpt
       targetType: 'account',
       targetId: target.account.id,
       targetName: target.account.name,
-      targetOwnerSystemAccountId: target.account.systemAccountId ?? created.users.admin.id,
+      targetOwnerSystemAccountId: target.account.ownerSystemAccountId ?? target.account.systemAccountId ?? created.users.admin.id,
       accountId: target.account.id,
       groupId: target.group.id,
       apiKeyId: target.apiKey.id,
@@ -1951,8 +2269,12 @@ function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOpt
         model,
         profile: 'full',
         trustedComparison,
-        trustedComparisonAccountId: trustedComparison ? created.accounts.oauth.id : undefined,
-        trustedComparisonAccountName: trustedComparison ? created.accounts.oauth.name : undefined,
+        trustedComparisonAccountId: trustedComparison ? target.comparisonAccount?.id : undefined,
+        trustedComparisonAccountName: trustedComparison ? target.comparisonAccount?.name : undefined,
+        groupId: target.group.id,
+        groupName: target.group.name,
+        apiKeyId: target.apiKey.id,
+        actorSystemAccountId: target.actor.id,
         generatedBy: 'mockdata'
       }
     })
@@ -2096,6 +2418,14 @@ function modelCheckLevelForScore(score: number, maxScore: number): MockModelChec
   if (ratio >= 0.58) return 'uncertain'
   if (ratio > 0) return 'suspicious'
   return 'unavailable'
+}
+
+function modelCheckLevelForRun(index: number, status: MockModelCheckRunStatus, score: number, maxScore: number): MockModelCheckLevel {
+  if (status !== 'completed') return 'unavailable'
+  const base = modelCheckLevelForScore(score, maxScore)
+  if (index % 12 === 0 && base !== 'high_confidence') return 'likely'
+  if (index % 10 === 0 && base === 'high_confidence') return 'uncertain'
+  return base
 }
 
 function modelCheckRunMessage(status: MockModelCheckRunStatus, level: MockModelCheckLevel, score: number, maxScore: number): string {
@@ -2926,6 +3256,103 @@ function updateApiKeyLastUsedAt(records: UsageRecordSeed[]): void {
   }
 }
 
+function mockUserSummaries(users: MockSystemAccounts): Array<Record<string, unknown>> {
+  return Object.entries(users)
+    .filter(([name]) => name !== 'admin')
+    .map(([name, user]) => ({
+      name,
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role,
+      status: user.status,
+      password: mockPassword
+    }))
+}
+
+function mockGroupById(groups: MockGroups): Map<string, GroupSummary> {
+  return new Map<string, GroupSummary>(Object.values(groups).map((group) => [group.id, group]))
+}
+
+function mockGroupOwnerById(groups: MockGroups, users: MockSystemAccounts): Map<string, SystemAccountSummary> {
+  return new Map<string, SystemAccountSummary>([
+    [groups.main.id, users.admin],
+    [groups.highConcurrency.id, users.admin],
+    [groups.backup.id, users.admin],
+    [groups.oauth.id, users.admin],
+    [groups.experiment.id, users.admin],
+    [groups.empty.id, users.admin],
+    [groups.devDefault.id, users.dev],
+    [groups.opsDefault.id, users.ops],
+    [groups.testerDefault.id, users.tester],
+    [groups.financeDefault.id, users.finance],
+    [groups.viewerDefault.id, users.viewer]
+  ])
+}
+
+function apiKeySummariesForMockdata(
+  apiKeys: MockApiKeys,
+  groupById: Map<string, GroupSummary>,
+  groupOwnerById: Map<string, SystemAccountSummary>
+): Array<Record<string, unknown>> {
+  return (Object.entries(apiKeys) as Array<[string, ApiKeyWithSecret]>).map(([name, key]) => {
+    const firstOwner = key.groupBindings
+      .map((binding) => groupOwnerById.get(binding.groupId))
+      .find((owner): owner is SystemAccountSummary => Boolean(owner))
+    return {
+      name,
+      id: key.id,
+      label: key.name,
+      description: key.description,
+      ownerSystemAccountId: key.systemAccountId ?? firstOwner?.id,
+      ownerSystemAccountName: key.systemAccountName ?? firstOwner?.displayName,
+      bindingScope: 'owner_local_group',
+      bindingRule: apiKeyAuthorizedGroupBindingRule,
+      groupBindings: key.groupBindings.map((binding) => {
+        const group = groupById.get(binding.groupId)
+        const owner = groupOwnerById.get(binding.groupId)
+        return {
+          groupId: binding.groupId,
+          groupName: binding.groupName ?? group?.name,
+          groupOwnerSystemAccountId: owner?.id ?? group?.systemAccountId,
+          groupOwnerSystemAccountName: owner?.displayName ?? group?.systemAccountName,
+          accessType: 'owner',
+          bindableToApiKey: true,
+          priority: binding.priority,
+          weight: binding.weight,
+          status: binding.status
+        }
+      }),
+      status: key.status,
+      key: key.key
+    }
+  })
+}
+
+function groupAuthorizationSamples(authorizations: ResourceAuthorizationSummary[]): Array<Record<string, unknown>> {
+  return authorizations
+    .filter((authorization) => authorization.resourceType === 'group')
+    .map((authorization) => ({
+      id: authorization.id,
+      resourceType: authorization.resourceType,
+      resourceId: authorization.resourceId,
+      resourceName: authorization.resourceName,
+      resourceOwnerSystemAccountId: authorization.resourceOwnerSystemAccountId,
+      resourceOwnerSystemAccountName: authorization.resourceOwnerSystemAccountName,
+      granteeType: authorization.granteeType,
+      granteeSystemAccountId: authorization.granteeSystemAccountId,
+      granteeSystemAccountName: authorization.granteeSystemAccountName,
+      granteeUsername: authorization.granteeUsername,
+      granteeTeamId: authorization.granteeTeamId,
+      granteeTeamName: authorization.granteeTeamName,
+      status: authorization.status,
+      remark: authorization.remark,
+      expiresAt: authorization.expiresAt,
+      bindableToApiKey: false,
+      bindingRule: apiKeyAuthorizedGroupBindingRule
+    }))
+}
+
 function writeSummary(
   created: CreatedMockdata,
   records: UsageRecordSeed[],
@@ -2934,6 +3361,8 @@ function writeSummary(
   options: MockdataOptions,
   durationMs: number
 ): void {
+  const groupById = mockGroupById(created.groups)
+  const groupOwnerById = mockGroupOwnerById(created.groups, created.users)
   const summary = {
     generatedAt: nowIso(),
     durationMs,
@@ -2944,19 +3373,11 @@ function writeSummary(
       displayName: created.users.admin.displayName
     },
     mockUserPassword: mockPassword,
-    apiKeys: Object.entries(created.apiKeys).map(([name, key]) => ({
-      name,
-      id: key.id,
-      label: key.name,
-      ownerSystemAccountId: key.systemAccountId,
-      groupBindings: key.groupBindings.map((binding: { groupId: string; priority: number; status: string }) => ({
-        groupId: binding.groupId,
-        priority: binding.priority,
-        status: binding.status
-      })),
-      status: key.status,
-      key: key.key
-    })),
+    mockUsers: mockUserSummaries(created.users),
+    apiKeyBindingRule: apiKeyAuthorizedGroupBindingRule,
+    authorizedUsageRecordNote: 'usage_records 中的 group_authorized 样本用于授权用量统计，不表示 API Key 可直接绑定授权方分组。',
+    apiKeys: apiKeySummariesForMockdata(created.apiKeys, groupById, groupOwnerById),
+    authorizationSamples: groupAuthorizationSamples(created.authorizations),
     counts: {
       users: Object.keys(created.users).length - 1,
       groups: Object.keys(created.groups).length,
@@ -3039,6 +3460,45 @@ function refreshAuthorization(id: string, access: AccessScope): ResourceAuthoriz
   const authorization = repositories.findResourceAuthorization(id, access)
   if (!authorization) throw new Error(`读取 Mockdata 授权失败：${id}`)
   return authorization
+}
+
+function assertNoMockSelfAuthorizations(adminId: string): void {
+  const database = getBusinessDatabase()
+  const likeName = `${namePrefix}%`
+  const selfRuntime = database.prepare(`
+    SELECT id
+    FROM resource_authorizations
+    WHERE created_by = ?
+      AND remark LIKE ?
+      AND resource_owner_system_account_id = grantee_system_account_id
+    LIMIT 1
+  `).get(adminId, likeName) as unknown as { id?: string } | undefined
+  if (selfRuntime?.id) {
+    throw new Error(`Mockdata 不能生成自授权运行时记录：${selfRuntime.id}`)
+  }
+  const selfGrant = database.prepare(`
+    SELECT id
+    FROM resource_authorization_grants
+    WHERE created_by = ?
+      AND remark LIKE ?
+      AND grantee_type = 'system_account'
+      AND resource_owner_system_account_id = grantee_system_account_id
+    LIMIT 1
+  `).get(adminId, likeName) as unknown as { id?: string } | undefined
+  if (selfGrant?.id) {
+    throw new Error(`Mockdata 不能生成自授权业务记录：${selfGrant.id}`)
+  }
+  const adminRuntime = database.prepare(`
+    SELECT id
+    FROM resource_authorizations
+    WHERE created_by = ?
+      AND remark LIKE ?
+      AND grantee_system_account_id = ?
+    LIMIT 1
+  `).get(adminId, likeName, adminId) as unknown as { id?: string } | undefined
+  if (adminRuntime?.id) {
+    throw new Error(`Mockdata 不应把超级管理员作为被授权人：${adminRuntime.id}`)
+  }
 }
 
 function selectIds(database: Database, sql: string, ...params: SqlValue[]): string[] {

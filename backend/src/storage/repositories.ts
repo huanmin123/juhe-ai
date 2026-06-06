@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
-import { normalizeAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
@@ -161,6 +161,7 @@ interface OpenAIOAuthRefreshCandidateRow {
   cooldown_until: string | null
   last_error_code: string | null
   last_error_message: string | null
+  last_successful_test_model: string | null
 }
 
 export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
@@ -232,7 +233,7 @@ export {
   updateApiKey
 } from './api-key.repository.js'
 export { listErrorPolicies } from './error-policy.repository.js'
-export { listProviders } from './provider.repository.js'
+export { findProviderDefaultTestModel, listProviders } from './provider.repository.js'
 export {
   createSession,
   createSystemAccount,
@@ -629,7 +630,9 @@ function accountResourceErrorPolicyId(row: AccountListRow): string | null {
 }
 
 function accountResourceClientCompatibility(row: AccountListRow): AccountClientCompatibility {
-  return normalizeAccountClientCompatibility(
+  return normalizeOpenAIAccountClientCompatibility(
+    accountResourceProviderCode(row),
+    accountResourceType(row),
     row.access_type === 'authorized' ? row.source_client_compatibility : row.client_compatibility,
     'openai_standard'
   )
@@ -1619,6 +1622,7 @@ function accountSummariesFromRows(
       fallbackEnabled: dispatchFallbackEnabled,
       clientCompatibility,
       supportedModels: [...(row.supported_models ?? [])],
+      lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
       qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
@@ -1855,6 +1859,31 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
   }
 }
 
+export function recordAccountSuccessfulTestModel(accountId: string, model: string, access?: AccessScope): AccountSummary | undefined {
+  const normalizedModel = optionalString(model)?.trim()
+  const current = findAccountSummary(accountId, access)
+  if (!current?.permissions?.canUse) {
+    return undefined
+  }
+  if (!normalizedModel) {
+    return current
+  }
+  const result = getBusinessDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET last_successful_test_model = ?,
+          updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+    `)
+    .run(normalizedModel, nowIso(), accountId)
+  if (Number(result.changes ?? 0) > 0) {
+    invalidateAccountLookupCache(accountId)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
+  }
+  return findAccountSummary(accountId, access)
+}
+
 export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
   disableExpiredAccounts()
   const rows = getBusinessDatabase()
@@ -1909,6 +1938,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       fallbackEnabled: row.fallback_enabled === 1,
       clientCompatibility: accountResourceClientCompatibility(row),
       supportedModels: supportedModelsByAccountId.get(accountResourceFactAccountId(row)) ?? [],
+      lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       errorPolicyId: accountResourceErrorPolicyId(row) ?? undefined,
       schedulable: row.schedulable === 1,
@@ -1947,7 +1977,7 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
       SELECT id, system_account_id, provider_code, name, type, status, credentials_encrypted,
         proxy_profile_id, error_policy_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message
+        last_error_code, last_error_message, last_successful_test_model
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND deleted_at IS NULL
@@ -1973,7 +2003,7 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
       SELECT id, system_account_id, provider_code, name, type, status, credentials_encrypted,
         proxy_profile_id, error_policy_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message
+        last_error_code, last_error_message, last_successful_test_model
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND provider_code = 'openai'
@@ -2001,8 +2031,9 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
     priority: row.priority,
     superPriorityEnabled: row.super_priority_enabled === 1,
     fallbackEnabled: row.fallback_enabled === 1,
-    clientCompatibility: normalizeAccountClientCompatibility(row.client_compatibility),
+    clientCompatibility: normalizeOpenAIAccountClientCompatibility('openai', 'oauth', row.client_compatibility),
     supportedModels: [],
+    lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
     proxyProfileId: row.proxy_profile_id ?? undefined,
     errorPolicyId: row.error_policy_id ?? undefined,
     schedulable: row.schedulable === 1,
@@ -2117,7 +2148,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const proxyProfileId = globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
   const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled, false)
   const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
-  const clientCompatibility = normalizeAccountClientCompatibility(input.clientCompatibility)
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility)
   if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
     throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
   }
@@ -2142,6 +2173,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     fallbackEnabled: createFallbackEnabled,
     clientCompatibility,
     supportedModels,
+    lastSuccessfulTestModel: undefined,
     proxyProfileId,
     errorPolicyId: normalizeNullableIdInput(input.errorPolicyId, '错误处理策略'),
     schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
@@ -2359,9 +2391,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (hasFallbackInput && nextFallbackEnabled) {
     nextSuperPriorityEnabled = false
   }
-  const nextClientCompatibility = hasOwnInput(input, 'clientCompatibility')
-    ? normalizeAccountClientCompatibility(input.clientCompatibility, current.clientCompatibility)
-    : current.clientCompatibility
+  const nextClientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    current.providerCode,
+    current.type,
+    hasOwnInput(input, 'clientCompatibility') ? input.clientCompatibility : current.clientCompatibility,
+    current.clientCompatibility
+  )
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
   const updateNowMs = Date.now()

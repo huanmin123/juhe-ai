@@ -275,6 +275,7 @@ const OPENAI_PROVIDER: ProviderDefinition = {
   name: 'OpenAI',
   enabled: true,
   baseUrl: 'https://api.openai.com/v1',
+  defaultTestModel: '',
   accountTypes: ['oauth', 'api_key'],
   capabilities: ['models', 'responses', 'stream', 'passthrough']
 }
@@ -502,15 +503,8 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
   if (!force && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
     return
   }
-  if (!isManagementView.value) {
-    providers.value = [OPENAI_PROVIDER]
-    usageStatsOptionsLoaded.value = true
-    usageStatsOptionsScopeKey.value = scopeKey
-    return
-  }
-
   const [providerList] = await Promise.all([
-    api.providers.list()
+    api.providers.options()
   ])
   providers.value = providerList.length ? providerList : [OPENAI_PROVIDER]
   usageStatsOptionsLoaded.value = true

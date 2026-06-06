@@ -56,7 +56,7 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountSummary) {
-  if (account.effectiveAvailability) return account.effectiveAvailability.color
+  if (account.effectiveAvailability && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
   if (isAccountPackageExpiredStatus(account)) return 'red'
@@ -73,7 +73,7 @@ export function accountStatusText(account: AccountSummary) {
   if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
     return directAccountStatusText(account)
   }
-  if (account.effectiveAvailability) return account.effectiveAvailability.label
+  if (account.effectiveAvailability && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.label
   if (isAuthorizationPaused(account)) return '授权暂停'
   if (isAuthorizationExpired(account)) return '授权到期'
   if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
@@ -94,8 +94,9 @@ export function accountCooldownText(account: AccountSummary) {
 
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
-  const effectiveAvailability = account.effectiveAvailability
+  const effectiveAvailability = isScheduleInactiveAvailability(account) ? undefined : account.effectiveAvailability
   const conciseOwnStatus = isAccountInstanceEffectiveAvailability(account)
+    && !isScheduleInactiveStatus(account.effectiveAvailability.status)
     && isConciseAccountStatus(account.effectiveAvailability.status)
   if (conciseOwnStatus) {
     return conciseAccountStatusTooltipLines(account)
@@ -186,8 +187,6 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push('已停用，不参与调度')
   } else if (effectiveStatus === 'instance_unschedulable') {
     lines.push('已关闭调度，不参与调度')
-  } else if (effectiveStatus === 'instance_schedule_inactive') {
-    lines.push('当前不在允许使用时段')
   }
   if (isTemporaryAccountStatus(account)) {
     const cooldownText = accountCooldownText(account)
@@ -290,7 +289,6 @@ function localAccountStatusText(account: AccountSummary): string {
   if (isAccountPackageExpiredStatus(account)) return '账户到期'
   if (account.status !== 'active') return statusText(account.status)
   if (isFutureTime(account.cooldownUntil)) return '冷却中'
-  if (account.availabilityScheduleActive === false) return '计划停用'
   if (!account.schedulable) return '停调'
   return ''
 }
@@ -305,7 +303,6 @@ export function authorizationSourceAccountStatusTag(account: AccountSummary): Ac
   if (sourceStatus === 'temporary_unavailable') return { color: 'gold', label: '来源临时不可调用' }
   if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) return { color: 'gold', label: '来源冷却' }
   if (account.authorizationInstanceSourceAccountSchedulable === false) return { color: 'orange', label: '来源停调' }
-  if (account.authorizationInstanceSourceAccountScheduleActive === false) return { color: 'gold', label: '来源计划停用' }
   return undefined
 }
 
@@ -326,9 +323,6 @@ export function authorizationSourceAccountTooltipLines(account: AccountSummary):
   }
   if (account.authorizationInstanceSourceAccountSchedulable === false) {
     lines.push('授权方原账户已关闭调度，授权实例实际不可调用')
-  }
-  if (account.authorizationInstanceSourceAccountScheduleActive === false) {
-    lines.push('授权方原账户当前不在允许使用时段，授权实例实际不可调用')
   }
   if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) {
     lines.push(`授权方原账户冷却至 ${formatDateTime(account.authorizationInstanceSourceAccountCooldownUntil)}`)
@@ -415,7 +409,15 @@ export function isTemporaryAccountStatus(account: AccountSummary) {
 }
 
 function isDirectAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
-  return status.startsWith('instance_')
+  return status.startsWith('instance_') && !isScheduleInactiveStatus(status)
+}
+
+function isScheduleInactiveAvailability(account: AccountSummary): boolean {
+  return isScheduleInactiveStatus(account.effectiveAvailability?.status)
+}
+
+function isScheduleInactiveStatus(status?: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
+  return status === 'instance_schedule_inactive' || status === 'source_schedule_inactive'
 }
 
 function isAccountInstanceEffectiveAvailability(account: AccountSummary): account is AccountSummary & { effectiveAvailability: NonNullable<AccountSummary['effectiveAvailability']> } {
@@ -436,7 +438,6 @@ function directAccountStatusText(account: AccountSummary): string {
   if (status === 'instance_temporary_unavailable') return '临时不可调用'
   if (status === 'instance_cooldown') return '冷却中'
   if (status === 'instance_unschedulable') return '停调'
-  if (status === 'instance_schedule_inactive') return '计划停用'
   return statusText(account.status)
 }
 

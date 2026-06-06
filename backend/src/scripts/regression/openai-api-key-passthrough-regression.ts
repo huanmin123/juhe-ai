@@ -39,6 +39,7 @@ async function main(): Promise<void> {
   testRawBodyPassthrough()
   await testOpenAIStandardRequestPartsPassthrough()
   await testCodexResponsesCompatibilityRequestParts()
+  await testCodexResponsesCompatibilityKeepsExplicitToolSettings()
   await testCodexResponsesCompatibilityDoesNotRewriteChatCompletions()
   testApiKeyHeaderFiltering()
   testOpenAIAccountHeadersAreNotClientOrCredentialControlled()
@@ -82,12 +83,23 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
     model: 'gpt-5.5',
     input: '只输出 OK',
     include: ['file_search_call.results'],
+    tools: [
+      { type: 'web_search_preview' },
+      { type: 'web_search_preview_2025_03_11' }
+    ],
+    tool_choice: {
+      type: 'allowed_tools',
+      tools: [{ type: 'web_search_preview' }]
+    },
     stream: false,
     store: true,
     max_output_tokens: 16,
     max_completion_tokens: 16,
     temperature: 0.2,
-    top_p: 0.9
+    top_p: 0.9,
+    context_management: [{ type: 'compact' }],
+    truncation: 'disabled',
+    user: 'local-user'
   }))
   const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
   const parts = await buildUpstreamRequestParts(req, {
@@ -101,16 +113,87 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
   assert.equal(body.store, false)
   assert.equal(body.instructions, '')
   assert.deepEqual(body.include, ['file_search_call.results', 'reasoning.encrypted_content'])
+  assert.equal(body.tools[0]?.type, 'web_search')
+  assert.equal(body.tools[1]?.type, 'web_search')
+  assert.equal(body.tool_choice?.type, 'allowed_tools')
+  assert.equal(body.tool_choice?.tools?.[0]?.type, 'web_search')
+  assert.equal(body.parallel_tool_calls, true)
   assert.equal(Object.prototype.hasOwnProperty.call(body, 'max_output_tokens'), false)
   assert.equal(Object.prototype.hasOwnProperty.call(body, 'max_completion_tokens'), false)
   assert.equal(Object.prototype.hasOwnProperty.call(body, 'temperature'), false)
   assert.equal(Object.prototype.hasOwnProperty.call(body, 'top_p'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'context_management'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'truncation'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call(body, 'user'), false)
+
+  assert.equal(parts.headers.get('accept'), 'text/event-stream')
+  assert.equal(parts.headers.get('content-type'), 'application/json')
+  assert.equal(parts.headers.get('originator'), 'codex_cli_rs')
+  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.125.0')
+  assert.equal(parts.headers.get('version'), '0.125.0')
+  assert.equal(parts.headers.get('openai-beta'), 'responses=experimental')
 
   const input = body.input
   assert.ok(Array.isArray(input))
   assert.equal(input[0]?.role, 'user')
   assert.equal(input[0]?.content?.[0]?.type, 'input_text')
   assert.equal(input[0]?.content?.[0]?.text, '只输出 OK')
+}
+
+async function testCodexResponsesCompatibilityKeepsExplicitToolSettings(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.5',
+    input: [
+      {
+        type: 'message',
+        role: 'system',
+        content: [
+          {
+            type: 'input_text',
+            text: '作为开发者指令处理'
+          }
+        ]
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: '只输出 OK'
+          }
+        ]
+      }
+    ],
+    tools: [{ type: 'function', name: 'noop' }],
+    tool_choice: { type: 'function', name: 'noop' },
+    parallel_tool_calls: false
+  }))
+  const req = createRequest(undefined, {
+    'accept': 'application/json',
+    'content-type': 'text/plain',
+    'openai-beta': 'responses=v1',
+    'originator': 'codex_vscode',
+    'user-agent': 'codex_vscode/1.2.3',
+    'version': '1.2.3'
+  }, rawBody, '/responses')
+  const parts = await buildUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    clientCompatibility: 'codex_responses'
+  }, testIdentity)
+  const body = parseJsonBuffer(parts.body)
+
+  assert.equal(body.input[0]?.role, 'developer')
+  assert.equal(body.input[1]?.role, 'user')
+  assert.deepEqual(body.tools, [{ type: 'function', name: 'noop' }])
+  assert.deepEqual(body.tool_choice, { type: 'function', name: 'noop' })
+  assert.equal(body.parallel_tool_calls, false)
+  assert.equal(parts.headers.get('accept'), 'text/event-stream')
+  assert.equal(parts.headers.get('content-type'), 'application/json')
+  assert.equal(parts.headers.get('openai-beta'), 'responses=v1')
+  assert.equal(parts.headers.get('originator'), 'codex_vscode')
+  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/1.2.3')
+  assert.equal(parts.headers.get('version'), '1.2.3')
 }
 
 async function testCodexResponsesCompatibilityDoesNotRewriteChatCompletions(): Promise<void> {
@@ -127,6 +210,10 @@ async function testCodexResponsesCompatibilityDoesNotRewriteChatCompletions(): P
 
   assert.ok(Buffer.isBuffer(parts.body))
   assert.equal(Buffer.compare(parts.body, rawBody), 0)
+  assert.equal(parts.headers.get('accept'), null)
+  assert.equal(parts.headers.get('content-type'), 'application/json')
+  assert.equal(parts.headers.get('originator'), null)
+  assert.equal(parts.headers.get('openai-beta'), null)
 }
 
 function testApiKeyHeaderFiltering(): void {

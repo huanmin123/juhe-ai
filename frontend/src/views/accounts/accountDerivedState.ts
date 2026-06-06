@@ -1,9 +1,9 @@
-import type { AccountSummary, GroupOptionSummary, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
-import { defaultTestModelOptions } from './accountOptions'
+import { OPENAI_PROVIDER_CODE } from './accountOptions'
 
 export type SelectOption = {
   label: string
@@ -11,25 +11,50 @@ export type SelectOption = {
   disabled?: boolean
 }
 
-export function buildTestModelOptions(providerModels: ProviderModelPricing[], account?: AccountSummary): SelectOption[] {
+export function buildTestModelOptions(providerModels: ProviderModelPricing[], account?: AccountSummary | AccountSummary[], providerDefaultModel = ''): SelectOption[] {
   const accountModels = normalizeAccountSupportedModels(account)
-  const providerModelValues = providerModels.length ? providerModels.map((item) => item.model) : defaultTestModelOptions
-  const models = [...accountModels, ...providerModelValues]
-  return [...new Set(models)].map((model) => ({ label: model, value: model }))
+  const useOpenAIModels = isOpenAITestSelection(account)
+  const providerModelValues = useOpenAIModels
+    ? providerModels.map((item) => item.model)
+    : []
+  const defaultModel = providerDefaultModel.trim()
+  const models = [
+    ...(defaultModel ? [defaultModel] : []),
+    ...accountModels,
+    ...providerModelValues
+  ]
+  return [...new Set(models.map((model) => model.trim()).filter(Boolean))].map((model) => ({ label: model, value: model }))
 }
 
-export function preferredTestModelForAccount(account: AccountSummary | undefined, currentModel: string, fallbackModel: string): string {
-  const accountModels = normalizeAccountSupportedModels(account)
-  if (accountModels.length) {
-    return accountModels.includes(currentModel) ? currentModel : accountModels[0]
-  }
-  return currentModel || fallbackModel
+export function defaultTestModelForAccountSelection(account: AccountSummary | AccountSummary[] | undefined, providerDefaultModel = ''): string {
+  return providerDefaultModel.trim() || normalizeAccountSupportedModels(account)[0] || ''
 }
 
-function normalizeAccountSupportedModels(account: AccountSummary | undefined): string[] {
-  return (account?.supportedModels ?? [])
+export function providerDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
+  const providerCode = providerCodeForAccountSelection(account)
+  if (!providerCode) return ''
+  return providers.find((provider) => provider.code === providerCode)?.defaultTestModel?.trim() ?? ''
+}
+
+export function providerCodeForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): string {
+  const codes = [...new Set(normalizeAccounts(account).map((item) => item.providerCode).filter(Boolean))]
+  return codes.length === 1 ? codes[0] : ''
+}
+
+export function isOpenAITestSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
+  const accounts = normalizeAccounts(account)
+  return accounts.length > 0 && accounts.every((item) => item.providerCode === OPENAI_PROVIDER_CODE)
+}
+
+function normalizeAccountSupportedModels(account: AccountSummary | AccountSummary[] | undefined): string[] {
+  return normalizeAccounts(account)
+    .flatMap((item) => item.supportedModels ?? [])
     .map((model) => model.trim())
     .filter(Boolean)
+}
+
+function normalizeAccounts(account: AccountSummary | AccountSummary[] | undefined): AccountSummary[] {
+  return Array.isArray(account) ? account : account ? [account] : []
 }
 
 export function targetSystemAccountLabel(systemAccounts: SystemAccountPrincipalSummary[], systemAccountId?: string, selected?: PrincipalSelection): string {

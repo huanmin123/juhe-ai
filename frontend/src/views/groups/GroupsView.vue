@@ -245,6 +245,7 @@ const OPENAI_PROVIDER: ProviderDefinition = {
   name: 'OpenAI',
   enabled: true,
   baseUrl: 'https://api.openai.com/v1',
+  defaultTestModel: '',
   accountTypes: ['oauth', 'api_key'],
   capabilities: ['models', 'responses', 'stream', 'passthrough']
 }
@@ -764,6 +765,11 @@ function handleGroupAction(key: string, group: GroupSummary) {
   }
 }
 
+function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
+  const systemAccountId = group?.systemAccountId?.trim() || groupScopeParams.value?.systemAccountId
+  return systemAccountId ? { systemAccountId } : undefined
+}
+
 function formatUsageSummary(usage: GroupSummary['accountStats']['usage']) {
   return `${formatNumber(usage.requestCount)}req/${formatUsageAmount(usage.totalTokens)}/${formatCost(usage.totalCost)}`
 }
@@ -797,7 +803,7 @@ async function loadGroupOptions(force = false): Promise<void> {
   }
 
   const [providerList] = await Promise.all([
-    isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[])
+    api.providers.options()
   ])
   providers.value = providerList.length ? providerList : [OPENAI_PROVIDER]
   groupOptionsLoaded.value = true
@@ -887,7 +893,8 @@ const saveGroup = submitAction('groups.save', async () => {
     const payload = groupFormPayload()
     const targetId = editingId.value
     if (targetId) {
-      const updated = await groupsApi.update(targetId, payload, groupScopeParams.value)
+      const targetGroup = groups.value.find((item) => item.id === targetId)
+      const updated = await groupsApi.update(targetId, payload, groupOperationScopeParams(targetGroup))
       updateGroupItems((item) => item.id === targetId, () => updated)
       message.success('分组已更新')
       void loadData({ quiet: true })
@@ -940,7 +947,7 @@ async function removeGroup(id: string) {
     return
   }
   try {
-    await groupsApi.delete(id, groupScopeParams.value)
+    await groupsApi.delete(id, groupOperationScopeParams(group))
     removeGroupItems((item) => item.id === id)
     message.success('分组已删除')
     void loadData({ quiet: true })

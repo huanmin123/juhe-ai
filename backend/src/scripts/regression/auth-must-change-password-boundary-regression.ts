@@ -52,6 +52,7 @@ interface ApiEnvelope<T> {
 
 interface CurrentUser {
   username: string
+  displayName: string
   mustChangePassword: boolean
 }
 
@@ -72,6 +73,9 @@ async function main(): Promise<void> {
     assert(blocked.status === 403, `初始密码未修改时受保护接口应返回 403，实际 HTTP ${blocked.status}: ${blockedText}`)
     const blockedBody = JSON.parse(blockedText) as ApiEnvelope<unknown>
     assert(blockedBody.code === 'must_change_password', `初始密码拦截 code 异常：${blockedBody.code}`)
+    await assertJsonStatus(baseUrl, '/__aisys__/api/auth/me', cookie, 'PATCH', {
+      displayName: '未改密用户'
+    }, 403, '初始密码未修改时不能修改显示名称')
 
     const changedUser = await postEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/change-password', cookie, {
       newPassword: 'changed-password'
@@ -80,6 +84,15 @@ async function main(): Promise<void> {
 
     const allowed = await getEnvelope<{ protected: boolean }>(baseUrl, '/__aisys__/api/protected', cookie)
     assert(allowed.protected === true, '修改密码后应允许访问受保护接口')
+    await assertJsonStatus(baseUrl, '/__aisys__/api/auth/me', cookie, 'PATCH', {
+      displayName: ''
+    }, 400, '显示名称不能为空')
+    const renamedUser = await patchEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', cookie, {
+      displayName: '控制台管理员'
+    })
+    assert(renamedUser.displayName === '控制台管理员', `修改显示名称后响应应返回新名称，实际：${renamedUser.displayName}`)
+    const renamedCurrentUser = await getEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', cookie)
+    assert(renamedCurrentUser.displayName === '控制台管理员', '修改显示名称后当前会话应读取到新名称')
 
     const secondCookie = await login(baseUrl, 'changed-password')
     await assertPostStatus(baseUrl, '/__aisys__/api/auth/change-password', secondCookie, {
@@ -99,7 +112,7 @@ async function main(): Promise<void> {
     const currentAllowed = await getEnvelope<{ protected: boolean }>(baseUrl, '/__aisys__/api/protected', secondCookie)
     assert(currentAllowed.protected === true, '普通改密后当前会话应继续可用')
 
-    console.log('初始密码与普通改密边界回归通过：初始改密放行，普通改密校验旧密码并撤销其他会话')
+    console.log('初始密码、普通改密与显示名称修改边界回归通过：初始改密放行，普通改密校验旧密码，显示名称自助修改受会话状态约束')
   } finally {
     await closeServer(server)
     try {
@@ -152,6 +165,25 @@ async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, bo
     body: JSON.stringify(body)
   })
   return unwrapEnvelope<T>(response, path)
+}
+
+async function patchEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'PATCH',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  return unwrapEnvelope<T>(response, path)
+}
+
+async function assertJsonStatus(baseUrl: string, path: string, cookie: string, method: 'PATCH' | 'POST', body: unknown, expectedStatus: number, message: string): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert(response.status === expectedStatus, `${message}，实际 HTTP ${response.status}: ${text}`)
 }
 
 async function assertPostStatus(baseUrl: string, path: string, cookie: string, body: unknown, expectedStatus: number, message: string): Promise<void> {

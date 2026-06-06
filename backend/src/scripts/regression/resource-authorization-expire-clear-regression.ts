@@ -264,7 +264,7 @@ try {
 
   const ownerScheduleInactiveAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '授权所有者计划停用账户',
+    name: '授权所有者时段外账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-schedule-inactive', base_url: 'https://api.openai.com/v1' },
     availabilitySchedule: inactiveSourceSchedule,
@@ -280,17 +280,17 @@ try {
   }, ownerAccess)
   const ownerScheduleInactiveAuthorizedInstance = authorizedInstanceForSource(ownerScheduleInactiveAccount.id, granteeAccess)
   const ownerScheduleInactiveAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id)
-  assert.equal(ownerScheduleInactiveAuthorizedAccount?.status, 'active', '所有者计划停用不应覆盖授权实例状态')
-  assert.equal(ownerScheduleInactiveAuthorizedAccount?.schedulable, false, '所有者计划停用应阻断被授权实例实际调度')
-  assert.equal(ownerScheduleInactiveAuthorizedAccount?.effectiveAvailability.status, 'source_schedule_inactive', '所有者计划停用时授权实例实际状态应标记来源计划停用')
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.status, 'active', '所有者时段外不应覆盖授权实例状态')
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.schedulable, false, '所有者时段外应阻断被授权实例实际调度')
+  assert.equal(ownerScheduleInactiveAuthorizedAccount?.effectiveAvailability.status, 'source_schedule_inactive', '所有者时段外时授权实例实际状态应标记来源时段外')
   assert.equal(ownerScheduleInactiveAuthorizedAccount?.authorizationInstanceSourceAccountScheduleActive, false, '授权实例列表应返回来源账户计划当前不可用提示字段')
-  assert.equal(repositories.listOpenAIAccountsForGroup(granteeQuotaGroup.id, grantee.id).some((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id), false, '所有者计划停用后授权实例不应进入网关候选')
+  assert.equal(repositories.listOpenAIAccountsForGroup(granteeQuotaGroup.id, grantee.id).some((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id), false, '所有者时段外后授权实例不应进入网关候选')
   assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerScheduleInactiveAuthorizedInstance.id, {
     fallbackEnabled: true
-  }, granteeAccess), /授权方原账户当前不在允许使用时段/, '所有者计划停用后不应允许被授权用户开启调度标记')
+  }, granteeAccess), /授权方原账户当前不在允许使用时段/, '所有者时段外后不应允许被授权用户开启调度标记')
   const ownerScheduleInactiveTestAccount = repositories.findAccountForTest(ownerScheduleInactiveAuthorizedInstance.id, granteeAccess)
-  assert(ownerScheduleInactiveTestAccount, '所有者计划停用账户仍应能被解析出来用于测试前置校验')
-  assert.equal(repositories.accountTestUnavailableMessage(ownerScheduleInactiveTestAccount), '授权方原账户当前不在允许使用时段，当前账户不能调用', '测试接口应因所有者计划停用拦截被授权账户')
+  assert(ownerScheduleInactiveTestAccount, '所有者时段外账户仍应能被解析出来用于测试前置校验')
+  assert.equal(repositories.accountTestUnavailableMessage(ownerScheduleInactiveTestAccount), '授权方原账户当前不在允许使用时段，当前账户不能调用', '测试接口应因所有者时段外拦截被授权账户')
 
   const ownerDisabledAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -400,3 +400,4 @@ function insertUsageDaily(database: ReturnType<typeof databaseModule.getStatsDat
     ) VALUES (?, ?, ?, ?, ?, ?)
   `).run(systemAccountId, scopeType, scopeId, statDate, totalCost, new Date().toISOString())
 }
+

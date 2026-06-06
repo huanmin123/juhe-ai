@@ -27,6 +27,43 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const systemAccountIds = seedSystemAccounts(maxSystemTeamMembersPerTeam + 1, 'fanout_member')
 
+  const selfGrantGroup = repositories.createGroup({
+    name: '禁止超级管理员自授权分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  assert.throws(
+    () => repositories.createResourceAuthorization({
+      resourceType: 'group',
+      resourceId: selfGrantGroup.id,
+      granteeType: 'system_account',
+      granteeId: access.systemAccountId
+    }, access),
+    /不能授权给资源所有者自己/,
+    '超级管理员不能把自己的分组授权给自己'
+  )
+  const selfGrantAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '禁止超级管理员自授权账户',
+    type: 'api_key',
+    groupId: selfGrantGroup.id,
+    credentials: {
+      api_key: 'sk-system-team-fanout-self-grant',
+      base_url: 'https://api.openai.com/v1'
+    }
+  }, access)
+  assert.throws(
+    () => repositories.createResourceAuthorization({
+      resourceType: 'account',
+      resourceId: selfGrantAccount.id,
+      granteeType: 'system_account',
+      granteeId: access.systemAccountId,
+      targetGroupId: selfGrantGroup.id
+    }, access),
+    /不能授权给资源所有者自己/,
+    '超级管理员不能把自己的 AI 账户授权给自己'
+  )
+
   const batchTeam = repositories.createSystemTeam({ name: '团队成员批量上限' }, access)
   assert.throws(
     () => repositories.addSystemTeamMembers(batchTeam.id, { systemAccountIds: systemAccountIds.slice(0, maxSystemTeamMemberBatchSize + 1) }, access),

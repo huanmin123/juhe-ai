@@ -26,7 +26,7 @@
           :filter-option="false"
           :groups="groups"
           :loading="groupOptionsLoading"
-          :placeholder="groupFilterDisabled ? '请先选择系统账户' : '绑定分组'"
+          placeholder="绑定分组"
           @change="handleGroupFilterChange"
           @dropdown-visible-change="handleGroupOptionsDropdown"
           @search="handleGroupOptionsSearch"
@@ -61,7 +61,7 @@
             :filter-option="false"
             :groups="groups"
             :loading="groupOptionsLoading"
-            :placeholder="groupFilterDisabled ? '请先选择系统账户' : '绑定分组'"
+            placeholder="绑定分组"
             @change="handleGroupFilterChange"
             @dropdown-visible-change="handleGroupOptionsDropdown"
             @search="handleGroupOptionsSearch"
@@ -238,23 +238,29 @@
         </a-form-item>
         <a-form-item label="绑定分组路由" required>
           <div class="api-key-group-bindings-field">
+            <a-alert
+              class="binding-scope-alert"
+              type="info"
+              show-icon
+              message="这里只能选择当前系统账户自己的本地分组；授权给你的分组可在分组列表和我的授权里查看，但不能直接绑定到 API Key。"
+            />
             <div v-for="(binding, index) in form.groupBindings" :key="binding.key" class="api-key-group-binding-row" :class="{ 'api-key-group-binding-row-weighted': form.groupRouteStrategy === 'weighted_round_robin' }">
               <span class="binding-priority">{{ groupBindingPriorityText(index) }}</span>
               <GroupSelect
                 v-model:value="binding.groupId"
                 v-model:selected-group="binding.group"
                 class="binding-group-select"
-                :disabled="groupFilterDisabled"
+                :disabled="formGroupSelectDisabled"
                 :filter-option="false"
                 :groups="groupOptionsForBinding(index)"
                 :loading="groupOptionsLoading"
-                :placeholder="groupFilterDisabled ? '请先选择系统账户' : '输入分组名称搜索'"
+                :placeholder="formGroupSelectDisabled ? '请先选择系统账户' : '输入分组名称搜索'"
                 :selected-ids="formGroupBindingIds"
                 :selected-groups="formGroupBindingSelections"
                 :hidden-option-values="hiddenGroupBindingIds(index)"
                 @change="handleGroupBindingChange(index)"
-                @dropdown-visible-change="handleGroupOptionsDropdown"
-                @search="handleGroupOptionsSearch"
+                @dropdown-visible-change="handleFormGroupOptionsDropdown"
+                @search="handleFormGroupOptionsSearch"
               />
               <a-input-number
                 v-if="form.groupRouteStrategy === 'weighted_round_robin'"
@@ -296,10 +302,16 @@
         <a-form-item class="api-key-schedule-form-item">
           <div class="api-key-schedule-field">
             <div class="schedule-toggle-row">
-              <span class="schedule-toggle-label">自动启停计划</span>
+              <span class="schedule-toggle-label">可用时段计划</span>
               <a-switch v-model:checked="form.availabilitySchedule.enabled" />
             </div>
             <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
+              <a-alert
+                class="schedule-help"
+                type="info"
+                show-icon
+                message="按重复日期和起止时间设置使用范围。"
+              />
               <div class="schedule-window-list">
                 <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
                   <a-select
@@ -311,7 +323,7 @@
                     placeholder="重复日期"
                   />
                   <a-time-picker v-model:value="window.start" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="开始" />
-                  <a-time-picker v-model:value="window.end" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="停止" />
+                  <a-time-picker v-model:value="window.end" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="结束" />
                   <a-tooltip title="移除">
                     <a-button type="text" size="small" danger :disabled="form.availabilitySchedule.windows.length <= 1" @click="removeScheduleWindow(index)">
                       <template #icon><delete-outlined /></template>
@@ -396,6 +408,7 @@ const modalOpen = ref(false)
 const createdKeyOpen = ref(false)
 const helpOpen = ref(false)
 const editingId = ref<string>()
+const editingSystemAccountId = ref<string>()
 const createdKey = ref('')
 const statusUpdatingId = ref('')
 const keyCopyingId = ref('')
@@ -432,6 +445,11 @@ interface ApiKeyAvailabilityScheduleForm {
   exceptions?: ApiKeyAvailabilitySchedule['exceptions']
 }
 type ApiKeyAvailabilitySchedulePayload = ApiKeyAvailabilitySchedule
+type ApiKeyScopeParams = { systemAccountId: string } | undefined
+interface ApiKeyGroupOptionsScope {
+  systemAccountId?: string
+  selectedIds?: string[]
+}
 const defaultApiKeysPageState = (): ApiKeysPageState => ({
   groupFilter: undefined,
   keywordFilter: '',
@@ -597,11 +615,16 @@ const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
 })
-const groupFilterDisabled = computed(() => isManagementView.value && !apiKeyScopeParams.value?.systemAccountId)
+const apiKeyFormScopeParams = computed<ApiKeyScopeParams>(() => {
+  const systemAccountId = editingSystemAccountId.value || apiKeyScopeParams.value?.systemAccountId
+  return systemAccountId ? { systemAccountId } : undefined
+})
+const groupFilterDisabled = computed(() => false)
+const formGroupSelectDisabled = computed(() => isManagementView.value && !apiKeyFormScopeParams.value?.systemAccountId)
 const activeFilterCount = computed(() => [
   keywordFilter.value.trim(),
   statusFilter.value !== 'all',
-  !groupFilterDisabled.value && groupFilter.value,
+  groupFilter.value,
   isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue
 ].filter(Boolean).length)
 const advancedFilterCount = computed(() => 0)
@@ -619,7 +642,7 @@ const targetSystemAccountLabel = computed(() => {
     || ''
 })
 const addGroupBindingDisabledReason = computed(() => {
-  if (groupFilterDisabled.value) return '请先选择系统账户'
+  if (formGroupSelectDisabled.value) return '请先选择系统账户'
   if (form.groupBindings.some((binding) => !binding.groupId.trim())) return '请先选择已有绑定分组'
   if (!nextAvailableGroupForNewBinding()) return '没有可继续绑定的分组'
   return undefined
@@ -685,15 +708,14 @@ function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {
     .slice(0, 2)
     .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
   const suffix = schedule.windows.length > 2 ? ` 等 ${schedule.windows.length} 段` : ''
-  const current = isScheduleCurrentlyAllowed(schedule) ? '当前可用' : '计划停用'
-  return `${current}：${windows.join(' / ')}${suffix}`
+  return `${windows.join(' / ')}${suffix}`
 }
 
 function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
   if (!apiKey.availabilitySchedule?.enabled) return 'default'
   try {
     assertApiKeyAvailabilitySchedule(apiKey.availabilitySchedule)
-    return isScheduleCurrentlyAllowed(apiKey.availabilitySchedule) ? 'green' : 'orange'
+    return 'blue'
   } catch {
     return 'red'
   }
@@ -710,67 +732,6 @@ function daysOfWeekText(days: number[]): string {
   if (normalized === '6,7') return '周末'
   const labels = new Map(weekdayOptions.map((item) => [item.value, item.label]))
   return [...new Set(days)].sort((left, right) => left - right).map((day) => labels.get(day) ?? `周${day}`).join('、')
-}
-
-function isScheduleCurrentlyAllowed(schedule: ApiKeyAvailabilitySchedule): boolean {
-  if (!schedule.enabled) return true
-  const current = zonedScheduleParts(new Date(), schedule.timezone)
-  if (schedule.dateRange?.startDate && current.dateKey < schedule.dateRange.startDate) return false
-  if (schedule.dateRange?.endDate && current.dateKey > schedule.dateRange.endDate) return false
-  const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
-  if (exception?.action === 'deny') return false
-  if (exception?.action === 'allow') {
-    return (exception.windows ?? []).some((window) => isCurrentMinuteInScheduleWindow(current, { daysOfWeek: [current.dayOfWeek], start: window.start, end: window.end }))
-  }
-  return schedule.windows.some((window) => isCurrentMinuteInScheduleWindow(current, window))
-}
-
-function isCurrentMinuteInScheduleWindow(
-  current: { dayOfWeek: number; minuteOfDay: number },
-  window: { daysOfWeek: number[]; start: string; end: string }
-): boolean {
-  const start = scheduleMinuteOfDay(window.start)
-  const end = scheduleMinuteOfDay(window.end)
-  const days = new Set(window.daysOfWeek)
-  if (start < end) {
-    return days.has(current.dayOfWeek) && current.minuteOfDay >= start && current.minuteOfDay < end
-  }
-  return (days.has(current.dayOfWeek) && current.minuteOfDay >= start)
-    || (days.has(previousScheduleDayOfWeek(current.dayOfWeek)) && current.minuteOfDay < end)
-}
-
-function scheduleMinuteOfDay(value: string): number {
-  const [hour, minute] = value.split(':').map((item) => Number(item))
-  return Math.max(0, Math.min(23, hour || 0)) * 60 + Math.max(0, Math.min(59, minute || 0))
-}
-
-function previousScheduleDayOfWeek(dayOfWeek: number): number {
-  return dayOfWeek === 1 ? 7 : dayOfWeek - 1
-}
-
-function zonedScheduleParts(date: Date, timezone: string): { dateKey: string; dayOfWeek: number; minuteOfDay: number } {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23'
-  })
-  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
-  const year = Number(parts.year)
-  const month = Number(parts.month)
-  const day = Number(parts.day)
-  const hour = Number(parts.hour)
-  const minute = Number(parts.minute)
-  const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-  const utcDay = new Date(Date.UTC(year, month - 1, day)).getUTCDay()
-  return {
-    dateKey,
-    dayOfWeek: utcDay === 0 ? 7 : utcDay,
-    minuteOfDay: hour * 60 + minute
-  }
 }
 
 function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>) {
@@ -797,7 +758,7 @@ async function copyKeyPreview(apiKey: ApiKeySummary): Promise<void> {
   if (keyCopyingId.value) return
   keyCopyingId.value = apiKey.id
   try {
-    const key = apiKey.key || (await apiKeysApi.secret(apiKey.id, apiKeyScopeParams.value)).key
+    const key = apiKey.key || (await apiKeysApi.secret(apiKey.id, apiKeyOperationScopeParams(apiKey))).key
     await copyTextToClipboard(key, '完整密钥已复制')
   } catch (error) {
     console.error(error)
@@ -853,23 +814,20 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
   apiKeyOptionsScopeKey.value = scopeKey
 }
 
-async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): Promise<void> {
+async function loadGroupOptions(keyword = groupOptionsKeyword, force = false, scopeOverride?: ApiKeyGroupOptionsScope): Promise<void> {
   groupOptionsKeyword = keyword
-  const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
-  if (isManagementView.value && !systemAccountId) {
-    groups.value = []
-    groupOptionsLoading.value = false
-    groupOptionsLoadingKey = undefined
-    groupOptionsLoadingPromise = undefined
-    return
-  }
+  const scope = normalizedGroupOptionsScope(scopeOverride)
   const requestKeyword = normalizeOptionKeyword(keyword)
-  const requestKey = JSON.stringify([isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', groupFilter.value ?? '', ...formGroupBindingIds.value])
+  const requestKey = JSON.stringify([
+    isManagementView.value ? `management:${scope.systemAccountId || 'all'}` : 'self',
+    requestKeyword ?? '',
+    scope.selectedIds
+  ])
   if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
     return groupOptionsLoadingPromise
   }
   const requestId = ++groupOptionsRequestId
-  const optionWindowKey = groupOptionWindowKey(systemAccountId, requestKeyword)
+  const optionWindowKey = groupOptionWindowKey(scope.systemAccountId, requestKeyword)
   const localWindowGroups = !force ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
   if (localWindowGroups?.length) {
     groupOptionsLoading.value = false
@@ -894,8 +852,8 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
   groupOptionsLoadingKey = requestKey
   groupOptionsLoadingPromise = (async () => {
     try {
-      let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50, manageableOnly: true, preferDefault: true })
-      nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId, optionWindowKey)
+      let nextGroups = await groupsApi.options({ systemAccountId: scope.systemAccountId || undefined, keyword: requestKeyword, limit: 50, manageableOnly: true, preferDefault: true })
+      nextGroups = await ensureSelectedGroupOptions(nextGroups, scope, optionWindowKey)
       rememberGroupLabels(nextGroups)
       syncSelectedGroupSelections(nextGroups)
       groupOptionsCache.set(requestKey, nextGroups)
@@ -919,6 +877,17 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
   return groupOptionsLoadingPromise
 }
 
+function normalizedGroupOptionsScope(scopeOverride?: ApiKeyGroupOptionsScope): Required<ApiKeyGroupOptionsScope> {
+  const systemAccountId = scopeOverride?.systemAccountId
+    ?? ((modalOpen.value || editingId.value) ? apiKeyFormScopeParams.value?.systemAccountId : apiKeyScopeParams.value?.systemAccountId)
+    ?? ''
+  const selectedIds = scopeOverride?.selectedIds ?? ((modalOpen.value || editingId.value) ? [groupFilter.value, ...formGroupBindingIds.value] : [groupFilter.value])
+  return {
+    systemAccountId: systemAccountId.trim(),
+    selectedIds: [...new Set(selectedIds.filter((id): id is string => Boolean(id?.trim())).map((id) => id.trim()).sort())]
+  }
+}
+
 function handleGroupOptionsDropdown(open: boolean): void {
   if (open) {
     void loadGroupOptions()
@@ -934,6 +903,27 @@ function handleGroupOptionsSearch(value: string): void {
   }, 250)
 }
 
+function handleFormGroupOptionsDropdown(open: boolean): void {
+  if (open) {
+    void loadGroupOptions(groupOptionsKeyword, false, {
+      systemAccountId: apiKeyFormScopeParams.value?.systemAccountId,
+      selectedIds: formGroupBindingIds.value
+    })
+  }
+}
+
+function handleFormGroupOptionsSearch(value: string): void {
+  groupOptionsKeyword = value
+  clearGroupOptionsSearchTimer()
+  groupOptionsSearchTimer = window.setTimeout(() => {
+    groupOptionsSearchTimer = undefined
+    void loadGroupOptions(groupOptionsKeyword, false, {
+      systemAccountId: apiKeyFormScopeParams.value?.systemAccountId,
+      selectedIds: formGroupBindingIds.value
+    })
+  }, 250)
+}
+
 function resetGroupOptionsSearch(): void {
   groupOptionsKeyword = ''
   clearGroupOptionsSearchTimer()
@@ -946,13 +936,12 @@ function clearGroupOptionsSearchTimer(): void {
   }
 }
 
-async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined, optionWindowKey: string): Promise<GroupOptionSummary[]> {
-  const selectedIds = [groupFilter.value, ...formGroupBindingIds.value].filter((id): id is string => Boolean(id))
-  const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
+async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], scope: Required<ApiKeyGroupOptionsScope>, optionWindowKey: string): Promise<GroupOptionSummary[]> {
+  const missingIds = scope.selectedIds.filter((id) => !nextGroups.some((group) => group.id === id))
   if (!missingIds.length) return nextGroups
   const selectedGroups = await Promise.all(missingIds.map(async (id) => {
     try {
-      return await groupsApi.options({ systemAccountId, ids: [id], limit: 1, manageableOnly: true, preferDefault: true })
+      return await groupsApi.options({ systemAccountId: scope.systemAccountId || undefined, ids: [id], limit: 1, manageableOnly: true, preferDefault: true })
     } catch {
       return []
     }
@@ -995,10 +984,6 @@ function groupOptionWindowKey(systemAccountId: string | undefined, requestKeywor
 }
 
 function syncSelectedGroupSelections(nextGroups = groups.value): void {
-  if (groupFilterDisabled.value) {
-    groupFilterSelection.value = undefined
-    return
-  }
   if (groupFilter.value) {
     groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
   }
@@ -1097,7 +1082,7 @@ function apiKeyListParams(systemAccountId: string | undefined, pageState: { curr
     pageSize: pageState.pageSize,
     keyword: keywordFilter.value.trim() || undefined,
     status: statusFilter.value,
-    groupId: isManagementView.value && !systemAccountId ? undefined : groupFilter.value
+    groupId: groupFilter.value
   }
 }
 
@@ -1122,9 +1107,13 @@ async function openCreate() {
     message.warning('请先在右侧选择目标系统账户，再创建 API Key')
     return
   }
-  resetGroupOptionsSearch()
-  await loadGroupOptions()
   editingId.value = undefined
+  editingSystemAccountId.value = undefined
+  resetGroupOptionsSearch()
+  await loadGroupOptions('', true, {
+    systemAccountId: apiKeyScopeParams.value?.systemAccountId,
+    selectedIds: []
+  })
   const defaultGroup = groups.value.find((group) => group.enabled && group.isDefault)
   if (!defaultGroup) {
     message.warning('请先创建并启用默认分组，再创建 API Key')
@@ -1144,7 +1133,11 @@ async function openCreate() {
 }
 
 async function openEdit(apiKey: ApiKeySummary) {
-  editingId.value = apiKey.id
+  const editScopeParams = apiKeyOperationScopeParams(apiKey)
+  if (isManagementView.value && !editScopeParams?.systemAccountId) {
+    message.warning('无法确定 API Key 归属系统账户，请刷新后重试')
+    return
+  }
   let bindings: ApiKeyGroupBindingFormRow[]
   let quotaLimits: ReturnType<typeof createQuotaLimitForm>
   let expiresAt: Dayjs | undefined
@@ -1168,6 +1161,8 @@ async function openEdit(apiKey: ApiKeySummary) {
     message.error('API Key 分组绑定数据异常，请刷新后重试')
     return
   }
+  editingId.value = apiKey.id
+  editingSystemAccountId.value = editScopeParams?.systemAccountId
   Object.assign(form, {
     name: apiKey.name,
     groupRouteStrategy: apiKey.groupRouteStrategy,
@@ -1179,7 +1174,10 @@ async function openEdit(apiKey: ApiKeySummary) {
     availabilitySchedule
   })
   resetGroupOptionsSearch()
-  await loadGroupOptions()
+  await loadGroupOptions('', true, {
+    systemAccountId: editScopeParams?.systemAccountId,
+    selectedIds: formGroupBindingIds.value
+  })
   modalOpen.value = true
 }
 
@@ -1256,50 +1254,50 @@ function defaultScheduleTimezone(): string {
 }
 
 function assertApiKeyAvailabilitySchedule(schedule: ApiKeyAvailabilitySchedule): void {
-  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], 'API Key 自动启停计划')
-  if (schedule.enabled !== true) throw new Error('API Key 自动启停计划启用状态异常，请清理后再编辑')
-  if (schedule.mode !== 'allow_windows') throw new Error('API Key 自动启停计划模式异常，请清理后再编辑')
-  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('API Key 自动启停计划时区异常，请清理后再编辑')
-  assertScheduleTimezone(schedule.timezone, 'API Key 自动启停计划时区')
-  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('API Key 自动启停计划时段异常，请清理后再编辑')
+  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], 'API Key 可用时段计划')
+  if (schedule.enabled !== true) throw new Error('API Key 可用时段计划启用状态异常，请清理后再编辑')
+  if (schedule.mode !== 'allow_windows') throw new Error('API Key 可用时段计划模式异常，请清理后再编辑')
+  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('API Key 可用时段计划时区异常，请清理后再编辑')
+  assertScheduleTimezone(schedule.timezone, 'API Key 可用时段计划时区')
+  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('API Key 可用时段计划时段异常，请清理后再编辑')
   for (const window of schedule.windows) {
-    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], 'API Key 自动启停计划时段')
-    assertScheduleDays(window.daysOfWeek, 'API Key 自动启停计划重复日期')
-    assertScheduleTime(window.start, 'API Key 自动启停计划开始时间')
-    assertScheduleTime(window.end, 'API Key 自动启停计划停止时间')
-    if (window.start === window.end) throw new Error('API Key 自动启停计划开始时间和停止时间不能相同')
+    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], 'API Key 可用时段计划时段')
+    assertScheduleDays(window.daysOfWeek, 'API Key 可用时段计划重复日期')
+    assertScheduleTime(window.start, 'API Key 可用时段计划开始时间')
+    assertScheduleTime(window.end, 'API Key 可用时段计划结束时间')
+    if (window.start === window.end) throw new Error('API Key 可用时段计划开始时间和结束时间不能相同')
   }
   if (schedule.dateRange) {
     assertScheduleDateRange(schedule.dateRange)
   }
   if (schedule.exceptions !== undefined) {
-    if (!Array.isArray(schedule.exceptions)) throw new Error('API Key 自动启停计划例外日期异常，请清理后再编辑')
+    if (!Array.isArray(schedule.exceptions)) throw new Error('API Key 可用时段计划例外日期异常，请清理后再编辑')
     for (const exception of schedule.exceptions) {
-      assertObjectKeys(exception, ['date', 'action', 'windows'], 'API Key 自动启停计划例外日期')
-      assertScheduleDate(exception.date, 'API Key 自动启停计划例外日期')
+      assertObjectKeys(exception, ['date', 'action', 'windows'], 'API Key 可用时段计划例外日期')
+      assertScheduleDate(exception.date, 'API Key 可用时段计划例外日期')
       if (exception.action === 'allow') {
-        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('API Key 自动启停计划允许例外时段异常，请清理后再编辑')
+        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('API Key 可用时段计划允许例外时段异常，请清理后再编辑')
         for (const window of exception.windows) {
-          assertObjectKeys(window, ['start', 'end'], 'API Key 自动启停计划例外时段')
-          assertScheduleTime(window.start, 'API Key 自动启停计划例外开始时间')
-          assertScheduleTime(window.end, 'API Key 自动启停计划例外停止时间')
-          if (window.start === window.end) throw new Error('API Key 自动启停计划例外开始时间和停止时间不能相同')
+          assertObjectKeys(window, ['start', 'end'], 'API Key 可用时段计划例外时段')
+          assertScheduleTime(window.start, 'API Key 可用时段计划例外开始时间')
+          assertScheduleTime(window.end, 'API Key 可用时段计划例外结束时间')
+          if (window.start === window.end) throw new Error('API Key 可用时段计划例外开始时间和结束时间不能相同')
         }
       } else if (exception.action === 'deny') {
-        if ('windows' in exception) throw new Error('API Key 自动启停计划拒绝例外不能带允许时段')
+        if ('windows' in exception) throw new Error('API Key 可用时段计划拒绝例外不能带允许时段')
       } else {
-        throw new Error('API Key 自动启停计划例外动作异常，请清理后再编辑')
+        throw new Error('API Key 可用时段计划例外动作异常，请清理后再编辑')
       }
     }
   }
 }
 
 function assertScheduleDateRange(dateRange: NonNullable<ApiKeyAvailabilitySchedule['dateRange']>): void {
-  assertObjectKeys(dateRange, ['startDate', 'endDate'], 'API Key 自动启停计划日期范围')
-  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, 'API Key 自动启停计划开始日期')
-  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, 'API Key 自动启停计划结束日期')
+  assertObjectKeys(dateRange, ['startDate', 'endDate'], 'API Key 可用时段计划日期范围')
+  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, 'API Key 可用时段计划开始日期')
+  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, 'API Key 可用时段计划结束日期')
   if (dateRange.startDate && dateRange.endDate && dateRange.startDate > dateRange.endDate) {
-    throw new Error('API Key 自动启停计划开始日期不能晚于结束日期')
+    throw new Error('API Key 可用时段计划开始日期不能晚于结束日期')
   }
 }
 
@@ -1359,6 +1357,12 @@ function handleGroupBindingChange(index: number) {
   if (!binding?.groupId) return
   const group = groupOptionForId(binding.groupId)
   if (!group) return
+  if (!isApiKeyBindableGroup(group)) {
+    message.warning('授权分组不能直接绑定到 API Key，请选择自己的本地分组')
+    binding.groupId = ''
+    binding.group = undefined
+    return
+  }
   const providerCode = selectedGroupBindingProviderCode(index)
   if (providerCode && group.providerCode !== providerCode) {
     message.warning('同一个 API Key 的绑定号池必须属于同一供应商')
@@ -1397,7 +1401,7 @@ function normalizedGroupBindingPayload(): Array<{ groupId: string; priority: num
 function nextAvailableGroupForNewBinding(): GroupOptionSummary | undefined {
   const selectedIds = new Set(form.groupBindings.map((binding) => binding.groupId.trim()).filter(Boolean))
   const providerCode = selectedGroupBindingProviderCode()
-  return groups.value.find((group) => group.enabled && !selectedIds.has(group.id) && (!providerCode || group.providerCode === providerCode))
+  return groups.value.find((group) => isApiKeyBindableGroup(group) && group.enabled && !selectedIds.has(group.id) && (!providerCode || group.providerCode === providerCode))
 }
 
 function groupBindingPriorityText(index: number): string {
@@ -1415,7 +1419,7 @@ function groupBindingPriorityTextByPriority(priority: number | undefined): strin
 
 function groupOptionsForBinding(index: number): GroupOptionSummary[] {
   const providerCode = selectedGroupBindingProviderCode(index)
-  return groups.value.filter((group) => group.enabled && (!providerCode || group.providerCode === providerCode))
+  return groups.value.filter((group) => isApiKeyBindableGroup(group) && group.enabled && (!providerCode || group.providerCode === providerCode))
 }
 
 function hiddenGroupBindingIds(index: number): string[] {
@@ -1443,6 +1447,10 @@ function groupOptionForId(groupId: string | undefined): GroupOptionSummary | und
   return groups.value.find((group) => group.id === id)
 }
 
+function isApiKeyBindableGroup(group: GroupOptionSummary): boolean {
+  return group.accessType !== 'authorized'
+}
+
 function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
   if (key === 'edit') {
     void openEdit(apiKey)
@@ -1453,14 +1461,21 @@ function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
     return
   }
   if (key === 'delete') {
-    void removeApiKey(apiKey.id)
+    void removeApiKey(apiKey)
   }
+}
+
+function apiKeyOperationScopeParams(apiKey?: Pick<ApiKeySummary, 'systemAccountId'>): ApiKeyScopeParams {
+  const systemAccountId = apiKey?.systemAccountId?.trim()
+    || apiKeyFormScopeParams.value?.systemAccountId
+    || apiKeyScopeParams.value?.systemAccountId
+  return systemAccountId ? { systemAccountId } : undefined
 }
 
 async function updateApiKeyStatus(apiKey: ApiKeySummary, status: 'active' | 'disabled') {
   statusUpdatingId.value = apiKey.id
   try {
-    const updated = await apiKeysApi.update(apiKey.id, { status }, apiKeyScopeParams.value)
+    const updated = await apiKeysApi.update(apiKey.id, { status }, apiKeyOperationScopeParams(apiKey))
     updateApiKeyItems((item) => item.id === apiKey.id, () => updated)
     message.success(status === 'active' ? 'API Key 已启用' : 'API Key 已停用')
     void loadData({ quiet: true })
@@ -1498,6 +1513,13 @@ const saveApiKey = submitAction('api_keys.save', async () => {
       message.warning('绑定分组不能重复')
       return
     }
+    const authorizedGroups = groupBindings
+      .map((binding) => groupOptionForId(binding.groupId))
+      .filter((group): group is GroupOptionSummary => Boolean(group && !isApiKeyBindableGroup(group)))
+    if (authorizedGroups.length) {
+      message.warning(`API Key 不能直接绑定授权分组：${authorizedGroups.map((group) => group.name).join('、')}`)
+      return
+    }
     const providerCodes = new Set(groupBindings.map((binding) => groupOptionForId(binding.groupId)?.providerCode).filter(Boolean))
     if (providerCodes.size > 1) {
       message.warning('同一个 API Key 的绑定号池必须属于同一供应商')
@@ -1528,7 +1550,7 @@ const saveApiKey = submitAction('api_keys.save', async () => {
       availabilitySchedule
     }
     if (targetId) {
-      const updated = await apiKeysApi.update(targetId, payload, apiKeyScopeParams.value)
+      const updated = await apiKeysApi.update(targetId, payload, apiKeyOperationScopeParams())
       updateApiKeyItems((item) => item.id === targetId, () => updated)
       message.success('API Key 已更新')
       void loadData({ quiet: true })
@@ -1561,7 +1583,7 @@ function availabilitySchedulePayload(): ApiKeyAvailabilitySchedulePayload | null
   }))
   const invalidIndex = windows.findIndex((window) => hasInvalidScheduleDays(window.daysOfWeek) || !window.start || !window.end || window.start === window.end)
   if (invalidIndex >= 0) {
-    message.warning(`请完整填写第 ${invalidIndex + 1} 个自动启停时段`)
+    message.warning(`请完整填写第 ${invalidIndex + 1} 个可用时段`)
     return false
   }
   return {
@@ -1636,10 +1658,10 @@ function cloneScheduleExceptions(exceptions: ApiKeyAvailabilitySchedule['excepti
   })
 }
 
-async function removeApiKey(id: string) {
+async function removeApiKey(apiKey: ApiKeySummary) {
   try {
-    await apiKeysApi.delete(id, apiKeyScopeParams.value)
-    removeApiKeyItems((item) => item.id === id)
+    await apiKeysApi.delete(apiKey.id, apiKeyOperationScopeParams(apiKey))
+    removeApiKeyItems((item) => item.id === apiKey.id)
     message.success('API Key 已删除，关联记录将后台清理')
     void loadData({ quiet: true })
   } catch (error) {
@@ -1649,11 +1671,11 @@ async function removeApiKey(id: string) {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-watch(groupFilterDisabled, (disabled) => {
-  if (!disabled) return
-  groupFilterSelection.value = undefined
-  groups.value = []
-}, { immediate: true })
+watch(modalOpen, (open) => {
+  if (open) return
+  editingId.value = undefined
+  editingSystemAccountId.value = undefined
+})
 watch(apiKeys, (items) => {
   for (const item of items) {
     for (const binding of apiKeyGroupBindings(item)) {
@@ -1808,6 +1830,10 @@ onMounted(loadData)
   gap: 10px;
 }
 
+.binding-scope-alert {
+  font-size: 12px;
+}
+
 .api-key-group-binding-row {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr) 96px auto;
@@ -1868,6 +1894,10 @@ onMounted(loadData)
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+}
+
+.schedule-help {
+  font-size: 12px;
 }
 
 .schedule-window-row {

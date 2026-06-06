@@ -39,7 +39,6 @@ const createFromCodeSchema = z.object({
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
   fallbackEnabled: z.boolean().optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
@@ -56,7 +55,6 @@ const createFromRefreshTokenSchema = z.object({
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
   fallbackEnabled: z.boolean().optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
@@ -133,7 +131,6 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
-        clientCompatibility: parsed.data.clientCompatibility,
         supportedModels: parsed.data.supportedModels,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
@@ -204,7 +201,6 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
-        clientCompatibility: parsed.data.clientCompatibility,
         supportedModels: parsed.data.supportedModels,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
@@ -465,7 +461,7 @@ function buildOAuthCreateLog(
       safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
       safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
       safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
-      safeChange('availabilitySchedule', '自动启停计划', undefined, account.availabilitySchedule)
+      safeChange('availabilitySchedule', '可用时段计划', undefined, account.availabilitySchedule)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
   }

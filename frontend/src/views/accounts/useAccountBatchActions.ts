@@ -2,22 +2,20 @@ import { message } from '@/lib/antd'
 import type { ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountSummary, AccountTestResult } from '@/types/domain'
+import type { AccountSummary } from '@/types/domain'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
-import { batchTestSummary } from './accountTestFlow'
-import { canBatchManageAccount, canBatchRestoreAccount, canTestAccount } from './accountRules'
+import { canBatchDeleteAccount, canBatchManageAccount, canBatchRestoreAccount, canTestAccount } from './accountRules'
 
 const accountBatchConcurrency = 5
-const accountBatchTestConcurrency = 3
 
 interface UseAccountBatchActionsOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   clearSelection: () => void
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
+  openBatchTestModal: (accounts: AccountSummary[]) => void | Promise<void>
   selectedAccounts: ComputedRef<AccountSummary[]>
-  testAccountSilently: (account: AccountSummary) => Promise<AccountTestResult | undefined>
 }
 
 export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
@@ -67,25 +65,10 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
       message.warning('请先选择账户')
       return
     }
-    const hide = message.loading(`正在批量测试 ${selected.length} 个账户...`, 0)
-    try {
-      const settledResults = await runWithConcurrency(selected, accountBatchTestConcurrency, (account) => options.testAccountSilently(account))
-      const results = settledResults.map((result) => result.status === 'fulfilled' ? result.value : undefined)
-      const successCount = results.filter((result) => result?.success).length
-      const summary = batchTestSummary(results.length, successCount)
-      if (summary.success) {
-        message.success(summary.message)
-        options.clearSelection()
-      } else {
-        message.warning(summary.message)
-      }
-      await options.loadData()
-    } catch (error) {
-      console.error(error)
-      message.error('批量测试失败')
-    } finally {
-      hide()
+    if (selected.length !== options.selectedAccounts.value.length) {
+      message.warning('已跳过非 OpenAI 或当前不能测试的账户')
     }
+    await options.openBatchTestModal(selected)
   }
 
   async function batchSetStatus(status: 'active' | 'disabled') {
@@ -125,7 +108,40 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     )
   }
 
+  async function batchDeleteSelected() {
+    const selected = options.selectedAccounts.value.filter(canBatchDeleteAccount)
+    if (!selected.length) {
+      message.warning('所选账户里没有可删除的自有账户')
+      return
+    }
+    if (selected.length !== options.selectedAccounts.value.length) {
+      message.warning('已跳过授权账户或无权删除的账户')
+    }
+    const hide = message.loading(`正在批量删除账户（${selected.length} 个）...`, 0)
+    try {
+      const results = await runWithConcurrency(selected, accountBatchConcurrency, (account) => (
+        options.isManagementView.value
+          ? api.accounts.delete(account.id, accountOperationScopeParams(account, options.accountScopeParams.value))
+          : api.myAccounts.delete(account.id)
+      ))
+      const failedCount = results.filter((result) => result.status === 'rejected').length
+      if (failedCount === 0) {
+        message.success('账户已批量删除，关联记录将在一个月后由后台物理清理')
+        options.clearSelection()
+      } else {
+        message.warning(`账户批量删除已执行，成功 ${selected.length - failedCount} 个，失败 ${failedCount} 个`)
+      }
+      await options.loadData()
+    } catch (error) {
+      console.error(error)
+      message.error('批量删除账户失败')
+    } finally {
+      hide()
+    }
+  }
+
   return {
+    batchDeleteSelected,
     batchRestoreSelected,
     batchSetStatus,
     batchTestSelected,

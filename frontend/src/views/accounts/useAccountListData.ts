@@ -200,7 +200,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
       const [providerList, proxyList] = await Promise.all([
-        options.isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+        api.providers.options(),
         api.proxies.options({ limit: 50 })
       ])
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
@@ -229,7 +229,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       keyword: filters.keyword.trim() || undefined,
       providerCode: filters.providerCode && filters.providerCode !== 'all' ? filters.providerCode : undefined,
       type: filters.type && filters.type !== 'all' ? filters.type : undefined,
-      groupId: options.isManagementView.value && !systemAccountId ? undefined : filters.groupId || undefined,
+      groupId: filters.groupId || undefined,
       status: filters.status
     }
   }
