@@ -7,6 +7,7 @@ import type { AccountAvailabilityScheduleForm } from './accountAvailabilitySched
 
 export interface AccountFormModel {
   providerCode: string
+  providerProtocolProfileId: string
   name: string
   type: AccountType
   groupId?: string

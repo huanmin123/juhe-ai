@@ -30,12 +30,12 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 try {
   const primaryGroup = repositories.createGroup({
     name: '多分组回归 A 主池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '多分组回归 B 后备池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const disabledProxy = repositories.createProxy({
@@ -46,7 +46,7 @@ try {
     enabled: true
   }, access)
   const primaryBlockedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多分组回归主池不可派发账号',
     type: 'api_key',
     credentials: {
@@ -60,7 +60,7 @@ try {
   }, access)
   repositories.updateProxy(disabledProxy.id, { enabled: false })
   const fallbackAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多分组回归后备账号',
     type: 'api_key',
     credentials: {
@@ -230,7 +230,7 @@ try {
   assert.equal(runtime.accounts[0]?.id, fallbackAccount.id, '运行时账号应来自后备分组')
 
   const primaryHealthyAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多分组回归主池恢复账号',
     type: 'api_key',
     credentials: {
@@ -251,16 +251,16 @@ try {
 
   const roundRobinGroupA = repositories.createGroup({
     name: '多分组轮询回归 A 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const roundRobinGroupB = repositories.createGroup({
     name: '多分组轮询回归 B 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多分组轮询回归 A 账号',
     type: 'api_key',
     credentials: {
@@ -272,7 +272,7 @@ try {
     schedulable: true
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多分组轮询回归 B 账号',
     type: 'api_key',
     credentials: {
@@ -300,16 +300,16 @@ try {
 
   const weightedGroupA = repositories.createGroup({
     name: '多分组权重回归 A 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const weightedGroupB = repositories.createGroup({
     name: '多分组权重回归 B 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多分组权重回归 A 账号',
     type: 'api_key',
     credentials: {
@@ -321,7 +321,7 @@ try {
     schedulable: true
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多分组权重回归 B 账号',
     type: 'api_key',
     credentials: {
@@ -398,12 +398,12 @@ try {
 
   const deletePrimaryGroup = repositories.createGroup({
     name: '多分组删除回归主池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const deleteFallbackGroup = repositories.createGroup({
     name: '多分组删除回归后备池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const deleteRouteKey = repositories.createApiKeyRecord({
@@ -433,7 +433,7 @@ try {
   assertGroupDeleteAffectedApiKeyWindowQueryPlan()
   const overLimitDeleteGroup = repositories.createGroup({
     name: '多分组删除超限保护池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   for (let index = 0; index <= maxGroupDeleteAffectedApiKeyRoutes; index += 1) {

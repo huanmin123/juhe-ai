@@ -268,11 +268,11 @@ function seedGatewayRuntime(): {
 } {
   const group = repositories.createGroup({
     name: '运行配置缓存混合账号分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const apiKeyAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '运行配置缓存 API Key 账号',
     type: 'api_key',
     credentials: {
@@ -285,7 +285,7 @@ function seedGatewayRuntime(): {
     schedulable: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const oauthAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '运行配置缓存 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -331,11 +331,11 @@ function seedGatewayRuntime(): {
   })
   const authorizedGroup = repositories.createGroup({
     name: '运行配置缓存临期授权分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '运行配置缓存临期授权账号',
     type: 'api_key',
     credentials: {
@@ -356,11 +356,11 @@ function seedGatewayRuntime(): {
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const accountScheduledGroup = repositories.createGroup({
     name: '运行配置缓存账户计划分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '运行配置缓存账户计划账号',
     type: 'api_key',
     credentials: {
@@ -386,17 +386,17 @@ function seedGatewayRuntime(): {
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const multiGroupAccountScheduledPrimaryGroup = repositories.createGroup({
     name: '运行配置缓存多分组账户计划主分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const multiGroupAccountScheduledFallbackGroup = repositories.createGroup({
     name: '运行配置缓存多分组账户计划备用分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   for (const [index, groupId] of [multiGroupAccountScheduledPrimaryGroup.id, multiGroupAccountScheduledFallbackGroup.id].entries()) {
     repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: `运行配置缓存多分组账户计划账号 ${index + 1}`,
       type: 'api_key',
       credentials: {

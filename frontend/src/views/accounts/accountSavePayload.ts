@@ -11,9 +11,11 @@ import {
   validateAccountAvailabilityScheduleForm,
   type AccountAvailabilitySchedulePayload
 } from './accountAvailabilitySchedule'
+import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
 
 export type AccountSavePayload = {
   providerCode: AccountFormModel['providerCode']
+  providerProtocolProfileId: AccountFormModel['providerProtocolProfileId']
   name?: string
   type: AccountFormModel['type']
   credentials: Record<string, unknown>
@@ -29,9 +31,10 @@ export type AccountSavePayload = {
   notes: string
 }
 
-export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'type'>
+export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type'>
 
 export type AccountOAuthCreateCommonPayload = {
+  providerProtocolProfileId?: string
   name?: string
   groupId?: string
   concurrencyLimit: number
@@ -54,12 +57,13 @@ export function validateAccountSaveForm(input: {
 }): string | undefined {
   const { editingId, form } = input
   if (!form.providerCode) return '请先选择供应商'
+  if (!form.providerProtocolProfileId) return '当前供应商配置不完整，请刷新后重试'
   if (!form.type) return '请先选择账户类型'
   if ((editingId || form.type === 'api_key') && !form.name.trim()) return '请填写账户名称'
   if (!form.groupId) return '请选择加入分组'
   if (!editingId && form.type === 'api_key' && !form.apiKey.trim()) return '请填写 API Key'
   if (form.type === 'api_key' && !form.baseUrl.trim()) return '请填写 Base URL'
-  if (!editingId && form.type === 'oauth' && form.providerCode !== 'openai') return '当前只支持创建 OpenAI OAuth 账户'
+  if (!editingId && form.type === 'oauth' && form.providerCode !== GPT_VENDOR_CODE) return '当前只支持创建 GPT OAuth 账户'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
@@ -84,6 +88,7 @@ export function buildAccountSavePayload(input: {
 }): AccountSavePayload {
   return {
     providerCode: input.form.providerCode,
+    providerProtocolProfileId: input.form.providerProtocolProfileId,
     name: input.form.name.trim() || undefined,
     type: input.form.type,
     credentials: accountCredentials(input),
@@ -127,6 +132,7 @@ export function buildOAuthCreateCommonPayload(input: {
   const credentials = accountCredentials(input)
   const payload: AccountOAuthCreateCommonPayload = {
     name: input.form.name.trim() || undefined,
+    providerProtocolProfileId: input.form.providerProtocolProfileId,
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,

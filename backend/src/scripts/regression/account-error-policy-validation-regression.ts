@@ -28,7 +28,7 @@ assert.equal(validateAccountCredentialsErrorHandlingRules({ error_handling_rules
 
 const decision = decideAccountErrorPolicy({
   id: 'account_error_policy_validation',
-  providerCode: 'openai',
+  providerCode: 'gpt',
   type: 'api_key',
   credentials: {
     error_handling_rules: [

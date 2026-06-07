@@ -37,7 +37,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
       title: '我的 AI 账户',
-      description: '创建和维护自己的 OpenAI OAuth / API Key 账户。',
+      description: '创建和维护自己的 GPT OAuth / API Key 账户。',
       viewScope: 'self',
       heavy: true
     }
@@ -183,7 +183,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/providers/ProvidersView.vue'),
     meta: {
       title: '供应商',
-      description: '管理当前支持的供应商能力与模型定价，当前启用 OpenAI。',
+      description: '管理当前支持的供应商能力与模型定价，当前启用 GPT / OpenAI v1。',
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
@@ -207,7 +207,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
       title: 'AI 账户管理',
-      description: '按系统账户管理 OpenAI OAuth / API Key 账户，统一查看状态、并发、代理和错误策略。',
+      description: '按系统账户管理 GPT OAuth / API Key 账户，统一查看状态、并发、代理和错误策略。',
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',

@@ -92,18 +92,18 @@ async function main(): Promise<void> {
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法分组路由策略回归 Key',
       groupRouteStrategy: 'random_strategy',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }]
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }]
     }, '分组路由策略无效')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法分组权重回归 Key',
       groupRouteStrategy: 'weighted_round_robin',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin', weight: 101 }]
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin', weight: 101 }]
     }, '分组权重必须在 1-100 之间')
 
     const validApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '更新校验回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }]
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }]
     })
     const secretResult = await getEnvelope<ApiKeySecretResult>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}/secret`, adminCookie)
     assert(secretResult.key === validApiKey.key, '复制完整密钥接口应返回创建时的完整 API Key')
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     }, '分组路由策略无效')
     await assertPatchBadRequestMessage(baseUrl, adminCookie, validApiKey.id, {
       groupRouteStrategy: 'weighted_round_robin',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin', weight: 0 }]
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin', weight: 0 }]
     }, '分组权重必须在 1-100 之间')
     const disabledApiKey = await patchEnvelope<ApiKeySummary & { status: string }>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}`, adminCookie, {
       status: 'disabled'
@@ -123,13 +123,13 @@ async function main(): Promise<void> {
 
     const expiringApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '清空过期时间回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       expiresAt: '2099-06-01T00:01:00.000Z'
     })
     assert(Boolean(expiringApiKey.expiresAt), '创建 API Key 时应保存过期时间')
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法过期时间回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       expiresAt: 'not-a-date'
     }, 'API Key 过期时间必须是有效时间字符串')
     await assertPatchBadRequestMessage(baseUrl, adminCookie, expiringApiKey.id, {
@@ -142,7 +142,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法可用时段计划回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -155,7 +155,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法可用时段星期回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '缺失可用时段模式回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
         timezone: 'Asia/Shanghai',
@@ -180,7 +180,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法可用时段模式回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
         mode: 'legacy_windows',
@@ -193,7 +193,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '空时区可用时段回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -206,7 +206,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '空允许例外可用时段回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
 
     const scheduleApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '可用时段计划清空回归 Key',
-      groupBindings: [{ groupId: 'grp_default_openai_sys_admin' }],
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',

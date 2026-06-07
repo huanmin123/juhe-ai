@@ -1,8 +1,20 @@
-export const DEFAULT_OPENAI_GROUP = {
-  id: 'grp_default_openai_sys_admin',
+import {
+  GPT_OPENAI_V1_PROFILE_ID,
+  GPT_VENDOR_CODE,
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_PROTOCOL_CODE,
+  OPENAI_PROTOCOL_VERSION,
+  OPENAI_RESPONSES_FAMILY
+} from '../domain/provider-protocol.js'
+
+export const DEFAULT_GPT_GROUP = {
+  id: 'grp_default_gpt_sys_admin',
   systemAccountId: 'sys_admin',
-  name: '默认 OpenAI 分组',
-  providerCode: 'openai',
+  name: '默认 GPT 分组',
+  providerCode: GPT_VENDOR_CODE,
+  providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
   description: ''
 } as const
 
@@ -11,16 +23,57 @@ export const DEFAULT_GLOBAL_SETTINGS = [
   ['appIcon', '/__aisys__/brand-icon.svg']
 ] as const
 
-export const OPENAI_PROVIDER_SEED = {
-  id: 'openai',
-  code: 'openai',
-  name: 'OpenAI',
-  description: '当前内置供应商，支持 OAuth 与 API Key 两种账户接入方式',
+export const GPT_PROVIDER_SEED = {
+  id: GPT_VENDOR_CODE,
+  code: GPT_VENDOR_CODE,
+  name: 'GPT',
+  description: '当前内置 GPT 厂商，默认通过 OpenAI v1 协议档案接入',
+  enabled: 1
+} as const
+
+export const OPENAI_PROTOCOL_SEED = {
+  id: `${OPENAI_PROTOCOL_CODE}_${OPENAI_PROTOCOL_VERSION}`,
+  code: OPENAI_PROTOCOL_CODE,
+  version: OPENAI_PROTOCOL_VERSION,
+  name: 'OpenAI v1',
+  description: 'OpenAI-compatible v1 协议；接口族包含 Chat Completions 与 Responses',
+  enabled: 1
+} as const
+
+export const OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS = [
+  {
+    id: `${OPENAI_PROTOCOL_CODE}_${OPENAI_PROTOCOL_VERSION}_${OPENAI_CHAT_COMPLETIONS_FAMILY}`,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
+    code: OPENAI_CHAT_COMPLETIONS_FAMILY,
+    name: 'Chat Completions',
+    description: 'OpenAI v1 /chat/completions 接口族',
+    enabled: 1
+  },
+  {
+    id: `${OPENAI_PROTOCOL_CODE}_${OPENAI_PROTOCOL_VERSION}_${OPENAI_RESPONSES_FAMILY}`,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
+    code: OPENAI_RESPONSES_FAMILY,
+    name: 'Responses',
+    description: 'OpenAI v1 /responses 接口族',
+    enabled: 1
+  }
+] as const
+
+export const GPT_OPENAI_V1_PROFILE_SEED = {
+  id: GPT_OPENAI_V1_PROFILE_ID,
+  providerCode: GPT_VENDOR_CODE,
+  name: 'GPT / OpenAI v1',
+  description: 'GPT 供应商的 OpenAI v1 协议档案，支持 OAuth 与 API Key 两种账户接入方式',
   enabled: 1,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.openai.com/v1',
   defaultTestModel: 'gpt-5.5',
   accountTypes: ['oauth', 'api_key'],
-  capabilities: ['responses', 'chat']
+  capabilities: ['responses', 'chat'],
+  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
 } as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [

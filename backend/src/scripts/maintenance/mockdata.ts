@@ -11,6 +11,7 @@ import type {
   SystemTeamSummary
 } from '../../domain/types.js'
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
+import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { refreshAccountQualityFromUsage } from '../../storage/account-quality.repository.js'
 import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, nowIso, statsDatabasePath } from '../../storage/database.js'
@@ -244,7 +245,7 @@ const defaultDays = 31
 const defaultDailyRequests = 120
 
 const adminUsername = 'admin'
-const providerCode = 'openai'
+const providerCode = GPT_VENDOR_CODE
 
 const modelPrices: Record<string, { input: number; output: number; cached: number }> = {
   'gpt-5.4-mini': { input: 0.15, output: 0.6, cached: 0.04 },
@@ -1592,7 +1593,7 @@ function createStreamInterceptPolicies(): number {
       name: `${namePrefix}流式错误切换账户`,
       enabled: true,
       priority: 20,
-      providerCode,
+      protocolCode: OPENAI_PROTOCOL_CODE,
       match: {
         eventTypes: ['response.failed', 'error'],
         errorCodes: ['rate_limit_exceeded', 'server_error'],
@@ -1605,7 +1606,7 @@ function createStreamInterceptPolicies(): number {
       name: `${namePrefix}安全策略干跑观察`,
       enabled: true,
       priority: 35,
-      providerCode,
+      protocolCode: OPENAI_PROTOCOL_CODE,
       match: {
         errorCodes: ['cyber_policy'],
         jsonPathsExists: ['response.error'],
@@ -1618,7 +1619,7 @@ function createStreamInterceptPolicies(): number {
       name: `${namePrefix}图像流异常账号避让`,
       enabled: false,
       priority: 55,
-      providerCode,
+      protocolCode: OPENAI_PROTOCOL_CODE,
       match: {
         dataTypes: ['response.output_item.done'],
         textIncludes: ['image_generation'],
@@ -2218,9 +2219,9 @@ function createPublicApiLogMockdata(created: CreatedMockdata, options: MockdataO
     { method: 'GET', path: '/__aipublic__/account/usage', query: 'range=last_30_days&page=1&pageSize=20', scope: 'account_usage' },
     { method: 'GET', path: '/__aipublic__/consumption/ranking', query: 'range=last_7_days&metric=cost', scope: 'ranking' },
     { method: 'GET', path: '/__aipublic__/access/info', query: '', scope: 'access_info' },
-    { method: 'GET', path: '/__aipublic__/group/list', query: `targetUsername=${created.users.admin.username}&providerCode=openai`, scope: 'group_list' },
+    { method: 'GET', path: '/__aipublic__/group/list', query: `targetUsername=${created.users.admin.username}&providerCode=gpt`, scope: 'group_list' },
     { method: 'GET', path: '/__aipublic__/api-key/list', query: `targetUsername=${created.users.admin.username}`, scope: 'api_key_list' },
-    { method: 'GET', path: '/__aipublic__/account/list', query: `targetUsername=${created.users.admin.username}&providerCode=openai`, scope: 'account_list' },
+    { method: 'GET', path: '/__aipublic__/account/list', query: `targetUsername=${created.users.admin.username}&providerCode=gpt`, scope: 'account_list' },
     { method: 'POST', path: '/__aipublic__/group/add', query: '', scope: 'group_write' },
     { method: 'POST', path: '/__aipublic__/group/update', query: '', scope: 'group_write' },
     { method: 'POST', path: '/__aipublic__/group/del', query: '', scope: 'group_write' },
@@ -3734,11 +3735,11 @@ function findAdminAccount(): SystemAccountSummary {
 
 function defaultOpenAIGroup(systemAccountId: string): GroupSummary {
   const row = getBusinessDatabase()
-    .prepare("SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'openai' AND is_default = 1 LIMIT 1")
+    .prepare("SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'gpt' AND is_default = 1 LIMIT 1")
     .get(systemAccountId) as unknown as { id?: string } | undefined
-  if (!row?.id) throw new Error(`未找到默认 OpenAI 分组：${systemAccountId}`)
+  if (!row?.id) throw new Error(`未找到默认 GPT 分组：${systemAccountId}`)
   const group = repositories.findGroupSummary(row.id, { systemAccountId, role: 'user' })
-  if (!group) throw new Error(`默认 OpenAI 分组不可读：${systemAccountId}`)
+  if (!group) throw new Error(`默认 GPT 分组不可读：${systemAccountId}`)
   return group
 }
 

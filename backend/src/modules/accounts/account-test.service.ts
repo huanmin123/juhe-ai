@@ -42,13 +42,15 @@ export async function testOpenAIAccount(
     account.providerCode,
     account.type,
     account.clientCompatibility,
-    account.clientCompatibility
+    account.clientCompatibility,
+    account
   )
   const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
     account.providerCode,
     account.type,
     input.clientCompatibility ?? accountClientCompatibility,
-    accountClientCompatibility
+    accountClientCompatibility,
+    account
   )
   const testRequest = createOpenAITestRequest({
     explicitModel,
@@ -124,6 +126,9 @@ export async function testOpenAIAccount(
       accountId: account.id,
       accountName: account.name,
       providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
       type: account.type,
       clientCompatibility: accountClientCompatibility,
       testClientCompatibility: clientCompatibility,
@@ -157,6 +162,9 @@ export async function testOpenAIAccount(
       accountId: account.id,
       accountName: account.name,
       providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
       type: account.type,
       clientCompatibility: accountClientCompatibility,
       testClientCompatibility: clientCompatibility,
@@ -194,6 +202,9 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     accountId: result.accountId,
     accountName: result.accountName,
     providerCode: result.providerCode,
+    providerProtocolProfileId: result.providerProtocolProfileId,
+    protocolCode: result.protocolCode,
+    protocolVersion: result.protocolVersion,
     type: result.type,
     clientCompatibility: result.clientCompatibility,
     testClientCompatibility: result.testClientCompatibility,

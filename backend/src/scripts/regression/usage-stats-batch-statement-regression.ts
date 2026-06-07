@@ -25,18 +25,18 @@ const [databaseModule, repositories, usageStatsRepository] = await Promise.all([
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '统计批量 statement 分组', providerCode: 'openai' }, access)
+  const group = repositories.createGroup({ name: '统计批量 statement 分组', providerCode: 'gpt' }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '统计批量 statement Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const mixedGroup = repositories.createGroup({ name: '统计账号类型合并分组', providerCode: 'openai' }, access)
+  const mixedGroup = repositories.createGroup({ name: '统计账号类型合并分组', providerCode: 'gpt' }, access)
   const mixedApiKey = repositories.createApiKeyRecord({
     name: '统计账号类型合并 Key',
     groupBindings: [{ groupId: mixedGroup.id, priority: 1, status: 'active' }],
   }, access)
   const oauthAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '统计合并 OAuth 账户',
     type: 'oauth',
     credentials: {
@@ -48,7 +48,7 @@ try {
     groupId: mixedGroup.id
   }, access)
   const apiKeyAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '统计合并 API Key 账户',
     type: 'api_key',
     credentials: {
@@ -67,7 +67,7 @@ try {
       apiKeyId: apiKey.id,
       groupId: group.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.1',
       success: true,
       statusCode: 200,
@@ -87,7 +87,7 @@ try {
       apiKeyId: apiKey.id,
       groupId: group.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.1',
       success: false,
       statusCode: 503,
@@ -106,7 +106,7 @@ try {
       groupId: mixedGroup.id,
       accountId: oauthAccount.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.1',
       success: true,
       statusCode: 200,
@@ -127,7 +127,7 @@ try {
       groupId: mixedGroup.id,
       accountId: apiKeyAccount.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.1',
       success: true,
       statusCode: 200,
@@ -197,7 +197,7 @@ try {
     apiKeyId: apiKey.id,
     groupId: group.id,
     endpoint: '/v1/responses',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-5.1',
     success: false,
     statusCode: 503,

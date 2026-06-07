@@ -36,18 +36,18 @@
         <span class="choice-card-icon">{{ provider.name.slice(0, 1).toUpperCase() }}</span>
         <span class="choice-card-content">
           <strong>{{ provider.name }}</strong>
-          <small>{{ provider.baseUrl }}</small>
+          <small>{{ providerAccountTypeCount(provider) }} 种账户类型</small>
         </span>
         <a-tag :color="provider.enabled ? 'green' : 'default'">{{ provider.enabled ? '可用' : '停用' }}</a-tag>
       </button>
     </div>
   </section>
 
-  <section v-if="selectedProvider" class="form-section selector-section">
+  <section v-if="selectedProtocolProfile" class="form-section selector-section">
     <div class="form-section-head">
       <div>
         <h4>选择账户类型</h4>
-        <p>{{ selectedProvider.name }} 当前支持 {{ accountTypeChoices.length }} 种账户创建方式。</p>
+        <p>{{ selectedProvider?.name || '当前供应商' }} 当前支持 {{ accountTypeChoices.length }} 种账户创建方式。</p>
       </div>
     </div>
     <div class="choice-grid type-choice-grid">
@@ -72,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import type { AccountType, ProviderDefinition } from '@/types/domain'
+import type { AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 
 interface AccountTypeChoice {
   value: AccountType
@@ -87,6 +87,7 @@ defineProps<{
   editing: boolean
   providerCode: string
   providers: ProviderDefinition[]
+  selectedProtocolProfile?: ProviderProtocolProfileDefinition
   selectedProvider?: ProviderDefinition
 }>()
 
@@ -94,6 +95,13 @@ defineEmits<{
   (event: 'select-provider', providerCode: string): void
   (event: 'select-type', type: AccountType): void
 }>()
+
+function providerAccountTypeCount(provider: ProviderDefinition): number {
+  const accountTypes = provider.protocolProfiles.length
+    ? provider.protocolProfiles.flatMap((profile) => profile.accountTypes)
+    : provider.accountTypes
+  return new Set(accountTypes).size
+}
 </script>
 
 <style scoped>

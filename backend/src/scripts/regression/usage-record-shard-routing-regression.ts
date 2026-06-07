@@ -28,9 +28,9 @@ const [databaseModule, repositories, usageStatsRepository, usageRecordShards] = 
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'openai', enabled: true }, access)
+  const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '分片写入回归账户',
     type: 'api_key',
     credentials: {
@@ -55,7 +55,7 @@ try {
       groupId: group.id,
       accountId: account.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: index % 2 === 0 ? 'gpt-5.5' : 'gpt-5.5-mini',
       stream: false,
       statusCode: 200,
@@ -96,7 +96,7 @@ try {
   assert.equal(recentShape?.model, records[records.length - 1].model, '恢复探活应从最近日期 shard 学习真实请求形态')
 
   const staleShapeAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '过期请求形态窗口回归账户',
     type: 'api_key',
     credentials: {
@@ -113,7 +113,7 @@ try {
     apiKeyId: apiKey.id,
     accountId: staleShapeAccount.id,
     endpoint: '/v1/responses',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-stale-shape',
     stream: false,
     statusCode: 200,

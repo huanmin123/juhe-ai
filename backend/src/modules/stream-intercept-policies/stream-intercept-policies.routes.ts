@@ -12,6 +12,7 @@ import {
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
+import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 
 export const streamInterceptPoliciesRouter = Router()
 
@@ -82,7 +83,7 @@ streamInterceptPoliciesRouter.post('/', mutationGuard({
   }
   let policy: StreamInterceptPolicySummary
   try {
-    policy = createStreamInterceptPolicy({ ...parsed.data, providerCode: 'openai' })
+    policy = createStreamInterceptPolicy({ ...parsed.data, protocolCode: OPENAI_PROTOCOL_CODE })
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '流式拦截策略创建失败'))
     return
@@ -112,7 +113,7 @@ streamInterceptPoliciesRouter.patch('/:id', mutationGuard({
   }
   let policy: StreamInterceptPolicySummary | undefined
   try {
-    policy = updateStreamInterceptPolicy(req.params.id, { ...parsed.data, providerCode: 'openai' })
+    policy = updateStreamInterceptPolicy(req.params.id, { ...parsed.data, protocolCode: OPENAI_PROTOCOL_CODE })
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '流式拦截策略更新失败'))
     return
@@ -176,8 +177,8 @@ function operationActionText(action: 'create' | 'update' | 'delete'): string {
   return '删除'
 }
 
-type PublicStreamInterceptPolicySummary = Omit<StreamInterceptPolicySummary, 'providerCode'>
+type PublicStreamInterceptPolicySummary = Omit<StreamInterceptPolicySummary, 'protocolCode'>
 
-function publicPolicySummary({ providerCode: _providerCode, ...policy }: StreamInterceptPolicySummary): PublicStreamInterceptPolicySummary {
+function publicPolicySummary({ protocolCode: _protocolCode, ...policy }: StreamInterceptPolicySummary): PublicStreamInterceptPolicySummary {
   return policy
 }

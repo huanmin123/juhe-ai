@@ -32,6 +32,7 @@ import { sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAcc
 import { diagnosticTaskBusyMessage, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
+import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 interface AccountTestQueueItem {
@@ -151,8 +152,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
 
     if (task.draftAccount) {
       const account = accountSummaryFromDraftSnapshot(task.draftAccount)
-      if (account.providerCode !== 'openai') {
-        failAccountTestTask(task.id, '当前仅支持测试 OpenAI 账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 账户', task.model))
+      if (!isOpenAIProtocolProfile(account)) {
+        failAccountTestTask(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
         return true
       }
       const result = await runAccountTestWithDiagnosticSlot(task.id, account, task.model, () => runOpenAIDraftAccountTest(account, task.draftAccount as AccountTestDraftSnapshot, {
@@ -177,8 +178,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       failAccountTestTask(task.id, '账户不存在')
       return true
     }
-    if (account.providerCode !== 'openai') {
-      failAccountTestTask(task.id, '当前仅支持测试 OpenAI 账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 账户', task.model))
+    if (!isOpenAIProtocolProfile(account)) {
+      failAccountTestTask(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
       return true
     }
     const unavailableMessage = accountTestUnavailableMessage(account)
@@ -368,7 +369,10 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
   const baseUrl = stringCredential(credentials.base_url) || 'https://api.openai.com/v1'
   return {
     id: draft.id,
-    providerCode: 'openai',
+    providerCode: draft.providerCode,
+    providerProtocolProfileId: draft.providerProtocolProfileId ?? '',
+    protocolCode: draft.protocolCode ?? '',
+    protocolVersion: draft.protocolVersion ?? '',
     systemAccountId: draft.ownerSystemAccountId,
     accountOwnerSystemAccountId: draft.ownerSystemAccountId,
     groupOwnerSystemAccountId: draft.ownerSystemAccountId,
@@ -408,6 +412,9 @@ function accountSummaryFromDraftSnapshot(draft: AccountTestDraftSnapshot): Accou
     systemAccountId: draft.ownerSystemAccountId,
     ownerSystemAccountId: draft.ownerSystemAccountId,
     providerCode: draft.providerCode,
+    providerProtocolProfileId: draft.providerProtocolProfileId,
+    protocolCode: draft.protocolCode,
+    protocolVersion: draft.protocolVersion,
     name: draft.name,
     notes: draft.notes,
     type: draft.type,
@@ -589,6 +596,9 @@ function failedAccountTestResult(account: AccountSummary, message: string, model
     accountId: account.id,
     accountName: account.name,
     providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
     type: account.type,
     success: false,
     message,

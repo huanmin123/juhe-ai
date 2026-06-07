@@ -47,16 +47,16 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({
     name: '使用记录查询防护分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const otherGroup = repositories.createGroup({
     name: '使用记录查询防护其他分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '使用记录查询防护账户',
     type: 'api_key',
     credentials: {
@@ -66,7 +66,7 @@ try {
     groupId: group.id
   }, access)
   const middleNameAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '普通使用记录查询防护账户',
     type: 'api_key',
     credentials: {
@@ -76,7 +76,7 @@ try {
     groupId: group.id
   }, access)
   const otherGroupAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '其他分组账户',
     type: 'api_key',
     credentials: {
@@ -114,11 +114,11 @@ try {
   const adminGranteeAccess = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: grantee.id }
   const granteeGroup = repositories.createGroup({
     name: '使用记录被授权人分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, granteeAccess)
   const renamedAuthorizedSourceAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权使用记录来源初始名',
     type: 'api_key',
     credentials: {
@@ -127,7 +127,7 @@ try {
     },
     groupId: repositories.createGroup({
       name: '使用记录来源账户分组',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       enabled: true
     }, ownerAccess).id
   }, ownerAccess)
@@ -152,11 +152,11 @@ try {
     .run('授权使用记录账户A', '2026-01-02T00:00:04.000Z', renamedAuthorizedSourceAccount.id)
   const ownerGroup = repositories.createGroup({
     name: '使用记录来源分组授权分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const groupAuthorizedSourceAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '分组授权使用记录账户A',
     type: 'api_key',
     credentials: {
@@ -184,7 +184,7 @@ try {
       groupId: group.id,
       accountId: account.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5',
       clientIp: '127.0.0.1',
       stream: false,
@@ -200,7 +200,7 @@ try {
       groupId: group.id,
       accountId: account.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5-mini',
       clientIp: '127.0.0.2',
       stream: false,
@@ -216,7 +216,7 @@ try {
       groupId: group.id,
       accountId: middleNameAccount.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-4.1',
       clientIp: '10.0.0.3',
       stream: false,
@@ -232,7 +232,7 @@ try {
       groupId: otherGroup.id,
       accountId: otherGroupAccount.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5-other-group',
       clientIp: '127.0.1.4',
       stream: false,
@@ -247,7 +247,7 @@ try {
       groupId: ownerGroup.id,
       accountId: renamedAuthorizedSourceAccount.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5-owner-source',
       clientIp: '127.0.2.4',
       stream: false,
@@ -268,7 +268,7 @@ try {
       groupAccessType: 'owner',
       accountAuthorizationId: runtimeAccountAuthorization.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5-authorized-source',
       clientIp: '127.0.2.5',
       stream: false,
@@ -284,7 +284,7 @@ try {
       groupId: granteeGroup.id,
       accountId: authorizedInstance.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5-authorized-inferred',
       clientIp: '127.0.2.7',
       stream: false,
@@ -305,7 +305,7 @@ try {
       groupAccessType: 'authorized',
       groupAuthorizationId: runtimeGroupAuthorization.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5-group-authorized-source',
       clientIp: '127.0.2.6',
       stream: false,
@@ -479,7 +479,7 @@ try {
       groupId: group.id,
       accountId: account.id,
       endpoint: 'POST /v1/responses/compact',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5',
       stream: true,
       statusCode: 200,
@@ -494,7 +494,7 @@ try {
       groupId: group.id,
       accountId: account.id,
       endpoint: 'POST /proxy/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5',
       stream: true,
       statusCode: 200,
@@ -569,7 +569,7 @@ try {
         groupId: group.id,
         accountId: account.id,
         endpoint: '/v1/responses',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         model: routeDefaultWindowModel,
         stream: false,
         statusCode: 200,
@@ -584,7 +584,7 @@ try {
         groupId: group.id,
         accountId: account.id,
         endpoint: '/v1/responses',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         model: routeDefaultWindowModel,
         stream: false,
         statusCode: 200,

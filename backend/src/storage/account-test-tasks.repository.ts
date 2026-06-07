@@ -8,6 +8,7 @@ import type {
   SystemAccountRole
 } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { AccessScope } from './access-scope.js'
@@ -29,6 +30,9 @@ export interface AccountTestDraftSnapshot {
   groupId: string
   groupName?: string
   providerCode: AccountSummary['providerCode']
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   name: string
   type: AccountSummary['type']
   credentials: Record<string, unknown>
@@ -51,6 +55,9 @@ interface AccountTestTaskRow {
   account_id: string
   account_name: string
   provider_code: string
+  provider_protocol_profile_id: string
+  protocol_code: string
+  protocol_version: string
   account_type: string
   request_system_account_id: string
   request_role: string
@@ -95,17 +102,20 @@ export function createAccountTestTask(input: CreateAccountTestTaskInput): Accoun
   const clientCompatibility = normalizeAccountTestTaskClientCompatibility(input.account, input.clientCompatibility)
   getBusinessDatabase().prepare(`
     INSERT INTO account_test_tasks (
-      id, account_id, account_name, provider_code, account_type,
+      id, account_id, account_name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
       request_system_account_id, request_role, request_system_account_filter_id,
       diagnostics, model, client_compatibility, draft_account_encrypted, status, status_message,
       cancel_requested, queued_at, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
   `).run(
     id,
     input.account.id,
     input.account.name,
     input.account.providerCode,
+    input.account.providerProtocolProfileId ?? '',
+    input.account.protocolCode ?? '',
+    input.account.protocolVersion ?? '',
     input.account.type,
     input.access.systemAccountId,
     input.access.role,
@@ -345,6 +355,9 @@ function accountTestTaskFromRow(row: AccountTestTaskRow): AccountTestTask {
     accountId: row.account_id,
     accountName: row.account_name,
     providerCode: row.provider_code,
+    providerProtocolProfileId: row.provider_protocol_profile_id,
+    protocolCode: row.protocol_code,
+    protocolVersion: row.protocol_version,
     type: row.account_type,
     status: accountTestTaskStatus(row.status),
     message: row.status_message ?? row.error_message ?? undefined,
@@ -388,16 +401,16 @@ function accountClientCompatibility(value: string | null): AccountClientCompatib
 }
 
 function normalizeAccountTestTaskClientCompatibility(account: AccountSummary, value: AccountClientCompatibility | undefined): AccountClientCompatibility | undefined {
-  if (account.providerCode === 'openai' && account.type === 'oauth') {
+  if (isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account) && account.type === 'oauth') {
     return 'codex_responses'
   }
   return value === undefined
     ? undefined
-    : normalizeOpenAIAccountClientCompatibility(account.providerCode, account.type, value, account.clientCompatibility)
+    : normalizeOpenAIAccountClientCompatibility(account.providerCode, account.type, value, account.clientCompatibility, account)
 }
 
 function accountTestTaskClientCompatibility(row: AccountTestTaskRow): AccountClientCompatibility | undefined {
-  if (row.provider_code === 'openai' && row.account_type === 'oauth') {
+  if (isGptVendorCode(row.provider_code) && isOpenAIProtocolProfile({ protocolCode: row.protocol_code, protocolVersion: row.protocol_version }) && row.account_type === 'oauth') {
     return 'codex_responses'
   }
   return accountClientCompatibility(row.client_compatibility)
@@ -440,6 +453,9 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
   const ownerSystemAccountId = normalizedOptionalText(record.ownerSystemAccountId)
   const groupId = normalizedOptionalText(record.groupId)
   const providerCode = normalizedOptionalText(record.providerCode)
+  const providerProtocolProfileId = normalizedOptionalText(record.providerProtocolProfileId)
+  const protocolCode = normalizedOptionalText(record.protocolCode)
+  const protocolVersion = normalizedOptionalText(record.protocolVersion)
   const name = normalizedOptionalText(record.name)
   const type = normalizedOptionalText(record.type)
   const credentials = record.credentials
@@ -456,6 +472,9 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
     groupId,
     groupName: normalizedOptionalText(record.groupName),
     providerCode,
+    providerProtocolProfileId,
+    protocolCode,
+    protocolVersion,
     name,
     type,
     credentials: credentials as Record<string, unknown>,

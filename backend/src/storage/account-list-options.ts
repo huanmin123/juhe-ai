@@ -17,6 +17,7 @@ export interface AccountListOptions {
   pageSize?: number
   keyword?: string
   providerCode?: string
+  providerProtocolProfileId?: string
   groupId?: string
   type?: string
   status?: string
@@ -34,6 +35,7 @@ export interface NormalizedAccountListOptions {
   pageSize: number
   keyword?: string
   providerCode?: string
+  providerProtocolProfileId?: string
   groupId?: string
   type?: string
   status?: string
@@ -112,6 +114,7 @@ export function normalizeAccountListOptions(options?: AccountListOptions, normal
     pageSize,
     keyword: normalizeTextFilter(options?.keyword),
     providerCode: normalizeTextFilter(options?.providerCode),
+    providerProtocolProfileId: normalizeTextFilter(options?.providerProtocolProfileId),
     groupId: normalizeTextFilter(options?.groupId),
     type: normalizeTextFilter(options?.type),
     status: normalizeTextFilter(options?.status),

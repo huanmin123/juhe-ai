@@ -25,13 +25,13 @@
           :value="targetAccountId"
           :selected-account="targetAccount"
           :options="targetOptions"
-          placeholder="请选择同供应商的可用账户"
+          placeholder="请选择可迁移的可用账户"
           show-search
           :filter-option="filterOption"
           @update:value="handleTargetAccountIdUpdate"
           @update:selected-account="$emit('update:targetAccount', $event)"
         />
-        <div class="form-help">{{ isAuthorizedSource ? '只显示你当前同一分组下处于正常状态且可调度的授权账户。' : '只显示同一系统账户、同一供应商、同一分组下处于正常状态且可调度的账户。' }}</div>
+        <div class="form-help">{{ isAuthorizedSource ? '只显示你当前同一分组下处于正常状态且可调度的授权账户。' : '只显示同一系统账户、同一分组下处于正常状态且可调度的账户。' }}</div>
       </a-form-item>
       <a-form-item :label="isAuthorizedSource ? '迁移后当前授权实例状态' : '迁移后原账户状态'">
         <a-radio-group :value="sourceStatus" @update:value="handleSourceStatusChange">

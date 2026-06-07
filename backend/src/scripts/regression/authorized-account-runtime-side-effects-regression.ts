@@ -62,7 +62,7 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeGroup = repositories.createGroup({
     name: '授权副作用被授权分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
 
   const cooldownAccount = createAuthorizedAccount('授权副作用临时不可调用账户', 'sk-runtime-side-effect-cooldown', [{
@@ -146,10 +146,10 @@ function createAuthorizedAccount(
 ) {
   const ownerSourceGroup = repositories.createGroup({
     name: `${name} 来源分组`,
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name,
     type: 'api_key',
     credentials: {

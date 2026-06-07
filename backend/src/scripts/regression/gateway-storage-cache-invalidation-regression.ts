@@ -53,7 +53,7 @@ try {
   const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const ownerGroup = repositories.createGroup({
     name: '缓存失效所有者分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
 
   const proxy = repositories.createProxy({
@@ -64,7 +64,7 @@ try {
     enabled: true
   }, ownerAccess)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '缓存失效主账户',
     type: 'api_key',
     groupId: ownerGroup.id,
@@ -111,7 +111,7 @@ try {
 
   const emptyGroup = repositories.createGroup({
     name: '缓存失效新空分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   repositories.updateApiKey(apiKey.id, {
     status: 'active',
@@ -166,7 +166,7 @@ try {
   assert.deepEqual(await runtimeAccountIds(granteeAuthorizedGroupApiKey.key), [], '直接回收分组授权后绑定该授权分组的 API Key 不应继续返回候选账号')
   const granteeGroup = repositories.createGroup({
     name: '缓存失效被授权分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const retainedRevokedGroupBindingApiKey = repositories.updateApiKey(granteeAuthorizedGroupApiKey.id, {
     name: '缓存失效授权分组 API Key 保留失效绑定',
@@ -183,7 +183,7 @@ try {
     groupBindings: [{ groupId: granteeGroup.id, priority: 1, status: 'active' }],
   }, granteeAccess)
   const sharedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '缓存失效共享账户',
     type: 'api_key',
     groupId: ownerGroup.id,
@@ -258,10 +258,10 @@ try {
   const statusOwnerAccess = { systemAccountId: statusOwner.id, role: 'user' as const }
   const statusGroup = repositories.createGroup({
     name: '缓存失效状态分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, statusOwnerAccess)
   const statusAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '缓存失效状态账户',
     type: 'api_key',
     groupId: statusGroup.id,

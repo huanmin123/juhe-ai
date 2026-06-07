@@ -58,7 +58,7 @@
     </a-form-item>
     <a-form-item v-if="isOAuthForm" label="客户端兼容">
       <a-input value="Codex Responses（OAuth 固定）" disabled />
-      <div class="form-help">OpenAI OAuth 账户固定使用 Codex Responses 适配器。</div>
+      <div class="form-help">GPT OAuth 账户固定使用 Codex Responses 适配器。</div>
     </a-form-item>
     <a-form-item v-else label="客户端兼容">
       <a-select

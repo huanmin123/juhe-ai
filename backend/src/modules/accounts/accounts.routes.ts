@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { isAdminRole, type AccountStatus, type AccountSummary } from '../../domain/types.js'
+import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
@@ -34,6 +35,7 @@ const accountModelMappingSchema = z.object({
 
 const accountCreateSchema = z.object({
   providerCode: z.string().trim().min(1),
+  providerProtocolProfileId: z.string().trim().min(1).optional(),
   name: z.string().trim().min(1),
   type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),
@@ -84,6 +86,7 @@ const accountTestSchema = z.object({
 
 const accountDraftTestAccountSchema = z.object({
   providerCode: z.string().trim().min(1),
+  providerProtocolProfileId: z.string().trim().min(1).optional(),
   name: z.string().trim().min(1),
   type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),
@@ -320,18 +323,24 @@ accountsRouter.post('/test-draft', async (req, res) => {
     return
   }
   const accountInput = parsed.data.account
-  if (accountInput.providerCode !== 'openai') {
-    res.status(400).json({ message: '当前仅支持测试 OpenAI 账户' })
-    return
-  }
   const group = findGroupSummary(accountInput.groupId, requestAccess)
   if (!group || group.providerCode !== accountInput.providerCode || group.permissions?.canManageAccounts === false) {
     res.status(400).json(badRequest('账户分组无效'))
     return
   }
   const provider = listProviders().find((item) => item.code === accountInput.providerCode)
-  if (!provider || !provider.accountTypes.includes(accountInput.type)) {
+  const providerProfile = provider?.protocolProfiles.find((item) => item.id === (accountInput.providerProtocolProfileId ?? group.providerProtocolProfileId))
+    ?? provider?.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
+  if (!provider || !providerProfile || !providerProfile.accountTypes.includes(accountInput.type)) {
     res.status(400).json(badRequest(`供应商 ${accountInput.providerCode} 不支持账户类型 ${accountInput.type}`))
+    return
+  }
+  if (!provider.enabled) {
+    res.status(400).json(badRequest(`供应商已停用：${accountInput.providerCode}`))
+    return
+  }
+  if (group.providerProtocolProfileId !== providerProfile.id || !isOpenAIProtocolProfile(providerProfile)) {
+    res.status(400).json({ message: '当前仅支持测试 OpenAI 协议账户' })
     return
   }
   const ownerSystemAccountId = group.ownerSystemAccountId ?? group.systemAccountId ?? requestAccess.systemAccountFilterId ?? requestAccess.systemAccountId
@@ -341,17 +350,26 @@ accountsRouter.post('/test-draft', async (req, res) => {
   }
 
   try {
-    const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, provider.baseUrl))
+    const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl))
     const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
     const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
-    const clientCompatibility = normalizeOpenAIAccountClientCompatibility(accountInput.providerCode, accountInput.type, accountInput.clientCompatibility)
+    const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
+      accountInput.providerCode,
+      accountInput.type,
+      accountInput.clientCompatibility,
+      'openai_standard',
+      providerProfile
+    )
     const account = draftTestAccountSummary({
       account: accountInput,
       availabilitySchedule,
       clientCompatibility,
       credentials,
       groupName: group.name,
-      ownerSystemAccountId
+      ownerSystemAccountId,
+      providerProtocolProfileId: providerProfile.id,
+      protocolCode: providerProfile.protocolCode,
+      protocolVersion: providerProfile.protocolVersion
     })
     const { prompt: _ignoredPrompt, ...testOptions } = parsed.data
     const draftAccount: AccountTestDraftSnapshot = {
@@ -360,6 +378,9 @@ accountsRouter.post('/test-draft', async (req, res) => {
       groupId: accountInput.groupId,
       groupName: group.name,
       providerCode: accountInput.providerCode,
+      providerProtocolProfileId: providerProfile.id,
+      protocolCode: providerProfile.protocolCode,
+      protocolVersion: providerProfile.protocolVersion,
       name: account.name,
       type: accountInput.type,
       credentials,
@@ -651,10 +672,6 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(`供应商已停用：${providerCode}`))
     return
   }
-  if (!provider.accountTypes.includes(parsed.data.type)) {
-    res.status(400).json(badRequest(`供应商 ${providerCode} 不支持账户类型 ${parsed.data.type}`))
-    return
-  }
   const groupId = typeof parsed.data.groupId === 'string' && parsed.data.groupId ? parsed.data.groupId : undefined
   let group: ReturnType<typeof findGroupSummary> | undefined
   if (groupId) {
@@ -664,12 +681,25 @@ accountsRouter.post('/', mutationGuard({
       return
     }
   }
+  const providerProtocolProfileId = parsed.data.providerProtocolProfileId ?? group?.providerProtocolProfileId ?? provider.defaultProtocolProfileId
+  const providerProfile = provider.protocolProfiles.find((item) => item.id === providerProtocolProfileId)
+  if (!providerProfile || !providerProfile.accountTypes.includes(parsed.data.type)) {
+    res.status(400).json(badRequest(`供应商协议档案不支持账户类型：${parsed.data.type}`))
+    return
+  }
+  if (group && group.providerProtocolProfileId !== providerProfile.id) {
+    res.status(400).json(badRequest('账户分组协议档案无效'))
+    return
+  }
 
   let createStatus: AccountStatus
   try {
     createStatus = accountCreateStatusFromActivationTest({
-      account: parsed.data,
-      providerBaseUrl: provider.baseUrl,
+      account: { ...parsed.data, providerProtocolProfileId: providerProfile.id },
+      providerBaseUrl: providerProfile.baseUrl,
+      providerProtocolProfileId: providerProfile.id,
+      protocolCode: providerProfile.protocolCode,
+      protocolVersion: providerProfile.protocolVersion,
       group,
       requestAccess
     })
@@ -684,6 +714,7 @@ accountsRouter.post('/', mutationGuard({
       const account = createAccount({
         ...accountCreateInput,
         providerCode,
+        providerProtocolProfileId: providerProfile.id,
         status: createStatus
       }, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
@@ -702,6 +733,7 @@ accountsRouter.post('/', mutationGuard({
           changes: [
             safeChange('name', '名称', undefined, account.name),
             safeChange('providerCode', '供应商', undefined, account.providerCode),
+            safeChange('providerProtocolProfileId', '协议档案', undefined, account.providerProtocolProfileId),
             safeChange('type', '账户类型', undefined, account.type),
             safeChange('status', '状态', undefined, account.status),
             safeChange('clientCompatibility', '客户端兼容', undefined, account.clientCompatibility),
@@ -1090,8 +1122,8 @@ accountsRouter.post('/:id/test', async (req, res) => {
     res.status(404).json({ message: '账户不存在' })
     return
   }
-  if (account.providerCode !== 'openai') {
-    res.status(400).json({ message: '当前仅支持测试 OpenAI 账户' })
+  if (!isOpenAIProtocolProfile(account)) {
+    res.status(400).json({ message: '当前仅支持测试 OpenAI 协议账户' })
     return
   }
   const unavailableMessage = accountTestUnavailableMessage(account)
@@ -1247,6 +1279,9 @@ function draftAccountCredentials(account: AccountDraftTestAccountRequest, provid
 function accountCreateStatusFromActivationTest(input: {
   account: AccountCreateRequest
   providerBaseUrl: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
   group?: ReturnType<typeof findGroupSummary>
   requestAccess?: RequestAccessScope
 }): AccountStatus {
@@ -1272,6 +1307,9 @@ function assertActivationTestTaskMatchesCreate(input: {
   account: AccountCreateRequest
   activationTestTaskId: string
   providerBaseUrl: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
   group?: ReturnType<typeof findGroupSummary>
   requestAccess?: RequestAccessScope
 }): void {
@@ -1295,6 +1333,9 @@ function assertActivationTestTaskMatchesCreate(input: {
   const expected = accountCreateActivationFingerprintSnapshot({
     account: input.account,
     providerBaseUrl: input.providerBaseUrl,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
     ownerSystemAccountId
   })
   const actual = draftActivationFingerprintSnapshot(task.draftAccount)
@@ -1315,16 +1356,28 @@ function sameAccountTestRequester(
 function accountCreateActivationFingerprintSnapshot(input: {
   account: AccountCreateRequest
   providerBaseUrl: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
   ownerSystemAccountId: string
 }): Record<string, unknown> {
   const account = accountDraftRequestFromCreate(input.account)
   const credentials = normalizeAccountCredentialsForWrite(account.type, draftAccountCredentials(account, input.providerBaseUrl))
   const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
-  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(account.providerCode, account.type, account.clientCompatibility)
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    account.providerCode,
+    account.type,
+    account.clientCompatibility,
+    'openai_standard',
+    { protocolCode: input.protocolCode, protocolVersion: input.protocolVersion }
+  )
   return {
     ownerSystemAccountId: input.ownerSystemAccountId,
     groupId: account.groupId,
     providerCode: account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
     name: account.name,
     type: account.type,
     credentials,
@@ -1347,6 +1400,9 @@ function draftActivationFingerprintSnapshot(draft: AccountTestDraftSnapshot): Re
     ownerSystemAccountId: draft.ownerSystemAccountId,
     groupId: draft.groupId,
     providerCode: draft.providerCode,
+    providerProtocolProfileId: draft.providerProtocolProfileId,
+    protocolCode: draft.protocolCode,
+    protocolVersion: draft.protocolVersion,
     name: draft.name,
     type: draft.type,
     credentials: draft.credentials,
@@ -1367,6 +1423,7 @@ function draftActivationFingerprintSnapshot(draft: AccountTestDraftSnapshot): Re
 function accountDraftRequestFromCreate(account: AccountCreateRequest): AccountDraftTestAccountRequest {
   return {
     providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
     name: account.name,
     type: account.type,
     credentials: account.credentials,
@@ -1392,6 +1449,9 @@ function draftTestAccountSummary(input: {
   credentials: Record<string, unknown>
   groupName?: string
   ownerSystemAccountId: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
 }): AccountSummary {
   const usage = emptyAccountUsageSummary()
   return {
@@ -1399,6 +1459,9 @@ function draftTestAccountSummary(input: {
     systemAccountId: input.ownerSystemAccountId,
     ownerSystemAccountId: input.ownerSystemAccountId,
     providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
     name: input.account.name,
     notes: optionalText(input.account.notes),
     type: input.account.type,

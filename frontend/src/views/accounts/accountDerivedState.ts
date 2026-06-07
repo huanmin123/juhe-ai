@@ -3,7 +3,7 @@ import { groupLabelForId } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
-import { OPENAI_PROVIDER_CODE } from './accountOptions'
+import { GPT_VENDOR_CODE } from './accountOptions'
 
 export type SelectOption = {
   label: string
@@ -13,8 +13,8 @@ export type SelectOption = {
 
 export function buildTestModelOptions(providerModels: ProviderModelPricing[], account?: AccountSummary | AccountSummary[], providerDefaultModel = ''): SelectOption[] {
   const accountModels = normalizeAccountSupportedModels(account)
-  const useOpenAIModels = isOpenAITestSelection(account)
-  const providerModelValues = useOpenAIModels
+  const useProviderModels = isGptTestSelection(account)
+  const providerModelValues = useProviderModels
     ? providerModels.map((item) => item.model)
     : []
   const defaultModel = providerDefaultModel.trim()
@@ -41,9 +41,9 @@ export function providerCodeForAccountSelection(account: AccountSummary | Accoun
   return codes.length === 1 ? codes[0] : ''
 }
 
-export function isOpenAITestSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
+export function isGptTestSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
   const accounts = normalizeAccounts(account)
-  return accounts.length > 0 && accounts.every((item) => item.providerCode === OPENAI_PROVIDER_CODE)
+  return accounts.length > 0 && accounts.every((item) => item.providerCode === GPT_VENDOR_CODE)
 }
 
 function normalizeAccountSupportedModels(account: AccountSummary | AccountSummary[] | undefined): string[] {
@@ -106,20 +106,22 @@ export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: Grou
   return map
 }
 
-export function manageableGroupsForProvider(groups: GroupOptionSummary[], providerCode?: string): GroupOptionSummary[] {
-  return groups.filter((group) => isManageableGroupForProvider(group, providerCode))
+export function manageableGroupsForProvider(groups: GroupOptionSummary[], providerCode?: string, providerProtocolProfileId?: string): GroupOptionSummary[] {
+  return groups.filter((group) => isManageableGroupForProvider(group, providerCode, providerProtocolProfileId))
 }
 
-export function isManageableGroupForProvider(group: GroupOptionSummary, providerCode?: string): boolean {
-  return canManageGroupAccounts(group) && (!providerCode || group.providerCode === providerCode)
+export function isManageableGroupForProvider(group: GroupOptionSummary, providerCode?: string, providerProtocolProfileId?: string): boolean {
+  return canManageGroupAccounts(group)
+    && (!providerCode || group.providerCode === providerCode)
+    && (!providerProtocolProfileId || group.providerProtocolProfileId === providerProtocolProfileId)
 }
 
-export function groupOptionsForProvider(groups: GroupOptionSummary[], providerCode?: string): SelectOption[] {
-  return manageableGroupsForProvider(groups, providerCode).map((group) => ({ label: group.name, value: group.id }))
+export function groupOptionsForProvider(groups: GroupOptionSummary[], providerCode?: string, providerProtocolProfileId?: string): SelectOption[] {
+  return manageableGroupsForProvider(groups, providerCode, providerProtocolProfileId).map((group) => ({ label: group.name, value: group.id }))
 }
 
-export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[], providerCode: string | undefined, selectedIds: Array<string | undefined>): SelectOption[] {
-  const options = groupOptionsForProvider(groups, providerCode)
+export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[], providerCode: string | undefined, selectedIds: Array<string | undefined>, providerProtocolProfileId?: string): SelectOption[] {
+  const options = groupOptionsForProvider(groups, providerCode, providerProtocolProfileId)
   const merged = new Map(options.map((option) => [option.value, option]))
   for (const id of selectedIds) {
     const normalizedId = id?.trim()
@@ -132,19 +134,19 @@ export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[]
   return [...merged.values()]
 }
 
-export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string): GroupOptionSummary | undefined {
-  const candidates = manageableGroupsForProvider(groups, providerCode)
+export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string, providerProtocolProfileId?: string): GroupOptionSummary | undefined {
+  const candidates = manageableGroupsForProvider(groups, providerCode, providerProtocolProfileId)
   return candidates.find((group) => group.isDefault)
 }
 
 export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountSummary): SelectOption[] {
   if (!account) return []
-  return groupOptionsForProviderWithSelected(groups, account.providerCode, [account.boundGroupId])
+  return groupOptionsForProviderWithSelected(groups, account.providerCode, [account.boundGroupId], account.providerProtocolProfileId)
 }
 
 export function bindGroupTip(account?: AccountSummary): string {
   const ownerName = account?.ownerSystemAccountName || '其他用户'
-  return `授权账户来自 ${ownerName}。绑定到你的同供应商分组后，对应 API Key 才能调度使用。`
+  return `授权账户来自 ${ownerName}。绑定到你的兼容分组后，对应 API Key 才能调度使用。`
 }
 
 export function trafficMigrationTargetOptions(accounts: AccountSummary[], source: AccountSummary | undefined, groupIdForAccount: AccountGroupIdResolver, groupNameForAccount: AccountGroupIdResolver): SelectOption[] {

@@ -13,10 +13,35 @@ export interface ProviderDefinition {
   name: string
   description?: string
   enabled: boolean
+  defaultProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
   baseUrl: string
   defaultTestModel: string
   accountTypes: AccountType[]
   capabilities: string[]
+  protocolProfiles: ProviderProtocolProfileDefinition[]
+}
+
+export interface ProtocolEndpointFamilyDefinition {
+  code: string
+  name: string
+  description?: string
+}
+
+export interface ProviderProtocolProfileDefinition {
+  id: string
+  providerCode: ProviderCode
+  name: string
+  description?: string
+  enabled: boolean
+  protocolCode: string
+  protocolVersion: string
+  baseUrl: string
+  defaultTestModel: string
+  accountTypes: AccountType[]
+  capabilities: string[]
+  endpointFamilies: ProtocolEndpointFamilyDefinition[]
 }
 
 export interface ProviderModelPricing {

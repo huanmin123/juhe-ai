@@ -42,16 +42,16 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const ownerGroup = repositories.createGroup({
     name: 'AI 性能账号选项拥有者分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const adminGroup = repositories.createGroup({
     name: 'AI 性能账号选项管理员分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, adminAccess)
   const matchedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'perfneedle 主账号',
     type: 'api_key',
     credentials: {
@@ -62,11 +62,11 @@ try {
   }, ownerAccess)
   const granteeTargetGroup = repositories.createGroup({
     name: 'AI 性能授权目标分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, granteeAccess)
   const authorizedSourceAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '性能授权来源账号',
     type: 'api_key',
     credentials: {
@@ -90,7 +90,7 @@ try {
     name: 'perfauthcurrent 来源账号'
   }, ownerAccess)
   const otherOwnerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'otherneedle 主账号',
     type: 'api_key',
     credentials: {
@@ -100,7 +100,7 @@ try {
     groupId: ownerGroup.id
   }, ownerAccess)
   const adminAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '管理员普通账号',
     type: 'api_key',
     credentials: {
@@ -110,7 +110,7 @@ try {
     groupId: adminGroup.id
   }, adminAccess)
   const wildcardAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'perf%literal 主账号',
     type: 'api_key',
     credentials: {
@@ -120,7 +120,7 @@ try {
     groupId: ownerGroup.id
   }, ownerAccess)
   const wildcardNeighborAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'perfXliteral 主账号',
     type: 'api_key',
     credentials: {
@@ -193,11 +193,11 @@ try {
 
   const groupAuthorizedGroup = repositories.createGroup({
     name: 'AI 性能分组授权来源分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const groupAuthorizedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'perfgroupauth 分组来源账号',
     type: 'api_key',
     credentials: {

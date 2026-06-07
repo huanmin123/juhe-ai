@@ -85,14 +85,14 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeGroup = repositories.createGroup({
     name: '记录归属被授权人分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const ownerSourceGroup = repositories.createGroup({
     name: '记录归属来源分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '记录归属来源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-record-ownership', base_url: 'https://api.openai.com/v1' },
@@ -218,7 +218,7 @@ function usageStatsRecordBase(systemAccountId: string, accountId: string): Usage
     group_id: null,
     account_id: accountId,
     endpoint: '/v1/responses',
-    provider_code: 'openai',
+    provider_code: 'gpt',
     model: 'gpt-5.5',
     status_code: 200,
     success: 1,

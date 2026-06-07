@@ -94,10 +94,10 @@ async function main(): Promise<void> {
     })
     const group = repositories.createGroup({
       name: '停用账户状态保护回归分组',
-      providerCode: 'openai'
+      providerCode: 'gpt'
     }, access)
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '停用账户状态保护回归',
       type: 'api_key',
       credentials: {
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
 
     const errorHandlingResult = applyAccountErrorHandling({
       id: account.id,
-      providerCode: 'openai',
+      providerCode: 'gpt',
       type: 'api_key',
       status: 'disabled',
       credentials: {}
@@ -198,7 +198,7 @@ async function main(): Promise<void> {
     assertAccountStatus(account.id, 'disabled', false, 'DB service 失败回写不应改变停用状态')
 
     const errorAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '异常账户测试成功不自动恢复',
       type: 'api_key',
       credentials: {
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
     assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '成功回写不应清理异常类型')
 
     const errorRaceAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '异常竞态成功回写不自动恢复',
       type: 'api_key',
       credentials: {
@@ -309,7 +309,7 @@ async function main(): Promise<void> {
     assert(statusChangeBlocked, '编辑异常账户不应绕过恢复异常切换到其他状态')
 
     const createdError = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '创建时异常账户不可调度',
       type: 'api_key',
       credentials: {

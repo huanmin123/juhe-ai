@@ -28,6 +28,9 @@ export interface ApiKeyGroupBindingSummary {
   groupId: string
   groupName?: string
   providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   priority: number
   weight: number
   status: ApiKeyGroupBindingStatus

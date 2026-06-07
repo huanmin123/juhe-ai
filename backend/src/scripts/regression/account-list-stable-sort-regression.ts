@@ -28,7 +28,7 @@ let testGroupId = ''
 try {
   const group = repositories.createGroup({
     name: '列表稳定排序分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   testGroupId = group.id
   const accounts = [
@@ -68,7 +68,7 @@ try {
 
 function createStableAccount(name: string, apiKey: string, createdAt: string): { id: string } {
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name,
     type: 'api_key',
     credentials: {
@@ -102,7 +102,7 @@ function seedQualityScore(accountId: string, qualityScore: number): void {
         recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
         recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
         window_started_at, window_ended_at, updated_at
-      ) VALUES (?, 'sys_admin', 'openai', ?, 'healthy', 1, 1, 0, 1, 1000, 1000, 1, ?, ?, ?)
+      ) VALUES (?, 'sys_admin', 'gpt', ?, 'healthy', 1, 1, 0, 1, 1000, 1000, 1, ?, ?, ?)
     `)
     .run(accountId, qualityScore, now, now, now)
 }

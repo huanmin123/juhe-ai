@@ -65,11 +65,11 @@ try {
   const teamB = repositories.createSystemTeam({ name: '授权分页团队B' }, adminAccess)
   const group = repositories.createGroup({
     name: '授权分页分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权分页账户',
     type: 'api_key',
     credentials: {
@@ -80,7 +80,7 @@ try {
   }, ownerAccess)
   const granteeAGroup = repositories.createGroup({
     name: '授权分页用户A目标分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, granteeAAccess)
 

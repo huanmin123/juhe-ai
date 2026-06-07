@@ -237,10 +237,10 @@ function seedData(): { accountId: string; adminCookie: string; groupId: string }
   const access = { systemAccountId: admin.id, role: 'admin' as const }
   const group = repositories.createGroup({
     name: '运行态快照不可用分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '运行态快照不可用账号',
     type: 'api_key',
     credentials: {

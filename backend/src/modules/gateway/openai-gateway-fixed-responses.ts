@@ -8,6 +8,7 @@ import { listCachedProviderModelCatalogAsync } from './gateway-runtime-cache.ser
 import { extractBearerToken } from './openai-gateway-usage.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
 interface OpenAIModelsResponseUsageContext {
   traceId: string
@@ -21,6 +22,7 @@ interface OpenAIModelsResponseUsageContext {
   groupAuthorizationId?: string
   groupAuthorizationSourceType?: GroupUsageAccessMetadata['groupAuthorizationSourceType']
   groupAuthorizationSourceTeamId?: string
+  providerCode?: string
   endpoint: string
 }
 
@@ -59,15 +61,16 @@ export function finalizeGatewayAuthFailureAudit(
 
 export async function sendOpenAIModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput): Promise<void> {
   const { res, auditCapture, usageContext, startedAt } = input
+  const providerCode = usageContext.providerCode ?? GPT_VENDOR_CODE
   const catalog = await listCachedProviderModelCatalogAsync({
-    providerCode: 'openai',
+    providerCode,
     systemAccountId: usageContext.systemAccountId
   })
   const responsePayload = buildOpenAIModelsResponse(catalog)
   res.status(200).json(responsePayload)
   enqueueUsageRecord({
     ...usageContext,
-    providerCode: 'openai',
+    providerCode,
     stream: false,
     statusCode: 200,
     success: true,

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaBatchAsync } from '../../modules/gateway/authorization-quota.service.js'
 import {
@@ -466,7 +467,10 @@ async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceCh
 function passiveAccount(id: string, accountAuthorizationId?: string, accountAuthorizationQuotaLimited?: boolean): OpenAIAccountSecret {
   return {
     id,
-    providerCode: 'openai',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     systemAccountId: 'sys_passive_quota',
     accountOwnerSystemAccountId: 'sys_passive_quota',
     groupOwnerSystemAccountId: 'sys_passive_quota',

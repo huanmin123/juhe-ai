@@ -12,6 +12,7 @@
         :editing="editing"
         :provider-code="form.providerCode"
         :providers="providers"
+        :selected-protocol-profile="selectedProtocolProfile"
         :selected-provider="selectedProvider"
         @select-provider="$emit('select-provider', $event)"
         @select-type="$emit('select-type', $event)"
@@ -124,7 +125,7 @@
 import { computed } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountSummary, AccountType, OpenAIAuthURLResult, ProviderDefinition } from '@/types/domain'
+import type { AccountSummary, AccountType, OpenAIAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -179,6 +180,7 @@ const props = withDefaults(defineProps<{
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
+  selectedProtocolProfile?: ProviderProtocolProfileDefinition
   selectedProvider?: ProviderDefinition
   testButtonDisabled?: boolean
   testLoading?: boolean

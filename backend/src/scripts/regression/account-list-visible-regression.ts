@@ -133,14 +133,14 @@ function seedData(): SeedState {
   const userBAccess = { systemAccountId: userB.id, role: 'user' as const }
   const userAGroup = repositories.createGroup({
     name: '账户列表可见分组 A',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, userAAccess)
   const userBGroup = repositories.createGroup({
     name: '账户列表可见分组 B',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, userBAccess)
   const userAAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '账户列表可见种子 A',
     type: 'api_key',
     credentials: { api_key: 'sk-account-list-visible-a', base_url: 'https://api.openai.com/v1' },
@@ -148,7 +148,7 @@ function seedData(): SeedState {
     groupId: userAGroup.id
   }, userAAccess)
   const userBAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '账户列表可见种子 B',
     type: 'api_key',
     credentials: { api_key: 'sk-account-list-visible-b', base_url: 'https://api.openai.com/v1' },

@@ -35,11 +35,11 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({
     name: '账号用量查询防护分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const matchedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'keywordneedle 账号用量账户',
     type: 'api_key',
     credentials: {
@@ -49,7 +49,7 @@ try {
     groupId: group.id
   }, access)
   const otherAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '普通 keywordneedle 账号用量账户',
     type: 'api_key',
     credentials: {
@@ -59,7 +59,7 @@ try {
     groupId: group.id
   }, access)
   const selectedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'selected-account 账号用量账户',
     type: 'api_key',
     credentials: {
@@ -69,7 +69,7 @@ try {
     groupId: group.id
   }, access)
   const notesOnlyAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '备注字段账号用量账户',
     type: 'api_key',
     credentials: {
@@ -95,16 +95,16 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const ownerGroup = repositories.createGroup({
     name: '账号用量授权方分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const granteeTargetGroup = repositories.createGroup({
     name: '账号用量授权目标分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, granteeAccess)
   const authorizedSourceAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权用量来源初始名',
     type: 'api_key',
     credentials: {
@@ -129,11 +129,11 @@ try {
   }, ownerAccess)
   const authorizedGroup = repositories.createGroup({
     name: '账号用量授权来源分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const groupAuthorizedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权用量分组账户A',
     type: 'api_key',
     credentials: {

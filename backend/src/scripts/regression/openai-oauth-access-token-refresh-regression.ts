@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-oauth-token-refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
   try {
     const group = repositories.createGroup({
       name: 'OAuth 后台保活回归分组',
-      providerCode: 'openai'
+      providerCode: GPT_VENDOR_CODE
     }, access)
     oauthGroupId = group.id
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
       createOAuthAccount('错误账户', 'error', false, 'error-token')
     ]
     const apiKeyAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: GPT_VENDOR_CODE,
       name: 'API Key 不应参与 OAuth 刷新',
       type: 'api_key',
       credentials: { api_key: 'sk-not-oauth', base_url: 'https://api.openai.com/v1' },
@@ -64,7 +65,7 @@ async function main(): Promise<void> {
       groupId: oauthGroupId
     }, access)
     const freshOAuthAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: GPT_VENDOR_CODE,
       name: '未到期 OAuth 账户',
       type: 'oauth',
       credentials: oauthCredentials('fresh-token', new Date(Date.now() + 3600_000).toISOString()),
@@ -189,7 +190,7 @@ function createOAuthAccount(
   overrides: { accessToken?: string; expiresAt?: string } = {}
 ): { id: string; name: string; status: string; schedulable: boolean; originalRefreshToken: string } {
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     name,
     type: 'oauth',
     credentials: oauthCredentials(refreshToken, overrides.expiresAt ?? new Date(Date.now() + 60_000).toISOString(), overrides.accessToken),
@@ -258,7 +259,7 @@ function assertOAuthRefreshDuePlanUsesIndex(): void {
       SELECT id
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
-        AND provider_code = 'openai'
+        AND provider_code = ?
         AND type = 'oauth'
         AND oauth_refresh_token_present = 1
         AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
@@ -266,7 +267,7 @@ function assertOAuthRefreshDuePlanUsesIndex(): void {
       ORDER BY oauth_access_token_expires_at IS NOT NULL ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
       LIMIT ?
     `)
-    .all('oauth_token_refresh_failed', new Date(Date.now() + 300_000).toISOString(), 20)
+    .all(GPT_VENDOR_CODE, 'oauth_token_refresh_failed', new Date(Date.now() + 300_000).toISOString(), 20)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))
     .join('\n')
   assert(details.includes('idx_accounts_openai_oauth_refresh_due'), `OAuth 刷新候选查询应使用索引，实际计划：${details}`)

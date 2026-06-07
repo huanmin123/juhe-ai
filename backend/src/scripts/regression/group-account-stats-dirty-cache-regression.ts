@@ -56,15 +56,15 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '脏缓存主分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     description: '用于验证授权分组摘要展示'
   }, ownerAccess)
   const granteeTargetGroup = repositories.createGroup({
     name: '脏缓存被授权人目标分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupId: primaryGroup.id,
     name: '脏缓存账户',
     type: 'api_key',
@@ -85,10 +85,10 @@ try {
 
   const statusLockGroup = repositories.createGroup({
     name: '脏缓存状态写入锁库分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const statusLockAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupId: statusLockGroup.id,
     name: '锁库状态写入账户',
     type: 'api_key',
@@ -109,10 +109,10 @@ try {
 
   const lockGroup = repositories.createGroup({
     name: '脏缓存锁库回归分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const lockExpiredAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupId: lockGroup.id,
     name: '锁库过期账户',
     type: 'api_key',
@@ -141,7 +141,7 @@ try {
   assert.deepEqual(dirtyRows(), [], '业务库脏标记刷新完成后应被清空')
 
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupId: primaryGroup.id,
     name: '脏缓存新增账户',
     type: 'api_key',
@@ -161,7 +161,7 @@ try {
   for (let index = 0; index < 25; index += 1) {
     repositories.createGroup({
       name: `脏缓存批量分组 ${String(index).padStart(2, '0')}`,
-      providerCode: 'openai'
+      providerCode: 'gpt'
     }, ownerAccess)
   }
   repositories.createResourceAuthorization({
@@ -184,7 +184,7 @@ try {
 
   const expireLockGroup = repositories.createGroup({
     name: '脏缓存授权过期锁库分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const expireLockAuthorization = repositories.createResourceAuthorization({
     resourceType: 'group',

@@ -31,7 +31,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
 
   const group = repositories.createGroup({
     name: `${nameScope}分组-${runId}`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     description: `${options.label}通过 Mockdata 共享夹具生成的临时分组`,
     enabled: true
   }, access)
@@ -39,7 +39,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
   const accounts: AccountSummary[] = []
   for (let index = 0; index < accountCount; index += 1) {
     accounts.push(repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: `${nameScope}账户-${index + 1}-${runId}`,
       type: 'api_key',
       credentials: {

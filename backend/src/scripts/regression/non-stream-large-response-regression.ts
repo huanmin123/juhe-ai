@@ -73,9 +73,9 @@ async function main(): Promise<void> {
       mustChangePassword: false
     })
     const access = { systemAccountId: owner.id, role: 'user' as const }
-    const group = repositories.createGroup({ name: '大响应回归分组', providerCode: 'openai' }, access)
+    const group = repositories.createGroup({ name: '大响应回归分组', providerCode: 'gpt' }, access)
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '大响应回归账户',
       type: 'api_key',
       credentials: {

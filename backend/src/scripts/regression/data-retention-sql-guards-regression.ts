@@ -139,7 +139,7 @@ function seedUsageStatsRows(): void {
   const statsDatabase = databaseModule.getStatsDatabase()
   statsDatabase.prepare(`
     INSERT INTO account_quality_minute_stats (account_id, system_account_id, provider_code, stat_minute, updated_at)
-    VALUES ('acct_retention_txn', 'sys_admin', 'openai', '2000-01-01T00:00', '2000-01-01T00:00:00.000Z')
+    VALUES ('acct_retention_txn', 'sys_admin', 'gpt', '2000-01-01T00:00', '2000-01-01T00:00:00.000Z')
   `).run()
   statsDatabase.prepare(`
     INSERT INTO usage_stats_minute (system_account_id, scope_type, scope_id, stat_minute, updated_at)
@@ -151,7 +151,7 @@ function seedModelCheckHistory(): void {
   const datasetDatabase = databaseModule.getDatasetDatabase()
   datasetDatabase.prepare(`
     INSERT INTO model_check_runs (id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, model, started_at, created_at, updated_at)
-    VALUES ('mcr_retention_old', 'sys_admin', 'sys_admin', 'openai', 'account', 'acct_retention_old', 'gpt-5.5', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
+    VALUES ('mcr_retention_old', 'sys_admin', 'sys_admin', 'gpt', 'account', 'acct_retention_old', 'gpt-5.5', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
   `).run()
   datasetDatabase.prepare(`
     INSERT INTO model_check_items (id, run_id, item_key, item_type, status, created_at, updated_at)

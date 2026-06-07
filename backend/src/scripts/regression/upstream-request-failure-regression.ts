@@ -73,9 +73,9 @@ async function main(): Promise<void> {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
-    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'openai', enabled: true }, access)
+    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const firstAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '01-上游失败回归账户',
       type: 'api_key',
       credentials: {
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const secondAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '02-上游失败回归账户',
       type: 'api_key',
       credentials: {
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const thirdAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '03-上游失败回归账户',
       type: 'api_key',
       credentials: {
@@ -112,9 +112,9 @@ async function main(): Promise<void> {
     }, access)
     const apiKey = createRegressionApiKey(group.id, 'sk-request-failure-regression')
     dispatchRaceSecondAccountId = secondAccount.id
-    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽快速失败回归分组', providerCode: 'openai', enabled: true }, access)
+    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽快速失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const fastFailAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '单账号快速失败回归账户',
       type: 'api_key',
       credentials: {
@@ -126,9 +126,9 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const fastFailApiKey = createRegressionApiKey(fastFailGroup.id, 'sk-request-failure-fast-fail-key')
-    const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'openai', enabled: true }, access)
+    const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'gpt', enabled: true }, access)
     const singleFailureAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '单账号上游失败写状态回归账户',
       type: 'api_key',
       credentials: {
@@ -145,11 +145,11 @@ async function main(): Promise<void> {
     const closedTransportBaseUrl = `http://127.0.0.1:${serverAddress(closedTransportServer).port}/v1`
     await closeServer(closedTransportServer)
     closedTransportServer = undefined
-    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'openai', enabled: true }, access)
+    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const directTransportFailureAccounts: RegressionAccount[] = []
     for (let index = 0; index < 2; index += 1) {
       const account = repositories.createAccount({
-        providerCode: 'openai',
+        providerCode: 'gpt',
         name: `直连传输失败回归账户-${index + 1}`,
         type: 'api_key',
         credentials: {

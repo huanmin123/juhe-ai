@@ -154,11 +154,11 @@ async function main(): Promise<void> {
     })
     const group = await postEnvelope<GroupSummary>(baseUrl, '/__aisys__/api/groups', adminCookie, {
       name: '代理负向回归分组',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       enabled: true
     })
     const account = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, {
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '代理负向回归账户',
       type: 'api_key',
       credentials: {

@@ -245,18 +245,18 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const firstGroup = repositories.createGroup({
     name: '路由缓存轮询 A 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const secondGroup = repositories.createGroup({
     name: '路由缓存轮询 B 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const firstUpstreamKey = 'sk-route-cache-round-robin-a'
   const secondUpstreamKey = 'sk-route-cache-round-robin-b'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '路由缓存轮询 A 账号',
     type: 'api_key',
     credentials: {
@@ -268,7 +268,7 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
     schedulable: true
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '路由缓存轮询 B 账号',
     type: 'api_key',
     credentials: {
@@ -315,21 +315,21 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const ownerSourceGroup = repositories.createGroup({
     name: '路由缓存后备授权来源号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, ownerAccess)
   const primaryGroup = repositories.createGroup({
     name: '路由缓存主 OAuth 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, granteeAccess)
   const fallbackGroup = repositories.createGroup({
     name: '路由缓存后备授权号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, granteeAccess)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '路由缓存主 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -343,7 +343,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
   }, granteeAccess)
   const fallbackUpstreamKey = 'sk-route-cache-fallback'
   const ownerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '路由缓存后备授权账号',
     type: 'api_key',
     credentials: {

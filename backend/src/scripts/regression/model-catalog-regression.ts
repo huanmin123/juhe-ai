@@ -37,7 +37,7 @@ const [
 
 try {
   const pricedModel = catalogService.saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-regression-global',
     scope: 'global',
     visibility: 'public',
@@ -48,7 +48,7 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-regression-hidden-target',
     scope: 'global',
     visibility: 'mapping_target_only',
@@ -58,7 +58,7 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-regression-alias',
     scope: 'personal',
     systemAccountId: 'sys_admin',
@@ -68,7 +68,7 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-regression-draft',
     scope: 'global',
     status: 'draft',
@@ -77,7 +77,7 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-5.5',
     scope: 'global',
     visibility: 'public',
@@ -85,7 +85,7 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-regression-overridden-pricing-alias',
     scope: 'personal',
     systemAccountId: 'sys_admin',
@@ -95,7 +95,7 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-regression-audio',
     scope: 'global',
     mode: 'audio',
@@ -106,7 +106,7 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-regression-image-unit',
     scope: 'global',
     mode: 'image',
@@ -117,7 +117,7 @@ try {
   })
 
   const publicCatalog = catalogService.listProviderModelCatalog({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin'
   })
   const publicModels = new Set(publicCatalog.map((item) => item.model))
@@ -130,7 +130,7 @@ try {
   assert.equal(publicModels.has('gpt-regression-overridden-pricing-alias'), false, 'pricingModel 目标被无价自定义模型覆盖时别名不应进入公开模型目录')
 
   const managementCatalog = catalogService.listProviderModelCatalog({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     includeMappingTargets: true,
     includeInactive: true,
@@ -139,7 +139,7 @@ try {
   assert(managementCatalog.some((item) => item.model === 'gpt-regression-draft'), '管理模型目录应能看到草稿模型')
 
   const mappingCatalog = catalogService.listProviderModelCatalog({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     includeMappingTargets: true
   })
@@ -162,7 +162,7 @@ try {
   assert.equal(response.data.some((item) => item.id === 'gpt-regression-hidden-target'), false, '/v1/models 不应暴露 mapping_target_only 模型')
 
   const aliasCost = catalogService.estimateCatalogCostUsd({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-alias',
     inputTokens: 1_000_000,
@@ -170,7 +170,7 @@ try {
   })
   assert.equal(aliasCost, 12, 'pricingModel 应按目标模型直接价格计费')
   const overriddenAliasCost = catalogService.estimateCatalogCostUsd({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-overridden-pricing-alias',
     inputTokens: 1_000_000,
@@ -178,7 +178,7 @@ try {
   })
   assert.equal(overriddenAliasCost, undefined, 'pricingModel 目标被无价自定义模型覆盖时不应回退到被覆盖的内置模型价格')
   const audioCost = catalogService.estimateCatalogCostUsd({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-audio',
     inputTokens: 1_000_000,
@@ -186,7 +186,7 @@ try {
   })
   assert.equal(audioCost, 28, '只有音频价格的自定义模型应按音频 token 成本计费')
   const audioBreakdown = catalogService.buildCatalogCostBreakdown({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-audio',
     inputAudioTokens: 1_000_000,
@@ -197,14 +197,14 @@ try {
   assert.equal(audioBreakdown?.inputAudioUsdPer1M, 4, '音频输入单价应进入成本拆解')
   assert.equal(audioBreakdown?.outputAudioUsdPer1M, 12, '音频输出单价应进入成本拆解')
   const imageUnitCost = catalogService.estimateCatalogCostUsd({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-image-unit',
     outputImageCount: 3
   })
   assert.equal(imageUnitCost, 0.12, '只有按张图片价格的自定义模型应按图片张数计费')
   const imageUnitBreakdown = catalogService.buildCatalogCostBreakdown({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-image-unit',
     outputImageCount: 2
@@ -214,7 +214,7 @@ try {
 
   catalogService.saveCustomProviderModel({
     id: pricedModel.id,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-regression-global',
     scope: 'global',
     visibility: 'public',
@@ -225,7 +225,7 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   const remappedCost = catalogService.estimateCatalogCostUsd({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-global',
     inputTokens: 1_000_000,

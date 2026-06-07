@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import type { AccountSummary } from '../../domain/types.js'
+import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/openai-gateway-usage-records.js'
@@ -353,7 +354,7 @@ async function testStalePrecheckAfterManualRestoreIsSkipped(): Promise<void> {
   assert.equal(result.updated, false, '手动恢复后的过期预检查写回不应再次改状态')
   assert.equal(result.skippedReason, 'stale_account_updated', '过期预检查应被识别为账号状态已更新')
   assertActiveAccount(account.id, '手动恢复后的过期预检查不应把账号改回临时不可调用')
-  assert.equal(group.providerCode, 'openai', '测试分组应为 OpenAI 分组')
+  assert.equal(group.providerCode, 'gpt', '测试分组应为 GPT 分组')
 }
 
 async function testFailedUsageDoesNotMakePrecheckStale(): Promise<void> {
@@ -368,7 +369,7 @@ async function testFailedUsageDoesNotMakePrecheckStale(): Promise<void> {
     groupId: group.id,
     accountId: account.id,
     endpoint: '/v1/responses',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-5.5',
     stream: false,
     statusCode: 502,
@@ -444,10 +445,10 @@ function createGatewayAccount(name: string, credentialExtras: Record<string, unk
 } {
   const group = repositories.createGroup({
     name: `${name}分组-${Math.random().toString(16).slice(2, 8)}`,
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, adminAccess)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: `${name}-${Math.random().toString(16).slice(2, 8)}`,
     type: 'api_key',
     groupId: group.id,
@@ -474,7 +475,10 @@ function assertActiveAccount(accountId: string, message: string): void {
 function createRuntimeAccount(id: string): OpenAIAccountSecret {
   return {
     id,
-    providerCode: 'openai',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     systemAccountId: 'sys_admin',
     accountOwnerSystemAccountId: 'sys_admin',
     groupOwnerSystemAccountId: 'sys_admin',

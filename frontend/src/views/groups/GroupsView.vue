@@ -167,8 +167,8 @@
           <a-input v-model:value="form.name" :disabled="editingAuthorizedGroup" />
         </a-form-item>
         <a-form-item label="所属供应商" required>
-          <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked || editingAuthorizedGroup" />
-          <div class="form-help">同一供应商下可混合 OAuth / API Key 账户；分组只决定账户归属，不拆统计、会话亲和或缓存边界。</div>
+          <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked || editingAuthorizedGroup" @change="handleGroupProviderChange" />
+          <div class="form-help">供应商决定这个分组后续可绑定的账户范围。</div>
         </a-form-item>
         <a-form-item label="分组类型" required>
           <a-radio-group v-model:value="form.groupType" button-style="solid">
@@ -238,17 +238,7 @@ import type { AccountUsageSummary, GroupAccountStats, GroupSchedulingPolicy, Gro
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
-
-const OPENAI_PROVIDER: ProviderDefinition = {
-  id: 'openai',
-  code: 'openai',
-  name: 'OpenAI',
-  enabled: true,
-  baseUrl: 'https://api.openai.com/v1',
-  defaultTestModel: '',
-  accountTypes: ['oauth', 'api_key'],
-  capabilities: ['responses', 'chat']
-}
+import { GPT_VENDOR_CODE, OPENAI_PROVIDER } from '../accounts/accountOptions'
 
 const pageSize = 50
 const modalOpen = ref(false)
@@ -315,7 +305,8 @@ const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const form = reactive({
   name: '',
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
+  providerProtocolProfileId: OPENAI_PROVIDER.defaultProtocolProfileId,
   description: '',
   enabled: true,
   groupType: 'personal' as GroupType,
@@ -641,6 +632,15 @@ function providerName(providerCode?: string) {
   return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
 }
 
+function defaultProviderProtocolProfileId(providerCode = form.providerCode): string {
+  const provider = availableProviders.value.find((item) => item.code === providerCode)
+  return provider?.defaultProtocolProfileId || provider?.protocolProfiles.find((profile) => profile.enabled)?.id || provider?.protocolProfiles[0]?.id || ''
+}
+
+function handleGroupProviderChange(providerCode: string) {
+  form.providerProtocolProfileId = defaultProviderProtocolProfileId(providerCode)
+}
+
 function groupSystemAccountText(group: GroupSummary) {
   return systemAccountDisplayText(group)
 }
@@ -875,6 +875,7 @@ function openCreate() {
   Object.assign(form, {
     name: '',
     providerCode: defaultProviderCode(),
+    providerProtocolProfileId: defaultProviderProtocolProfileId(defaultProviderCode()),
     description: '',
     enabled: true,
     groupType: 'personal' as GroupType,
@@ -902,6 +903,7 @@ function openEdit(group: GroupSummary) {
   Object.assign(form, {
     name: group.name,
     providerCode: group.providerCode,
+    providerProtocolProfileId: group.providerProtocolProfileId ?? defaultProviderProtocolProfileId(group.providerCode),
     description: group.description ?? '',
     enabled: group.enabled,
     groupType: group.groupType,
@@ -913,6 +915,10 @@ function openEdit(group: GroupSummary) {
 const saveGroup = submitAction('groups.save', async () => {
   if (!form.name.trim()) {
     message.warning('请填写分组名称')
+    return
+  }
+  if (!form.providerProtocolProfileId && !editingAuthorizedGroup.value) {
+    message.warning('当前供应商配置不完整，请刷新后重试')
     return
   }
   try {
@@ -960,6 +966,7 @@ function groupFormPayload(targetGroup?: GroupSummary): Record<string, unknown> {
   return {
     name: form.name,
     providerCode: form.providerCode,
+    providerProtocolProfileId: form.providerProtocolProfileId,
     description: form.description,
     ...localSettings
   }

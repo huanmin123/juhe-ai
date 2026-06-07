@@ -52,15 +52,15 @@ try {
   const otherGranteeAccess = { systemAccountId: otherGrantee.id, role: 'user' as const }
   const ownerSourceGroup = repositories.createGroup({
     name: '授权调度来源分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const granteeOwnedGroup = repositories.createGroup({
     name: '被授权人自有账户分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
 
   const superAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'B 授权超级优先账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-super', base_url: 'https://api.openai.com/v1' },
@@ -69,7 +69,7 @@ try {
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   const normalAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'A 授权普通账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-normal', base_url: 'https://api.openai.com/v1' },
@@ -77,7 +77,7 @@ try {
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   const fallbackAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'C 授权降级备用账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-fallback', base_url: 'https://api.openai.com/v1' },
@@ -86,7 +86,7 @@ try {
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   const granteeOwnedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'D 被授权人自有账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-owned-target', base_url: 'https://api.openai.com/v1' },
@@ -95,11 +95,11 @@ try {
   }, granteeAccess)
   const granteeGroup = repositories.createGroup({
     name: '被授权人调度分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const otherGranteeGroup = repositories.createGroup({
     name: '另一个被授权人调度分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, otherGranteeAccess)
 
   for (const account of [superAccount, normalAccount, fallbackAccount]) {

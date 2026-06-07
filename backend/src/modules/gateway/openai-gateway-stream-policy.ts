@@ -10,6 +10,7 @@ import type {
 import { streamInterceptPolicyActionRuntime } from '../../storage/stream-intercept-policy.repository.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 import type { ParsedOpenAIStreamEvent } from './openai-gateway-stream-events.js'
+import { OPENAI_PROTOCOL_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 
 export type StreamInterceptPolicySource = 'system_default' | 'management' | 'account'
 export type StreamInterceptRuntimePhase = 'before_downstream_write' | 'after_downstream_write'
@@ -46,7 +47,7 @@ const textScanMaxEventChars = 64 * 1024
 
 export function resolveRuntimeStreamInterceptPolicies(input: ResolveStreamInterceptPoliciesInput): RuntimeStreamInterceptPolicy[] {
   const management = (input.managementPolicies ?? [])
-    .filter((policy) => policy.enabled && policyMatchesProvider(policy, input))
+    .filter((policy) => policy.enabled && policyMatchesOpenAIProtocol(policy))
     .map(runtimePolicyFromSummary)
   const accountRules = accountStreamInterceptRules(input.account.credentials)
   return [...management, ...accountRules].sort((left, right) => sourceOrder(left.source) - sourceOrder(right.source) || left.priority - right.priority || left.id.localeCompare(right.id))
@@ -72,8 +73,8 @@ export function matchRuntimeStreamInterceptPolicy(
   return undefined
 }
 
-function policyMatchesProvider(policy: StreamInterceptPolicySummary, input: ResolveStreamInterceptPoliciesInput): boolean {
-  return normalizeComparable(policy.providerCode) === normalizeComparable(input.account.providerCode)
+function policyMatchesOpenAIProtocol(policy: StreamInterceptPolicySummary): boolean {
+  return normalizeProviderToken(policy.protocolCode) === OPENAI_PROTOCOL_CODE
 }
 
 function runtimePolicyFromSummary(policy: StreamInterceptPolicySummary): RuntimeStreamInterceptPolicy {

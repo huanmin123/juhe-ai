@@ -15,6 +15,7 @@ import {
   type RuntimeStreamInterceptPolicy
 } from '../../modules/gateway/openai-gateway-stream-policy.js'
 import { listStreamInterceptPolicyDefaultRules } from '../../storage/stream-intercept-policy.repository.js'
+import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 
 function policy(overrides: Partial<RuntimeStreamInterceptPolicy>): RuntimeStreamInterceptPolicy {
   return {
@@ -121,7 +122,7 @@ const settings: GatewaySettings = {
   assert.throws(
     () => resolveRuntimeStreamInterceptPolicies({
       account: {
-        providerCode: 'openai',
+        providerCode: GPT_VENDOR_CODE,
         credentials: {
           stream_intercept_rules: [
             {
@@ -231,7 +232,7 @@ const settings: GatewaySettings = {
   )
   const defaultPolicies = resolveRuntimeStreamInterceptPolicies({
     account: {
-      providerCode: 'openai',
+      providerCode: GPT_VENDOR_CODE,
       credentials: {}
     } as never,
     managementPolicies: defaultRules
@@ -394,7 +395,7 @@ const settings: GatewaySettings = {
 {
   const resolved = resolveRuntimeStreamInterceptPolicies({
     account: {
-      providerCode: 'openai',
+      providerCode: GPT_VENDOR_CODE,
       credentials: {
         stream_intercept_rules: [
           {
@@ -416,7 +417,7 @@ const settings: GatewaySettings = {
         name: '默认低数字规则',
         enabled: true,
         priority: 1,
-        providerCode: 'openai',
+        protocolCode: OPENAI_PROTOCOL_CODE,
         match: { textIncludes: ['广告污染'] },
         action: 'retry_next_account'
       },
@@ -427,7 +428,7 @@ const settings: GatewaySettings = {
         name: '管理端低数字规则',
         enabled: true,
         priority: 1,
-        providerCode: 'openai',
+        protocolCode: OPENAI_PROTOCOL_CODE,
         match: { textIncludes: ['广告污染'] },
         action: 'retry_next_account'
       }
@@ -458,8 +459,8 @@ function assertStreamInterceptPolicyRepositoryGuards(): void {
   assert(!repositorySource.includes('normalizeSetValue('), '流式拦截策略不应再用旧动作兜底模板吞掉非法 action')
   assert(!repositorySource.includes('Number(value)'), '流式拦截策略写入路径不应接收数字字符串')
   assert(!repositorySource.includes('value.split(/[,;'), '流式拦截策略匹配条件不应接收旧字符串列表格式')
-  assert(!repositorySource.includes("fallback = 'openai'"), '流式拦截策略不应缺省回填 OpenAI 供应商')
-  assert(!repositorySource.includes("normalizeProviderCode(row.provider_code, 'openai')"), '流式拦截策略读取不应缺省回填 OpenAI 供应商')
+  assert(!repositorySource.includes("fallback = 'openai'"), '流式拦截策略不应缺省回填 OpenAI 协议')
+  assert(!repositorySource.includes("normalizeProtocolCode(row.protocol_code, 'openai')"), '流式拦截策略读取不应缺省回填 OpenAI 协议')
   assert(repositorySource.includes('normalizePolicyAction'), '流式拦截策略必须显式校验 action 模板')
   assert(!repositorySource.includes('avoidanceTtlSeconds'), '流式拦截策略不应保存用户配置的避让秒数字段')
   assert(!repositorySource.includes('avoidance_ttl_seconds'), '流式拦截策略表不应保留用户配置的避让秒数字段')
@@ -471,7 +472,7 @@ function assertStreamInterceptPolicyRepositoryGuards(): void {
   assert(dbServiceTypesSource.includes("type: 'mark_account_temporary_unavailable'"), 'db-service 必须声明通用临时不可调用写入操作')
   assert(dbServiceHandlersSource.includes('markAccountTemporaryUnavailable(operation.account.id, operation.reason)'), 'db-service 普通账号临时不可调用必须复用统一仓储入口')
   assert(dbServiceHandlersSource.includes('markAuthorizedAccountBindingTemporaryUnavailableByContext'), 'db-service 授权绑定临时不可调用必须复用统一仓储入口')
-  assert(gatewayListBody.includes('provider_code = ?'), '网关运行态读取流式拦截策略必须按供应商收窄')
+  assert(gatewayListBody.includes('protocol_code = ?'), '网关运行态读取流式拦截策略必须按协议收窄')
   assert(gatewayListBody.includes('LIMIT ?'), '网关运行态读取流式拦截策略必须带固定上限')
   assert(gatewayListBody.includes('maxManagementStreamInterceptPolicies'), '网关运行态读取流式拦截策略必须复用管理端数量上限')
   assert(listBody.includes('LIMIT ?'), '管理端策略列表不能无上限读取策略表')

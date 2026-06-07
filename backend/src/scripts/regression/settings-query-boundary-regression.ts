@@ -85,11 +85,11 @@ try {
   settingsRepository.clearSettingsRepositoryCache()
   const settingsGroup = repositories.createGroup({
     name: '非法临时不可调用设置读取回归分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   assert.throws(
     () => repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '非法临时不可调用设置读取回归',
       type: 'api_key',
       credentials: {

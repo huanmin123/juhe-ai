@@ -166,11 +166,11 @@ function seedGatewayRuntime(): { id: string; key: string } {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({
     name: '认证预解析分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '认证预解析账号',
     type: 'api_key',
     credentials: {

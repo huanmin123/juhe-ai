@@ -54,10 +54,10 @@ try {
   const access = { systemAccountId: admin.id, role: 'admin' as const }
   const group = repositories.createGroup({
     name: '账户测试 Responses 当前契约分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const oauthAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '测试 OAuth 固定 Codex 账户',
     type: 'oauth',
     groupId: group.id,
@@ -84,7 +84,7 @@ try {
   assert.equal(oauthTestTask.clientCompatibility, 'codex_responses', 'OpenAI OAuth 测试任务入队时应固定 Codex Responses 兼容')
 
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '测试 Responses 当前契约账户',
     type: 'api_key',
     groupId: group.id,
@@ -111,7 +111,7 @@ try {
   assert.equal(seenResponsesPayloads[0]?.model, 'gpt-5.5', '测试请求应保留显式模型')
 
   const defaultModelAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '测试 Responses 默认模型账户',
     type: 'api_key',
     groupId: group.id,

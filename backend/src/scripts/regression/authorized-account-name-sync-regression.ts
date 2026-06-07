@@ -43,16 +43,16 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const targetGroup = repositories.createGroup({
     name: '授权名称同步目标分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, granteeAccess)
   const ownerSourceGroup = repositories.createGroup({
     name: '授权名称同步来源分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const sourceAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权名称同步初始名',
     type: 'api_key',
     credentials: {

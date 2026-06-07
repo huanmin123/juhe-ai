@@ -54,11 +54,11 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeGroup = repositories.createGroup({
     name: '额度批量分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const ownerGroup = repositories.createGroup({
     name: '额度单次分组授权资源',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'group',
@@ -84,7 +84,7 @@ try {
   const accountInstanceIds: string[] = []
   for (let index = 0; index < accountCount; index += 1) {
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: `额度批量账户 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
       credentials: { api_key: `sk-authorization-quota-batch-${index}`, base_url: 'https://api.openai.com/v1' },
@@ -220,7 +220,7 @@ try {
     }, adminAccess)
     assert(repositories.addSystemTeamMembers(team.id, { systemAccountIds: [teamGrantee.id] }, adminAccess), '额度批量团队成员添加失败')
     const teamAccount = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '额度批量团队授权账户',
       type: 'api_key',
       credentials: { api_key: 'sk-authorization-quota-team', base_url: 'https://api.openai.com/v1' },

@@ -13,7 +13,15 @@ import {
   hashExternalIntegrationSourceTokenValue
 } from '../external-integration-source-constants.js'
 import { defaultRequestQuotaHourlyWindowHours } from '../request-quota-limits.js'
-import { DEFAULT_GLOBAL_SETTINGS, DEFAULT_OPENAI_GROUP, DEFAULT_SYSTEM_SETTINGS, OPENAI_PROVIDER_SEED } from '../schema-defaults.js'
+import {
+  DEFAULT_GLOBAL_SETTINGS,
+  DEFAULT_GPT_GROUP,
+  DEFAULT_SYSTEM_SETTINGS,
+  GPT_OPENAI_V1_PROFILE_SEED,
+  GPT_PROVIDER_SEED,
+  OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
+  OPENAI_PROTOCOL_SEED
+} from '../schema-defaults.js'
 
 export function seedDefaults(database: DatabaseSync): void {
   const now = new Date().toISOString()
@@ -57,24 +65,88 @@ export function seedDefaults(database: DatabaseSync): void {
   database
     .prepare(`
       INSERT OR IGNORE INTO providers (
-        id, code, name, description, enabled, base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, code, name, description, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
-      OPENAI_PROVIDER_SEED.id,
-      OPENAI_PROVIDER_SEED.code,
-      OPENAI_PROVIDER_SEED.name,
-      OPENAI_PROVIDER_SEED.description,
-      OPENAI_PROVIDER_SEED.enabled,
-      OPENAI_PROVIDER_SEED.baseUrl,
-      OPENAI_PROVIDER_SEED.defaultTestModel,
-      JSON.stringify(OPENAI_PROVIDER_SEED.accountTypes),
-      JSON.stringify(OPENAI_PROVIDER_SEED.capabilities),
+      GPT_PROVIDER_SEED.id,
+      GPT_PROVIDER_SEED.code,
+      GPT_PROVIDER_SEED.name,
+      GPT_PROVIDER_SEED.description,
+      GPT_PROVIDER_SEED.enabled,
       now,
       now
     )
 
-  seedAdminDefaultOpenAIGroup(database, now)
+  database
+    .prepare(`
+      INSERT OR IGNORE INTO protocols (
+        id, code, version, name, description, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      OPENAI_PROTOCOL_SEED.id,
+      OPENAI_PROTOCOL_SEED.code,
+      OPENAI_PROTOCOL_SEED.version,
+      OPENAI_PROTOCOL_SEED.name,
+      OPENAI_PROTOCOL_SEED.description,
+      OPENAI_PROTOCOL_SEED.enabled,
+      now,
+      now
+    )
+
+  const endpointFamilyStatement = database.prepare(`
+    INSERT OR IGNORE INTO protocol_endpoint_families (
+      id, protocol_code, protocol_version, family_code, name, description, enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const family of OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS) {
+    endpointFamilyStatement.run(
+      family.id,
+      family.protocolCode,
+      family.protocolVersion,
+      family.code,
+      family.name,
+      family.description,
+      family.enabled,
+      now,
+      now
+    )
+  }
+
+  database
+    .prepare(`
+      INSERT OR IGNORE INTO provider_protocol_profiles (
+        id, provider_code, name, description, enabled, protocol_code, protocol_version,
+        base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      GPT_OPENAI_V1_PROFILE_SEED.id,
+      GPT_OPENAI_V1_PROFILE_SEED.providerCode,
+      GPT_OPENAI_V1_PROFILE_SEED.name,
+      GPT_OPENAI_V1_PROFILE_SEED.description,
+      GPT_OPENAI_V1_PROFILE_SEED.enabled,
+      GPT_OPENAI_V1_PROFILE_SEED.protocolCode,
+      GPT_OPENAI_V1_PROFILE_SEED.protocolVersion,
+      GPT_OPENAI_V1_PROFILE_SEED.baseUrl,
+      GPT_OPENAI_V1_PROFILE_SEED.defaultTestModel,
+      JSON.stringify(GPT_OPENAI_V1_PROFILE_SEED.accountTypes),
+      JSON.stringify(GPT_OPENAI_V1_PROFILE_SEED.capabilities),
+      now,
+      now
+    )
+
+  const profileFamilyStatement = database.prepare(`
+    INSERT OR IGNORE INTO provider_protocol_profile_families (
+      profile_id, family_code, enabled, capabilities_json, created_at, updated_at
+    ) VALUES (?, ?, 1, '[]', ?, ?)
+  `)
+  for (const familyCode of GPT_OPENAI_V1_PROFILE_SEED.endpointFamilies) {
+    profileFamilyStatement.run(GPT_OPENAI_V1_PROFILE_SEED.id, familyCode, now, now)
+  }
+
+  seedAdminDefaultGptGroup(database, now)
   seedBuiltInExternalIntegrationTestToken(database, now)
 
   const statement = database.prepare(`
@@ -87,25 +159,31 @@ export function seedDefaults(database: DatabaseSync): void {
   }
 }
 
-function seedAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string): void {
+function seedAdminDefaultGptGroup(database: DatabaseSync, timestamp: string): void {
   database
     .prepare(`
-      INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
+      INSERT OR IGNORE INTO groups (
+        id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        description, enabled, is_default, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
     `)
     .run(
-      DEFAULT_OPENAI_GROUP.id,
-      DEFAULT_OPENAI_GROUP.systemAccountId,
-      DEFAULT_OPENAI_GROUP.name,
-      DEFAULT_OPENAI_GROUP.providerCode,
-      DEFAULT_OPENAI_GROUP.description,
+      DEFAULT_GPT_GROUP.id,
+      DEFAULT_GPT_GROUP.systemAccountId,
+      DEFAULT_GPT_GROUP.name,
+      DEFAULT_GPT_GROUP.providerCode,
+      DEFAULT_GPT_GROUP.providerProtocolProfileId,
+      DEFAULT_GPT_GROUP.protocolCode,
+      DEFAULT_GPT_GROUP.protocolVersion,
+      DEFAULT_GPT_GROUP.description,
       timestamp,
       timestamp
     )
 
   database
     .prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
-    .run(DEFAULT_OPENAI_GROUP.id, DEFAULT_OPENAI_GROUP.systemAccountId)
+    .run(DEFAULT_GPT_GROUP.id, DEFAULT_GPT_GROUP.systemAccountId)
 }
 
 function seedBuiltInExternalIntegrationTestToken(database: DatabaseSync, timestamp: string): void {

@@ -1,4 +1,5 @@
 import { openAIModelPricingData } from './openai-model-pricing.data.js'
+import { GPT_VENDOR_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 
 export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'
 
@@ -315,7 +316,7 @@ function buildModelCandidates(model: string): string[] {
 
 function toProviderModelPricing(item: RawModelPricing): ProviderModelPricing {
   return {
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     model: item.model,
     mode: item.mode,
     releaseDate: getOpenAIModelReleaseDate(item),
@@ -469,7 +470,7 @@ function hasModelShutdown(item: RawModelPricing): boolean {
 }
 
 function isOpenAIProvider(providerCode: string): boolean {
-  return normalizeModel(providerCode) === 'openai'
+  return normalizeProviderToken(providerCode) === GPT_VENDOR_CODE
 }
 
 function normalizeModel(value: string): string {

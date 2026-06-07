@@ -10,6 +10,9 @@ export interface ApiKeyGroupBindingRow {
   group_id: string
   group_name: string | null
   provider_code: string | null
+  provider_protocol_profile_id: string | null
+  protocol_code: string | null
+  protocol_version: string | null
   group_enabled: number | null
   priority: number
   weight?: number | null
@@ -36,6 +39,9 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
           api_key_group_bindings.status,
           groups.name AS group_name,
           groups.provider_code,
+          groups.provider_protocol_profile_id,
+          groups.protocol_code,
+          groups.protocol_version,
         CASE
           WHEN groups.id IS NULL THEN 0
           WHEN groups.system_account_id = api_key_group_bindings.system_account_id THEN groups.enabled
@@ -77,6 +83,9 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
         groupId: row.group_id,
         groupName: row.group_name ?? undefined,
         providerCode: row.provider_code ?? undefined,
+        providerProtocolProfileId: row.provider_protocol_profile_id ?? undefined,
+        protocolCode: row.protocol_code ?? undefined,
+        protocolVersion: row.protocol_version ?? undefined,
         priority: row.priority,
         weight: normalizeApiKeyGroupBindingWeight(row.weight),
         status: row.status,

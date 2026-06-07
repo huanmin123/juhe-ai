@@ -237,11 +237,11 @@ function seedData(): SeedState {
   const insertAccount = databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO accounts (
-        id, system_account_id, provider_code, name, notes, type, status, credential_mask, credentials_encrypted,
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, notes, type, status, credential_mask, credentials_encrypted,
         proxy_profile_id, concurrency_limit, error_policy_id, priority, super_priority_enabled,
         fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
         last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-      ) VALUES (?, ?, 'openai', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
+      ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
         NULL, 20, NULL, 10, 0,
         0, 1, NULL, NULL, NULL, NULL,
         NULL, 0, NULL, ?, ?)
@@ -280,8 +280,8 @@ function seedData(): SeedState {
   const groupId = 'grp_account_options_keyword_match'
   database
     .prepare(`
-      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, 'openai', NULL, 1, 0, ?, ?)
+      INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', NULL, 1, 0, ?, ?)
     `)
     .run(groupId, user.id, '账户选项绑定分组', keywordCreatedAt, keywordCreatedAt)
   database
@@ -292,8 +292,8 @@ function seedData(): SeedState {
     .run(user.id, groupId, groupMatchedAccountId, keywordCreatedAt, keywordCreatedAt)
   database
     .prepare(`
-      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, 'openai', NULL, 1, 0, ?, ?)
+      INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', NULL, 1, 0, ?, ?)
     `)
     .run(ownerGroupId, owner.id, '账户选项授权来源分组', keywordCreatedAt, keywordCreatedAt)
   database
@@ -304,8 +304,8 @@ function seedData(): SeedState {
     .run(owner.id, ownerGroupId, authorizedSourceAccountId, keywordCreatedAt, keywordCreatedAt)
   database
     .prepare(`
-      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, 'openai', NULL, 1, 0, ?, ?)
+      INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', NULL, 1, 0, ?, ?)
     `)
     .run(authorizedTargetGroupId, user.id, '账户选项授权目标分组', keywordCreatedAt, keywordCreatedAt)
   database
@@ -320,13 +320,13 @@ function seedData(): SeedState {
   database
     .prepare(`
       INSERT INTO accounts (
-        id, system_account_id, provider_code, name, notes, type, status, credential_mask, credentials_encrypted,
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, notes, type, status, credential_mask, credentials_encrypted,
         proxy_profile_id, concurrency_limit, error_policy_id, priority, super_priority_enabled,
         fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
         last_error_message, stream_failure_count, stream_failure_window_started_at,
         authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
         created_at, updated_at
-      ) VALUES (?, ?, 'openai', ?, NULL, 'api_key', 'active', '', '{}',
+      ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, NULL, 'api_key', 'active', '', '{}',
         NULL, 20, NULL, 0, 0,
         0, 1, NULL, NULL, NULL, NULL,
         NULL, 0, NULL, ?, ?, ?,

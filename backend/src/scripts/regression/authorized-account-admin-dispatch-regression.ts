@@ -417,39 +417,47 @@ function seedData(mockBaseUrl: string): SeedState {
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
-  const granteeDefaultGroup = repositories.listGroups(granteeAccess).find((group) => group.providerCode === 'openai' && group.isDefault)
-  assert(granteeDefaultGroup, '被授权用户默认 OpenAI 分组不存在')
+  const granteeDefaultGroup = repositories.listGroups(granteeAccess).find((group) => group.providerCode === 'gpt' && group.isDefault)
+  assert(granteeDefaultGroup, '被授权用户默认 GPT 分组不存在')
   const ownerSourceGroup = repositories.createGroup({
     name: '管理员代操作授权来源分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '管理员代操作授权账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch', base_url: mockBaseUrl },
-    groupId: ownerSourceGroup.id
+    groupId: ownerSourceGroup.id,
+    status: 'active',
+    schedulable: true
   }, ownerAccess)
   const ownerErrorAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '管理员代操作授权错误脱敏账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch-error', base_url: mockBaseUrl },
-    groupId: ownerSourceGroup.id
+    groupId: ownerSourceGroup.id,
+    status: 'active',
+    schedulable: true
   }, ownerAccess)
   const ownerPausedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '管理员代操作归属人停用账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch-owner-disabled', base_url: mockBaseUrl },
-    groupId: ownerSourceGroup.id
+    groupId: ownerSourceGroup.id,
+    status: 'active',
+    schedulable: true
   }, ownerAccess)
   const granteeTargetAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '管理员代操作迁移目标账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch-target', base_url: mockBaseUrl },
-    groupId: granteeDefaultGroup.id
+    groupId: granteeDefaultGroup.id,
+    status: 'active',
+    schedulable: true
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -482,7 +490,7 @@ function seedData(mockBaseUrl: string): SeedState {
   const ownerPausedAuthorizedAccount = authorizedInstanceForSource(ownerPausedAccount.id, granteeAccess)
   const granteeGroup = repositories.createGroup({
     name: '管理员代操作被授权分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   assert(repositories.setAccountGroup(defaultBoundAccount.id, granteeGroup.id, granteeAccess), '授权实例账户绑定到被授权用户分组失败')
   assert(repositories.setAccountGroup(ownerErrorAuthorizedAccount.id, granteeGroup.id, granteeAccess), '错误脱敏授权实例绑定到被授权用户分组失败')

@@ -52,14 +52,14 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const ownerGroup = repositories.createGroup({
     name: '统计授权上下文来源分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '统计授权上下文目标分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const sourceAccountA = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '统计授权上下文来源账号 A',
     type: 'api_key',
     credentials: {
@@ -69,7 +69,7 @@ try {
     groupId: ownerGroup.id
   }, ownerAccess)
   const sourceAccountB = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '统计授权上下文来源账号 B',
     type: 'api_key',
     credentials: {
@@ -112,7 +112,7 @@ try {
       groupId: granteeGroup.id,
       accountId: authorizedAccountA.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5',
       statusCode: 200,
       success: true,
@@ -128,7 +128,7 @@ try {
       groupId: granteeGroup.id,
       accountId: authorizedAccountB.id,
       endpoint: '/v1/responses',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       model: 'gpt-5.5',
       statusCode: 200,
       success: true,

@@ -235,10 +235,10 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
   const upstreamKey = 'sk-image-permission-upstream'
   const group = repositories.createGroup({
     name: '图像权限回归分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '图像权限回归上游账号',
     type: 'api_key',
     credentials: {

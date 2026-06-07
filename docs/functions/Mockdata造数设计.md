@@ -16,7 +16,7 @@ Mockdata 是项目里“可复用本地造数”的唯一职责入口：
 
 - 本地演示、页面验收、联调排障、空库补数据、压测临时网关数据和后续新增的通用测试数据，都应扩展 `backend/src/scripts/maintenance/mockdata.ts` 或 `backend/src/scripts/maintenance/mockdata-fixtures.ts`。
 - 不再新增独立的 `seed-*`、`demo-*`、`sample-*`、`fixture-*` 造数脚本；如果某段造数逻辑会被多个脚本、页面验收或人工联调用到，必须收口到 Mockdata。
-- `seedDefaults()` 只负责系统启动所需的最小默认数据，例如默认超级管理员、OpenAI 供应商、默认分组和系统设置；它不是业务演示 / 测试造数入口。
+- `seedDefaults()` 只负责系统启动所需的最小默认数据，例如默认超级管理员、GPT 供应商、默认分组和系统设置；它不是业务演示 / 测试造数入口。
 - 回归脚本内部为了断言某个 bug 的最小私有 fixture 可以保留在对应脚本内，但不能被文档、人工联调或其他脚本当作通用造数方案；一旦需要复用，就移动到 Mockdata。
 - Mockdata 写出的数据必须带稳定清理标识：业务名称使用 `造数-` 前缀，统计数据集域 ID / trace 使用 `mockdata_` / `mockdata-` 前缀，配套用户使用 `mockdata_` 用户名前缀。
 - 新增功能只要包含页面菜单、列表、筛选项、统计卡片、趋势图、日志、审计、后台任务状态、公开接口、运维监控或可视化表格，就必须同步扩展 Mockdata。功能提交不能只实现真实写入路径而让本地测试环境保持空数据。
@@ -25,8 +25,8 @@ Mockdata 是项目里“可复用本地造数”的唯一职责入口：
 
 当前已收口的散落入口：
 
-- `pnpm test:perf` 的临时压测分组、OpenAI API Key 类型账户和本地网关 API Key 由 `mockdata-fixtures.ts` 生成。
-- `pnpm test:smoke` 在空库且未指定真实账户时，使用 `mockdata-fixtures.ts` 生成临时 mock OpenAI 账户、分组和本地网关 Key，再接入烟测自己的本机 mock 上游。
+- `pnpm test:perf` 的临时压测 GPT 分组、GPT API Key 类型账户和本地网关 API Key 由 `mockdata-fixtures.ts` 生成。
+- `pnpm test:smoke` 在空库且未指定真实账户时，使用 `mockdata-fixtures.ts` 生成临时 mock GPT 账户、分组和本地网关 Key，再接入烟测自己的本机 mock OpenAI-compatible 上游。
 
 ## 3. 命令
 

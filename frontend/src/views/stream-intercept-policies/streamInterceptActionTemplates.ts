@@ -41,7 +41,7 @@ export const streamInterceptActionTemplates: StreamInterceptActionTemplate[] = [
   {
     action: 'avoid_upstream_bucket_ttl',
     label: '短期避让上游桶',
-    description: '命中后按系统临时不可调用策略避让同代理、同 baseUrl 或同供应商桶，并重试。',
+    description: '命中后按系统临时不可调用策略避让同代理、同 baseUrl 或同供应商协议档案桶，并重试。',
     runtimeAvoidance: true
   }
 ]

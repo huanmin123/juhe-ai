@@ -47,7 +47,7 @@ try {
   for (let index = 0; index < 250; index += 1) {
     const group = repositories.createGroup({
       name: `授权单条读取回归-${String(index).padStart(3, '0')}`,
-      providerCode: 'openai',
+      providerCode: 'gpt',
       enabled: true
     }, ownerAccess)
     const authorization = repositories.createResourceAuthorization({

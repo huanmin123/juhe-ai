@@ -268,14 +268,11 @@ function assertRecordMaintenanceCleanupRunsAsync(): void {
 function seedAccount(accountId: string, systemAccountId: string): void {
   databaseModule.getBusinessDatabase()
     .prepare(`
-      INSERT OR IGNORE INTO providers (id, code, name, description, enabled, base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at)
-      VALUES ('prov_openai', 'openai', 'OpenAI', NULL, 1, 'https://api.openai.com', 'gpt-5.5', '[]', '{}', ?, ?)
-    `)
-    .run('2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
-  databaseModule.getBusinessDatabase()
-    .prepare(`
-      INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, credentials_encrypted, schedulable, created_at, updated_at)
-      VALUES (?, ?, 'openai', ?, 'oauth', 'active', ?, 1, ?, ?)
+      INSERT INTO accounts (
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        name, type, status, credentials_encrypted, schedulable, created_at, updated_at
+      )
+      VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, 'oauth', 'active', ?, 1, ?, ?)
     `)
     .run(accountId, systemAccountId, accountId, '{}', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
 }

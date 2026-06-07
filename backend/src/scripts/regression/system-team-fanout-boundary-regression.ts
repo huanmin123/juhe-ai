@@ -29,7 +29,7 @@ try {
 
   const selfGrantGroup = repositories.createGroup({
     name: '禁止超级管理员自授权分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   assert.throws(
@@ -43,7 +43,7 @@ try {
     '超级管理员不能把自己的分组授权给自己'
   )
   const selfGrantAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '禁止超级管理员自授权账户',
     type: 'api_key',
     groupId: selfGrantGroup.id,
@@ -84,7 +84,7 @@ try {
   for (let index = 0; index < maxSystemTeamActiveGrantCount; index += 1) {
     const group = repositories.createGroup({
       name: `团队授权展开分组 ${String(index).padStart(2, '0')}`,
-      providerCode: 'openai',
+      providerCode: 'gpt',
       enabled: true
     }, access)
     repositories.createResourceAuthorization({
@@ -96,7 +96,7 @@ try {
   }
   const overflowGroup = repositories.createGroup({
     name: '团队授权展开溢出分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   assert.throws(
@@ -115,11 +115,11 @@ try {
   repositories.addSystemTeamMembers(missingDefaultGroupTeam.id, { systemAccountIds: [missingDefaultGroupMemberId] }, access)
   const accountGroup = repositories.createGroup({
     name: '缺默认分组团队授权来源分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const sourceAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '缺默认分组团队授权来源账号',
     type: 'api_key',
     credentials: {
@@ -171,7 +171,7 @@ function seedSystemAccounts(count: number, prefix: string): string[] {
 
 function openAIGroupCountForSystemAccount(systemAccountId: string): number {
   const row = databaseModule.getBusinessDatabase()
-    .prepare("SELECT COUNT(*) AS total FROM groups WHERE system_account_id = ? AND provider_code = 'openai'")
+    .prepare("SELECT COUNT(*) AS total FROM groups WHERE system_account_id = ? AND provider_code = 'gpt'")
     .get(systemAccountId) as unknown as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }

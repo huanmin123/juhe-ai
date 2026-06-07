@@ -30,7 +30,7 @@ const [repositories, databaseModule] = await Promise.all([
 const run = repositories.createModelCheckRun({
   systemAccountId: 'sys_admin',
   actorSystemAccountId: 'sys_admin',
-  providerCode: 'openai',
+  providerCode: 'gpt',
   targetType: 'account',
   targetId: 'acc_storage_sanitizer',
   targetName: '存储脱敏检测',
@@ -105,7 +105,7 @@ assert(!JSON.stringify(list).includes(secretApiKey), '检测历史列表同样�
 const atomicRun = repositories.createModelCheckRun({
   systemAccountId: 'sys_admin',
   actorSystemAccountId: 'sys_admin',
-  providerCode: 'openai',
+  providerCode: 'gpt',
   targetType: 'account',
   targetId: 'acc_storage_atomic',
   targetName: '检测项原子写入',
@@ -146,7 +146,7 @@ assert.equal(atomicDetail?.checks.length, 0, '检测项批量写入必须原子�
 const otherRun = repositories.createModelCheckRun({
   systemAccountId: 'sys_other',
   actorSystemAccountId: 'sys_other',
-  providerCode: 'openai',
+  providerCode: 'gpt',
   targetType: 'account',
   targetId: 'acc_storage_other',
   targetName: '范围隔离检测',

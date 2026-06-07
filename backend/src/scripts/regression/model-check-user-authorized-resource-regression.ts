@@ -204,10 +204,10 @@ function seedData(upstreamBaseUrl: string): SeedState {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const ownerSourceGroup = repositories.createGroup({
     name: '模型检测授权来源分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '模型检测授权账户',
     type: 'api_key',
     credentials: {
@@ -218,7 +218,7 @@ function seedData(upstreamBaseUrl: string): SeedState {
   }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '模型检测授权用户分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

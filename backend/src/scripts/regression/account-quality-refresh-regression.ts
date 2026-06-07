@@ -33,11 +33,11 @@ try {
   const statsDatabase = databaseModule.getStatsDatabase()
   const group = repositories.createGroup({
     name: '账号质量刷新回归分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '质量刷新回归账户',
     type: 'api_key',
     credentials: {
@@ -48,7 +48,7 @@ try {
     status: 'active'
   }, access)
   const staleAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '质量刷新无新样本账户',
     type: 'api_key',
     credentials: {
@@ -59,7 +59,7 @@ try {
     status: 'active'
   }, access)
   const batchAccounts = Array.from({ length: 5 }, (_, index) => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: `质量刷新批量账户 ${index}`,
     type: 'api_key',
     credentials: {
@@ -81,7 +81,7 @@ try {
         last_sample_at, last_success_at, last_error_at, last_error_message, updated_at
       ) VALUES (?, ?, ?, ?, 1, 0, 1, 0, 0, ?, NULL, ?, ?, ?)
     `)
-    .run(account.id, 'sys_admin', 'openai', statMinute, now, now, '质量刷新模拟错误', now)
+    .run(account.id, 'sys_admin', 'gpt', statMinute, now, now, '质量刷新模拟错误', now)
   markAccountQualityDirty(account.id, now)
   for (const [index, batchAccount] of batchAccounts.entries()) {
     statsDatabase
@@ -92,7 +92,7 @@ try {
           last_sample_at, last_success_at, last_error_at, last_error_message, updated_at
         ) VALUES (?, ?, ?, ?, 1, 1, 0, ?, 1, ?, ?, NULL, NULL, ?)
       `)
-      .run(batchAccount.id, 'sys_admin', 'openai', statMinute, 800 + index, now, now, now)
+      .run(batchAccount.id, 'sys_admin', 'gpt', statMinute, 800 + index, now, now, now)
     markAccountQualityDirty(batchAccount.id, now)
   }
   for (let index = 0; index < 1205; index += 1) {
@@ -103,7 +103,7 @@ try {
           account_id, system_account_id, provider_code, stat_minute,
           request_count, success_count, error_count, first_token_ms_sum, first_token_ms_count,
           last_sample_at, last_success_at, last_error_at, last_error_message, updated_at
-        ) VALUES (?, 'sys_admin', 'openai', ?, 1, 1, 0, 800, 1, ?, ?, NULL, NULL, ?)
+        ) VALUES (?, 'sys_admin', 'gpt', ?, 1, 1, 0, 800, 1, ?, ?, NULL, NULL, ?)
       `)
       .run(inactiveAccountId, inactiveMinute, now, now, now)
   }
@@ -114,7 +114,7 @@ try {
         recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
         recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
         window_started_at, window_ended_at, last_sample_at, updated_at
-      ) VALUES (?, 'sys_admin', 'openai', 1000, 'fresh', 1, 1, 0, 1, 1000, 1000, 1, ?, ?, ?, ?)
+      ) VALUES (?, 'sys_admin', 'gpt', 1000, 'fresh', 1, 1, 0, 1, 1000, 1000, 1, ?, ?, ?, ?)
     `)
     .run(staleAccount.id, now, now, now, now)
 

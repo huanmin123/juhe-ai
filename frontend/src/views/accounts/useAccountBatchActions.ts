@@ -66,7 +66,7 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
       return
     }
     if (selected.length !== options.selectedAccounts.value.length) {
-      message.warning('已跳过非 OpenAI 或当前不能测试的账户')
+      message.warning('已跳过非 GPT 供应商或当前不能测试的账户')
     }
     await options.openBatchTestModal(selected)
   }

@@ -57,7 +57,7 @@ try {
   })
   const group = repositories.createGroup({
     name: '团队授权批量查询分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
 
   const grantCount = 120
@@ -66,7 +66,7 @@ try {
     const team = teams[Math.floor(index / 20)]
     assert(team, '团队种子数据不足')
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: `团队授权批量查询账户 ${index}`,
       type: 'api_key',
       credentials: {

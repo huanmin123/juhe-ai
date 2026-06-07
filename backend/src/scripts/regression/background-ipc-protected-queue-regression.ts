@@ -121,7 +121,7 @@ function buildUsageRecord(index: number) {
     trafficSource: 'gateway' as const,
     systemAccountId: 'sys_admin',
     endpoint: 'POST /v1/responses',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     success: true,
     stream: false,
     statusCode: 200,

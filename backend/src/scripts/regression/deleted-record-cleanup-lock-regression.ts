@@ -87,7 +87,7 @@ function seedAccountStats(targetAccountId: string, ownerSystemAccountId: string)
       account_id, system_account_id, provider_code, quality_score, quality_state,
       recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
       window_started_at, window_ended_at, updated_at
-    ) VALUES (?, ?, 'openai', 100, 'healthy', 1, 1, 0, 0, ?, ?, ?)
+    ) VALUES (?, ?, 'gpt', 100, 'healthy', 1, 1, 0, 0, ?, ?, ?)
   `).run(targetAccountId, ownerSystemAccountId, now, now, now)
   statsDatabase.prepare(`
     INSERT INTO account_usage_snapshots (

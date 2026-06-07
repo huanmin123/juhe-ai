@@ -567,7 +567,7 @@ async function waitForAccountTestTask(initialTask: AccountTestTask, taskPath: st
 }
 
 function assertAccountCanBeTested(account: AccountSummary, prefix: string): void {
-  assert(account.providerCode === 'openai', `${prefix}，供应商不是 openai：${account.providerCode}`)
+  assert(account.providerCode === 'gpt', `${prefix}，供应商不是 gpt：${account.providerCode}`)
   assert(account.status === 'active', `${prefix}，状态不是正常：${account.status}`)
   assert(account.schedulable !== false, `${prefix}，账号已设为不可调度`)
   assert(!isCooling(account), `${prefix}，账号冷却中至 ${account.cooldownUntil}`)
@@ -576,7 +576,7 @@ function assertAccountCanBeTested(account: AccountSummary, prefix: string): void
 }
 
 function isOpenAIAccountCandidate(account: AccountSummary): boolean {
-  return account.providerCode === 'openai'
+  return account.providerCode === 'gpt'
     && account.status === 'active'
     && account.schedulable !== false
     && Boolean(account.ownerSystemAccountId)

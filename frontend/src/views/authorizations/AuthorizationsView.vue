@@ -411,7 +411,7 @@ const createTargetGroupPlaceholder = computed(() => {
 })
 const createTargetGroupTip = computed(() => createTargetGroups.value.length
   ? '默认选择目标用户的默认分组；授权创建后会直接把账户加入该分组。'
-  : '目标用户暂无可选同供应商分组，请先为目标用户准备分组。')
+  : '目标用户暂无可选兼容分组，请先为目标用户准备分组。')
 const activeFilterCount = computed(() => {
   let count = 0
   if (keywordFilter.value.trim()) count += 1

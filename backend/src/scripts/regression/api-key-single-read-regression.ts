@@ -27,7 +27,7 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 try {
   const group = repositories.createGroup({
     name: 'API Key 单条读取回归分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   let targetId = ''
   for (let index = 0; index < 250; index += 1) {

@@ -246,6 +246,7 @@ import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText, statusColor, statusText } from '@/views/accounts/accountFormatters'
+import { OPENAI_PROVIDER } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatCompactInteger, formatCost, formatInteger, formatPercent, formatSeconds } from '@/views/stats/statsFormatters'
@@ -269,17 +270,6 @@ type AccountUsagePageState = { current: number; pageSize: number }
 const MAX_RANGE_DAYS = 31
 const accountUsagePageSize = 10
 const maxAddedTrendAccounts = 20
-const OPENAI_PROVIDER: ProviderDefinition = {
-  id: 'openai',
-  code: 'openai',
-  name: 'OpenAI',
-  enabled: true,
-  baseUrl: 'https://api.openai.com/v1',
-  defaultTestModel: '',
-  accountTypes: ['oauth', 'api_key'],
-  capabilities: ['responses', 'chat']
-}
-
 const metricOptions: Array<{ label: string; value: UsageTrendMetric }> = [
   { label: '成本', value: 'cost' },
   { label: 'Token', value: 'tokens' },

@@ -55,7 +55,7 @@ try {
   assert.throws(
     () => repositories.createGroup({
       name: '高并发调度策略旧字段回归分组',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       groupType: 'high_concurrency',
       schedulingPolicy: {
         defaultSoftConcurrency: 3,
@@ -68,7 +68,7 @@ try {
 
   const highConcurrencyGroup = repositories.createGroup({
     name: '高并发调度策略回归分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'high_concurrency',
     schedulingPolicy: {
       defaultSoftConcurrency: 3,
@@ -139,7 +139,7 @@ try {
   assert.equal(options[0]?.groupType, 'high_concurrency', '分组选项应携带分组类型')
 
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '高并发绑定单账户排队阈值账户',
     type: 'api_key',
     credentials: {

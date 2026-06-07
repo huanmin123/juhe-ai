@@ -42,14 +42,14 @@ try {
 
   const group = repositories.createGroup({
     name: '冷却复测回归分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const workerGatewaySettings = await gatewayRuntimeCache.readCachedGatewaySettingsAsync()
   assert.equal(typeof workerGatewaySettings.defaultTemporaryUnschedulableMinutes, 'number', 'worker 角色应能本地读取网关设置，不能误走 DB service IPC')
   const workerGroupAccess = await gatewayRuntimeCache.resolveCachedGroupUsageAccessMetadataAsync(group.id, access.systemAccountId)
   assert.equal(workerGroupAccess?.groupOwnerSystemAccountId, access.systemAccountId, 'worker 角色应能本地读取分组访问元数据，不能误走 DB service IPC')
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '冷却复测观察窗口回归',
     type: 'api_key',
     credentials: {
@@ -91,7 +91,7 @@ try {
   assert(!repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '异常账号不应再进入后台复测候选')
 
   const freshAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '冷却复测未超观察窗口回归',
     type: 'api_key',
     credentials: {
@@ -131,7 +131,7 @@ try {
   assert.equal(restored?.cooldownRetestObservationStartedAt, undefined, '恢复正常时应清理自动恢复观察起点')
 
   const disabledCleanupAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '停用清理过期失败原因回归',
     type: 'api_key',
     credentials: {
@@ -149,7 +149,7 @@ try {
   assert.equal(disabledCleanup?.cooldownUntil, undefined, '手动停用应清理既有冷却结束时间')
 
   const rateLimitedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '限流后台复测回归',
     type: 'api_key',
     credentials: {
@@ -178,7 +178,7 @@ try {
   assert.equal(repositories.findAccountSummary(rateLimitedAccount.id, access)?.status, 'rate_limited', '限流复测失败后应保持限流状态等待下次自动恢复')
 
   const probeAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '后台探针通过恢复回归',
     type: 'api_key',
     credentials: {

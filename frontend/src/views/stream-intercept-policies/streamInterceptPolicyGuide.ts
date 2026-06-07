@@ -105,8 +105,8 @@ export const streamInterceptPolicyGuideActions = [
   {
     key: 'avoid_upstream_bucket_ttl',
     action: '短期避让上游桶',
-    when: '同代理、baseUrl 或供应商桶内多个账号都可能受影响时',
-    note: '按系统临时不可调用策略避让同代理、同 baseUrl 或同供应商桶的账号，并在可行时重试。'
+    when: '同代理、baseUrl 或供应商协议档案桶内多个账号都可能受影响时',
+    note: '按系统临时不可调用策略避让同代理、同 baseUrl 或同供应商协议档案桶的账号，并在可行时重试。'
   }
 ]
 

@@ -216,7 +216,7 @@ try {
   assert.equal(returnedGroupGrant?.status, 'returned', '分组页归还后，授权方授权列表仍应保留已归还记录')
 
   const adminManagedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '管理员代归还授权账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorization-return', base_url: 'https://api.openai.com/v1' },
@@ -277,28 +277,28 @@ function seedData() {
   const adminAccess = { systemAccountId: admin.id, role: 'admin' as const }
   const ownerGroup = repositories.createGroup({
     name: '授权归还分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const granteeTargetGroup = repositories.createGroup({
     name: '授权归还被授权人目标分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, { systemAccountId: grantee.id, role: 'user' as const })
   const ownerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupId: ownerGroup.id,
     name: '授权归还账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorization-return', base_url: 'https://api.openai.com/v1' }
   }, ownerAccess)
   const teamAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupId: ownerGroup.id,
     name: '授权归还团队来源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorization-return-team', base_url: 'https://api.openai.com/v1' }
   }, ownerAccess)
   const mixedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupId: ownerGroup.id,
     name: '授权归还团队覆盖个人来源账户',
     type: 'api_key',

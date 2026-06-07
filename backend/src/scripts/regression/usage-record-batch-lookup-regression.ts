@@ -30,11 +30,11 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 try {
   const group = repositories.createGroup({
     name: '使用记录批量查询回归分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '使用记录批量查询回归账户',
     type: 'api_key',
     credentials: {
@@ -137,7 +137,7 @@ function buildUsageRecord(index: number, apiKeyId: string, groupId: string, acco
     groupId,
     accountId,
     endpoint: '/v1/responses',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-5.1',
     stream: false,
     statusCode: 200,

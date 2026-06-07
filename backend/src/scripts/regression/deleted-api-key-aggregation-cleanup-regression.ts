@@ -234,7 +234,7 @@ function seedUsageRecord(id: string, apiKeyIdInput: string, createdAtInput: stri
       INSERT INTO usage_records (
         id, system_account_id, trace_id, traffic_source, api_key_id, endpoint, provider_code, model,
         stream, success, input_tokens, output_tokens, cost_usd, created_at
-      ) VALUES (?, 'sys_admin', ?, 'gateway', ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?)
+      ) VALUES (?, 'sys_admin', ?, 'gateway', ?, '/v1/chat/completions', 'gpt', 'gpt-regression', 0, 1, 10, 20, 0.12, ?)
     `)
     .run(id, `trace_${id}`, apiKeyIdInput, createdAtInput)
   usageRecordShards.recordUsageRecordShardEntries([{

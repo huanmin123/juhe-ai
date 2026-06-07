@@ -28,12 +28,12 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const matchedGroup = repositories.createGroup({
     name: '账户绑定前缀分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const middleGroup = repositories.createGroup({
     name: '普通账户绑定前缀分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const matchedByName = createGuardAccount('账户检索目标', 'sk-account-list-query-guard-name', '普通备注', matchedGroup.id)
@@ -58,7 +58,7 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeTargetGroup = repositories.createGroup({
     name: '账户列表防护被授权目标分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -204,7 +204,7 @@ function createGuardAccount(
   status: 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable' = 'active'
 ): { id: string } {
   return repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name,
     type: 'api_key',
     credentials: {
@@ -265,13 +265,13 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
 
   const group = repositories.createGroup({
     name: '过期账号批量停用防护分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const accountIds: string[] = []
   for (let index = 0; index < maxAccountExpirySweepBatchSize + 1; index += 1) {
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: `过期账号批量停用防护 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
       credentials: {

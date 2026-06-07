@@ -16,7 +16,7 @@ const emptyUsage: AccountUsageSummary = {
 
 const account: AccountSummary = accountSummaryWithEffectiveAvailability({
   id: 'acct_limited_diagnostics',
-  providerCode: 'openai',
+  providerCode: 'gpt',
   name: '授权账户脱敏回归',
   type: 'api_key',
   credentials: {},

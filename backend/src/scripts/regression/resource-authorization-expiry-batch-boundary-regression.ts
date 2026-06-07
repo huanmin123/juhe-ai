@@ -38,7 +38,7 @@ try {
   for (let index = 0; index < maxAuthorizationExpirySweepBatchSize + 1; index += 1) {
     const group = repositories.createGroup({
       name: `授权过期批量分组 ${String(index).padStart(2, '0')}`,
-      providerCode: 'openai',
+      providerCode: 'gpt',
       enabled: true
     }, access)
     repositories.createResourceAuthorization({

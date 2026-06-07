@@ -55,13 +55,13 @@ try {
   const futureExpiresAt = '2099-01-01T00:00:00.000Z'
   const ownerAccountGroup = repositories.createGroup({
     name: '授权有效期账号来源分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
 
   const userGroup = repositories.createGroup({
     name: '授权有效期清空个人分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const userAuthorization = repositories.createResourceAuthorization({
@@ -85,7 +85,7 @@ try {
   repositories.addSystemTeamMembers(team.id, { systemAccountIds: [teamMember.id] }, adminAccess)
   const teamGroup = repositories.createGroup({
     name: '授权有效期清空团队分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const teamAuthorization = repositories.createResourceAuthorization({
@@ -104,7 +104,7 @@ try {
 
   const expiredRevokeGroup = repositories.createGroup({
     name: '授权到期后回收分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, ownerAccess)
   const expiredRevokeAuthorization = repositories.createResourceAuthorization({
@@ -137,16 +137,17 @@ try {
     dateRange: { startDate: '2999-01-01' }
   }
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权有效期边界账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-expire-boundary', base_url: 'https://api.openai.com/v1' },
+    status: 'active',
     accountExpiresAt,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
   const granteeQuotaGroup = repositories.createGroup({
     name: '授权额度拦截分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, granteeAccess)
   assert.throws(() => repositories.createResourceAuthorization({
@@ -181,10 +182,11 @@ try {
   const quotaBinding = repositories.setAccountGroup(quotaAuthorizedAccount.id, granteeQuotaGroup.id, granteeAccess)
   assert.equal(quotaBinding?.boundGroupId, granteeQuotaGroup.id, '额度账户应能先绑定到被授权人的分组')
   const migrationSourceAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权额度迁移源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-quota-source', base_url: 'https://api.openai.com/v1' },
+    status: 'active',
     groupId: ownerAccountGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -231,10 +233,11 @@ try {
   assert.equal(repositories.accountTestUnavailableMessage(quotaExceededTestAccount), '授权额度已用完，当前账户不能调用', '测试接口应在实际调用前拦截授权额度用完账户')
 
   const ownerPausedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权所有者停调账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-paused', base_url: 'https://api.openai.com/v1' },
+    status: 'active',
     schedulable: false,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
@@ -263,10 +266,11 @@ try {
   assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), '授权方原账户已关闭调度，当前账户不能调用', '测试接口应因所有者停调拦截被授权账户')
 
   const ownerScheduleInactiveAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权所有者时段外账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-schedule-inactive', base_url: 'https://api.openai.com/v1' },
+    status: 'active',
     availabilitySchedule: inactiveSourceSchedule,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
@@ -293,7 +297,7 @@ try {
   assert.equal(repositories.accountTestUnavailableMessage(ownerScheduleInactiveTestAccount), '授权方原账户当前不在允许使用时段，当前账户不能调用', '测试接口应因所有者时段外拦截被授权账户')
 
   const ownerDisabledAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权所有者停用账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-disabled', base_url: 'https://api.openai.com/v1' },
@@ -317,10 +321,11 @@ try {
   assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, false, '来源账户停用时应返回来源调度不可用提示字段')
 
   const teamQuotaAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权有效期团队额度账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-team-quota', base_url: 'https://api.openai.com/v1' },
+    status: 'active',
     groupId: ownerAccountGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({

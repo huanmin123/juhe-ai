@@ -327,6 +327,7 @@ import {
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type {
@@ -547,7 +548,7 @@ async function loadTargetOptions(keyword = '') {
       limit: 50
     })
     const nextOptions = accounts
-      .filter((account) => account.providerCode === 'openai')
+      .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account))
       .filter((account) => Boolean(account.name.trim()))
       .map(accountTargetOption)
     targetOptionsCache.set(requestKey, nextOptions)
@@ -585,7 +586,7 @@ async function loadComparisonOptions(keyword = '') {
       limit: 50
     })
     const nextOptions = accounts
-      .filter((account) => account.providerCode === 'openai' && account.id !== form.targetId)
+      .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account) && account.id !== form.targetId)
       .filter((account) => Boolean(account.name.trim()))
       .map(accountTargetOption)
     comparisonOptionsCache.set(requestKey, nextOptions)
@@ -621,7 +622,7 @@ async function loadHistoryTargetOptions(keyword = '') {
       limit: 50
     })
     const nextOptions = accounts
-      .filter((account) => account.providerCode === 'openai')
+      .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account))
       .filter((account) => Boolean(account.name.trim()))
       .map(accountTargetOption)
     historyTargetOptionsCache.set(requestKey, nextOptions)
@@ -935,7 +936,7 @@ function targetTypeText(value: ModelCheckRunSummary['targetType']) {
 }
 
 function providerText(value: ModelCheckRunSummary['providerCode']) {
-  if (value === 'openai') return 'OpenAI'
+  if (isGptVendorCode(value)) return 'GPT'
   return value || '未知供应商'
 }
 

@@ -41,10 +41,10 @@ const futureSchedule = {
 try {
   const group = repositories.createGroup({
     name: '账户计划回归分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const allowed = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '账户计划允许回归',
     type: 'api_key',
     credentials: { api_key: 'sk-account-schedule-allow', base_url: 'https://api.openai.com/v1' },
@@ -52,7 +52,7 @@ try {
     groupId: group.id
   }, access)
   const denied = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '账户时段外回归',
     type: 'api_key',
     credentials: { api_key: 'sk-account-schedule-deny', base_url: 'https://api.openai.com/v1' },

@@ -33,9 +33,9 @@ const [databaseModule, repositories, usageStatsRepository] = await Promise.all([
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: '统计重建分片游标回归分组', providerCode: 'openai', enabled: true }, access)
+  const group = repositories.createGroup({ name: '统计重建分片游标回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '统计重建分片游标回归账户',
     type: 'api_key',
     credentials: {
@@ -56,7 +56,7 @@ try {
     groupId: group.id,
     accountId: account.id,
     endpoint: '/v1/responses',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model: 'gpt-5.5',
     stream: false,
     statusCode: 200,

@@ -50,10 +50,10 @@ try {
   const team = repositories.createSystemTeam({ name: '删除账户清理团队' }, adminAccess)
   assert(repositories.addSystemTeamMembers(team.id, { systemAccountIds: [grantee.id] }, adminAccess), '团队成员应添加成功')
 
-  const ownerGroup = repositories.createGroup({ name: '删除账户归属分组', providerCode: 'openai' }, ownerAccess)
-  const granteeGroup = repositories.createGroup({ name: '删除账户授权分组', providerCode: 'openai' }, granteeAccess)
+  const ownerGroup = repositories.createGroup({ name: '删除账户归属分组', providerCode: 'gpt' }, ownerAccess)
+  const granteeGroup = repositories.createGroup({ name: '删除账户授权分组', providerCode: 'gpt' }, granteeAccess)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '删除关联清理账户',
     type: 'api_key',
     credentials: {
@@ -108,7 +108,7 @@ try {
   assert.equal(authorizationUserUsageRangeWindowRequestCount(owner.id, authorizedInstance.id), 0, '授权方报表资源过滤不应写成被授权实例 ID')
 
   const directReturnAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '被授权人归还账户来源',
     type: 'api_key',
     credentials: {
@@ -235,7 +235,7 @@ try {
   assert.equal(cleanupTargetExists(account.id), false, '过期物理清理完成后不应残留账户清理目标')
 
   const legacyDeletedSource = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '旧版本父账户已删授权实例',
     type: 'api_key',
     credentials: {
@@ -308,7 +308,7 @@ function seedOwnerUsageRecord(id: string, accountId: string, ownerSystemAccountI
         stream, success, input_tokens, output_tokens, cost_usd,
         account_owner_system_account_id, account_access_type,
         created_at
-      ) VALUES (?, ?, ?, 'gateway', ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?, 'owner', ?)
+      ) VALUES (?, ?, ?, 'gateway', ?, '/v1/chat/completions', 'gpt', 'gpt-regression', 0, 1, 10, 20, 0.12, ?, 'owner', ?)
     `)
     .run(id, ownerSystemAccountId, `trace_${id}`, accountId, ownerSystemAccountId, createdAt)
   usageRecordShards.recordUsageRecordShardEntries([{
@@ -340,7 +340,7 @@ function seedAuthorizedUsageRecord(id: string, accountId: string, ownerSystemAcc
         account_owner_system_account_id, account_access_type,
         account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
         created_at
-      ) VALUES (?, ?, ?, 'gateway', ?, '/v1/chat/completions', 'openai', 'gpt-regression', 0, 1, 10, 20, 0.12, ?, 'account_authorized', ?, 'team', ?, ?)
+      ) VALUES (?, ?, ?, 'gateway', ?, '/v1/chat/completions', 'gpt', 'gpt-regression', 0, 1, 10, 20, 0.12, ?, 'account_authorized', ?, 'team', ?, ?)
     `)
     .run(id, callerSystemAccountId, `trace_${id}`, accountId, ownerSystemAccountId, authorizationId, teamId, createdAt)
   usageRecordShards.recordUsageRecordShardEntries([{
@@ -388,7 +388,7 @@ function seedModelCheckRun(accountId: string, ownerSystemAccountId: string, suff
       INSERT INTO model_check_runs (
         id, system_account_id, actor_system_account_id, provider_code, target_type, target_id,
         target_owner_system_account_id, account_id, model, started_at, created_at, updated_at
-      ) VALUES (?, ?, ?, 'openai', 'account', ?, ?, ?, 'gpt-regression', ?, ?, ?)
+      ) VALUES (?, ?, ?, 'gpt', 'account', ?, ?, ?, 'gpt-regression', ?, ?, ?)
     `)
     .run(`model_check_deleted_account_related_cleanup_${suffix}`, ownerSystemAccountId, ownerSystemAccountId, accountId, ownerSystemAccountId, accountId, createdAt, createdAt, createdAt)
 }
@@ -401,7 +401,7 @@ function seedDetachedAccountStats(accountId: string, ownerSystemAccountId: strin
         account_id, system_account_id, provider_code, quality_score, quality_state,
         recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
         window_started_at, window_ended_at, updated_at
-      ) VALUES (?, ?, 'openai', 100, 'healthy', 1, 1, 0, 0, ?, ?, ?)
+      ) VALUES (?, ?, 'gpt', 100, 'healthy', 1, 1, 0, 0, ?, ?, ?)
     `)
     .run(accountId, ownerSystemAccountId, createdAt, createdAt, createdAt)
   statsDatabase

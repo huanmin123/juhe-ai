@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import type { UsageRecordSummary } from '../../storage/repositories.js'
@@ -135,17 +136,17 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '流式拦截主号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '流式拦截后备号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = 'sk-route-stream-intercept-primary'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '流式拦截主号池账号',
     type: 'api_key',
     credentials: {
@@ -158,7 +159,7 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
   }, access)
   const fallbackUpstreamKey = 'sk-route-stream-intercept-fallback'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '流式拦截后备账号',
     type: 'api_key',
     credentials: {
@@ -173,7 +174,7 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
     name: '回归：未写下游污染流切后备',
     enabled: true,
     priority: 20,
-    providerCode: 'openai',
+    protocolCode: OPENAI_PROTOCOL_CODE,
     match: { textIncludes: ['route-stream-pollution'] },
     action: 'retry_next_account'
   })
@@ -225,18 +226,18 @@ async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBas
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '上游账号耗尽主号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '上游账号耗尽后备号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = 'sk-route-upstream-exhausted-primary'
   failingUpstreamKeys.add(primaryUpstreamKey)
   const primaryAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '上游账号耗尽主号池账号',
     type: 'api_key',
     credentials: {
@@ -249,7 +250,7 @@ async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBas
   }, access)
   const fallbackUpstreamKey = 'sk-route-upstream-exhausted-fallback'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '上游账号耗尽后备账号',
     type: 'api_key',
     credentials: {
@@ -345,17 +346,17 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: `策略仿真 ${item.displayName} A 号池`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: `策略仿真 ${item.displayName} B 号池`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const thirdGroup = repositories.createGroup({
     name: `策略仿真 ${item.displayName} C 号池`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = `sk-route-strategy-${item.suffix}-primary-fail`
@@ -363,7 +364,7 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
   const thirdUpstreamKey = `sk-route-strategy-${item.suffix}-fallback-c`
   failingUpstreamKeys.add(primaryUpstreamKey)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: `策略仿真 ${item.displayName} A 账号`,
     type: 'api_key',
     credentials: {
@@ -375,7 +376,7 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
     schedulable: true,
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: `策略仿真 ${item.displayName} B 账号`,
     type: 'api_key',
     credentials: {
@@ -387,7 +388,7 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
     schedulable: true,
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: `策略仿真 ${item.displayName} C 账号`,
     type: 'api_key',
     credentials: {
@@ -448,17 +449,17 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '回绕重分配 A 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const secondGroup = repositories.createGroup({
     name: '回绕重分配 B 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const thirdGroup = repositories.createGroup({
     name: '回绕重分配 C 号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const primaryFailKey = 'sk-route-wrap-a-fail'
@@ -470,7 +471,7 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
   failingUpstreamKeys.add(thirdFailKey)
   releaseLocalSuppressionsBeforeRespondingKeys.add(thirdFailKey)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '回绕重分配 A 失败账号',
     type: 'api_key',
     credentials: {
@@ -482,7 +483,7 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
     schedulable: true,
   }, access)
   const recoveredAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '回绕重分配 A 恢复账号',
     type: 'api_key',
     credentials: {
@@ -494,7 +495,7 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
     schedulable: true,
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '回绕重分配 B 失败账号',
     type: 'api_key',
     credentials: {
@@ -506,7 +507,7 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
     schedulable: true,
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '回绕重分配 C 失败账号',
     type: 'api_key',
     credentials: {
@@ -567,16 +568,16 @@ async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl:
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '请求能力主号池 OAuth',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'high_concurrency'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '请求能力后备号池 API Key',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '请求能力主号池 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -590,7 +591,7 @@ async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl:
   }, access)
   const fallbackUpstreamKey = 'sk-route-capability-fallback'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '请求能力后备 API Key 账号',
     type: 'api_key',
     credentials: {
@@ -675,12 +676,12 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '多跳能力不匹配主号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const busyGroup = repositories.createGroup({
     name: '多跳繁忙中间号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'high_concurrency',
     schedulingPolicy: {
       maxQueueWaitMs: 5
@@ -688,11 +689,11 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
   }, access)
   const finalGroup = repositories.createGroup({
     name: '多跳最终可承接号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多跳主号池 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -706,7 +707,7 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
   }, access)
   const busyUpstreamKey = 'sk-route-multi-hop-busy'
   const busyAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多跳中间繁忙账号',
     type: 'api_key',
     credentials: {
@@ -720,7 +721,7 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
   }, access)
   const finalUpstreamKey = 'sk-route-multi-hop-final'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '多跳最终可承接账号',
     type: 'api_key',
     credentials: {
@@ -789,17 +790,17 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '模型主号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '模型后备号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'high_concurrency'
   }, access)
   const primaryUpstreamKey = 'sk-route-model-primary'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '模型主号池账号',
     type: 'api_key',
     credentials: {
@@ -813,7 +814,7 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
   }, access)
   const fallbackUpstreamKey = 'sk-route-model-fallback'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '模型后备号池账号',
     type: 'api_key',
     credentials: {
@@ -859,7 +860,7 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '高并发繁忙主号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'high_concurrency',
     schedulingPolicy: {
       maxQueueWaitMs: 5
@@ -867,12 +868,12 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '高并发繁忙后备号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = 'sk-route-busy-primary'
   const primaryAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '高并发繁忙主号池账号',
     type: 'api_key',
     credentials: {
@@ -886,7 +887,7 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
   }, access)
   const fallbackUpstreamKey = 'sk-route-busy-fallback'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '高并发繁忙后备账号',
     type: 'api_key',
     credentials: {
@@ -937,12 +938,12 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '个人繁忙主号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '个人繁忙后备高并发号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'high_concurrency',
     schedulingPolicy: {
       maxQueueWaitMs: 5
@@ -950,7 +951,7 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
   }, access)
   const primaryUpstreamKey = 'sk-route-personal-busy-primary'
   const primaryAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '个人繁忙主号池账号',
     type: 'api_key',
     credentials: {
@@ -964,7 +965,7 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
   }, access)
   const fallbackUpstreamKey = 'sk-route-personal-busy-fallback'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '个人繁忙后备高并发账号',
     type: 'api_key',
     credentials: {
@@ -1029,17 +1030,17 @@ async function assertLocalSuppressionFallback(gatewayBaseUrl: string, upstreamBa
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
     name: '本地屏蔽主号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
     name: '本地屏蔽后备号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const primaryUpstreamKey = 'sk-route-local-suppression-primary'
   const primaryAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '本地屏蔽主号池账号',
     type: 'api_key',
     credentials: {
@@ -1052,7 +1053,7 @@ async function assertLocalSuppressionFallback(gatewayBaseUrl: string, upstreamBa
   }, access)
   const fallbackUpstreamKey = 'sk-route-local-suppression-fallback'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '本地屏蔽后备账号',
     type: 'api_key',
     credentials: {
@@ -1110,22 +1111,22 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const ownerSourceGroup = repositories.createGroup({
     name: '授权额度来源号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, ownerAccess)
   const primaryGroup = repositories.createGroup({
     name: '授权额度主号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, granteeAccess)
   const fallbackGroup = repositories.createGroup({
     name: '授权额度后备号池',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     groupType: 'personal'
   }, granteeAccess)
   const primaryUpstreamKey = 'sk-route-authorization-quota-primary'
   const ownerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权额度主号池授权账号',
     type: 'api_key',
     credentials: {
@@ -1156,7 +1157,7 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
 
   const fallbackUpstreamKey = 'sk-route-authorization-quota-fallback'
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权额度后备自有账号',
     type: 'api_key',
     credentials: {

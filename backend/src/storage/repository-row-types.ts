@@ -20,6 +20,9 @@ export interface AccountRow {
   id: string
   system_account_id: string
   provider_code: ProviderCode
+  provider_protocol_profile_id: string
+  protocol_code: string
+  protocol_version: string
   name: string
   notes: string | null
   type: AccountType
@@ -188,6 +191,9 @@ export type AccountListRow = AccountRow & {
   bound_group_local_super_priority_enabled?: number | null
   bound_group_local_fallback_enabled?: number | null
   source_provider_code?: ProviderCode | null
+  source_provider_protocol_profile_id?: string | null
+  source_protocol_code?: string | null
+  source_protocol_version?: string | null
   source_type?: AccountType | null
   source_status?: AccountStatus | null
   source_schedulable?: number | null
@@ -217,6 +223,9 @@ export interface GroupRow {
   system_account_id: string
   name: string
   provider_code: ProviderCode
+  provider_protocol_profile_id: string
+  protocol_code: string
+  protocol_version: string
   description: string | null
   enabled: number
   is_default: number

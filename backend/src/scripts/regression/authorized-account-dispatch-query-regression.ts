@@ -43,11 +43,11 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const ownerGroup = repositories.createGroup({
     name: '所有者调度查询分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '被授权人调度查询分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const sharedProxy = repositories.createProxy({
     name: '授权调度查询共用代理',
@@ -89,7 +89,7 @@ try {
   let disabledProxyAccountId = ''
   for (let index = 0; index < accountCount; index += 1) {
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: `授权调度查询账户 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
       groupId: ownerGroup.id,
@@ -113,7 +113,7 @@ try {
     assert(bound, `授权账户绑定分组失败：${account.name}`)
   }
   const staleAuthorizedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权已失效且凭据损坏账户',
     type: 'api_key',
     groupId: ownerGroup.id,
@@ -140,7 +140,7 @@ try {
       .run('not-a-valid-encrypted-proxy-payload', staleAuthorizedInstance.proxyProfileId)
   }
   const disabledSourceAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权父账户停用且凭据损坏账户',
     type: 'api_key',
     groupId: ownerGroup.id,

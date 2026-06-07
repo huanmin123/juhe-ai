@@ -1,4 +1,5 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 
 export type StreamInterceptPolicyExecutionMode = 'intercept' | 'dry_run'
@@ -30,7 +31,7 @@ export interface StreamInterceptPolicySummary {
   name: string
   enabled: boolean
   priority: number
-  providerCode: string
+  protocolCode: string
   match: StreamInterceptPolicyMatch
   action: StreamInterceptPolicyAction
   notes?: string
@@ -42,7 +43,7 @@ export interface StreamInterceptPolicyInput {
   name?: string
   enabled?: boolean
   priority?: number
-  providerCode: string
+  protocolCode: string
   match?: StreamInterceptPolicyMatch
   action?: StreamInterceptPolicyAction
   notes?: string | null
@@ -53,7 +54,7 @@ interface StreamInterceptPolicyRow {
   name: string
   enabled: number
   priority: number
-  provider_code: string
+  protocol_code: string
   match_json: string
   action: string
   notes: string | null
@@ -75,7 +76,7 @@ const streamInterceptPolicyInputKeys = new Set([
   'name',
   'enabled',
   'priority',
-  'providerCode',
+  'protocolCode',
   'match',
   'action',
   'notes'
@@ -98,7 +99,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI response.failed',
     enabled: true,
     priority: 1,
-    providerCode: 'openai',
+    protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       eventTypes: ['response.failed']
     },
@@ -112,7 +113,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI event:error',
     enabled: true,
     priority: 2,
-    providerCode: 'openai',
+    protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       eventTypes: ['error']
     },
@@ -126,7 +127,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI data.error',
     enabled: true,
     priority: 3,
-    providerCode: 'openai',
+    protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       jsonPathsExists: ['error']
     },
@@ -140,7 +141,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI response.error',
     enabled: true,
     priority: 4,
-    providerCode: 'openai',
+    protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       jsonPathsExists: ['response.error']
     },
@@ -154,7 +155,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI cyber_policy',
     enabled: true,
     priority: 5,
-    providerCode: 'openai',
+    protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       errorCodes: ['cyber_policy']
     },
@@ -185,7 +186,7 @@ export function listActiveStreamInterceptPoliciesForGateway(): StreamInterceptPo
       SELECT *
       FROM stream_intercept_policies
       WHERE enabled = 1
-        AND provider_code = ?
+        AND protocol_code = ?
       ORDER BY priority ASC, updated_at DESC, id ASC
       LIMIT ?
     `)
@@ -208,7 +209,7 @@ export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): 
   getBusinessDatabase()
     .prepare(`
       INSERT INTO stream_intercept_policies (
-        id, name, enabled, priority, provider_code, match_json,
+        id, name, enabled, priority, protocol_code, match_json,
         action, notes, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
@@ -217,7 +218,7 @@ export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): 
       policy.name,
       policy.enabled ? 1 : 0,
       policy.priority,
-      policy.providerCode,
+      policy.protocolCode,
       JSON.stringify(policy.match),
       policy.action,
       policy.notes ?? null,
@@ -245,7 +246,7 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
       SET name = ?,
           enabled = ?,
           priority = ?,
-          provider_code = ?,
+          protocol_code = ?,
           match_json = ?,
           action = ?,
           notes = ?,
@@ -256,7 +257,7 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
       policy.name,
       policy.enabled ? 1 : 0,
       policy.priority,
-      policy.providerCode,
+      policy.protocolCode,
       JSON.stringify(policy.match),
       policy.action,
       policy.notes ?? null,
@@ -324,7 +325,7 @@ function normalizePolicyInput(
     name: normalizePolicyName(input.name, fallback?.name),
     enabled: normalizeBooleanInput(input.enabled, fallback?.enabled ?? true, '启用状态'),
     priority: normalizePriority(input.priority, fallback?.priority),
-    providerCode: normalizeProviderCode(input.providerCode),
+    protocolCode: normalizeProtocolCode(input.protocolCode),
     match: normalizeMatch(input.match === undefined ? fallback?.match : input.match),
     action,
     notes: normalizeOptionalTextInput(input.notes, fallback?.notes, 1000, '备注'),
@@ -342,7 +343,7 @@ function policyFromRow(row: StreamInterceptPolicyRow): StreamInterceptPolicySumm
     name: row.name,
     enabled: row.enabled === 1,
     priority: normalizePriority(row.priority, 1),
-    providerCode: normalizeProviderCode(row.provider_code),
+    protocolCode: normalizeProtocolCode(row.protocol_code),
     match: normalizeMatch(parseJsonObject(row.match_json)),
     action,
     notes: row.notes ?? undefined,
@@ -380,19 +381,19 @@ function normalizeMatch(value: unknown): StreamInterceptPolicyMatch {
   return match
 }
 
-function normalizeProviderCode(value: unknown): string {
+function normalizeProtocolCode(value: unknown): string {
   if (value === undefined) {
-    throw new Error('流式拦截策略供应商编码不能为空')
+    throw new Error('流式拦截策略协议编码不能为空')
   }
   if (typeof value !== 'string') {
-    throw new Error('流式拦截策略供应商编码必须是字符串')
+    throw new Error('流式拦截策略协议编码必须是字符串')
   }
   const text = value.trim()
   if (!text) {
-    throw new Error('流式拦截策略供应商编码不能为空')
+    throw new Error('流式拦截策略协议编码不能为空')
   }
   if (text.length > 80) {
-    throw new Error('流式拦截策略供应商编码不能超过 80 个字符')
+    throw new Error('流式拦截策略协议编码不能超过 80 个字符')
   }
   return text
 }

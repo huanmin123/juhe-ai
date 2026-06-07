@@ -89,7 +89,7 @@ export const runtimeLogEventTextMap: Record<string, string> = {
   http_request_completed: 'HTTP 请求已结束',
   http_request_unhandled_error: 'HTTP 请求未处理异常',
   openai_oauth_codex_large_body_parse: 'OpenAI OAuth Codex 大请求体解析',
-  openai_oauth_access_token_refresh_account_failed: 'OpenAI OAuth 账户 Token 刷新失败',
+  openai_oauth_access_token_refresh_account_failed: 'GPT OAuth 账户 Token 刷新失败',
   openai_oauth_access_token_refresh_race_recovered: 'OpenAI OAuth Token 并发刷新已恢复',
   openai_oauth_access_token_refresh_retry_with_latest_refresh_token: 'OpenAI OAuth 使用最新 Refresh Token 重试',
   operation_log_after_commit_effect_failed: '操作日志提交后副作用失败',

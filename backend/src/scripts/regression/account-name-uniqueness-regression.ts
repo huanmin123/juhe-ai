@@ -25,6 +25,7 @@ const [databaseModule, repositories, accountImport] = await Promise.all([
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const otherProviderCode = 'account-name-unique-provider'
+const otherProviderProfileId = 'profile_account_name_unique_openai_v1'
 const duplicateName = '用户维度唯一账户'
 const renameConflictName = '授权同步冲突名'
 
@@ -32,8 +33,8 @@ try {
   seedTestProvider()
 
   const openaiGroup = repositories.createGroup({
-    name: '账户名称唯一 OpenAI 分组',
-    providerCode: 'openai'
+    name: '账户名称唯一 GPT 分组',
+    providerCode: 'gpt'
   }, access)
   const otherProviderGroup = repositories.createGroup({
     name: '账户名称唯一测试供应商分组',
@@ -41,7 +42,7 @@ try {
   }, access)
 
   const primary = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: duplicateName,
     type: 'api_key',
     credentials: { api_key: 'sk-account-name-unique-openai', base_url: 'https://api.openai.com/v1' },
@@ -83,8 +84,8 @@ try {
   })
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeOpenAIGroup = repositories.createGroup({
-    name: '账户名称唯一被授权 OpenAI 分组',
-    providerCode: 'openai'
+    name: '账户名称唯一被授权 GPT 分组',
+    providerCode: 'gpt'
   }, granteeAccess)
   const granteeOtherProviderGroup = repositories.createGroup({
     name: '账户名称唯一被授权测试供应商分组',
@@ -133,7 +134,7 @@ try {
     accounts: [
       {
         name: '导入用户维度重复账户',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'active',
         groupName: openaiGroup.name,
@@ -175,7 +176,7 @@ try {
     accounts: [
       {
         name: '导入用户维度失败账户',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'active',
         groupName: openaiGroup.name,
@@ -210,22 +211,45 @@ try {
 
 function seedTestProvider(): void {
   const now = new Date().toISOString()
-  databaseModule.getBusinessDatabase()
+  const database = databaseModule.getBusinessDatabase()
+  database
     .prepare(`
       INSERT INTO providers (
-        id, code, name, description, enabled, base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+        id, code, name, description, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?)
     `)
     .run(
       'provider_account_name_unique',
       otherProviderCode,
       '账户名称唯一测试供应商',
       '仅用于账号名称唯一回归',
-      'https://other-provider.example.com/v1',
-      'test-model',
-      JSON.stringify(['api_key']),
-      JSON.stringify(['chat_completions']),
       now,
       now
     )
+  database
+    .prepare(`
+      INSERT INTO provider_protocol_profiles (
+        id, provider_code, name, description, enabled, protocol_code, protocol_version,
+        base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, 'openai', 'v1', ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      otherProviderProfileId,
+      otherProviderCode,
+      '账户名称唯一测试供应商 / OpenAI v1',
+      '仅用于账号名称唯一回归的 OpenAI v1 协议档案',
+      'https://other-provider.example.com/v1',
+      'test-model',
+      JSON.stringify(['api_key', 'oauth']),
+      JSON.stringify(['chat']),
+      now,
+      now
+    )
+  const familyStatement = database.prepare(`
+    INSERT INTO provider_protocol_profile_families (
+      profile_id, family_code, enabled, capabilities_json, created_at, updated_at
+    ) VALUES (?, ?, 1, '[]', ?, ?)
+  `)
+  familyStatement.run(otherProviderProfileId, 'chat_completions', now, now)
+  familyStatement.run(otherProviderProfileId, 'responses', now, now)
 }

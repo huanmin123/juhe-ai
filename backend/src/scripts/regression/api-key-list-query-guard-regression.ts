@@ -27,7 +27,7 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({
     name: 'API Key 列表查询防护分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const matchedByName = repositories.createApiKeyRecord({

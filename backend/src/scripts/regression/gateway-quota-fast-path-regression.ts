@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaAsync,
@@ -63,14 +64,21 @@ function apiKeyWithoutQuota(): GatewayApiKeyRow {
 function groupAccessWithoutAuthorizationQuota(): GroupUsageAccessMetadata {
   return {
     groupOwnerSystemAccountId: 'sys_fast_path',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     groupAccessType: 'owner'
-  } as GroupUsageAccessMetadata
+  }
 }
 
 function upstreamAccountWithoutAuthorizationQuota(id: string): OpenAIAccountSecret {
   return {
     id,
-    providerCode: 'openai',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     systemAccountId: 'sys_fast_path',
     accountOwnerSystemAccountId: 'sys_fast_path',
     groupOwnerSystemAccountId: 'sys_fast_path',
@@ -92,5 +100,5 @@ function upstreamAccountWithoutAuthorizationQuota(id: string): OpenAIAccountSecr
       api_key: 'sk-fast-path',
       base_url: 'https://api.openai.com/v1'
     }
-  } as OpenAIAccountSecret
+  }
 }

@@ -127,7 +127,7 @@ function seedTeamAuthorization(access: { systemAccountId: string; role: 'admin' 
   repositories.addSystemTeamMembers(team.id, { systemAccountIds: [member.id] }, access)
   const group = repositories.createGroup({
     name: '基础列表页码窗口分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const authorization = repositories.createResourceAuthorization({

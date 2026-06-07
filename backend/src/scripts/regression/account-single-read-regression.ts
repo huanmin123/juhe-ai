@@ -27,14 +27,14 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 try {
   const group = repositories.createGroup({
     name: '账户单条读取回归分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
 
   let targetId = ''
   for (let index = 0; index < 250; index += 1) {
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: `账户单条读取回归-${String(index).padStart(3, '0')}`,
       type: 'api_key',
       credentials: {
@@ -59,7 +59,7 @@ try {
 
   const accountCountBeforeInvalidCreate = repositories.listAccounts(access).length
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '账户单条读取回归-非法到期时间',
     type: 'api_key',
     credentials: {
@@ -70,7 +70,7 @@ try {
     accountExpiresAt: 'not-a-date'
   }, access), /账户套餐到期时间必须是有效时间字符串/, '创建账户时非法到期时间不应被静默当作未设置')
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '账户单条读取回归-非法日历日期',
     type: 'api_key',
     credentials: {
@@ -81,7 +81,7 @@ try {
     accountExpiresAt: '2026-02-31T00:00:00'
   }, access), /账户套餐到期时间必须是有效时间字符串/, '创建账户时不存在的日历日期不应被 Date 自动修正')
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '账户单条读取回归-非法调度布尔',
     type: 'api_key',
     credentials: {

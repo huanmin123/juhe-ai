@@ -3,7 +3,8 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, findGroupSummary, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
+import { ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, findGroupSummary, listProviders, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -40,6 +41,7 @@ const accountModelMappingSchema = z.object({
 const createFromCodeSchema = z.object({
   sessionId: z.string().min(1),
   callbackUrl: z.string().min(1),
+  providerProtocolProfileId: z.string().trim().min(1).optional(),
   name: z.string().trim().min(1).optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -57,6 +59,7 @@ const createFromCodeSchema = z.object({
 
 const createFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1),
+  providerProtocolProfileId: z.string().trim().min(1).optional(),
   name: z.string().trim().min(1).optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -111,7 +114,12 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
     res.status(400).json(badRequest('OpenAI 授权码参数无效'))
     return
   }
-  if (parsed.data.groupId && !isOpenAIGroup(parsed.data.groupId, requestAccess)) {
+  const providerProfile = resolveOpenAIOAuthProviderProfile(parsed.data.providerProtocolProfileId)
+  if (!providerProfile.ok) {
+    res.status(400).json(badRequest(providerProfile.message))
+    return
+  }
+  if (parsed.data.groupId && !isOpenAIOAuthGroup(parsed.data.groupId, providerProfile.profile.id, requestAccess)) {
     res.status(400).json(badRequest('账户分组无效'))
     return
   }
@@ -131,7 +139,8 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
     })
     const account = runLoggedOperation(() => {
       const account = createAccount({
-        providerCode: 'openai',
+        providerCode: GPT_VENDOR_CODE,
+        providerProtocolProfileId: providerProfile.profile.id,
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
@@ -185,7 +194,12 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     res.status(400).json(badRequest('OpenAI 刷新令牌参数无效'))
     return
   }
-  if (parsed.data.groupId && !isOpenAIGroup(parsed.data.groupId, requestAccess)) {
+  const providerProfile = resolveOpenAIOAuthProviderProfile(parsed.data.providerProtocolProfileId)
+  if (!providerProfile.ok) {
+    res.status(400).json(badRequest(providerProfile.message))
+    return
+  }
+  if (parsed.data.groupId && !isOpenAIOAuthGroup(parsed.data.groupId, providerProfile.profile.id, requestAccess)) {
     res.status(400).json(badRequest('账户分组无效'))
     return
   }
@@ -202,7 +216,8 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     })
     const account = runLoggedOperation(() => {
       const account = createAccount({
-        providerCode: 'openai',
+        providerCode: GPT_VENDOR_CODE,
+        providerProtocolProfileId: providerProfile.profile.id,
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
@@ -362,8 +377,38 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
   }
 })
 
-function isOpenAIGroup(groupId: string, access?: AccessScope): boolean {
-  return findGroupSummary(groupId, access)?.providerCode === 'openai'
+function isOpenAIOAuthGroup(groupId: string, providerProtocolProfileId: string, access?: AccessScope): boolean {
+  const group = findGroupSummary(groupId, access)
+  return Boolean(group
+    && isGptVendorCode(group.providerCode)
+    && group.providerProtocolProfileId === providerProtocolProfileId
+    && isOpenAIProtocolProfile(group))
+}
+
+type OpenAIOAuthProviderProfileResult =
+  | { ok: true; profile: NonNullable<ReturnType<typeof listProviders>[number]['protocolProfiles'][number]> }
+  | { ok: false; message: string }
+
+function resolveOpenAIOAuthProviderProfile(providerProtocolProfileId?: string): OpenAIOAuthProviderProfileResult {
+  const provider = listProviders().find((item) => item.code === GPT_VENDOR_CODE)
+  if (!provider) {
+    return { ok: false, message: `不支持的供应商：${GPT_VENDOR_CODE}` }
+  }
+  if (!provider.enabled) {
+    return { ok: false, message: `供应商已停用：${GPT_VENDOR_CODE}` }
+  }
+  const profileId = providerProtocolProfileId?.trim() || provider.defaultProtocolProfileId || GPT_OPENAI_V1_PROFILE_ID
+  const profile = provider.protocolProfiles.find((item) => item.id === profileId)
+  if (!profile || profile.providerCode !== GPT_VENDOR_CODE) {
+    return { ok: false, message: `供应商协议档案无效：${profileId}` }
+  }
+  if (!profile.enabled) {
+    return { ok: false, message: `供应商协议档案已停用：${profile.name}` }
+  }
+  if (!isOpenAIProtocolProfile(profile) || !profile.accountTypes.includes('oauth')) {
+    return { ok: false, message: `供应商协议档案 ${profile.name} 不支持 OpenAI OAuth` }
+  }
+  return { ok: true, profile }
 }
 
 function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchSchema>): Record<string, unknown> {
@@ -402,7 +447,7 @@ export function buildSafeOpenAIOAuthCredentials(
 
 function findEditableOpenAIOAuthAccount(accountId: string, access?: AccessScope) {
   const account = findAccountForTest(accountId, access)
-  if (!account || account.providerCode !== 'openai' || account.type !== 'oauth' || account.permissions?.canEdit === false || account.permissions?.canViewCredentials === false) {
+  if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth' || account.permissions?.canEdit === false || account.permissions?.canViewCredentials === false) {
     return undefined
   }
   return account

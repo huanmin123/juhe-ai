@@ -29,7 +29,7 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const groups = Array.from({ length: maxApiKeyGroupBindings + 1 }, (_, index) => repositories.createGroup({
     name: `网关 API Key 路由查询防护分组 ${String(index + 1).padStart(2, '0')}`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access))
   const apiKey = repositories.createApiKeyRecord({

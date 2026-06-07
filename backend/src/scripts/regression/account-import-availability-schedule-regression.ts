@@ -40,7 +40,7 @@ const importGroupName = '导入回归分组'
 try {
   repositories.createGroup({
     name: importGroupName,
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
 
   const importData = {
@@ -49,7 +49,7 @@ try {
     accounts: [
       {
         name: '导入计划账户',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'active',
         groupName: importGroupName,
@@ -61,7 +61,7 @@ try {
       },
       {
         name: '导入无计划账户',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'active',
         groupName: importGroupName,
@@ -78,13 +78,13 @@ try {
   const result = accountImport.executeAccountImport(importData, {}, access)
   assert.equal(result.imported, true, '显式可用时段计划的账户导入应成功')
 
-  const scheduled = repositories.listAccounts(access, { keyword: '导入计划账户', providerCode: 'openai' })
+  const scheduled = repositories.listAccounts(access, { keyword: '导入计划账户', providerCode: 'gpt' })
     .find((item) => item.name === '导入计划账户')
   assert(scheduled, '显式计划的导入账户应创建成功')
   assert.equal(scheduled.availabilitySchedule?.enabled, true, '账户导入应保存账户级 availabilitySchedule')
   assert.equal(scheduled.availabilitySchedule?.windows?.[0]?.start, '22:00', '账户导入应保存可用时段时段')
 
-  const withoutSchedule = repositories.listAccounts(access, { keyword: '导入无计划账户', providerCode: 'openai' })
+  const withoutSchedule = repositories.listAccounts(access, { keyword: '导入无计划账户', providerCode: 'gpt' })
     .find((item) => item.name === '导入无计划账户')
   assert(withoutSchedule, '未配置计划的导入账户应创建成功')
   assert.equal(withoutSchedule.availabilitySchedule, undefined, '未填写 availabilitySchedule 时账户不应生成计划')

@@ -59,6 +59,9 @@ export interface AccountImportItem {
   ref?: string
   name?: string
   providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   accountType?: AccountType
   groupName?: string
   groupId?: string
@@ -96,6 +99,9 @@ interface NormalizedImportAccount {
   ref?: string
   name: string
   providerCode: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   type: AccountType
   status: AccountImportStatus
   credentials: Record<string, unknown>
@@ -149,7 +155,7 @@ interface ImportPlan {
   accounts: AccountPlan[]
   proxies: ProxyPlan[]
   groupIdsByKey: Map<string, string>
-  groupNamesToCreate: Map<string, { providerCode: string; name: string }>
+  groupNamesToCreate: Map<string, { providerCode: string; providerProtocolProfileId: string; name: string }>
   options: Required<AccountImportOptions>
   access?: AccessScope
 }
@@ -180,6 +186,7 @@ const importAccountKeys = new Set([
   'ref',
   'name',
   'providerCode',
+  'providerProtocolProfileId',
   'type',
   'status',
   'credentials',
@@ -228,6 +235,7 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
     try {
       const accountInput: Record<string, unknown> = {
         providerCode: account.source.providerCode,
+        providerProtocolProfileId: account.source.providerProtocolProfileId,
         name: account.source.name,
         type: account.source.type,
         status: accountImportCreateStatus(account.source.status),
@@ -339,7 +347,7 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
   }
 
   const groupIdsByKey = new Map<string, string>()
-  const groupNamesToCreate = new Map<string, { providerCode: string; name: string }>()
+  const groupNamesToCreate = new Map<string, { providerCode: string; providerProtocolProfileId: string; name: string }>()
   const accounts = rawAccounts.map((item, index) => planAccount(item, index + 1, context, proxyByRef, groupIdsByKey, groupNamesToCreate))
   markDuplicateAccounts(accounts, context.options.skipDuplicates)
 
@@ -463,7 +471,7 @@ function planAccount(
   context: ImportContext,
   proxyByRef: Map<string, ProxyPlan>,
   groupIdsByKey: Map<string, string>,
-  groupNamesToCreate: Map<string, { providerCode: string; name: string }>
+  groupNamesToCreate: Map<string, { providerCode: string; providerProtocolProfileId: string; name: string }>
 ): AccountPlan {
   const item: AccountImportItem = { index, action: 'create', messages: [], warnings: [] }
   const source: NormalizedImportAccount = {
@@ -485,6 +493,7 @@ function planAccount(
   source.ref = optionalTextField(value, 'ref', '账户 ref', item.messages)
   source.name = optionalTextField(value, 'name', '账户名称', item.messages) ?? ''
   source.providerCode = optionalTextField(value, 'providerCode', '账户 providerCode', item.messages) ?? ''
+  source.providerProtocolProfileId = optionalTextField(value, 'providerProtocolProfileId', '账户 providerProtocolProfileId', item.messages)
   if (!source.providerCode) {
     item.messages.push('账户 providerCode 不能为空')
   }
@@ -530,12 +539,15 @@ function planAccount(
   item.ref = source.ref
   item.name = source.name
   item.providerCode = source.providerCode
-  item.accountType = source.type
   item.groupName = source.groupName
   item.groupId = source.groupId
   item.proxyRef = source.proxyRef
 
   validateAccountBasics(source, context)
+  item.providerProtocolProfileId = source.providerProtocolProfileId
+  item.protocolCode = source.protocolCode
+  item.protocolVersion = source.protocolVersion
+  item.accountType = source.type
   validateAccountModelCatalogFields(source, context)
   const groupId = resolveAccountGroup(source, context, groupIdsByKey, groupNamesToCreate, item)
   const proxyProfileId = resolveAccountProxy(source, proxyByRef, item)
@@ -557,8 +569,11 @@ function validateAccountBasics(account: NormalizedImportAccount, context: Import
     account.messages.push(`不支持的供应商：${account.providerCode}`)
   } else if (!provider.enabled) {
     account.messages.push(`供应商已停用：${account.providerCode}`)
-  } else if (!provider.accountTypes.includes(account.type)) {
-    account.messages.push(`供应商 ${account.providerCode} 不支持账户类型 ${account.type}`)
+  } else {
+    const profile = resolveImportAccountProtocolProfile(account, provider)
+    if (profile && !profile.accountTypes.includes(account.type)) {
+      account.messages.push(`供应商协议档案 ${profile.name} 不支持账户类型 ${account.type}`)
+    }
   }
   if (account.status !== 'active' && account.status !== 'pending_test' && account.status !== 'disabled') {
     account.messages.push('账户状态仅支持 active、pending_test 或 disabled')
@@ -569,6 +584,31 @@ function validateAccountBasics(account: NormalizedImportAccount, context: Import
   if (account.accountExpiresAt && !optionalServerDateTimeIso(account.accountExpiresAt)) {
     account.messages.push('accountExpiresAt 必须是有效时间字符串')
   }
+}
+
+function resolveImportAccountProtocolProfile(account: NormalizedImportAccount, provider: ProviderDefinition): ProviderDefinition['protocolProfiles'][number] | undefined {
+  const requestedProfileId = account.providerProtocolProfileId?.trim()
+  const profile = requestedProfileId
+    ? provider.protocolProfiles.find((item) => item.id === requestedProfileId)
+    : provider.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
+      ?? provider.protocolProfiles.find((item) => item.enabled)
+      ?? provider.protocolProfiles[0]
+  if (!profile) {
+    account.messages.push(`供应商 ${account.providerCode} 未配置协议档案`)
+    return undefined
+  }
+  if (profile.providerCode !== account.providerCode) {
+    account.messages.push(`协议档案 ${profile.id} 不属于供应商 ${account.providerCode}`)
+    return undefined
+  }
+  if (!profile.enabled) {
+    account.messages.push(`供应商协议档案已停用：${profile.name}`)
+    return undefined
+  }
+  account.providerProtocolProfileId = profile.id
+  account.protocolCode = profile.protocolCode
+  account.protocolVersion = profile.protocolVersion
+  return profile
 }
 
 function validateAccountModelCatalogFields(account: NormalizedImportAccount, context: ImportContext): void {
@@ -609,7 +649,7 @@ function resolveAccountGroup(
   account: NormalizedImportAccount,
   context: ImportContext,
   groupIdsByKey: Map<string, string>,
-  groupNamesToCreate: Map<string, { providerCode: string; name: string }>,
+  groupNamesToCreate: Map<string, { providerCode: string; providerProtocolProfileId: string; name: string }>,
   item: AccountImportItem
 ): string | undefined {
   if (account.groupId && account.groupName) {
@@ -625,16 +665,24 @@ function resolveAccountGroup(
       item.messages.push(`分组供应商与账户供应商不一致：${group.name}`)
       return undefined
     }
+    if (group.providerProtocolProfileId !== account.providerProtocolProfileId) {
+      item.messages.push(`分组协议档案与账户协议档案不一致：${group.name}`)
+      return undefined
+    }
     return group.id
   }
   if (!account.groupName) {
     item.messages.push('账户 groupId 或 groupName 必填')
     return undefined
   }
-  const key = groupKey(account.providerCode, account.groupName)
+  if (!account.providerProtocolProfileId) {
+    item.messages.push('账户 providerProtocolProfileId 无效')
+    return undefined
+  }
+  const key = groupKey(account.providerProtocolProfileId, account.groupName)
   const existingGroupId = groupIdsByKey.get(key)
   if (existingGroupId) return existingGroupId
-  const group = findGroupOptionByName(account.providerCode, account.groupName, context)
+  const group = findGroupOptionByName(account.providerCode, account.providerProtocolProfileId, account.groupName, context)
   if (group) {
     groupIdsByKey.set(key, group.id)
     return group.id
@@ -643,7 +691,7 @@ function resolveAccountGroup(
     item.messages.push(`分组不存在：${account.groupName}`)
     return undefined
   }
-  groupNamesToCreate.set(key, { providerCode: account.providerCode, name: account.groupName })
+  groupNamesToCreate.set(key, { providerCode: account.providerCode, providerProtocolProfileId: account.providerProtocolProfileId, name: account.groupName })
   return undefined
 }
 
@@ -771,12 +819,13 @@ function createPlannedGroups(plan: ImportPlan, access: AccessScope): void {
     try {
       const created = createGroup({
         providerCode: group.providerCode,
+        providerProtocolProfileId: group.providerProtocolProfileId,
         name: group.name,
         description: '由账户导入自动创建'
       }, access)
       plan.groupIdsByKey.set(key, created.id)
     } catch (error) {
-      const existing = findGroupOptionByName(group.providerCode, group.name, {
+      const existing = findGroupOptionByName(group.providerCode, group.providerProtocolProfileId, group.name, {
         access,
         options: defaultAccountImportOptions(),
         providers: listProviders(),
@@ -793,7 +842,7 @@ function createPlannedGroups(plan: ImportPlan, access: AccessScope): void {
       plan.result.summary.groups.create -= 1
       plan.result.summary.groups.failed += 1
       for (const account of plan.accounts) {
-        if (account.source.groupName && groupKey(account.source.providerCode, account.source.groupName) === key && account.item.action === 'create') {
+        if (account.source.groupName && account.source.providerProtocolProfileId && groupKey(account.source.providerProtocolProfileId, account.source.groupName) === key && account.item.action === 'create') {
           account.item.action = 'failed'
           account.item.messages = [errorMessage(error)]
           plan.result.summary.accounts.create -= 1
@@ -807,13 +856,14 @@ function createPlannedGroups(plan: ImportPlan, access: AccessScope): void {
 function groupIdForAccount(plan: ImportPlan, account: NormalizedImportAccount): string | undefined {
   if (account.groupId) return account.groupId
   if (!account.groupName) return undefined
-  return plan.groupIdsByKey.get(groupKey(account.providerCode, account.groupName))
+  if (!account.providerProtocolProfileId) return undefined
+  return plan.groupIdsByKey.get(groupKey(account.providerProtocolProfileId, account.groupName))
 }
 
 function buildSummary(
   accounts: AccountImportItem[],
   proxies: AccountImportProxyItem[],
-  groupsToCreate: Map<string, { providerCode: string; name: string }>
+  groupsToCreate: Map<string, { providerCode: string; providerProtocolProfileId: string; name: string }>
 ): AccountImportSummary {
   const groupRefs = new Set<string>()
   for (const item of accounts) {
@@ -821,7 +871,7 @@ function buildSummary(
     if (item.groupId) {
       groupRefs.add(`id:${item.groupId}`)
     } else if (item.groupName) {
-      groupRefs.add(groupKey(item.providerCode ?? '', item.groupName))
+      groupRefs.add(groupKey(item.providerProtocolProfileId ?? '', item.groupName))
     }
   }
   return {
@@ -846,18 +896,19 @@ function buildSummary(
   }
 }
 
-function findGroupOptionByName(providerCode: string, name: string, context: ImportContext): GroupOptionSummary | undefined {
-  const key = groupKey(providerCode, name)
+function findGroupOptionByName(providerCode: string, providerProtocolProfileId: string, name: string, context: ImportContext): GroupOptionSummary | undefined {
+  const key = groupKey(providerProtocolProfileId, name)
   if (context.groupLookup.has(key)) {
     return context.groupLookup.get(key)
   }
   const normalized = name.trim().toLowerCase()
   const group = listGroupOptions(context.access, {
     providerCode,
+    providerProtocolProfileId,
     keyword: name,
     manageableOnly: true,
     limit: 50
-  }).find((item) => item.name.trim().toLowerCase() === normalized)
+  }).find((item) => item.providerProtocolProfileId === providerProtocolProfileId && item.name.trim().toLowerCase() === normalized)
   context.groupLookup.set(key, group)
   return group
 }
@@ -877,8 +928,8 @@ function findProxyByName(name: string): ProxyProfileSummary | undefined {
   return option ? findProxy(option.id) : undefined
 }
 
-function groupKey(providerCode: string, name: string): string {
-  return `${providerCode.trim().toLowerCase()}:${name.trim().toLowerCase()}`
+function groupKey(providerProtocolProfileId: string, name: string): string {
+  return `${providerProtocolProfileId.trim().toLowerCase()}:${name.trim().toLowerCase()}`
 }
 
 function normalizeStatus(value: unknown): AccountImportStatus | undefined {

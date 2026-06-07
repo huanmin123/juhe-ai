@@ -28,18 +28,18 @@ try {
   const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({
     name: 'AI 性能小时查询分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, adminAccess)
   const accountA = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'AI 性能小时查询 A',
     type: 'api_key',
     credentials: { api_key: 'sk-ai-performance-hourly-a', base_url: 'https://api.openai.com/v1' },
     groupId: group.id
   }, adminAccess)
   const accountB = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'AI 性能小时查询 B',
     type: 'api_key',
     credentials: { api_key: 'sk-ai-performance-hourly-b', base_url: 'https://api.openai.com/v1' },

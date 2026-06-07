@@ -239,6 +239,7 @@ export interface AccountTestPayload {
 
 export interface AccountDraftTestAccountPayload {
   providerCode: string
+  providerProtocolProfileId?: string
   name: string
   type: string
   credentials: Record<string, unknown>

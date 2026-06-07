@@ -68,7 +68,7 @@ try {
     mustChangePassword: false
   })
   databaseModule.getBusinessDatabase()
-    .prepare("DELETE FROM groups WHERE system_account_id = ? AND provider_code = 'openai'")
+    .prepare("DELETE FROM groups WHERE system_account_id = ? AND provider_code = 'gpt'")
     .run(missingDefaultGroupAccount.id)
 
   const database = databaseModule.getBusinessDatabase()
@@ -114,7 +114,7 @@ try {
 
     const missingDefaultGroups = repositories.listAuthorizationGranteeGroups(undefined, {
       granteeSystemAccountId: missingDefaultGroupAccount.id,
-      providerCode: 'openai',
+      providerCode: 'gpt',
       limit: 20
     })
     assert.equal(missingDefaultGroups.length, 0, '授权目标分组选项读取路径不应自动补建缺失默认分组')
@@ -154,7 +154,7 @@ function assertBusinessIndexExists(indexName: string): void {
 
 function openAIGroupCountForSystemAccount(systemAccountId: string): number {
   const row = databaseModule.getBusinessDatabase()
-    .prepare("SELECT COUNT(*) AS total FROM groups WHERE system_account_id = ? AND provider_code = 'openai'")
+    .prepare("SELECT COUNT(*) AS total FROM groups WHERE system_account_id = ? AND provider_code = 'gpt'")
     .get(systemAccountId) as unknown as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }

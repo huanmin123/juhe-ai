@@ -49,12 +49,65 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       name TEXT NOT NULL,
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS protocols (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      version TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (code, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS protocol_endpoint_families (
+      id TEXT PRIMARY KEY,
+      protocol_code TEXT NOT NULL,
+      protocol_version TEXT NOT NULL,
+      family_code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (protocol_code, protocol_version, family_code),
+      FOREIGN KEY (protocol_code, protocol_version) REFERENCES protocols(code, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_protocol_profiles (
+      id TEXT PRIMARY KEY,
+      provider_code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      protocol_code TEXT NOT NULL,
+      protocol_version TEXT NOT NULL,
       base_url TEXT NOT NULL,
       default_test_model TEXT NOT NULL,
       account_types_json TEXT NOT NULL,
       capabilities_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      UNIQUE (provider_code, protocol_code, protocol_version),
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (protocol_code, protocol_version) REFERENCES protocols(code, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_protocol_profile_families (
+      profile_id TEXT NOT NULL,
+      family_code TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      default_test_model TEXT,
+      capabilities_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, family_code),
+      FOREIGN KEY (profile_id) REFERENCES provider_protocol_profiles(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS custom_provider_models (
@@ -134,7 +187,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       priority INTEGER NOT NULL DEFAULT 100,
-      provider_code TEXT NOT NULL,
+      protocol_code TEXT NOT NULL,
       match_json TEXT NOT NULL DEFAULT '{}',
       action TEXT NOT NULL DEFAULT 'avoid_account_ttl',
       notes TEXT,
@@ -177,6 +230,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,
+      provider_protocol_profile_id TEXT NOT NULL,
+      protocol_code TEXT NOT NULL,
+      protocol_version TEXT NOT NULL,
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending_test',
@@ -215,6 +271,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (provider_protocol_profile_id) REFERENCES provider_protocol_profiles(id),
       FOREIGN KEY (proxy_profile_id) REFERENCES proxy_profiles(id),
       FOREIGN KEY (error_policy_id) REFERENCES error_policies(id),
       FOREIGN KEY (authorization_instance_source_account_id) REFERENCES accounts(id),
@@ -249,6 +306,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       account_id TEXT NOT NULL,
       account_name TEXT NOT NULL,
       provider_code TEXT NOT NULL,
+      provider_protocol_profile_id TEXT NOT NULL,
+      protocol_code TEXT NOT NULL,
+      protocol_version TEXT NOT NULL,
       account_type TEXT NOT NULL,
       request_system_account_id TEXT NOT NULL,
       request_role TEXT NOT NULL,
@@ -368,6 +428,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
       provider_code TEXT NOT NULL,
+      provider_protocol_profile_id TEXT NOT NULL,
+      protocol_code TEXT NOT NULL,
+      protocol_version TEXT NOT NULL,
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       is_default INTEGER NOT NULL DEFAULT 0,
@@ -375,7 +438,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       scheduling_policy_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (provider_code) REFERENCES providers(code)
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (provider_protocol_profile_id) REFERENCES provider_protocol_profiles(id)
     );
 
     CREATE TABLE IF NOT EXISTS group_authorization_settings (
@@ -482,7 +546,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_status ON accounts(provider_code, status);
+    CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_status ON accounts(provider_protocol_profile_id, status);
     CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);
+    CREATE INDEX IF NOT EXISTS idx_groups_protocol_profile ON groups(provider_protocol_profile_id);
     CREATE INDEX IF NOT EXISTS idx_system_sessions_expires_at ON system_sessions(expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));
@@ -499,7 +565,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_name_lookup ON accounts(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_name_lookup ON accounts(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code COLLATE NOCASE, id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_lookup ON accounts(provider_protocol_profile_id COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_provider_lookup ON accounts(system_account_id, provider_code COLLATE NOCASE, id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_system_account_protocol_profile_lookup ON accounts(system_account_id, provider_protocol_profile_id COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_type_lookup ON accounts(type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_type_lookup ON accounts(system_account_id, type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);
@@ -536,12 +604,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_updated ON groups(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_updated ON groups(system_account_id, updated_at DESC, id DESC);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique_lower ON groups(system_account_id, provider_code, lower(name));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_protocol_profile_name_unique_lower ON groups(system_account_id, provider_protocol_profile_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_groups_name_lookup ON groups(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_name_lookup ON groups(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_groups_provider_name_lookup ON groups(provider_code, name COLLATE NOCASE, id);
+    CREATE INDEX IF NOT EXISTS idx_groups_protocol_profile_name_lookup ON groups(provider_protocol_profile_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_provider_name_lookup ON groups(system_account_id, provider_code, name COLLATE NOCASE, id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_default_unique ON groups(system_account_id, provider_code) WHERE is_default = 1;
+    CREATE INDEX IF NOT EXISTS idx_groups_system_account_protocol_profile_name_lookup ON groups(system_account_id, provider_protocol_profile_id, name COLLATE NOCASE, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_protocol_profile_default_unique ON groups(system_account_id, provider_protocol_profile_id) WHERE is_default = 1;
     CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique_lower ON system_teams(lower(name));
@@ -630,7 +700,7 @@ function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {
 function ensureStreamInterceptPolicyIndexes(database: DatabaseSync): void {
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_enabled_priority ON stream_intercept_policies(enabled, priority, updated_at DESC, id);
-    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_provider_priority ON stream_intercept_policies(provider_code, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_protocol_priority ON stream_intercept_policies(protocol_code, priority, updated_at DESC, id);
   `)
 }
 

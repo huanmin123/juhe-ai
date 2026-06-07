@@ -29,7 +29,7 @@ try {
   for (let index = 0; index < 250; index += 1) {
     const group = repositories.createGroup({
       name: `分组单条读取回归-${String(index).padStart(3, '0')}`,
-      providerCode: 'openai',
+      providerCode: 'gpt',
       enabled: true
     }, access)
     if (index === 0) {
@@ -47,7 +47,7 @@ try {
   const groupCountBeforeInvalidCreate = repositories.listGroups(access).length
   assert.throws(() => repositories.createGroup({
     name: '分组单条读取回归-非法启用状态',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: 'false'
   }, access), /分组启用状态必须是布尔值/, '创建分组时字符串布尔不应被兼容为启用状态')
   assert.equal(repositories.listGroups(access).length, groupCountBeforeInvalidCreate, '非法创建分组不应落库')

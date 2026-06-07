@@ -7,6 +7,7 @@ import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { fetchFirstAvailableUpstream, UpstreamAttemptError } from '../../modules/gateway/openai-gateway-upstream-dispatch.js'
 import { resolveOpenAIGatewayRequestLane } from '../../modules/gateway/openai-gateway-request-lane.js'
@@ -377,7 +378,10 @@ function buildAccount(input: {
 }): UpstreamAccount {
   return {
     id: input.id,
-    providerCode: 'openai',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     systemAccountId: 'sys_admin',
     name: input.name,
     type: input.type,

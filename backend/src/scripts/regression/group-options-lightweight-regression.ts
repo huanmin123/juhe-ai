@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-group-options-lightweight-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -160,10 +161,10 @@ try {
     const limitedOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&keyword=${keyword}&limit=1`, seed.adminCookie)
     assert.equal(limitedOptions.length, 1, '分组选项关键词查询应遵守 limit')
 
-    const providerOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&providerCode=openai&manageableOnly=true&preferDefault=true&limit=20`, seed.adminCookie)
+    const providerOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&providerCode=gpt&manageableOnly=true&preferDefault=true&limit=20`, seed.adminCookie)
     assert(providerOptions.length > 0, '供应商分组选项应返回当前用户可管理分组')
     assert.equal(providerOptions[0]?.id, seed.userDefaultGroupId, 'preferDefault 应让默认分组排在首位')
-    assert.equal(providerOptions.every((group) => group.providerCode === 'openai'), true, '供应商分组选项必须按 providerCode 精确过滤')
+    assert.equal(providerOptions.every((group) => group.providerCode === 'gpt'), true, '供应商分组选项必须按 providerCode 精确过滤')
     assert(!providerOptions.some((group) => group.id === seed.otherProviderGroupId), '供应商分组选项不应混入其他供应商分组')
     assert(!providerOptions.some((group) => group.id === seed.adminAuthorizedGroupId), 'manageableOnly 应排除被授权分组，账户绑定下拉只能展示自有可管理分组')
   } finally {
@@ -205,40 +206,40 @@ function seedData(): SeedState {
   })
   const userGroup = repositories.createGroup({
     name: '分组选项种子',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: user.id, role: 'user' as const })
   const userDefaultGroup = repositories.createGroup({
     name: '默认优先分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: user.id, role: 'user' as const })
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE groups SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE system_account_id = ? AND provider_code = ?')
-    .run(userDefaultGroup.id, user.id, 'openai')
+    .run(userDefaultGroup.id, user.id, 'gpt')
   const matchedGroup = repositories.createGroup({
     name: '检索目标分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: user.id, role: 'user' as const })
   const matchedPrefixGroup = repositories.createGroup({
     name: '检索目标分组扩展',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: user.id, role: 'user' as const })
   const middleGroup = repositories.createGroup({
     name: '普通检索目标分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: user.id, role: 'user' as const })
   const wildcardGroup = repositories.createGroup({
     name: 'percent%literal 分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: user.id, role: 'user' as const })
   const wildcardNeighborGroup = repositories.createGroup({
     name: 'percentXliteral 分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: user.id, role: 'user' as const })
   seedProvider('anthropic')
@@ -249,7 +250,7 @@ function seedData(): SeedState {
   }, { systemAccountId: user.id, role: 'user' as const })
   const adminAuthorizedGroup = repositories.createGroup({
     name: '检索目标授权分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: admin.id, role: 'admin' as const })
   seedActiveGroupAuthorization(adminAuthorizedGroup.id, admin.id, user.id)
@@ -259,11 +260,11 @@ function seedData(): SeedState {
   databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO accounts (
-        id, system_account_id, provider_code, name, notes, type, status, credential_mask, credentials_encrypted,
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, notes, type, status, credential_mask, credentials_encrypted,
         proxy_profile_id, concurrency_limit, error_policy_id, priority, super_priority_enabled,
         fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
         last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-      ) VALUES (?, ?, 'openai', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
+      ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
         NULL, 20, NULL, 10, 0,
         0, 1, NULL, NULL, NULL, NULL,
         NULL, 0, NULL, ?, ?)
@@ -272,11 +273,11 @@ function seedData(): SeedState {
   databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO accounts (
-        id, system_account_id, provider_code, name, notes, type, status, credential_mask, credentials_encrypted,
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, notes, type, status, credential_mask, credentials_encrypted,
         proxy_profile_id, concurrency_limit, error_policy_id, priority, super_priority_enabled,
         fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
         last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-      ) VALUES (?, ?, 'openai', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
+      ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
         NULL, 20, NULL, 10, 0,
         0, 1, NULL, NULL, NULL, NULL,
         NULL, 0, NULL, ?, ?)
@@ -328,24 +329,50 @@ function seedActiveGroupAuthorization(resourceId: string, ownerSystemAccountId: 
 
 function seedProvider(code: string): void {
   const now = new Date().toISOString()
-  databaseModule.getBusinessDatabase()
+  const database = databaseModule.getBusinessDatabase()
+  const profileId = `profile_${code}_openai_v1`
+  database
     .prepare(`
       INSERT OR IGNORE INTO providers (
-        id, code, name, description, enabled, base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+        id, code, name, description, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?)
     `)
     .run(
       `provider_${code}`,
       code,
       code,
       `${code} provider`,
-      'https://example.invalid/v1',
-      `${code}-test-model`,
-      JSON.stringify(['api_key']),
-      JSON.stringify({ chatCompletions: true }),
       now,
       now
     )
+  database
+    .prepare(`
+      INSERT OR IGNORE INTO provider_protocol_profiles (
+        id, provider_code, name, description, enabled, protocol_code, protocol_version,
+        base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      profileId,
+      code,
+      `${code} / OpenAI v1`,
+      `${code} OpenAI v1 profile`,
+      OPENAI_PROTOCOL_CODE,
+      OPENAI_PROTOCOL_VERSION,
+      'https://example.invalid/v1',
+      `${code}-test-model`,
+      JSON.stringify(['api_key']),
+      JSON.stringify(['chat']),
+      now,
+      now
+    )
+  const familyStatement = database.prepare(`
+    INSERT OR IGNORE INTO provider_protocol_profile_families (
+      profile_id, family_code, enabled, capabilities_json, created_at, updated_at
+    ) VALUES (?, ?, 1, '[]', ?, ?)
+  `)
+  familyStatement.run(profileId, 'chat_completions', now, now)
+  familyStatement.run(profileId, 'responses', now, now)
 }
 
 function assertLightweightGroupOption(group: GroupOptionSummary | undefined): void {

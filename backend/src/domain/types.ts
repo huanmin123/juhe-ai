@@ -132,10 +132,35 @@ export interface ProviderDefinition {
   name: string
   description?: string
   enabled: boolean
+  defaultProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
   baseUrl: string
   defaultTestModel: string
   accountTypes: AccountType[]
   capabilities: string[]
+  protocolProfiles: ProviderProtocolProfileDefinition[]
+}
+
+export interface ProtocolEndpointFamilyDefinition {
+  code: string
+  name: string
+  description?: string
+}
+
+export interface ProviderProtocolProfileDefinition {
+  id: string
+  providerCode: ProviderCode
+  name: string
+  description?: string
+  enabled: boolean
+  protocolCode: string
+  protocolVersion: string
+  baseUrl: string
+  defaultTestModel: string
+  accountTypes: AccountType[]
+  capabilities: string[]
+  endpointFamilies: ProtocolEndpointFamilyDefinition[]
 }
 
 export interface ProviderModelPricing {
@@ -400,6 +425,9 @@ export interface AccountSummary {
   systemAccountId?: string
   systemAccountName?: string
   providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   name: string
   notes?: string
   type: AccountType
@@ -482,6 +510,9 @@ export type AccountOptionSummary = Pick<
   | 'ownerSystemAccountId'
   | 'ownerSystemAccountName'
   | 'providerCode'
+  | 'providerProtocolProfileId'
+  | 'protocolCode'
+  | 'protocolVersion'
   | 'name'
   | 'type'
   | 'status'
@@ -535,6 +566,9 @@ export interface AccountTestResult {
   accountId: string
   accountName: string
   providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   type: AccountType
   success: boolean
   statusCode?: number
@@ -569,6 +603,9 @@ export interface AccountTestTask {
   accountId: string
   accountName: string
   providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   type: AccountType
   status: AccountTestTaskStatus
   message?: string
@@ -714,6 +751,9 @@ export interface GroupSummary {
   systemAccountName?: string
   name: string
   providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   description?: string
   enabled: boolean
   isDefault: boolean
@@ -749,6 +789,9 @@ export type GroupOptionSummary = Pick<
   | 'ownerSystemAccountName'
   | 'name'
   | 'providerCode'
+  | 'providerProtocolProfileId'
+  | 'protocolCode'
+  | 'protocolVersion'
   | 'enabled'
   | 'isDefault'
   | 'groupType'
@@ -897,6 +940,9 @@ export interface ApiKeyGroupBindingSummary {
   groupId: string
   groupName?: string
   providerCode?: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   priority: number
   weight: number
   status: ApiKeyGroupBindingStatus

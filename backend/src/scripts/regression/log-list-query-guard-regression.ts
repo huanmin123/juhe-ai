@@ -297,7 +297,7 @@ function auditLog(input: {
     id: input.id,
     traceId: input.traceId,
     systemAccountId: 'sys_admin',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     method: 'POST',
     path: input.path,
     model: input.model,

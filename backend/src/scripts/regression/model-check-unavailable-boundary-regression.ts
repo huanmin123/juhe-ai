@@ -59,10 +59,10 @@ try {
 
   const temporaryGroup = repositories.createGroup({
     name: '模型检测未绑定分组边界临时分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const unboundAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '模型检测未绑定分组边界账户',
     type: 'api_key',
     credentials: {

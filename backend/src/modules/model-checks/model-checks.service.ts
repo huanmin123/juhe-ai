@@ -27,6 +27,7 @@ import {
   type ModelCheckItemCreateInput,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { currentSystemAccountId } from '../../storage/access-scope.js'
 import { handleOpenAIGatewayRequest, type OpenAIGatewayRequestIdentity } from '../gateway/openai-gateway.routes.js'
@@ -248,7 +249,7 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
   const trustedComparison = {
     enabledByDefault: false,
     available: true,
-    message: '可信对比默认关闭；选择一个你信任的可用 OpenAI 账户后，会额外消耗该账户额度'
+    message: '可信对比默认关闭；选择一个你信任的可用 GPT 账户后，会额外消耗该账户额度'
   }
   return {
     supportedModels: [
@@ -451,8 +452,8 @@ function resolveAccountTarget(accountId: string, access?: AccessScope): ModelChe
   if (!account) {
     throw new ModelCheckRequestError(404, '账户不存在或无权检测')
   }
-  if (account.providerCode !== 'openai') {
-    throw new ModelCheckRequestError(400, '当前仅支持检测 OpenAI 账户')
+  if (!isOpenAIProtocolProfile(account)) {
+    throw new ModelCheckRequestError(400, '当前仅支持检测 OpenAI v1 协议账户')
   }
   if (account.status === 'disabled') {
     throw new ModelCheckRequestError(400, '账户已停用，无法执行模型检测')
@@ -516,7 +517,7 @@ function resolveTrustedComparisonTarget(accountId: string, access?: AccessScope)
     if (error instanceof ModelCheckRequestError) {
       const message = error.message
         .replace(/^账户/, '可信对比账户')
-        .replace(/^当前仅支持检测 OpenAI 账户$/, '可信对比账户必须是 OpenAI 账户')
+        .replace(/^当前仅支持检测 OpenAI v1 协议账户$/, '可信对比账户必须是 OpenAI v1 协议账户')
       throw new ModelCheckRequestError(error.statusCode, message)
     }
     throw error

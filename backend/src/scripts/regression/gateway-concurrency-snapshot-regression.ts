@@ -65,14 +65,14 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeTargetGroup = repositories.createGroup({
     name: '实时并发快照被授权目标分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const group = repositories.createGroup({
     name: '实时并发快照分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const accountA = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '实时并发快照账号 A',
     type: 'api_key',
     credentials: {
@@ -85,7 +85,7 @@ try {
     groupId: group.id
   }, access)
   const accountB = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '实时并发快照账号 B',
     type: 'api_key',
     credentials: {

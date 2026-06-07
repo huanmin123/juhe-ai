@@ -72,7 +72,7 @@ try {
 function createStableAuthorization(name: string, granteeId: string, createdAt: string, access: { systemAccountId: string; role: 'user' }): { id: string } {
   const group = repositories.createGroup({
     name,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const authorization = repositories.createResourceAuthorization({

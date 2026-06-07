@@ -4,7 +4,6 @@ import type { AccountSummary } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
-import { OPENAI_PROVIDER_CODE } from './accountOptions'
 import { buildAccountSavePayload, validateAccountSaveForm } from './accountSavePayload'
 
 interface AccountDraftTestPayloadInput {
@@ -23,7 +22,7 @@ interface AccountDraftTestSummaryInput {
 }
 
 export function validateAccountDraftTestForm(input: AccountDraftTestPayloadInput & { hasAuthSession: boolean }): string | undefined {
-  if (input.form.providerCode !== OPENAI_PROVIDER_CODE) return '当前仅支持测试 OpenAI 账户'
+  if (!input.form.providerProtocolProfileId) return '当前供应商配置不完整，请刷新后重试'
   if (!input.editingId && input.form.type === 'oauth' && input.form.oauthMode === 'manual') {
     return '手动授权创建需先保存账户，完成换取 Token 后再测试'
   }
@@ -40,6 +39,7 @@ export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput
   const credentials = accountDraftTestCredentials(payload.credentials, input.accountDetail)
   return {
     providerCode: payload.providerCode,
+    providerProtocolProfileId: payload.providerProtocolProfileId,
     name: payload.name ?? input.accountDetail?.name ?? input.form.name.trim(),
     type: payload.type,
     credentials,
@@ -64,6 +64,9 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     systemAccountId: ownerSystemAccountId,
     ownerSystemAccountId,
     providerCode: input.draftPayload.providerCode,
+    providerProtocolProfileId: input.draftPayload.providerProtocolProfileId,
+    protocolCode: input.accountDetail?.protocolCode,
+    protocolVersion: input.accountDetail?.protocolVersion,
     name: input.draftPayload.name || input.accountDetail?.name || '未命名账户',
     notes: input.draftPayload.notes,
     type: input.draftPayload.type,

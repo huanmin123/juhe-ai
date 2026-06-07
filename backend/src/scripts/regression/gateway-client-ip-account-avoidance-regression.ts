@@ -8,6 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-client-ip-account-avoidance-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'client-ip-account-avoidance.sqlite3')
@@ -288,13 +289,13 @@ function assertPendingFailureTrackerIsBoundedAndTransferSafe(): void {
 function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
   const group = repositories.createGroup({
     name: 'IP 级账号回避回归分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const firstUpstreamKey = 'sk-client-ip-avoidance-first'
   const secondUpstreamKey = 'sk-client-ip-avoidance-second'
   const firstAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '01-IP回避首选账号',
     type: 'api_key',
     credentials: {
@@ -307,7 +308,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     priority: 0
   }, access)
   const secondAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '02-IP回避备用账号',
     type: 'api_key',
     credentials: {
@@ -436,7 +437,10 @@ function parseJsonObject(text: string): Record<string, unknown> {
 function createTestAccount(id: string): Parameters<typeof clientIpAvoidance.orderOpenAIAccountsByClientIpAccountAvoidance>[0][number] {
   return {
     id,
-    providerCode: 'openai',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     systemAccountId: 'sys_bypass',
     accountOwnerSystemAccountId: 'sys_bypass',
     groupOwnerSystemAccountId: 'sys_bypass',

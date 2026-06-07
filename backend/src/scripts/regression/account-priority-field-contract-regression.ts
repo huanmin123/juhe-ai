@@ -26,11 +26,11 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
   const accountGroup = repositories.createGroup({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '账户字段契约回归分组'
   }, access)
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '优先级拼写残留创建检查',
     type: 'api_key',
     credentials: {
@@ -42,7 +42,7 @@ try {
   }, access), /账户创建参数包含未知字段：prioritiy/, '拼错字段 prioritiy 不应在创建账户时被静默忽略')
 
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '优先级拼写残留更新检查',
     type: 'api_key',
     credentials: {
@@ -70,7 +70,7 @@ try {
   }, access), /供应商不能为空/, '创建账户必须显式提供当前供应商')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     type: 'api_key',
     credentials: {
       api_key: 'sk-priority-contract-missing-name',
@@ -80,7 +80,7 @@ try {
   }, access), /账户名称不能为空/, '创建账户必须显式提供当前账户名称')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '缺失类型创建检查',
     credentials: {
       api_key: 'sk-priority-contract-missing-type',
@@ -90,7 +90,7 @@ try {
   }, access), /账户类型不能为空/, '创建账户必须显式提供当前账户类型')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '字符串并发创建检查',
     type: 'api_key',
     credentials: {
@@ -102,7 +102,7 @@ try {
   }, access), /并发限制必须是大于 0 的整数/, '创建账户不应接收数字字符串形式的并发限制')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '缺失 Base URL 创建检查',
     type: 'api_key',
     credentials: {
@@ -118,7 +118,7 @@ try {
   }, access), /Base URL不能为空/, '更新账户不应为凭据补默认 Base URL')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '凭据旧字段创建检查',
     type: 'api_key',
     credentials: {
@@ -138,7 +138,7 @@ try {
   }, access), /账户凭据包含未知字段：legacyToken/, '更新账户不应静默保留 credentials 内的旧字段')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '超长 API Key 创建检查',
     type: 'api_key',
     credentials: {
@@ -149,7 +149,7 @@ try {
   }, access), /API Key不能超过 16384 字节/, '创建账户不应接收超长 API Key 凭据')
 
   const oauthAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'OAuth 凭据当前字段检查',
     type: 'oauth',
     credentials: {
@@ -169,7 +169,7 @@ try {
   assert.equal(oauthAccount.credentials.client_id, 'client-priority-contract', '当前 OAuth 元数据字段应正常保留')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'OAuth 凭据旧字段检查',
     type: 'oauth',
     credentials: {
@@ -181,7 +181,7 @@ try {
   }, access), /账户凭据包含未知字段：accountId/, 'OAuth 凭据不应接收 camelCase 旧字段')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'OAuth 凭据非法时间检查',
     type: 'oauth',
     credentials: {
@@ -193,7 +193,7 @@ try {
   }, access), /Access Token 到期时间必须是有效时间字符串/, 'OAuth 凭据时间字段不应吞掉非法字符串')
 
   assert.throws(() => repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'OAuth 凭据整体大小检查',
     type: 'oauth',
     credentials: {
@@ -210,7 +210,7 @@ try {
   }, access), /供应商不能为空/, '创建分组必须显式提供当前供应商')
 
   assert.throws(() => repositories.createGroup({
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access), /分组名称不能为空/, '创建分组必须显式提供当前分组名称')
 
   assert.throws(() => repositories.updateAccount(account.id, { status: 'archived' }, access), /账户状态无效/, '显式传入非法状态应被拒绝')
@@ -220,12 +220,12 @@ try {
   assert.throws(() => repositories.updateAccount(account.id, { priority: 8.5 }, access), /优先级必须是大于等于 0 的整数/, '更新账户不应截断小数形式的优先级')
   assert.throws(() => repositories.updateAccount(account.id, { superPriorityEnabled: '1' }, access), /超级优先必须是布尔值/, '更新账户不应接收 1 字符串形式的布尔调度字段')
   assert.throws(() => repositories.createGroup({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '分组未知字段检查',
     legacyName: '旧字段'
   }, access), /分组创建参数包含未知字段：legacyName/, '分组创建不应静默忽略未知字段')
   const groupForUnknownField = repositories.createGroup({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '分组未知字段更新检查'
   }, access)
   assert.throws(() => repositories.updateGroup(groupForUnknownField.id, { legacyDescription: '旧字段' }, access), /分组更新参数包含未知字段：legacyDescription/, '分组更新不应静默忽略未知字段')

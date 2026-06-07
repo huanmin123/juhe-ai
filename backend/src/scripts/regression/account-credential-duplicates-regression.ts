@@ -28,11 +28,11 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 try {
   const group = repositories.createGroup({
     name: '账户凭据重复回归分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
 
   const apiKeyPrimary = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '固定 Key 站点 A 主账户',
     type: 'api_key',
     credentials: { api_key: 'sk-fixed-upstream-key', base_url: 'https://site-a.example.com/v1' },
@@ -40,7 +40,7 @@ try {
   }, access)
 
   const apiKeyDuplicate = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '固定 Key 站点 A 重复账户',
     type: 'api_key',
     credentials: { api_key: 'sk-fixed-upstream-key', base_url: 'https://SITE-A.example.com/openai/v1/' },
@@ -48,7 +48,7 @@ try {
   }, access)
 
   const apiKeyDifferentHost = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '固定 Key 站点 B',
     type: 'api_key',
     credentials: { api_key: 'sk-fixed-upstream-key', base_url: 'https://site-b.example.com/openai/v1/' },
@@ -56,7 +56,7 @@ try {
   }, access)
 
   const oauthPrimary = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'OAuth Refresh Token 主账户',
     type: 'oauth',
     credentials: { refresh_token: 'refresh-duplicate-oauth-token', access_token: 'access-duplicate-oauth-token-1', base_url: 'https://chatgpt.com/backend-api/codex' },
@@ -64,7 +64,7 @@ try {
   }, access)
 
   const oauthDuplicate = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'OAuth Refresh Token 重复账户',
     type: 'oauth',
     credentials: { refresh_token: 'refresh-duplicate-oauth-token', access_token: 'access-duplicate-oauth-token-2', base_url: 'https://chatgpt.com/backend-api/codex' },
@@ -81,7 +81,7 @@ try {
     accounts: [
       {
         name: '导入固定 Key 站点 C',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'active',
         groupName: group.name,
@@ -89,7 +89,7 @@ try {
       },
       {
         name: '导入固定 Key 站点 D',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'active',
         groupName: group.name,
@@ -97,7 +97,7 @@ try {
       },
       {
         name: '导入固定 Key 站点 C 重复凭据',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'active',
         groupName: group.name,
@@ -105,7 +105,7 @@ try {
       },
       {
         name: '导入固定 Key 站点 C',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'active',
         groupName: group.name,

@@ -85,7 +85,7 @@ try {
   assert.equal(detail.credentials.api_key, 'sk-redaction-existing-api-key', '详情响应应返回完整 API Key 供编辑弹窗查看')
 
   const created = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '响应脱敏新建账号',
     type: 'api_key',
     credentials: {
@@ -180,11 +180,11 @@ function seedData(): {
   const access = { systemAccountId: admin.id, role: admin.role }
   const groupA = repositories.createGroup({
     name: '响应脱敏分组 A',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const groupB = repositories.createGroup({
     name: '响应脱敏分组 B',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, access)
   const errorHandlingRules = [{
     enabled: true,
@@ -196,7 +196,7 @@ function seedData(): {
     duration_hours: 1
   }]
   const apiKeyAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '响应脱敏 API Key 账号',
     type: 'api_key',
     credentials: {
@@ -208,7 +208,7 @@ function seedData(): {
     groupId: groupA.id
   }, access)
   const oauthAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '响应脱敏 OAuth 账号',
     type: 'oauth',
     credentials: {
@@ -227,7 +227,7 @@ function seedData(): {
     groupId: groupA.id
   }, access)
   const targetAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '响应脱敏迁移目标账号',
     type: 'api_key',
     credentials: {

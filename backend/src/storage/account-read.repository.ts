@@ -308,6 +308,9 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.id',
     'accounts.system_account_id',
     'accounts.provider_code',
+    'accounts.provider_protocol_profile_id',
+    'accounts.protocol_code',
+    'accounts.protocol_version',
     'accounts.name',
     'accounts.notes',
     'accounts.type',
@@ -349,6 +352,9 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
 function sourceAccountSelectColumns(includeCredentials: boolean): string {
   return [
     'source_accounts.provider_code AS source_provider_code',
+    'source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id',
+    'source_accounts.protocol_code AS source_protocol_code',
+    'source_accounts.protocol_version AS source_protocol_version',
     'source_accounts.type AS source_type',
     'source_accounts.status AS source_status',
     'source_accounts.schedulable AS source_schedulable',
@@ -371,6 +377,9 @@ function accountListOuterSelectColumns(): string {
     'id',
     'system_account_id',
     'provider_code',
+    'provider_protocol_profile_id',
+    'protocol_code',
+    'protocol_version',
     'name',
     'notes',
     'type',
@@ -415,6 +424,9 @@ function accountListOuterSelectColumns(): string {
     'authorization_resource_owner_system_account_id',
     'authorization_resource_id',
     'source_provider_code',
+    'source_provider_protocol_profile_id',
+    'source_protocol_code',
+    'source_protocol_version',
     'source_type',
     'source_status',
     'source_schedulable',
@@ -526,6 +538,9 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
   const sourceRows: Array<{
     id: string
     provider_code: AccountListRow['provider_code']
+    provider_protocol_profile_id: string
+    protocol_code: string
+    protocol_version: string
     type: AccountListRow['type']
     status: AccountListRow['status']
     schedulable: number
@@ -545,7 +560,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
   for (const chunk of chunkValues(sourceIds, 900)) {
     sourceRows.push(...database
       .prepare(`
-        SELECT id, provider_code, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
+        SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
           last_error_code, last_error_message, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
           proxy_profile_id, concurrency_limit, error_policy_id, client_compatibility
@@ -564,6 +579,9 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     return {
       ...row,
       source_provider_code: source.provider_code,
+      source_provider_protocol_profile_id: source.provider_protocol_profile_id,
+      source_protocol_code: source.protocol_code,
+      source_protocol_version: source.protocol_version,
       source_type: source.type,
       source_status: source.status,
       source_schedulable: source.schedulable,
@@ -644,6 +662,10 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
   if (options.providerCode && options.providerCode !== 'all') {
     clauses.push('account_rows.provider_code = ?')
     params.push(options.providerCode)
+  }
+  if (options.providerProtocolProfileId && options.providerProtocolProfileId !== 'all') {
+    clauses.push('account_rows.provider_protocol_profile_id = ?')
+    params.push(options.providerProtocolProfileId)
   }
   const groupId = options.groupId?.trim()
   if (groupId) {

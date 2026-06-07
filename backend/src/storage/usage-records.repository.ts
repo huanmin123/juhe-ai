@@ -20,6 +20,8 @@ import {
 } from './usage-record-shards.js'
 import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
+import { GPT_VENDOR_CODE } from '../domain/provider-protocol.js'
+import { listOpenAIProtocolProviderCodes } from './provider.repository.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -212,6 +214,8 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
     params.push(input.groupId)
   }
   if (clauses.length === 0) return undefined
+  const providerCodes = openAIProtocolProviderCodesForRecentRequestShape()
+  if (!providerCodes.length) return undefined
   const endpointFilter = recentOpenAIEndpointFilter()
   let currentBucketDateKey = ''
   let currentRows: RecentOpenAIRequestShapeRow[] = []
@@ -229,19 +233,24 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
       WHERE ${clauses.join(' AND ')}
         AND api_key_id IS NOT NULL
         AND traffic_source = 'gateway'
-        AND provider_code = 'openai'
+        AND provider_code IN (${sqlPlaceholders(providerCodes.length)})
         AND endpoint IS NOT NULL
         AND TRIM(endpoint) <> ''
         AND (${endpointFilter.clause})
       ORDER BY created_at DESC, id DESC
       LIMIT 1
     `)
-      .get(...params, ...endpointFilter.params) as unknown as RecentOpenAIRequestShapeRow | undefined
+      .get(...params, ...providerCodes, ...endpointFilter.params) as unknown as RecentOpenAIRequestShapeRow | undefined
     if (row) {
       currentRows.push(row)
     }
   }
   return recentOpenAIRequestShapeFromRows(currentRows)
+}
+
+function openAIProtocolProviderCodesForRecentRequestShape(): string[] {
+  const codes = listOpenAIProtocolProviderCodes()
+  return codes.length ? codes : [GPT_VENDOR_CODE]
 }
 
 function recentOpenAIRequestShapeFromRows(rows: RecentOpenAIRequestShapeRow[]): RecentOpenAIRequestShape | undefined {

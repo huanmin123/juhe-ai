@@ -196,7 +196,7 @@ function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, au
     `)
     .get(instance.id, authorization.grantee_system_account_id, authorization.id) as unknown as { group_id?: string } | undefined
   if (existingBinding?.group_id && (!requestedGroupId || existingBinding.group_id === requestedGroupId)) return
-  const bindGroupId = groupIdForAuthorizationBinding(database, instance.provider_code, authorization.grantee_system_account_id, requestedGroupId)
+  const bindGroupId = groupIdForAuthorizationBinding(database, instance.provider_protocol_profile_id, authorization.grantee_system_account_id, requestedGroupId)
   if (!bindGroupId) return
   if (existingBinding?.group_id && existingBinding.group_id !== bindGroupId) {
     database
@@ -271,6 +271,9 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
       .prepare(`
         UPDATE accounts
         SET provider_code = ?,
+            provider_protocol_profile_id = ?,
+            protocol_code = ?,
+            protocol_version = ?,
             name = ?,
             type = ?,
             status = 'active',
@@ -291,7 +294,18 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
             updated_at = ?
         WHERE id = ?
       `)
-      .run(source.provider_code, restoredName, source.type, authorization.resource_id, authorization.resource_owner_system_account_id, now, deletedExisting.id)
+      .run(
+        source.provider_code,
+        source.provider_protocol_profile_id,
+        source.protocol_code,
+        source.protocol_version,
+        restoredName,
+        source.type,
+        authorization.resource_id,
+        authorization.resource_owner_system_account_id,
+        now,
+        deletedExisting.id
+      )
     return database.prepare('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1').get(deletedExisting.id) as unknown as AccountRow | undefined
   }
   const id = newId('acc')
@@ -299,18 +313,21 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
   database
     .prepare(`
       INSERT INTO accounts (
-        id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
         proxy_profile_id, concurrency_limit, error_policy_id,
         priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
         cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
         authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?)
     `)
     .run(
       id,
       authorization.grantee_system_account_id,
       source.provider_code,
+      source.provider_protocol_profile_id,
+      source.protocol_code,
+      source.protocol_version,
       name,
       source.type,
       encryptJson({}),
@@ -354,29 +371,29 @@ function isAccountNameAvailable(database: DatabaseSync, systemAccountId: string,
   return !row?.id || row.id === exceptAccountId
 }
 
-function groupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, targetGroupId?: string): string {
+function groupIdForAuthorizationBinding(database: DatabaseSync, providerProtocolProfileId: string, systemAccountId: string, targetGroupId?: string): string {
   if (targetGroupId) {
     const group = database
-      .prepare('SELECT id, system_account_id, provider_code, enabled FROM groups WHERE id = ? LIMIT 1')
-      .get(targetGroupId) as unknown as { id?: string; system_account_id?: string; provider_code?: string; enabled?: number } | undefined
+      .prepare('SELECT id, system_account_id, provider_protocol_profile_id, enabled FROM groups WHERE id = ? LIMIT 1')
+      .get(targetGroupId) as unknown as { id?: string; system_account_id?: string; provider_protocol_profile_id?: string; enabled?: number } | undefined
     if (!group?.id || group.system_account_id !== systemAccountId) {
       throw new Error('目标分组不存在或不属于被授权用户')
     }
-    if (group.provider_code !== providerCode) {
-      throw new Error('目标分组供应商与授权账户不一致')
+    if (group.provider_protocol_profile_id !== providerProtocolProfileId) {
+      throw new Error('目标分组协议档案与授权账户不一致')
     }
     if (group.enabled !== 1) {
       throw new Error('目标分组已停用，请选择启用分组')
     }
     return group.id
   }
-  return defaultGroupIdForAuthorizationBinding(database, providerCode, systemAccountId)
+  return defaultGroupIdForAuthorizationBinding(database, providerProtocolProfileId, systemAccountId)
 }
 
-function defaultGroupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string): string {
+function defaultGroupIdForAuthorizationBinding(database: DatabaseSync, providerProtocolProfileId: string, systemAccountId: string): string {
   const existing = database
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 AND enabled = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
-    .get(systemAccountId, providerCode) as unknown as { id?: string } | undefined
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 AND enabled = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
+    .get(systemAccountId, providerProtocolProfileId) as unknown as { id?: string } | undefined
   if (existing?.id) return existing.id
   throw new Error('目标用户缺少启用的默认分组，请按当前数据契约修复目标用户分组后再授权')
 }

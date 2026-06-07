@@ -13,6 +13,7 @@ import {
 } from '../../storage/usage-stats-helpers.js'
 import { latestUsageStatsLagSeconds } from '../../storage/usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from '../../storage/usage-stats-types.js'
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
 export type PublicWelfareRangePreset = 'today' | 'last7d' | 'last31d'
 export type PublicClientIpUsageSortField = ClientIpStatsSortField
@@ -264,19 +265,19 @@ const mockAccountRows: Array<{ accountId: string; accountName: string; providerC
   {
     accountId: 'acc_mock_public_welfare_main',
     accountName: '公益体验入口',
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     usage: mockAccountUsageRow('acc_mock_public_welfare_main', 1280, 1252, 28, 516000, 326000, 126000, 12.36, 7)
   },
   {
     accountId: 'acc_mock_public_welfare_backup',
     accountName: '校园社群入口',
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     usage: mockAccountUsageRow('acc_mock_public_welfare_backup', 936, 914, 22, 317400, 214000, 68420, 8.42, 6)
   },
   {
     accountId: 'acc_mock_public_welfare_test',
     accountName: '志愿者测试入口',
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     usage: mockAccountUsageRow('acc_mock_public_welfare_test', 648, 631, 17, 184200, 120600, 38200, 5.18, 5)
   }
 ]

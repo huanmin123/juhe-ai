@@ -114,14 +114,14 @@ try {
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeGroup = repositories.createGroup({
     name: '授权测试本地恢复分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, granteeAccess)
   const ownerSourceGroup = repositories.createGroup({
     name: '授权测试本地恢复来源分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, ownerAccess)
   const ownerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权测试本地恢复账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-local-restore', base_url: mockBaseUrl },
@@ -195,7 +195,7 @@ try {
   assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '测试恢复授权实例状态不应修改所有者原账户')
 
   const failingOwnerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权测试本地失败账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-local-failure', base_url: mockBaseUrl },
@@ -270,7 +270,7 @@ try {
   assert.equal(repositories.findAccountSummary(failingOwnerAccount.id, ownerAccess)?.status, 'active', '测试失败不应修改所有者原账户')
 
   const errorOwnerAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '授权测试本地异常账户',
     type: 'api_key',
     credentials: { api_key: 'sk-authorized-local-error-success', base_url: mockBaseUrl },

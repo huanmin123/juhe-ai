@@ -1,4 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
+import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
@@ -60,7 +61,7 @@ const recentRefreshByAccountId = createAppCache<string, OpenAIOAuthRefreshAccoun
 })
 let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
 
-type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode'>> & {
+type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode'>> & {
   proxyUrl?: string
 }
 type OpenAIOAuthRefreshAccount = RefreshableOpenAIOAuthAccount & Partial<Pick<AccountSummary, 'systemAccountId' | 'concurrencyLimit' | 'currentConcurrency' | 'priority' | 'superPriorityEnabled' | 'fallbackEnabled' | 'schedulable' | 'todayUsage' | 'usage' | 'permissions'>> & {
@@ -88,7 +89,7 @@ export async function refreshOpenAIOAuthAccountAccessToken(
   account: RefreshableOpenAIOAuthAccount,
   options: OpenAIOAuthAccountRefreshCallOptions = {}
 ): Promise<AccountSummary | RefreshedOpenAIOAuthAccount> {
-  if (account.providerCode !== 'openai' || account.type !== 'oauth') {
+  if (!isOpenAIOAuthRefreshAccount(account)) {
     throw new Error('仅支持刷新 OpenAI OAuth 账户')
   }
   return runWithAccountRefreshLock(account.id, () => refreshOpenAIOAuthAccountAccessTokenLocked(account, options))
@@ -285,11 +286,17 @@ export async function refreshDueOpenAIOAuthAccessTokens(
 }
 
 function isExistingOpenAIOAuthAccountWithRefreshToken(account: AccountSummary): boolean {
-  return account.providerCode === 'openai'
-    && account.type === 'oauth'
+  return isOpenAIOAuthRefreshAccount(account)
     && account.accessType !== 'authorized'
     && !shouldStopOpenAIOAuthBackgroundRefresh(account)
     && Boolean(stringCredential(account.credentials, 'refresh_token'))
+}
+
+function isOpenAIOAuthRefreshAccount(account: RefreshableOpenAIOAuthAccount | AccountSummary | undefined): boolean {
+  return Boolean(account
+    && isGptVendorCode(account.providerCode)
+    && isOpenAIProtocolProfile(account)
+    && account.type === 'oauth')
 }
 
 function shouldStopOpenAIOAuthBackgroundRefresh(account: AccountSummary): boolean {
@@ -357,7 +364,7 @@ async function findLatestRefreshableOpenAIOAuthAccount(
   }
 
   const latest = findAccountForTest(account.id, options.access)
-  if (!latest || latest.providerCode !== 'openai' || latest.type !== 'oauth') {
+  if (!isOpenAIOAuthRefreshAccount(latest)) {
     return undefined
   }
   return latest

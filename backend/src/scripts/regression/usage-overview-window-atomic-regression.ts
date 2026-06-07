@@ -120,13 +120,13 @@ function seedPublishedOverviewWindows(systemAccountId: string, windowKey: string
     INSERT INTO usage_model_rank_windows (
       system_account_id, window_key, start_date, end_date, rank, provider_code, model,
       request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at
-    ) VALUES (?, ?, ?, ?, 1, 'openai', 'published-model', 1, 10, 2, 0, 0, 0.01, ?)
+    ) VALUES (?, ?, ?, ?, 1, 'gpt', 'published-model', 1, 10, 2, 0, 0, 0.01, ?)
   `).run(systemAccountId, windowKey, startDate, endDate, updatedAt)
   database.prepare(`
     INSERT INTO usage_error_rank_windows (
       system_account_id, window_key, start_date, end_date, rank, provider_code, error_code,
       status_code, error_message, error_count, updated_at
-    ) VALUES (?, ?, ?, ?, 1, 'openai', 'published_error', 500, 'published error', 1, ?)
+    ) VALUES (?, ?, ?, ?, 1, 'gpt', 'published_error', 500, 'published error', 1, ?)
   `).run(systemAccountId, windowKey, startDate, endDate, updatedAt)
 }
 
@@ -162,13 +162,13 @@ function seedNewUsageSources(statDate: string): void {
       INSERT INTO usage_model_daily (
         system_account_id, stat_date, provider_code, model, request_count, success_count, error_count,
         input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at
-      ) VALUES (?, ?, 'openai', 'new-model', 5, 3, 2, 50, 10, 0, 0, 0.05, ?)
+      ) VALUES (?, ?, 'gpt', 'new-model', 5, 3, 2, 50, 10, 0, 0, 0.05, ?)
     `).run(scope, statDate, updatedAt)
     database.prepare(`
       INSERT INTO usage_error_daily (
         system_account_id, stat_date, error_group, provider_code, error_code, status_code, error_message,
         request_count, error_count, updated_at
-      ) VALUES (?, ?, 'gateway', 'openai', 'new_error', 429, 'new error', 2, 2, ?)
+      ) VALUES (?, ?, 'gateway', 'gpt', 'new_error', 429, 'new error', 2, 2, ?)
     `).run(scope, statDate, updatedAt)
   }
 }

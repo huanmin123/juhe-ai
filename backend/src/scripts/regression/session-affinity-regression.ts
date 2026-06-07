@@ -11,6 +11,7 @@ import {
   rememberOpenAIAccountForSession,
   resolveOpenAIGatewaySessionAffinityKey
 } from '../../modules/gateway/openai-gateway-session-affinity.service.js'
+import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 
 async function main(): Promise<void> {
@@ -349,7 +350,10 @@ function createAccount(
 ): OpenAIAccountSecret {
   return {
     id,
-    providerCode: 'openai',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     systemAccountId: 'system-a',
     accountOwnerSystemAccountId: 'system-a',
     groupOwnerSystemAccountId: 'system-a',

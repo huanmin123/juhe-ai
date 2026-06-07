@@ -27,7 +27,7 @@ import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { optionalServerDateTimeIso, optionalString } from './value-utils.js'
 
 const API_KEY_GROUP_BOUNDARY_ERROR = 'API Key 只能绑定自己的分组或有效授权给自己的分组'
-const API_KEY_GROUP_PROVIDER_ERROR = 'API Key 不能绑定不同供应商的分组'
+const API_KEY_GROUP_PROVIDER_ERROR = 'API Key 不能绑定不同供应商协议档案的分组'
 const apiKeyMutationInputKeys = new Set([
   'name',
   'description',
@@ -78,6 +78,9 @@ interface ApiKeyGroupBindingInput {
 interface ApiKeyGroupBindingWrite extends ApiKeyGroupBindingInput {
   groupName?: string
   providerCode: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
   groupEnabled: boolean
 }
 
@@ -85,6 +88,9 @@ interface ApiKeyBindableGroupRow {
   id: string
   system_account_id: string
   provider_code: string
+  provider_protocol_profile_id: string
+  protocol_code: string
+  protocol_version: string
   name: string | null
   enabled: number
 }
@@ -482,7 +488,7 @@ function normalizeApiKeyGroupBindings(
 
   const groups = loadApiKeyBindableGroups([...seenGroupIds], systemAccountId)
   const retainableGroupIds = new Set((options.retainableGroupIds ?? []).filter(Boolean))
-  let providerCode: string | undefined
+  let providerProtocolProfileId: string | undefined
   return normalized
     .map((binding) => {
       const group = groups.get(binding.groupId)
@@ -490,10 +496,10 @@ function normalizeApiKeyGroupBindings(
       if (!group || (!canBindNow && !retainableGroupIds.has(binding.groupId))) {
         throw new Error(API_KEY_GROUP_BOUNDARY_ERROR)
       }
-      if (providerCode && group.provider_code !== providerCode) {
+      if (providerProtocolProfileId && group.provider_protocol_profile_id !== providerProtocolProfileId) {
         throw new Error(API_KEY_GROUP_PROVIDER_ERROR)
       }
-      providerCode = providerCode ?? group.provider_code
+      providerProtocolProfileId = providerProtocolProfileId ?? group.provider_protocol_profile_id
       if (binding.status === 'active' && group.enabled === 0) {
         throw new Error(`API Key 不能启用已停用分组：${group.name ?? binding.groupId}`)
       }
@@ -502,6 +508,9 @@ function normalizeApiKeyGroupBindings(
         weight: normalizeApiKeyGroupBindingWeight(binding.weight),
         groupName: group.name ?? undefined,
         providerCode: group.provider_code,
+        providerProtocolProfileId: group.provider_protocol_profile_id,
+        protocolCode: group.protocol_code,
+        protocolVersion: group.protocol_version,
         groupEnabled: group.enabled !== 0
       }
     })
@@ -521,6 +530,9 @@ function loadApiKeyBindableGroups(groupIds: string[], systemAccountId: string): 
           groups.id,
           groups.system_account_id,
           groups.provider_code,
+          groups.provider_protocol_profile_id,
+          groups.protocol_code,
+          groups.protocol_version,
           groups.name,
           CASE
             WHEN groups.system_account_id = ? THEN groups.enabled
@@ -571,6 +583,9 @@ function apiKeyGroupBindingSummariesForRecord(idPrefix: string, bindings: ApiKey
     groupId: binding.groupId,
     groupName: binding.groupName,
     providerCode: binding.providerCode,
+    providerProtocolProfileId: binding.providerProtocolProfileId,
+    protocolCode: binding.protocolCode,
+    protocolVersion: binding.protocolVersion,
     priority: binding.priority,
     weight: binding.weight,
     status: binding.status,

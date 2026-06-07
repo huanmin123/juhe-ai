@@ -90,7 +90,7 @@ async function assertGatewayCacheInvalidationBehavior(): Promise<void> {
     const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
     const group = repositories.createGroup({
       name: '缓存定点失效分组',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       enabled: true
     }, access)
     const first = repositories.createApiKeyRecord({

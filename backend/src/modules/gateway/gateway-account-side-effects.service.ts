@@ -1253,7 +1253,7 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
     id: account.id,
     systemAccountId: gatewayAccountSummarySystemAccountId(account),
     ownerSystemAccountId: account.accountOwnerSystemAccountId,
-    providerCode: 'openai',
+    providerCode: account.providerCode,
     name: account.name,
     type: account.type,
     credentials: account.credentials,
