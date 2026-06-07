@@ -1245,7 +1245,9 @@ function accountCreateInputForPush(input: PublicAccountPushInput, providerCode: 
     ...accountWriteInputForPush(input),
     providerCode,
     type: input.type,
-    groupId
+    groupId,
+    status: input.status === 'disabled' ? 'disabled' : 'pending_test',
+    schedulable: false
   }
 }
 

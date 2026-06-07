@@ -25,7 +25,7 @@ export const accountImportMaxAccounts = 50
 export const accountImportMaxProxies = 20
 
 type ImportAction = 'create' | 'reuse' | 'skip' | 'failed'
-type AccountImportStatus = 'active' | 'disabled'
+type AccountImportStatus = 'active' | 'pending_test' | 'disabled'
 
 export interface AccountImportOptions {
   createMissingGroups?: boolean
@@ -230,7 +230,7 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
         providerCode: account.source.providerCode,
         name: account.source.name,
         type: account.source.type,
-        status: account.source.status,
+        status: accountImportCreateStatus(account.source.status),
         credentials: account.source.credentials
       }
       if (groupId !== undefined) accountInput.groupId = groupId
@@ -246,7 +246,7 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
       if (account.source.notes !== undefined) accountInput.notes = account.source.notes
       const created = createAccount(accountInput, access)
       account.item.accountId = created.id
-      account.item.messages = ['已创建账户']
+      account.item.messages = [created.status === 'pending_test' ? '已创建账户，需测试通过后参与调度' : '已创建账户']
     } catch (error) {
       if (isDuplicateAccountError(error) && plan.options.skipDuplicates) {
         account.item.action = 'skip'
@@ -560,8 +560,8 @@ function validateAccountBasics(account: NormalizedImportAccount, context: Import
   } else if (!provider.accountTypes.includes(account.type)) {
     account.messages.push(`供应商 ${account.providerCode} 不支持账户类型 ${account.type}`)
   }
-  if (account.status !== 'active' && account.status !== 'disabled') {
-    account.messages.push('账户状态仅支持 active 或 disabled')
+  if (account.status !== 'active' && account.status !== 'pending_test' && account.status !== 'disabled') {
+    account.messages.push('账户状态仅支持 active、pending_test 或 disabled')
   }
   if (account.concurrencyLimit !== undefined && account.concurrencyLimit < 1) {
     account.messages.push('concurrencyLimit 必须大于 0')
@@ -883,8 +883,12 @@ function groupKey(providerCode: string, name: string): string {
 
 function normalizeStatus(value: unknown): AccountImportStatus | undefined {
   const input = text(value)
-  if (input === 'active' || input === 'disabled') return input
+  if (input === 'active' || input === 'pending_test' || input === 'disabled') return input
   return undefined
+}
+
+function accountImportCreateStatus(status: AccountImportStatus): AccountImportStatus {
+  return status === 'active' ? 'pending_test' : status
 }
 
 function normalizeProxyType(value: unknown): NormalizedImportProxy['type'] {

@@ -1,7 +1,5 @@
 import type { Request, Response } from 'express'
 
-import { runtimeConfig } from '../../config/runtime.js'
-
 export const gatewayJsonBodyLargeWarningBytes = 2 * 1024 * 1024
 export const gatewayJsonBodyInlineParseMaxBytes = 256 * 1024
 export const gatewayTextRawBodyHardLimitBytes = 8 * 1024 * 1024
@@ -10,6 +8,7 @@ export const gatewayImageRawBodyHardLimitBytes = 64 * 1024 * 1024
 export const gatewayImageRawBodyHardLimit = '64mb'
 export const gatewayRawBodyHardLimitBytes = gatewayImageRawBodyHardLimitBytes
 export const gatewayRawBodyHardLimit = gatewayImageRawBodyHardLimit
+export const defaultGatewayBodyInFlightMaxBytes = 256 * 1024 * 1024
 let gatewayBodyInFlightBytes = 0
 let gatewayBodyInFlightRequestCount = 0
 let gatewayBodyInFlightRejectedCount = 0
@@ -123,14 +122,15 @@ export function getGatewayRequestBodyState(req: Request): GatewayRequestBodyStat
 export function tryAcquireGatewayRequestBodyInFlightBytes(
   req: GatewayRawBodyRequest,
   res: Response,
-  rawBodyBytes: number
+  rawBodyBytes: number,
+  configuredMaxBytes?: number
 ): boolean {
   const bytes = normalizeGatewayBodyInFlightBytes(rawBodyBytes)
   if (bytes <= 0) {
     return true
   }
   releaseGatewayRequestBodyInFlightBytes(req)
-  const maxBytes = gatewayRequestBodyInFlightMaxBytes()
+  const maxBytes = gatewayRequestBodyInFlightMaxBytes(configuredMaxBytes)
   if (bytes > maxBytes || gatewayBodyInFlightBytes + bytes > maxBytes) {
     gatewayBodyInFlightRejectedCount += 1
     return false
@@ -165,11 +165,11 @@ export function releaseGatewayRequestBodyInFlightBytes(req: GatewayRawBodyReques
   req.gatewayBodyInFlightLease?.release()
 }
 
-export function getGatewayRequestBodyInFlightState(): GatewayBodyInFlightState {
+export function getGatewayRequestBodyInFlightState(configuredMaxBytes?: number): GatewayBodyInFlightState {
   return {
     currentBytes: gatewayBodyInFlightBytes,
     requestCount: gatewayBodyInFlightRequestCount,
-    maxBytes: gatewayRequestBodyInFlightMaxBytes(),
+    maxBytes: gatewayRequestBodyInFlightMaxBytes(configuredMaxBytes),
     rejectedCount: gatewayBodyInFlightRejectedCount
   }
 }
@@ -394,8 +394,12 @@ function replaceGatewayJsonBody(req: Request, body: Record<string, unknown>): vo
   })
 }
 
-function gatewayRequestBodyInFlightMaxBytes(): number {
-  return gatewayBodyInFlightMaxBytesForTest ?? runtimeConfig.gateway.bodyInFlightMaxBytes
+function gatewayRequestBodyInFlightMaxBytes(configuredMaxBytes?: number): number {
+  if (gatewayBodyInFlightMaxBytesForTest !== undefined) {
+    return gatewayBodyInFlightMaxBytesForTest
+  }
+  const normalizedMaxBytes = normalizeGatewayBodyInFlightBytes(configuredMaxBytes)
+  return normalizedMaxBytes > 0 ? normalizedMaxBytes : defaultGatewayBodyInFlightMaxBytes
 }
 
 function normalizeGatewayBodyInFlightBytes(value: unknown): number {

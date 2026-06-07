@@ -508,9 +508,9 @@ function shouldClearAccountAfterSuccessfulTest(account: AccountSummary): boolean
 
 function clearAccountAfterSuccessfulTest(account: AccountSummary, access: AccessScope) {
   if (account.accessType === 'authorized') {
-    return clearAuthorizedAccountBindingFailureState(account.id, access)
+    return clearAuthorizedAccountBindingFailureState(account.id, access, { allowPendingTestRestore: true })
   }
-  return clearAccountFailureStateResult(account.id, access)
+  return clearAccountFailureStateResult(account.id, access, { allowPendingTestRestore: true })
 }
 
 function accountTestStatusLogChanges(before: AccountSummary, after: AccountSummary): ReturnType<typeof safeChange>[] {

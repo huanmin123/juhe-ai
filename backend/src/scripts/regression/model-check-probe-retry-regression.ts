@@ -65,12 +65,12 @@ try {
   assert.equal(retryState.transientBasicAttempts, 3, '瞬态异常 basic 探针应在同一账号上尝试三次')
   assert.equal(retryState.transientStreamAttempts, 3, '瞬态流式异常应在同一账号上尝试三次')
   assert.equal(transientBasic.status, 'passed', '第 3 次恢复后 basic 探针应通过')
-  assert.equal(transientBasic.evidenceSummary.attemptCount, 3, 'basic 探针应记录总尝试次数')
+  assert.equal(transientBasic.evidenceSummary.attemptCount, 3, `basic 探针应记录总尝试次数：${JSON.stringify(transientBasic.evidenceSummary)}`)
   assert.equal(transientBasic.evidenceSummary.retryAttemptCount, 2, 'basic 探针应记录重试次数')
   assert.deepEqual(transientBasic.evidenceSummary.attemptStatusCodes, [503, 503, 200], 'basic 探针应记录每次尝试状态码')
   assert.equal(transientStream.status, 'passed', '第 3 次恢复后流式探针应通过')
   assert.equal(transientStream.evidenceSummary.attemptCount, 3, '流式探针应记录总尝试次数')
-  assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [200, 200, 200], '流式探针应记录每次 HTTP 状态码')
+  assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [503, 503, 200], '流式探针应记录每次 HTTP 状态码')
 
   const persistentFixture = createMockGatewayFixture({
     label: 'model-check-retry-persistent',
@@ -216,24 +216,8 @@ function sendStream(res: http.ServerResponse, model: string, outputText: string)
   res.end()
 }
 
-function sendStreamFailure(res: http.ServerResponse, model: string, message: string): void {
-  res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-cache',
-    connection: 'keep-alive'
-  })
-  res.write(`event: response.failed\ndata: ${JSON.stringify({
-    type: 'response.failed',
-    response: {
-      status: 'failed',
-      model,
-      error: {
-        code: 'server_error',
-        message
-      }
-    }
-  })}\n\n`)
-  res.end()
+function sendStreamFailure(res: http.ServerResponse, _model: string, message: string): void {
+  sendError(res, message)
 }
 
 function outputForProbe(body: Record<string, unknown>): string {

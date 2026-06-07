@@ -1,5 +1,6 @@
 import type { NextFunction, Response } from 'express'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import { getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
 import {
   createGatewayRequestBodyState,
@@ -41,7 +42,7 @@ export async function captureGatewayRawBody(
       return
     }
 
-    if (!tryAcquireGatewayRequestBodyInFlightBytes(req, res, rawBody.length)) {
+    if (!tryAcquireGatewayRequestBodyInFlightBytes(req, res, rawBody.length, runtimeConfig.gateway.bodyInFlightMaxBytes)) {
       req.gatewayRequestBody = {
         rawBodyBytes: rawBody.length,
         contentType: String(contentType ?? ''),
@@ -68,6 +69,9 @@ export async function captureGatewayRawBody(
       if (rawBody.length > gatewayJsonBodyInlineParseMaxBytes) {
         const metadata = await extractLargeJsonBodyMetadata(req, res, rawBody)
         if (!metadata) {
+          req.rawBody = undefined
+          req.body = undefined
+          releaseGatewayRequestBodyInFlightBytes(req)
           return
         }
         const logPayload = {
@@ -118,10 +122,14 @@ export async function captureGatewayRawBody(
     }
 
     if (req.aborted || res.destroyed) {
+      req.rawBody = undefined
+      req.body = undefined
+      releaseGatewayRequestBodyInFlightBytes(req)
       return
     }
     next()
   } catch (error) {
+    releaseGatewayRequestBodyInFlightBytes(req)
     next(error)
   }
 }
@@ -184,7 +192,7 @@ function rejectGatewayRawBodyInFlightLimit(
   res: Response,
   rawBody: Buffer
 ): void {
-  const state = getGatewayRequestBodyInFlightState()
+  const state = getGatewayRequestBodyInFlightState(runtimeConfig.gateway.bodyInFlightMaxBytes)
   getRequestLogger().warn({
     event: 'gateway_raw_body_in_flight_limit_rejected',
     method: req.method,

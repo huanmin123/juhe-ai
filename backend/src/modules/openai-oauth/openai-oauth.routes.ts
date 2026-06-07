@@ -135,7 +135,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
-        status: 'active',
+        status: 'pending_test',
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
@@ -145,7 +145,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: true,
+        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)
@@ -206,7 +206,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
-        status: 'active',
+        status: 'pending_test',
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
@@ -216,7 +216,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: true,
+        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)
@@ -424,7 +424,7 @@ function updateOpenAIOAuthAccountCredentials(
   if (!updated) {
     throw new Error('OpenAI OAuth 账户不存在或无法更新')
   }
-  if (updated.status !== 'disabled' && (updated.status !== 'error' || updated.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE)) {
+  if (updated.status !== 'pending_test' && updated.status !== 'disabled' && (updated.status !== 'error' || updated.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE)) {
     return clearAccountFailureState(account.id, access) ?? updated
   }
   return updated

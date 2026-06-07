@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
-import { isAdminRole, type AccountSummary } from '../../domain/types.js'
+import { isAdminRole, type AccountStatus, type AccountSummary } from '../../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
@@ -11,11 +11,12 @@ import { ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccou
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
+import { hashStableValue } from '../deduplication/deduplication.service.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, ownerTarget, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
-import { cancelAccountTestTask, createAccountTestTask, failAccountTestTask, getAccountTestTask, listAccountTestTasks, type AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
+import { cancelAccountTestTask, createAccountTestTask, failAccountTestTask, getAccountTestTask, getAccountTestTaskRecord, listAccountTestTasks, type AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
@@ -38,7 +39,8 @@ const accountCreateSchema = z.object({
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
-  status: z.enum(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
+  status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
+  activationTestTaskId: z.string().trim().min(1).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
   superPriorityEnabled: z.boolean().optional(),
@@ -58,7 +60,7 @@ const accountUpdateSchema = z.object({
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
-  status: z.enum(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
+  status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().min(0).optional(),
   superPriorityEnabled: z.boolean().optional(),
@@ -107,6 +109,7 @@ const accountDraftTestSchema = z.object({
 }).strict()
 
 type AccountDraftTestAccountRequest = z.infer<typeof accountDraftTestAccountSchema>
+type AccountCreateRequest = z.infer<typeof accountCreateSchema>
 
 const accountGroupSchema = z.object({
   groupId: z.string().trim().min(1, '分组不能为空')
@@ -611,7 +614,9 @@ accountsRouter.post('/', mutationGuard({
     providerCode: normalizedText(bodyField(req, 'providerCode')),
     type: normalizedText(bodyField(req, 'type')),
     name: normalizedText(bodyField(req, 'name')),
-    credential: accountCredentialFingerprint(bodyField(req, 'credentials'))
+    credential: accountCredentialFingerprint(bodyField(req, 'credentials')),
+    status: normalizedText(bodyField(req, 'status')),
+    activationTestTaskId: normalizedText(bodyField(req, 'activationTestTaskId'))
   })
 }), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -651,19 +656,35 @@ accountsRouter.post('/', mutationGuard({
     return
   }
   const groupId = typeof parsed.data.groupId === 'string' && parsed.data.groupId ? parsed.data.groupId : undefined
+  let group: ReturnType<typeof findGroupSummary> | undefined
   if (groupId) {
-    const group = findGroupSummary(groupId, requestAccess)
+    group = findGroupSummary(groupId, requestAccess)
     if (!group || group.providerCode !== providerCode) {
       res.status(400).json(badRequest('账户分组无效'))
       return
     }
   }
 
+  let createStatus: AccountStatus
+  try {
+    createStatus = accountCreateStatusFromActivationTest({
+      account: parsed.data,
+      providerBaseUrl: provider.baseUrl,
+      group,
+      requestAccess
+    })
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '账户创建测试状态无效'))
+    return
+  }
+
   try {
     const account = runLoggedOperation(() => {
+      const { activationTestTaskId: _activationTestTaskId, ...accountCreateInput } = parsed.data
       const account = createAccount({
-        ...parsed.data,
-        providerCode
+        ...accountCreateInput,
+        providerCode,
+        status: createStatus
       }, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {
@@ -932,6 +953,10 @@ accountsRouter.patch('/:id', async (req, res) => {
   const existingAccount = findAccountForTest(req.params.id, requestAccess)
   if (!existingAccount) {
     res.status(404).json({ message: '账户不存在' })
+    return
+  }
+  if (requestedClearFailureState === true && existingAccount.status === 'pending_test') {
+    res.status(400).json(badRequest('待测试账户需手动测试通过后才能参与调度'))
     return
   }
   const hasGroupId = Object.prototype.hasOwnProperty.call(body, 'groupId')
@@ -1216,6 +1241,147 @@ function draftAccountCredentials(account: AccountDraftTestAccountRequest, provid
   return {
     ...credentials,
     base_url: providerBaseUrl || 'https://api.openai.com/v1'
+  }
+}
+
+function accountCreateStatusFromActivationTest(input: {
+  account: AccountCreateRequest
+  providerBaseUrl: string
+  group?: ReturnType<typeof findGroupSummary>
+  requestAccess?: RequestAccessScope
+}): AccountStatus {
+  const requestedStatus = input.account.status
+  const activationTestTaskId = optionalText(input.account.activationTestTaskId)
+  if (!activationTestTaskId) {
+    if (requestedStatus === 'active') {
+      throw new Error('创建为正常状态需要先完成本次账户草稿测试')
+    }
+    return requestedStatus ?? 'pending_test'
+  }
+  if (requestedStatus && requestedStatus !== 'active') {
+    throw new Error('带测试任务创建账户时，状态只能为正常或留空')
+  }
+  assertActivationTestTaskMatchesCreate({
+    ...input,
+    activationTestTaskId
+  })
+  return 'active'
+}
+
+function assertActivationTestTaskMatchesCreate(input: {
+  account: AccountCreateRequest
+  activationTestTaskId: string
+  providerBaseUrl: string
+  group?: ReturnType<typeof findGroupSummary>
+  requestAccess?: RequestAccessScope
+}): void {
+  if (!input.requestAccess) {
+    throw new Error('缺少系统账户上下文，无法确认账户草稿测试结果')
+  }
+  if (!input.group) {
+    throw new Error('账户分组无效，无法确认账户草稿测试结果')
+  }
+  const task = getAccountTestTaskRecord(input.activationTestTaskId)
+  if (!task || !sameAccountTestRequester(task, input.requestAccess)) {
+    throw new Error('账户草稿测试任务不存在或不属于当前创建上下文')
+  }
+  if (task.status !== 'success' || task.result?.success !== true || !task.draftAccount) {
+    throw new Error('账户草稿测试尚未成功，不能直接创建为正常状态')
+  }
+  const ownerSystemAccountId = input.group.ownerSystemAccountId
+    ?? input.group.systemAccountId
+    ?? input.requestAccess.systemAccountFilterId
+    ?? input.requestAccess.systemAccountId
+  const expected = accountCreateActivationFingerprintSnapshot({
+    account: input.account,
+    providerBaseUrl: input.providerBaseUrl,
+    ownerSystemAccountId
+  })
+  const actual = draftActivationFingerprintSnapshot(task.draftAccount)
+  if (hashStableValue(expected) !== hashStableValue(actual)) {
+    throw new Error('账户草稿测试内容已变化，请重新测试后再创建为正常状态')
+  }
+}
+
+function sameAccountTestRequester(
+  task: NonNullable<ReturnType<typeof getAccountTestTaskRecord>>,
+  access: RequestAccessScope
+): boolean {
+  return task.requestSystemAccountId === access.systemAccountId
+    && task.requestRole === access.role
+    && (task.requestSystemAccountFilterId ?? undefined) === access.systemAccountFilterId
+}
+
+function accountCreateActivationFingerprintSnapshot(input: {
+  account: AccountCreateRequest
+  providerBaseUrl: string
+  ownerSystemAccountId: string
+}): Record<string, unknown> {
+  const account = accountDraftRequestFromCreate(input.account)
+  const credentials = normalizeAccountCredentialsForWrite(account.type, draftAccountCredentials(account, input.providerBaseUrl))
+  const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(account.providerCode, account.type, account.clientCompatibility)
+  return {
+    ownerSystemAccountId: input.ownerSystemAccountId,
+    groupId: account.groupId,
+    providerCode: account.providerCode,
+    name: account.name,
+    type: account.type,
+    credentials,
+    concurrencyLimit: account.concurrencyLimit ?? 20,
+    priority: account.priority ?? 0,
+    superPriorityEnabled: account.superPriorityEnabled ?? false,
+    fallbackEnabled: account.fallbackEnabled ?? false,
+    clientCompatibility,
+    supportedModels: normalizedTextList(account.supportedModels),
+    modelMappings: normalizeDraftAccountModelMappings(account.modelMappings, account.providerCode, input.ownerSystemAccountId),
+    proxyProfileId: optionalText(account.proxyProfileId),
+    accountExpiresAt: optionalText(account.accountExpiresAt),
+    availabilityScheduleJson: accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined,
+    notes: optionalText(account.notes)
+  }
+}
+
+function draftActivationFingerprintSnapshot(draft: AccountTestDraftSnapshot): Record<string, unknown> {
+  return {
+    ownerSystemAccountId: draft.ownerSystemAccountId,
+    groupId: draft.groupId,
+    providerCode: draft.providerCode,
+    name: draft.name,
+    type: draft.type,
+    credentials: draft.credentials,
+    concurrencyLimit: draft.concurrencyLimit,
+    priority: draft.priority,
+    superPriorityEnabled: draft.superPriorityEnabled,
+    fallbackEnabled: draft.fallbackEnabled,
+    clientCompatibility: draft.clientCompatibility,
+    supportedModels: normalizedTextList(draft.supportedModels),
+    modelMappings: draft.modelMappings ?? [],
+    proxyProfileId: optionalText(draft.proxyProfileId),
+    accountExpiresAt: optionalText(draft.accountExpiresAt),
+    availabilityScheduleJson: optionalText(draft.availabilityScheduleJson),
+    notes: optionalText(draft.notes)
+  }
+}
+
+function accountDraftRequestFromCreate(account: AccountCreateRequest): AccountDraftTestAccountRequest {
+  return {
+    providerCode: account.providerCode,
+    name: account.name,
+    type: account.type,
+    credentials: account.credentials,
+    supportedModels: account.supportedModels,
+    modelMappings: account.modelMappings,
+    concurrencyLimit: account.concurrencyLimit,
+    priority: account.priority,
+    superPriorityEnabled: account.superPriorityEnabled,
+    fallbackEnabled: account.fallbackEnabled,
+    clientCompatibility: account.clientCompatibility,
+    proxyProfileId: account.proxyProfileId,
+    groupId: typeof account.groupId === 'string' ? account.groupId : '',
+    accountExpiresAt: account.accountExpiresAt,
+    availabilitySchedule: account.availabilitySchedule,
+    notes: account.notes
   }
 }
 

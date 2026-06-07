@@ -3,6 +3,7 @@ import { Router } from 'express'
 import { ok } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
+import { buildBackgroundQueueHealthSnapshot } from '../background/background-queue-health.service.js'
 import { requestDbService, requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 
@@ -48,6 +49,7 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
     const runtimeLogIndexQueue = workerSnapshot?.runtimeLogIndexQueue
     const dbServiceState = serverRuntime?.dbService
     const gatewayAccountSideEffects = serverRuntime?.gatewayAccountSideEffects
+    const queueHealth = buildBackgroundQueueHealthSnapshot(serverRuntime)
     res.json(ok({
       ...facets,
       runtimeAvailable: Boolean(serverRuntime),
@@ -76,6 +78,7 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
         lastRequestAt: dbServiceSnapshot?.lastRequestAt,
         lastError: dbServiceSnapshot?.lastError
       },
+      queueHealth,
       grep: grepRuntime,
       gatewayAccountSideEffectsAvailable: Boolean(gatewayAccountSideEffects),
       gatewayAccountSideEffects: gatewayAccountSideEffects

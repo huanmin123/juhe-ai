@@ -10,10 +10,13 @@ import {
 import { buildUpstreamHeaders, buildUpstreamRequestBody, buildUpstreamRequestParts, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
 import {
   createGatewayRequestBodyState,
+  clearGatewayRequestBodyInFlightForTest,
   gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   gatewayRawBodyHardLimitBytes,
   gatewayTextRawBodyHardLimitBytes,
+  getGatewayRequestBodyInFlightState,
+  setGatewayRequestBodyInFlightMaxBytesForTest,
   type GatewayRawBodyRequest
 } from '../../modules/gateway/openai-gateway-request-body.js'
 import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
@@ -24,7 +27,9 @@ type MockResponse = EventEmitter & {
   headersSent: boolean
   destroyed: boolean
   statusCode: number
+  headers: Record<string, string>
   body?: unknown
+  setHeader: (name: string, value: string) => MockResponse
   status: (statusCode: number) => MockResponse
   json: (body: unknown) => MockResponse
 }
@@ -50,6 +55,7 @@ async function main(): Promise<void> {
   await testMediumJsonBodyDeferredByGatewayMiddleware()
   await testOversizeJsonBodyRejectedByGatewayMiddleware()
   await testLargeImageJsonBodyAllowedByGatewayMiddleware()
+  await testGatewayRawBodyInFlightLimit()
   await testDeferredJsonBodyImageToolMetadataScanned()
   await testDeferredInvalidJsonMarkedWithoutWorkerParse()
   await testDeferredInvalidJsonPrimitiveMarkedWithoutWorkerParse()
@@ -451,6 +457,77 @@ async function testLargeImageJsonBodyAllowedByGatewayMiddleware(): Promise<void>
   assert.equal(res.statusCode, 200)
 }
 
+async function testGatewayRawBodyInFlightLimit(): Promise<void> {
+  clearGatewayRequestBodyInFlightForTest()
+  const rawBodyA = Buffer.alloc(512 * 1024, 'a')
+  const rawBodyB = Buffer.alloc(512 * 1024, 'b')
+  const maxBytes = rawBodyA.length + rawBodyB.length - 1
+  setGatewayRequestBodyInFlightMaxBytesForTest(maxBytes)
+
+  try {
+    const reqA = createRequest(rawBodyA, { 'content-type': 'application/octet-stream' }, rawBodyA)
+    const resA = createMockResponse()
+    let nextA = false
+
+    await captureGatewayRawBody(reqA, resA as never, () => {
+      nextA = true
+    })
+
+    assert.equal(nextA, true)
+    assert.equal(reqA.rawBody?.length, rawBodyA.length)
+    assert.deepEqual(getGatewayRequestBodyInFlightState(), {
+      currentBytes: rawBodyA.length,
+      requestCount: 1,
+      maxBytes,
+      rejectedCount: 0
+    })
+
+    const reqB = createRequest(rawBodyB, { 'content-type': 'application/octet-stream' }, rawBodyB)
+    const resB = createMockResponse()
+    let nextB = false
+
+    await captureGatewayRawBody(reqB, resB as never, () => {
+      nextB = true
+    })
+
+    assert.equal(nextB, false)
+    assert.equal(reqB.rawBody, undefined)
+    assert.equal(resB.statusCode, 503)
+    assert.equal(resB.headers['retry-after'], '1')
+    assert.deepEqual(resB.body, {
+      error: {
+        message: '网关请求体在途总量过高，请稍后重试',
+        type: 'server_overloaded',
+        code: 'gateway_body_in_flight_limit_exceeded'
+      }
+    })
+    assert.deepEqual(getGatewayRequestBodyInFlightState(), {
+      currentBytes: rawBodyA.length,
+      requestCount: 1,
+      maxBytes,
+      rejectedCount: 1
+    })
+
+    resA.emit('finish')
+    assert.deepEqual(getGatewayRequestBodyInFlightState(), {
+      currentBytes: 0,
+      requestCount: 0,
+      maxBytes,
+      rejectedCount: 1
+    })
+
+    resA.emit('close')
+    assert.deepEqual(getGatewayRequestBodyInFlightState(), {
+      currentBytes: 0,
+      requestCount: 0,
+      maxBytes,
+      rejectedCount: 1
+    })
+  } finally {
+    clearGatewayRequestBodyInFlightForTest()
+  }
+}
+
 async function testDeferredJsonBodyImageToolMetadataScanned(): Promise<void> {
   const body = {
     model: 'gpt-5.4',
@@ -536,7 +613,12 @@ function createMockResponse(): MockResponse {
     headersSent: false,
     destroyed: false,
     statusCode: 200,
+    headers: {} as Record<string, string>,
     body: undefined as unknown,
+    setHeader(name: string, value: string) {
+      response.headers[name.toLowerCase()] = value
+      return response
+    },
     status(statusCode: number) {
       response.statusCode = statusCode
       return response

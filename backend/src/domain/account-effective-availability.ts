@@ -114,6 +114,9 @@ function sourceAccountAvailability(account: AccountEffectiveAvailabilityInput, n
   if (sourceStatus === 'disabled') {
     return blocked('source_disabled', '来源停用', 'red', 'source_account', '授权方原账户已停用，当前账户不能调用')
   }
+  if (sourceStatus === 'pending_test') {
+    return blocked('source_pending_test', '来源待测试', 'blue', 'source_account', '授权方原账户尚未测试通过，当前账户不能调用')
+  }
   if (sourceStatus === 'error') {
     return blocked('source_error', '来源异常', 'red', 'source_account', sourceReason(account, '授权方原账户处于异常状态，当前账户不能调用'))
   }
@@ -144,6 +147,9 @@ function instanceAccountAvailability(account: AccountEffectiveAvailabilityInput,
   }
   if (account.status === 'disabled') {
     return blocked('instance_disabled', `${instanceLabel}停用`, 'default', blockerScope, `${instanceReasonPrefix}已停用，当前不可用`)
+  }
+  if (account.status === 'pending_test') {
+    return blocked('instance_pending_test', `${instanceLabel}待测试`, 'blue', blockerScope, `${instanceReasonPrefix}尚未测试通过，当前不会参与调度`)
   }
   if (account.status === 'error') {
     return blocked('instance_error', `${instanceLabel}异常`, 'red', blockerScope, account.lastErrorMessage || `${instanceReasonPrefix}处于异常状态，当前不可用`)

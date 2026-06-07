@@ -699,7 +699,12 @@ async function runGatewayProbeAttempt(target: ProbeTarget, probe: GatewayProbeIn
       identity: target.identity,
       candidateAccounts: target.candidateAccounts,
       disableSessionAffinity: true,
-      exposeUpstreamDiagnostics: false
+      exposeUpstreamDiagnostics: false,
+      disableAccountStateMutation: true,
+      settingsOverride: {
+        temporaryUnschedulableRetryAttempts: 0,
+        temporaryUnschedulableRetryIntervalSeconds: 0
+      }
     }))
   } catch (error) {
     if (signal?.aborted) throw error
@@ -1386,6 +1391,24 @@ function item(
   evidence: Record<string, unknown>
 ): ModelCheckItemCreateInput {
   const evidenceResponseModel = textValue(evidence.responseModel)
+  const retrySummary = retryEvidence(result)
+  const evidenceSummary: Record<string, unknown> = {
+    httpStatus: result.statusCode,
+    success: result.success,
+    responseModel: result.model ?? evidenceResponseModel,
+    firstTokenMs: result.firstTokenMs,
+    responseTruncated: result.bodyTruncated,
+    ...retrySummary,
+    ...evidence
+  }
+  evidenceSummary.httpStatus = result.statusCode
+  evidenceSummary.success = result.success
+  evidenceSummary.responseModel = result.model ?? evidenceResponseModel
+  evidenceSummary.firstTokenMs = result.firstTokenMs
+  evidenceSummary.responseTruncated = result.bodyTruncated
+  for (const [key, value] of Object.entries(retrySummary)) {
+    evidenceSummary[key] = value
+  }
   return {
     itemKey,
     itemType,
@@ -1394,15 +1417,7 @@ function item(
     maxScore,
     durationMs: result.durationMs,
     traceId: result.traceId,
-    evidenceSummary: {
-      ...evidence,
-      httpStatus: result.statusCode,
-      success: result.success,
-      responseModel: result.model ?? evidenceResponseModel,
-      firstTokenMs: result.firstTokenMs,
-      responseTruncated: result.bodyTruncated,
-      ...retryEvidence(result)
-    },
+    evidenceSummary,
     errorCode: result.success ? undefined : `http_${result.statusCode}`,
     errorMessage: result.success ? undefined : result.errorMessage
   }

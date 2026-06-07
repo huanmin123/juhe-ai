@@ -116,13 +116,20 @@ fakeWorker.ready()
 fakeWorker.sentMessages = []
 assert.equal(backgroundIpc.sendAuditLogsToWorker([buildLargeAudit('without-hash')]), true, '无 hash 的大审计应可降级投递')
 assert.equal(backgroundIpc.sendAuditLogsToWorker([buildLargeAudit('with-hash', 'sha256-large-body')]), true, '已有 hash 的大审计应可 hash_only 投递')
+assert.equal(backgroundIpc.sendAuditLogsToWorker([buildOversizedMetadataAudit()]), true, 'headers / attempts 过大的审计应继续二次降级后投递')
 const auditMessages = fakeWorker.sentMessages
   .filter((message): message is Extract<WorkerMessage, { type: 'background_worker_audit_logs' }> => message.type === 'background_worker_audit_logs')
-assert.equal(auditMessages.length, 2, 'fake worker 应收到两条降级后的审计消息')
+assert.equal(auditMessages.length, 3, 'fake worker 应收到三条降级后的审计消息')
 assert.equal(auditMessages[0].items[0]?.payloads[0]?.body, undefined, '降级审计不应向 worker IPC 发送大 body')
 assert.equal(auditMessages[0].items[0]?.payloads[0]?.captureStatus, 'dropped', '未计算 hash 时丢弃 body 必须标记 dropped')
 assert.equal(auditMessages[1].items[0]?.payloads[0]?.captureStatus, 'hash_only', '已有 hash 时丢弃 body 才能标记 hash_only')
 assert.equal(auditMessages[1].items[0]?.payloads[0]?.bodySha256, 'sha256-large-body', 'hash_only 降级必须保留既有 bodySha256')
+const metadataTrimmedAudit = auditMessages[2].items[0]
+assert.equal(metadataTrimmedAudit?.captureStatus, 'dropped', 'metadata 过大时审计日志本身应标记为已降级')
+assert((metadataTrimmedAudit?.attempts.length ?? 0) <= 16, '过多 attempts 应在 IPC 投递前裁剪')
+assert((metadataTrimmedAudit?.payloads.length ?? 0) <= 32, '过多 payloads 应在 IPC 投递前裁剪')
+assert.equal(metadataTrimmedAudit?.payloads[0]?.headers, undefined, '过大的 payload headers 应在 IPC 投递前丢弃')
+assert.equal(metadataTrimmedAudit?.payloads[0]?.body, undefined, 'metadata 二次降级后不应携带 body')
 
 console.log('后台 IPC payload 边界回归通过：大审计 body 会在投递前降级，状态读取不重新遍历队列，超大 usage 消息快速拒绝')
 
@@ -150,5 +157,55 @@ function buildLargeAudit(suffix: string, bodySha256?: string): AuditLogInput {
       contentType: 'text/plain',
       captureStatus: 'complete'
     }]
+  }
+}
+
+function buildOversizedMetadataAudit(): AuditLogInput {
+  const largeHeader = 'h'.repeat(128 * 1024)
+  const payloads: AuditLogInput['payloads'] = [
+    ...Array.from({ length: 48 }, (_, index) => ({
+      partType: index % 2 === 0 ? 'upstream_request' as const : 'upstream_response' as const,
+      attemptTempId: `attempt_${index}`,
+      headers: {
+        'x-large-header': largeHeader
+      },
+      contentType: 'application/json',
+      captureStatus: 'complete' as const
+    })),
+    ...Array.from({ length: 5000 }, (_, index) => ({
+      partType: 'gateway_metadata' as const,
+      contentType: 'application/json',
+      captureStatus: 'complete' as const,
+      sequenceIndex: 1000 + index
+    }))
+  ]
+  return {
+    traceId: 'trace-background-ipc-large-audit-metadata',
+    method: 'POST',
+    path: '/v1/responses',
+    auditOutcome: 'upstream_failed',
+    success: false,
+    finalStatusCode: 502,
+    errorPhase: 'upstream',
+    errorCode: 'large_audit_metadata',
+    errorMessage: 'x'.repeat(1024 * 1024),
+    sampleBucket: 0,
+    sampleReason: 'regression',
+    captureStatus: 'complete',
+    startedAt: '2000-01-01T00:00:00.000Z',
+    endedAt: '2000-01-01T00:00:00.000Z',
+    attempts: Array.from({ length: 40 }, (_, index) => ({
+      attemptIndex: index,
+      upstreamMethod: 'POST',
+      upstreamUrl: `https://api.openai.com/v1/responses?metadata=${'u'.repeat(128 * 1024)}`,
+      success: false,
+      errorPhase: 'upstream',
+      errorCode: 'large_audit_metadata',
+      errorMessage: 'e'.repeat(128 * 1024),
+      startedAt: '2000-01-01T00:00:00.000Z',
+      endedAt: '2000-01-01T00:00:00.001Z',
+      durationMs: 1
+    })),
+    payloads
   }
 }

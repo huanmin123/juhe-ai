@@ -1,6 +1,6 @@
 export type ProviderCode = string
 export type AccountType = string
-export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
+export type AccountStatus = 'active' | 'pending_test' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
 export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled'
 export const ACCOUNT_CLIENT_COMPATIBILITIES = ['openai_standard', 'codex_responses'] as const
 export type AccountClientCompatibility = typeof ACCOUNT_CLIENT_COMPATIBILITIES[number]
@@ -334,6 +334,7 @@ export type AccountEffectiveAvailabilityStatus =
   | 'source_deleted'
   | 'source_expired'
   | 'source_disabled'
+  | 'source_pending_test'
   | 'source_error'
   | 'source_rate_limited'
   | 'source_temporary_unavailable'
@@ -342,6 +343,7 @@ export type AccountEffectiveAvailabilityStatus =
   | 'source_schedule_inactive'
   | 'instance_expired'
   | 'instance_disabled'
+  | 'instance_pending_test'
   | 'instance_error'
   | 'instance_rate_limited'
   | 'instance_temporary_unavailable'

@@ -266,7 +266,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
         accessTokenExpiredOrMissing: expiredOrMissing
       }), 'OpenAI OAuth 访问令牌刷新失败')
 
-      if (failureState.count >= oauthTokenRefreshFailureThreshold) {
+      if (failureState.count >= oauthTokenRefreshFailureThreshold && account.status !== 'pending_test') {
         const updated = markAccountException(
           account.id,
           OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
@@ -406,7 +406,7 @@ function finalizeSuccessfulTokenRefresh(account: OpenAIOAuthRefreshAccount, opti
     clearGatewayRuntimeCache()
     return account
   }
-  const updated = account.status !== 'disabled' && (account.status !== 'error' || account.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE)
+  const updated = account.status !== 'pending_test' && account.status !== 'disabled' && (account.status !== 'error' || account.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE)
     ? clearAccountFailureState(account.id, options.access) ?? account as AccountSummary
     : account
   clearGatewayRuntimeCache()

@@ -72,6 +72,7 @@
     "test:public-api-logs": "tsx src/scripts/regression/public-api-logs-regression.ts",
     "test:background-parent-ipc-event-loop": "tsx src/scripts/regression/background-parent-ipc-event-loop-regression.ts",
     "test:background-ipc-protected-queue": "tsx src/scripts/regression/background-ipc-protected-queue-regression.ts",
+    "test:background-queue-health": "tsx src/scripts/regression/background-queue-health-regression.ts",
     "test:background-ipc-payload-boundary": "tsx src/scripts/regression/background-ipc-payload-boundary-regression.ts",
     "test:worker-local-queue-limit": "tsx src/scripts/regression/worker-local-queue-limit-regression.ts",
     "test:queue-failure-requeue-boundary": "tsx src/scripts/regression/queue-failure-requeue-boundary-regression.ts",

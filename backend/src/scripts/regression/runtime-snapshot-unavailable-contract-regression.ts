@@ -60,6 +60,17 @@ interface RuntimeLogFacetsResponse {
   workerSnapshotAvailable: boolean
   runtimeLogIndexQueueAvailable: boolean
   runtime: unknown
+  queueHealth: {
+    available: boolean
+    workerSnapshotAvailable: boolean
+    serverIpcQueueAvailable: boolean
+    status: string
+    summary: {
+      unavailableCount: number
+      droppedCount: number
+      rejectedCount: number
+    }
+  }
   worker: {
     available: boolean
     ready: boolean | null
@@ -153,6 +164,13 @@ try {
   assert.equal(runtimeLogFacets.runtime, null, '运行日志 runtime 不可用时不能伪装成空队列')
   assert.equal(runtimeLogFacets.worker.ready, null, 'worker 状态不可用时 facets ready 不能伪装成 false')
   assert.equal(runtimeLogFacets.worker.pendingMessageCount, null, 'worker 状态不可用时 facets pendingMessageCount 不能伪装成 0')
+  assert.equal(runtimeLogFacets.queueHealth.available, false, '队列健康快照应标记 server runtime 不可用')
+  assert.equal(runtimeLogFacets.queueHealth.workerSnapshotAvailable, false, '队列健康快照应标记 worker snapshot 不可用')
+  assert.equal(runtimeLogFacets.queueHealth.serverIpcQueueAvailable, false, '队列健康快照应标记 server IPC 队列不可用')
+  assert.equal(runtimeLogFacets.queueHealth.status, 'unavailable', '运行态不可用时队列健康状态不能伪装成 normal')
+  assert(runtimeLogFacets.queueHealth.summary.unavailableCount > 0, '运行态不可用时队列健康应记录不可用队列数量')
+  assert.equal(runtimeLogFacets.queueHealth.summary.droppedCount, 0, '不可用不应伪造 dropped 指标')
+  assert.equal(runtimeLogFacets.queueHealth.summary.rejectedCount, 0, '不可用不应伪造 rejected 指标')
   assert.equal(runtimeLogFacets.dbService.statusAvailable, true, 'DB service 本地 status 仍应可用')
   assert.equal(runtimeLogFacets.dbService.stateAvailable, false, 'server runtime 缺失时 DB service 父进程状态应标记不可用')
   assert.equal(runtimeLogFacets.dbService.ready, true, 'DB service 本地 status 可用时 ready 应来自本地 status')

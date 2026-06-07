@@ -7,7 +7,7 @@ import {
   accountImportProtocolVersion
 } from './account-import.service.js'
 
-type AccountExportStatus = 'active' | 'disabled'
+type AccountExportStatus = 'active' | 'pending_test' | 'disabled'
 
 export interface AccountExportOptions {
   accountIds: string[]
@@ -174,6 +174,7 @@ function exportAccount(account: AccountSummary, proxyRefsById: Map<string, strin
 }
 
 function exportAccountStatus(account: AccountSummary): AccountExportStatus {
+  if (account.status === 'pending_test') return 'pending_test'
   return account.status === 'active' && account.schedulable !== false ? 'active' : 'disabled'
 }
 

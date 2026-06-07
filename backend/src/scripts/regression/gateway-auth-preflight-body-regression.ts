@@ -127,7 +127,7 @@ try {
     assert.equal(fakeChild.sentOperationCount, 2, '图像权限早拒绝只需要复用一次运行配置读取')
 
     const valid = await postJson(`${baseUrl}/v1/responses`, body, apiKey.key)
-    assert.equal(valid.status, 200, '合法 API Key 应继续进入网关 body 读取链路')
+    assert.equal(valid.status, 200, `合法 API Key 应继续进入网关 body 读取链路：${valid.text}`)
     assert.equal(rawBodyMiddlewareHitCount, 1, '合法请求应读取一次 raw body')
     assert.deepEqual(JSON.parse(valid.text), {
       apiKeyId: apiKey.id,

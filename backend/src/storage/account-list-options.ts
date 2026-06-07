@@ -69,11 +69,11 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
         WHEN account_rows.source_last_error_code = 'account_expired'
           OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         THEN 'disabled'
-        WHEN account_rows.source_status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
+        WHEN account_rows.source_status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
         WHEN account_rows.source_schedulable <> 1 THEN 'disabled'
         WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'temporary_unavailable'
         WHEN account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'disabled'
-        WHEN account_rows.status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
+        WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
         WHEN account_rows.schedulable <> 1 THEN 'disabled'
         WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 'temporary_unavailable'
         ELSE account_rows.status

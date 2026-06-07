@@ -75,6 +75,46 @@ export interface RuntimeLogGrepRuntime {
   maxConcurrentSearches: number
 }
 
+export type RuntimeLogQueueHealthStatus = 'normal' | 'backlogged' | 'degraded' | 'unavailable'
+
+export interface RuntimeLogQueueHealthItem {
+  key: string
+  label: string
+  source: 'worker_local' | 'server_ipc'
+  status: RuntimeLogQueueHealthStatus
+  reasons: string[]
+  queueLength: number | null
+  queueBytes: number | null
+  droppedCount: number | null
+  droppedOverflowCount: number | null
+  droppedOversizeCount: number | null
+  droppedSuccessCount: number | null
+  droppedFailureCount: number | null
+  rejectedCount: number | null
+  flushFailureCount: number | null
+  flushLastError?: string
+}
+
+export interface RuntimeLogQueueHealth {
+  available: boolean
+  workerSnapshotAvailable: boolean
+  serverIpcQueueAvailable: boolean
+  status: RuntimeLogQueueHealthStatus
+  reasons: string[]
+  summary: {
+    degradedCount: number
+    backloggedCount: number
+    unavailableCount: number
+    droppedCount: number
+    rejectedCount: number
+    flushFailureCount: number
+    queuedCount: number
+    queuedBytes: number
+  }
+  workerQueues: RuntimeLogQueueHealthItem[]
+  serverIpcQueues: RuntimeLogQueueHealthItem[]
+}
+
 export interface RuntimeLogFacets {
   retentionDays: number
   earliestIndexedAt?: string
@@ -108,6 +148,7 @@ export interface RuntimeLogFacets {
     lastRequestAt?: string
     lastError?: string
   }
+  queueHealth: RuntimeLogQueueHealth
   grep: RuntimeLogGrepRuntime
   gatewayAccountSideEffectsAvailable: boolean
   gatewayAccountSideEffects: {

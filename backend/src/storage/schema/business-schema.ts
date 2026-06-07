@@ -179,7 +179,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       provider_code TEXT NOT NULL,
       name TEXT NOT NULL,
       type TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active',
+      status TEXT NOT NULL DEFAULT 'pending_test',
       credentials_encrypted TEXT NOT NULL,
       credential_fingerprint TEXT,
       credential_mask TEXT NOT NULL DEFAULT '',

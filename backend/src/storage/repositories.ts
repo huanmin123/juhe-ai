@@ -706,6 +706,7 @@ export function accountTestUnavailableMessage(account: AccountSummary): string |
     if (account.effectiveAvailability.status === 'instance_disabled') return undefined
     if (
       (account.effectiveAvailability.status === 'instance_error'
+        || account.effectiveAvailability.status === 'instance_pending_test'
         || account.effectiveAvailability.status === 'instance_rate_limited'
         || account.effectiveAvailability.status === 'instance_temporary_unavailable'
         || account.effectiveAvailability.status === 'instance_cooldown')
@@ -777,7 +778,7 @@ function disableExpiredAccounts(access?: AccessScope, limit = maxAccountExpirySw
   return changed
 }
 
-const accountStatusValues: readonly AccountStatus[] = ['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
+const accountStatusValues: readonly AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 const coolingAccountStatusValues: readonly AccountStatus[] = ['rate_limited', 'temporary_unavailable']
 
 function normalizeAccountStatus(value: unknown): AccountStatus {
@@ -800,7 +801,7 @@ function isCoolingAccountStatus(status: AccountStatus): boolean {
 }
 
 function isHardUnavailableAccountStatus(status: AccountStatus): boolean {
-  return status === 'disabled' || status === 'error'
+  return status === 'disabled' || status === 'pending_test' || status === 'error'
 }
 
 function optionalNumber(value: unknown): number | undefined {
@@ -1510,7 +1511,7 @@ function buildAccountOptionFilters(
       OR (ra.expires_at IS NOT NULL AND ra.expires_at <= ${currentIsoSql})
     THEN 'disabled'
     WHEN accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql} THEN 'disabled'
-    WHEN accounts.status IN ('disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     ELSE accounts.status
@@ -1528,7 +1529,7 @@ function buildAccountOptionFilters(
     AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ${currentIsoSql})
     AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ${currentIsoSql})`
   const authorizedAccountHardUnavailableExpression = `accounts.schedulable <> 1
-    OR accounts.status IN ('disabled', 'error')
+    OR accounts.status IN ('pending_test', 'disabled', 'error')
     OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})`
   const authorizedAccountCoolingExpression = `accounts.status IN ('rate_limited', 'temporary_unavailable')
     OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql})`
@@ -2183,7 +2184,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode, systemAccountId) ?? []
   const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId) ?? []
-  const initialStatus = normalizedAccountStatusInput(input.status, 'active')
+  const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : initialStatus
   const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
@@ -2228,13 +2229,17 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     lastSuccessfulTestModel: undefined,
     proxyProfileId,
     errorPolicyId: normalizeNullableIdInput(input.errorPolicyId, '错误处理策略'),
-    schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
+    schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
     availabilityScheduleActive: isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(availabilitySchedule), new Date(nowMs)),
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorCode: expiredByPackage ? 'account_expired' : undefined,
-    lastErrorMessage: expiredByPackage ? '账户套餐已过期，已自动停用' : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
+    lastErrorMessage: expiredByPackage
+      ? '账户套餐已过期，已自动停用'
+      : initialStatus === 'pending_test'
+        ? '账户创建后需测试通过才能参与调度'
+        : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     cooldownRetestFailureCount: 0,
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
     cooldownRetestLastAt: undefined,
@@ -2381,8 +2386,8 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
     throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
   }
-  if (hasStatusInput && requestedStatus === 'active' && (isCoolingAccountStatus(current.status) || current.status === 'error')) {
-    throw new Error('临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用恢复正常或恢复异常')
+  if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
+    throw new Error('待测试、临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用账户测试、恢复正常或恢复异常')
   }
   const nextStatus = expiredByPackage ? 'disabled' : requestedStatus
   let nextCooldownUntil = current.cooldownUntil
@@ -2395,6 +2400,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
       nextLastErrorMessage = undefined
+      nextCooldownRetestObservationStartedAt = undefined
+      clearCooldownRetestState = true
+    } else if (nextStatus === 'pending_test') {
+      nextCooldownUntil = undefined
+      nextLastErrorCode = undefined
+      nextLastErrorMessage = '账户需测试通过后才能参与调度'
       nextCooldownRetestObservationStartedAt = undefined
       clearCooldownRetestState = true
     } else if (nextStatus === 'disabled' || nextStatus === 'error') {
@@ -2474,7 +2485,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
       : current.proxyProfileId,
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : normalizeNullableIdInput(rawErrorPolicyId, '错误处理策略'),
-    schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus)
+    schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus)
       ? false
       : hasStatusInput
         ? true
@@ -3268,6 +3279,7 @@ function statementChanges(result: { changes?: number | bigint }): number {
 
 interface ClearAccountFailureStateOptions {
   allowErrorRestore?: boolean
+  allowPendingTestRestore?: boolean
 }
 
 export interface AccountFailureStateClearResult {
@@ -3299,6 +3311,9 @@ export function clearAccountFailureStateResult(
   }
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (current.status === 'disabled' && !expiredByPackage) {
+    return { account: current, changed: false }
+  }
+  if (current.status === 'pending_test' && options.allowPendingTestRestore !== true) {
     return { account: current, changed: false }
   }
   if (current.status === 'error' && options.allowErrorRestore === false) {
@@ -3351,6 +3366,7 @@ export function clearAccountFailureStateResult(
         AND deleted_at IS NULL
         AND status <> 'disabled'
         AND (? = 1 OR status <> 'error')
+        AND (? = 1 OR status <> 'pending_test')
         AND (
           status <> 'active'
           OR schedulable <> 1
@@ -3365,7 +3381,7 @@ export function clearAccountFailureStateResult(
           OR stream_failure_window_started_at IS NOT NULL
         )
     `)
-    .run(nowIso(), id, options.allowErrorRestore === false ? 0 : 1)
+    .run(nowIso(), id, options.allowErrorRestore === false ? 0 : 1, options.allowPendingTestRestore === true ? 1 : 0)
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_restored' })
@@ -3378,13 +3394,17 @@ export function clearAccountFailureStateResult(
 
 export function clearAuthorizedAccountBindingFailureState(
   id: string,
-  access?: AccessScope
+  access?: AccessScope,
+  options: ClearAccountFailureStateOptions = {}
 ): AccountFailureStateClearResult {
   const current = findAccountSummary(id, access)
   if (!current || current.accessType !== 'authorized' || !current.boundGroupId || !current.accountAuthorizationId) {
     return { account: current, changed: false }
   }
   if (current.status === 'disabled') {
+    return { account: current, changed: false }
+  }
+  if (current.status === 'pending_test' && options.allowPendingTestRestore !== true) {
     return { account: current, changed: false }
   }
   const hasFailureState = current.status !== 'active'
@@ -3400,7 +3420,7 @@ export function clearAuthorizedAccountBindingFailureState(
     systemAccountId: authorizedBindingSystemAccountId(access),
     groupId: current.boundGroupId,
     accountAuthorizationId: current.accountAuthorizationId
-  })
+  }, options)
 }
 
 export interface AuthorizedAccountBindingRuntimeTarget {
@@ -3538,6 +3558,7 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
         AND deleted_at IS NULL
         AND status <> 'disabled'
         AND (? = 1 OR status <> 'error')
+        AND (? = 1 OR status <> 'pending_test')
         AND (
           status <> 'active'
           OR schedulable <> 1
@@ -3561,7 +3582,7 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
             AND group_accounts.account_authorization_id = ?
         )
     `)
-    .run(now, target.accountId, target.systemAccountId, target.accountAuthorizationId, options.allowErrorRestore === false ? 0 : 1, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+    .run(now, target.accountId, target.systemAccountId, target.accountAuthorizationId, options.allowErrorRestore === false ? 0 : 1, options.allowPendingTestRestore === true ? 1 : 0, target.systemAccountId, target.groupId, target.accountAuthorizationId)
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_restored' })
@@ -4277,6 +4298,9 @@ export function updateAuthorizedAccountBindingDispatch(
     throw new Error('超级优先和降级备用不能同时开启')
   }
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
+  if ((input.clearFailureState === true || input.status === 'active') && current.status === 'pending_test') {
+    throw new Error('待测试账户需手动测试通过后才能参与调度')
+  }
   const nextStatus: AccountStatus = hasStatusInput
     ? input.status === 'disabled' ? 'disabled' : 'active'
     : input.clearFailureState === true

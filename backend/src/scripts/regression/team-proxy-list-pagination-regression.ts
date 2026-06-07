@@ -222,7 +222,7 @@ try {
   assertBusinessIndexMissing('idx_proxy_profiles_type_lookup')
   assertProxyDeleteUsageWindowGuard()
   assertQueryPlanUsesIndex(
-    'SELECT id, name FROM accounts WHERE proxy_profile_id = ? ORDER BY id ASC LIMIT ?',
+    'SELECT id, name FROM accounts WHERE proxy_profile_id = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?',
     [proxyMatched.id, 4],
     'idx_accounts_proxy_profile'
   )
@@ -254,7 +254,7 @@ function assertBusinessIndexMissing(indexName: string): void {
 function assertProxyDeleteUsageWindowGuard(): void {
   const source = readFileSync(new URL('../../storage/proxy.repository.ts', import.meta.url), 'utf8')
   assert(!source.includes('COUNT(*) AS account_count FROM accounts WHERE proxy_profile_id = ?'), '代理删除占用检查不能对绑定账户做精确 COUNT(*)')
-  assert(source.includes('SELECT id, name FROM accounts WHERE proxy_profile_id = ? ORDER BY id ASC LIMIT ?'), '代理删除占用检查必须只读取固定账户窗口')
+  assert(source.includes('SELECT id, name FROM accounts WHERE proxy_profile_id = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?'), '代理删除占用检查必须只读取固定账户窗口')
 }
 
 function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
