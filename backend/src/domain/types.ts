@@ -130,6 +130,7 @@ export interface ProviderDefinition {
   id: string
   code: ProviderCode
   name: string
+  parentCode?: ProviderCode
   description?: string
   enabled: boolean
   defaultProtocolProfileId: string

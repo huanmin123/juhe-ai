@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { isSuperAdminRole, type SystemAccountPrincipalSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
 import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPasswordAsync } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
+import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
@@ -301,7 +301,7 @@ export function createSystemAccountWithPasswordHash(input: {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now)
-    ensureDefaultOpenAIGroupForSystemAccount(summary.id, now)
+    ensureDefaultBuiltInGroupsForSystemAccount(summary.id, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)

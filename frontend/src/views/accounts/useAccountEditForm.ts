@@ -40,7 +40,7 @@ import {
   parseStrictDatePickerValue
 } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
-import { GPT_VENDOR_CODE, OPENAI_PROVIDER } from './accountOptions'
+import { FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
 import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
@@ -103,7 +103,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   })
 
   const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId], form.providerProtocolProfileId))
-  const availableProviders = computed(() => options.providers.value.length ? options.providers.value : [OPENAI_PROVIDER])
+  const availableProviders = computed(() => options.providers.value.length ? options.providers.value : FALLBACK_PROVIDERS)
   const providerNameByCode = computed(() => providerNameByCodeMap(availableProviders.value))
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
   const selectedProtocolProfile = computed(() => selectedProvider.value

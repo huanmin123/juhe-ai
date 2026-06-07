@@ -4930,15 +4930,25 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
     return undefined
   }
   const hasDescriptionInput = hasOwnInput(input, 'description')
+  const hasProviderCodeInput = hasOwnInput(input, 'providerCode')
+  const hasProviderProtocolProfileInput = hasOwnInput(input, 'providerProtocolProfileId')
   const hasGroupTypeInput = hasOwnInput(input, 'groupType')
   const hasSchedulingPolicyInput = hasGroupSchedulingPolicyInput(input)
+  const nextProviderCode = hasProviderCodeInput
+    ? normalizeOptionalRequiredTextInput(input, 'providerCode', current.providerCode, '供应商')
+    : current.providerCode
+  const nextProviderProtocolProfileId = hasProviderProtocolProfileInput
+    ? normalizeOptionalRequiredTextInput(input, 'providerProtocolProfileId', current.providerProtocolProfileId ?? '', '供应商协议档案')
+    : nextProviderCode === current.providerCode
+      ? current.providerProtocolProfileId
+      : undefined
   const nextGroupType = hasGroupTypeInput ? normalizeGroupType(input.groupType) : current.groupType
   const nextSchedulingPolicyInput = hasSchedulingPolicyInput ? groupSchedulingPolicyInput(input) : current.schedulingPolicy
   const next: GroupSummary = {
     ...current,
     name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '分组名称'),
-    providerCode: normalizeOptionalRequiredTextInput(input, 'providerCode', current.providerCode, '供应商'),
-    providerProtocolProfileId: normalizeOptionalRequiredTextInput(input, 'providerProtocolProfileId', current.providerProtocolProfileId ?? '', '供应商协议档案'),
+    providerCode: nextProviderCode,
+    providerProtocolProfileId: nextProviderProtocolProfileId,
     description: hasDescriptionInput ? normalizeNullableTextInput(input.description, '分组说明') : current.description,
     enabled: normalizeOptionalBooleanInput(input, 'enabled', current.enabled, '分组启用状态'),
     groupType: nextGroupType,

@@ -2,8 +2,8 @@ import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProviderMo
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
+import { isOpenAICompatibleProviderCode } from '@/shared/providerProtocol'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
-import { GPT_VENDOR_CODE } from './accountOptions'
 
 export type SelectOption = {
   label: string
@@ -13,7 +13,7 @@ export type SelectOption = {
 
 export function buildTestModelOptions(providerModels: ProviderModelPricing[], account?: AccountSummary | AccountSummary[], providerDefaultModel = ''): SelectOption[] {
   const accountModels = normalizeAccountSupportedModels(account)
-  const useProviderModels = isGptTestSelection(account)
+  const useProviderModels = isOpenAICompatibleTestSelection(account)
   const providerModelValues = useProviderModels
     ? providerModels.map((item) => item.model)
     : []
@@ -41,9 +41,9 @@ export function providerCodeForAccountSelection(account: AccountSummary | Accoun
   return codes.length === 1 ? codes[0] : ''
 }
 
-export function isGptTestSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
+export function isOpenAICompatibleTestSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
   const accounts = normalizeAccounts(account)
-  return accounts.length > 0 && accounts.every((item) => item.providerCode === GPT_VENDOR_CODE)
+  return accounts.length > 0 && accounts.every((item) => isOpenAICompatibleProviderCode(item.providerCode))
 }
 
 function normalizeAccountSupportedModels(account: AccountSummary | AccountSummary[] | undefined): string[] {

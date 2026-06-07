@@ -3,7 +3,7 @@
     <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadProviders" />
     <ResponsiveDataList table-class="page-table provider-table" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :scroll-x="1320" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
       <template #emptyText>
-        <a-empty class="page-empty-card" description="当前仅内置 GPT 供应商，后续新供应商会在这里扩展。" />
+        <a-empty class="page-empty-card" description="当前内置 OpenAI 兼容与 GPT 供应商，后续新供应商会在这里扩展。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">

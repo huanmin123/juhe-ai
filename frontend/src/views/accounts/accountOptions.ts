@@ -1,5 +1,7 @@
 import type { AccountStatus, ProviderDefinition } from '@/types/domain'
 import {
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
@@ -10,10 +12,43 @@ import {
 
 export { GPT_VENDOR_CODE }
 
-export const OPENAI_PROVIDER: ProviderDefinition = {
+export const OPENAI_COMPATIBLE_PROVIDER: ProviderDefinition = {
+  id: OPENAI_COMPATIBLE_PROVIDER_CODE,
+  code: OPENAI_COMPATIBLE_PROVIDER_CODE,
+  name: 'OpenAI 兼容',
+  enabled: true,
+  defaultProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://api.openai.com/v1',
+  defaultTestModel: 'gpt-5.5',
+  accountTypes: ['api_key'],
+  capabilities: ['responses', 'chat', 'passthrough'],
+  protocolProfiles: [
+    {
+      id: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      name: 'OpenAI 兼容 / OpenAI v1',
+      enabled: true,
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      protocolVersion: OPENAI_PROTOCOL_VERSION,
+      baseUrl: 'https://api.openai.com/v1',
+      defaultTestModel: 'gpt-5.5',
+      accountTypes: ['api_key'],
+      capabilities: ['responses', 'chat', 'passthrough'],
+      endpointFamilies: [
+        { code: OPENAI_RESPONSES_FAMILY, name: 'Responses' },
+        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
+      ]
+    }
+  ]
+}
+
+export const GPT_PROVIDER: ProviderDefinition = {
   id: GPT_VENDOR_CODE,
   code: GPT_VENDOR_CODE,
   name: 'GPT',
+  parentCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
   enabled: true,
   defaultProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
   protocolCode: OPENAI_PROTOCOL_CODE,
@@ -41,6 +76,8 @@ export const OPENAI_PROVIDER: ProviderDefinition = {
     }
   ]
 }
+
+export const FALLBACK_PROVIDERS: ProviderDefinition[] = [OPENAI_COMPATIBLE_PROVIDER, GPT_PROVIDER]
 
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20

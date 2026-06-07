@@ -2,14 +2,14 @@
 
 ## 范围
 
-当前版本启用 GPT 供应商，并通过 OpenAI v1 协议对外提供兼容网关。账户类型支持：
+当前版本启用两个使用 OpenAI v1 协议的供应商，并通过 OpenAI-compatible 入口对外提供兼容网关：
 
-- GPT OAuth
-- GPT API Key
+- `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传。
+- `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力。
 
-这里的 `openai` 是协议层编码，表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；AI 账户、分组、模型目录和价格目录归属在供应商层，当前默认供应商编码是 `gpt`。后续如果增加 GLM、Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`，不能把账户直接创建到 `openai` 协议层。
+这里的 `openai` 有两种层级语义：`protocolCode=openai` 表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；`providerCode=openai` 表示通用 OpenAI-compatible 供应商。两者同名但字段不同，不能混淆。AI 账户、分组、模型目录和价格目录归属在供应商层；后续如果增加 GLM、Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`。
 
-当前唯一可创建和可调度的供应商协议档案是 `profile_gpt_openai_v1`。账户、分组、账号测试任务、导入协议和公开推送接口都必须带上或解析出这个档案；后端会把档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。`providerCode=gpt` 只说明供应商，不能单独表达上游协议、端点族和客户端策略。
+当前可创建和可调度的供应商协议档案有两个：`profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。账户、分组、账号测试任务、导入协议和公开推送接口都必须带上或由供应商解析出档案；后端会把档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。`providerCode` 只说明供应商，不能单独表达上游协议、端点族和客户端策略。
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 `API Key 管理` 或 `我的 API Key` 页面生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
@@ -17,6 +17,7 @@
 
 | 账户类型 | 上游链路 | 当前路径策略 | 主要限制 |
 | --- | --- | --- | --- |
+| 通用 OpenAI 兼容 API Key | 任意 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 只支持 `api_key`；请求体默认 raw passthrough；本地过滤危险 header 和本地认证 header；不启用 GPT OAuth、Codex adapter 或 Codex 专属客户端策略。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
 | GPT API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传，例如 `/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions`。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 请求体默认 raw passthrough；可选 `codex_responses` 兼容模式只改写 `/responses` 请求；本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
 | GPT OAuth | ChatGPT / Codex backend 的 `openai_oauth_codex` adapter | 只为 `POST /responses`、`POST /v1/responses`、`POST /responses/compact` 和 `POST /v1/responses/compact` 构造 Codex 上游请求；`GET /models` / `/v1/models` 由本地模型目录返回。 | 账户兼容模式固定为 `codex_responses`，不提供用户侧切换；不等价于公开 OpenAI API Key；不承诺 `/chat/completions` 到 Responses 的重型协议翻译，也不承诺公开 Responses API 全字段原样进入 Codex backend。OAuth-only 分组请求不支持的路径时不会落到公开 OpenAI API。 |
 
@@ -24,15 +25,16 @@
 
 单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，服务端不换账号也不重新请求上游续写；持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时按客户端策略处理可见输出前失败：只有命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时，才写出 Codex 可重试的 `response.failed/upstream_retryable_error`，并在同一 turn 第 4 次失败链路上避让已失败账号；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
-## 协议与 GPT 供应商定义
+## 协议与供应商定义
 
 ```ts
 type ProtocolCode = 'openai'
 type ProtocolVersion = 'v1'
-type ProviderCode = 'gpt'
-type ProviderProtocolProfileId = 'profile_gpt_openai_v1'
+type ProviderCode = 'openai' | 'gpt'
+type ProviderProtocolProfileId = 'profile_openai_openai_v1' | 'profile_gpt_openai_v1'
 type EndpointFamily = 'chat_completions' | 'responses'
-type GptAccountType = 'oauth' | 'api_key'
+type OpenAICompatibleAccountType = 'api_key'
+type GptAccountType = 'api_key' | 'oauth'
 ```
 
 默认协议定义：
@@ -41,20 +43,15 @@ type GptAccountType = 'oauth' | 'api_key'
 - `protocolVersion`: `v1`
 - `endpointFamilies`: `chat_completions`、`responses`
 
-默认供应商定义：
+内置供应商定义：
 
-- `code`: `gpt`
-- `name`: `GPT`
+- `openai`：通用 OpenAI-compatible 供应商，作为同协议优化的父层，只提供 API Key 透传。
+- `gpt`：GPT 子供应商，`parent_code = openai`，继承通用 OpenAI-compatible 能力，并叠加 GPT OAuth / Codex 专属能力。
 
-默认供应商协议档案：
+内置供应商协议档案：
 
-- `id`: `profile_gpt_openai_v1`
-- `providerCode`: `gpt`
-- `protocolCode`: `openai`
-- `protocolVersion`: `v1`
-- `baseUrl`: `https://api.openai.com/v1`
-- `accountTypes`: `oauth`、`api_key`
-- `endpointFamilies`: `chat_completions`、`responses`
+- `profile_openai_openai_v1`：`providerCode = openai`，`accountTypes = api_key`，用于通用 OpenAI-compatible 透传。
+- `profile_gpt_openai_v1`：`providerCode = gpt`，`accountTypes = api_key / oauth`，用于 GPT API Key 透传和 GPT OAuth / Codex 适配。
 
 默认能力：
 
@@ -136,7 +133,7 @@ type GptAccountType = 'oauth' | 'api_key'
 当前关系规则：
 
 - `accounts.system_account_id` 表示当前账户行所属系统账户；账户所有者把 AI 账户授权给其他系统账户后，系统会为被授权人创建独立授权实例账户。
-- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、API Key 号池路由和网关候选过滤的硬边界；当前值为 `profile_gpt_openai_v1`。
+- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、API Key 号池路由和网关候选过滤的硬边界；当前内置值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。
 - `group_accounts` 表示某个使用方的本地分组绑定；自有账户绑定自有账户 ID，授权账户绑定被授权人自己的授权实例账户 ID，并记录稳定的 `account_authorization_id`。
 - 一个账户在同一个使用方作用域内同一时间只保留一个有效分组绑定；自有账户在所有者作用域内创建 / 编辑时选择分组，被授权账户在授权创建时必须绑定被授权用户自己的本地分组，后续通过账户编辑弹窗调整分组和分组内优先级。
 - 被授权用户把授权实例加入自己的同协议档案分组后，自己的 API Key 才能通过该分组调度该授权实例；这只是本地调度绑定，不改变授权方原账户的分组绑定。
@@ -152,8 +149,8 @@ type GptAccountType = 'oauth' | 'api_key'
 
 ## 当前页面入口
 
-1. 供应商页：展示 GPT、支持的账户类型和本地供应商模型目录。
-2. 账户页：GPT OAuth / API Key 创建、编辑、状态切换、测试、删除、批量删除、授权来源和 OAuth 额度进度展示。
+1. 供应商页：展示 OpenAI 兼容、GPT、支持的账户类型和本地供应商模型目录。
+2. 账户页：通用 OpenAI 兼容 API Key、GPT API Key、GPT OAuth 创建、编辑、状态切换、测试、删除、批量删除、授权来源和 OAuth 额度进度展示。
 3. 分组页：维护分组基础信息、查看账户数量与聚合状态、绑定自有或授权账户。
 4. 统一授权页：统一维护账户 / 分组授权、系统账户 / 团队授权对象、授权到期和授权额度。
 5. 团队消耗明细 / 用户消耗明细：按日期范围查看授权团队和最终用户消耗。
@@ -165,7 +162,7 @@ type GptAccountType = 'oauth' | 'api_key'
 ## 当前接口入口
 
 - 系统后台 API 统一在 `/__aisys__/api/*` 下，用户侧接口使用 `/__aisys__/api/my-*`，管理侧接口使用 `/__aisys__/api/*` 并按需要求管理员权限。
-- GPT 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。账户、分组和测试相关 DTO 需要返回 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion`，用于前端筛选、表单默认值、分组绑定和运行时诊断。
+- OpenAI 兼容 / GPT 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。账户、分组和测试相关 DTO 需要返回 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion`，用于前端筛选、表单默认值、分组绑定和运行时诊断。
 - 授权消耗明细接口固定使用 `startDate=YYYY-MM-DD`、`endDate=YYYY-MM-DD`、`page` 和 `pageSize` 参数读取窗口分页，管理侧为 `/__aisys__/api/authorizations/usage/team-details`、`/__aisys__/api/authorizations/usage/user-details`，用户侧为 `/__aisys__/api/my-authorizations/usage/team-details`、`/__aisys__/api/my-authorizations/usage/user-details`。
 - 客户端网关入口是根路径和 `/v1/*`，不使用后台登录态，只使用本地 API Key。
 

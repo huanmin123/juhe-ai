@@ -7,6 +7,7 @@ interface ProviderRow {
   id: string
   code: ProviderCode
   name: string
+  parent_code: ProviderCode | null
   description: string | null
   enabled: number
 }
@@ -38,7 +39,7 @@ const maxProviderProtocolProfiles = 200
 export function listProviders(): ProviderDefinition[] {
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT id, code, name, description, enabled
+      SELECT id, code, name, parent_code, description, enabled
       FROM providers
       ORDER BY name ASC, code ASC
       LIMIT ?
@@ -49,6 +50,7 @@ export function listProviders(): ProviderDefinition[] {
     id: row.id,
     code: row.code,
     name: row.name,
+    parentCode: row.parent_code ?? undefined,
     description: row.description ?? undefined,
     enabled: row.enabled === 1,
     ...providerDefaultProfileFields(profilesByProvider.get(row.code) ?? []),

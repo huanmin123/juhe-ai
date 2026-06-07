@@ -246,7 +246,7 @@ import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText, statusColor, statusText } from '@/views/accounts/accountFormatters'
-import { OPENAI_PROVIDER } from '@/views/accounts/accountOptions'
+import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatCompactInteger, formatCost, formatInteger, formatPercent, formatSeconds } from '@/views/stats/statsFormatters'
@@ -375,7 +375,7 @@ const { pageActive, requestRender: renderChart } = useEchartsPageLifecycle({
   onBeforeUnmount: clearAccountOptionsSearchTimer
 })
 
-const availableProviders = computed(() => providers.value.length ? providers.value : [OPENAI_PROVIDER])
+const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const rows = computed(() => orderedUsageRows(accountUsageRows.value))
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
@@ -496,7 +496,7 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
   const [providerList] = await Promise.all([
     api.providers.options()
   ])
-  providers.value = providerList.length ? providerList : [OPENAI_PROVIDER]
+  providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
   usageStatsOptionsLoaded.value = true
   usageStatsOptionsScopeKey.value = scopeKey
 }

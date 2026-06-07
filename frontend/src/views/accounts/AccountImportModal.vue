@@ -141,7 +141,7 @@ import { reactive, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
+import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '@/shared/providerProtocol'
 import type { AccountImportItem, AccountImportOptions, AccountImportProxyItem, AccountImportResult } from '@/types/domain'
 
 const props = defineProps<{
@@ -201,12 +201,12 @@ const importTemplate = JSON.stringify({
   ],
   accounts: [
     {
-      ref: 'gpt-key-001',
-      name: 'GPT API Key 账号 1',
-      providerCode: GPT_VENDOR_CODE,
+      ref: 'openai-key-001',
+      name: 'OpenAI 兼容 API Key 账号 1',
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       type: 'api_key',
       status: 'active',
-      groupName: '默认 GPT 分组',
+      groupName: '默认 OpenAI 兼容分组',
       concurrencyLimit: 3,
       priority: 50,
       proxyRef: 'proxy-hk-1',
@@ -214,7 +214,7 @@ const importTemplate = JSON.stringify({
         api_key: 'sk-xxx',
         base_url: 'https://api.openai.com/v1'
       },
-      notes: 'API Key 账号'
+      notes: '通用 OpenAI-compatible API Key 账号'
     },
     {
       ref: 'gpt-oauth-001',
@@ -265,7 +265,7 @@ const accountImportProtocolMarkdown = [
   '- 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。',
   '- 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。',
   '- `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。',
-  '- 当前 `providerCode` 填 `gpt`，系统会按供应商自动匹配内部协议配置；当前账户类型只填 `api_key` 或 `oauth`。',
+  '- 当前 `providerCode` 可填 `openai` 或 `gpt`，系统会按供应商自动匹配内部协议配置；通用 `openai` 供应商只填 `api_key`，`gpt` 供应商可填 `api_key` 或 `oauth`。',
   '- 不确定是否可立即调度时，`status` 填 `disabled`，不要默认填 `active`。',
   '- 不要编造缺失的 token、API Key、邮箱、账号 ID、代理密码或模型列表；不确定的信息写入 `notes`。',
   '- 外部来源字段如果没有本协议对应字段，不要塞进 `credentials`，可以整理到 `notes`。',
@@ -295,7 +295,7 @@ const accountImportProtocolMarkdown = [
   '| --- | --- | --- | --- |',
   '| `ref` | 否 | string | 导入预览和错误定位用，不写入数据库。 |',
   '| `name` | 是 | string | 账户名称，同一系统账户下不能重复。 |',
-  '| `providerCode` | 是 | string | 当前填写 `gpt`，表示 GPT 供应商；OpenAI 是协议层，不作为账户池供应商填写。 |',
+  '| `providerCode` | 是 | string | 当前支持 `openai` 和 `gpt`。`openai` 表示通用 OpenAI-compatible 供应商，`gpt` 表示 GPT 专属供应商。 |',
   '| `type` | 是 | string | `api_key` 或 `oauth`。 |',
   '| `status` | 是 | string | `active` 或 `disabled`。不确定时用 `disabled`。 |',
   '| `groupId` | 二选一 | string | 绑定已有分组 ID；同时存在 `groupName` 时优先使用 `groupId`。 |',

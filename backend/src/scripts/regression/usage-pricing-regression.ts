@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import {
   parseOpenAIUsageFromJsonBuffer
 } from '../../modules/gateway/openai-gateway-usage.js'
@@ -207,8 +207,19 @@ const gpt41Cost = estimateProviderCostUsd({
   cacheReadTokens: 300
 })
 assert.equal(gpt41Cost, 0.00315)
+assert.equal(estimateProviderCostUsd({
+  providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+  model: 'gpt-4.1',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300
+}), gpt41Cost)
 
 const openAIModelPricingList = listProviderModelPricing(GPT_VENDOR_CODE)
+const genericOpenAIModelPricingList = listProviderModelPricing(OPENAI_COMPATIBLE_PROVIDER_CODE)
+assert.equal(genericOpenAIModelPricingList.length, openAIModelPricingList.length, 'openai 通用供应商应继承 OpenAI-compatible 内置模型目录')
+assert.equal(genericOpenAIModelPricingList[0]?.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, '通用供应商模型目录应保留 openai providerCode')
+assert.equal(openAIModelPricingList[0]?.providerCode, GPT_VENDOR_CODE, 'GPT 子供应商模型目录应保留 gpt providerCode')
 const availableOpenAIModels = new Set(openAIModelPricingList.map((item) => item.model))
 const openAIModelPricingById = new Map(openAIModelPricingList.map((item) => [item.model, item]))
 for (const item of openAIModelPricingList) {

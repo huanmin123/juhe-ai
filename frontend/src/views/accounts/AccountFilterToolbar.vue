@@ -174,7 +174,7 @@ import type { AccountStatus, GroupOptionSummary, ProviderDefinition, SystemAccou
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText } from './accountFormatters'
 import type { AccountFilters } from './accountFormTypes'
-import { OPENAI_PROVIDER } from './accountOptions'
+import { FALLBACK_PROVIDERS } from './accountOptions'
 
 type FilterOption<T extends string> = {
   label: string
@@ -221,7 +221,7 @@ const emit = defineEmits<{
 }>()
 
 const accountStatusValues = new Set<AccountStatus>(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])
-const resolvedProviders = computed(() => props.providers.length ? props.providers : [OPENAI_PROVIDER])
+const resolvedProviders = computed(() => props.providers.length ? props.providers : FALLBACK_PROVIDERS)
 const exportTooltip = computed(() => props.selectedCount
   ? `已选择 ${props.selectedCount} 个账户，将优先导出已选自有账户`
   : '未选择账户时按当前筛选导出自有账户')

@@ -16,8 +16,8 @@ import {
   nextTestModel,
   stoppedAccountTestMessage
 } from './accountTestFlow'
-import { buildTestModelOptions, defaultTestModelForAccountSelection, isGptTestSelection, providerCodeForAccountSelection, providerDefaultTestModelForAccountSelection } from './accountDerivedState'
-import { GPT_VENDOR_CODE } from './accountOptions'
+import { buildTestModelOptions, defaultTestModelForAccountSelection, isOpenAICompatibleTestSelection, providerCodeForAccountSelection, providerDefaultTestModelForAccountSelection } from './accountDerivedState'
+import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
 import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
@@ -79,13 +79,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const defaultTestModel = computed(() => (
     defaultTestModelForAccountSelection(testTargetAccountSelection.value, providerDefaultTestModel.value)
   ))
-  const isGptTestTarget = computed(() => isGptTestSelection(testTargetAccountSelection.value))
+  const isOpenAICompatibleTestTarget = computed(() => isOpenAICompatibleTestSelection(testTargetAccountSelection.value))
 
   let accountTestAbortController: AbortController | undefined
   const activeAccountTestTasks = new Map<string, AccountSummary>()
 
   async function loadTestModels() {
-    if (!isGptTestTarget.value) {
+    if (!isOpenAICompatibleTestTarget.value) {
       providerModels.value = []
       providerModelsProviderCode.value = ''
       testForm.model = nextTestModel(testForm.model, testModelOptions.value, defaultTestModel.value)

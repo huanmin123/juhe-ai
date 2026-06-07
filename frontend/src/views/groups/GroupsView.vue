@@ -238,7 +238,7 @@ import type { AccountUsageSummary, GroupAccountStats, GroupSchedulingPolicy, Gro
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
-import { GPT_VENDOR_CODE, OPENAI_PROVIDER } from '../accounts/accountOptions'
+import { FALLBACK_PROVIDERS, GPT_PROVIDER, GPT_VENDOR_CODE } from '../accounts/accountOptions'
 
 const pageSize = 50
 const modalOpen = ref(false)
@@ -306,7 +306,7 @@ const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initial
 const form = reactive({
   name: '',
   providerCode: GPT_VENDOR_CODE,
-  providerProtocolProfileId: OPENAI_PROVIDER.defaultProtocolProfileId,
+  providerProtocolProfileId: GPT_PROVIDER.defaultProtocolProfileId,
   description: '',
   enabled: true,
   groupType: 'personal' as GroupType,
@@ -395,7 +395,7 @@ const {
   minVisible: 1
 })
 
-const availableProviders = computed(() => providers.value.length ? providers.value : [OPENAI_PROVIDER])
+const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -831,7 +831,7 @@ async function loadGroupOptions(force = false): Promise<void> {
   const [providerList] = await Promise.all([
     api.providers.options()
   ])
-  providers.value = providerList.length ? providerList : [OPENAI_PROVIDER]
+  providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
   groupOptionsLoaded.value = true
   groupOptionsScopeKey.value = scopeKey
 }

@@ -5,7 +5,11 @@ import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import {
+  GPT_VENDOR_CODE,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+} from '../../domain/provider-protocol.js'
 import {
   filterGatewayAccountsByRequestedModel,
   gatewayModelFilterFailureMessage
@@ -145,20 +149,37 @@ async function assertStorageRoundTrip(): Promise<void> {
     assert.deepEqual(cleared?.supportedModels, [], '提交空数组应清空模型限制')
     assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), [], '提交空数组应清空关系表')
 
+    const openAICompatibleGroup = repositories.createGroup({
+      name: '账户模型限制 OpenAI 兼容分组',
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE
+    }, access)
+    assert.equal(openAICompatibleGroup.providerProtocolProfileId, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID)
+    const openAICompatibleAccount = repositories.createAccount({
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      name: '账户模型限制 OpenAI 兼容账号回归',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-filter-openai-compatible',
+        base_url: 'https://api.openai.com/v1'
+      },
+      status: 'active',
+      supportedModels: ['gpt-5.5'],
+      groupId: openAICompatibleGroup.id
+    }, access)
+    assert.equal(openAICompatibleAccount.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, 'openai 通用供应商应允许创建 API Key 账户')
     assert.throws(() => {
       repositories.createAccount({
-        providerCode: 'openai',
-        name: '账户模型限制协议码供应商回归',
-        type: 'api_key',
+        providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+        name: '账户模型限制 OpenAI 兼容 OAuth 回归',
+        type: 'oauth',
         credentials: {
-          api_key: 'sk-account-model-filter-protocol-provider',
+          refresh_token: 'refresh-account-model-filter-openai-compatible',
           base_url: 'https://api.openai.com/v1'
         },
         status: 'active',
-        supportedModels: ['gpt-5.5'],
-        groupId: group.id
+        groupId: openAICompatibleGroup.id
       }, access)
-    }, /不支持的供应商：openai/, '账户创建必须使用供应商编码，不能使用协议编码 openai')
+    }, /不支持账户类型 oauth/, 'openai 通用供应商不应继承 GPT OAuth 能力')
 
     assert.throws(() => {
       repositories.createAccount({

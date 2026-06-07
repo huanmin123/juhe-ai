@@ -1,6 +1,8 @@
 export const OPENAI_PROTOCOL_CODE = 'openai'
 export const OPENAI_PROTOCOL_VERSION = 'v1'
+export const OPENAI_COMPATIBLE_PROVIDER_CODE = 'openai'
 export const GPT_VENDOR_CODE = 'gpt'
+export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID = 'profile_openai_openai_v1'
 export const GPT_OPENAI_V1_PROFILE_ID = 'profile_gpt_openai_v1'
 export const OPENAI_CHAT_COMPLETIONS_FAMILY = 'chat_completions'
 export const OPENAI_RESPONSES_FAMILY = 'responses'
@@ -30,6 +32,11 @@ export function isOpenAIProtocolProfile(profile: ProviderProtocolProfileDefiniti
 
 export function isGptVendorCode(value: unknown): boolean {
   return normalizeProviderToken(value) === GPT_VENDOR_CODE
+}
+
+export function isOpenAICompatibleProviderCode(value: unknown): boolean {
+  const normalized = normalizeProviderToken(value)
+  return normalized === OPENAI_COMPATIBLE_PROVIDER_CODE || normalized === GPT_VENDOR_CODE
 }
 
 export function normalizeProviderToken(value: unknown): string | undefined {

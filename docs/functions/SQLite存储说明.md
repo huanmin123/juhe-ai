@@ -97,7 +97,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 
 - 使用 Node 内置 `node:sqlite`，要求官方 Node.js LTS；当前支持 22.x LTS（>=22.13.0）或 24.x LTS（>=24.11.0），且内置 `node:sqlite` 必须可用。
 - 启动时自动建表
-- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、GPT 供应商、`profile_gpt_openai_v1` 供应商协议档案、默认 GPT 分组、默认全局设置和默认系统设置
+- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、`openai` 通用供应商、`gpt` 子供应商、`profile_openai_openai_v1` 与 `profile_gpt_openai_v1` 供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、默认全局设置和默认系统设置
 - 使用 `PRAGMA journal_mode = WAL`
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
@@ -111,7 +111,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 原始审计日志使用独立表保存完全成功请求的 10% 稳定样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 background worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
 - 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集目录库表 `runtime_logs`，后台 worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配，完整日志正文搜索交给 `grep 模式`。
 - 系统团队、团队成员和统一资源授权使用独立表记录；账户授权会为被授权用户创建独立授权实例账户，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
-- `protocols` 保存协议族和版本，当前为 `openai/v1`；`protocol_endpoint_families` 保存协议下的端点族，当前包含 `chat_completions` 和 `responses`；`providers` 只保存供应商身份，当前为 `gpt`；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、默认测试模型、账户类型和能力，当前默认档案为 `profile_gpt_openai_v1`；`provider_protocol_profile_families` 保存该档案启用的端点族能力。
+- `protocols` 保存协议族和版本，当前为 `openai/v1`；`protocol_endpoint_families` 保存协议下的端点族，当前包含 `chat_completions` 和 `responses`；`providers` 保存供应商身份和父子关系，当前为通用 `openai` 供应商和 `gpt.parent_code = openai` 子供应商；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、默认测试模型、账户类型和能力，当前默认档案为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`；`provider_protocol_profile_families` 保存档案启用的端点族能力。
 - `accounts.provider_protocol_profile_id`、`groups.provider_protocol_profile_id` 和 `account_test_tasks.provider_protocol_profile_id` 保存供应商协议档案；`protocol_code` / `protocol_version` 从档案冗余写入，用于运行时策略、审计和排障。账户只能加入同 `provider_protocol_profile_id` 的分组；分组名称唯一、默认分组唯一和 API Key 号池绑定兼容性都按协议档案维度判断，不能只按 `provider_code` 判断。
 - `accounts.system_account_id` 和 `groups.system_account_id` 表示当前资源行所属系统账户；授权实例账户的 `accounts.system_account_id` 是被授权用户，`authorization_instance_source_account_id` 记录来源账户，`authorization_instance_authorization_id` 指向用户级授权，`authorization_instance_owner_system_account_id` 记录原资源归属人。`group_accounts.system_account_id` 表示本地分组绑定所属的使用方系统账户；授权账户绑定到被授权用户分组时写入授权实例账户 ID 和稳定的 `account_authorization_id`。授权实例自己的 `accounts.status / schedulable / cooldown_until / last_error_* / stream_failure_*` 是被授权侧本地运行态；当前分组内排序、超级优先和降级备用以 `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled` 为准；真实上游资源事实从来源账户补齐，包括凭据、`base_url`、账号类型、支持模型、代理、并发和错误策略。归属人原账户停用、异常、限流 / 临时不可调用、冷却、关闭调度、套餐到期或测试失败不会覆盖或回写授权实例本地运行态，但会参与授权实例 `effectiveAvailability` 实际可用性计算并阻断调度、账户测试和迁移目标选择；来源账户资源配置变化会同步影响授权实例运行时。来源账户被逻辑删除时，来源账户及其授权实例都会立即隐藏且不可调度，对应授权关系转为已回收；授权实例账户不能通过账户删除接口删除，被授权人不想继续使用个人直授权时通过授权归还入口把个人授权标记为 `returned` 并隐藏该实例。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。

@@ -48,9 +48,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       code TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       description TEXT,
+      parent_code TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (parent_code) REFERENCES providers(code)
     );
 
     CREATE TABLE IF NOT EXISTS protocols (

@@ -19,7 +19,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。
 - 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。
 - `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
-- 当前 `providerCode` 填 `gpt`；系统会按供应商自动匹配内部协议配置。`openai` 是协议层编码，不作为导入账户的供应商编码。当前账户类型只填 `api_key` 或 `oauth`。
+- 当前 `providerCode` 可填 `openai` 或 `gpt`；系统会按供应商自动匹配内部协议配置。`openai` 在供应商层表示通用 OpenAI-compatible 供应商，只支持 `api_key`；`gpt` 表示 GPT 专属供应商，支持 `api_key` 和 `oauth`。
 - 不确定是否可立即调度时，`status` 填 `pending_test` 或 `disabled`，不要默认填 `active`；即使导入文件写 `active`，导入落库也会转为 `pending_test`，必须在本系统测试通过后才参与调度。
 - 不要编造缺失的 token、API Key、邮箱、账号 ID、代理密码或模型列表；不确定的信息写入 `notes`。
 - 外部来源字段如果没有本协议对应字段，不要塞进 `credentials`，可以整理到 `notes`。
@@ -70,12 +70,12 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
   ],
   "accounts": [
     {
-      "ref": "gpt-key-001",
-      "name": "GPT API Key 账号 1",
-      "providerCode": "gpt",
+      "ref": "openai-key-001",
+      "name": "OpenAI 兼容 API Key 账号 1",
+      "providerCode": "openai",
       "type": "api_key",
       "status": "active",
-      "groupName": "默认 GPT 分组",
+      "groupName": "默认 OpenAI 兼容分组",
       "concurrencyLimit": 3,
       "priority": 50,
       "proxyRef": "proxy-hk-1",
@@ -83,7 +83,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
         "api_key": "sk-xxx",
         "base_url": "https://api.openai.com/v1"
       },
-      "notes": "API Key 账号"
+      "notes": "通用 OpenAI-compatible API Key 账号"
     },
     {
       "ref": "gpt-oauth-001",
@@ -123,7 +123,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | --- | --- | --- |
 | `ref` | 否 | 导入预览和错误定位用，不写入数据库。 |
 | `name` | 是 | 账户名称，同一系统账户下不能重复。 |
-| `providerCode` | 是 | 当前支持 `gpt`，表示 GPT 供应商；不要填写协议码 `openai`。 |
+| `providerCode` | 是 | 当前支持 `openai` 和 `gpt`。`openai` 表示通用 OpenAI-compatible 供应商，`gpt` 表示 GPT 专属供应商。 |
 | `type` | 是 | `api_key` 或 `oauth`。 |
 | `status` | 是 | `active`、`pending_test` 或 `disabled`；导入创建时 `active` 会转为 `pending_test`。 |
 | `groupId` | 二选一 | 绑定已有分组 ID；优先级高于 `groupName`。 |
@@ -173,8 +173,9 @@ OAuth 账户：
 
 规则：
 
-- `api_key` 账户必须有 `credentials.api_key`。
-- `oauth` 账户必须有 `credentials.refresh_token` 或 `credentials.access_token`。
+- `providerCode = openai` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
+- `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
+- `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
 - `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。

@@ -1,5 +1,5 @@
 import { openAIModelPricingData } from './openai-model-pricing.data.js'
-import { GPT_VENDOR_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import { isOpenAICompatibleProviderCode, normalizeProviderToken } from '../../domain/provider-protocol.js'
 
 export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'
 
@@ -93,20 +93,23 @@ const openAIModels = openAIModelPricingData as readonly RawModelPricing[]
 
 export function listProviderModelPricing(providerCode: string): ProviderModelPricing[] {
   if (!isOpenAIProvider(providerCode)) return []
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (!normalizedProviderCode) return []
   const pricing = openAIModels
     .filter((item) => !hasModelShutdown(item))
-    .map((item) => toProviderModelPricing(item))
+    .map((item) => toProviderModelPricing(item, normalizedProviderCode))
   return pricing.sort(compareProviderModels)
 }
 
 export function getProviderModelPricing(providerCode: string, model?: string): ProviderModelPricing | undefined {
   if (!isOpenAIProvider(providerCode) || !model) return undefined
   const raw = findOpenAIModelPricing(model)
-  return raw ? toProviderModelPricing(raw) : undefined
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  return raw && normalizedProviderCode ? toProviderModelPricing(raw, normalizedProviderCode) : undefined
 }
 
 export function estimateProviderCostUsd(input: CostInput): number | undefined {
-  if (!input.model || !hasAnyCostDimension(input)) {
+  if (!isOpenAIProvider(input.providerCode) || !input.model || !hasAnyCostDimension(input)) {
     return undefined
   }
 
@@ -314,9 +317,9 @@ function buildModelCandidates(model: string): string[] {
   return Array.from(candidates)
 }
 
-function toProviderModelPricing(item: RawModelPricing): ProviderModelPricing {
+function toProviderModelPricing(item: RawModelPricing, providerCode: string): ProviderModelPricing {
   return {
-    providerCode: GPT_VENDOR_CODE,
+    providerCode,
     model: item.model,
     mode: item.mode,
     releaseDate: getOpenAIModelReleaseDate(item),
@@ -470,7 +473,7 @@ function hasModelShutdown(item: RawModelPricing): boolean {
 }
 
 function isOpenAIProvider(providerCode: string): boolean {
-  return normalizeProviderToken(providerCode) === GPT_VENDOR_CODE
+  return isOpenAICompatibleProviderCode(providerCode)
 }
 
 function normalizeModel(value: string): string {

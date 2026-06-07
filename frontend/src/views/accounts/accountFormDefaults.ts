@@ -1,7 +1,7 @@
 import type { AccountType, ProviderDefinition } from '@/types/domain'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import type { AccountFormModel } from './accountFormTypes'
-import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, GPT_VENDOR_CODE, OPENAI_PROVIDER } from './accountOptions'
+import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
 
 export function defaultAccountForm(
   providerCode = '',
@@ -9,7 +9,7 @@ export function defaultAccountForm(
   providers: ProviderDefinition[] = [],
   providerProtocolProfileId = ''
 ): AccountFormModel {
-  const providerList = providers.length ? providers : [OPENAI_PROVIDER]
+  const providerList = providers.length ? providers : FALLBACK_PROVIDERS
   const provider = providerList.find((item) => item.code === providerCode)
   const profile = provider?.protocolProfiles.find((item) => item.id === (providerProtocolProfileId || provider.defaultProtocolProfileId))
     ?? provider?.protocolProfiles.find((item) => item.enabled)

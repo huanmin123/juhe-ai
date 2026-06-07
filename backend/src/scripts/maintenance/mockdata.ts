@@ -698,12 +698,12 @@ function createGroups(adminAccess: AccessScope, users: MockSystemAccounts): Mock
     adminGrantedDev,
     adminGrantedOps,
     adminGrantedTester,
-    managerDefault: defaultOpenAIGroup(users.manager.id),
-    devDefault: defaultOpenAIGroup(users.dev.id),
-    opsDefault: defaultOpenAIGroup(users.ops.id),
-    testerDefault: defaultOpenAIGroup(users.tester.id),
-    financeDefault: defaultOpenAIGroup(users.finance.id),
-    viewerDefault: defaultOpenAIGroup(users.viewer.id)
+    managerDefault: defaultGptGroup(users.manager.id),
+    devDefault: defaultGptGroup(users.dev.id),
+    opsDefault: defaultGptGroup(users.ops.id),
+    testerDefault: defaultGptGroup(users.tester.id),
+    financeDefault: defaultGptGroup(users.finance.id),
+    viewerDefault: defaultGptGroup(users.viewer.id)
   }
 }
 
@@ -1116,7 +1116,7 @@ function createAuthorizations(
     resourceId: accounts.devShared.id,
     granteeType: 'system_account',
     granteeId: users.admin.id,
-    targetGroupId: defaultOpenAIGroup(users.admin.id).id,
+    targetGroupId: defaultGptGroup(users.admin.id).id,
     remark: `${namePrefix}研发账户授权给超级管理员`,
     limits: quotaLimits(11, 88, 320)
   }, unscopedAdminAccess))
@@ -1126,7 +1126,7 @@ function createAuthorizations(
     resourceId: accounts.opsShared.id,
     granteeType: 'system_account',
     granteeId: users.admin.id,
-    targetGroupId: defaultOpenAIGroup(users.admin.id).id,
+    targetGroupId: defaultGptGroup(users.admin.id).id,
     remark: `${namePrefix}运维账户授权给超级管理员后暂停`,
     limits: quotaLimits(7, 56, 210)
   }, unscopedAdminAccess)
@@ -1138,7 +1138,7 @@ function createAuthorizations(
     resourceId: accounts.testerShared.id,
     granteeType: 'system_account',
     granteeId: users.admin.id,
-    targetGroupId: defaultOpenAIGroup(users.admin.id).id,
+    targetGroupId: defaultGptGroup(users.admin.id).id,
     remark: `${namePrefix}测试账户授权给超级管理员后过期`,
     expiresAt: new Date(Date.now() + 4 * dayMs).toISOString(),
     limits: quotaLimits(4, 24, 96)
@@ -1219,7 +1219,7 @@ function createAuthorizations(
     resourceId: accounts.proxied.id,
     granteeType: 'system_account',
     granteeId: users.ops.id,
-    targetGroupId: defaultOpenAIGroup(users.ops.id).id,
+    targetGroupId: defaultGptGroup(users.ops.id).id,
     remark: `${namePrefix}运维用户可调用带代理账户`,
     limits: quotaLimits(8, 60, 200)
   }, adminAccess))
@@ -1294,7 +1294,7 @@ function createAuthorizations(
     resourceId: accounts.oauthBackup.id,
     granteeType: 'system_account',
     granteeId: users.viewer.id,
-    targetGroupId: defaultOpenAIGroup(users.viewer.id).id,
+    targetGroupId: defaultGptGroup(users.viewer.id).id,
     remark: `${namePrefix}观察用户已归还 OAuth 账户授权`,
     limits: quotaLimits(2, 10, 40)
   }, adminAccess)
@@ -1332,7 +1332,7 @@ function createAuthorizations(
     resourceId: accounts.fallback.id,
     granteeType: 'system_account',
     granteeId: users.tester.id,
-    targetGroupId: defaultOpenAIGroup(users.tester.id).id,
+    targetGroupId: defaultGptGroup(users.tester.id).id,
     remark: `${namePrefix}测试用户已过期账户授权`,
     expiresAt: new Date(Date.now() + dayMs).toISOString(),
     limits: quotaLimits(3, 16, 50)
@@ -1348,7 +1348,7 @@ function createAuthorizations(
     resourceId: accounts.normal.id,
     granteeType: 'system_account',
     granteeId: users.viewer.id,
-    targetGroupId: defaultOpenAIGroup(users.viewer.id).id,
+    targetGroupId: defaultGptGroup(users.viewer.id).id,
     remark: `${namePrefix}观察用户已回收账户授权`,
     limits: quotaLimits(2, 12, 40)
   }, adminAccess)
@@ -3733,7 +3733,7 @@ function findAdminAccount(): SystemAccountSummary {
   return admin
 }
 
-function defaultOpenAIGroup(systemAccountId: string): GroupSummary {
+function defaultGptGroup(systemAccountId: string): GroupSummary {
   const row = getBusinessDatabase()
     .prepare("SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'gpt' AND is_default = 1 LIMIT 1")
     .get(systemAccountId) as unknown as { id?: string } | undefined
