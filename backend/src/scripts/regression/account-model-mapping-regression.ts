@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path'
 import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import type { AccountModelMapping } from '../../domain/types.js'
 import {
   buildOpenAIModelMappedJsonBody,
@@ -42,7 +43,7 @@ const replacementUpstreamModel = 'gpt-mapping-regression-upstream-global'
 
 try {
   saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     model: sourceModel,
     scope: 'global',
     visibility: 'public',
@@ -52,7 +53,7 @@ try {
     actorSystemAccountId: ownerAccess.systemAccountId
   })
   saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     model: upstreamModel,
     scope: 'personal',
     systemAccountId: ownerAccess.systemAccountId,
@@ -63,7 +64,7 @@ try {
     actorSystemAccountId: ownerAccess.systemAccountId
   })
   saveCustomProviderModel({
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     model: replacementUpstreamModel,
     scope: 'global',
     visibility: 'mapping_target_only',
@@ -75,16 +76,17 @@ try {
 
   const group = repositories.createGroup({
     name: '账号模型映射回归分组',
-    providerCode: 'openai'
+    providerCode: GPT_VENDOR_CODE
   }, ownerAccess)
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: GPT_VENDOR_CODE,
     name: '账号模型映射回归账户',
     type: 'api_key',
     credentials: {
       api_key: 'sk-account-model-mapping-regression',
       base_url: 'https://api.openai.com/v1'
     },
+    status: 'active',
     supportedModels: [sourceModel],
     modelMappings: [
       { sourceModel, upstreamModel, enabled: true }
@@ -168,7 +170,7 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
     accounts: [
       {
         name: '账号模型映射非法导入预览',
-        providerCode: 'openai',
+        providerCode: GPT_VENDOR_CODE,
         type: 'api_key',
         status: 'active',
         groupId,

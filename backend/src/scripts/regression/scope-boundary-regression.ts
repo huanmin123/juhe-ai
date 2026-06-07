@@ -326,11 +326,11 @@ async function main(): Promise<void> {
     await assertForbidden(`${baseUrl}/__aisys__/api/authorizations`, seed.userACookie, '普通用户不能访问统一授权管理接口')
     await assertForbidden(`${baseUrl}/__aisys__/api/providers`, seed.userACookie, '普通用户不能访问供应商管理接口')
     const userProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', seed.userACookie)
-    assert(userProviderOptions.some((item) => item.code === 'openai' && typeof item.defaultTestModel === 'string'), '普通用户应能读取供应商安全选项')
-    const userProviderModels = await getEnvelope<Array<{ model: string }>>(baseUrl, '/__aisys__/api/providers/openai/models', seed.userACookie)
-    assert(userProviderModels.some((item) => item.model === 'gpt-5.5'), '普通用户应能查询 OpenAI 模型列表用于账户模型限制下拉')
+    assert(userProviderOptions.some((item) => item.code === 'gpt' && typeof item.defaultTestModel === 'string'), '普通用户应能读取供应商安全选项')
+    const userProviderModels = await getEnvelope<Array<{ model: string }>>(baseUrl, '/__aisys__/api/providers/gpt/models', seed.userACookie)
+    assert(userProviderModels.some((item) => item.model === 'gpt-5.5'), '普通用户应能查询 GPT 模型列表用于账户模型限制下拉')
     const userProviderModelOptions = await getEnvelope<Array<{ providerCode: string; model: string }>>(baseUrl, '/__aisys__/api/providers/models/options', seed.userACookie)
-    assert(userProviderModelOptions.some((item) => item.providerCode === 'openai' && item.model === 'gpt-5.5'), '普通用户应能查询全部模型名称选项用于使用记录模型筛选')
+    assert(userProviderModelOptions.some((item) => item.providerCode === 'gpt' && item.model === 'gpt-5.5'), '普通用户应能查询全部模型名称选项用于使用记录模型筛选')
     const userProxyOptions = await getEnvelope<Array<{ id: string; enabled: boolean }>>(baseUrl, '/__aisys__/api/proxies/options?limit=50', seed.userACookie)
     assert(userProxyOptions.some((proxy) => proxy.id === seed.userBProxyId && proxy.enabled === true), '普通用户应能查询已启用代理选项用于账户代理下拉')
     summary.push('仅管理员菜单接口拦截通过')
@@ -362,7 +362,7 @@ async function main(): Promise<void> {
       accounts: [{
         ref: 'scope-user-a-import',
         name: '用户 A 导入账户',
-        providerCode: 'openai',
+        providerCode: 'gpt',
         type: 'api_key',
         status: 'disabled',
         groupId: seed.userATargetGroupId,
@@ -442,7 +442,7 @@ async function main(): Promise<void> {
 
     const createdGroup = await postEnvelope<GroupSummary>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}`, seed.adminCookie, {
       name: '用户 B 管理代建分组',
-      providerCode: 'openai'
+      providerCode: 'gpt'
     })
     assert(createdGroup.systemAccountId === seed.userBId, '管理员按用户 B 创建分组没有归属到用户 B')
     const userBGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
@@ -597,7 +597,7 @@ async function main(): Promise<void> {
     assert(userAGranteeTeams.some((team) => team.id === seed.teamUserBOnlyId), '授权候选团队应包含当前用户未加入但同团队成员加入的团队')
     assert(userAGranteeTeams.some((team) => team.id === seed.teamNoUserAId), '授权候选团队应包含当前用户完全无关的系统团队')
     assert(userAGranteeTeams.every((team) => !Object.prototype.hasOwnProperty.call(team, 'members')), '授权候选团队不应返回成员明细')
-    const userAGranteeGroups = await getEnvelope<GroupSummary[]>(baseUrl, `/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=${seed.userAId}&providerCode=openai&preferDefault=true`, seed.userBCookie)
+    const userAGranteeGroups = await getEnvelope<GroupSummary[]>(baseUrl, `/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=${seed.userAId}&providerCode=gpt&preferDefault=true`, seed.userBCookie)
     assert(userAGranteeGroups.some((group) => group.id === seed.userATargetGroupId), '授权目标分组选项应返回被授权用户自己的同供应商分组')
     assert(userAGranteeGroups.every((group) => group.ownerSystemAccountId === seed.userAId), '授权目标分组选项不应混入其他用户分组')
     const selectedBinding = databaseModule.getBusinessDatabase()
@@ -701,19 +701,23 @@ function seedData(): SeedState {
   }, userBAccess)
   const userBGroup = repositories.createGroup({
     name: '用户 B 自建分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, userBAccess)
   const userATargetGroup = repositories.createGroup({
     name: '指定授权目标分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, userAAccess)
   const userAAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '用户 A 账户',
     type: 'api_key',
     groupId: userATargetGroup.id,
     credentials: { api_key: 'sk-scope-user-a', base_url: 'https://api.openai.com/v1' }
   }, userAAccess)
+  assert(
+    repositories.clearAccountFailureStateResult(userAAccount.id, userAAccess, { allowPendingTestRestore: true }).account?.status === 'active',
+    '作用域回归种子应模拟用户 A 账户测试成功'
+  )
   const userBErrorHandlingRules = [{
     enabled: true,
     name: '授权来源 429 限流',
@@ -748,7 +752,7 @@ function seedData(): SeedState {
     }]
   }
   const userBAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '用户 B 账户',
     type: 'api_key',
     groupId: userBGroup.id,
@@ -764,8 +768,12 @@ function seedData(): SeedState {
     accountExpiresAt: '2027-12-31T00:00:00.000Z',
     availabilitySchedule: userBAvailabilitySchedule
   }, userBAccess)
+  assert(
+    repositories.clearAccountFailureStateResult(userBAccount.id, userBAccess, { allowPendingTestRestore: true }).account?.status === 'active',
+    '作用域回归种子应模拟用户 B 账户测试成功后再创建授权'
+  )
   repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: 'Scope Extra OAuth',
     type: 'oauth',
     groupId: userBGroup.id,
@@ -928,7 +936,7 @@ function usageRecord(
     groupId,
     accountId,
     endpoint,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     model,
     stream: false,
     statusCode,

@@ -339,13 +339,13 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
   const access = seedGatewayAccess()
   const group = repositories.createGroup({
     name: `Codex 切号 e2e 分组-${label}`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
   const freshUpstreamKey = `sk-codex-switch-${sequence}-fresh`
   const failedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: `A-Codex 切号 e2e 失败账号-${label}`,
     type: 'api_key',
     credentials: {
@@ -361,7 +361,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     waitForClockTick()
   }
   const freshAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: `B-Codex 切号 e2e 备用账号-${label}`,
     type: 'api_key',
     credentials: {

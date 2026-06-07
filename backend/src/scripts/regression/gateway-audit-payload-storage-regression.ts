@@ -1,0 +1,430 @@
+import { strict as assert } from 'node:assert'
+import { mkdirSync, rmSync } from 'node:fs'
+import http from 'node:http'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import express from 'express'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-audit-payload-storage-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.secret = 'gateway-audit-payload-storage-secret'
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+runtimeConfig.processRole = 'db-service'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
+runtimeConfig.audit.fullBodyCaptureEnabled = false
+runtimeConfig.audit.fullBodyCapture = { enabled: false, scope: 'global', includeSuccess: false }
+mkdirSync(tempRoot, { recursive: true })
+logger.level = 'silent'
+
+const [
+  { openAIGatewayRouter },
+  { captureGatewayRawBody },
+  { requestContextMiddleware },
+  databaseModule,
+  repositories,
+  settingsRepository,
+  auditSettings,
+  auditLogQueue,
+  usageRecordQueue,
+  gatewayCache,
+  accountSideEffects
+] = await Promise.all([
+  import('../../modules/gateway/openai-gateway.routes.js'),
+  import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../storage/settings.repository.js'),
+  import('../../modules/audit-logs/audit-log-settings.js'),
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/gateway-runtime-cache.service.js'),
+  import('../../modules/gateway/gateway-account-side-effects.service.js')
+])
+
+const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const model = 'gpt-5.4-mini'
+
+const nonStreamSuccessBody = JSON.stringify({
+  id: 'resp_audit_non_stream_success',
+  object: 'response',
+  status: 'completed',
+  model,
+  output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'audit success ok' }] }],
+  usage: { input_tokens: 3, output_tokens: 2 }
+})
+const retryFailureBody = JSON.stringify({
+  error: { message: 'first account failed before audit retry success', type: 'server_error', code: 'audit_retry_first_failed' }
+})
+const retrySuccessBody = JSON.stringify({
+  id: 'chatcmpl_audit_retry_success',
+  object: 'chat.completion',
+  choices: [{ index: 0, message: { role: 'assistant', content: 'audit retry success ok' }, finish_reason: 'stop' }],
+  usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }
+})
+const allFailureBody = JSON.stringify({
+  error: { message: 'single upstream failed for audit storage', type: 'server_error', code: 'audit_single_failure' }
+})
+
+const app = express()
+app.use(requestContextMiddleware)
+app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+
+try {
+  settingsRepository.updateSettings({
+    temporaryUnschedulableRetryAttempts: 0,
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 10
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const upstreamServer = createMockOpenAIUpstream()
+  await listen(upstreamServer)
+  const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
+  const appServer = http.createServer(app)
+  await listen(appServer)
+  const gatewayBaseUrl = `http://127.0.0.1:${serverPort(appServer)}`
+
+  try {
+    await assertFullCapturedNonStreamSuccess(gatewayBaseUrl, upstreamBaseUrl)
+    await assertSuccessAfterRetryCapturesFinalUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
+    await assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
+    await assertFullCapturedStreamSuccess(gatewayBaseUrl, upstreamBaseUrl)
+    await assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
+  } finally {
+    await closeServer(appServer)
+    await closeServer(upstreamServer)
+  }
+
+  console.log('网关审计 payload 存储回归通过：非流式成功、先失败后成功、全失败、流式成功、流式失败均保留预期正文')
+} finally {
+  usageRecordQueue.flushAllUsageRecordQueue()
+  auditLogQueue.flushAllAuditLogQueue()
+  try {
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    databaseModule.getBusinessDatabase().close()
+    databaseModule.closeStorageDatabases()
+  } catch {
+  }
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+async function assertFullCapturedNonStreamSuccess(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: true, scope: 'global', includeSuccess: true })
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计成功全量捕获', ['sk-audit-non-stream-success'])
+  const traceId = 'trace-audit-non-stream-success-full-capture'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      input: 'audit non stream success',
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `非流式成功应返回 200，实际 ${response.status}: ${text}`)
+  assert.equal(text, nonStreamSuccessBody, '非流式成功响应体应完整透传')
+
+  const detail = auditDetailByTrace(traceId)
+  assert.equal(detail.auditOutcome, 'success', '全量捕获成功请求应写入 success 审计')
+  await assertPayloadBodyEquals(detail, 'upstream_response', nonStreamSuccessBody)
+  await assertPayloadBodyEquals(detail, 'gateway_response', nonStreamSuccessBody)
+  await assertPayloadBodyContains(detail, 'client_request', 'audit non stream success')
+  await assertPayloadBodyContains(detail, 'upstream_request', 'audit non stream success')
+}
+
+async function assertSuccessAfterRetryCapturesFinalUpstreamResponse(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: false })
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计先失败后成功', ['sk-audit-retry-fail', 'sk-audit-retry-success'])
+  const traceId = 'trace-audit-success-after-retry'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: 'audit retry success' }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `先失败后成功应返回 200，实际 ${response.status}: ${text}`)
+  assert.equal(text, retrySuccessBody, '先失败后成功最终响应体应来自第二账号')
+
+  const detail = auditDetailByTrace(traceId)
+  assert.equal(detail.auditOutcome, 'success_after_retry', '先失败后成功应写入 success_after_retry 审计')
+  assert(detail.attempts.length >= 2, `先失败后成功应至少有两次上游尝试，实际 ${detail.attempts.length}`)
+  const failedAttemptId = detail.attempts[0]?.id
+  const successAttemptId = detail.attempts[1]?.id
+  assert(failedAttemptId && successAttemptId, '先失败后成功审计缺少 attempt id')
+  await assertPayloadBodyEquals(detail, 'upstream_response', retryFailureBody, failedAttemptId)
+  await assertPayloadBodyEquals(detail, 'upstream_response', retrySuccessBody, successAttemptId)
+  await assertPayloadBodyEquals(detail, 'gateway_response', retrySuccessBody)
+}
+
+async function assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: false })
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计全失败', ['sk-audit-all-fail'])
+  const traceId = 'trace-audit-all-upstream-failure'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: 'audit all upstream failure' }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 503, `全失败应返回统一 503，实际 ${response.status}: ${text}`)
+
+  const detail = auditDetailByTrace(traceId)
+  assert.equal(detail.auditOutcome, 'upstream_failed', '全失败应写入 upstream_failed 审计')
+  await assertPayloadBodyEquals(detail, 'upstream_response', allFailureBody, detail.attempts[0]?.id)
+  await assertPayloadBodyContains(detail, 'gateway_error', '没有可用的上游账户')
+}
+
+async function assertFullCapturedStreamSuccess(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: true, scope: 'global', includeSuccess: true })
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计流式成功', ['sk-audit-stream-success'])
+  const traceId = 'trace-audit-stream-success-full-capture'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      input: 'audit stream success',
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `流式成功应返回 200，实际 ${response.status}: ${text}`)
+  assert.match(text, /response\.completed/, '流式成功响应应包含 completed 事件')
+
+  const detail = auditDetailByTrace(traceId)
+  assert.equal(detail.auditOutcome, 'success', '全量捕获流式成功应写入 success 审计')
+  await assertPayloadBodyContains(detail, 'upstream_response', 'response.completed')
+  await assertPayloadBodyContains(detail, 'gateway_response', 'response.completed')
+}
+
+async function assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: false })
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计流式失败', ['sk-audit-stream-failure'])
+  const traceId = 'trace-audit-stream-failure'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      input: 'audit stream failure',
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `流式失败会按 SSE 200 透传失败事件，实际 ${response.status}: ${text}`)
+  assert.match(text, /response\.failed/, '流式失败响应应包含 failed 事件')
+
+  const detail = auditDetailByTrace(traceId)
+  assert.equal(detail.auditOutcome, 'stream_failed', '流式失败应写入 stream_failed 审计')
+  await assertPayloadBodyContains(detail, 'upstream_response', 'response.failed')
+  await assertPayloadBodyContains(detail, 'gateway_response', 'response.failed')
+}
+
+function seedGatewayRoute(upstreamBaseUrl: string, label: string, upstreamKeys: string[]): { apiKey: string; groupId: string } {
+  const group = repositories.createGroup({
+    name: `${label}分组`,
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
+  for (const [index, upstreamKey] of upstreamKeys.entries()) {
+    repositories.createAccount({
+      providerCode: 'gpt',
+      name: `${label}账户-${String(index + 1).padStart(2, '0')}`,
+      type: 'api_key',
+      credentials: {
+        api_key: upstreamKey,
+        base_url: upstreamBaseUrl
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true
+    }, access)
+  }
+  const apiKey = repositories.createApiKeyRecord({
+    name: `${label} API Key`,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, `${label} API Key 未返回明文密钥`)
+  gatewayCache.clearGatewayRuntimeCache()
+  return { apiKey: apiKey.key, groupId: group.id }
+}
+
+function createMockOpenAIUpstream(): http.Server {
+  return http.createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+    req.on('end', () => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const body = parseJson(Buffer.concat(chunks).toString('utf8'))
+      const authorization = String(req.headers.authorization ?? '')
+      if (url.pathname === '/v1/chat/completions') {
+        if (authorization.includes('sk-audit-retry-fail')) {
+          sendJson(res, 502, retryFailureBody)
+          return
+        }
+        if (authorization.includes('sk-audit-all-fail')) {
+          sendJson(res, 418, allFailureBody)
+          return
+        }
+        sendJson(res, 200, retrySuccessBody)
+        return
+      }
+      if (url.pathname === '/v1/responses') {
+        if (body.stream === true && String(body.input ?? '').includes('failure')) {
+          sendStreamFailure(res)
+          return
+        }
+        if (body.stream === true) {
+          sendStreamSuccess(res)
+          return
+        }
+        sendJson(res, 200, nonStreamSuccessBody)
+        return
+      }
+      sendJson(res, 404, JSON.stringify({ error: { message: 'mock upstream path not found' } }))
+    })
+  })
+}
+
+function sendJson(res: http.ServerResponse, statusCode: number, body: string): void {
+  res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(body)
+}
+
+function sendStreamSuccess(res: http.ServerResponse): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache'
+  })
+  res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'OK' })}\n\n`)
+  res.write(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 3, output_tokens: 2 } } })}\n\n`)
+  res.end()
+}
+
+function sendStreamFailure(res: http.ServerResponse): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache'
+  })
+  res.write(`event: response.failed\ndata: ${JSON.stringify({
+    type: 'response.failed',
+    response: {
+      status: 'failed',
+      error: { message: 'mock stream failed for audit storage', code: 'audit_stream_failed' }
+    }
+  })}\n\n`)
+  res.end()
+}
+
+function auditDetailByTrace(traceId: string): NonNullable<ReturnType<typeof repositories.getAuditLogDetail>> {
+  auditLogQueue.flushAllAuditLogQueue()
+  const list = repositories.listAuditLogs({ traceId, pageSize: 10 })
+  assert.equal(list.total, 1, `trace ${traceId} 应只有一条审计记录，实际 ${list.total}`)
+  const detail = repositories.getAuditLogDetail(list.items[0]?.id ?? '')
+  assert(detail, `trace ${traceId} 审计详情不存在`)
+  return detail
+}
+
+async function assertPayloadBodyEquals(
+  detail: NonNullable<ReturnType<typeof repositories.getAuditLogDetail>>,
+  partType: string,
+  expectedBody: string,
+  attemptId?: string
+): Promise<void> {
+  const payload = await readPayload(detail, partType, attemptId)
+  assert.equal(payload.bodyText, expectedBody, `${detail.traceId} ${partType} 正文不匹配`)
+  assert.equal(payload.bodyTotalBytes, Buffer.byteLength(expectedBody, 'utf8'), `${detail.traceId} ${partType} 正文字节数不匹配`)
+}
+
+async function assertPayloadBodyContains(
+  detail: NonNullable<ReturnType<typeof repositories.getAuditLogDetail>>,
+  partType: string,
+  expectedText: string,
+  attemptId?: string
+): Promise<void> {
+  const payload = await readPayload(detail, partType, attemptId)
+  assert(
+    payload.bodyText?.includes(expectedText),
+    `${detail.traceId} ${partType} 正文应包含 ${expectedText}，实际 ${payload.bodyText ?? payload.bodyBase64 ?? '[empty]'}`
+  )
+  assert((payload.bodyTotalBytes ?? 0) > 0, `${detail.traceId} ${partType} 正文字节数应大于 0`)
+}
+
+async function readPayload(
+  detail: NonNullable<ReturnType<typeof repositories.getAuditLogDetail>>,
+  partType: string,
+  attemptId?: string
+): Promise<NonNullable<Awaited<ReturnType<typeof repositories.getAuditLogPayload>>>> {
+  const payload = detail.payloads.find((item) => item.partType === partType && (attemptId === undefined || item.attemptId === attemptId))
+  assert(payload, `${detail.traceId} 缺少 ${partType}${attemptId ? ` attempt=${attemptId}` : ''} payload`)
+  assert(payload.hasBody, `${detail.traceId} ${partType} payload 没有 body blob`)
+  const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
+  assert(payloadDetail, `${detail.traceId} ${partType} payload 详情不存在`)
+  return payloadDetail
+}
+
+function gatewayHeaders(apiKey: string, traceId: string): Record<string, string> {
+  return {
+    authorization: `Bearer ${apiKey}`,
+    'content-type': 'application/json',
+    'x-trace-id': traceId
+  }
+}
+
+function parseJson(value: string): Record<string, unknown> {
+  if (!value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function listen(server: http.Server): Promise<void> {
+  if (server.listening) return Promise.resolve()
+  server.listen(0, '127.0.0.1')
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.once('listening', resolvePromise)
+    server.once('error', rejectPromise)
+  })
+}
+
+function serverPort(server: http.Server): number {
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('服务地址不可用')
+  }
+  return address.port
+}
+
+async function closeServer(server: http.Server | undefined): Promise<void> {
+  if (!server?.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.close((error) => error ? rejectPromise(error) : resolvePromise())
+  })
+}

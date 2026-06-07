@@ -24,7 +24,7 @@ import {
   normalizeOpenAIGatewayTrafficSource,
   type OpenAIGatewayTrafficSource
 } from './openai-gateway-traffic-source.js'
-import { sanitizeAuditPayloadBody, sanitizeDiagnosticPayload } from './payload-sanitizer.js'
+import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
@@ -84,9 +84,13 @@ interface AddGatewayMetadataInput {
   label?: string
 }
 
+type PendingAuditPayloadInput = Omit<AuditLogPayloadInput, 'sequenceIndex'>
+
 interface AuditAttemptState {
   tempId: string
   attempt: AuditLogAttemptInput
+  requestPayload?: PendingAuditPayloadInput
+  requestPayloadCaptured: boolean
   startedAtMs: number
   completed: boolean
 }
@@ -119,7 +123,7 @@ export class AuditCaptureContext {
   private readonly fullBodyCapture: AuditFullBodyCaptureConfig
   private readonly payloads: AuditLogPayloadInput[] = []
   private readonly attempts: AuditLogAttemptInput[] = []
-  private gatewayContext: AuditGatewayContext = { providerCode: 'openai' }
+  private gatewayContext: AuditGatewayContext = { providerCode: OPENAI_PROTOCOL_CODE }
   private activeAttemptByTempId = new Map<string, AuditAttemptState>()
   private finalized = false
   private hadFailedAttempt = false
@@ -179,7 +183,7 @@ export class AuditCaptureContext {
   }
 
   shouldCaptureSuccessPayloads(): boolean {
-    return this.enabled && !this.metadataOnly && (this.successCaptureSelected || this.shouldForceCaptureSuccess())
+    return this.enabled && !this.metadataOnly && (this.successCaptureSelected || this.shouldForceCaptureSuccess() || this.hadFailedAttempt)
   }
 
   private shouldForceCaptureSuccess(): boolean {
@@ -275,6 +279,7 @@ export class AuditCaptureContext {
   startAttempt(input: StartAttemptInput): string {
     if (!this.enabled) return ''
     this.markFullBodyCaptureAccount(input.account.id)
+    this.bindContext({ providerCode: input.account.providerCode })
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const startedAtMs = Date.now()
     const attempt: AuditLogAttemptInput = {
@@ -285,22 +290,25 @@ export class AuditCaptureContext {
       accountOwnerSystemAccountId: input.account.accountOwnerSystemAccountId,
       groupId: this.gatewayContext.groupId,
       proxyUrl: sanitizeUrlCredentialsForLog(input.account.proxyUrl),
-      providerCode: 'openai',
+      providerCode: input.account.providerCode,
       upstreamMethod: input.method,
       upstreamUrl: sanitizeUrlCredentialsForLog(input.upstreamUrl) ?? 'unknown',
       startedAt: new Date(startedAtMs).toISOString()
     }
     this.attempts.push(attempt)
-    this.activeAttemptByTempId.set(tempId, { tempId, attempt, startedAtMs, completed: false })
+    const requestPayload: PendingAuditPayloadInput = {
+      attemptTempId: tempId,
+      partType: 'upstream_request',
+      headers: headersToSafeObject(input.headers),
+      body: input.body,
+      contentType: input.headers.get('content-type') ?? undefined,
+      contentEncoding: input.headers.get('content-encoding') ?? undefined
+    }
+    const state: AuditAttemptState = { tempId, attempt, requestPayload, requestPayloadCaptured: false, startedAtMs, completed: false }
+    this.activeAttemptByTempId.set(tempId, state)
     if (this.shouldCaptureSuccessPayloads()) {
-      this.addPayload({
-        attemptTempId: tempId,
-        partType: 'upstream_request',
-        headers: headersToSafeObject(input.headers),
-        body: input.body,
-        contentType: input.headers.get('content-type') ?? undefined,
-        contentEncoding: input.headers.get('content-encoding') ?? undefined
-      })
+      this.addPayload(requestPayload)
+      state.requestPayloadCaptured = true
     }
     return tempId
   }
@@ -322,6 +330,10 @@ export class AuditCaptureContext {
     state.attempt.errorMessage = sanitizeOptionalDiagnosticMessage(input.errorMessage)
     if (!input.success) {
       this.hadFailedAttempt = true
+    }
+    if (!this.metadataOnly && !input.success && state.requestPayload && !state.requestPayloadCaptured) {
+      this.addPayload(state.requestPayload)
+      state.requestPayloadCaptured = true
     }
     if (
       !this.metadataOnly
@@ -428,7 +440,6 @@ export class AuditCaptureContext {
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
-    sanitizeAuditPayloadInput(payload)
     if (!this.shouldPreserveFullPayloadBodies() && !this.mayPreserveFullPayloadBodiesAfterAccountMatch()) {
       summarizePayloadForLimit(payload, failedAuditFullBodyLimitBytes)
     }
@@ -483,20 +494,8 @@ export class AuditCaptureContext {
   }
 }
 
-function sanitizeAuditPayloadInput(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
-  const sanitized = sanitizeAuditPayloadBody({
-    body: payload.body,
-    contentType: payload.contentType,
-    contentEncoding: payload.contentEncoding
-  })
-  if (!sanitized.redacted) return
-  payload.rawBodySizeBytes = payload.rawBodySizeBytes ?? sanitized.originalSizeBytes
-  payload.body = sanitized.body
-  payload.contentEncoding = undefined
-}
-
 function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : sanitizeDiagnosticPayload(value)
+  return value
 }
 
 export function createAuditCapture(input: AuditCaptureContextInput): AuditCaptureContext {

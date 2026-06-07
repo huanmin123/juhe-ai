@@ -31,12 +31,10 @@ assertNoLeak(JSON.stringify(diagnostic), [
   'diagnostic-client-secret',
   'diagnostic-api-key',
   'sk-diagnostic-secret-token',
-  'url-user',
-  'url-password',
-  'url-secret',
   'fallback-client-secret',
   'fallback-id-token'
-], '上游诊断错误响应不应泄露敏感字段、token 或 URL 用户信息')
+], '上游诊断错误响应正文不应泄露敏感字段或 token')
+assert(JSON.stringify(diagnostic).includes('https://url-user:url-password@example.com/v1/chat/completions?client_secret=url-secret&safe=ok'), '上游诊断 URL 应按日志规则保留原文')
 
 const jsonBody = JSON.stringify({
   model: 'gpt-4o-mini',
@@ -52,16 +50,16 @@ const sanitizedJson = sanitizeAuditPayloadBody({
   body: jsonBody,
   contentType: 'application/json; charset=utf-8'
 })
-assert.equal(sanitizedJson.redacted, true, 'JSON 审计 payload 应发生脱敏')
-assert.equal(sanitizedJson.originalSizeBytes, Buffer.byteLength(jsonBody), 'JSON 审计 payload 应保留原始体积')
+assert.equal(sanitizedJson.redacted, false, 'JSON 审计 payload 不应脱敏')
+assert.equal(sanitizedJson.originalSizeBytes, undefined, 'JSON 审计 payload 未脱敏时不需要记录脱敏前体积')
 const sanitizedJsonText = bodyText(sanitizedJson.body)
-assertNoLeak(sanitizedJsonText, [
+assertAllPresent(sanitizedJsonText, [
   'audit-json-client-secret',
   'audit-json-id-token',
   'audit-json-api-key',
   'audit-json-bearer-token',
   'sk-audit-json-secret-token'
-], 'JSON 审计 payload 不应保留敏感原文')
+], 'JSON 审计 payload 应保留敏感原文')
 assert.equal(JSON.parse(sanitizedJsonText).safe, 'ok', 'JSON 审计 payload 应保留安全字段')
 
 const sanitizedText = sanitizeDiagnosticPayload('proxy failed at https://diagnostic-user:diagnostic-password@example.com/v1?safe=ok')
@@ -76,33 +74,33 @@ const sanitizedForm = sanitizeAuditPayloadBody({
   body: formBody,
   contentType: 'application/x-www-form-urlencoded'
 })
-assert.equal(sanitizedForm.redacted, true, '表单审计 payload 应发生脱敏')
-assert.equal(sanitizedForm.originalSizeBytes, Buffer.byteLength(formBody), '表单审计 payload 应保留原始体积')
+assert.equal(sanitizedForm.redacted, false, '表单审计 payload 不应脱敏')
+assert.equal(sanitizedForm.originalSizeBytes, undefined, '表单审计 payload 未脱敏时不需要记录脱敏前体积')
 const sanitizedFormParams = new URLSearchParams(bodyText(sanitizedForm.body))
 assert.equal(sanitizedFormParams.get('safe'), 'ok', '表单审计 payload 应保留安全参数')
-assert.equal(sanitizedFormParams.get('client_secret'), '[redacted]', '表单 client_secret 应脱敏')
-assert.equal(sanitizedFormParams.get('id_token'), '[redacted]', '表单 id_token 应脱敏')
-assert.equal(sanitizedFormParams.get('message'), 'Bearer [redacted]', '表单普通字段内的 Bearer token 应脱敏')
-assertNoLeak(bodyText(sanitizedForm.body), [
+assert.equal(sanitizedFormParams.get('client_secret'), 'audit-form-client-secret', '表单 client_secret 应保留原文')
+assert.equal(sanitizedFormParams.get('id_token'), 'audit-form-id-token', '表单 id_token 应保留原文')
+assert.equal(sanitizedFormParams.get('message'), 'Bearer audit-form-bearer-token', '表单普通字段内的 Bearer token 应保留原文')
+assertAllPresent(bodyText(sanitizedForm.body), [
   'audit-form-client-secret',
   'audit-form-id-token',
   'audit-form-bearer-token'
-], '表单审计 payload 不应保留敏感原文')
+], '表单审计 payload 应保留敏感原文')
 
 const largeJsonText = `{"padding":"${'x'.repeat(4 * 1024 * 1024 + 1)}","client_secret":"large-audit-client-secret","id_token":"large-audit-id-token","apiKey":"large-audit-api-key"}`
 const sanitizedLarge = sanitizeAuditPayloadBody({
   body: largeJsonText,
   contentType: 'application/json'
 })
-assert.equal(sanitizedLarge.redacted, true, '超过内联 JSON 解析阈值的大文本也应通过字符串规则脱敏')
-assert.equal(sanitizedLarge.originalSizeBytes, Buffer.byteLength(largeJsonText), '大文本审计 payload 应保留原始体积')
-assertNoLeak(bodyText(sanitizedLarge.body), [
+assert.equal(sanitizedLarge.redacted, false, '超过内联 JSON 解析阈值的大文本不应脱敏')
+assert.equal(sanitizedLarge.originalSizeBytes, undefined, '大文本审计 payload 未脱敏时不需要记录脱敏前体积')
+assertAllPresent(bodyText(sanitizedLarge.body), [
   'large-audit-client-secret',
   'large-audit-id-token',
   'large-audit-api-key'
-], '大文本审计 payload 不应因跳过 JSON 解析而泄露敏感赋值片段')
+], '大文本审计 payload 应保留敏感赋值片段')
 
-console.log('网关 payload 脱敏回归通过：诊断错误和审计 payload 均会清理敏感字段、token 与 URL 凭据')
+console.log('网关 payload 日志回归通过：审计 payload 保留原文，诊断正文仍按展示策略清理')
 
 function bodyText(body: Buffer | string | undefined): string {
   return Buffer.isBuffer(body) ? body.toString('utf8') : body ?? ''
@@ -111,5 +109,11 @@ function bodyText(body: Buffer | string | undefined): string {
 function assertNoLeak(text: string, markers: string[], message: string): void {
   for (const marker of markers) {
     assert(!text.includes(marker), `${message}：${marker}`)
+  }
+}
+
+function assertAllPresent(text: string, markers: string[], message: string): void {
+  for (const marker of markers) {
+    assert(text.includes(marker), `${message}：${marker}`)
   }
 }

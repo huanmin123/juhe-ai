@@ -71,7 +71,6 @@ import {
   recordCompletedUpstreamAttempt,
   type GatewayUsageContext
 } from './openai-gateway-usage-records.js'
-import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true }
@@ -559,7 +558,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       responseBodyText = error.partialResult.diagnosticBodyText ?? error.partialResult.usageTailText
       responseUsageText = error.partialResult.usageTailText
       firstTokenMs = error.partialResult.firstByteMs ?? firstTokenMs
-      const errorMessage = sanitizeDiagnosticPayload(error instanceof Error ? error.message : '上游非流式响应正文中断')
+      const errorMessage = error instanceof Error ? error.message : '上游非流式响应正文中断'
       logger.warn({
         event: 'gateway_non_stream_body_interrupted_after_output',
         accountId: account.id,

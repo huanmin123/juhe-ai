@@ -1,5 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
-import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupResult, OperationLogInput } from '../../storage/repositories.js'
+import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput } from '../../storage/repositories.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
@@ -156,10 +156,11 @@ export interface DbServiceGatewayRuntime {
   groupAccess?: GroupUsageAccessMetadata
   accounts: OpenAIAccountSecret[]
   hasAccountAvailabilitySchedule?: boolean
+  accountDispatchDiagnostics?: OpenAIAccountsForGroupDiagnostics
   streamInterceptPolicies?: StreamInterceptPolicySummary[]
 }
 
-export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId' | 'lastErrorCode'> & {
+export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId' | 'lastErrorCode'> & {
   proxyUrl?: string
 }
 

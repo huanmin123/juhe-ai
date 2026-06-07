@@ -2,12 +2,14 @@
 
 ## 范围
 
-当前版本启用 OpenAI 供应商，账户类型支持：
+当前版本启用 GPT 供应商，并通过 OpenAI v1 协议对外提供兼容网关。账户类型支持：
 
-- OpenAI OAuth
-- OpenAI API Key
+- GPT OAuth
+- GPT API Key
 
-其他供应商保留架构扩展位，暂不开放页面和接口。
+这里的 `openai` 是协议层编码，表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；AI 账户、分组、模型目录和价格目录归属在供应商层，当前默认供应商编码是 `gpt`。后续如果增加 GLM、Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`，不能把账户直接创建到 `openai` 协议层。
+
+当前唯一可创建和可调度的供应商协议档案是 `profile_gpt_openai_v1`。账户、分组、账号测试任务、导入协议和公开推送接口都必须带上或解析出这个档案；后端会把档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。`providerCode=gpt` 只说明供应商，不能单独表达上游协议、端点族和客户端策略。
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 `API Key 管理` 或 `我的 API Key` 页面生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
@@ -15,20 +17,44 @@
 
 | 账户类型 | 上游链路 | 当前路径策略 | 主要限制 |
 | --- | --- | --- | --- |
-| OpenAI API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传，例如 `/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions`。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 请求体默认 raw passthrough；可选 `codex_responses` 兼容模式只改写 `/responses` 请求；本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
-| OpenAI OAuth | ChatGPT / Codex backend 的 `openai_oauth_codex` adapter | 只为 `POST /responses`、`POST /v1/responses`、`POST /responses/compact` 和 `POST /v1/responses/compact` 构造 Codex 上游请求；`GET /models` / `/v1/models` 由本地模型目录返回。 | 账户兼容模式固定为 `codex_responses`，不提供用户侧切换；不等价于公开 OpenAI API Key；不承诺 `/chat/completions` 到 Responses 的重型协议翻译，也不承诺公开 Responses API 全字段原样进入 Codex backend。OAuth-only 分组请求不支持的路径时不会落到公开 OpenAI API。 |
+| GPT API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传，例如 `/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions`。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 请求体默认 raw passthrough；可选 `codex_responses` 兼容模式只改写 `/responses` 请求；本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
+| GPT OAuth | ChatGPT / Codex backend 的 `openai_oauth_codex` adapter | 只为 `POST /responses`、`POST /v1/responses`、`POST /responses/compact` 和 `POST /v1/responses/compact` 构造 Codex 上游请求；`GET /models` / `/v1/models` 由本地模型目录返回。 | 账户兼容模式固定为 `codex_responses`，不提供用户侧切换；不等价于公开 OpenAI API Key；不承诺 `/chat/completions` 到 Responses 的重型协议翻译，也不承诺公开 Responses API 全字段原样进入 Codex backend。OAuth-only 分组请求不支持的路径时不会落到公开 OpenAI API。 |
 
 混合分组中如果同时存在 API Key 账号和 OAuth 账号，某条路径是否可用取决于调度命中的账号类型：OAuth 账号不支持的路径会跳过该账号，仍可由同分组内可用的 API Key 账号承接；如果当前 API Key 还绑定了后续号池，且当前分组没有任何账号类型能承接该路径，网关应继续尝试下一号池；如果所有号池都没有可用账号，则返回“没有可用的上游账户”一类网关错误，而不是自动协议翻译。多号池混合规则见 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
 
 单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，服务端不换账号也不重新请求上游续写；持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时按客户端策略处理可见输出前失败：只有命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时，才写出 Codex 可重试的 `response.failed/upstream_retryable_error`，并在同一 turn 第 4 次失败链路上避让已失败账号；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
-## OpenAI 供应商定义
+## 协议与 GPT 供应商定义
 
 ```ts
-type ProviderCode = 'openai'
-
-type OpenAIAccountType = 'oauth' | 'api_key'
+type ProtocolCode = 'openai'
+type ProtocolVersion = 'v1'
+type ProviderCode = 'gpt'
+type ProviderProtocolProfileId = 'profile_gpt_openai_v1'
+type EndpointFamily = 'chat_completions' | 'responses'
+type GptAccountType = 'oauth' | 'api_key'
 ```
+
+默认协议定义：
+
+- `protocolCode`: `openai`
+- `protocolVersion`: `v1`
+- `endpointFamilies`: `chat_completions`、`responses`
+
+默认供应商定义：
+
+- `code`: `gpt`
+- `name`: `GPT`
+
+默认供应商协议档案：
+
+- `id`: `profile_gpt_openai_v1`
+- `providerCode`: `gpt`
+- `protocolCode`: `openai`
+- `protocolVersion`: `v1`
+- `baseUrl`: `https://api.openai.com/v1`
+- `accountTypes`: `oauth`、`api_key`
+- `endpointFamilies`: `chat_completions`、`responses`
 
 默认能力：
 
@@ -39,7 +65,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 - `gpt-5.5`，通过供应商定义的 `default_test_model` 提供给前端账户测试和后台系统复测兜底使用。
 
-## OpenAI OAuth 创建方式
+## GPT OAuth 创建方式
 
 当前支持手动授权链接和直接粘贴 Refresh Token 两种创建方式。
 
@@ -61,6 +87,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 保存要求：
 
 - token 加密存储
+- 新建 OAuth 账户默认写入 `status = pending_test` 且 `schedulable = false`，不参与调度；创建后必须手动测试通过才恢复为正常。OAuth token 刷新成功只更新凭据，不自动把待测试账户恢复正常。
 - OAuth 账户允许重复添加相同凭据；同一个 `refresh_token` 或兜底 `access_token` 可以创建多个账户。系统只保留凭据指纹用于排查相同 token，不承担唯一约束。
 - 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
 - `expires_at` 由后端根据 OpenAI 返回的 `expires_in` 自动计算和刷新
@@ -69,7 +96,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 可手动启用 / 停用
 - `refresh_token` 只对 OAuth 账户需要，账户列表不展示
 
-## OpenAI API Key 创建方式
+## GPT API Key 创建方式
 
 表单字段：
 
@@ -87,6 +114,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 保存要求：
 
 - API Key 加密存储
+- 新建 API Key 账户默认写入 `status = pending_test` 且 `schedulable = false`，不参与调度；只有在创建前对同一份草稿完成账户测试且测试成功，创建请求才可以携带该测试任务 ID 直接落成正常账户。
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
@@ -95,7 +123,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 可用时段计划不改写账户 `status`；时段外只退出网关账号候选，进入允许时段后自动重新参与调度。时区跟随系统默认值，用户表单不提供时区配置。
 - 可手动启用 / 停用
 
-透传策略：OpenAI 账户默认按供应商网关策略透传，用户侧不提供通用透传开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。API Key 账号默认原样使用客户端 `rawBody`，只有显式选择 `codex_responses` 时才对 `POST /responses` / `POST /v1/responses` 按 Codex Responses 形态补齐请求体和必要流式请求头；Header 会过滤本地认证、代理链路、SDK / tracing 噪声和客户端传入的 `OpenAI-Organization` / `OpenAI-Project`，不从账号凭据生成这些上游账号上下文头。`OpenAI-Beta` 保留客户端显式传入值，服务端不做账号级覆盖。OAuth 账号固定进入 `openai_oauth_codex` adapter，不读取也不接受用户侧客户端兼容模式覆盖。
+透传策略：GPT 账户默认按供应商网关策略透传，用户侧不提供通用透传开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。API Key 账号默认原样使用客户端 `rawBody`，只有显式选择 `codex_responses` 时才对 `POST /responses` / `POST /v1/responses` 按 Codex Responses 形态补齐请求体和必要流式请求头；Header 会过滤本地认证、代理链路、SDK / tracing 噪声和客户端传入的 `OpenAI-Organization` / `OpenAI-Project`，不从账号凭据生成这些上游账号上下文头。`OpenAI-Beta` 保留客户端显式传入值，服务端不做账号级覆盖。OAuth 账号固定进入 `openai_oauth_codex` adapter，不读取也不接受用户侧客户端兼容模式覆盖。
 
 ### 账户支持模型限制
 
@@ -108,23 +136,24 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 当前关系规则：
 
 - `accounts.system_account_id` 表示当前账户行所属系统账户；账户所有者把 AI 账户授权给其他系统账户后，系统会为被授权人创建独立授权实例账户。
+- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、API Key 号池路由和网关候选过滤的硬边界；当前值为 `profile_gpt_openai_v1`。
 - `group_accounts` 表示某个使用方的本地分组绑定；自有账户绑定自有账户 ID，授权账户绑定被授权人自己的授权实例账户 ID，并记录稳定的 `account_authorization_id`。
 - 一个账户在同一个使用方作用域内同一时间只保留一个有效分组绑定；自有账户在所有者作用域内创建 / 编辑时选择分组，被授权账户在授权创建时必须绑定被授权用户自己的本地分组，后续通过账户编辑弹窗调整分组和分组内优先级。
-- 被授权用户把授权实例加入自己的同供应商分组后，自己的 API Key 才能通过该分组调度该授权实例；这只是本地调度绑定，不改变授权方原账户的分组绑定。
+- 被授权用户把授权实例加入自己的同协议档案分组后，自己的 API Key 才能通过该分组调度该授权实例；这只是本地调度绑定，不改变授权方原账户的分组绑定。
 - 授权实例账户自己的状态、冷却、错误和流失败窗口与授权方原账户运行态隔离；当前分组内优先级、超级优先和降级备用来自 `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled`，只影响当前使用方当前分组绑定。
 - 授权实例运行时的 OpenAI 凭据、`base_url`、账号类型、支持模型、代理、并发和错误策略从来源账户补齐；父账户 API Key、OAuth token、模型或代理更新后，被授权实例列表、测试和网关缓存都应读取最新来源资源事实。
 - 被授权用户不能编辑来源账户、查看敏感凭据、修改来源账户代理 / 并发 / 错误策略 / 模型 / 凭据，也不能继续转授权；被授权用户可以在自己的分组内绑定 / 调整授权实例、执行账户测试、停用或恢复自己的授权实例，并调整当前分组内优先级、超级优先和降级备用。被授权用户不想继续使用个人直授权账户时只能归还个人授权，不删除授权实例账户行或授权方原账户；团队来源授权账户不提供个人归还入口。
 - 统一授权管理支持分组授权；分组所有者可以把整个分组授权给系统账户或系统团队使用，授权共享该分组内当前全部可共享账户；有效授权分组可直接作为被授权方新建或编辑 API Key 的号池
 - 被授权用户可以把自己的 API Key 直接绑定到有效授权分组；也可以在分组页查看授权分组信息，并本地调整该授权分组的启用状态、分组类型和高并发调度配置。该本地配置只影响当前被授权人的 API Key 号池和网关调度，不修改授权方原分组。
 - 授权暂停、过期、回收、归还、额度不可用或被授权人本地停用授权分组时，该号池配置保留但运行态不可用。个人直授权分组可从分组页归还；团队来源授权分组不提供个人归还入口。
-- 分组可以汇总多个 OpenAI 账户，但只能汇总同一供应商下的账户
+- 分组可以汇总多个 GPT 账户，但只能汇总同一供应商协议档案下的账户；不能只凭 `providerCode` 相同或 `protocolCode` 相同混用账户
 - API Key 可以绑定调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组；统一授权提供使用权，不提供编辑、删除或转授权权限
 - 请求进入后先按 API Key 号池优先级选择一个可承接分组，再只能使用该分组内调用方有权使用的账户
 
 ## 当前页面入口
 
-1. 供应商页：展示 OpenAI、支持的账户类型和本地供应商模型目录。
-2. 账户页：OpenAI OAuth / API Key 创建、编辑、状态切换、测试、删除、批量删除、授权来源和 OAuth 额度进度展示。
+1. 供应商页：展示 GPT、支持的账户类型和本地供应商模型目录。
+2. 账户页：GPT OAuth / API Key 创建、编辑、状态切换、测试、删除、批量删除、授权来源和 OAuth 额度进度展示。
 3. 分组页：维护分组基础信息、查看账户数量与聚合状态、绑定自有或授权账户。
 4. 统一授权页：统一维护账户 / 分组授权、系统账户 / 团队授权对象、授权到期和授权额度。
 5. 团队消耗明细 / 用户消耗明细：按日期范围查看授权团队和最终用户消耗。
@@ -136,7 +165,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 ## 当前接口入口
 
 - 系统后台 API 统一在 `/__aisys__/api/*` 下，用户侧接口使用 `/__aisys__/api/my-*`，管理侧接口使用 `/__aisys__/api/*` 并按需要求管理员权限。
-- OpenAI 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。
+- GPT 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。账户、分组和测试相关 DTO 需要返回 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion`，用于前端筛选、表单默认值、分组绑定和运行时诊断。
 - 授权消耗明细接口固定使用 `startDate=YYYY-MM-DD`、`endDate=YYYY-MM-DD`、`page` 和 `pageSize` 参数读取窗口分页，管理侧为 `/__aisys__/api/authorizations/usage/team-details`、`/__aisys__/api/authorizations/usage/user-details`，用户侧为 `/__aisys__/api/my-authorizations/usage/team-details`、`/__aisys__/api/my-authorizations/usage/user-details`。
 - 客户端网关入口是根路径和 `/v1/*`，不使用后台登录态，只使用本地 API Key。
 
@@ -152,7 +181,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 ## OpenAI OAuth 授权方式
 
-`juhe-ai` 为 OpenAI OAuth 账户实现两种轻量授权方式：
+`juhe-ai` 为 GPT OAuth 账户实现两种轻量授权方式，底层使用 OpenAI OAuth 授权服务：
 
 ### 手动授权
 
@@ -161,7 +190,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 3. 用户登录 OpenAI 后浏览器会跳转到 `http://localhost:1455/auth/callback`。
 4. 如果本机没有监听该端口，浏览器显示连接失败也没关系，复制地址栏完整 URL。
 5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token；Client ID 与 Redirect URI 使用后端内置默认值，不暴露给用户填写。
-6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱和可选的 `account_expires_at`。
+6. 创建 GPT OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱和可选的 `account_expires_at`。
 7. 账户落库后不主动请求模型接口获取额度；额度快照等待第一次真实网关请求或账户测试返回 Codex rate-limit 响应头后被动更新。
 8. 创建接口默认不携带账号级错误处理规则；只有用户显式添加专属规则时，客户端才通过 `credentialsPatch.error_handling_rules` 携带。`access_token`、`refresh_token`、`expires_at`、`client_id` 和 `base_url` 必须以 OpenAI token endpoint 返回或服务端 fallback 为准，不能被请求体覆盖。
 
@@ -169,7 +198,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 1. 用户直接粘贴已有 `refresh_token`。
 2. 后端使用内置默认 Client ID 和 `grant_type=refresh_token` 向 OpenAI token endpoint 刷新。
-3. 刷新成功后创建 OpenAI OAuth 账户。
+3. 刷新成功后创建 GPT OAuth 账户。
 4. 账户落库后不主动请求模型接口获取额度；额度快照等待第一次真实网关请求或账户测试返回 Codex rate-limit 响应头后被动更新。
 5. 如果 OpenAI 没返回新的 `refresh_token`，继续保留用户输入的原始 `refresh_token`。
 
@@ -177,15 +206,17 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 - API Key 账户使用 `credentials.api_key` 作为上游 Bearer token。
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
-- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接客户端网关 `/*` 和 `/v1/*` 请求；OpenAI API Key 上游仍归一到 `/v1/*`。
+- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接客户端网关 `/*` 和 `/v1/*` 请求；GPT API Key 上游仍归一到 `/v1/*`。
 - OAuth 账户不把 `access_token` 当作官方 OpenAI API Key 打到 `api.openai.com/v1`；真实转发走 ChatGPT / Codex backend 专用链路 `https://chatgpt.com/backend-api/codex`，账户兼容模式固定为 Codex Responses。
 - OAuth Codex 网关当前支持 Codex 原生 `POST /responses` 和 `POST /responses/compact`，暂不做 `/chat/completions` 到 Responses 的重型协议翻译。
 - `GET /v1/models` 由本地供应商模型目录返回，并叠加调用方可见的内置、全局自定义和个人自定义模型；它不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。
 - OAuth Codex 转发会补齐必要 Codex CLI 协议头，并在账号凭据包含 `account_id` 时写入 `chatgpt-account-id`；客户端传入的同名头不会透传，避免跨账号伪造。
-- 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户，作为请求前懒刷新兜底。
+- 网关发现 OAuth Access Token 缺失、过期、过期时间无效或距离过期不超过 5 秒时，会在当前请求内用 `refresh_token` 刷新并写回账户，避免把已不可用 token 发给上游。
+- 网关发现 OAuth Access Token 距离过期小于 60 秒但仍超过 5 秒时，不阻塞当前请求；当前请求继续使用现有 Access Token，同时按账号触发一次后台预热刷新。预热刷新按账号去重，同一账号已有预热任务时不会重复排队；预热成功只写回新凭据并清理运行缓存，预热失败只写运行日志，不把当前请求卡在 token endpoint 上。
 - OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。刷新成功后 server 进程会短 TTL 记住最近新凭据，同一波临期请求复用该结果，不再逐个重复读写 DB service。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
-- 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 OpenAI OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做 token 保活，成功时不恢复普通冷却状态、不清理无关错误；失败时按退避等待并累计连续失败次数，连续 3 次失败后把非停用账户写入 `status = error`，`last_error_code = oauth_token_refresh_failed`，`last_error_message` 记录最近失败摘要，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
-- 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求或账户测试返回的 Codex rate-limit 响应头被动更新。账户测试和模型检测展示用上游响应体只保留 `256KB` 有界预览，避免 DB service 在诊断请求内同步解析大文本。OpenAI OAuth token endpoint 的响应体同样只允许收集 `256KB`，异常大响应会主动中断并返回错误，避免刷新 token 时无界占用内存。access token 即将过期时，真实网关请求仍会按正常规则做请求前懒刷新。
+- 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 GPT OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`pending_test`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做 token 保活，成功时不恢复普通冷却状态、不清理无关错误；失败时按退避等待并累计连续失败次数，连续 3 次失败后把非停用、非待测试账户写入 `status = error`，`last_error_code = oauth_token_refresh_failed`，`last_error_message` 记录最近失败摘要，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
+- 待测试账户不属于冷却恢复状态；OAuth 后台刷新、后台冷却复测、“恢复正常”和手动启用都不能把 `pending_test` 改成 `active`。只有手动账户测试成功，或创建时引用同一份草稿的成功测试任务，才能让账户进入正常调度。
+- 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求或账户测试返回的 Codex rate-limit 响应头被动更新。账户测试和模型检测展示用上游响应体只保留 `256KB` 有界预览，避免 DB service 在诊断请求内同步解析大文本。OpenAI OAuth token endpoint 的响应体同样只允许收集 `256KB`，异常大响应会主动中断并返回错误，避免刷新 token 时无界占用内存。access token 临近过期时，真实网关请求会按 5 秒硬阻塞阈值和 60 秒后台预热阈值处理。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
 - 账户可用时段计划只作为网关候选过滤条件，不改变手动启用/停用、异常、冷却和到期状态。账号池运行缓存按分钟边界刷新，避免计划切换时间点继续使用旧候选。
@@ -207,7 +238,7 @@ OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过�
 
 ### OpenAI OAuth 额度进度
 
-OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括约 `5h` 窗口和 `7d` 窗口；这类额度不是 API Key 的 token / 成本用量，必须单独展示和处理。
+GPT OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括约 `5h` 窗口和 `7d` 窗口；这类额度不是 API Key 的 token / 成本用量，必须单独展示和处理。
 
 - 数据来源使用真实网关请求或账号测试返回的 Codex rate-limit 响应头：`x-codex-primary-used-percent`、`x-codex-primary-reset-after-seconds`、`x-codex-primary-window-minutes`、`x-codex-secondary-used-percent`、`x-codex-secondary-reset-after-seconds`、`x-codex-secondary-window-minutes`。后台不再为了额度快照主动探测。
 - 归一化规则：只按 `window_minutes` 判断窗口，`<= 360` 分钟归为 `5h`，更长归为 `7d`；没有窗口长度的 primary / secondary 原始 header 只保存原始字段，不生成 `codex_5h_*` 或 `codex_7d_*` 归一化字段。
@@ -229,22 +260,22 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 账户类型
 - 供应商
 - 并发数
-- 状态（正常、停用、异常、限流中、临时不可调用；授权账户额外按有效性展示授权到期、授权已失效、授权额度已用完，账户套餐过期展示账户到期）
+- 状态（正常、待测试、停用、异常、限流中、临时不可调用；授权账户额外按有效性展示授权到期、授权已失效、授权额度已用完，账户套餐过期展示账户到期）
 - 用量情况
 - 优先级
 - 最近使用时间
 - 到期时间（授权账户优先展示授权到期时间；没有授权到期时间时展示账户到期时间）
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户和恢复正常，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。编辑弹窗只维护名称、凭据、分组、并发、优先级、代理、过期时间、备注、错误策略和 API Key 账户客户端兼容等配置；OpenAI OAuth 账户客户端兼容固定显示 Codex Responses，不提供切换。不提供状态修改；保存编辑时也不得提交 `status`，避免覆盖测试、后台自动恢复、错误处理或网关冷却刚写入的状态。迁移流量用于人工处理上游返回状态码正常但内容异常、自动错误策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认把原账户改为临时不可调用，也可指定为停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接。手动启用只针对真正已停用的账户；停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由手动测试成功恢复；后台冷却复测固定启用，会在冷却时间到期后复测 `temporary_unavailable` 和 `rate_limited` 账号。复测失败会先短重试确认，再按指数退避延长下一次复测时间；超过最长自动恢复观察窗口后会转为 `status = error`，需要通过“恢复异常”清理。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；`oauth_token_refresh_failed` 这类后台刷新异常会在后台刷新成功后自动恢复，其它显式硬异常仍保留编辑（状态锁定为异常）、删除、测试和“恢复异常”入口。授权额度耗尽是授权关系的展示层状态，只显示“授权额度已用完”并由网关按授权额度返回 429，不改变物理 AI 账户状态；只有上游账号本身触发错误策略 `rate_limited` 时才显示“限流中”。账户套餐到期显示“账户到期”，授权到期或绑定的稳定授权 ID 失效显示“授权到期 / 授权已失效”。
+操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户和恢复正常，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。编辑弹窗只维护名称、凭据、分组、并发、优先级、代理、过期时间、备注、错误策略和 API Key 账户客户端兼容等配置；GPT OAuth 账户客户端兼容固定显示 Codex Responses，不提供切换。不提供状态修改；保存编辑时也不得提交 `status`，避免覆盖测试、后台自动恢复、错误处理或网关冷却刚写入的状态。迁移流量用于人工处理上游返回状态码正常但内容异常、自动错误策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认把原账户改为临时不可调用，也可指定为停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接。`待测试` 是新建账户的默认隔离状态，不能参与调度，不能通过启用账户或恢复正常绕过测试；手动测试失败仍保持待测试，手动测试通过后才恢复为正常并开启调度。手动启用只针对真正已停用的账户；停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由手动测试成功恢复；后台冷却复测固定启用，会在冷却时间到期后复测 `temporary_unavailable` 和 `rate_limited` 账号。复测失败会先短重试确认，再按指数退避延长下一次复测时间；超过最长自动恢复观察窗口后会转为 `status = error`，需要通过“恢复异常”清理。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；`oauth_token_refresh_failed` 这类后台刷新异常会在后台刷新成功后自动恢复，其它显式硬异常仍保留编辑（状态锁定为异常）、删除、测试和“恢复异常”入口。授权额度耗尽是授权关系的展示层状态，只显示“授权额度已用完”并由网关按授权额度返回 429，不改变物理 AI 账户状态；只有上游账号本身触发错误策略 `rate_limited` 时才显示“限流中”。账户套餐到期显示“账户到期”，授权到期或绑定的稳定授权 ID 失效显示“授权到期 / 授权已失效”。
 
-批量工具栏支持“批量恢复”，只处理选中账户中可恢复的异常、限流、临时不可调用、冷却或网关运行态避让账户；动作逐个复用单账户恢复语义，跳过停用、到期、授权失效、授权暂停或无权恢复的账户。授权实例恢复只清理被授权用户自己的实例运行态，不修改授权方原账户。
+批量工具栏支持“批量恢复”，只处理选中账户中可恢复的异常、限流、临时不可调用、冷却或网关运行态避让账户；动作逐个复用单账户恢复语义，跳过待测试、停用、到期、授权失效、授权暂停或无权恢复的账户。授权实例恢复只清理被授权用户自己的实例运行态，不修改授权方原账户。
 
 自有账户测试入口不因停用状态隐藏；停用账户仍可手动测试凭据、代理和上游链路，但测试结果只作为诊断，不会恢复或改写停用状态。在非停用状态下，自有账户测试不受 `schedulable` 标记或冷却时间限制，只要账户仍绑定分组且凭据可读取，就固定测试当前账号。授权账户测试还必须满足授权可用、额度未耗尽、已绑定当前用户分组、账户未到期，停用的授权实例同样可以保留测试入口用于诊断；授权用户测试时只返回脱敏后的状态码、耗时、成败和简短错误，完整上游响应头、响应体、上游地址、代理和请求体诊断只对所有者或管理员开放。授权账户只保留使用相关操作、授权实例状态、本地分组调度入口和个人直授权归还入口；授权实例账户不能删除，归还个人授权只隐藏自己的授权实例并把授权状态标记为 `returned`，不删除授权方原账户。测试会打开结果弹窗，可选择模型；弹窗终端区域展示测试过程、成败、模型返回内容，并在结束行内显示总耗时；所有者或管理员可通过完整 JSON 查看状态码、请求 URL、代理、原始响应正文等排查字段，不再额外展示测试结果表格。测试必须复用正常客户请求的网关调度、代理、OAuth 刷新、错误策略、用量解析和成本统计链路，并固定只测试当前账号；测试接口会等待网关账号副作用写入完成后再回读状态。若人工测试确认被测账号不可用，且失败不是分组绑定、凭据读取、取消等配置或操作问题，后端只会把当前仍为正常状态且可调度的自有账号或授权实例标记为 `temporary_unavailable` 并写入当前账户行的冷却时间；授权实例测试失败不改授权方原账户，也不写 `group_accounts.local_*`。其他状态不会被失败测试覆盖；如果测试响应里带有 Codex rate-limit header，可作为副作用更新 OAuth 额度快照。
 
 ## 统一授权管理
 
-OpenAI 账户不再分别设计账户授权弹窗和分组授权弹窗，授权关系统一进入管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作`。完整规则见 [系统团队与统一授权设计](系统团队与统一授权设计.md)。
+GPT 账户不再分别设计账户授权弹窗和分组授权弹窗，授权关系统一进入管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作`。完整规则见 [系统团队与统一授权设计](系统团队与统一授权设计.md)。
 
 - 授权资源支持 AI 账户和分组。
 - 授权对象支持系统账户和系统团队。

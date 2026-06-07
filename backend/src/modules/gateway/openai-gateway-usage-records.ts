@@ -26,7 +26,7 @@ import {
 import type { GatewayErrorPayload } from './openai-gateway-responses.js'
 import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
-import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -55,6 +55,7 @@ export interface GatewayUsageContext {
 }
 
 export interface GatewayFailureUsageContext extends GatewayUsageContext {
+  providerCode?: string
   groupOwnerSystemAccountId?: string
   groupAccessType?: GroupUsageAccessMetadata['groupAccessType']
   groupAuthorizationId?: string
@@ -77,8 +78,9 @@ export function accountUsageMetadata(account: UpstreamAccount): UsageAccessField
   }
 }
 
-export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<UsageAccessFields, 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
+export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
   return {
+    providerCode: groupAccess.providerCode,
     groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
     groupAccessType: groupAccess.groupAccessType,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
@@ -105,7 +107,7 @@ export function recordFailedUpstreamAttempt(
   const upstreamModel = modelMapping?.upstreamModel ?? model
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
   const pricingModel = resolveCatalogPricingModel({
-    providerCode: 'openai',
+    providerCode: account.providerCode,
     systemAccountId: catalogSystemAccountId,
     model: upstreamModel
   })
@@ -113,9 +115,9 @@ export function recordFailedUpstreamAttempt(
     ? parseErrorPayload(input.bodyText, input.headers)
     : {}
   const errorCode = sanitizeOptionalDiagnosticMessage(typeof errorPayload.code === 'string' ? errorPayload.code : undefined)
-  const errorMessage = sanitizeDiagnosticPayload(input.errorMessage
+  const errorMessage = input.errorMessage
     ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
-    ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败'))
+    ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
 
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_upstream_attempt_failed',
@@ -141,7 +143,7 @@ export function recordFailedUpstreamAttempt(
     accountId: account.id,
     ...accountUsageMetadata(account),
     endpoint: usageContext.endpoint,
-    providerCode: 'openai',
+    providerCode: account.providerCode,
     model,
     upstreamModel,
     pricingModel,
@@ -192,7 +194,7 @@ export function recordCompletedUpstreamAttempt(
   const upstreamModel = modelMapping?.upstreamModel ?? model
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const pricingModel = resolveCatalogPricingModel({
-    providerCode: 'openai',
+    providerCode: input.account.providerCode,
     systemAccountId: catalogSystemAccountId,
     model: upstreamModel
   })
@@ -206,7 +208,7 @@ export function recordCompletedUpstreamAttempt(
     accountId: input.account.id,
     ...accountUsageMetadata(input.account),
     endpoint: input.endpoint,
-    providerCode: 'openai',
+    providerCode: input.account.providerCode,
     model,
     upstreamModel,
     pricingModel,
@@ -223,13 +225,13 @@ export function recordCompletedUpstreamAttempt(
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
     cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
-      providerCode: 'openai',
+      providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
       model: upstreamModel,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
     costUsd: estimateCatalogCostUsd({
-      providerCode: 'openai',
+      providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
       model: upstreamModel,
       inputTokens: input.usage.inputTokens,
@@ -286,7 +288,7 @@ export function recordGatewayFailure(
     errorMessage?: string
   }
 ): void {
-  const errorMessage = sanitizeDiagnosticPayload(input.errorMessage ?? input.responsePayload.error.message)
+  const errorMessage = input.errorMessage ?? input.responsePayload.error.message
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_request_failed',
     statusCode: input.statusCode,
@@ -310,7 +312,7 @@ export function recordGatewayFailure(
     groupAuthorizationSourceType: usageContext.groupAuthorizationSourceType,
     groupAuthorizationSourceTeamId: usageContext.groupAuthorizationSourceTeamId,
     endpoint: usageContext.endpoint,
-    providerCode: 'openai',
+    providerCode: usageContext.providerCode ?? GPT_VENDOR_CODE,
     model: requestModel(req),
     stream: requestStream(req),
     statusCode: input.statusCode,
@@ -330,7 +332,7 @@ function usageRecordSnapshot(
 }
 
 function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : sanitizeDiagnosticPayload(value)
+  return value
 }
 
 function logGatewayAttemptFailure(

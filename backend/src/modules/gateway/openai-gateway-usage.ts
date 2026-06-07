@@ -2,7 +2,6 @@ import type { IncomingHttpHeaders } from 'node:http'
 import { isIP } from 'node:net'
 import type { Request } from 'express'
 
-import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import {
   buildGatewayRequestBodySummary,
   getGatewayRequestBodyState
@@ -87,7 +86,7 @@ export function buildUsageRequestSnapshot(req: Request, traceId: string, clientI
   const snapshot: UsageRequestSnapshot = {
     method: req.method,
     path: req.path,
-    originalUrl: sanitizeUrlForLog(req.originalUrl),
+    originalUrl: req.originalUrl,
     clientIp,
     traceId,
     headers: sanitizeRequestHeaders(req.headers)
@@ -105,7 +104,7 @@ export function sanitizeRequestHeaders(headers: IncomingHttpHeaders): Record<str
   const output: Record<string, string | string[]> = {}
   for (const [name, value] of Object.entries(headers)) {
     if (value === undefined) continue
-    output[name] = sanitizeHeaderValue(name, value)
+    output[name] = value
   }
   return output
 }
@@ -122,7 +121,7 @@ export function buildUsageResponseSnapshot(input: {
   return {
     upstreamUrl: input.upstreamUrl,
     statusCode: input.statusCode,
-    headers: input.headers instanceof Headers ? headersToSafeObject(input.headers) : input.headers ? sanitizeStringHeaderRecord(input.headers) : undefined,
+    headers: input.headers instanceof Headers ? headersToObject(input.headers) : input.headers,
     bodyText: input.bodyText,
     bodyOmission: input.bodyOmission,
     errorMessage: input.errorMessage,
@@ -169,43 +168,24 @@ export function headersToObject(headers: Headers): Record<string, string> {
 }
 
 export function headersToSafeObject(headers: Headers): Record<string, string> {
-  const output: Record<string, string> = {}
-  headers.forEach((value, name) => {
-    output[name] = String(sanitizeHeaderValue(name, value))
-  })
-  return output
+  return headersToObject(headers)
 }
 
 export function sanitizeHeaderRecord(headers: Record<string, string | string[]>): Record<string, string | string[]> {
-  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, sanitizeHeaderValue(name, value)]))
+  return { ...headers }
 }
 
 function sanitizeStringHeaderRecord(headers: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, String(sanitizeHeaderValue(name, value))]))
+  return { ...headers }
 }
 
-export function sanitizeHeaderValue(name: string, value: string | string[]): string | string[] {
-  if (!isSensitiveHeaderName(name)) {
-    return value
-  }
-  return Array.isArray(value) ? value.map(() => '[redacted]') : '[redacted]'
+export function sanitizeHeaderValue(_name: string, value: string | string[]): string | string[] {
+  return value
 }
 
-export function isSensitiveHeaderName(name: string): boolean {
-  const normalized = name.trim().toLowerCase()
-  return sensitiveHeaderNames.has(normalized)
+export function isSensitiveHeaderName(_name: string): boolean {
+  return false
 }
-
-const sensitiveHeaderNames = new Set([
-  'authorization',
-  'proxy-authorization',
-  'cookie',
-  'set-cookie',
-  'x-api-key',
-  'x-goog-api-key',
-  'api-key',
-  'openai-api-key'
-])
 
 export function emptyUsage(): ParsedUsage {
   return {}

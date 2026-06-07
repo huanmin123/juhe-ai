@@ -8,7 +8,7 @@ import { accountOperationScopeParams } from './accountOperationScope'
 import {
   authorizedAccountUnavailableText,
   canEditAccount,
-  canManageOpenAIOAuth,
+  canManageGptOAuth,
   canRestoreException,
   hasAuthorizedInstanceFailureState,
   canUseAccountActions,
@@ -29,8 +29,8 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
   const tokenRefreshLoading = ref(false)
 
   async function refreshOAuthToken(account: AccountSummary) {
-    if (!canManageOpenAIOAuth(account)) {
-      message.warning('只有自有 OpenAI OAuth 账户可以刷新令牌')
+    if (!canManageGptOAuth(account)) {
+      message.warning('只有自有 GPT OAuth 账户可以刷新令牌')
       return
     }
     tokenRefreshLoading.value = true
@@ -92,6 +92,10 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (key === 'restore-normal') {
+      if (account.status === 'pending_test') {
+        message.warning('待测试账户需测试通过后才能参与调度')
+        return
+      }
       if (isAuthorizedAccount(account)) {
         if (!hasAccountRuntimeRecoveryState(account) && !hasAuthorizedInstanceFailureState(account)) {
           message.warning('当前授权账户不需要恢复')
@@ -132,6 +136,10 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (key === 'toggle-status') {
+      if (account.status === 'pending_test') {
+        message.warning('待测试账户需测试通过后才能参与调度')
+        return
+      }
       if (isAuthorizedAccount(account)) {
         if (!account.boundGroupId) {
           message.warning('请先把授权账户绑定到你的分组')
@@ -188,6 +196,10 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (key === 'migrate-traffic') {
+      if (account.status === 'pending_test') {
+        message.warning('待测试账户需测试通过后才能参与调度')
+        return
+      }
       if (isAuthorizedAccount(account) && !canUseBoundAuthorizedAccount(account)) {
         message.warning(authorizedAccountUnavailableText(account) ?? '授权账户当前不可用，不能迁移流量')
         return

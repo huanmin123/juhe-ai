@@ -62,6 +62,7 @@
     "test:authorized-account-dispatch-query": "pnpm --filter juhe-ai-backend test:authorized-account-dispatch-query",
     "test:authorized-account-dispatch-flags": "pnpm --filter juhe-ai-backend test:authorized-account-dispatch-flags",
     "test:authorized-account-admin-dispatch": "pnpm --filter juhe-ai-backend test:authorized-account-admin-dispatch",
+    "test:account-pending-test": "pnpm --filter juhe-ai-backend test:account-pending-test",
     "test:account-test-local-restore": "pnpm --filter juhe-ai-backend test:account-test-local-restore",
     "test:authorized-account-test-local-restore": "pnpm --filter juhe-ai-backend test:authorized-account-test-local-restore",
     "test:model-catalog": "pnpm --filter juhe-ai-backend test:model-catalog",

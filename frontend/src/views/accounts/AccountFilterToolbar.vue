@@ -220,7 +220,7 @@ const emit = defineEmits<{
   (event: 'update:type', value: string): void
 }>()
 
-const accountStatusValues = new Set<AccountStatus>(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])
+const accountStatusValues = new Set<AccountStatus>(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])
 const resolvedProviders = computed(() => props.providers.length ? props.providers : [OPENAI_PROVIDER])
 const exportTooltip = computed(() => props.selectedCount
   ? `已选择 ${props.selectedCount} 个账户，将优先导出已选自有账户`
@@ -237,7 +237,9 @@ const accountTypeOptions = computed(() => {
   const providers = selectedProvider ? [selectedProvider] : resolvedProviders.value
   const seenTypes = new Set<string>()
   const types = providers
-    .flatMap((provider) => provider.accountTypes)
+    .flatMap((provider) => provider.protocolProfiles.length
+      ? provider.protocolProfiles.flatMap((profile) => profile.accountTypes)
+      : provider.accountTypes)
     .filter((type) => {
       if (seenTypes.has(type)) return false
       seenTypes.add(type)

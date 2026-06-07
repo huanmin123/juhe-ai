@@ -5,18 +5,21 @@ import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import {
   filterGatewayAccountsByRequestedModel,
   gatewayModelFilterFailureMessage
 } from '../../modules/gateway/openai-gateway-model-filter.js'
 import { logger } from '../../shared/logger.js'
 import type { UpstreamAccount } from '../../modules/gateway/openai-gateway-route-helpers.js'
+import type { AccountModelMapping } from '../../domain/types.js'
 
-function account(id: string, supportedModels?: string[]): UpstreamAccount {
+function account(id: string, supportedModels?: string[], modelMappings?: AccountModelMapping[]): UpstreamAccount {
   return {
     id,
     name: id,
     supportedModels,
+    modelMappings,
     type: 'api_key',
     status: 'active',
     apiKey: 'sk-model-filter',
@@ -38,15 +41,40 @@ function account(id: string, supportedModels?: string[]): UpstreamAccount {
 const unrestricted = account('unrestricted', [])
 const gpt55Only = account('gpt55-only', ['gpt-5.5'])
 const gpt54Only = account('gpt54-only', ['gpt-5.4'])
+const mappedByUpstream = account('mapped-by-upstream', ['gpt-5.5-private'], [
+  { sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.5-private', enabled: true }
+])
+const disabledMappedByUpstream = account('disabled-mapped-by-upstream', ['gpt-5.5-private'], [
+  { sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.5-private', enabled: false }
+])
+const mappedToUnsupportedUpstream = account('mapped-to-unsupported-upstream', ['gpt-5.4'], [
+  { sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.5-private', enabled: true }
+])
 
 const matched = filterGatewayAccountsByRequestedModel([gpt55Only, unrestricted, gpt54Only], 'gpt-5.5')
 assert.deepEqual(matched.accounts.map((item) => item.id), ['gpt55-only', 'unrestricted'])
 assert.equal(matched.skippedCount, 1)
+assert.equal(matched.directMatchedCount, 1)
+assert.equal(matched.mappingMatchedCount, 0)
 assert.equal(matched.reason, undefined)
+
+const mapped = filterGatewayAccountsByRequestedModel([
+  mappedByUpstream,
+  disabledMappedByUpstream,
+  mappedToUnsupportedUpstream,
+  gpt54Only
+], 'gpt-5.5')
+assert.deepEqual(mapped.accounts.map((item) => item.id), ['mapped-by-upstream'])
+assert.equal(mapped.skippedCount, 3)
+assert.equal(mapped.directMatchedCount, 0)
+assert.equal(mapped.mappingMatchedCount, 1)
+assert.equal(mapped.reason, undefined)
 
 const missingModel = filterGatewayAccountsByRequestedModel([gpt55Only, unrestricted], undefined)
 assert.deepEqual(missingModel.accounts.map((item) => item.id), ['unrestricted'])
 assert.equal(missingModel.skippedCount, 1)
+assert.equal(missingModel.directMatchedCount, 0)
+assert.equal(missingModel.mappingMatchedCount, 0)
 assert.equal(missingModel.reason, undefined)
 
 const allRestrictedMissingModel = filterGatewayAccountsByRequestedModel([gpt55Only, gpt54Only], undefined)
@@ -84,16 +112,17 @@ async function assertStorageRoundTrip(): Promise<void> {
   try {
     const group = repositories.createGroup({
       name: '账户模型限制回归分组',
-      providerCode: 'openai'
+      providerCode: GPT_VENDOR_CODE
     }, access)
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: GPT_VENDOR_CODE,
       name: '账户模型限制回归',
       type: 'api_key',
       credentials: {
         api_key: 'sk-account-model-filter-create',
         base_url: 'https://api.openai.com/v1'
       },
+      status: 'active',
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
       groupId: group.id
     }, access)
@@ -119,12 +148,28 @@ async function assertStorageRoundTrip(): Promise<void> {
     assert.throws(() => {
       repositories.createAccount({
         providerCode: 'openai',
+        name: '账户模型限制协议码供应商回归',
+        type: 'api_key',
+        credentials: {
+          api_key: 'sk-account-model-filter-protocol-provider',
+          base_url: 'https://api.openai.com/v1'
+        },
+        status: 'active',
+        supportedModels: ['gpt-5.5'],
+        groupId: group.id
+      }, access)
+    }, /不支持的供应商：openai/, '账户创建必须使用供应商编码，不能使用协议编码 openai')
+
+    assert.throws(() => {
+      repositories.createAccount({
+        providerCode: GPT_VENDOR_CODE,
         name: '账户模型限制非法模型回归',
         type: 'api_key',
         credentials: {
           api_key: 'sk-account-model-filter-invalid',
           base_url: 'https://api.openai.com/v1'
         },
+        status: 'active',
         supportedModels: ['claude-opus-4-6'],
         groupId: group.id
       }, access)

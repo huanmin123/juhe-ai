@@ -19,8 +19,8 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。
 - 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。
 - `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
-- 当前 `providerCode` 填 `openai`；当前账户类型只填 `api_key` 或 `oauth`。
-- 不确定是否可立即调度时，`status` 填 `disabled`，不要默认填 `active`。
+- 当前 `providerCode` 填 `gpt`；系统会按供应商自动匹配内部协议配置。`openai` 是协议层编码，不作为导入账户的供应商编码。当前账户类型只填 `api_key` 或 `oauth`。
+- 不确定是否可立即调度时，`status` 填 `pending_test` 或 `disabled`，不要默认填 `active`；即使导入文件写 `active`，导入落库也会转为 `pending_test`，必须在本系统测试通过后才参与调度。
 - 不要编造缺失的 token、API Key、邮箱、账号 ID、代理密码或模型列表；不确定的信息写入 `notes`。
 - 外部来源字段如果没有本协议对应字段，不要塞进 `credentials`，可以整理到 `notes`。
 
@@ -47,7 +47,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 顶部“导出 JSON”按当前账户列表筛选条件导出，最多处理前 50 条匹配结果；勾选账户后，批量工具栏“导出 JSON”只导出当前勾选账户。
 - 导出只包含当前用户或管理员目标作用域内有权查看凭据和编辑的自有账户；授权账户实例不导出。
 - 如果账户绑定了可用代理，导出文件会同时写入 `proxies` 并通过账户 `proxyRef` 引用，便于再次导入时自动创建或复用代理。
-- 账户当前为 `active` 且参与调度时导出为 `status: "active"`；其他运行态状态统一导出为 `status: "disabled"`，避免重新导入后直接参与调度。
+- 账户当前为 `pending_test` 时导出为 `status: "pending_test"`；账户当前为 `active` 且参与调度时导出为 `status: "active"`；其他运行态状态统一导出为 `status: "disabled"`。导入时 `active` 会按安全策略落成 `pending_test`，避免重新导入后直接参与调度。
 - 导出的 JSON 文件可以在“导入账户”弹窗中直接粘贴预览，再确认导入。
 
 ## JSON 示例
@@ -70,12 +70,12 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
   ],
   "accounts": [
     {
-      "ref": "openai-key-001",
-      "name": "OpenAI API Key 账号 1",
-      "providerCode": "openai",
+      "ref": "gpt-key-001",
+      "name": "GPT API Key 账号 1",
+      "providerCode": "gpt",
       "type": "api_key",
       "status": "active",
-      "groupName": "默认 OpenAI 分组",
+      "groupName": "默认 GPT 分组",
       "concurrencyLimit": 3,
       "priority": 50,
       "proxyRef": "proxy-hk-1",
@@ -86,12 +86,12 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "notes": "API Key 账号"
     },
     {
-      "ref": "openai-oauth-001",
-      "name": "OpenAI OAuth 账号 1",
-      "providerCode": "openai",
+      "ref": "gpt-oauth-001",
+      "name": "GPT OAuth 账号 1",
+      "providerCode": "gpt",
       "type": "oauth",
       "status": "active",
-      "groupName": "默认 OpenAI 分组",
+      "groupName": "默认 GPT 分组",
       "concurrencyLimit": 3,
       "priority": 50,
       "credentials": {
@@ -123,9 +123,9 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | --- | --- | --- |
 | `ref` | 否 | 导入预览和错误定位用，不写入数据库。 |
 | `name` | 是 | 账户名称，同一系统账户下不能重复。 |
-| `providerCode` | 是 | 当前支持 `openai`。 |
+| `providerCode` | 是 | 当前支持 `gpt`，表示 GPT 供应商；不要填写协议码 `openai`。 |
 | `type` | 是 | `api_key` 或 `oauth`。 |
-| `status` | 是 | `active` 或 `disabled`。 |
+| `status` | 是 | `active`、`pending_test` 或 `disabled`；导入创建时 `active` 会转为 `pending_test`。 |
 | `groupId` | 二选一 | 绑定已有分组 ID；优先级高于 `groupName`。 |
 | `groupName` | 二选一 | 绑定或自动创建同名分组。 |
 | `proxyRef` | 否 | 引用 `proxies[].ref` 或已有代理 ID。 |
@@ -145,6 +145,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略。
 - `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。
+- `pending_test` 表示账户需要在本系统手动测试通过后才参与调度；这是新建和导入账户的推荐默认状态。
 
 ## credentials 字段
 

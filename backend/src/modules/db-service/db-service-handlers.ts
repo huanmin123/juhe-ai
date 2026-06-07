@@ -33,6 +33,7 @@ import {
   clearGatewayRuntimeCacheLocal,
   readCachedGatewaySettings,
 } from '../gateway/gateway-runtime-cache.service.js'
+import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
@@ -281,7 +282,7 @@ function authorizedBindingRuntimeTarget(account: OpenAIAccountSecret | undefined
 
 function findOpenAIOAuthAccountForRefresh(accountId: string): unknown {
   const account = findAccountForTest(accountId)
-  if (!account || account.providerCode !== 'openai' || account.type !== 'oauth') {
+  if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') {
     return undefined
   }
   return {
@@ -340,6 +341,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       groupAccess,
       accounts,
       hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
+      accountDispatchDiagnostics: groupAccountsResult.diagnostics,
       streamInterceptPolicies
     }
   }

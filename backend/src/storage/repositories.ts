@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountModelMapping, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
@@ -41,7 +42,7 @@ import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-accoun
 import { findGroupRowForAccess, listGroupOptionRowsForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions, type GroupOptionListOptions } from './group-read.repository.js'
 import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
-import { listProviders } from './provider.repository.js'
+import { defaultProviderProtocolProfile, findProviderProtocolProfile, listOpenAIProtocolProfileIds, listProviders } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
@@ -119,10 +120,44 @@ const deletedAccountPhysicalCleanupBatchSize = 20
 type AccountOptionFilterValue = string | number
 const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
+function openAIProtocolProfileIdsForQuery(): string[] {
+  const profileIds = listOpenAIProtocolProfileIds().map((profileId) => profileId.trim()).filter(Boolean)
+  return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
+}
+
+function requireEnabledProvider(providerCode: string): ReturnType<typeof listProviders>[number] {
+  const provider = listProviders().find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  if (!provider.enabled) {
+    throw new Error(`供应商已停用：${providerCode}`)
+  }
+  return provider
+}
+
+function requireEnabledProviderProtocolProfile(providerCode: string, profileIdInput: unknown): NonNullable<ReturnType<typeof defaultProviderProtocolProfile>> {
+  const provider = requireEnabledProvider(providerCode)
+  const profileId = typeof profileIdInput === 'string' && profileIdInput.trim()
+    ? profileIdInput.trim()
+    : provider.defaultProtocolProfileId
+  const profile = profileId ? findProviderProtocolProfile(profileId) : defaultProviderProtocolProfile(providerCode)
+  if (!profile || profile.providerCode !== providerCode) {
+    throw new Error(`供应商协议档案无效：${profileId || providerCode}`)
+  }
+  if (!profile.enabled) {
+    throw new Error(`供应商协议档案已停用：${profile.name}`)
+  }
+  return profile
+}
+
 interface AccountOptionRow {
   id: string
   system_account_id: string
   provider_code: string
+  provider_protocol_profile_id: string
+  protocol_code: string
+  protocol_version: string
   name: string
   type: string
   status: AccountStatus
@@ -146,6 +181,9 @@ interface OpenAIOAuthRefreshCandidateRow {
   id: string
   system_account_id: string
   provider_code: string
+  provider_protocol_profile_id: string
+  protocol_code: string
+  protocol_version: string
   name: string
   type: string
   status: AccountStatus
@@ -234,7 +272,7 @@ export {
   updateApiKey
 } from './api-key.repository.js'
 export { listErrorPolicies } from './error-policy.repository.js'
-export { findProviderDefaultTestModel, listProviders } from './provider.repository.js'
+export { defaultProviderProtocolProfile, findProviderDefaultTestModel, findProviderProtocolProfile, isOpenAIProtocolProviderCode, listOpenAIProtocolProfileIds, listOpenAIProtocolProviderCodes, listProviders } from './provider.repository.js'
 export {
   createSession,
   createSystemAccount,
@@ -431,6 +469,7 @@ export {
   selectOpenAIAccountForGroup,
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret,
+  type OpenAIAccountsForGroupDiagnostics,
   type OpenAIAccountsForGroupResult
 } from './openai-account-selector.repository.js'
 export {
@@ -626,6 +665,24 @@ function accountResourceProviderCode(row: AccountListRow): AccountListRow['provi
     : row.provider_code
 }
 
+function accountResourceProviderProtocolProfileId(row: AccountListRow): string {
+  return row.access_type === 'authorized' && row.source_provider_protocol_profile_id
+    ? row.source_provider_protocol_profile_id
+    : row.provider_protocol_profile_id
+}
+
+function accountResourceProtocolCode(row: AccountListRow): string {
+  return row.access_type === 'authorized' && row.source_protocol_code
+    ? row.source_protocol_code
+    : row.protocol_code
+}
+
+function accountResourceProtocolVersion(row: AccountListRow): string {
+  return row.access_type === 'authorized' && row.source_protocol_version
+    ? row.source_protocol_version
+    : row.protocol_version
+}
+
 function accountResourceType(row: AccountListRow): AccountListRow['type'] {
   return row.access_type === 'authorized' && row.source_type
     ? row.source_type
@@ -650,7 +707,8 @@ function accountResourceClientCompatibility(row: AccountListRow): AccountClientC
     accountResourceProviderCode(row),
     accountResourceType(row),
     row.access_type === 'authorized' ? row.source_client_compatibility : row.client_compatibility,
-    'openai_standard'
+    'openai_standard',
+    { protocolCode: accountResourceProtocolCode(row), protocolVersion: accountResourceProtocolVersion(row) }
   )
 }
 
@@ -943,17 +1001,17 @@ function writeSystemAccountId(access?: AccessScope): string {
   return manageableSystemAccountId(access) ?? currentSystemAccountId(access)
 }
 
-function validAccountIdsForGroup(providerCode: string, accountIds: string[], systemAccountId: string): string[] {
+function validAccountIdsForGroup(providerCode: string, providerProtocolProfileId: string, accountIds: string[], systemAccountId: string): string[] {
   const uniqueIds = [...new Set(accountIds)]
-  const accountsById = new Map<string, { provider_code?: string }>()
+  const accountsById = new Map<string, { provider_code?: string; provider_protocol_profile_id?: string }>()
   const database = getBusinessDatabase()
   for (const chunk of chunkValues(uniqueIds, 900)) {
     const rows = database.prepare(`
-      SELECT id, provider_code
+      SELECT id, provider_code, provider_protocol_profile_id
       FROM accounts
       WHERE system_account_id = ?
         AND id IN (${sqlPlaceholders(chunk.length)})
-    `).all(systemAccountId, ...chunk) as Array<{ id?: string; provider_code?: string }>
+    `).all(systemAccountId, ...chunk) as Array<{ id?: string; provider_code?: string; provider_protocol_profile_id?: string }>
     for (const row of rows) {
       if (row.id) {
         accountsById.set(row.id, row)
@@ -962,7 +1020,9 @@ function validAccountIdsForGroup(providerCode: string, accountIds: string[], sys
   }
   return uniqueIds.filter((accountId) => {
     const account = accountsById.get(accountId)
-    return account?.provider_code === providerCode && canUseAccount(accountId, systemAccountId)
+    return account?.provider_code === providerCode
+      && account.provider_protocol_profile_id === providerProtocolProfileId
+      && canUseAccount(accountId, systemAccountId)
   })
 }
 
@@ -1196,20 +1256,20 @@ function assertAccountNameAvailable(systemAccountId: string, name: string, exclu
 
 function isDuplicateGroupNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_groups_owner_provider_name_unique_lower')
+  return error.message.includes('idx_groups_owner_protocol_profile_name_unique_lower')
 }
 
-function assertGroupNameAvailable(systemAccountId: string, providerCode: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, providerCode, name]
+function assertGroupNameAvailable(systemAccountId: string, providerProtocolProfileId: string, name: string, excludeId?: string): void {
+  const params: string[] = [systemAccountId, providerProtocolProfileId, name]
   const excludeClause = excludeId ? ' AND id <> ?' : ''
   if (excludeId) {
     params.push(excludeId)
   }
   const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
+    .prepare(`SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
     .get(...params) as { id?: string } | undefined
   if (row?.id) {
-    throw new Error(`同一供应商下分组名称已存在：${name}`)
+    throw new Error(`同一协议档案下分组名称已存在：${name}`)
   }
 }
 
@@ -1367,6 +1427,9 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
       ownerSystemAccountId: isAuthorizedView ? row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id : row.system_account_id,
       ownerSystemAccountName: accountNames.get(isAuthorizedView ? row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id : row.system_account_id),
       providerCode: row.provider_code,
+      providerProtocolProfileId: row.provider_protocol_profile_id,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
       name: row.name,
       type: row.type,
       status: effectiveStatus,
@@ -1449,6 +1512,9 @@ function accountOptionSelectColumns(): string {
     'accounts.id',
     'accounts.system_account_id',
     'accounts.provider_code',
+    'accounts.provider_protocol_profile_id',
+    'accounts.protocol_code',
+    'accounts.protocol_version',
     'accounts.name',
     'accounts.type',
     'accounts.status',
@@ -1658,6 +1724,9 @@ function accountSummariesFromRows(
       ownerSystemAccountId: displayOwnerSystemAccountId,
       ownerSystemAccountName: accountNames.get(displayOwnerSystemAccountId),
       providerCode: resourceProviderCode,
+      providerProtocolProfileId: accountResourceProviderProtocolProfileId(row),
+      protocolCode: accountResourceProtocolCode(row),
+      protocolVersion: accountResourceProtocolVersion(row),
       name: row.name,
       notes: isAuthorizedView ? undefined : row.notes ?? undefined,
       type: resourceType,
@@ -1697,7 +1766,7 @@ function accountSummariesFromRows(
       lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? undefined,
       todayUsage,
       usage,
-      oauthUsage: resourceProviderCode === 'openai' && resourceType === 'oauth' ? oauthUsageByAccount.get(accountResourceFactAccountId(row)) : undefined,
+      oauthUsage: isGptVendorCode(resourceProviderCode) && resourceType === 'oauth' ? oauthUsageByAccount.get(accountResourceFactAccountId(row)) : undefined,
       accessType: row.access_type ?? 'owner',
       accountAuthorizationId: row.authorization_id ?? undefined,
       authorizationInstanceSourceAccountId: isAuthorizedView ? row.authorization_instance_source_account_id ?? undefined : undefined,
@@ -1935,13 +2004,14 @@ export function recordAccountSuccessfulTestModel(accountId: string, model: strin
 
 export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
   disableExpiredAccounts()
+  const providerProtocolProfileIds = openAIProtocolProfileIdsForQuery()
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT accounts.*, CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
         accounts.authorization_instance_authorization_id AS authorization_id,
         NULL AS authorization_status
       FROM accounts
-      WHERE provider_code = 'openai'
+      WHERE provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
         AND type IN ('api_key', 'oauth')
         AND deleted_at IS NULL
         AND status IN ('temporary_unavailable', 'rate_limited')
@@ -1959,7 +2029,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       ORDER BY cooldown_until ASC, priority ASC, created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
+    .all(...providerProtocolProfileIds, nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
   const scheduledRows = rows.filter((row) => isAccountAvailabilityScheduleAllowed(row.availability_schedule_json))
   const hydratedRows = hydrateAccountRowsWithRuntimeState(scheduledRows, { includeCredentials: true })
     .filter((row) => row.access_type !== 'authorized' || Boolean(row.source_provider_code))
@@ -1974,6 +2044,9 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       ownerSystemAccountId: row.system_account_id,
       ownerSystemAccountName: accountNames.get(row.system_account_id),
       providerCode: accountResourceProviderCode(row),
+      providerProtocolProfileId: accountResourceProviderProtocolProfileId(row),
+      protocolCode: accountResourceProtocolCode(row),
+      protocolVersion: accountResourceProtocolVersion(row),
       name: row.name,
       notes: row.notes ?? undefined,
       type: accountResourceType(row),
@@ -2023,14 +2096,14 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
   const limit = Math.max(1, Math.min(Math.trunc(input.limit), 500))
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT id, system_account_id, provider_code, name, type, status, credentials_encrypted,
+      SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, error_policy_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
         last_error_code, last_error_message, last_successful_test_model
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND deleted_at IS NULL
-        AND provider_code = 'openai'
+        AND provider_protocol_profile_id = ?
         AND type = 'oauth'
         AND oauth_refresh_token_present = 1
         AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
@@ -2038,7 +2111,7 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
       ORDER BY oauth_access_token_expires_at IS NOT NULL ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
       LIMIT ?
     `)
-    .all(input.stoppedErrorCode, dueBefore, limit) as unknown as OpenAIOAuthRefreshCandidateRow[]
+    .all(GPT_OPENAI_V1_PROFILE_ID, input.stoppedErrorCode, dueBefore, limit) as unknown as OpenAIOAuthRefreshCandidateRow[]
   return openAIOAuthRefreshCandidateSummaries(rows)
 }
 
@@ -2049,20 +2122,20 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 200), 500))
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT id, system_account_id, provider_code, name, type, status, credentials_encrypted,
+      SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, error_policy_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
         last_error_code, last_error_message, last_successful_test_model
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
-        AND provider_code = 'openai'
+        AND provider_protocol_profile_id = ?
         AND type = 'oauth'
         AND status = 'error'
         AND last_error_code = ?
       ORDER BY updated_at ASC, id ASC
       LIMIT ?
     `)
-    .all(input.stoppedErrorCode, limit) as unknown as OpenAIOAuthRefreshCandidateRow[]
+    .all(GPT_OPENAI_V1_PROFILE_ID, input.stoppedErrorCode, limit) as unknown as OpenAIOAuthRefreshCandidateRow[]
   return openAIOAuthRefreshCandidateSummaries(rows)
 }
 
@@ -2070,7 +2143,10 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
   return rows.map((row) => accountSummaryWithEffectiveAvailability({
     id: row.id,
     systemAccountId: row.system_account_id,
-    providerCode: 'openai',
+    providerCode: row.provider_code,
+    providerProtocolProfileId: row.provider_protocol_profile_id,
+    protocolCode: row.protocol_code,
+    protocolVersion: row.protocol_version,
     name: row.name,
     type: 'oauth',
     credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
@@ -2080,7 +2156,13 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
     priority: row.priority,
     superPriorityEnabled: row.super_priority_enabled === 1,
     fallbackEnabled: row.fallback_enabled === 1,
-    clientCompatibility: normalizeOpenAIAccountClientCompatibility('openai', 'oauth', row.client_compatibility),
+    clientCompatibility: normalizeOpenAIAccountClientCompatibility(
+      GPT_VENDOR_CODE,
+      'oauth',
+      row.client_compatibility,
+      'openai_standard',
+      { protocolCode: row.protocol_code, protocolVersion: row.protocol_version }
+    ),
     supportedModels: [],
     lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
     proxyProfileId: row.proxy_profile_id ?? undefined,
@@ -2115,6 +2197,7 @@ function openAIOAuthRefreshMetadata(accountType: string, credentials: Record<str
 
 const accountCreateInputKeys = new Set([
   'providerCode',
+  'providerProtocolProfileId',
   'name',
   'type',
   'credentials',
@@ -2160,17 +2243,14 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const now = new Date(nowMs).toISOString()
   const id = newId('acc')
   const providerCode = requiredTextInput(input.providerCode, '供应商')
+  const providerProfile = requireEnabledProviderProtocolProfile(providerCode, input.providerProtocolProfileId)
   const explicitGroupId = hasOwnInput(input, 'groupId') ? normalizeNullableIdInput(input.groupId, '账户分组') : undefined
   const explicitGroup = explicitGroupId ? groupOwnerAndProvider(explicitGroupId) : undefined
   const requestedSystemAccountId = writeSystemAccountId(access)
   const systemAccountId = explicitGroup && canManageResourceOwner(explicitGroup.systemAccountId, access) ? explicitGroup.systemAccountId : requestedSystemAccountId
-  const provider = listProviders().find((item) => item.code === providerCode)
-  if (!provider) {
-    throw new Error(`不支持的供应商：${providerCode}`)
-  }
   const accountType = normalizedAccountType(input.type)
-  if (!provider.accountTypes.includes(accountType as AccountType)) {
-    throw new Error(`供应商 ${providerCode} 不支持账户类型 ${accountType}`)
+  if (!providerProfile.accountTypes.includes(accountType as AccountType)) {
+    throw new Error(`供应商协议档案 ${providerProfile.name} 不支持账户类型 ${accountType}`)
   }
   const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials)
   const credentialSource = requiredAccountCredentialSource(accountType, credentials)
@@ -2194,13 +2274,13 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw new Error('账户分组不能为空')
   }
   const group = explicitGroupId === groupId ? explicitGroup : groupOwnerAndProvider(groupId)
-  if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
+  if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode || group.providerProtocolProfileId !== providerProfile.id) {
     throw new Error('账户分组无效')
   }
   const proxyProfileId = globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
   const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled, false)
   const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
-  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility)
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility, 'openai_standard', providerProfile)
   if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
     throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
   }
@@ -2213,6 +2293,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion,
     name: requiredTextInput(input.name, '账户名称'),
     notes: normalizeNullableTextInput(input.notes, '账户备注'),
     type: accountType,
@@ -2259,16 +2342,19 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     database
       .prepare(`
         INSERT INTO accounts (
-          id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+          id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit, error_policy_id,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
         systemAccountId,
         account.providerCode,
+        providerProfile.id,
+        providerProfile.protocolCode,
+        providerProfile.protocolVersion,
         account.name,
         account.type,
         account.status,
@@ -2386,6 +2472,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
     throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
   }
+  if (hasStatusInput && current.status === 'pending_test' && requestedStatus !== 'pending_test') {
+    throw new Error('待测试账户需手动测试通过后才能参与调度')
+  }
   if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
     throw new Error('待测试、临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用账户测试、恢复正常或恢复异常')
   }
@@ -2463,7 +2552,8 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     current.providerCode,
     current.type,
     hasOwnInput(input, 'clientCompatibility') ? input.clientCompatibility : current.clientCompatibility,
-    current.clientCompatibility
+    current.clientCompatibility,
+    current
   )
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
@@ -4298,7 +4388,7 @@ export function updateAuthorizedAccountBindingDispatch(
     throw new Error('超级优先和降级备用不能同时开启')
   }
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
-  if ((input.clearFailureState === true || input.status === 'active') && current.status === 'pending_test') {
+  if ((input.clearFailureState === true || hasStatusInput) && current.status === 'pending_test') {
     throw new Error('待测试账户需手动测试通过后才能参与调度')
   }
   const nextStatus: AccountStatus = hasStatusInput
@@ -4657,6 +4747,9 @@ function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): 
       ownerSystemAccountName: accountNames.get(row.system_account_id),
       name: row.name,
       providerCode: row.provider_code,
+      providerProtocolProfileId: row.provider_protocol_profile_id,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
       enabled: row.enabled === 1,
       isDefault: isAuthorizedView ? false : row.is_default === 1,
       groupType: groupTypeFromRow(row),
@@ -4708,6 +4801,9 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       ownerSystemAccountName: accountNames.get(row.system_account_id),
       name: row.name,
       providerCode: row.provider_code,
+      providerProtocolProfileId: row.provider_protocol_profile_id,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
       description: row.description ?? undefined,
       enabled: row.enabled === 1,
       isDefault: isAuthorizedView ? false : row.is_default === 1,
@@ -4747,6 +4843,7 @@ function groupSchedulingPolicyInput(input: Record<string, unknown>): unknown {
 const groupCreateInputKeys = new Set([
   'name',
   'providerCode',
+  'providerProtocolProfileId',
   'description',
   'enabled',
   'groupType',
@@ -4756,6 +4853,7 @@ const groupCreateInputKeys = new Set([
 const groupUpdateInputKeys = new Set([
   'name',
   'providerCode',
+  'providerProtocolProfileId',
   'description',
   'enabled',
   'groupType',
@@ -4773,17 +4871,21 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
   const now = nowIso()
   const systemAccountId = writeSystemAccountId(access)
   const providerCode = requiredTextInput(input.providerCode, '供应商')
+  const providerProfile = requireEnabledProviderProtocolProfile(providerCode, input.providerProtocolProfileId)
   const groupType = normalizeGroupType(input.groupType)
   const schedulingPolicyJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), groupType)
   const name = requiredTextInput(input.name, '分组名称')
   const enabled = normalizeOptionalBooleanInput(input, 'enabled', true, '分组启用状态')
-  assertGroupNameAvailable(systemAccountId, providerCode, name)
+  assertGroupNameAvailable(systemAccountId, providerProfile.id, name)
   const group: GroupSummary = {
     id: newId('grp'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     name,
     providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion,
     description: normalizeNullableTextInput(input.description, '分组说明'),
     enabled,
     isDefault: false,
@@ -4794,11 +4896,11 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
   }
   try {
     getBusinessDatabase()
-      .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
-      .run(group.id, systemAccountId, group.name, group.providerCode, group.description ?? null, group.enabled ? 1 : 0, group.groupType, schedulingPolicyJson, now, now)
+      .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
+      .run(group.id, systemAccountId, group.name, group.providerCode, providerProfile.id, providerProfile.protocolCode, providerProfile.protocolVersion, group.description ?? null, group.enabled ? 1 : 0, group.groupType, schedulingPolicyJson, now, now)
   } catch (error) {
     if (isDuplicateGroupNameError(error)) {
-      throw new Error(`同一供应商下分组名称已存在：${group.name}`)
+      throw new Error(`同一协议档案下分组名称已存在：${group.name}`)
     }
     throw error
   }
@@ -4836,23 +4938,28 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
     ...current,
     name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '分组名称'),
     providerCode: normalizeOptionalRequiredTextInput(input, 'providerCode', current.providerCode, '供应商'),
+    providerProtocolProfileId: normalizeOptionalRequiredTextInput(input, 'providerProtocolProfileId', current.providerProtocolProfileId ?? '', '供应商协议档案'),
     description: hasDescriptionInput ? normalizeNullableTextInput(input.description, '分组说明') : current.description,
     enabled: normalizeOptionalBooleanInput(input, 'enabled', current.enabled, '分组启用状态'),
     groupType: nextGroupType,
     schedulingPolicy: parseGroupSchedulingPolicyJson(groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nextGroupType)
   }
-  if (next.providerCode !== current.providerCode && current.accountStats.total > 0) {
-    throw new Error('已有账户的分组不允许修改供应商')
+  if ((next.providerCode !== current.providerCode || next.providerProtocolProfileId !== current.providerProtocolProfileId) && current.accountStats.total > 0) {
+    throw new Error('已有账户的分组不允许修改供应商或协议档案')
   }
-  assertGroupNameAvailable(systemAccountId, next.providerCode, next.name, id)
+  const providerProfile = requireEnabledProviderProtocolProfile(next.providerCode, next.providerProtocolProfileId)
+  next.providerProtocolProfileId = providerProfile.id
+  next.protocolCode = providerProfile.protocolCode
+  next.protocolVersion = providerProfile.protocolVersion
+  assertGroupNameAvailable(systemAccountId, providerProfile.id, next.name, id)
   const database = getBusinessDatabase()
   try {
     database
-      .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-      .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, next.groupType, groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nowIso(), id, systemAccountId)
+      .prepare('UPDATE groups SET name = ?, provider_code = ?, provider_protocol_profile_id = ?, protocol_code = ?, protocol_version = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+      .run(next.name, next.providerCode, next.providerProtocolProfileId, next.protocolCode, next.protocolVersion, next.description ?? null, next.enabled ? 1 : 0, next.groupType, groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nowIso(), id, systemAccountId)
   } catch (error) {
     if (isDuplicateGroupNameError(error)) {
-      throw new Error(`同一供应商下分组名称已存在：${next.name}`)
+      throw new Error(`同一协议档案下分组名称已存在：${next.name}`)
     }
     throw error
   }
@@ -5154,7 +5261,7 @@ export function addAccountToGroup(groupId: string, accountId: string): GroupSumm
   if (!canManageResourceOwner(current.systemAccountId)) {
     return undefined
   }
-  if (!validAccountIdsForGroup(current.providerCode, [accountId], current.systemAccountId).includes(accountId)) {
+  if (!validAccountIdsForGroup(current.providerCode, current.providerProtocolProfileId ?? '', [accountId], current.systemAccountId).includes(accountId)) {
     return undefined
   }
   const account = findAccountSummary(accountId, { systemAccountId: current.systemAccountId, role: 'user' })
@@ -5377,6 +5484,9 @@ function authorizationGranteeGroupSelectColumns(): string {
     'system_account_id',
     'name',
     'provider_code',
+    'provider_protocol_profile_id',
+    'protocol_code',
+    'protocol_version',
     'description',
     'enabled',
     'is_default',

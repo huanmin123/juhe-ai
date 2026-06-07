@@ -116,7 +116,7 @@ endpoint + normalizedErrorSignature
 - `apiKeyId` 隔离同一出口 IP 下不同 API Key。
 - `clientIp` 隔离客户端来源。
 - `endpoint` 用于区分 `/v1/responses`、`/v1/chat/completions`、`/v1/models` 等请求类型。
-- `normalizedErrorSignature` 用于识别同一类错误风暴，但不能保存完整请求体或完整上游错误正文。
+- `normalizedErrorSignature` 用于识别同一类错误风暴，只保存用于聚合的类型、错误码和摘要 hash，不把完整请求体或完整上游错误正文复制进熔断运行态；进入日志 / 审计 / 使用记录的字段仍按当前日志口径原文保存。
 
 `groupId` 不参与认证后错误熔断键。同一个 API Key 绑定多个分组时，分组只是路由容器，来源持续制造的本地请求错误应按 API Key 入口止损，不应通过切换分组重置计数。
 
@@ -186,8 +186,8 @@ clientIp + invalid_token_spray
 - 最大 scope 数：`10000` 级别。
 - 最大 TTL：`15` 分钟。
 - 每个 scope 内错误摘要数量有上限，例如最近 `20` 个摘要。
-- 不保存完整请求体、完整响应体或完整错误正文。
-- `normalizedErrorSignature` 只保存错误类型、错误码、截断摘要 hash、endpoint 和模型等低敏摘要。
+- 熔断运行态不保存完整请求体、完整响应体或完整错误正文。
+- `normalizedErrorSignature` 只保存错误类型、错误码、截断摘要 hash、endpoint 和模型等摘要；日志型落点不复用该运行态裁剪作为脱敏规则。
 
 ## 网关流程
 
@@ -243,7 +243,7 @@ flowchart TD
 
 - 使用记录写网关本地失败，不关联上游账号。
 - 原始审计按失败 / 异常策略保留终态摘要。
-- 普通日志只记录 scope 摘要、原因、计数、熔断剩余时间和 trace ID，不记录完整请求体或完整错误正文。
+- 普通日志默认只写 scope 摘要、原因、计数、熔断剩余时间和 trace ID；如果调用方传入请求体、错误正文或凭据类字段，日志层不做敏感字段脱敏，只按系统日志容量和格式边界输出。
 
 ## 与现有策略关系
 
@@ -283,7 +283,7 @@ flowchart TD
 - `blockedUntilMs`
 - `retryAfterSeconds`
 
-不要记录完整请求体、完整响应体、完整上游错误正文、完整 API Key 或 token。
+熔断事件元数据不主动复制完整请求体、完整响应体、完整上游错误正文、完整 API Key 或 token；进入系统日志、原始审计和使用记录的字段不再因为字段名或字符串形态做脱敏。
 
 ## 实现落点
 
@@ -293,8 +293,8 @@ flowchart TD
 - `openai-gateway-request-preflight.ts` / `openai-gateway.routes.ts`：本地校验失败和 OAuth/Codex adapter 本地请求校验失败收口时记录来源错误样本。
 - `openai-gateway-response-finalization.ts`：完整成功后降低或清理当前来源错误态。
 - `openai-gateway-upstream-dispatch.ts` / `openai-gateway-failure-dispatch.ts`：账号级、容量级和未知账号池失败都不计入来源错误熔断；普通上游失败必须先走本地账号屏蔽、切号、等待和统一网关错误，不复用 IP 级错误熔断的本地 429。
-- `audit-capture.service.ts`、`openai-gateway-usage.ts`、`usage-record-queue.service.ts`：审计 payload 和使用记录 snapshot 入队 / 落库前统一脱敏凭据类 headers、敏感字段和 URL 敏感查询参数，不影响真实转发 headers。
-- 回归脚本：新增 `client-ip-error-circuit-regression.ts`，覆盖认证前缺失 Bearer 熔断、重复无效 token 熔断、随机无效 token 不挡有效 token、本地高置信错误熔断、成功恢复、同一 API Key 不同分组共享熔断、不同 IP / API Key / 系统账户隔离、未知上游账号池失败不采样、账号失败不触发、容量失败不触发；在审计保全回归中覆盖审计 payload、审计 queryString 和使用记录 snapshot 的敏感信息脱敏。
+- `audit-capture.service.ts`、`openai-gateway-usage.ts`、`usage-record-queue.service.ts`：审计 payload 和使用记录 snapshot 入队 / 落库前不再统一脱敏凭据类 headers、敏感字段和 URL 敏感查询参数；只保留容量和结构边界，不影响真实转发 headers。
+- 回归脚本：新增 `client-ip-error-circuit-regression.ts`，覆盖认证前缺失 Bearer 熔断、重复无效 token 熔断、随机无效 token 不挡有效 token、本地高置信错误熔断、成功恢复、同一 API Key 不同分组共享熔断、不同 IP / API Key / 系统账户隔离、未知上游账号池失败不采样、账号失败不触发、容量失败不触发；在审计保全回归中覆盖审计 payload、审计 queryString 和使用记录 snapshot 的原文保存。
 
 ## 深度思考与风险
 
@@ -335,4 +335,4 @@ flowchart TD
 - 不存在地区、国家、ASN、运营商、IP 段或固定状态码 / 错误码黑名单判断。
 - 完整成功可以让来源错误态恢复或衰减。
 - 请求热路径不新增数据库查询，不扫描使用记录、审计日志或统计缓存明细。
-- 来源错误熔断的日志、审计 metadata 和使用记录只保存安全摘要，不保存完整请求体、完整响应体或敏感凭据；原始审计 payload、审计 queryString 和使用记录 snapshot 中的凭据类信息在入队 / 落库前统一脱敏。
+- 来源错误熔断的运行态仍只保存有限摘要；进入日志、原始审计 payload、审计 queryString 和使用记录 snapshot 的字段按当前日志口径原文保存，不再在入队 / 落库前统一脱敏。

@@ -41,7 +41,6 @@ import {
   recordGatewayUpstreamBucketFailure
 } from './openai-gateway-proxy-health.service.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
-import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 export type AccountFailureInput = {
   success: false
@@ -188,8 +187,8 @@ export async function handleFailedUpstreamResponse(
   if (!responseBodyRead.truncated) {
     parsedError = parseErrorPayload(responseBodyText, response.headers)
   }
-  const parsedErrorMessage = sanitizeDiagnosticPayload(stringValue(parsedError.message))
-  const diagnosticErrorMessage = sanitizeDiagnosticPayload(diagnosticResponseBodyText)
+  const parsedErrorMessage = stringValue(parsedError.message)
+  const diagnosticErrorMessage = diagnosticResponseBodyText
   if (input.retrySameAccount) {
     auditCapture.addGatewayMetadata({
       label: 'same_account_retry_response_failed',
@@ -296,7 +295,7 @@ export async function handleUpstreamRequestError(
     throw error
   }
 
-  const message = sanitizeDiagnosticPayload(formatUpstreamRequestErrorMessage(error))
+  const message = formatUpstreamRequestErrorMessage(error)
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
   logGatewayFailureWarning(usageContext, {
     event: 'gateway_upstream_request_failed',
@@ -430,7 +429,7 @@ function stringValue(value: unknown): string {
 }
 
 function sanitizeOptionalDiagnosticPayload(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : sanitizeDiagnosticPayload(value)
+  return value
 }
 
 function isRealUpstreamUrl(value: string): boolean {

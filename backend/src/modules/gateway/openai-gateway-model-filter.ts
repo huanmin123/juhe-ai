@@ -4,6 +4,8 @@ export interface GatewayModelAccountFilterResult {
   accounts: UpstreamAccount[]
   skippedCount: number
   limitedAccountCount: number
+  directMatchedCount: number
+  mappingMatchedCount: number
   requestedModel?: string
   reason?: 'missing_model' | 'unsupported_model'
 }
@@ -15,6 +17,8 @@ export function filterGatewayAccountsByRequestedModel(
   const model = requestedModel?.trim()
   let skippedCount = 0
   let limitedAccountCount = 0
+  let directMatchedCount = 0
+  let mappingMatchedCount = 0
   const filtered: UpstreamAccount[] = []
 
   for (const account of accounts) {
@@ -24,7 +28,14 @@ export function filterGatewayAccountsByRequestedModel(
       continue
     }
     limitedAccountCount += 1
-    if (model && supportedModels.includes(model)) {
+    const match = resolveGatewayAccountModelMatch(account, model, supportedModels)
+    if (match === 'direct') {
+      directMatchedCount += 1
+      filtered.push(account)
+      continue
+    }
+    if (match === 'mapping') {
+      mappingMatchedCount += 1
       filtered.push(account)
       continue
     }
@@ -35,11 +46,33 @@ export function filterGatewayAccountsByRequestedModel(
     accounts: filtered,
     skippedCount,
     limitedAccountCount,
+    directMatchedCount,
+    mappingMatchedCount,
     requestedModel: model || undefined,
     reason: skippedCount > 0 && filtered.length === 0
       ? model ? 'unsupported_model' : 'missing_model'
       : undefined
   }
+}
+
+type GatewayAccountModelMatch = 'direct' | 'mapping' | undefined
+
+function resolveGatewayAccountModelMatch(
+  account: UpstreamAccount,
+  requestedModel: string | undefined,
+  supportedModels: string[]
+): GatewayAccountModelMatch {
+  if (!requestedModel) return undefined
+  if (supportedModels.includes(requestedModel)) {
+    return 'direct'
+  }
+  const mapping = (account.modelMappings ?? []).find((item) =>
+    item.enabled !== false
+    && item.sourceModel === requestedModel
+    && item.upstreamModel !== item.sourceModel
+  )
+  if (!mapping) return undefined
+  return supportedModels.includes(mapping.upstreamModel) ? 'mapping' : undefined
 }
 
 export function gatewayModelFilterFailureMessage(result: GatewayModelAccountFilterResult): string {

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import {
   parseOpenAIUsageFromJsonBuffer
 } from '../../modules/gateway/openai-gateway-usage.js'
@@ -199,7 +200,7 @@ assert.deepEqual(defined(splitImageTerminalComplete.usage), {
 })
 
 const gpt41Cost = estimateProviderCostUsd({
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
   model: 'gpt-4.1',
   inputTokens: 1000,
   outputTokens: 200,
@@ -207,7 +208,7 @@ const gpt41Cost = estimateProviderCostUsd({
 })
 assert.equal(gpt41Cost, 0.00315)
 
-const openAIModelPricingList = listProviderModelPricing('openai')
+const openAIModelPricingList = listProviderModelPricing(GPT_VENDOR_CODE)
 const availableOpenAIModels = new Set(openAIModelPricingList.map((item) => item.model))
 const openAIModelPricingById = new Map(openAIModelPricingList.map((item) => [item.model, item]))
 for (const item of openAIModelPricingList) {
@@ -249,7 +250,7 @@ for (const id of [
   'davinci-002'
 ]) {
   assert.equal(availableOpenAIModels.has(id), true, `${id} should be exposed while official shutdown date has not passed`)
-  assert.ok(getProviderModelPricing('openai', id), `${id} should resolve pricing`)
+  assert.ok(getProviderModelPricing(GPT_VENDOR_CODE, id), `${id} should resolve pricing`)
 }
 for (const id of [
   'gpt-4.5-preview',
@@ -258,7 +259,7 @@ for (const id of [
   'o1-mini'
 ]) {
   assert.equal(availableOpenAIModels.has(id), false, `${id} should not be exposed`)
-  assert.equal(getProviderModelPricing('openai', id), undefined, `${id} should not resolve pricing`)
+  assert.equal(getProviderModelPricing(GPT_VENDOR_CODE, id), undefined, `${id} should not resolve pricing`)
 }
 
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2')?.supportedApiProtocols, ['chat_completions', 'responses'])
@@ -275,28 +276,28 @@ assert.equal(openAIModelPricingById.get('gpt-4.1')?.releaseDate, '2025-04-14')
 assert.equal(openAIModelPricingById.get('babbage-002')?.releaseDate, '2024-01-04')
 
 assert.equal(estimateProviderCostUsd({
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
   model: 'gpt-5.2-codex',
   inputTokens: 1000,
   outputTokens: 200,
   cacheReadTokens: 300
 }), 0.0040775)
 assert.equal(estimateProviderCostUsd({
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
   model: 'gpt-5.1-codex-mini',
   inputTokens: 1000,
   outputTokens: 200,
   cacheReadTokens: 300
 }), 0.0005825)
 assert.equal(estimateProviderCostUsd({
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
   model: 'gpt-3.5-turbo',
   inputTokens: 1000,
   outputTokens: 200
 }), 0.0008)
 
 const gpt55ImageInputAsNormalTokensCost = estimateProviderCostUsd({
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
   model: 'gpt-5.5',
   inputTokens: 1000,
   outputTokens: 200,
@@ -305,7 +306,7 @@ const gpt55ImageInputAsNormalTokensCost = estimateProviderCostUsd({
 assert.equal(gpt55ImageInputAsNormalTokensCost, 0.011)
 
 const gpt55Breakdown = buildProviderCostBreakdown({
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
   model: 'gpt-5.5',
   inputTokens: 1000,
   outputTokens: 200,
@@ -357,7 +358,7 @@ assert.deepEqual(defined(audioUsage), {
 })
 
 const imageCost = estimateProviderCostUsd({
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
   model: 'gpt-image-2',
   inputTokens: imageUsage.inputTokens,
   outputTokens: imageUsage.outputTokens,
@@ -368,7 +369,7 @@ const imageCost = estimateProviderCostUsd({
 assert.equal(imageCost, 0.0305375)
 
 const imageBreakdown = buildProviderCostBreakdown({
-  providerCode: 'openai',
+  providerCode: GPT_VENDOR_CODE,
   model: 'gpt-image-2',
   inputTokens: imageUsage.inputTokens,
   outputTokens: imageUsage.outputTokens,
@@ -554,7 +555,7 @@ assert.match(openAIAccountSelectorSource, /accountAccess\.accountAccessType === 
 const accountsRoutesSource = readSource('modules/accounts/accounts.routes.ts')
 assert.match(accountsRoutesSource, /const accountUpdateSchema = z\.object/)
 assert.match(accountsRoutesSource, /concurrencyLimit:\s*z\.number\(\)\.int\(\)\.min\(1\)\.optional\(\)/)
-assert.match(accountsRoutesSource, /status:\s*z\.enum\(\['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'\]\)\.optional\(\)/)
+assert.match(accountsRoutesSource, /status:\s*z\.enum\(\['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'\]\)\.optional\(\)/)
 assert.match(accountsRoutesSource, /accountUpdateSchema\.safeParse\(req\.body\)/)
 assert.match(accountsRoutesSource, /\}\)\.strict\(\)/)
 
@@ -595,7 +596,7 @@ const externalPublicAccountUpdateCatalogSource = sourceBetween(externalPublicApi
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'providerCode'[\s\S]+required: true/)
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'accountId'[\s\S]+required: true/)
 assert.match(externalPublicAccountUpdateCatalogSource, /name: 'type'[\s\S]+required: true/)
-assert.match(externalPublicAccountUpdateCatalogSource, /providerCode:\s*'openai'/)
+assert.match(externalPublicAccountUpdateCatalogSource, /providerCode:\s*GPT_VENDOR_CODE/)
 assert.match(externalPublicAccountUpdateCatalogSource, /accountId:\s*'acc_xxx'/)
 assert.match(externalPublicAccountUpdateCatalogSource, /type:\s*'api_key'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /externalId/)

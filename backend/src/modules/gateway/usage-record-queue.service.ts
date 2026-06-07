@@ -6,11 +6,8 @@ import { createUsageRecordsBatch, type UsageRecordInput } from '../../storage/re
 import { generateUsageRecordId } from '../../storage/usage-record-shards.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../background/background-ipc.js'
-import { isSensitiveHeaderName } from './openai-gateway-usage.js'
-import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 
 const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
@@ -246,7 +243,7 @@ function sanitizeUsageRecordSnapshot(value: unknown): unknown {
 }
 
 function sanitizeUsageRecordErrorMessage(value: string | undefined): string | undefined {
-  return value === undefined ? undefined : sanitizeDiagnosticPayload(value)
+  return value
 }
 
 function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext): unknown {
@@ -323,69 +320,24 @@ function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext)
 }
 
 function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext): string {
-  const sanitized = sanitizeDiagnosticPayload(value)
   const remaining = Math.max(0, usageSnapshotMaxBytes - context.bytes)
   const limit = Math.min(usageSnapshotMaxStringBytes, remaining)
-  const bytes = boundedStringByteLength(sanitized, limit + 1)
+  const bytes = boundedStringByteLength(value, limit + 1)
   if (bytes <= limit) {
     context.bytes += bytes
-    return sanitized
+    return value
   }
   context.truncated = true
   const suffix = `...[truncated ${bytes - limit} bytes]`
   const prefixBytes = Math.max(0, limit - Buffer.byteLength(suffix, 'utf8'))
-  const truncated = sliceStringByUtf8Bytes(sanitized, prefixBytes)
+  const truncated = sliceStringByUtf8Bytes(value, prefixBytes)
   context.bytes += boundedStringByteLength(truncated, prefixBytes) + Buffer.byteLength(suffix, 'utf8')
   return `${truncated}${suffix}`
 }
 
 function sanitizeSnapshotField(key: string, value: unknown): unknown {
-  if (isSensitiveHeaderName(key) || isSensitiveSnapshotFieldName(key)) {
-    return redactedSnapshotSensitiveValue(value)
-  }
-  if (isUrlSnapshotFieldName(key) && typeof value === 'string') {
-    return sanitizeUrlCredentialsForLog(value)
-  }
   return value
 }
-
-function isSensitiveSnapshotFieldName(name: string): boolean {
-  const compact = name.trim().toLowerCase().replace(/[\s_-]+/g, '')
-  return sensitiveSnapshotFieldNames.has(compact)
-}
-
-function isUrlSnapshotFieldName(name: string): boolean {
-  const compact = name.trim().toLowerCase().replace(/[\s_-]+/g, '')
-  return compact === 'originalurl' || compact === 'upstreamurl' || compact === 'url'
-}
-
-function redactedSnapshotSensitiveValue(value: unknown): string | string[] {
-  if (Array.isArray(value)) {
-    return value.map(() => '[redacted]')
-  }
-  return '[redacted]'
-}
-
-const sensitiveSnapshotFieldNames = new Set([
-  'authorization',
-  'proxyauthorization',
-  'cookie',
-  'setcookie',
-  'apikey',
-  'openaiapikey',
-  'password',
-  'key',
-  'secret',
-  'token',
-  'accesstoken',
-  'refreshtoken',
-  'idtoken',
-  'clientsecret',
-  'codeverifier',
-  'credential',
-  'credentials',
-  'session'
-])
 
 interface SnapshotSanitizeContext {
   depth: number

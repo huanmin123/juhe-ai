@@ -1,7 +1,7 @@
 import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
-import { api } from '@/api/client'
+import { api, type AccountDraftTestPayload } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
@@ -40,10 +40,12 @@ import {
   parseStrictDatePickerValue
 } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
-import { OPENAI_PROVIDER } from './accountOptions'
+import { GPT_VENDOR_CODE, OPENAI_PROVIDER } from './accountOptions'
+import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
-import { buildAccountSavePayload, buildAccountUpdatePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm } from './accountSavePayload'
+import { buildAccountSavePayload, buildAccountUpdatePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm, type AccountSavePayload } from './accountSavePayload'
+import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -68,6 +70,7 @@ interface UseAccountEditFormOptions {
   providers: ReadonlyValue<ProviderDefinition[]>
   systemAccountSelection?: ReadonlyValue<PrincipalSelection | undefined>
   systemAccounts: ReadonlyValue<SystemAccountPrincipalSummary[]>
+  successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
 }
 
 export function useAccountEditForm(options: UseAccountEditFormOptions) {
@@ -99,26 +102,32 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId, options.systemAccountSelection?.value)
   })
 
-  const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId]))
+  const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId], form.providerProtocolProfileId))
   const availableProviders = computed(() => options.providers.value.length ? options.providers.value : [OPENAI_PROVIDER])
   const providerNameByCode = computed(() => providerNameByCodeMap(availableProviders.value))
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
-  const accountTypeChoices = computed(() => (selectedProvider.value?.accountTypes ?? []).map((type) => ({
+  const selectedProtocolProfile = computed(() => selectedProvider.value
+    ? selectedProvider.value.protocolProfiles.find((profile) => profile.id === form.providerProtocolProfileId)
+      ?? selectedProvider.value.protocolProfiles.find((profile) => profile.id === selectedProvider.value?.defaultProtocolProfileId)
+      ?? selectedProvider.value.protocolProfiles[0]
+    : undefined)
+  const accountTypeChoices = computed(() => (selectedProtocolProfile.value?.accountTypes ?? []).map((type) => ({
     value: type,
     label: accountTypeTitle(selectedProvider.value?.code ?? form.providerCode, type),
     description: accountTypeDescription(selectedProvider.value?.code ?? form.providerCode, type),
     tag: accountTypeText(type)
   })))
-  const hasAccountType = computed(() => Boolean(form.providerCode && form.type))
+  const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
   const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
-  const isOpenAIOAuthForm = computed(() => form.providerCode === 'openai' && form.type === 'oauth')
+  const isOpenAIOAuthForm = computed(() => form.providerCode === GPT_VENDOR_CODE && form.type === 'oauth' && isOpenAIProtocolProfile(selectedProtocolProfile.value))
   const editingAuthorizedAccount = computed(() => Boolean(editingId.value && editingAccountDetail.value && isAuthorizedAccount(editingAccountDetail.value)))
   const modalTitle = computed(() => {
     if (editingAuthorizedAccount.value) return '编辑授权账户'
     if (editingId.value) return '编辑账户'
     if (cloningSourceId.value) return '克隆账户'
     if (!form.providerCode) return '添加账户'
+    if (!form.providerProtocolProfileId) return `添加 ${providerName(form.providerCode)} 账户`
     if (!form.type) return `添加 ${providerName(form.providerCode)} 账户`
     return `添加 ${accountTypeTitle(form.providerCode, form.type)} 账户`
   })
@@ -129,14 +138,15 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }))
   const selectedAccountTypeTitle = computed(() => hasAccountType.value ? accountTypeTitle(form.providerCode, form.type) : '')
 
-  function defaultForm(providerCode = '', type: AccountType = ''): AccountFormModel {
-    return defaultAccountForm(providerCode, type, options.providers.value)
+  function defaultForm(providerCode = '', type: AccountType = '', providerProtocolProfileId = ''): AccountFormModel {
+    return defaultAccountForm(providerCode, type, options.providers.value, providerProtocolProfileId)
   }
 
   function resetForm(providerCode = '', type: AccountType = '') {
     cloningSourceId.value = undefined
     editingScheduleFingerprint.value = undefined
     cloningScheduleFingerprint.value = undefined
+    clearSuccessfulDraftActivationTest()
     Object.assign(form, defaultForm(providerCode, type))
     providerModelOptions.value = []
     mappingTargetModelOptions.value = []
@@ -163,22 +173,22 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }))
   }
 
-  function defaultGroupForProvider(providerCode: string) {
-    return selectDefaultGroupForProvider(options.groups.value, providerCode)
+  function defaultGroupForProvider(providerCode: string, providerProtocolProfileId?: string) {
+    return selectDefaultGroupForProvider(options.groups.value, providerCode, providerProtocolProfileId)
   }
 
-  function ensureDefaultGroupSelected(providerCode = form.providerCode) {
+  function ensureDefaultGroupSelected(providerCode = form.providerCode, providerProtocolProfileId = form.providerProtocolProfileId) {
     if (!providerCode) {
       form.groupId = undefined
       form.group = undefined
       return
     }
     const currentGroup = options.groups.value.find((group) => group.id === form.groupId)
-    if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode)) {
+    if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode, providerProtocolProfileId)) {
       form.group = { id: currentGroup.id, name: currentGroup.name }
       return
     }
-    const nextGroup = defaultGroupForProvider(providerCode)
+    const nextGroup = defaultGroupForProvider(providerCode, providerProtocolProfileId)
     setFormGroup(nextGroup ? { id: nextGroup.id, name: nextGroup.name } : undefined)
   }
 
@@ -223,13 +233,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (editingId.value || form.type === type) return
     cloningSourceId.value = undefined
     const providerCode = form.providerCode
+    const providerProtocolProfileId = form.providerProtocolProfileId
     Object.assign(form, {
-      ...defaultForm(providerCode, type),
+      ...defaultForm(providerCode, type, providerProtocolProfileId),
       groupId: form.groupId,
       group: form.group,
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
-      clientCompatibility: providerCode === 'openai' && type === 'oauth' ? 'codex_responses' : form.clientCompatibility,
+      clientCompatibility: providerCode === GPT_VENDOR_CODE && type === 'oauth' ? 'codex_responses' : form.clientCompatibility,
       supportedModels: form.supportedModels,
       modelMappings: form.modelMappings,
       concurrencyLimit: form.concurrencyLimit,
@@ -239,7 +250,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     void loadProviderGroupOptions(providerCode)
     void loadProviderModelOptions(providerCode)
-    ensureDefaultGroupSelected(providerCode)
+    ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
     authResult.value = undefined
   }
 
@@ -248,7 +259,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
     if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
-    const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type)
+    const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
     const baseUrl = credentialBaseUrlForForm(sourceAccount.credentials, '账户详情凭据')
     const policyRules = loadCredentialPolicyRules(sourceAccount.credentials, '账户详情策略')
     if (!baseUrl || !policyRules) return
@@ -272,11 +283,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void options.loadAccountOptions(editScopeParams?.systemAccountId)
     Object.assign(form, defaults, {
       providerCode: sourceAccount.providerCode,
+      providerProtocolProfileId: sourceAccount.providerProtocolProfileId ?? defaults.providerProtocolProfileId,
       name: sourceAccount.name,
       type: sourceAccount.type,
       concurrencyLimit: sourceAccount.concurrencyLimit,
       priority: sourceAccount.priority,
-      clientCompatibility: sourceAccount.providerCode === 'openai' && sourceAccount.type === 'oauth' ? 'codex_responses' : sourceAccount.clientCompatibility ?? 'openai_standard',
+      clientCompatibility: sourceAccount.providerCode === GPT_VENDOR_CODE && sourceAccount.type === 'oauth' ? 'codex_responses' : sourceAccount.clientCompatibility ?? 'openai_standard',
       proxyProfileId: sourceAccount.proxyProfileId,
       accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(sourceAccount.id),
@@ -437,15 +449,18 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         message.success('账户已更新')
       } else if (form.type === 'oauth') {
         await createOAuthAccountFromUnifiedForm()
-        message.success('OAuth 账户已创建')
+        message.success('OAuth 账户已创建，需测试通过后参与调度')
       } else {
+        const createPayload = accountCreatePayloadWithActivationTest(payload)
+        let created: AccountSummary
         if (options.isManagementView.value) {
-          await api.accounts.create(payload, createScopeParams.value)
+          created = await api.accounts.create(createPayload, createScopeParams.value)
         } else {
-          await api.myAccounts.create(payload)
+          created = await api.myAccounts.create(createPayload)
         }
-        message.success('账户已创建')
+        message.success(created.status === 'active' ? '账户已创建并启用' : '账户已创建，需测试通过后参与调度')
       }
+      clearSuccessfulDraftActivationTest()
       modalOpen.value = false
       await options.loadData()
     } catch (error) {
@@ -581,6 +596,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     saveAccount,
     selectAccountType,
     selectedAccountTypeTitle,
+    selectedProtocolProfile,
     selectedProvider,
     selectProvider,
     targetSystemAccountLabel
@@ -632,7 +648,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const selectedGroup = account.boundGroupId
       ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
       : undefined
-    const defaults = defaultForm(account.providerCode, account.type)
+    const defaults = defaultForm(account.providerCode, account.type, account.providerProtocolProfileId)
     let accountExpiresAt: AccountFormModel['accountExpiresAt']
     let availabilitySchedule: AccountFormModel['availabilitySchedule']
     try {
@@ -645,11 +661,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     Object.assign(form, defaults, {
       providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId ?? defaults.providerProtocolProfileId,
       name: cloneAccountName(account.name),
       type: account.type,
       concurrencyLimit: account.concurrencyLimit,
       priority: account.priority,
-      clientCompatibility: account.providerCode === 'openai' && account.type === 'oauth' ? 'codex_responses' : account.clientCompatibility ?? 'openai_standard',
+      clientCompatibility: account.providerCode === GPT_VENDOR_CODE && account.type === 'oauth' ? 'codex_responses' : account.clientCompatibility ?? 'openai_standard',
       proxyProfileId: account.proxyProfileId,
       accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
@@ -701,5 +718,64 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!editingId.value) return options.accountScopeParams.value
     const account = editingAccountDetail.value ?? options.accounts.value.find((item) => item.id === editingId.value)
     return account ? accountOperationScopeParams(account, options.accountScopeParams.value) : options.accountScopeParams.value
+  }
+
+  function accountCreatePayloadWithActivationTest(payload: AccountSavePayload): AccountSavePayload & { status?: 'active'; activationTestTaskId?: string } {
+    const activationTest = options.successfulDraftActivationTest?.value
+    if (!activationTest || !isActivationTestForPayload(activationTest, payload)) {
+      return payload
+    }
+    return {
+      ...payload,
+      status: 'active',
+      activationTestTaskId: activationTest.taskId
+    }
+  }
+
+  function isActivationTestForPayload(activationTest: SuccessfulDraftActivationTest, payload: AccountSavePayload): boolean {
+    return stablePayloadFingerprint(activationTest.account) === stablePayloadFingerprint(accountDraftPayloadFromSavePayload(payload))
+  }
+
+  function accountDraftPayloadFromSavePayload(payload: AccountSavePayload): AccountDraftTestPayload['account'] {
+    return {
+      providerCode: payload.providerCode,
+      providerProtocolProfileId: payload.providerProtocolProfileId,
+      name: payload.name ?? form.name.trim(),
+      type: payload.type,
+      credentials: payload.credentials,
+      concurrencyLimit: payload.concurrencyLimit,
+      priority: payload.priority,
+      clientCompatibility: payload.clientCompatibility,
+      supportedModels: payload.supportedModels,
+      modelMappings: payload.modelMappings,
+      proxyProfileId: payload.proxyProfileId,
+      groupId: payload.groupId ?? '',
+      accountExpiresAt: payload.accountExpiresAt,
+      availabilitySchedule: payload.availabilitySchedule as AccountDraftTestPayload['account']['availabilitySchedule'],
+      notes: payload.notes
+    }
+  }
+
+  function stablePayloadFingerprint(value: unknown): string {
+    return JSON.stringify(stablePayloadValue(value))
+  }
+
+  function stablePayloadValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(stablePayloadValue)
+    if (!value || typeof value !== 'object') return value
+    const output: Record<string, unknown> = {}
+    for (const key of Object.keys(value).sort()) {
+      const item = (value as Record<string, unknown>)[key]
+      if (item !== undefined) {
+        output[key] = stablePayloadValue(item)
+      }
+    }
+    return output
+  }
+
+  function clearSuccessfulDraftActivationTest(): void {
+    if (options.successfulDraftActivationTest) {
+      options.successfulDraftActivationTest.value = undefined
+    }
   }
 }

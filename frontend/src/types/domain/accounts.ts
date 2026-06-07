@@ -76,6 +76,7 @@ export type AccountEffectiveAvailabilityStatus =
   | 'authorization_quota_exceeded'
   | 'source_deleted'
   | 'source_expired'
+  | 'source_pending_test'
   | 'source_disabled'
   | 'source_error'
   | 'source_rate_limited'
@@ -84,6 +85,7 @@ export type AccountEffectiveAvailabilityStatus =
   | 'source_unschedulable'
   | 'source_schedule_inactive'
   | 'instance_expired'
+  | 'instance_pending_test'
   | 'instance_disabled'
   | 'instance_error'
   | 'instance_rate_limited'
@@ -174,6 +176,9 @@ export interface AccountSummary {
   systemAccountId?: string
   systemAccountName?: string
   providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   name: string
   notes?: string
   type: AccountType
@@ -268,6 +273,9 @@ export type AccountOptionSummary = Pick<
   | 'ownerSystemAccountId'
   | 'ownerSystemAccountName'
   | 'providerCode'
+  | 'providerProtocolProfileId'
+  | 'protocolCode'
+  | 'protocolVersion'
   | 'name'
   | 'type'
   | 'status'
@@ -283,6 +291,9 @@ export interface AccountTestResult {
   accountId: string
   accountName: string
   providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   type: AccountType
   success: boolean
   statusCode?: number
@@ -317,6 +328,9 @@ export interface AccountTestTask {
   accountId: string
   accountName: string
   providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   type: AccountType
   status: AccountTestTaskStatus
   message?: string
@@ -371,6 +385,9 @@ export interface AccountImportItem {
   ref?: string
   name?: string
   providerCode?: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   accountType?: AccountType
   groupName?: string
   groupId?: string
@@ -453,6 +470,9 @@ export interface GroupSummary {
   systemAccountName?: string
   name: string
   providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   description?: string
   enabled: boolean
   isDefault: boolean
@@ -491,6 +511,9 @@ export type GroupOptionSummary = Pick<
   | 'ownerSystemAccountName'
   | 'name'
   | 'providerCode'
+  | 'providerProtocolProfileId'
+  | 'protocolCode'
+  | 'protocolVersion'
   | 'enabled'
   | 'isDefault'
   | 'groupType'

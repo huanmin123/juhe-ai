@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { getRequestLogger } from '../../shared/request-context.js'
 import { assertSafeUpstreamBaseUrl } from '../../shared/upstream-url-policy.js'
 import { runtimeOpenAIAccountCredentials } from '../../storage/repositories.js'
@@ -40,6 +41,9 @@ type GatewayAccountFailurePrecheckRecorder = (
   settings: GatewaySettings | undefined,
   input: GatewayAccountFailurePrecheckInput
 ) => void
+
+const oauthBlockingRefreshLeadMs = 5_000
+const oauthRefreshPreheatInFlightAccountIds = new Set<string>()
 
 export function skipAccountForFailedProxyDispatch(
   failedProxyDispatchKeys: Map<string, string>,
@@ -114,6 +118,10 @@ export async function prepareUpstreamAccount(account: UpstreamAccount, signal?: 
   if (account.type !== 'oauth' || !shouldRefreshOpenAIOAuthCredentials(refreshCredentials) || !account.refreshToken) {
     return account
   }
+  if (!shouldBlockForOpenAIOAuthAccessTokenRefresh(refreshCredentials)) {
+    scheduleOpenAIOAuthAccessTokenPreheat(account, refreshCredentials)
+    return account
+  }
   throwIfRequestAborted(signal)
 
   const credentialSourceAccount = account.credentialSourceAccountId
@@ -138,6 +146,52 @@ export async function prepareUpstreamAccount(account: UpstreamAccount, signal?: 
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : account.expiresAt,
     credentials: runtimeOpenAIAccountCredentials(credentials)
   }
+}
+
+function scheduleOpenAIOAuthAccessTokenPreheat(account: UpstreamAccount, credentials: Record<string, unknown>): void {
+  const credentialSourceAccount = account.credentialSourceAccountId
+    ? { ...account, id: account.credentialSourceAccountId }
+    : account
+  if (oauthRefreshPreheatInFlightAccountIds.has(credentialSourceAccount.id)) {
+    return
+  }
+  oauthRefreshPreheatInFlightAccountIds.add(credentialSourceAccount.id)
+  const previousExpiresAt = typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined
+
+  void (async () => {
+    try {
+      const updated = await refreshOpenAIOAuthAccountAccessToken({
+        ...credentialSourceAccount,
+        credentials
+      }, { force: false, persistMode: 'db-service', restoreFailureState: false })
+      logger.info({
+        event: 'gateway_openai_oauth_access_token_preheated',
+        accountId: account.id,
+        credentialSourceAccountId: credentialSourceAccount.id !== account.id ? credentialSourceAccount.id : undefined,
+        previousExpiresAt,
+        nextExpiresAt: typeof updated.credentials.expires_at === 'string' ? updated.credentials.expires_at : undefined
+      }, 'OpenAI OAuth Access Token 已在请求热路径外预刷新')
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_openai_oauth_access_token_preheat_failed',
+        accountId: account.id,
+        credentialSourceAccountId: credentialSourceAccount.id !== account.id ? credentialSourceAccount.id : undefined,
+        previousExpiresAt
+      }), 'OpenAI OAuth Access Token 请求热路径外预刷新失败')
+    } finally {
+      oauthRefreshPreheatInFlightAccountIds.delete(credentialSourceAccount.id)
+    }
+  })()
+}
+
+function shouldBlockForOpenAIOAuthAccessTokenRefresh(credentials: Record<string, unknown>): boolean {
+  const accessToken = typeof credentials.access_token === 'string' && credentials.access_token.trim()
+    ? credentials.access_token.trim()
+    : undefined
+  if (!accessToken) return true
+  const expiresAt = typeof credentials.expires_at === 'string' ? Date.parse(credentials.expires_at) : Number.NaN
+  if (!Number.isFinite(expiresAt)) return true
+  return expiresAt - Date.now() <= oauthBlockingRefreshLeadMs
 }
 
 function openAIOAuthRefreshCredentials(account: UpstreamAccount): Record<string, unknown> {

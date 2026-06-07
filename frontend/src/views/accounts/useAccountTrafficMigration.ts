@@ -57,6 +57,10 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
       message.warning('异常账户除编辑、删除外，只支持测试和恢复异常')
       return
     }
+    if (account.status === 'pending_test') {
+      message.warning('待测试账户需测试通过后才能参与调度')
+      return
+    }
     if (!canUseAccountActions(account) && !isAuthorizedAccount(account)) {
       message.warning('授权账户不能迁移流量')
       return
@@ -79,7 +83,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
     rememberAccountSelection(trafficMigrationForm.targetAccount)
     trafficMigrationModalOpen.value = true
     if (!target) {
-      message.warning('当前没有可迁移到的同供应商可用账户')
+      message.warning('当前没有可迁移到的同分组可用账户')
     }
   }
 

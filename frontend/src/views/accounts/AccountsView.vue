@@ -129,7 +129,7 @@
       :authorized-editing="editingAuthorizedAccount"
       :auth-loading="authLoading"
       :auth-result="authResult"
-      :base-url-placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
+      :base-url-placeholder="selectedProtocolProfile?.baseUrl || selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
       :confirm-loading="modalConfirmLoading"
       :credential-title="selectedAccountTypeTitle"
       :cloning="Boolean(cloningSourceId)"
@@ -149,6 +149,7 @@
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
+      :selected-protocol-profile="selectedProtocolProfile"
       :selected-provider="selectedProvider"
       :test-button-disabled="accountEditTestButtonDisabled"
       :test-loading="testRunning"
@@ -246,7 +247,7 @@ import { useAccountListData } from './useAccountListData'
 import { useAccountMenuActions } from './useAccountMenuActions'
 import { accountOperationScopeParams, accountOperationSystemAccountId } from './accountOperationScope'
 import { useAccountReauthorize } from './useAccountReauthorize'
-import { useAccountTestModal } from './useAccountTestModal'
+import { useAccountTestModal, type SuccessfulDraftActivationTest } from './useAccountTestModal'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 
 const AccountEditModal = defineAsyncComponent(() => import('./AccountEditModal.vue'))
@@ -368,6 +369,7 @@ const selectedDeletableAccountCount = computed(() => selectedAccounts.value.filt
 const groupOptionProviderCode = ref('')
 const groupOptionSystemAccountId = ref('')
 const selectedGroupIds = ref<Array<string | undefined>>([])
+const successfulDraftActivationTest = ref<SuccessfulDraftActivationTest>()
 const {
   groups,
   handleDropdown: handleGroupOptionsDropdown,
@@ -419,6 +421,7 @@ const {
   saveAccount,
   selectAccountType,
   selectedAccountTypeTitle,
+  selectedProtocolProfile,
   selectedProvider,
   selectProvider,
   targetSystemAccountLabel
@@ -434,7 +437,8 @@ const {
   loadData,
   providers,
   systemAccountSelection: computed(() => filters.systemAccount),
-  systemAccounts
+  systemAccounts,
+  successfulDraftActivationTest
 })
 const {
   batchTestItems,
@@ -458,7 +462,8 @@ const {
   clearSelection,
   isManagementView,
   loadData,
-  providers: availableProviders
+  providers: availableProviders,
+  successfulDraftActivationTest
 })
 const accountEditTestButtonDisabled = computed(() => modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
 const {
@@ -610,7 +615,10 @@ function handleProviderFilterChange(value: string): void {
   const provider = filters.providerCode === 'all'
     ? undefined
     : availableProviders.value.find((item) => item.code === filters.providerCode)
-  if (provider && filters.type !== 'all' && !provider.accountTypes.includes(filters.type)) {
+  const providerAccountTypes = provider?.protocolProfiles.length
+    ? provider.protocolProfiles.flatMap((profile) => profile.accountTypes)
+    : provider?.accountTypes ?? []
+  if (provider && filters.type !== 'all' && !providerAccountTypes.includes(filters.type)) {
     filters.type = 'all'
   }
   resetFilterGroupOptionsSearch()

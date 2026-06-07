@@ -92,10 +92,10 @@ try {
     assert.equal(successLog.success, true)
     assert.equal(successLog.isTestToken, true)
     assert.equal(successLog.sourceName, '内置测试来源')
-    assert.equal(successLog.queryString, 'token=%5Bredacted%5D&safe=ok', '公开接口日志 queryString 应脱敏敏感参数')
+    assert.equal(successLog.queryString, 'token=public-query-secret&safe=ok', '公开接口日志 queryString 应保留敏感参数原文')
     const successDetail = requiredDetail(successLog.id)
-    assert.equal((successDetail.requestData.query as Record<string, unknown>).token, '[redacted]', '请求快照 query 应脱敏 token 参数')
-    assert.equal(JSON.stringify(successDetail).includes('public-query-secret'), false, '公开接口日志详情不能保存 query token 原文')
+    assert.equal((successDetail.requestData.query as Record<string, unknown>).token, 'public-query-secret', '请求快照 query 应保留 token 参数原文')
+    assert(JSON.stringify(successDetail).includes('public-query-secret'), '公开接口日志详情应保存 query token 原文')
 
     const apiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
       Authorization: `Bearer ${builtInTestToken}`,
@@ -109,8 +109,8 @@ try {
     assert.equal(apiKeyAdd.body.data.apiKey.key, 'juis_mock_public_api_key', '测试 token 响应仍应按原业务返回一次性明文 Key')
     const apiKeyAddDetail = requiredDetail(singleLogByTraceId('trace-public-api-key-add').id)
     const apiKeySerialized = JSON.stringify(apiKeyAddDetail)
-    assert.equal(apiKeySerialized.includes('juis_mock_public_api_key'), false, '公开接口日志不能保存 API Key 新增响应里的明文 key')
-    assert(apiKeySerialized.includes('[redacted]'), 'API Key 新增日志应保留脱敏占位')
+    assert(apiKeySerialized.includes('juis_mock_public_api_key'), '公开接口日志应保存 API Key 新增响应里的明文 key')
+    assert.equal(apiKeySerialized.includes('[redacted]'), false, 'API Key 新增日志不应写入脱敏占位')
 
     const accountAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
       Authorization: `Bearer ${builtInTestToken}`,
@@ -118,7 +118,7 @@ try {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '公开接口日志回归账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -128,8 +128,8 @@ try {
     assert.equal(accountAdd.status, 200)
     const accountAddDetail = requiredDetail(singleLogByTraceId('trace-public-account-add').id)
     const accountSerialized = JSON.stringify(accountAddDetail)
-    assert.equal(accountSerialized.includes('sk-public-log-regression-secret'), false, '公开接口日志不能保存账号写入请求里的上游 API Key')
-    assert(accountSerialized.includes('[redacted]'), '账号写入日志应保留脱敏占位')
+    assert(accountSerialized.includes('sk-public-log-regression-secret'), '公开接口日志应保存账号写入请求里的上游 API Key')
+    assert.equal(accountSerialized.includes('[redacted]'), false, '账号写入日志不应写入脱敏占位')
 
     const notFound = await requestJson(baseUrl, '/__aipublic__/not-found', {
       Authorization: `Bearer ${builtInTestToken}`,
@@ -224,7 +224,7 @@ try {
   assert.equal(cleanupPublicApiLogsBefore(batchCutoff, 5), 5, '公开接口日志 repository 清理必须遵守传入 limit')
   assert.equal(listPublicApiLogs({ traceId: 'publog_bounded_', pageSize: 20 }).items.length, 7, '限定批量清理不能一次删除全部过期记录')
 
-  console.log('公开接口日志回归通过：公开请求记录、管理员查询、敏感字段脱敏和 7 天保留清理均符合预期')
+  console.log('公开接口日志回归通过：公开请求记录、管理员查询、原文日志和 7 天保留清理均符合预期')
 } finally {
   try {
     closeStorageDatabases()

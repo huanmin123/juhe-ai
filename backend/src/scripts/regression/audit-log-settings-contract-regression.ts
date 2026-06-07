@@ -7,9 +7,9 @@ const nowMs = Date.parse('2026-01-01T00:00:00.000Z')
 const auditDesignDoc = readFileSync(new URL('../../../../docs/functions/原始审计日志设计.md', import.meta.url), 'utf8')
 
 assert.equal(auditSettings.fixedAuditLogSettings.queueMaxItems, 5000, '审计日志 worker 本地队列请求数必须有固定硬上限')
-assert.equal(auditSettings.fixedAuditLogSettings.queueMaxBytes, 128 * 1024 * 1024, '审计日志 worker 本地队列字节数必须有固定硬上限')
+assert.equal(auditSettings.fixedAuditLogSettings.queueMaxBytes, 1024 * 1024 * 1024, '审计日志 worker 本地队列字节数必须有固定硬上限')
 assert(auditDesignDoc.includes('| `queueMaxItems` | `5000` |'), '原始审计日志设计文档必须声明 queueMaxItems 固定硬上限')
-assert(auditDesignDoc.includes('| `queueMaxBytes` | `128MB` |'), '原始审计日志设计文档必须声明 queueMaxBytes 固定硬上限')
+assert(auditDesignDoc.includes('| `queueMaxBytes` | `1024MB` |'), '原始审计日志设计文档必须声明 queueMaxBytes 固定硬上限')
 assert(!auditDesignDoc.includes('Number.MAX_SAFE_INTEGER'), '原始审计日志设计文档不能再把 worker 队列描述为无限制')
 
 const valid = auditSettings.normalizeAuditFullBodyCaptureConfig({

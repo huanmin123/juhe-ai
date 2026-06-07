@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import type { AccountStatus, AccountSummary, ApiKeySummary, GroupSummary, SystemAccountSummary } from '../../domain/types.js'
+import type { AccountStatus, AccountSummary, ApiKeySummary, GroupSummary, ProviderDefinition, ProviderProtocolProfileDefinition, SystemAccountSummary } from '../../domain/types.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
 import {
   createAccount,
@@ -31,6 +31,7 @@ export interface PublicAccountPushInput {
   targetDisplayName?: string
   targetGroupName: string
   providerCode: string
+  providerProtocolProfileId?: string
   name: string
   type: 'api_key'
   baseUrl: string
@@ -64,6 +65,9 @@ export interface PublicAccountPushResponse {
     id: string
     name: string
     providerCode: string
+    providerProtocolProfileId?: string
+    protocolCode?: string
+    protocolVersion?: string
     type: string
     status: AccountStatus
     supportedModels?: string[]
@@ -78,6 +82,7 @@ export interface PublicAccountDeleteInput {
   targetUsername: string
   targetGroupName: string
   providerCode: string
+  providerProtocolProfileId?: string
   accountId: string
 }
 
@@ -93,6 +98,7 @@ export interface PublicAccountListInput {
   targetUsername: string
   targetGroupName?: string
   providerCode?: string
+  providerProtocolProfileId?: string
   groupId?: string
   keyword?: string
   type?: string
@@ -123,6 +129,7 @@ export interface PublicGroupAddInput {
   targetDisplayName?: string
   name: string
   providerCode: string
+  providerProtocolProfileId?: string
   description?: string
   enabled?: boolean
   groupType?: 'personal' | 'high_concurrency'
@@ -133,6 +140,7 @@ export interface PublicGroupUpdateInput {
   groupId: string
   name?: string
   providerCode?: string
+  providerProtocolProfileId?: string
   description?: string | null
   enabled?: boolean
   groupType?: 'personal' | 'high_concurrency'
@@ -155,6 +163,7 @@ export interface PublicGroupListInput {
   targetUsername: string
   keyword?: string
   providerCode?: string
+  providerProtocolProfileId?: string
   page?: number
   pageSize?: number
 }
@@ -232,6 +241,9 @@ interface PublicGroupSummary {
   id: string
   name: string
   providerCode: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   description?: string
   enabled: boolean
   groupType: string
@@ -284,7 +296,8 @@ function writePublicWelfareAccount(input: PublicAccountPushInput | PublicAccount
   if (!provider.enabled) {
     throw new Error(`供应商已停用：${providerCode}`)
   }
-  assertSupportedPushAccountType(input.type, provider.accountTypes)
+  const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId)
+  assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
 
   return runInDatabaseTransaction(() => {
     const target = mode === 'update' ? findPublicTarget(input.targetUsername) : ensureTargetSystemAccount(input, targetPasswordHash)
@@ -295,18 +308,20 @@ function writePublicWelfareAccount(input: PublicAccountPushInput | PublicAccount
 
     const access = { systemAccountId: target.account.id, role: 'user' as const }
     const targetGroup = mode === 'update'
-      ? requireExistingTargetGroup({ access, providerCode, groupName: input.targetGroupName })
-      : ensureTargetGroup({ access, providerCode, groupName: input.targetGroupName })
+      ? requireExistingTargetGroup({ access, providerCode, providerProtocolProfileId: providerProfile.id, groupName: input.targetGroupName })
+      : ensureTargetGroup({ access, providerCode, providerProtocolProfileId: providerProfile.id, groupName: input.targetGroupName })
     const existing = mode === 'update'
       ? findTargetAccountById({
         access,
         providerCode,
+        providerProtocolProfileId: providerProfile.id,
         groupId: targetGroup.group.id,
         accountId: (input as PublicAccountUpdateInput).accountId
       })
       : findTargetAccount({
         access,
         providerCode,
+        providerProtocolProfileId: providerProfile.id,
         groupId: targetGroup.group.id,
         name: input.name
       })
@@ -318,7 +333,7 @@ function writePublicWelfareAccount(input: PublicAccountPushInput | PublicAccount
     }
     const accountInput = existing
       ? accountUpdateInputForPush(input)
-      : accountCreateInputForPush(input, providerCode, targetGroup.group.id)
+      : accountCreateInputForPush(input, providerCode, providerProfile.id, targetGroup.group.id)
     const account = existing
       ? updateAccount(existing.id, accountInput, access) ?? existing
       : createAccount(accountInput, access)
@@ -347,6 +362,7 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
   }
+  const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId)
 
   const username = normalizedText(input.targetUsername)
   if (!username) {
@@ -372,6 +388,7 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
   const targetGroup = findExistingTargetGroup({
     access,
     providerCode,
+    providerProtocolProfileId: providerProfile.id,
     groupName
   })
   const resolvedTarget = {
@@ -390,6 +407,7 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
   const account = findTargetAccountById({
     access,
     providerCode,
+    providerProtocolProfileId: providerProfile.id,
     groupId: targetGroup.id,
     accountId
   })
@@ -418,8 +436,10 @@ export function listPublicWelfareAccounts(input: PublicAccountListInput): Public
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
   const providerCode = normalizedText(input.providerCode)
+  const providerProtocolProfileId = resolveOptionalProviderProtocolProfileId(providerCode, input.providerProtocolProfileId)
   const groupId = resolveAccountListGroupId(access, {
     providerCode,
+    providerProtocolProfileId,
     groupId: input.groupId,
     targetGroupName: input.targetGroupName
   })
@@ -428,6 +448,7 @@ export function listPublicWelfareAccounts(input: PublicAccountListInput): Public
     pageSize: input.pageSize,
     keyword: normalizedText(input.keyword),
     providerCode,
+    providerProtocolProfileId,
     groupId,
     type: normalizedText(input.type),
     status: normalizedText(input.status),
@@ -448,19 +469,20 @@ export function listPublicWelfareAccounts(input: PublicAccountListInput): Public
 
 export async function addPublicGroup(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
   const providerCode = requiredProviderCode(input.providerCode)
-  assertProviderEnabled(providerCode)
+  const providerProfile = assertProviderEnabled(providerCode, input.providerProtocolProfileId)
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
   return runInDatabaseTransaction(() => {
     const target = ensureTargetSystemAccount(input, targetPasswordHash)
     assertTargetActive(target.account)
     const access = targetAccess(target.account.id)
-    const existing = resolvePublicGroup(access, { name: input.name, providerCode })
+    const existing = resolvePublicGroup(access, { name: input.name, providerCode, providerProtocolProfileId: providerProfile.id })
     if (existing) {
       return publicGroupResponse('existing', target, sanitizeGroup(existing))
     }
     const group = createGroup({
       name: input.name,
       providerCode,
+      providerProtocolProfileId: providerProfile.id,
       description: input.description,
       enabled: input.enabled,
       groupType: input.groupType ?? 'personal'
@@ -479,13 +501,14 @@ export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupRes
   const group = resolvePublicGroup(access, {
     groupId: input.groupId,
     name: input.name,
-    providerCode: input.providerCode
+    providerCode: input.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId
   })
   if (!group) {
     return publicGroupResponse('not_found', target, null)
   }
   if (input.providerCode) {
-    assertProviderEnabled(input.providerCode)
+    assertProviderEnabled(input.providerCode, input.providerProtocolProfileId)
   }
   const updated = updateGroup(group.id, publicGroupUpdatePayload(input), access)
   if (!updated) {
@@ -518,6 +541,7 @@ export function listPublicGroups(input: PublicGroupListInput): PublicGroupListRe
     pageSize: input.pageSize,
     keyword: normalizedText(input.keyword),
     providerCode: normalizedText(input.providerCode),
+    providerProtocolProfileId: resolveOptionalProviderProtocolProfileId(input.providerCode, input.providerProtocolProfileId),
     manageableOnly: true
   })
   return publicGroupListResponse(target, {
@@ -835,7 +859,7 @@ function mockPublicApiKeyGroupBindings(input: PublicApiKeyAddInput['groupBinding
   }))
 }
 
-function assertProviderEnabled(providerCode: string): void {
+function assertProviderEnabled(providerCode: string, providerProtocolProfileId?: string): ProviderProtocolProfileDefinition {
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
@@ -843,6 +867,40 @@ function assertProviderEnabled(providerCode: string): void {
   if (!provider.enabled) {
     throw new Error(`供应商已停用：${providerCode}`)
   }
+  return requireProviderProtocolProfile(provider, providerProtocolProfileId)
+}
+
+function requireProviderProtocolProfile(provider: ProviderDefinition, providerProtocolProfileId?: string): ProviderProtocolProfileDefinition {
+  const profileId = normalizedText(providerProtocolProfileId)
+  const profile = profileId
+    ? provider.protocolProfiles.find((item) => item.id === profileId)
+    : provider.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
+      ?? provider.protocolProfiles.find((item) => item.enabled)
+      ?? provider.protocolProfiles[0]
+  if (!profile) {
+    throw new Error(`供应商未配置协议档案：${provider.code}`)
+  }
+  if (profile.providerCode !== provider.code) {
+    throw new Error(`协议档案 ${profile.id} 不属于供应商 ${provider.code}`)
+  }
+  if (!profile.enabled) {
+    throw new Error(`供应商协议档案已停用：${profile.name}`)
+  }
+  return profile
+}
+
+function resolveOptionalProviderProtocolProfileId(providerCodeInput?: string, providerProtocolProfileIdInput?: string): string | undefined {
+  const providerCode = normalizedText(providerCodeInput)
+  const providerProtocolProfileId = normalizedText(providerProtocolProfileIdInput)
+  if (!providerCode && !providerProtocolProfileId) return undefined
+  if (!providerCode) {
+    throw new Error('按协议档案查询时必须提供 providerCode')
+  }
+  const provider = listProviders().find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  return requireProviderProtocolProfile(provider, providerProtocolProfileId).id
 }
 
 function assertTargetActive(account: SystemAccountSummary): void {
@@ -1001,7 +1059,7 @@ function publicMockApiKeyResponse(action: PublicApiKeyResponse['action'], userna
   }
 }
 
-function resolvePublicGroup(access: TargetAccess, input: { groupId?: string; name?: string; providerCode?: string }): GroupSummary | undefined {
+function resolvePublicGroup(access: TargetAccess, input: { groupId?: string; name?: string; providerCode?: string; providerProtocolProfileId?: string }): GroupSummary | undefined {
   const groupId = normalizedText(input.groupId)
   if (groupId) {
     return findGroupSummary(groupId, access)
@@ -1014,12 +1072,13 @@ function resolvePublicGroup(access: TargetAccess, input: { groupId?: string; nam
   if (!providerCode) {
     return undefined
   }
-  return findExistingTargetGroup({ access, providerCode, groupName: name })
+  const providerProtocolProfileId = resolveOptionalProviderProtocolProfileId(providerCode, input.providerProtocolProfileId)
+  return findExistingTargetGroup({ access, providerCode, providerProtocolProfileId, groupName: name })
 }
 
 function resolveAccountListGroupId(
   access: TargetAccess,
-  input: { providerCode?: string; groupId?: string; targetGroupName?: string }
+  input: { providerCode?: string; providerProtocolProfileId?: string; groupId?: string; targetGroupName?: string }
 ): string | undefined {
   const groupId = normalizedText(input.groupId)
   if (groupId) {
@@ -1033,7 +1092,8 @@ function resolveAccountListGroupId(
   if (!providerCode) {
     throw new Error('按目标分组名称查询账号时必须提供 providerCode')
   }
-  return findExistingTargetGroup({ access, providerCode, groupName })?.id ?? '__public_group_not_found__'
+  const providerProtocolProfileId = resolveOptionalProviderProtocolProfileId(providerCode, input.providerProtocolProfileId)
+  return findExistingTargetGroup({ access, providerCode, providerProtocolProfileId, groupName })?.id ?? '__public_group_not_found__'
 }
 
 function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUpdateInput, partial = false): Record<string, unknown> {
@@ -1058,6 +1118,7 @@ function publicGroupUpdatePayload(input: PublicGroupUpdateInput): Record<string,
   const payload: Record<string, unknown> = {}
   if (input.name !== undefined) payload.name = input.name
   if (input.providerCode !== undefined) payload.providerCode = input.providerCode
+  if (input.providerProtocolProfileId !== undefined) payload.providerProtocolProfileId = input.providerProtocolProfileId
   if (input.description !== undefined) payload.description = input.description
   if (input.enabled !== undefined) payload.enabled = input.enabled
   if (input.groupType !== undefined) payload.groupType = input.groupType
@@ -1104,6 +1165,7 @@ async function autoCreatedTargetPasswordHash(): Promise<string> {
 function ensureTargetGroup(input: {
   access: TargetAccess
   providerCode: string
+  providerProtocolProfileId: string
   groupName: string
 }): ResolvedGroup {
   const groupName = normalizedText(input.groupName)
@@ -1113,8 +1175,9 @@ function ensureTargetGroup(input: {
   const existing = listGroupOptions(input.access, {
     keyword: groupName,
     providerCode: input.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
     limit: 20
-  }).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
+  }).find((item) => item.providerCode === input.providerCode && item.providerProtocolProfileId === input.providerProtocolProfileId && sameText(item.name, groupName))
 
   if (existing) {
     const group = findGroupSummary(existing.id, input.access)
@@ -1131,6 +1194,7 @@ function ensureTargetGroup(input: {
     group: createGroup({
       name: groupName,
       providerCode: input.providerCode,
+      providerProtocolProfileId: input.providerProtocolProfileId,
       description: '由公开接口自动创建',
       enabled: true,
       groupType: 'personal'
@@ -1142,6 +1206,7 @@ function ensureTargetGroup(input: {
 function requireExistingTargetGroup(input: {
   access: TargetAccess
   providerCode: string
+  providerProtocolProfileId: string
   groupName: string
 }): ResolvedGroup {
   const group = findExistingTargetGroup(input)
@@ -1157,6 +1222,7 @@ function requireExistingTargetGroup(input: {
 function findExistingTargetGroup(input: {
   access: TargetAccess
   providerCode: string
+  providerProtocolProfileId?: string
   groupName: string
 }): GroupSummary | undefined {
   const groupName = normalizedText(input.groupName)
@@ -1166,14 +1232,16 @@ function findExistingTargetGroup(input: {
   const existing = listGroupOptions(input.access, {
     keyword: groupName,
     providerCode: input.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
     limit: 20
-  }).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
+  }).find((item) => item.providerCode === input.providerCode && (!input.providerProtocolProfileId || item.providerProtocolProfileId === input.providerProtocolProfileId) && sameText(item.name, groupName))
   return existing ? findGroupSummary(existing.id, input.access) : undefined
 }
 
 function findTargetAccountById(input: {
   access: TargetAccess
   providerCode: string
+  providerProtocolProfileId: string
   groupId: string
   accountId?: string
 }): AccountSummary | undefined {
@@ -1188,12 +1256,14 @@ function findTargetAccountById(input: {
     WHERE accounts.id = ?
       AND accounts.system_account_id = ?
       AND accounts.provider_code = ?
+      AND accounts.provider_protocol_profile_id = ?
       AND group_accounts.group_id = ?
     LIMIT 1
   `).get(
     accountId,
     input.access.systemAccountId,
     input.providerCode,
+    input.providerProtocolProfileId,
     input.groupId
   ) as { id?: string } | undefined
   return row?.id ? findAccountSummary(row.id, input.access) : undefined
@@ -1202,6 +1272,7 @@ function findTargetAccountById(input: {
 function findTargetAccount(input: {
   access: TargetAccess
   providerCode: string
+  providerProtocolProfileId: string
   groupId: string
   name: string
 }): AccountSummary | undefined {
@@ -1212,10 +1283,11 @@ function findTargetAccount(input: {
   return listAccountsPage(input.access, {
     keyword: name,
     providerCode: input.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
     groupId: input.groupId,
     page: 1,
     pageSize: 20
-  }).items.find((item) => item.providerCode === input.providerCode && sameText(item.name, name))
+  }).items.find((item) => item.providerCode === input.providerCode && item.providerProtocolProfileId === input.providerProtocolProfileId && sameText(item.name, name))
 }
 
 function targetFromInput(username: string, groupName: string): PublicAccountDeleteResponse['target'] {
@@ -1240,10 +1312,11 @@ function notFoundAccountDeleteResponse(target: PublicAccountDeleteResponse['targ
   }
 }
 
-function accountCreateInputForPush(input: PublicAccountPushInput, providerCode: string, groupId: string): Record<string, unknown> {
+function accountCreateInputForPush(input: PublicAccountPushInput, providerCode: string, providerProtocolProfileId: string, groupId: string): Record<string, unknown> {
   return {
     ...accountWriteInputForPush(input),
     providerCode,
+    providerProtocolProfileId,
     type: input.type,
     groupId,
     status: input.status === 'disabled' ? 'disabled' : 'pending_test',
@@ -1274,15 +1347,25 @@ function accountWriteInputForPush(input: PublicAccountPushInput): Record<string,
     credentials: {
       api_key: apiKey,
       base_url: baseUrl
-    },
-    supportedModels: normalizedStringList(input.supportedModels),
-    status: input.status === 'disabled' ? 'disabled' : 'active',
-    concurrencyLimit: boundedInteger(input.concurrencyLimit, 1, 100_000),
-    priority: boundedInteger(input.priority, 0, 100_000) ?? 0,
-    schedulable: input.status !== 'disabled',
-    notes: pushNotes(input)
+    }
   }
-  if (Object.prototype.hasOwnProperty.call(input, 'availabilitySchedule')) {
+  if (hasPublicInput(input, 'supportedModels')) {
+    payload.supportedModels = normalizedStringList(input.supportedModels) ?? []
+  }
+  if (hasPublicInput(input, 'status')) {
+    payload.status = input.status === 'disabled' ? 'disabled' : 'active'
+    payload.schedulable = input.status !== 'disabled'
+  }
+  if (hasPublicInput(input, 'concurrencyLimit')) {
+    payload.concurrencyLimit = boundedInteger(input.concurrencyLimit, 1, 100_000)
+  }
+  if (hasPublicInput(input, 'priority')) {
+    payload.priority = boundedInteger(input.priority, 0, 100_000) ?? 0
+  }
+  if (hasPublicInput(input, 'notes')) {
+    payload.notes = pushNotes(input)
+  }
+  if (hasPublicInput(input, 'availabilitySchedule')) {
     payload.availabilitySchedule = input.availabilitySchedule
   }
   return payload
@@ -1314,6 +1397,9 @@ function sanitizeAccount(account: AccountSummary): PublicAccountPushResponse['ac
     id: account.id,
     name: account.name,
     providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
     type: account.type,
     status: account.status,
     supportedModels: account.supportedModels,
@@ -1329,6 +1415,9 @@ function sanitizeGroup(group: GroupSummary): PublicGroupSummary {
     id: group.id,
     name: group.name,
     providerCode: group.providerCode,
+    providerProtocolProfileId: group.providerProtocolProfileId,
+    protocolCode: group.protocolCode,
+    protocolVersion: group.protocolVersion,
     description: group.description,
     enabled: group.enabled,
     groupType: group.groupType,
@@ -1375,4 +1464,8 @@ function boundedInteger(value: unknown, min: number, max: number): number | unde
 
 function sameText(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase()
+}
+
+function hasPublicInput(input: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(input, key)
 }

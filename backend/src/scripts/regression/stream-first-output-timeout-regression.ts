@@ -386,10 +386,10 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
   const access = scenarioCredentialAccess()
-  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'openai', enabled: true }, access)
+  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'gpt', enabled: true }, access)
   scenarioCredentialIndex += 1
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: `流式超时回归账户-${label}`,
     type: 'api_key',
     credentials: {

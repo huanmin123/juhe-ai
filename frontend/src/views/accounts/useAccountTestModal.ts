@@ -16,8 +16,9 @@ import {
   nextTestModel,
   stoppedAccountTestMessage
 } from './accountTestFlow'
-import { buildTestModelOptions, defaultTestModelForAccountSelection, isOpenAITestSelection, providerCodeForAccountSelection, providerDefaultTestModelForAccountSelection } from './accountDerivedState'
-import { OPENAI_PROVIDER_CODE } from './accountOptions'
+import { buildTestModelOptions, defaultTestModelForAccountSelection, isGptTestSelection, providerCodeForAccountSelection, providerDefaultTestModelForAccountSelection } from './accountDerivedState'
+import { GPT_VENDOR_CODE } from './accountOptions'
+import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { authorizedAccountUnavailableText, canTestAccount } from './accountRules'
@@ -28,9 +29,15 @@ interface UseAccountTestModalOptions {
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
   providers: ComputedRef<ProviderDefinition[]>
+  successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
 }
 
 type AccountTestPayload = ReturnType<typeof buildAccountTestPayload>
+
+export interface SuccessfulDraftActivationTest {
+  taskId: string
+  account: AccountDraftTestPayload['account']
+}
 
 const accountBatchTestConcurrency = 3
 const accountTestTaskBatchQuerySize = 100
@@ -54,6 +61,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const providerModels = ref<ProviderModelPricing[]>([])
   const providerModelsProviderCode = ref('')
   const draftTestingAccountPayload = ref<AccountDraftTestPayload['account']>()
+  const successfulDraftActivationTest = options.successfulDraftActivationTest ?? ref<SuccessfulDraftActivationTest>()
   const testForm = reactive<AccountTestForm>({ model: '', clientCompatibility: 'account_default' })
   const testTargetAccountSelection = computed(() => (
     testMode.value === 'batch' ? batchTestingAccounts.value : testingAccount.value
@@ -71,19 +79,19 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const defaultTestModel = computed(() => (
     defaultTestModelForAccountSelection(testTargetAccountSelection.value, providerDefaultTestModel.value)
   ))
-  const isOpenAITestTarget = computed(() => isOpenAITestSelection(testTargetAccountSelection.value))
+  const isGptTestTarget = computed(() => isGptTestSelection(testTargetAccountSelection.value))
 
   let accountTestAbortController: AbortController | undefined
   const activeAccountTestTasks = new Map<string, AccountSummary>()
 
   async function loadTestModels() {
-    if (!isOpenAITestTarget.value) {
+    if (!isGptTestTarget.value) {
       providerModels.value = []
       providerModelsProviderCode.value = ''
       testForm.model = nextTestModel(testForm.model, testModelOptions.value, defaultTestModel.value)
       return
     }
-    const providerCode = testTargetProviderCode.value || OPENAI_PROVIDER_CODE
+    const providerCode = testTargetProviderCode.value || GPT_VENDOR_CODE
     if (providerModelsProviderCode.value !== providerCode) {
       providerModels.value = []
       providerModelsProviderCode.value = providerCode
@@ -104,8 +112,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   async function openTestModal(account: AccountSummary) {
     if (!canTestAccount(account)) {
-      if (account.providerCode !== OPENAI_PROVIDER_CODE) {
-        message.warning('当前仅支持测试 OpenAI 账户')
+      if (!isOpenAIProtocolProfile(account)) {
+        message.warning('当前仅支持测试 OpenAI v1 协议账户')
       } else if (isAuthorizedAccount(account) && !account.boundGroupId) {
         message.warning('请先把授权账户绑定到你的分组')
       } else if (isAuthorizedAccount(account)) {
@@ -128,8 +136,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   async function openDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
-    if (account.providerCode !== OPENAI_PROVIDER_CODE) {
-      message.warning('当前仅支持测试 OpenAI 账户')
+    if (!isOpenAIProtocolProfile(account)) {
+      message.warning('当前仅支持测试 OpenAI v1 协议账户')
       return
     }
     testMode.value = 'single'
@@ -137,6 +145,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     batchTestingAccounts.value = []
     batchTestItems.value = []
     draftTestingAccountPayload.value = draftPayload
+    successfulDraftActivationTest.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.clientCompatibility = 'account_default'
@@ -159,7 +168,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       return
     }
     if (testableAccounts.length !== accounts.length) {
-      message.warning('已跳过非 OpenAI 或当前不能测试的账户')
+      message.warning('已跳过非 GPT 供应商或当前不能测试的账户')
     }
     testMode.value = 'batch'
     testingAccount.value = undefined
@@ -181,6 +190,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     accountTestAbortController = controller
     const startedAt = Date.now()
     const account = testingAccount.value
+    const activationDraftPayload = activeDraftTestPayload(account)
     try {
       const payload = buildAccountSpecificTestPayload(account)
       const task = await submitAccountTest(account, payload)
@@ -193,8 +203,14 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       const result = await waitForAccountTestResult(task, account, controller.signal)
       testResult.value = result
       if (result.success) {
+        if (activationDraftPayload) {
+          successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }
+        }
         message.success(accountTestSuccessMessage(account, result))
       } else {
+        if (activationDraftPayload) {
+          successfulDraftActivationTest.value = undefined
+        }
         message.error(accountTestErrorMessage(account, result))
       }
       await options.loadData()
@@ -212,6 +228,9 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         startedAt
       })
       message.error(`${account.name}: 测试失败`)
+      if (activationDraftPayload) {
+        successfulDraftActivationTest.value = undefined
+      }
     } finally {
       for (const taskId of [...activeAccountTestTasks.keys()]) {
         activeAccountTestTasks.delete(taskId)
@@ -555,7 +574,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testModelsLoading,
     testResult,
     testRunning,
-    testingAccount
+    testingAccount,
+    successfulDraftActivationTest
   }
 }
 

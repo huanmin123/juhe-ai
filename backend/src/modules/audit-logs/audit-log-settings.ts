@@ -36,7 +36,7 @@ export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
   flushIntervalSeconds: 5,
   batchSize: 200,
   queueMaxItems: 5000,
-  queueMaxBytes: 128 * auditLogMb,
+  queueMaxBytes: 1024 * auditLogMb,
   activeCaptureMaxBytes: 64 * auditLogMb,
   fullBodyCaptureEnabled: false,
   fullBodyCapture: Object.freeze({

@@ -29,7 +29,7 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({
     name: '调度候选窗口回归分组',
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const allowedSchedule = {
@@ -49,13 +49,14 @@ try {
   const expectedAlwaysAvailableIds: string[] = []
   for (let index = 0; index < dispatchCandidateLimit + 64; index += 1) {
     const account = repositories.createAccount({
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: `调度窗口普通账号 ${String(index).padStart(3, '0')}`,
       type: 'api_key',
       credentials: {
         api_key: `sk-dispatch-window-normal-${index}`,
         base_url: 'https://api.openai.com/v1'
       },
+      status: 'active',
       groupId: group.id,
       priority: index + 10
     }, access)
@@ -65,36 +66,39 @@ try {
   }
 
   const cooledAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '调度窗口冷却中账号',
     type: 'api_key',
     credentials: {
       api_key: 'sk-dispatch-window-cooling',
       base_url: 'https://api.openai.com/v1'
     },
+    status: 'active',
     groupId: group.id,
     priority: 1
   }, access)
   const scheduledAllowedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '调度窗口允许计划账号',
     type: 'api_key',
     credentials: {
       api_key: 'sk-dispatch-window-scheduled-allowed',
       base_url: 'https://api.openai.com/v1'
     },
+    status: 'active',
     groupId: group.id,
     priority: 3,
     availabilitySchedule: allowedSchedule
   }, access)
   const scheduledDeniedAccount = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '调度窗口停用计划账号',
     type: 'api_key',
     credentials: {
       api_key: 'sk-dispatch-window-scheduled-denied',
       base_url: 'https://api.openai.com/v1'
     },
+    status: 'active',
     groupId: group.id,
     priority: 2,
     availabilitySchedule: futureSchedule
@@ -144,6 +148,18 @@ try {
     assert.equal(ids.has(scheduledAllowedAccount.id), true, '带计划但当前允许的账号不能因无计划窗口 LIMIT 被误漏')
     assert.equal(ids.has(scheduledDeniedAccount.id), false, '带计划但当前停用的账号不应进入调度候选')
     assert.equal(result.hasAccountAvailabilitySchedule, true, '候选窗口包含计划账号时应保留计划重校验标记')
+    assert(result.diagnostics, '调度候选窗口应返回轻量诊断字段')
+    assert.equal(result.diagnostics.scanLimit, dispatchCandidateScanLimit, '诊断应记录候选扫描窗口上限')
+    assert.equal(result.diagnostics.finalLimit, dispatchCandidateLimit, '诊断应记录最终候选上限')
+    assert.equal(result.diagnostics.withoutScheduleRowCount, dispatchCandidateLimit + 64, '诊断应记录无计划候选窗口行数')
+    assert.equal(result.diagnostics.withScheduleRowCount, 2, '诊断应记录有计划候选窗口行数')
+    assert.equal(result.diagnostics.scannedRowCount, dispatchCandidateLimit + 66, '诊断应记录两类候选窗口扫描总数')
+    assert.equal(result.diagnostics.eligibleRowCount, dispatchCandidateLimit + 65, '诊断应记录运行态过滤后的可用候选数')
+    assert.equal(result.diagnostics.hydrationBatchCount, 1, '首批 256 个候选成功水合时不应继续扩大水合窗口')
+    assert.equal(result.diagnostics.hydratedAccountCount, dispatchCandidateLimit, '诊断应记录成功水合账号数')
+    assert.equal(result.diagnostics.hydrationDroppedCount, 0, '首批候选凭据完整时不应出现水合丢弃')
+    assert.equal(result.diagnostics.finalAccountCount, dispatchCandidateLimit, '诊断应记录最终返回给网关的候选数')
+    assert.equal(result.diagnostics.scanLimitReached, false, '候选行数未触达 512 时不应标记扫描窗口截断')
     for (const accountId of expectedAlwaysAvailableIds.slice(0, dispatchCandidateLimit - 1)) {
       assert(ids.has(accountId), `无计划主窗口账号应稳定进入候选：${accountId}`)
     }
@@ -153,19 +169,20 @@ try {
 
     const refillGroup = repositories.createGroup({
       name: '调度候选补齐回归分组',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       enabled: true
     }, access)
     const brokenAccountIds: string[] = []
     for (let index = 0; index < dispatchCandidateLimit; index += 1) {
       const account = repositories.createAccount({
-        providerCode: 'openai',
+        providerCode: 'gpt',
         name: `调度窗口损坏凭据账号 ${String(index).padStart(3, '0')}`,
         type: 'api_key',
         credentials: {
           api_key: `sk-dispatch-window-broken-${index}`,
           base_url: 'https://api.openai.com/v1'
         },
+        status: 'active',
         groupId: refillGroup.id,
         priority: index
       }, access)
@@ -174,13 +191,14 @@ try {
     const refillAccountIds: string[] = []
     for (let index = 0; index < 8; index += 1) {
       const account = repositories.createAccount({
-        providerCode: 'openai',
+        providerCode: 'gpt',
         name: `调度窗口补齐可用账号 ${String(index).padStart(3, '0')}`,
         type: 'api_key',
         credentials: {
           api_key: `sk-dispatch-window-refill-${index}`,
           base_url: 'https://api.openai.com/v1'
         },
+        status: 'active',
         groupId: refillGroup.id,
         priority: dispatchCandidateLimit + index
       }, access)
@@ -204,6 +222,18 @@ try {
     }
     assert.equal(capturedCalls.length - capturedCallsBeforeRefill, 2, '补齐场景仍应只读取有计划/无计划两条有界 SQL')
     assert.equal(supportedModelHydrationCalls.length - hydrationCallsBeforeRefill, 2, '补齐场景应先水合失败窗口，再水合后续补齐窗口')
+    assert(refillResult.diagnostics, '补齐场景应返回轻量诊断字段')
+    assert.equal(refillResult.diagnostics.scanLimit, dispatchCandidateScanLimit, '补齐诊断应记录候选扫描窗口上限')
+    assert.equal(refillResult.diagnostics.finalLimit, dispatchCandidateLimit, '补齐诊断应记录最终候选上限')
+    assert.equal(refillResult.diagnostics.withoutScheduleRowCount, dispatchCandidateLimit + refillAccountIds.length, '补齐诊断应记录无计划候选窗口行数')
+    assert.equal(refillResult.diagnostics.withScheduleRowCount, 0, '补齐诊断应记录有计划候选窗口行数')
+    assert.equal(refillResult.diagnostics.scannedRowCount, dispatchCandidateLimit + refillAccountIds.length, '补齐诊断应记录候选扫描总数')
+    assert.equal(refillResult.diagnostics.eligibleRowCount, dispatchCandidateLimit + refillAccountIds.length, '补齐诊断应记录运行态可用候选数')
+    assert.equal(refillResult.diagnostics.hydrationBatchCount, 2, '补齐场景应记录两批水合')
+    assert.equal(refillResult.diagnostics.hydratedAccountCount, refillAccountIds.length, '补齐诊断应记录成功水合账号数')
+    assert.equal(refillResult.diagnostics.hydrationDroppedCount, dispatchCandidateLimit, '补齐诊断应记录凭据损坏导致的水合丢弃数')
+    assert.equal(refillResult.diagnostics.finalAccountCount, refillAccountIds.length, '补齐诊断应记录最终候选数')
+    assert.equal(refillResult.diagnostics.scanLimitReached, false, '补齐候选行数未触达 512 时不应标记扫描窗口截断')
   } finally {
     database.prepare = originalPrepare
   }
@@ -251,7 +281,7 @@ function explainDispatchCandidateWindowQuery(
       WHERE group_accounts.group_id = ?
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND accounts.provider_code = 'openai'
+        AND accounts.provider_code = 'gpt'
         AND accounts.status = 'active'
         AND accounts.schedulable = 1
         AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)

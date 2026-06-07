@@ -2,8 +2,9 @@ import type { AccountSummary, ResourcePermissions } from '@/types/domain'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
+import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { AccountMenuItem } from './accountActionTypes'
-import { OPENAI_PROVIDER_CODE } from './accountOptions'
+import { GPT_VENDOR_CODE } from './accountOptions'
 import {
   formatDateTime,
   hasAccountRuntimeRecoveryState,
@@ -71,6 +72,7 @@ function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
     || isAuthorizationExpired(account)
     || isAuthorizationPaused(account)
     || isAuthorizationBindingUnavailable(account)
+    || account.status === 'pending_test'
     || account.status === 'disabled'
     || account.status === 'error'
     || isTemporaryAccountStatus(account)
@@ -121,6 +123,7 @@ export function canUseAccountActions(account: AccountSummary): boolean {
 }
 
 export function canBatchManageAccount(account: AccountSummary): boolean {
+  if (account.status === 'pending_test') return false
   if (isAuthorizedAccount(account)) {
     return Boolean(account.boundGroupId)
       && account.permissions?.canUse !== false
@@ -138,6 +141,7 @@ export function canSelectAccountForBatch(account: AccountSummary): boolean {
 
 export function canBatchRestoreAccount(account: AccountSummary): boolean {
   if (isAccountPackageExpiredStatus(account)) return false
+  if (account.status === 'pending_test') return false
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
     if (account.status === 'disabled') return false
@@ -180,6 +184,7 @@ export function authorizedAccountUnavailableText(account: AccountSummary): strin
   if (isAuthorizationBindingUnavailable(account)) return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
   if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
   if (account.status === 'disabled') return '账户已停用，当前不可用'
+  if (account.status === 'pending_test') return '账户尚未测试通过，测试成功前不会参与调度'
   if (account.status === 'error') return '授权账户状态异常，当前不可用'
   if (isTemporaryAccountStatus(account) || isFutureTime(account.cooldownUntil)) return '授权账户实例暂时不可调用，恢复前不会参与调度'
   if (!account.schedulable) return '授权账户实例暂时不可调用，恢复前不会参与调度'
@@ -201,13 +206,14 @@ export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
 }
 
 export function canTestAccount(account: AccountSummary): boolean {
-  if (account.providerCode !== OPENAI_PROVIDER_CODE) return false
+  if (!isOpenAIProtocolProfile(account)) return false
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
     if (account.effectiveAvailability?.available === false) {
       if (account.effectiveAvailability.blockerScope === 'runtime') return true
       if (account.effectiveAvailability.blockerScope !== 'authorized_instance') return false
       if (account.effectiveAvailability.status === 'instance_disabled') return true
+      if (account.effectiveAvailability.status === 'instance_pending_test') return true
       const instanceFailureState = hasAuthorizedInstanceFailureState(account)
       return instanceFailureState && (
         account.effectiveAvailability.status === 'instance_error'
@@ -237,7 +243,7 @@ export function canManageGroupAccounts(group: { accessType?: string; permissions
 
 export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: AccountSummary, groupIdForAccount: AccountGroupIdResolver): boolean {
   if (target.id === source.id) return false
-  if (target.providerCode !== source.providerCode) return false
+  if (target.providerProtocolProfileId !== source.providerProtocolProfileId) return false
   if (groupIdForAccount(target.id) !== groupIdForAccount(source.id)) return false
   if (isAuthorizedAccount(source)) {
     if (isAuthorizedAccount(target)) return canUseBoundAuthorizedAccount(target) && !hasAccountRuntimeRecoveryState(target)
@@ -249,8 +255,8 @@ export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: A
   return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target) && !hasAccountRuntimeRecoveryState(target)
 }
 
-export function canManageOpenAIOAuth(account: AccountSummary): boolean {
-  return canUseAccountActions(account) && account.providerCode === 'openai' && account.type === 'oauth'
+export function canManageGptOAuth(account: AccountSummary): boolean {
+  return canUseAccountActions(account) && account.providerCode === GPT_VENDOR_CODE && account.type === 'oauth'
 }
 
 export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
@@ -266,7 +272,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       pushDispatchFlagItems(items, account)
       return items.map(normalizeAccountMenuItem)
     }
-    if (hasAccountRuntimeRecoveryState(account) || (account.boundGroupId && hasAuthorizedInstanceFailureState(account))) {
+    if (account.status !== 'pending_test' && (hasAccountRuntimeRecoveryState(account) || (account.boundGroupId && hasAuthorizedInstanceFailureState(account)))) {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
     pushDispatchFlagItems(items, account)
@@ -300,26 +306,28 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     return items.map(normalizeAccountMenuItem)
   }
   if (canUseAccountActions(account)) {
-    if (canManageOpenAIOAuth(account)) {
+    if (canManageGptOAuth(account)) {
       items.push({ key: 'refresh-oauth-token', label: '刷新令牌' })
       items.push({ key: 'reauthorize-oauth', label: '重新授权' })
     }
-    if (hasAccountRuntimeRecoveryState(account) || isTemporaryAccountStatus(account)) {
+    if (account.status !== 'pending_test' && (hasAccountRuntimeRecoveryState(account) || isTemporaryAccountStatus(account))) {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
     pushDispatchFlagItems(items, account)
-    items.push({ key: 'migrate-traffic', label: '迁移流量' })
-    items.push({
-      key: 'toggle-status',
-      label: account.status === 'disabled' ? '启用账户' : '停用账户',
-      danger: account.status !== 'disabled',
-      icon: account.status === 'disabled' ? 'enable' : 'pause',
-      tone: account.status === 'disabled' ? 'success' : 'warning',
-      confirmTitle: account.status === 'disabled'
-        ? `确认启用账户「${account.name}」？`
-        : `确认停用账户「${account.name}」？停用后该账户将不再参与调度。`,
-      confirmOkText: account.status === 'disabled' ? '启用' : '停用'
-    })
+    if (account.status !== 'pending_test') {
+      items.push({ key: 'migrate-traffic', label: '迁移流量' })
+      items.push({
+        key: 'toggle-status',
+        label: account.status === 'disabled' ? '启用账户' : '停用账户',
+        danger: account.status !== 'disabled',
+        icon: account.status === 'disabled' ? 'enable' : 'pause',
+        tone: account.status === 'disabled' ? 'success' : 'warning',
+        confirmTitle: account.status === 'disabled'
+          ? `确认启用账户「${account.name}」？`
+          : `确认停用账户「${account.name}」？停用后该账户将不再参与调度。`,
+        confirmOkText: account.status === 'disabled' ? '启用' : '停用'
+      })
+    }
   }
   return items.map(normalizeAccountMenuItem)
 }

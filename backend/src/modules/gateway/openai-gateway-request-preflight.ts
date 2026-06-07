@@ -4,7 +4,7 @@ import { loadAccountCurrentConcurrencyByIds } from '../../shared/account-concurr
 import { effectiveImageLaneConcurrencyLimit } from '../../domain/group-scheduling.js'
 import { logger } from '../../shared/logger.js'
 import { bindRequestContextFields } from '../../shared/request-context.js'
-import { type GatewayApiKeyRow, type GroupUsageAccessMetadata } from '../../storage/repositories.js'
+import { type GatewayApiKeyRow, type GroupUsageAccessMetadata, type OpenAIAccountsForGroupDiagnostics } from '../../storage/repositories.js'
 import { isGatewayApiKeyScheduleInactive } from '../../storage/gateway-api-key.repository.js'
 import {
   listCachedOpenAIAccountsForGroupAsync,
@@ -86,6 +86,7 @@ import {
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 import type { GroupSchedulingPolicy } from '../../domain/types.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
+import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -139,6 +140,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let apiKeyRecord: GatewayApiKeyRow | undefined = options.apiKeyRecord
   let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
   let runtimeAccounts: UpstreamAccount[] | undefined
+  let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
   let runtimeStreamInterceptPolicies: StreamInterceptPolicySummary[] | undefined = options.streamInterceptPolicies
 
   const identity = options.identity ?? await (async () => {
@@ -151,6 +153,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyRecord = runtime.apiKey
     runtimeGroupAccess = runtime.groupAccess
     runtimeAccounts = runtime.accounts
+    runtimeAccountDispatchDiagnostics = runtime.accountDispatchDiagnostics
     runtimeStreamInterceptPolicies = runtime.streamInterceptPolicies
     options.streamInterceptPolicies = runtime.streamInterceptPolicies
     return {
@@ -176,7 +179,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     systemAccountId,
     apiKeyId,
     groupId,
-    providerCode: 'openai',
+    providerCode: OPENAI_PROTOCOL_CODE,
     trafficSource
   })
   bindRequestContextFields({
@@ -385,6 +388,9 @@ export async function prepareOpenAIGatewayDispatchContext(
   }
 
   const groupAccess = runtimeGroupAccess ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
+  if (groupAccess) {
+    auditCapture.bindContext({ providerCode: groupAccess.providerCode })
+  }
   const clientStrategy = resolveOpenAIGatewayClientStrategy(req, {
     systemAccountId,
     apiKeyId,
@@ -510,6 +516,15 @@ export async function prepareOpenAIGatewayDispatchContext(
   })
   const sessionAffinityKey = options.disableSessionAffinity ? undefined : rawSessionAffinityKey
   const rawCandidateAccounts = options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId)
+  if (!options.candidateAccounts && runtimeAccountDispatchDiagnostics) {
+    auditCapture.addGatewayMetadata({
+      label: 'account_dispatch_candidate_window',
+      metadata: {
+        ...runtimeAccountDispatchDiagnostics,
+        returnedCandidateCount: rawCandidateAccounts.length
+      }
+    })
+  }
   const dispatchOrderingOptions = {
     groupType: groupAccess.groupType,
     schedulingPolicy: groupAccess.schedulingPolicy
@@ -580,13 +595,15 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestModel(req))
-  if (modelFilter.skippedCount > 0) {
+  if (modelFilter.skippedCount > 0 || modelFilter.mappingMatchedCount > 0) {
     auditCapture.addGatewayMetadata({
       label: 'account_model_filter',
       metadata: {
         requestedModel: modelFilter.requestedModel,
         skippedCount: modelFilter.skippedCount,
         limitedAccountCount: modelFilter.limitedAccountCount,
+        directMatchedCount: modelFilter.directMatchedCount,
+        mappingMatchedCount: modelFilter.mappingMatchedCount,
         remainingCount: modelFilter.accounts.length,
         reason: modelFilter.reason
       }

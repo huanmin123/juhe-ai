@@ -3,7 +3,6 @@ import type { NextFunction, Request, Response } from 'express'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getRequestContext, getTraceId, sanitizeUrlForLog } from '../../shared/request-context.js'
 import type { PublicApiLogCaptureStatus, PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
-import { sanitizeDiagnosticPayload } from '../gateway/payload-sanitizer.js'
 import type { ExternalIntegrationSourceAuthContext } from '../../storage/external-integration-source.repository.js'
 import { enqueuePublicApiLog } from './public-api-log-queue.service.js'
 
@@ -173,13 +172,13 @@ function buildRequestSnapshot(req: Request, res: Response, statusCode: number): 
   const bodyRejectedReason = requestBodyRejectedReason(req, res, statusCode)
   const contentType = req.header('content-type')
   const contentLength = req.header('content-length')
-  const query = sanitizeDiagnosticPayload(req.query)
+  const query = req.query
   const body = bodyRejectedReason
     ? {
         dropped: true,
         reason: bodyRejectedReason
       }
-    : req.body === undefined ? undefined : sanitizeDiagnosticPayload(req.body)
+    : req.body
   const headers = {
     contentType,
     contentLength
@@ -200,7 +199,7 @@ function buildRequestSnapshot(req: Request, res: Response, statusCode: number): 
 function buildResponseSnapshot(payload: ResponsePayload, statusCode: number): CapturedSnapshot {
   const data = {
     statusCode,
-    body: payload === undefined ? undefined : sanitizeDiagnosticPayload(payload)
+    body: payload
   }
   return boundedSnapshot(data, estimatePayloadSizeBytes(payload))
 }
@@ -248,9 +247,8 @@ function isSnapshotEmpty(data: Record<string, unknown>): boolean {
 
 function extractPublicApiErrorInfo(payload: ResponsePayload, statusCode: number): { errorCode?: string; errorMessage?: string } {
   if (statusCode < 400) return {}
-  const sanitized = sanitizeDiagnosticPayload(payload)
-  if (sanitized && typeof sanitized === 'object' && !Array.isArray(sanitized)) {
-    const record = sanitized as Record<string, unknown>
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>
     const nestedError = record.error && typeof record.error === 'object' && !Array.isArray(record.error)
       ? record.error as Record<string, unknown>
       : undefined
@@ -259,9 +257,9 @@ function extractPublicApiErrorInfo(payload: ResponsePayload, statusCode: number)
       errorMessage: firstString(record.message, nestedError?.message, record.error)
     }
   }
-  if (typeof sanitized === 'string') {
+  if (typeof payload === 'string') {
     return {
-      errorMessage: sanitized.slice(0, 1000)
+      errorMessage: payload.slice(0, 1000)
     }
   }
   return {

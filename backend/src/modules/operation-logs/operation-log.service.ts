@@ -31,21 +31,6 @@ type LoggedOperationResult<T> = {
   afterCommit?: () => void
 }
 
-const sensitiveFieldNames = new Set([
-  'apiKey',
-  'api_key',
-  'key',
-  'password',
-  'proxyPassword',
-  'refreshToken',
-  'refresh_token',
-  'accessToken',
-  'access_token',
-  'credentials',
-  'token',
-  'secret'
-])
-
 export function recordOperationLog(input: OperationLogRecordInput, req?: Request): void {
   try {
     recordOperationLogUnsafe(input, req)
@@ -230,9 +215,8 @@ function normalizeSafeValue(value: unknown): unknown {
   }
 }
 
-function isSensitiveField(field: string): boolean {
-  const normalized = field.trim()
-  return sensitiveFieldNames.has(normalized) || [...sensitiveFieldNames].some((name) => normalized.toLowerCase().includes(name.toLowerCase()))
+function isSensitiveField(_field: string): boolean {
+  return false
 }
 
 function operationLogMaxChangesPerRecord(settings: Record<string, unknown>): number {

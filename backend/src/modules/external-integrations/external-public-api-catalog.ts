@@ -17,6 +17,7 @@ import {
   externalIntegrationIpUsageReadScope,
   externalIntegrationSourceAuthDemoScope
 } from '../../storage/external-integration-source.repository.js'
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
 export type ExternalPublicApiMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 export type ExternalPublicApiStatus = 'available' | 'mock'
@@ -342,7 +343,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
                 dimension: 'account',
                 accountId: 'acc_xxx',
                 accountName: '公益站-青芽主通道',
-                providerCode: 'openai',
+                providerCode: GPT_VENDOR_CODE,
                 type: 'api_key',
                 status: 'active',
                 requestCount: 1280,
@@ -431,7 +432,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         headers: [authHeader],
         query: [
           { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
-          { name: 'providerCode', type: 'string', required: false, description: '供应商编码筛选。', example: 'openai' },
+          { name: 'providerCode', type: 'string', required: false, description: '供应商编码筛选。', example: GPT_VENDOR_CODE },
           { name: 'keyword', type: 'string', required: false, description: '按分组名称或供应商编码精确 / 前缀筛选。', example: '福利' },
           { name: 'page', type: 'number', required: false, description: '分页页码，默认 1。', example: 1 },
           { name: 'pageSize', type: 'number', required: false, description: '每页数量，范围 1 到 100。', example: 20 }
@@ -445,7 +446,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             pageSize: 20,
             pageUpperBound: 1,
             hasMore: false,
-            items: [{ id: 'grp_xxx', name: '福利', providerCode: 'openai', enabled: true, groupType: 'personal', isDefault: false }]
+            items: [{ id: 'grp_xxx', name: '福利', providerCode: GPT_VENDOR_CODE, enabled: true, groupType: 'personal', isDefault: false }]
           }
         }
       },
@@ -496,7 +497,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         query: [
           { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
           { name: 'targetGroupName', type: 'string', required: false, description: '目标分组名称；提供该字段时必须同时提供 providerCode。', example: '福利' },
-          { name: 'providerCode', type: 'string', required: false, description: '供应商编码筛选。', example: 'openai' },
+          { name: 'providerCode', type: 'string', required: false, description: '供应商编码筛选。', example: GPT_VENDOR_CODE },
           { name: 'groupId', type: 'string', required: false, description: '目标分组 ID；优先于 targetGroupName。', example: 'grp_xxx' },
           { name: 'keyword', type: 'string', required: false, description: '按账号名称精确 / 前缀筛选。', example: '公益站' },
           { name: 'type', type: 'string', required: false, description: '账号类型筛选；公开写入当前只支持 api_key。', example: 'api_key' },
@@ -517,7 +518,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             items: [{
               id: 'acc_xxx',
               name: '公益站-青芽主通道',
-              providerCode: 'openai',
+              providerCode: GPT_VENDOR_CODE,
               type: 'api_key',
               status: 'active',
               supportedModels: ['gpt-5.5'],
@@ -545,7 +546,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
             { name: 'targetDisplayName', type: 'string', required: false, description: '自动创建目标系统用户时使用的显示名称；未填写时使用 targetUsername。', example: '欢民' },
             { name: 'name', type: 'string', required: true, description: '分组名称。', example: '福利' },
-            { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: 'openai' },
+            { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: GPT_VENDOR_CODE },
             { name: 'description', type: 'string', required: false, description: '分组说明。' },
             { name: 'enabled', type: 'boolean', required: false, description: '是否启用，默认 true。', example: true },
             { name: 'groupType', type: 'string', required: false, description: '分组类型：personal 或 high_concurrency，默认 personal。', example: 'personal' }
@@ -554,7 +555,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             targetUsername: 'huanmin',
             targetDisplayName: '欢民',
             name: '福利',
-            providerCode: 'openai',
+            providerCode: GPT_VENDOR_CODE,
             description: '公益站账号分组',
             enabled: true,
             groupType: 'personal'
@@ -566,7 +567,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             generatedAt: '2026-05-30T00:00:00.000Z',
             action: 'created',
             target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
-            group: { id: 'grp_xxx', name: '福利', providerCode: 'openai', enabled: true, groupType: 'personal', isDefault: false }
+            group: { id: 'grp_xxx', name: '福利', providerCode: GPT_VENDOR_CODE, enabled: true, groupType: 'personal', isDefault: false }
           }
         }
       },
@@ -585,7 +586,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
             { name: 'groupId', type: 'string', required: true, description: '分组 ID。', example: 'grp_xxx' },
             { name: 'name', type: 'string', required: false, description: '新的分组名称。', example: '福利-主池' },
-            { name: 'providerCode', type: 'string', required: false, description: '新的供应商编码。', example: 'openai' },
+            { name: 'providerCode', type: 'string', required: false, description: '新的供应商编码。', example: GPT_VENDOR_CODE },
             { name: 'description', type: 'string|null', required: false, description: '新的分组说明；传 null 表示清空。' },
             { name: 'enabled', type: 'boolean', required: false, description: '是否启用。', example: true },
             { name: 'groupType', type: 'string', required: false, description: '分组类型：personal 或 high_concurrency。', example: 'personal' }
@@ -594,7 +595,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             targetUsername: 'huanmin',
             groupId: 'grp_xxx',
             name: '福利-主池',
-            providerCode: 'openai',
+            providerCode: GPT_VENDOR_CODE,
             description: null,
             enabled: true,
             groupType: 'personal'
@@ -606,7 +607,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             generatedAt: '2026-05-30T00:00:00.000Z',
             action: 'updated',
             target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
-            group: { id: 'grp_xxx', name: '福利-主池', providerCode: 'openai', enabled: true, groupType: 'personal', isDefault: false }
+            group: { id: 'grp_xxx', name: '福利-主池', providerCode: GPT_VENDOR_CODE, enabled: true, groupType: 'personal', isDefault: false }
           }
         }
       },
@@ -636,7 +637,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             generatedAt: '2026-05-30T00:00:00.000Z',
             action: 'deleted',
             target: { username: 'huanmin', displayName: 'huanmin', systemAccountId: 'sysacc_xxx', created: false },
-            group: { id: 'grp_xxx', name: '福利', providerCode: 'openai', enabled: true, groupType: 'personal', isDefault: false }
+            group: { id: 'grp_xxx', name: '福利', providerCode: GPT_VENDOR_CODE, enabled: true, groupType: 'personal', isDefault: false }
           }
         }
       },
@@ -825,7 +826,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               type: 'string',
               required: true,
               description: '供应商编码。',
-              example: 'openai'
+              example: GPT_VENDOR_CODE
             },
             {
               name: 'name',
@@ -879,7 +880,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               name: 'status',
               type: 'string',
               required: false,
-              description: '账号状态：active 或 disabled，默认 active。',
+              description: '账号状态：active 或 disabled；新增传 active 或不传时会先落成 pending_test，需测试通过后才参与调度。',
               example: 'active'
             },
             {
@@ -899,7 +900,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             targetUsername: 'huanmin',
             targetDisplayName: '欢民',
             targetGroupName: '福利',
-            providerCode: 'openai',
+            providerCode: GPT_VENDOR_CODE,
             name: '公益站-青芽主通道',
             type: 'api_key',
             baseUrl: 'https://api.openai.com/v1',
@@ -933,13 +934,13 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             account: {
               id: 'acc_xxx',
               name: '公益站-青芽主通道',
-              providerCode: 'openai',
+              providerCode: GPT_VENDOR_CODE,
               type: 'api_key',
-              status: 'active',
+              status: 'pending_test',
               supportedModels: ['gpt-5.5', 'gpt-5.4'],
               boundGroupId: 'grp_xxx',
               boundGroupName: '福利',
-              schedulable: true,
+              schedulable: false,
               availabilitySchedule: { enabled: true, mode: 'allow_windows' }
             }
           }
@@ -960,7 +961,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
             { name: 'targetDisplayName', type: 'string', required: false, description: '目标系统用户显示名称；修改时不会自动创建用户，仅用于 schema 与新增保持一致。', example: '欢民' },
             { name: 'targetGroupName', type: 'string', required: true, description: '目标账号分组名称。', example: '福利' },
-            { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: 'openai' },
+            { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: GPT_VENDOR_CODE },
             { name: 'accountId', type: 'string', required: true, description: '账号新增或列表响应返回的账号 ID。', example: 'acc_xxx' },
             { name: 'name', type: 'string', required: true, description: '账号名称。', example: '公益站-青芽主通道' },
             { name: 'type', type: 'string', required: true, description: '账号类型；当前公开修改只支持 api_key。', example: 'api_key' },
@@ -969,7 +970,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'supportedModels', type: 'string[]', required: false, description: '该账号支持的模型列表；提供时按当前数组覆盖。', example: ['gpt-5.5', 'gpt-5.4'] },
             { name: 'concurrencyLimit', type: 'number', required: false, description: '单账号并发限制，范围 1 到 100000。', example: 20 },
             { name: 'priority', type: 'number', required: false, description: '账号调度优先级，范围 0 到 100000。', example: 0 },
-            { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled。', example: 'disabled' },
+            { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled；未填写时保留原状态，待测试账号不能通过修改接口激活。', example: 'disabled' },
             { name: 'availabilitySchedule', type: 'object|null', required: false, description: '可用时段计划；null 表示清空计划，未填写表示保留。' },
             { name: 'notes', type: 'string', required: false, description: '账号备注，最多 1000 个字符。' }
           ],
@@ -977,7 +978,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             targetUsername: 'huanmin',
             targetDisplayName: '欢民',
             targetGroupName: '福利',
-            providerCode: 'openai',
+            providerCode: GPT_VENDOR_CODE,
             accountId: 'acc_xxx',
             name: '公益站-青芽主通道',
             type: 'api_key',
@@ -1008,7 +1009,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             account: {
               id: 'acc_xxx',
               name: '公益站-青芽主通道',
-              providerCode: 'openai',
+              providerCode: GPT_VENDOR_CODE,
               type: 'api_key',
               status: 'disabled',
               supportedModels: ['gpt-5.5', 'gpt-5.4'],
@@ -1050,7 +1051,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               type: 'string',
               required: true,
               description: '供应商编码。',
-              example: 'openai'
+              example: GPT_VENDOR_CODE
             },
             {
               name: 'accountId',
@@ -1063,7 +1064,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           example: {
             targetUsername: 'huanmin',
             targetGroupName: '福利',
-            providerCode: 'openai',
+            providerCode: GPT_VENDOR_CODE,
             accountId: 'acc_xxx'
           }
         },
@@ -1084,7 +1085,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             account: {
               id: 'acc_xxx',
               name: '公益站-青芽主通道',
-              providerCode: 'openai',
+              providerCode: GPT_VENDOR_CODE,
               type: 'api_key',
               status: 'active',
               boundGroupId: 'grp_xxx',
@@ -1311,7 +1312,7 @@ function publicAccountUsageItemFields(prefix: string): ExternalPublicApiField[] 
     apiDocField(`${prefix}.dimension`, 'string', true, '数据维度，固定为 account。', 'account'),
     apiDocField(`${prefix}.accountId`, 'string', true, '账号维度事实键，也是外部来源系统保存和映射账号的主键。', 'acc_xxx'),
     apiDocField(`${prefix}.accountName`, 'string', true, '账号名称。', '公益站-青芽主通道'),
-    apiDocField(`${prefix}.providerCode`, 'string', false, '供应商编码；账号元数据缺失时可能为空。', 'openai'),
+    apiDocField(`${prefix}.providerCode`, 'string', false, '供应商编码；账号元数据缺失时可能为空。', GPT_VENDOR_CODE),
     apiDocField(`${prefix}.type`, 'string', false, '账号类型；账号元数据缺失时可能为空。', 'api_key'),
     apiDocField(`${prefix}.status`, 'string', false, '账号状态；账号元数据缺失时可能为空。', 'active'),
     ...publicUsageMetricFields(prefix)
@@ -1362,7 +1363,7 @@ function publicGroupFields(prefix: string): ExternalPublicApiField[] {
   return [
     apiDocField(`${prefix}.id`, 'string', false, '分组 ID；对象为 null 时没有该字段。', 'grp_xxx'),
     apiDocField(`${prefix}.name`, 'string', false, '分组名称。', '福利'),
-    apiDocField(`${prefix}.providerCode`, 'string', false, '供应商编码。', 'openai'),
+    apiDocField(`${prefix}.providerCode`, 'string', false, '供应商编码。', GPT_VENDOR_CODE),
     apiDocField(`${prefix}.description`, 'string', false, '分组说明；未填写时缺省。', '公益站账号分组'),
     apiDocField(`${prefix}.enabled`, 'boolean', false, '分组是否启用。', true),
     apiDocField(`${prefix}.groupType`, 'string', false, '分组类型：personal 或 high_concurrency。', 'personal'),
@@ -1382,7 +1383,7 @@ function publicApiKeyFields(prefix: string): ExternalPublicApiField[] {
     apiDocField(`${prefix}.groupBindings[].id`, 'string', false, '绑定关系 ID。', 'bind_xxx'),
     apiDocField(`${prefix}.groupBindings[].groupId`, 'string', false, '绑定分组 ID。', 'grp_xxx'),
     apiDocField(`${prefix}.groupBindings[].groupName`, 'string', false, '绑定分组名称。', '福利'),
-    apiDocField(`${prefix}.groupBindings[].providerCode`, 'string', false, '绑定分组供应商编码；无法补齐时可能缺省。', 'openai'),
+    apiDocField(`${prefix}.groupBindings[].providerCode`, 'string', false, '绑定分组供应商编码；无法补齐时可能缺省。', GPT_VENDOR_CODE),
     apiDocField(`${prefix}.groupBindings[].priority`, 'number', false, '优先级路由使用的优先级。', 1),
     apiDocField(`${prefix}.groupBindings[].weight`, 'number', false, '加权轮询使用的权重。', 1),
     apiDocField(`${prefix}.groupBindings[].status`, 'string', false, '绑定状态：active 或 disabled。', 'active'),
@@ -1396,7 +1397,7 @@ function publicAccountFields(prefix: string): ExternalPublicApiField[] {
   return [
     apiDocField(`${prefix}.id`, 'string', false, 'AI 账户 ID；对象为 null 时没有该字段。', 'acc_xxx'),
     apiDocField(`${prefix}.name`, 'string', false, 'AI 账户名称。', '公益站-青芽主通道'),
-    apiDocField(`${prefix}.providerCode`, 'string', false, '供应商编码。', 'openai'),
+    apiDocField(`${prefix}.providerCode`, 'string', false, '供应商编码。', GPT_VENDOR_CODE),
     apiDocField(`${prefix}.type`, 'string', false, '账号类型，公开写接口当前只支持 api_key。', 'api_key'),
     apiDocField(`${prefix}.status`, 'string', false, '账号状态。', 'active'),
     apiDocField(`${prefix}.supportedModels`, 'string[]', false, '账号支持的模型列表；未限制或未配置时可能缺省。', ['gpt-5.5', 'gpt-5.4']),

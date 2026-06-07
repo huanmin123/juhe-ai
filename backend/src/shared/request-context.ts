@@ -192,76 +192,10 @@ function isHealthPath(path: string): boolean {
 }
 
 export function sanitizeUrlForLog(value: string): string {
-  const [path, queryString] = value.split('?', 2)
-  if (!queryString) return path
-
-  try {
-    const params = new URLSearchParams(queryString)
-    for (const name of [...params.keys()]) {
-      if (isSensitiveQueryName(name)) {
-        params.set(name, '[redacted]')
-      }
-    }
-    const sanitizedQuery = params.toString()
-    return sanitizedQuery ? `${path}?${sanitizedQuery}` : path
-  } catch {
-    return path
-  }
+  return value
 }
 
 export function sanitizeUrlCredentialsForLog(value?: string | null): string | undefined {
   const text = value?.trim()
-  if (!text) return undefined
-
-  try {
-    const url = new URL(text)
-    const authority = url.username || url.password ? `[redacted]@${url.host}` : url.host
-    const pathAndQuery = sanitizeUrlForLog(`${url.pathname}${url.search}`)
-    const normalizedPath = pathAndQuery === '/' ? '' : pathAndQuery
-    return `${url.protocol}//${authority}${normalizedPath}${url.hash}`
-  } catch {
-    if (text.includes('@')) {
-      return '[configured]'
-    }
-    return sanitizeUrlForLog(text)
-  }
-}
-
-const sensitiveQueryNames = new Set([
-  'api_key',
-  'apikey',
-  'access_token',
-  'authorization',
-  'code',
-  'code_verifier',
-  'cookie',
-  'key',
-  'keyword',
-  'keywords',
-  'password',
-  'refreshtoken',
-  'refresh_token',
-  'secret',
-  'session',
-  'signature',
-  'sig',
-  'state',
-  'token'
-])
-
-const sensitiveQueryNameFragments = [
-  'token',
-  'secret',
-  'password',
-  'credential',
-  'authorization',
-  'api_key',
-  'apikey'
-]
-
-function isSensitiveQueryName(name: string): boolean {
-  const normalized = name.trim().toLowerCase()
-  if (!normalized) return false
-  return sensitiveQueryNames.has(normalized)
-    || sensitiveQueryNameFragments.some((fragment) => normalized.includes(fragment))
+  return text || undefined
 }

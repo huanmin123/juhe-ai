@@ -100,7 +100,7 @@ export async function pipeUpstreamStream(
   })
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
   const responseCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
-  const upstreamCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
+  const upstreamCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : streamDiagnosticCaptureBytes)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
   const streamLogger = getRequestLogger()
   let completed = false
@@ -940,12 +940,31 @@ function streamResult(
     estimatedOutputTokens,
     responseBodyText,
     auditResponseBody,
-    auditUpstreamBody: bodyOmission || !captureSuccessPayloads ? undefined : upstreamCapture.completeBuffer(),
+    auditUpstreamBody: auditUpstreamBodyForResult(upstreamCapture, completed, captureSuccessPayloads, bodyOmission),
     streamIntercept,
     streamInterceptObservations: streamInterceptObservations.length ? [...streamInterceptObservations] : undefined,
     streamInterceptObservationOmittedCount: streamInterceptObservationOmittedCount > 0 ? streamInterceptObservationOmittedCount : undefined,
     bodyOmission
   }
+}
+
+function auditUpstreamBodyForResult(
+  upstreamCapture: LimitedBufferCapture,
+  completed: boolean,
+  captureSuccessPayloads: boolean,
+  bodyOmission?: StreamBodyOmissionSummary
+): Buffer | undefined {
+  if (bodyOmission) {
+    return undefined
+  }
+  if (captureSuccessPayloads) {
+    return upstreamCapture.completeBuffer()
+  }
+  if (completed) {
+    return undefined
+  }
+  const buffer = upstreamCapture.buffer()
+  return buffer.byteLength > 0 ? buffer : undefined
 }
 
 function streamBodyOmissionSummary(

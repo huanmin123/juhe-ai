@@ -86,7 +86,7 @@ try {
 
   const group = repositories.createGroup({
     name: '手动测试恢复分组',
-    providerCode: 'openai'
+    providerCode: 'gpt'
   }, adminAccess)
 
   await assertManualTestRestoresAccount({
@@ -175,10 +175,12 @@ async function assertManualTestRestoresAccount(input: {
   makeUnavailable: (accountId: string) => void
 }): Promise<void> {
   const account = repositories.createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: input.accountName,
     type: 'api_key',
     credentials: { api_key: input.apiKey, base_url: input.mockBaseUrl },
+    status: 'active',
+    schedulable: true,
     groupId: input.groupId
   }, adminAccess)
   assert.equal(account.boundGroupId, input.groupId, `${input.accountName} 应绑定分组`)

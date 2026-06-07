@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { logger } from '../../shared/logger.js'
+import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import {
   clearGatewayProxyHealthForTest,
@@ -74,9 +75,9 @@ function testProxyUrlBucketMetadataRedaction(): void {
     avoidedProxyKeys: order.avoidedProxyKeys,
     halfOpenBucketKeys: order.halfOpenBucketKeys
   })
-  assert.equal(serialized.includes('proxy-user'), false, '代理 URL 桶元数据不应保留代理用户名')
-  assert.equal(serialized.includes('proxy-pass'), false, '代理 URL 桶元数据不应保留代理密码')
-  assert(serialized.includes('proxy:url:http://[redacted]@127.0.0.1:18080'), '代理 URL 桶元数据应保留脱敏后的代理目标信号')
+  assert(serialized.includes('proxy-user'), '代理 URL 桶元数据应保留代理用户名')
+  assert(serialized.includes('proxy-pass'), '代理 URL 桶元数据应保留代理密码')
+  assert(serialized.includes('proxy:url:http://proxy-user:proxy-pass@127.0.0.1:18080'), '代理 URL 桶元数据应保留代理 URL 原文')
 
   clearGatewayProxyHealthForTest()
 }
@@ -150,7 +151,10 @@ function account(id: string, proxyProfileId: string | undefined, baseUrl = 'http
     id,
     systemAccountId: 'sys_admin',
     name: id,
-    providerCode: 'openai',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     type: 'api_key',
     status: 'active',
     credentials: {},

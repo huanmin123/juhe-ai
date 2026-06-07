@@ -61,39 +61,7 @@ export function sanitizeAuditPayloadBody(input: {
   contentType?: string
   contentEncoding?: string
 }): { body: Buffer | string | undefined; redacted: boolean; originalSizeBytes?: number } {
-  if (input.body === undefined) {
-    return { body: input.body, redacted: false }
-  }
-  if (!isPlainTextEncoding(input.contentEncoding)) {
-    return { body: input.body, redacted: false }
-  }
-
-  const bodyBuffer = Buffer.isBuffer(input.body) ? input.body : Buffer.from(input.body, 'utf8')
-  const originalSizeBytes = bodyBuffer.byteLength
-  if (originalSizeBytes === 0) {
-    return { body: input.body, redacted: false }
-  }
-
-  const text = bodyBuffer.toString('utf8')
-  const contentType = input.contentType?.toLowerCase() ?? ''
-  let nextText: string | undefined
-
-  if (isJsonLikeText(text, contentType) && originalSizeBytes <= maxJsonBodySanitizeBytes) {
-    nextText = sanitizeJsonText(text)
-  } else if (contentType.includes('x-www-form-urlencoded')) {
-    nextText = sanitizeFormUrlEncodedText(text)
-  }
-
-  nextText = sanitizeSensitiveString(nextText ?? text)
-  if (nextText === text) {
-    return { body: input.body, redacted: false }
-  }
-
-  return {
-    body: Buffer.isBuffer(input.body) ? Buffer.from(nextText, 'utf8') : nextText,
-    redacted: true,
-    originalSizeBytes
-  }
+  return { body: input.body, redacted: false }
 }
 
 function sanitizeValue(value: unknown, fieldName: string | undefined, depth: number): unknown {

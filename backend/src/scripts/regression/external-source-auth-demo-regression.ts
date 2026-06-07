@@ -78,11 +78,20 @@ async function runChild(): Promise<void> {
     listOperationLogs,
     listAccounts,
     listGroupOptions,
+    clearAccountFailureStateResult,
     updateSystemAccount
   } = await import('../../storage/repositories.js')
   const { closeStorageDatabases, getBusinessDatabase, getStatsDatabase } = await import('../../storage/database.js')
+  const { decryptJson } = await import('../../storage/crypto.js')
   const clientIpStats = await import('../../storage/client-ip-stats.repository.js')
   const usageStatsHelpers = await import('../../storage/usage-stats-helpers.js')
+  const readAccountCredentials = (accountId: string): Record<string, unknown> => {
+    const row = getBusinessDatabase()
+      .prepare('SELECT credentials_encrypted FROM accounts WHERE id = ?')
+      .get(accountId) as { credentials_encrypted?: string } | undefined
+    assert(row?.credentials_encrypted, `账号凭据不存在：${accountId}`)
+    return decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+  }
 
   const sourceName = 'juhe-ai公益站'
   const validToken = 'juis_valid_external_source_demo_token_32_chars'
@@ -448,10 +457,27 @@ async function runChild(): Promise<void> {
     assert.equal(accessInfo.body.data.dataDimension, 'client_ip')
     assert.deepEqual(accessInfo.body.data.supportedDimensions, ['client_ip', 'account'])
     assert.deepEqual(accessInfo.body.data.supportedRanges, ['today', 'last7d', 'last31d'], '接入信息只能声明后台已维护的固定窗口')
-    const accessInfoPaths = accessInfo.body.data.endpoints.map((endpoint: any) => endpoint.path)
-    assert(accessInfoPaths.includes('/__aipublic__/group/list'), '接入信息应声明公开分组列表接口')
-    assert(accessInfoPaths.includes('/__aipublic__/api-key/list'), '接入信息应声明公开 API Key 列表接口')
-    assert(accessInfoPaths.includes('/__aipublic__/account/list'), '接入信息应声明公开账号列表接口')
+    const accessInfoEndpointKeys = accessInfo.body.data.endpoints
+      .map((endpoint: any) => `${endpoint.method} ${endpoint.path}`)
+      .sort()
+    assert.deepEqual(accessInfoEndpointKeys, [
+      'GET /__aipublic__/access/info',
+      'GET /__aipublic__/account/list',
+      'GET /__aipublic__/account/usage',
+      'GET /__aipublic__/api-key/list',
+      'GET /__aipublic__/consumption/ranking',
+      'GET /__aipublic__/group/list',
+      'GET /__aipublic__/ip/usage',
+      'POST /__aipublic__/account/add',
+      'POST /__aipublic__/account/del',
+      'POST /__aipublic__/account/update',
+      'POST /__aipublic__/api-key/add',
+      'POST /__aipublic__/api-key/del',
+      'POST /__aipublic__/api-key/update',
+      'POST /__aipublic__/group/add',
+      'POST /__aipublic__/group/del',
+      'POST /__aipublic__/group/update'
+    ].sort(), '接入信息应完整声明当前所有公开接口')
     assert(accessInfo.body.data.boundary.provides.includes('账号维度实际请求数、Token、缓存、成本、活跃天数和速度指标聚合'), '接入信息应声明账号实际用量事实')
     assert(accessInfo.body.data.boundary.provides.includes('分组、API Key 和账号的受控脱敏列表、新增、修改与删除入口'), '接入信息应声明资源列表和写入入口')
     assert(accessInfo.body.data.boundary.notProvided.includes('公益站用户维度排行榜快照'), '接入信息应明确公益站业务快照不由 sub2api-lite 提供')
@@ -483,7 +509,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '公益站测试账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -500,7 +526,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       accountId: 'acc_mock_delete'
     })
     assert.equal(mockAccountDelete.status, 200)
@@ -514,7 +540,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'illegal_type_user',
       targetGroupName: '非法类型分组',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '非法 OAuth 新增账号',
       type: 'oauth',
       baseUrl: 'https://push.example/v1',
@@ -529,7 +555,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'invalid_model_user',
       targetGroupName: '无效模型分组',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '无效模型新增账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -549,7 +575,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '旧外部登记字段账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -564,7 +590,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       name: '公益站测试账号',
       type: 'api_key',
       baseUrl: 'https://push.example/v1',
@@ -588,16 +614,17 @@ async function runChild(): Promise<void> {
     assert.equal(accountAdd.body.data.target.created, true)
     assert.equal(accountAdd.body.data.target.groupCreated, true)
     assert.equal(accountAdd.body.data.account.name, '公益站测试账号')
+    assert.equal(accountAdd.body.data.account.status, 'pending_test', '公开账号新增即使传 active 也应先落成待测试')
     assert.equal(accountAdd.body.data.account.availabilitySchedule?.enabled, true, '公开账号新增应写入并回显可用时段计划')
     assert.equal(Object.prototype.hasOwnProperty.call(accountAdd.body.data.account, 'credentials'), false, '正式新增响应不能返回凭据')
 
     const targetAccount = findSystemAccountByUsername('huanmin')
     assert(targetAccount, '账号新增应自动创建目标用户 huanmin')
     const targetAccess = { systemAccountId: targetAccount.id, role: 'user' as const }
-    const welfareGroup = listGroupOptions(targetAccess, { keyword: '福利', providerCode: 'openai' })
+    const welfareGroup = listGroupOptions(targetAccess, { keyword: '福利', providerCode: 'gpt' })
       .find((item) => item.name === '福利')
     assert(welfareGroup, '账号新增应自动创建福利分组')
-    const addedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号', providerCode: 'openai', groupId: welfareGroup.id })
+    const addedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号', providerCode: 'gpt', groupId: welfareGroup.id })
       .find((item) => item.name === '公益站测试账号')
     assert(addedAccount, '账号新增应把账号绑定到福利分组')
     assert.equal(addedAccount.boundGroupId, welfareGroup.id)
@@ -613,8 +640,9 @@ async function runChild(): Promise<void> {
     assert(addLogDetail, '正式账号新增操作日志应可读取详情')
     assert.equal(addLogDetail.metadata?.sourceRefId, accountWriteSource.id, '操作日志详情应记录来源系统 ID')
     assert.equal(addLogDetail.metadata?.tokenPrefix, accountWriteToken.slice(0, 8), '操作日志详情应记录来源 token 前缀')
+    assert.equal(readAccountCredentials(addedAccount.id).api_key, 'sk-public-push-regression-001', '公开账号新增应真实写入上游 API Key')
 
-    const accountList = await requestJson(baseUrl, `/__aipublic__/account/list?targetUsername=huanmin&targetGroupName=${encodeURIComponent('福利')}&providerCode=openai&pageSize=10`, {
+    const accountList = await requestJson(baseUrl, `/__aipublic__/account/list?targetUsername=huanmin&targetGroupName=${encodeURIComponent('福利')}&providerCode=gpt&pageSize=10`, {
       Authorization: `Bearer ${accountWriteToken}`
     })
     assert.equal(accountList.status, 200)
@@ -624,17 +652,42 @@ async function runChild(): Promise<void> {
     assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'externalId'), false, '公开账号列表不应回显外部来源系统业务 ID')
     assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'credentials'), false, '公开账号列表不能返回上游凭据')
 
+    const accountKeyUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'gpt',
+      accountId: accountAdd.body.data.account.id,
+      name: '公益站测试账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v2',
+      apiKey: 'sk-public-push-regression-rotated'
+    })
+    assert.equal(accountKeyUpdate.status, 200, `待测试账号修改凭据不应被隐式 active 状态拦截：${JSON.stringify(accountKeyUpdate.body)}`)
+    assert.equal(accountKeyUpdate.body.data.action, 'updated')
+    assert.equal(accountKeyUpdate.body.data.account.status, 'pending_test', '公开账号修改未提交 status 时应保留待测试状态')
+    const rotatedCredentials = readAccountCredentials(addedAccount.id)
+    assert.equal(rotatedCredentials.api_key, 'sk-public-push-regression-rotated', '公开账号修改应覆盖旧上游 API Key')
+    assert.equal(rotatedCredentials.base_url, 'https://push.example/v2', '公开账号修改应覆盖 Base URL')
+    const rotatedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号', providerCode: 'gpt', groupId: welfareGroup.id })
+      .find((item) => item.id === addedAccount.id)
+    assert.deepEqual(rotatedAccount?.supportedModels, ['gpt-5.5'], '公开账号修改未提交 supportedModels 时应保留原模型限制')
+
+    const activatedAccount = clearAccountFailureStateResult(addedAccount.id, targetAccess, { allowPendingTestRestore: true })
+    assert.equal(activatedAccount.account?.status, 'active', '回归准备：待测试账号应通过测试成功入口恢复正常')
+
     const accountUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       accountId: accountAdd.body.data.account.id,
       name: '公益站测试账号',
       type: 'api_key',
-      baseUrl: 'https://push.example/v1',
-      apiKey: 'sk-public-push-regression-001',
+      baseUrl: 'https://push.example/v2',
+      apiKey: 'sk-public-push-regression-rotated',
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
       status: 'disabled'
     })
@@ -649,12 +702,12 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       accountId: accountAdd.body.data.account.id,
       name: '公益站测试账号新版',
       type: 'api_key',
-      baseUrl: 'https://push.example/v1',
-      apiKey: 'sk-public-push-regression-001',
+      baseUrl: 'https://push.example/v2',
+      apiKey: 'sk-public-push-regression-rotated',
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
       status: 'active',
       availabilitySchedule: null
@@ -665,7 +718,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountRename.body.data.account.name, '公益站测试账号新版')
     assert.equal(accountRename.body.data.account.status, 'active')
     assert.equal(accountRename.body.data.account.availabilitySchedule, undefined, '公开账号修改应支持 availabilitySchedule: null 清空计划')
-    const renamedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号新版', providerCode: 'openai', groupId: welfareGroup.id })
+    const renamedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号新版', providerCode: 'gpt', groupId: welfareGroup.id })
       .find((item) => item.name === '公益站测试账号新版')
     assert.equal(renamedAccount?.id, addedAccount.id, '按 accountId 修改账号时应更新原账号，不能因名称变化创建新账号')
 
@@ -674,7 +727,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       accountId: 'acc_public_missing_update',
       name: '不存在的账号',
       type: 'api_key',
@@ -684,13 +737,62 @@ async function runChild(): Promise<void> {
     })
     assert.equal(missingAccountUpdate.status, 404, '账号修改接口找不到账号时不应自动新增')
 
+    const missingTargetAccountUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'missing_public_account_update_user',
+      targetGroupName: '福利',
+      providerCode: 'gpt',
+      accountId: accountAdd.body.data.account.id,
+      name: '目标用户不存在的账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-missing-target'
+    })
+    assert.equal(missingTargetAccountUpdate.status, 404, '账号修改接口目标用户不存在时不应自动创建用户')
+
     assert.equal(updateSystemAccount(targetAccount.id, { status: 'disabled' })?.status, 'disabled', '回归准备：目标用户 huanmin 应可被停用')
+    const disabledTargetAccountList = await requestJson(baseUrl, `/__aipublic__/account/list?targetUsername=huanmin&targetGroupName=${encodeURIComponent('福利')}&providerCode=gpt`, {
+      Authorization: `Bearer ${accountWriteToken}`
+    })
+    assert.equal(disabledTargetAccountList.status, 400, '目标用户停用后公开账号列表应被拒绝')
+    assert.match(disabledTargetAccountList.body.message, /目标用户已停用/)
+
+    const disabledTargetAccountAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'gpt',
+      name: '停用用户不应新增的账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-disabled-target-add'
+    })
+    assert.equal(disabledTargetAccountAdd.status, 400, '目标用户停用后公开账号新增应被拒绝')
+    assert.match(disabledTargetAccountAdd.body.message, /目标用户已停用/)
+
+    const disabledTargetAccountUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'huanmin',
+      targetGroupName: '福利',
+      providerCode: 'gpt',
+      accountId: accountAdd.body.data.account.id,
+      name: '停用用户不应修改的账号',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-disabled-target-update'
+    })
+    assert.equal(disabledTargetAccountUpdate.status, 400, '目标用户停用后公开账号修改应被拒绝')
+    assert.match(disabledTargetAccountUpdate.body.message, /目标用户已停用/)
+
     const disabledTargetAccountDelete = await requestJson(baseUrl, '/__aipublic__/account/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       accountId: accountAdd.body.data.account.id
     })
     assert.equal(disabledTargetAccountDelete.status, 400, '目标用户停用后公开账号删除应被拒绝')
@@ -702,14 +804,14 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       accountId: accountAdd.body.data.account.id
     })
     assert.equal(accountDelete.status, 200)
     assert.equal(accountDelete.body.data.source, 'stats')
     assert.equal(accountDelete.body.data.action, 'deleted')
     assert.equal(accountDelete.body.data.account.id, accountAdd.body.data.account.id)
-    const removedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号新版', providerCode: 'openai', groupId: welfareGroup.id })
+    const removedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号新版', providerCode: 'gpt', groupId: welfareGroup.id })
       .find((item) => item.name === '公益站测试账号新版')
     assert.equal(removedAccount, undefined, '公开账号删除接口应真实删除 sub2api-lite 账号，而不是禁用')
     const deleteLogs = listOperationLogs({
@@ -725,7 +827,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'huanmin',
       targetGroupName: '福利',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       accountId: accountAdd.body.data.account.id
     })
     assert.equal(accountDeleteAgain.status, 200)
@@ -742,7 +844,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'public_control_user',
       name: '公开接口控制分组',
-      providerCode: 'openai',
+      providerCode: 'gpt',
       description: '公开接口控制面回归',
       enabled: true
     })
@@ -750,7 +852,7 @@ async function runChild(): Promise<void> {
     assert.equal(publicGroupAdd.body.data.action, 'created')
     const publicGroupId = publicGroupAdd.body.data.group.id as string
 
-    const publicGroupList = await requestJson(baseUrl, `/__aipublic__/group/list?targetUsername=public_control_user&providerCode=openai&keyword=${encodeURIComponent('公开接口控制')}`, {
+    const publicGroupList = await requestJson(baseUrl, `/__aipublic__/group/list?targetUsername=public_control_user&providerCode=gpt&keyword=${encodeURIComponent('公开接口控制')}`, {
       Authorization: `Bearer ${accountWriteToken}`
     })
     assert.equal(publicGroupList.status, 200)
@@ -767,6 +869,36 @@ async function runChild(): Promise<void> {
     assert.equal(publicGroupUpdate.status, 200)
     assert.equal(publicGroupUpdate.body.data.action, 'updated')
     assert.equal(publicGroupUpdate.body.data.group.name, '公开接口控制分组新版')
+
+    const missingPublicGroupUpdate = await requestJson(baseUrl, '/__aipublic__/group/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      groupId: 'grp_public_missing_update',
+      name: '不存在的公开接口分组'
+    })
+    assert.equal(missingPublicGroupUpdate.status, 404, '公开分组修改找不到分组时应返回 404')
+    assert.match(missingPublicGroupUpdate.body.message, /分组不存在/)
+
+    const missingPublicGroupDelete = await requestJson(baseUrl, '/__aipublic__/group/del', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      groupId: 'grp_public_missing_delete'
+    })
+    assert.equal(missingPublicGroupDelete.status, 404, '公开分组删除找不到分组时应返回 404')
+    assert.match(missingPublicGroupDelete.body.message, /分组不存在/)
+
+    const missingTargetPublicApiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_api_key_missing_user',
+      name: '目标用户不存在的公开 API Key',
+      groupBindings: [{ groupId: publicGroupId }],
+      status: 'active'
+    })
+    assert.equal(missingTargetPublicApiKeyAdd.status, 400, '公开 API Key 新增要求目标用户已存在')
+    assert.match(missingTargetPublicApiKeyAdd.body.message, /目标用户不存在/)
 
     const publicApiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -798,9 +930,56 @@ async function runChild(): Promise<void> {
     assert(listedApiKey, '公开 API Key 列表应按绑定分组返回刚新增的 Key')
     assert.equal(Object.prototype.hasOwnProperty.call(listedApiKey, 'key'), false, '公开 API Key 列表不能返回明文密钥')
 
+    const missingPublicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      apiKeyId: 'key_public_missing_update',
+      status: 'disabled'
+    })
+    assert.equal(missingPublicApiKeyUpdate.status, 404, '公开 API Key 修改找不到 Key 时应返回 404')
+    assert.match(missingPublicApiKeyUpdate.body.message, /API Key 不存在/)
+
+    const missingPublicApiKeyDelete = await requestJson(baseUrl, '/__aipublic__/api-key/del', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      apiKeyId: 'key_public_missing_delete'
+    })
+    assert.equal(missingPublicApiKeyDelete.status, 404, '公开 API Key 删除找不到 Key 时应返回 404')
+    assert.match(missingPublicApiKeyDelete.body.message, /API Key 不存在/)
+
     const publicControlTarget = findSystemAccountByUsername('public_control_user')
     assert(publicControlTarget, '公开控制面新增分组应自动创建目标用户')
     assert.equal(updateSystemAccount(publicControlTarget.id, { status: 'disabled' })?.status, 'disabled', '回归准备：公开控制面目标用户应可被停用')
+
+    const disabledPublicGroupList = await requestJson(baseUrl, '/__aipublic__/group/list?targetUsername=public_control_user', {
+      Authorization: `Bearer ${accountWriteToken}`
+    })
+    assert.equal(disabledPublicGroupList.status, 400, '目标用户停用后公开分组列表应被拒绝')
+    assert.match(disabledPublicGroupList.body.message, /目标用户已停用/)
+
+    const disabledPublicApiKeyList = await requestJson(baseUrl, '/__aipublic__/api-key/list?targetUsername=public_control_user', {
+      Authorization: `Bearer ${accountWriteToken}`
+    })
+    assert.equal(disabledPublicApiKeyList.status, 400, '目标用户停用后公开 API Key 列表应被拒绝')
+    assert.match(disabledPublicApiKeyList.body.message, /目标用户已停用/)
+
+    const disabledPublicAccountList = await requestJson(baseUrl, '/__aipublic__/account/list?targetUsername=public_control_user', {
+      Authorization: `Bearer ${accountWriteToken}`
+    })
+    assert.equal(disabledPublicAccountList.status, 400, '目标用户停用后公开账号列表应被拒绝')
+    assert.match(disabledPublicAccountList.body.message, /目标用户已停用/)
+
+    const disabledPublicGroupAdd = await requestJson(baseUrl, '/__aipublic__/group/add', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      name: '停用用户不应新增的分组',
+      providerCode: 'gpt'
+    })
+    assert.equal(disabledPublicGroupAdd.status, 400, '目标用户停用后公开分组新增应被拒绝')
+    assert.match(disabledPublicGroupAdd.body.message, /目标用户已停用/)
 
     const disabledPublicGroupUpdate = await requestJson(baseUrl, '/__aipublic__/group/update', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -820,6 +999,17 @@ async function runChild(): Promise<void> {
     })
     assert.equal(disabledPublicGroupDelete.status, 400, '目标用户停用后公开分组删除应被拒绝')
     assert.match(disabledPublicGroupDelete.body.message, /目标用户已停用/)
+
+    const disabledPublicApiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'public_control_user',
+      name: '停用用户不应新增的 API Key',
+      groupBindings: [{ groupId: publicGroupId }],
+      status: 'active'
+    })
+    assert.equal(disabledPublicApiKeyAdd.status, 400, '目标用户停用后公开 API Key 新增应被拒绝')
+    assert.match(disabledPublicApiKeyAdd.body.message, /目标用户已停用/)
 
     const disabledPublicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -847,12 +1037,16 @@ async function runChild(): Promise<void> {
       targetUsername: 'public_control_user',
       apiKeyId: publicApiKeyId,
       status: 'disabled',
+      groupBindings: [{ groupId: publicGroupId, priority: 1, weight: 1, status: 'active' }],
+      groupRouteStrategy: 'round_robin',
       availabilitySchedule: null
     })
     assert.equal(publicApiKeyUpdate.status, 200)
     assert.equal(publicApiKeyUpdate.body.data.action, 'updated')
     assert.equal(Object.prototype.hasOwnProperty.call(publicApiKeyUpdate.body.data.apiKey, 'key'), false, 'API Key 修改响应不应返回明文密钥')
     assert.equal(publicApiKeyUpdate.body.data.apiKey.status, 'disabled')
+    assert.equal(publicApiKeyUpdate.body.data.apiKey.groupRouteStrategy, 'round_robin', '公开 API Key 修改应支持 groupRouteStrategy')
+    assert.equal(publicApiKeyUpdate.body.data.apiKey.groupBindings[0]?.groupId, publicGroupId, '公开 API Key 修改应支持 groupBindings 覆盖')
     assert.equal(publicApiKeyUpdate.body.data.apiKey.availabilitySchedule, undefined, '公开 API Key 修改应支持 availabilitySchedule: null 清空计划')
 
     const publicApiKeyDelete = await requestJson(baseUrl, '/__aipublic__/api-key/del', {
@@ -969,12 +1163,12 @@ function seedAccountUsageWindow(
   getStatsDatabase: typeof import('../../storage/database.js')['getStatsDatabase']
 ): ReturnType<typeof createAccount> {
   const group = createGroup({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '公益站贡献统计分组',
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const account = createAccount({
-    providerCode: 'openai',
+    providerCode: 'gpt',
     name: '公益站贡献统计账号',
     type: 'api_key',
     groupId: group.id,

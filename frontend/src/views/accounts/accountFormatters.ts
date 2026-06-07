@@ -8,6 +8,7 @@ import {
   serverDateTimeTimestamp
 } from '@/shared/formatters'
 import type { AccountClientCompatibility, AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary } from '@/types/domain'
+import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 
 export interface OAuthUsageBar {
   key: string
@@ -26,6 +27,7 @@ export interface AccountStatusTagInfo {
 
 export function statusColor(status: AccountStatus) {
   if (status === 'active') return 'green'
+  if (status === 'pending_test') return 'blue'
   if (status === 'error') return 'red'
   if (status === 'rate_limited') return 'orange'
   if (status === 'temporary_unavailable') return 'gold'
@@ -34,6 +36,7 @@ export function statusColor(status: AccountStatus) {
 
 export function statusText(status: AccountStatus) {
   if (status === 'active') return '正常'
+  if (status === 'pending_test') return '待测试'
   if (status === 'error') return '异常'
   if (status === 'rate_limited') return '限流中'
   if (status === 'temporary_unavailable') return '临时不可调用'
@@ -152,6 +155,8 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
       }
     } else if (account.status === 'disabled' && !accountExpired) {
       lines.push('停用账户可手动测试诊断，但不会被测试结果或后台任务自动恢复')
+    } else if (account.status === 'pending_test') {
+      lines.push('新建账户需手动测试通过后才参与调度')
     } else if (account.status === 'error') {
       lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
       if (account.cooldownRetestFailureCount) {
@@ -183,6 +188,8 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
   }
   if (effectiveStatus === 'instance_expired') {
     lines.push(account.accountExpiresAt ? `到期时间：${formatDateTime(account.accountExpiresAt)}` : '账户已到期，当前不可用')
+  } else if (effectiveStatus === 'instance_pending_test') {
+    lines.push('新建账户需手动测试通过后才参与调度')
   } else if (effectiveStatus === 'instance_disabled') {
     lines.push('已停用，不参与调度')
   } else if (effectiveStatus === 'instance_unschedulable') {
@@ -297,6 +304,7 @@ export function authorizationSourceAccountStatusTag(account: AccountSummary): Ac
   if (!isAuthorizedAccount(account)) return undefined
   if (isAuthorizationSourceAccountExpired(account)) return { color: 'red', label: '来源到期' }
   const sourceStatus = account.authorizationInstanceSourceAccountStatus
+  if (sourceStatus === 'pending_test') return { color: 'blue', label: '来源待测试' }
   if (sourceStatus === 'disabled') return { color: 'orange', label: '来源停用' }
   if (sourceStatus === 'error') return { color: 'red', label: '来源异常' }
   if (sourceStatus === 'rate_limited') return { color: 'orange', label: '来源限流中' }
@@ -312,6 +320,8 @@ export function authorizationSourceAccountTooltipLines(account: AccountSummary):
   const lines: string[] = []
   if (isAuthorizationSourceAccountExpired(account)) {
     lines.push('授权方原账户已到期，授权实例实际不可调用')
+  } else if (sourceStatus === 'pending_test') {
+    lines.push('授权方原账户尚未测试通过，授权实例实际不可调用')
   } else if (sourceStatus === 'disabled') {
     lines.push('授权方原账户已停用，授权实例实际不可调用')
   } else if (sourceStatus === 'error') {
@@ -432,6 +442,7 @@ function isConciseAccountStatus(status: NonNullable<AccountSummary['effectiveAva
 function directAccountStatusText(account: AccountSummary): string {
   const status = account.effectiveAvailability?.status
   if (status === 'instance_expired') return '账户到期'
+  if (status === 'instance_pending_test') return '待测试'
   if (status === 'instance_disabled') return '停用'
   if (status === 'instance_error') return '异常'
   if (status === 'instance_rate_limited') return '限流中'
@@ -520,8 +531,8 @@ export function accountTypeTitle(providerName: string, type: AccountType) {
 }
 
 export function accountTypeDescription(providerCode: string, type: AccountType) {
-  if (providerCode === 'openai' && type === 'oauth') return '适合 Codex / ChatGPT OAuth 授权账户；网关只支持 Responses / compact 路径。'
-  if (providerCode === 'openai' && type === 'api_key') return '适合公开 OpenAI-compatible 透传，可配置 Base URL。'
+  if (isGptVendorCode(providerCode) && type === 'oauth') return '适合 GPT / ChatGPT OAuth 授权账户；网关只支持 Responses / compact 路径。'
+  if (isGptVendorCode(providerCode) && type === 'api_key') return '适合 GPT 官方或 OpenAI v1 兼容透传，可配置 Base URL。'
   return '该账户类型会使用供应商定义的创建流程。'
 }
 
@@ -550,7 +561,7 @@ export function formatCost(value?: number): string {
 }
 
 export function oauthUsageBars(account: AccountSummary): OAuthUsageBar[] {
-  if (account.providerCode !== 'openai' || account.type !== 'oauth') return []
+  if (!isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') return []
   const usage = account.oauthUsage
   if (!usage) return []
   return [
