@@ -27,8 +27,12 @@ const reusableRelease = tryAcquireDiagnosticTaskSlot()
 assert.ok(reusableRelease, '释放槽位后应允许新的诊断任务进入')
 reusableRelease()
 
+const accountTaskQueueSource = readFileSync(resolve('src/modules/accounts/account-test-task-queue.service.ts'), 'utf8')
+assert.match(accountTaskQueueSource, /tryAcquireDiagnosticTaskSlot/, '账户测试后台 worker 必须接入诊断任务并发闸门')
+assert.match(accountTaskQueueSource, /diagnosticTaskBusyMessage/, '账户测试后台 worker 过载时必须快速失败任务')
+assert.match(accountTaskQueueSource, /failAccountTestTask/, '账户测试后台 worker 过载时必须写入任务失败结果')
+
 for (const relativePath of [
-  'src/modules/accounts/accounts.routes.ts',
   'src/modules/model-checks/model-checks.routes.ts',
   'src/modules/proxies/proxies.routes.ts'
 ]) {

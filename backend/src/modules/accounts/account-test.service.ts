@@ -31,7 +31,7 @@ export const accountTestResponsePreviewBytes = 256 * 1024
 
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; trafficSource?: OpenAIGatewayTrafficSource; gatewaySettingsOverride?: Partial<GatewaySettings>; disableAccountStateMutation?: boolean; clientCompatibility?: AccountClientCompatibility } = {}
+  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; systemAccountId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; trafficSource?: OpenAIGatewayTrafficSource; gatewaySettingsOverride?: Partial<GatewaySettings>; disableAccountStateMutation?: boolean; clientCompatibility?: AccountClientCompatibility; candidateAccount?: OpenAIAccountSecret } = {}
 ): Promise<AccountTestResult> {
   const explicitModel = stringValue(input.model)
   const model = explicitModel || defaultAccountTestModel(account)
@@ -66,7 +66,9 @@ export async function testOpenAIAccount(
   try {
     const resolved = resolveAccountTestCandidate(account, {
       groupId: stringValue(input.groupId),
-      clientCompatibility
+      systemAccountId: stringValue(input.systemAccountId),
+      clientCompatibility,
+      candidateAccount: input.candidateAccount
     })
     const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal)
     const response = new MemoryGatewayResponse(startedAt)
@@ -103,8 +105,12 @@ export async function testOpenAIAccount(
       throw accountTestAbortError(input.signal)
     }
 
-    const finalAccount = findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
-    const finalSummary = findAccountForTest(account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
+    const finalAccount = input.candidateAccount
+      ? resolved.account
+      : findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
+    const finalSummary = input.candidateAccount
+      ? account
+      : findAccountForTest(account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const responseText = response.bodyText()
     const upstreamMessage = parseUpstreamMessage(responseText)
@@ -250,11 +256,30 @@ function accountTestProxyMarker(account: AccountSummary, resolved: OpenAIAccount
   return account.proxyProfileId || resolved.proxyUrl || resolved.proxyProfileUnavailable ? '[configured]' : undefined
 }
 
-function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?: string; clientCompatibility?: AccountClientCompatibility } = {}): {
+function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?: string; systemAccountId?: string; clientCompatibility?: AccountClientCompatibility; candidateAccount?: OpenAIAccountSecret } = {}): {
   systemAccountId: string
   groupId: string
   account: OpenAIAccountSecret
 } {
+  const draftCandidate = input.candidateAccount
+  if (draftCandidate) {
+    const systemAccountId = input.systemAccountId || draftCandidate.systemAccountId
+    const groupId = input.groupId || account.boundGroupId || draftCandidate.boundGroupId
+    if (!systemAccountId) {
+      throw new AccountTestConfigurationError('账户归属数据异常，无法执行网关测试')
+    }
+    if (!groupId) {
+      throw new AccountTestConfigurationError('账户未绑定可用分组，无法按客户真实链路测试')
+    }
+    return {
+      systemAccountId,
+      groupId,
+      account: input.clientCompatibility ? {
+        ...draftCandidate,
+        clientCompatibility: input.clientCompatibility
+      } : draftCandidate
+    }
+  }
   const systemAccountId = account.accessType === 'authorized'
     ? account.bindingSystemAccountId
     : account.ownerSystemAccountId ?? account.systemAccountId
@@ -265,17 +290,17 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
   if (!groupId) {
     throw new AccountTestConfigurationError('账户未绑定可用分组，无法按客户真实链路测试')
   }
-  const candidate = findOpenAIAccountForGroup(groupId, account.id, systemAccountId, { ignoreAvailability: true })
-  if (!candidate) {
+  const resolvedCandidate = findOpenAIAccountForGroup(groupId, account.id, systemAccountId, { ignoreAvailability: true })
+  if (!resolvedCandidate) {
     throw new AccountTestConfigurationError('账户不在当前分组或凭据不可用，无法执行网关测试')
   }
   return {
     systemAccountId,
     groupId,
     account: input.clientCompatibility ? {
-      ...candidate,
+      ...resolvedCandidate,
       clientCompatibility: input.clientCompatibility
-    } : candidate
+    } : resolvedCandidate
   }
 }
 

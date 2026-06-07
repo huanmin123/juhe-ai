@@ -494,7 +494,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       clientIp: gatewayClientIp,
       endpoint
     })
-    sendOpenAIModelsGatewayResponse({
+    await sendOpenAIModelsGatewayResponse({
       res,
       auditCapture,
       usageContext,

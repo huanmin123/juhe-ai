@@ -1,0 +1,339 @@
+import {
+  deleteCustomProviderModel,
+  findCustomProviderModelById,
+  listCustomProviderModelsForCatalog,
+  upsertCustomProviderModel,
+  type CustomProviderModelRecord,
+  type CustomProviderModelScope,
+  type CustomProviderModelStatus,
+  type CustomProviderModelVisibility,
+  type UpsertCustomProviderModelInput
+} from '../../storage/custom-provider-models.repository.js'
+import {
+  listProviderModelPricing,
+  type CostInput,
+  type ProviderCostBreakdown,
+  type ProviderModelApiProtocol,
+  type ProviderModelPricing
+} from './model-pricing.service.js'
+
+export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
+export type ModelCatalogVisibility = 'public' | 'mapping_target_only'
+
+export interface ProviderModelCatalogItem extends ProviderModelPricing {
+  id?: string
+  scope: ModelCatalogScope
+  visibility: ModelCatalogVisibility
+  status: 'draft' | 'active' | 'disabled'
+  systemAccountId?: string
+  displayName?: string
+  pricingModel?: string
+  contextWindowTokens?: number
+  pricingNotes?: string
+  capabilityNotes?: string
+  notes?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface OpenAIModelListItem {
+  id: string
+  object: 'model'
+  created: number
+  owned_by: string
+}
+
+export interface OpenAIModelsListResponse {
+  object: 'list'
+  data: OpenAIModelListItem[]
+}
+
+export interface ModelCatalogListOptions {
+  providerCode: string
+  systemAccountId?: string
+  includeMappingTargets?: boolean
+  includeInactive?: boolean
+  includeUnpriced?: boolean
+}
+
+export interface SaveCustomProviderModelInput extends Omit<UpsertCustomProviderModelInput, 'actorSystemAccountId'> {
+  actorSystemAccountId: string
+}
+
+export function listProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
+  const builtIn = listProviderModelPricing(options.providerCode).map(toBuiltInCatalogItem)
+  const custom = listCustomProviderModelsForCatalog({
+    providerCode: options.providerCode,
+    systemAccountId: options.systemAccountId,
+    includeMappingTargets: true,
+    includeInactive: options.includeInactive
+  }).map(toCustomCatalogItem)
+  const merged = mergeModelCatalogItems([...builtIn, ...custom])
+
+  return merged
+    .filter((item) => options.includeMappingTargets || item.visibility === 'public')
+    .filter((item) => options.includeInactive || item.status === 'active')
+    .filter((item) => options.includeUnpriced || hasResolvablePrice(item, merged))
+    .sort(compareCatalogItems)
+}
+
+export function buildOpenAIModelsResponseFromCatalog(items: ProviderModelCatalogItem[]): OpenAIModelsListResponse {
+  return {
+    object: 'list',
+    data: items
+      .filter((item) => item.visibility === 'public')
+      .map((item) => ({
+        id: item.model,
+        object: 'model',
+        created: modelCreatedUnixSeconds(item),
+        owned_by: item.scope === 'built_in' ? 'openai' : 'juhe-ai'
+      }))
+  }
+}
+
+export function saveCustomProviderModel(input: SaveCustomProviderModelInput): ProviderModelCatalogItem {
+  const saved = upsertCustomProviderModel(input)
+  return toCustomCatalogItem(saved)
+}
+
+export function findCustomProviderModel(id: string): CustomProviderModelRecord | undefined {
+  return findCustomProviderModelById(id)
+}
+
+export function removeCustomProviderModel(id: string): boolean {
+  return deleteCustomProviderModel(id)
+}
+
+export function estimateCatalogCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {
+  const pricing = resolveCatalogPricing(input)
+  if (!pricing || !hasAnyCostDimension(input)) {
+    return undefined
+  }
+  const breakdown = buildCatalogCostBreakdown({ ...input, model: pricing.model })
+  return breakdown?.accountChargeUsd
+}
+
+export function estimateCatalogCacheReadCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {
+  const pricing = resolveCatalogPricing(input)
+  if (!pricing || input.cacheReadTokens === undefined) return undefined
+  const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? perToken(pricing.inputUsdPer1M)
+  if (cachedInputPrice === undefined) return undefined
+  return roundCost(Math.max(input.cacheReadTokens, 0) * cachedInputPrice)
+}
+
+export function resolveCatalogPricingModel(input: { providerCode: string; model?: string; systemAccountId?: string }): string | undefined {
+  return resolveCatalogPricing(input)?.model
+}
+
+export function buildCatalogCostBreakdown(input: CostInput & { systemAccountId?: string; costUsd?: number }): ProviderCostBreakdown | undefined {
+  const pricing = resolveCatalogPricing(input)
+  if (!pricing) return undefined
+
+  const inputPrice = perToken(pricing.inputUsdPer1M)
+  const outputPrice = perToken(pricing.outputUsdPer1M)
+  const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? inputPrice
+  const inputImagePrice = perToken(pricing.imageInputUsdPer1M)
+  const outputImagePrice = perToken(pricing.imageOutputUsdPer1M)
+  const inputAudioPrice = perToken(pricing.audioInputUsdPer1M)
+  const outputAudioPrice = perToken(pricing.audioOutputUsdPer1M)
+  const outputImageUnitPrice = pricing.outputUsdPerImage
+  if (!hasAnyPrice(inputPrice, outputPrice, cachedInputPrice, inputImagePrice, outputImagePrice, inputAudioPrice, outputAudioPrice, outputImageUnitPrice)) return undefined
+
+  const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
+  const inputImageTokens = inputImagePrice === undefined ? 0 : Math.max(input.inputImageTokens ?? 0, 0)
+  const outputImageTokens = outputImagePrice === undefined ? 0 : Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
+  const inputAudioTokens = inputAudioPrice === undefined ? 0 : Math.max(input.inputAudioTokens ?? defaultInputAudioTokens(input, inputPrice, cacheReadTokens, inputImageTokens), 0)
+  const outputAudioTokens = outputAudioPrice === undefined ? 0 : Math.max(input.outputAudioTokens ?? defaultOutputAudioTokens(input, outputPrice, outputImageTokens), 0)
+  const outputImageCount = outputImageUnitPrice === undefined ? 0 : Math.max(input.outputImageCount ?? 0, 0)
+  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens - inputAudioTokens, 0)
+  const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens - outputAudioTokens, 0)
+  const inputCostUsd = inputPrice === undefined ? undefined : roundCost(uncachedInputTokens * inputPrice)
+  const outputCostUsd = outputPrice === undefined ? undefined : roundCost(outputTokens * outputPrice)
+  const cacheReadCostUsd = cachedInputPrice === undefined ? undefined : roundCost(cacheReadTokens * cachedInputPrice)
+  const inputImageCostUsd = inputImageTokens > 0 && inputImagePrice !== undefined ? roundCost(inputImageTokens * inputImagePrice) : undefined
+  const outputImageCostUsd = outputImageTokens > 0 && outputImagePrice !== undefined ? roundCost(outputImageTokens * outputImagePrice) : undefined
+  const inputAudioCostUsd = inputAudioTokens > 0 && inputAudioPrice !== undefined ? roundCost(inputAudioTokens * inputAudioPrice) : undefined
+  const outputAudioCostUsd = outputAudioTokens > 0 && outputAudioPrice !== undefined ? roundCost(outputAudioTokens * outputAudioPrice) : undefined
+  const outputImageUnitCostUsd = outputImageCount > 0 && outputImageUnitPrice !== undefined ? roundCost(outputImageCount * outputImageUnitPrice) : undefined
+
+  return {
+    inputCostUsd,
+    outputCostUsd,
+    inputUsdPer1M: pricing.inputUsdPer1M,
+    outputUsdPer1M: pricing.outputUsdPer1M,
+    cacheReadCostUsd,
+    cacheReadUsdPer1M: pricing.cachedInputUsdPer1M ?? pricing.inputUsdPer1M,
+    inputImageCostUsd,
+    outputImageCostUsd,
+    inputImageUsdPer1M: pricing.imageInputUsdPer1M,
+    outputImageUsdPer1M: pricing.imageOutputUsdPer1M,
+    inputAudioCostUsd,
+    outputAudioCostUsd,
+    inputAudioUsdPer1M: pricing.audioInputUsdPer1M,
+    outputAudioUsdPer1M: pricing.audioOutputUsdPer1M,
+    outputImageUnitCostUsd,
+    outputUsdPerImage: pricing.outputUsdPerImage,
+    accountChargeUsd: input.costUsd ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
+    multiplier: 1
+  }
+}
+
+function resolveCatalogPricing(input: CostInput & { systemAccountId?: string }): ProviderModelCatalogItem | undefined {
+  if (!input.model) return undefined
+  const catalog = listProviderModelCatalog({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId,
+    includeMappingTargets: true
+  })
+  const item = findCatalogItem(catalog, input.model)
+  if (!item) return undefined
+  if (!item.pricingModel) return item
+  return findCatalogItem(catalog, item.pricingModel)
+}
+
+function mergeModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
+  const merged = new Map<string, ProviderModelCatalogItem>()
+  for (const item of items) {
+    const key = item.model.trim().toLowerCase()
+    if (!key) continue
+    const previous = merged.get(key)
+    if (!previous || catalogPriority(item) >= catalogPriority(previous)) {
+      merged.set(key, item)
+    }
+  }
+  return [...merged.values()]
+}
+
+function hasResolvablePrice(item: ProviderModelCatalogItem, allItems: ProviderModelCatalogItem[]): boolean {
+  if (hasDirectPrice(item)) return true
+  if (!item.pricingModel) return false
+  const target = findCatalogItem(allItems, item.pricingModel)
+  return Boolean(target && hasDirectPrice(target) && !target.pricingModel)
+}
+
+function hasDirectPrice(item: ProviderModelPricing): boolean {
+  return item.inputUsdPer1M !== undefined
+    || item.outputUsdPer1M !== undefined
+    || item.cachedInputUsdPer1M !== undefined
+    || item.cacheWriteUsdPer1M !== undefined
+    || item.imageInputUsdPer1M !== undefined
+    || item.imageOutputUsdPer1M !== undefined
+    || item.audioInputUsdPer1M !== undefined
+    || item.audioOutputUsdPer1M !== undefined
+    || item.outputUsdPerImage !== undefined
+}
+
+function findCatalogItem(items: ProviderModelCatalogItem[], model: string): ProviderModelCatalogItem | undefined {
+  const normalized = model.trim().toLowerCase()
+  return items.find((item) => item.model.trim().toLowerCase() === normalized)
+}
+
+function toBuiltInCatalogItem(item: ProviderModelPricing): ProviderModelCatalogItem {
+  return {
+    ...item,
+    scope: 'built_in',
+    visibility: 'public',
+    status: 'active'
+  }
+}
+
+function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCatalogItem {
+  return {
+    id: item.id,
+    providerCode: item.providerCode,
+    model: item.model,
+    mode: item.mode,
+    releaseDate: item.releaseDate,
+    shutdownDate: item.shutdownDate,
+    supportedApiProtocols: item.supportedApiProtocols as ProviderModelApiProtocol[],
+    inputUsdPer1M: item.inputUsdPer1M,
+    outputUsdPer1M: item.outputUsdPer1M,
+    cachedInputUsdPer1M: item.cachedInputUsdPer1M,
+    cacheWriteUsdPer1M: item.cacheWriteUsdPer1M,
+    imageInputUsdPer1M: item.imageInputUsdPer1M,
+    imageOutputUsdPer1M: item.imageOutputUsdPer1M,
+    audioInputUsdPer1M: item.audioInputUsdPer1M,
+    audioOutputUsdPer1M: item.audioOutputUsdPer1M,
+    outputUsdPerImage: item.outputUsdPerImage,
+    maxOutputTokens: item.maxOutputTokens,
+    supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
+    supportsServiceTier: false,
+    source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
+    scope: item.scope,
+    visibility: item.visibility,
+    status: item.status,
+    systemAccountId: item.systemAccountId,
+    displayName: item.displayName,
+    pricingModel: item.pricingModel,
+    contextWindowTokens: item.contextWindowTokens,
+    pricingNotes: item.pricingNotes,
+    capabilityNotes: item.capabilityNotes,
+    notes: item.notes,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt
+  }
+}
+
+function catalogPriority(item: ProviderModelCatalogItem): number {
+  if (item.scope === 'personal') return 3
+  if (item.scope === 'global') return 2
+  return 1
+}
+
+function compareCatalogItems(left: ProviderModelCatalogItem, right: ProviderModelCatalogItem): number {
+  return left.model.localeCompare(right.model, 'en')
+}
+
+function modelCreatedUnixSeconds(item: ProviderModelCatalogItem): number {
+  const source = item.releaseDate
+    ? `${item.releaseDate}T00:00:00.000Z`
+    : item.createdAt
+  if (!source) return 0
+  const time = Date.parse(source)
+  return Number.isFinite(time) ? Math.trunc(time / 1000) : 0
+}
+
+function defaultImageOutputTokens(input: CostInput, pricing: ProviderModelPricing): number {
+  if (input.outputImageTokens !== undefined || pricing.mode !== 'image_generation' || pricing.imageOutputUsdPer1M === undefined) {
+    return 0
+  }
+  return Math.max(input.outputTokens ?? 0, 0)
+}
+
+function defaultInputAudioTokens(input: CostInput, inputPrice: number | undefined, cacheReadTokens: number, inputImageTokens: number): number {
+  if (input.inputAudioTokens !== undefined || inputPrice !== undefined) return 0
+  return Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens, 0)
+}
+
+function defaultOutputAudioTokens(input: CostInput, outputPrice: number | undefined, outputImageTokens: number): number {
+  if (input.outputAudioTokens !== undefined || outputPrice !== undefined) return 0
+  return Math.max((input.outputTokens ?? 0) - outputImageTokens, 0)
+}
+
+function hasAnyCostDimension(input: CostInput): boolean {
+  return input.inputTokens !== undefined
+    || input.outputTokens !== undefined
+    || input.cacheReadTokens !== undefined
+    || input.inputImageTokens !== undefined
+    || input.outputImageTokens !== undefined
+    || input.inputAudioTokens !== undefined
+    || input.outputAudioTokens !== undefined
+    || input.outputImageCount !== undefined
+}
+
+function hasAnyPrice(...prices: Array<number | undefined>): boolean {
+  return prices.some((price) => price !== undefined)
+}
+
+function perToken(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : value / 1_000_000
+}
+
+function roundCost(value: number): number {
+  return Number(value.toFixed(10))
+}
+
+function sumCostParts(...parts: Array<number | undefined>): number | undefined {
+  const values = parts.filter((part): part is number => part !== undefined)
+  return values.length ? roundCost(values.reduce((sum, part) => sum + part, 0)) : undefined
+}

@@ -277,7 +277,7 @@ const OPENAI_PROVIDER: ProviderDefinition = {
   baseUrl: 'https://api.openai.com/v1',
   defaultTestModel: '',
   accountTypes: ['oauth', 'api_key'],
-  capabilities: ['models', 'responses', 'stream', 'passthrough']
+  capabilities: ['responses', 'chat']
 }
 
 const metricOptions: Array<{ label: string; value: UsageTrendMetric }> = [

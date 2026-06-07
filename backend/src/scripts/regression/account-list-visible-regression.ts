@@ -115,7 +115,7 @@ function seedData(): SeedState {
   repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const userA = repositories.createSystemAccount({
     username: 'account_list_visible_user_a',
-    displayName: '账户列表可见用户 A',
+    displayName: '账户列表可见用户A',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -123,7 +123,7 @@ function seedData(): SeedState {
   })
   const userB = repositories.createSystemAccount({
     username: 'account_list_visible_user_b',
-    displayName: '账户列表可见用户 B',
+    displayName: '账户列表可见用户B',
     password: 'password',
     role: 'user',
     status: 'active',

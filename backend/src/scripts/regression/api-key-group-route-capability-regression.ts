@@ -336,7 +336,7 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
 ): Promise<void> {
   const owner = repositories.createSystemAccount({
     username: `route_strategy_exhausted_${item.suffix.replace(/-/g, '_')}_owner`,
-    displayName: `策略仿真 ${item.displayName} 用户`,
+    displayName: `策略仿真${item.displayName}用户`,
     password: 'password',
     role: 'user',
     status: 'active',

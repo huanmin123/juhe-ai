@@ -160,14 +160,14 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑分组' : '新建分组'" width="640px" :confirm-loading="groupSaving" :ok-button-props="{ type: 'primary', disabled: groupSaving }" @ok="saveGroup">
+    <a-modal v-model:open="modalOpen" :title="groupModalTitle" width="640px" :confirm-loading="groupSaving" :ok-button-props="{ type: 'primary', disabled: groupSaving }" @ok="saveGroup">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-form layout="vertical">
         <a-form-item label="分组名称" required>
-          <a-input v-model:value="form.name" />
+          <a-input v-model:value="form.name" :disabled="editingAuthorizedGroup" />
         </a-form-item>
         <a-form-item label="所属供应商" required>
-          <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked" />
+          <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked || editingAuthorizedGroup" />
           <div class="form-help">同一供应商下可混合 OAuth / API Key 账户；分组只决定账户归属，不拆统计、会话亲和或缓存边界。</div>
         </a-form-item>
         <a-form-item label="分组类型" required>
@@ -199,7 +199,7 @@
           </a-form-item>
         </div>
         <a-form-item label="说明">
-          <a-textarea v-model:value="form.description" :rows="3" />
+          <a-textarea v-model:value="form.description" :rows="3" :disabled="editingAuthorizedGroup" />
         </a-form-item>
         <a-form-item label="状态">
           <a-switch v-model:checked="form.enabled" checked-children="启用" un-checked-children="停用" />
@@ -247,7 +247,7 @@ const OPENAI_PROVIDER: ProviderDefinition = {
   baseUrl: 'https://api.openai.com/v1',
   defaultTestModel: '',
   accountTypes: ['oauth', 'api_key'],
-  capabilities: ['models', 'responses', 'stream', 'passthrough']
+  capabilities: ['responses', 'chat']
 }
 
 const pageSize = 50
@@ -376,7 +376,7 @@ const {
 
 const rawColumns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
-    { title: '分组名称', dataIndex: 'name', key: 'name', width: 240, fixed: 'left' },
+    { title: '分组名称', dataIndex: 'name', key: 'name', width: 240, fixed: 'left', customHeaderCell: () => ({ class: 'group-name-header-cell' }) },
     { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 },
     { title: '类型', dataIndex: 'groupType', key: 'groupType', width: 130 }
   ]
@@ -414,7 +414,13 @@ const providerOptions = computed(() => availableProviders.value.map((provider) =
   value: provider.code,
   disabled: !provider.enabled
 })))
-const providerLocked = computed(() => Boolean(editingId.value && groupStats(groups.value.find((group) => group.id === editingId.value)).total))
+const editingGroup = computed(() => groups.value.find((group) => group.id === editingId.value))
+const editingAuthorizedGroup = computed(() => Boolean(editingGroup.value && isAuthorizedGroup(editingGroup.value)))
+const groupModalTitle = computed(() => {
+  if (!editingId.value) return '新建分组'
+  return editingAuthorizedGroup.value ? '编辑授权分组使用配置' : '编辑分组'
+})
+const providerLocked = computed(() => Boolean(editingId.value && groupStats(editingGroup.value).total))
 const activeFilterCount = computed(() => systemAccountFilter.value === allSystemAccountsValue ? 0 : 1)
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
@@ -662,15 +668,8 @@ function authorizedGroupTooltip(group: GroupSummary): string {
 }
 
 function groupInfoTooltip(group: GroupSummary): string {
-  const lines: string[] = []
-  if (isAuthorizedGroup(group)) {
-    lines.push(authorizedGroupTooltip(group))
-  }
-  const description = groupDisplayDescription(group)
-  if (description) {
-    lines.push(`分组说明：${description}`)
-  }
-  return lines.join('\n')
+  if (!isAuthorizedGroup(group)) return ''
+  return authorizedGroupTooltip(group)
 }
 
 function groupDisplayDescription(group: GroupSummary): string {
@@ -724,9 +723,19 @@ function canDeleteGroup(group: GroupSummary): boolean {
   return !group.isDefault && group.permissions?.canDelete !== false
 }
 
+function canReturnAuthorizedGroup(group: GroupSummary): boolean {
+  return isAuthorizedGroup(group) && group.permissions?.canReturnAuthorization === true
+}
+
 function groupRowActions(group: GroupSummary): RowActionItem[] {
   const actions: RowActionItem[] = []
   if (isAuthorizedGroup(group)) {
+    if (canEditGroup(group)) {
+      actions.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
+    }
+    if (canReturnAuthorizedGroup(group)) {
+      actions.push(returnAuthorizedGroupAction(group))
+    }
     return actions
   }
   if (canDeleteGroup(group)) {
@@ -755,18 +764,35 @@ function deleteGroupAction(group: GroupSummary): RowActionItem {
   }
 }
 
+function returnAuthorizedGroupAction(group: GroupSummary): RowActionItem {
+  return {
+    key: 'return-authorization',
+    label: '归还',
+    icon: 'revoke',
+    tone: 'danger',
+    confirmTitle: `确认归还授权分组「${group.name}」？归还后你将不再看到或使用它，不影响授权方原分组。`,
+    confirmOkText: '归还'
+  }
+}
+
 function handleGroupAction(key: string, group: GroupSummary) {
   if (key === 'edit') {
     openEdit(group)
     return
   }
-  if (key === 'delete' || key === 'return') {
+  if (key === 'return-authorization') {
+    void returnAuthorizationGroup(group.id)
+    return
+  }
+  if (key === 'delete') {
     void removeGroup(group.id)
   }
 }
 
-function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
-  const systemAccountId = group?.systemAccountId?.trim() || groupScopeParams.value?.systemAccountId
+function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId' | 'accessType'>): { systemAccountId: string } | undefined {
+  const systemAccountId = group?.accessType === 'authorized'
+    ? groupScopeParams.value?.systemAccountId
+    : group?.systemAccountId?.trim() || groupScopeParams.value?.systemAccountId
   return systemAccountId ? { systemAccountId } : undefined
 }
 
@@ -859,7 +885,7 @@ function openCreate() {
 
 function openEdit(group: GroupSummary) {
   if (!canEditGroup(group)) {
-    message.warning(group.isDefault ? '默认分组不允许编辑' : '授权分组不能编辑')
+    message.warning(group.isDefault ? '默认分组不允许编辑' : '当前分组不能编辑')
     return
   }
   let schedulingPolicy: Required<GroupSchedulingPolicy>
@@ -890,15 +916,16 @@ const saveGroup = submitAction('groups.save', async () => {
     return
   }
   try {
-    const payload = groupFormPayload()
     const targetId = editingId.value
     if (targetId) {
       const targetGroup = groups.value.find((item) => item.id === targetId)
+      const payload = groupFormPayload(targetGroup)
       const updated = await groupsApi.update(targetId, payload, groupOperationScopeParams(targetGroup))
       updateGroupItems((item) => item.id === targetId, () => updated)
-      message.success('分组已更新')
+      message.success(isAuthorizedGroup(updated) ? '授权分组使用配置已更新' : '分组已更新')
       void loadData({ quiet: true })
     } else {
+      const payload = groupFormPayload()
       await groupsApi.create(payload, groupScopeParams.value)
       message.success('分组已创建')
       await loadData()
@@ -910,12 +937,9 @@ const saveGroup = submitAction('groups.save', async () => {
   }
 })
 
-function groupFormPayload(): Record<string, unknown> {
+function groupFormPayload(targetGroup?: GroupSummary): Record<string, unknown> {
   const schedulingPolicy = cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy, { requireComplete: true })
-  return {
-    name: form.name,
-    providerCode: form.providerCode,
-    description: form.description,
+  const localSettings = {
     enabled: form.enabled,
     groupType: form.groupType,
     schedulingPolicy: form.groupType === 'high_concurrency'
@@ -930,12 +954,21 @@ function groupFormPayload(): Record<string, unknown> {
         }
       : undefined
   }
+  if (targetGroup && isAuthorizedGroup(targetGroup)) {
+    return localSettings
+  }
+  return {
+    name: form.name,
+    providerCode: form.providerCode,
+    description: form.description,
+    ...localSettings
+  }
 }
 
 async function removeGroup(id: string) {
   const group = groups.value.find((item) => item.id === id)
   if (group && isAuthorizedGroup(group)) {
-    message.warning('请到授权操作页归还授权分组')
+    message.warning('授权分组请使用归还操作')
     return
   }
   if (group?.isDefault) {
@@ -954,6 +987,27 @@ async function removeGroup(id: string) {
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除分组失败'))
+  }
+}
+
+async function returnAuthorizationGroup(id: string) {
+  const group = groups.value.find((item) => item.id === id)
+  if (!group || !isAuthorizedGroup(group)) {
+    message.warning('授权分组不存在')
+    return
+  }
+  if (!canReturnAuthorizedGroup(group)) {
+    message.warning('当前授权分组不能归还')
+    return
+  }
+  try {
+    await groupsApi.returnAuthorization(id, groupOperationScopeParams(group))
+    removeGroupItems((item) => item.id === id)
+    message.success('授权分组已归还')
+    void loadData({ quiet: true })
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '归还授权分组失败'))
   }
 }
 
@@ -1019,6 +1073,11 @@ onMounted(() => {
   margin: 12px 0;
 }
 
+.groups-table :deep(.group-name-header-cell),
+.groups-table :deep(.group-name-header-cell .ant-table-column-title) {
+  font-weight: 400;
+}
+
 .group-name-cell {
   display: grid;
   min-width: 0;
@@ -1046,7 +1105,11 @@ onMounted(() => {
 
 .group-name-text {
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 400;
+}
+
+.groups-page-card .mobile-list-card-title {
+  font-weight: 400;
 }
 
 .group-description-column-text {

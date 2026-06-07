@@ -143,12 +143,15 @@
       :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
+      :mapping-target-model-options="mappingTargetModelOptions"
       :model-options="providerModelOptions"
       :models-loading="providerModelsLoading"
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
       :selected-provider="selectedProvider"
+      :test-button-disabled="accountEditTestButtonDisabled"
+      :test-loading="testRunning"
       :title="modalTitle"
       :target-system-account-label="targetSystemAccountLabel"
       @cancel="handleModalCancel"
@@ -159,6 +162,7 @@
       @ok="saveAccount"
       @open-auth-url="openAuthUrl"
       @select-provider="selectProvider"
+      @test="testAccountFromEditModal"
       @select-type="selectAccountType"
     />
 
@@ -230,6 +234,11 @@ import {
   canEditAccount,
   canSelectAccountForBatch
 } from './accountRules'
+import {
+  buildAccountDraftTestPayload,
+  buildAccountDraftTestSummary,
+  validateAccountDraftTestForm
+} from './accountDraftTestPayload'
 import { useAccountBatchActions } from './useAccountBatchActions'
 import { useAccountEditForm } from './useAccountEditForm'
 import { useAccountGroupOptions } from './useAccountGroupOptions'
@@ -395,6 +404,7 @@ const {
   isApiKeyForm,
   isOAuthForm,
   isOpenAIOAuthForm,
+  mappingTargetModelOptions,
   modalConfirmLoading,
   modalOkButtonProps,
   modalOpen,
@@ -431,6 +441,7 @@ const {
   batchTestingAccounts,
   closeTestModal,
   openBatchTestModal,
+  openDraftTestModal,
   openTestModal,
   runAccountTest,
   stopAccountTest,
@@ -449,6 +460,7 @@ const {
   loadData,
   providers: availableProviders
 })
+const accountEditTestButtonDisabled = computed(() => modalConfirmLoading.value || testRunning.value || !hasAccountType.value)
 const {
   openTrafficMigration,
   saveTrafficMigration,
@@ -612,6 +624,71 @@ function handleAccountTypeFilterChange(value: string): void {
 
 async function copyText(value: string) {
   await copyTextToClipboard(value)
+}
+
+async function testAccountFromEditModal() {
+  if (editingAuthorizedAccount.value) {
+    if (!editingAccountDetail.value) {
+      message.warning('请选择要测试的授权账户')
+      return
+    }
+    if (form.groupId && form.groupId !== editingAccountDetail.value.boundGroupId) {
+      message.info('授权账户测试使用当前已保存的分组绑定，保存后新分组才会生效')
+    }
+    await openTestModal(editingAccountDetail.value)
+    return
+  }
+
+  const validationMessage = validateAccountDraftTestForm({
+    accounts: accounts.value,
+    accountDetail: editingAccountDetail.value,
+    editingId: editingId.value,
+    errorPolicyRules: accountErrorPolicyRules.value,
+    form,
+    hasAuthSession: Boolean(authResult.value?.sessionId),
+    streamInterceptRules: accountStreamInterceptRules.value
+  })
+  if (validationMessage) {
+    message.warning(validationMessage)
+    return
+  }
+
+  try {
+    const draftPayload = buildAccountDraftTestPayload({
+      accounts: accounts.value,
+      accountDetail: editingAccountDetail.value,
+      editingId: editingId.value,
+      errorPolicyRules: accountErrorPolicyRules.value,
+      form,
+      streamInterceptRules: accountStreamInterceptRules.value
+    })
+    if (!draftPayload.groupId) {
+      message.warning('请选择加入分组')
+      return
+    }
+    if (form.group?.id === draftPayload.groupId && form.group.name) {
+      rememberGroupLabel(form.group.id, form.group.name)
+    }
+    const draftAccount = buildAccountDraftTestSummary({
+      accountDetail: editingAccountDetail.value,
+      draftPayload,
+      scopeSystemAccountId: draftTestScopeSystemAccountId()
+    })
+    if (form.group?.id === draftPayload.groupId && form.group.name) {
+      draftAccount.boundGroupName = form.group.name
+    }
+    await openDraftTestModal(draftAccount, draftPayload)
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '生成账户测试草稿失败'))
+  }
+}
+
+function draftTestScopeSystemAccountId(): string | undefined {
+  if (editingAccountDetail.value) {
+    return accountOperationScopeParams(editingAccountDetail.value, accountScopeParams.value)?.systemAccountId
+  }
+  return createScopeParams.value?.systemAccountId ?? accountScopeParams.value?.systemAccountId
 }
 
 function resetFilters() {

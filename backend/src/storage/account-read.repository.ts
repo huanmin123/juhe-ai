@@ -1,6 +1,7 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
+import { loadModelMappingsByAccountIds } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, getStatsDatabase, statsDatabasePath } from './database.js'
@@ -439,6 +440,7 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
   if (ids.length === 0) return rows
   const supportedModelAccountIds = [...new Set(rowsWithSources.map((row) => supportedModelAccountIdForRow(row)).filter(Boolean))]
   const supportedModelsByAccountId = loadSupportedModelsByAccountIds(supportedModelAccountIds)
+  const modelMappingsByAccountId = loadModelMappingsByAccountIds(supportedModelAccountIds)
   const qualityRows = getStatsDatabase()
     .prepare(`
       SELECT account_id, quality_score, quality_state, ewma_first_token_ms, recent_avg_first_token_ms,
@@ -459,11 +461,14 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
   const qualityByAccount = new Map(qualityRows.map((row) => [row.account_id, row]))
   return rowsWithSources.map((row) => {
     const quality = qualityByAccount.get(row.id)
-    const supportedModels = supportedModelsByAccountId.get(supportedModelAccountIdForRow(row)) ?? []
-    if (!quality) return { ...row, supported_models: supportedModels }
+    const runtimeAccountId = supportedModelAccountIdForRow(row)
+    const supportedModels = supportedModelsByAccountId.get(runtimeAccountId) ?? []
+    const modelMappings = modelMappingsByAccountId.get(runtimeAccountId) ?? []
+    if (!quality) return { ...row, supported_models: supportedModels, model_mappings: modelMappings }
     return {
       ...row,
       supported_models: supportedModels,
+      model_mappings: modelMappings,
       quality_score: quality.quality_score,
       quality_state: quality.quality_state,
       quality_ewma_first_token_ms: quality.ewma_first_token_ms,

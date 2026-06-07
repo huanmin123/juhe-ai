@@ -76,14 +76,23 @@ function assertGatewayRouteBindingQueryPlan(): void {
     FROM api_key_group_bindings
     INNER JOIN groups
       ON groups.id = api_key_group_bindings.group_id
-      AND groups.system_account_id = api_key_group_bindings.system_account_id
+    LEFT JOIN resource_authorizations group_authorization
+      ON group_authorization.resource_type = 'group'
+      AND group_authorization.resource_id = groups.id
+      AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+      AND group_authorization.status = 'active'
+      AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
     WHERE api_key_group_bindings.api_key_id = ?
       AND api_key_group_bindings.system_account_id = ?
       AND api_key_group_bindings.status = 'active'
       AND groups.enabled = 1
+      AND (
+        groups.system_account_id = api_key_group_bindings.system_account_id
+        OR group_authorization.id IS NOT NULL
+      )
     ORDER BY api_key_group_bindings.priority ASC, api_key_group_bindings.created_at ASC, api_key_group_bindings.id ASC
     LIMIT ?
-  `, ['key_query_plan_guard', 'sys_admin', maxApiKeyGroupBindings])
+  `, [new Date().toISOString(), 'key_query_plan_guard', 'sys_admin', maxApiKeyGroupBindings])
   assert(details.includes('idx_api_key_group_bindings_gateway_route'), `网关 API Key 分组绑定读取应命中路由窗口索引，实际计划：${details}`)
   assert(!details.includes('SCAN api_key_group_bindings'), `网关 API Key 分组绑定读取不能扫描绑定表，实际计划：${details}`)
   assert(!details.includes('USE TEMP B-TREE FOR ORDER BY'), `网关 API Key 分组绑定读取不应为排序创建临时 B-TREE，实际计划：${details}`)

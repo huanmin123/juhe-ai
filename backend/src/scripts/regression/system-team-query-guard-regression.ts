@@ -27,7 +27,7 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const firstMember = repositories.createSystemAccount({
     username: 'system_team_query_guard_member_1',
-    displayName: '系统团队查询防护成员 1',
+    displayName: '系统团队查询防护成员1',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -35,7 +35,7 @@ try {
   })
   const secondMember = repositories.createSystemAccount({
     username: 'system_team_query_guard_member_2',
-    displayName: '系统团队查询防护成员 2',
+    displayName: '系统团队查询防护成员2',
     password: 'password',
     role: 'user',
     status: 'active',

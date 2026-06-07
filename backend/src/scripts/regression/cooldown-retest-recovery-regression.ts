@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import http from 'node:http'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -14,18 +15,31 @@ runtimeConfig.secret = 'cooldown-retest-recovery-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, gatewayRuntimeCache] = await Promise.all([
+const [databaseModule, repositories, gatewayRuntimeCache, cooldownRetestService] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js')
+  import('../../modules/gateway/gateway-runtime-cache.service.js'),
+  import('../../modules/background/cooldown-account-retest.service.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
+let mockOpenAIServer: http.Server | undefined
+
 try {
+  mockOpenAIServer = createMockOpenAIServer()
+  mockOpenAIServer.listen(0, '127.0.0.1')
+  await onceListening(mockOpenAIServer)
+  const mockAddress = mockOpenAIServer.address()
+  if (!mockAddress || typeof mockAddress === 'string') {
+    throw new Error('冷却复测恢复 mock 上游地址不可用')
+  }
+  const mockBaseUrl = `http://127.0.0.1:${mockAddress.port}`
+
   const group = repositories.createGroup({
     name: '冷却复测回归分组',
     providerCode: 'openai'
@@ -163,8 +177,99 @@ try {
   assert.equal(limitedStillRecovering.action, 'retry_immediately', '限流首次复测失败应走快速恢复通道')
   assert.equal(repositories.findAccountSummary(rateLimitedAccount.id, access)?.status, 'rate_limited', '限流复测失败后应保持限流状态等待下次自动恢复')
 
+  const probeAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '后台探针通过恢复回归',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cooldown-retest-probe-success',
+      base_url: mockBaseUrl
+    },
+    status: 'active',
+    groupId: group.id
+  }, access)
+  repositories.markAccountTemporaryUnavailable(probeAccount.id, '模拟后台探针恢复前失败态')
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(Date.now() - 1000).toISOString(), probeAccount.id)
+  const dueProbeAccount = repositories.findAccountSummary(probeAccount.id, access)
+  assert.equal(dueProbeAccount?.status, 'temporary_unavailable', '后台探针恢复前账号应为临时不可调用')
+  assert(dueProbeAccount?.cooldownUntil, '后台探针恢复前应有冷却时间')
+  assert(cooldownRetestService.enqueueCooldownAccountRetest(dueProbeAccount, {
+    maxPauseMinutes: 10,
+    maxRecoveryHours: 1
+  }), '后台探针恢复账号应能入队')
+  const restoredByProbe = await waitForAccountStatus(probeAccount.id, 'active')
+  assert(restoredByProbe, '后台探针测试通过后应能读取恢复后的账号')
+  assert.equal(restoredByProbe.schedulable, true, '后台探针测试通过后应恢复调度')
+  assert.equal(restoredByProbe.cooldownUntil, undefined, '后台探针测试通过后应清理冷却时间')
+  assert.equal(restoredByProbe.lastErrorMessage, undefined, '后台探针测试通过后应清理错误原因')
+
   console.log('cooldown retest recovery regression passed')
 } finally {
+  await closeServer(mockOpenAIServer)
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function createMockOpenAIServer(): http.Server {
+  return http.createServer((req, res) => {
+    if (req.method !== 'POST' || req.url?.split('?', 1)[0] !== '/v1/responses') {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'not found' } }))
+      return
+    }
+    req.on('end', () => {
+      const completedEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'resp_cooldown_retest_probe_success',
+          object: 'response',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              content: [{ type: 'output_text', text: 'OK' }]
+            }
+          ],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2
+          }
+        }
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+      res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
+    })
+    req.resume()
+  })
+}
+
+async function waitForAccountStatus(accountId: string, status: string): Promise<NonNullable<ReturnType<typeof repositories.findAccountSummary>>> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 5000) {
+    const account = repositories.findAccountSummary(accountId, access)
+    if (account?.status === status) {
+      return account
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+  }
+  throw new Error(`等待账号 ${accountId} 恢复为 ${status} 超时`)
+}
+
+async function onceListening(server: http.Server): Promise<void> {
+  if (server.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once('listening', resolvePromise)
+    server.once('error', rejectPromise)
+  })
+}
+
+async function closeServer(server?: http.Server): Promise<void> {
+  if (!server?.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.close((error) => error ? rejectPromise(error) : resolvePromise())
+    server.closeIdleConnections?.()
+  })
 }

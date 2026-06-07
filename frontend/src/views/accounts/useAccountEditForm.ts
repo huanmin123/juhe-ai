@@ -86,8 +86,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
   const accountStreamInterceptRules = ref<AccountStreamInterceptRuleForm[]>(loadAccountStreamInterceptRules())
   const providerModelOptions = ref<SelectOption[]>([])
+  const mappingTargetModelOptions = ref<SelectOption[]>([])
   const providerModelsLoading = ref(false)
   const providerModelOptionsCache = new Map<string, SelectOption[]>()
+  const mappingTargetModelOptionsCache = new Map<string, SelectOption[]>()
   let formOpenRequestToken = 0
 
   const createScopeParams = computed<AccountScopeParams>(() => creatingAccountScopeParams.value ?? options.accountScopeParams.value)
@@ -137,6 +139,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningScheduleFingerprint.value = undefined
     Object.assign(form, defaultForm(providerCode, type))
     providerModelOptions.value = []
+    mappingTargetModelOptions.value = []
     providerModelsLoading.value = false
     ensureDefaultGroupSelected(providerCode)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
@@ -154,7 +157,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function providerModelsToOptions(models: ProviderModelPricing[]): SelectOption[] {
-    return models.map((item) => ({ label: item.model, value: item.model }))
+    return models.map((item) => ({
+      label: item.visibility === 'mapping_target_only' ? `${item.model}（仅映射）` : item.model,
+      value: item.model
+    }))
   }
 
   function defaultGroupForProvider(providerCode: string) {
@@ -225,6 +231,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       notes: form.notes,
       clientCompatibility: providerCode === 'openai' && type === 'oauth' ? 'codex_responses' : form.clientCompatibility,
       supportedModels: form.supportedModels,
+      modelMappings: form.modelMappings,
       concurrencyLimit: form.concurrencyLimit,
       priority: form.priority,
       accountExpiresAt: form.accountExpiresAt,
@@ -279,6 +286,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accessToken: asString(sourceAccount.credentials.access_token) ?? '',
       refreshToken: asString(sourceAccount.credentials.refresh_token) ?? '',
       supportedModels: [...(sourceAccount.supportedModels ?? [])],
+      modelMappings: cloneAccountModelMappings(sourceAccount.modelMappings),
       availabilitySchedule,
       notes: sourceAccount.notes ?? ''
     })
@@ -324,20 +332,30 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   async function loadProviderModelOptions(providerCode: string): Promise<void> {
     const code = providerCode.trim()
     providerModelOptions.value = []
+    mappingTargetModelOptions.value = []
     if (!code) return
-    const cached = providerModelOptionsCache.get(code)
-    if (cached) {
-      providerModelOptions.value = cached
+    const cacheKey = providerModelCacheKey(code)
+    const cachedPublic = providerModelOptionsCache.get(cacheKey)
+    const cachedMappingTargets = mappingTargetModelOptionsCache.get(cacheKey)
+    if (cachedPublic && cachedMappingTargets) {
+      providerModelOptions.value = cachedPublic
+      mappingTargetModelOptions.value = cachedMappingTargets
       providerModelsLoading.value = false
       return
     }
     providerModelsLoading.value = true
     try {
-      const models = await api.providers.models(code)
-      const modelOptions = providerModelsToOptions(models)
-      providerModelOptionsCache.set(code, modelOptions)
+      const [models, mappingTargetModels] = await Promise.all([
+        cachedPublic ? Promise.resolve(undefined) : api.providers.models(code),
+        cachedMappingTargets ? Promise.resolve(undefined) : api.providers.models(code, { includeMappingTargets: true })
+      ])
+      const modelOptions = cachedPublic ?? providerModelsToOptions(models ?? [])
+      const mappingTargetOptions = cachedMappingTargets ?? providerModelsToOptions(mappingTargetModels ?? [])
+      providerModelOptionsCache.set(cacheKey, modelOptions)
+      mappingTargetModelOptionsCache.set(cacheKey, mappingTargetOptions)
       if (form.providerCode === code) {
         providerModelOptions.value = modelOptions
+        mappingTargetModelOptions.value = mappingTargetOptions
       }
     } catch (error) {
       console.error(error)
@@ -347,6 +365,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         providerModelsLoading.value = false
       }
     }
+  }
+
+  function providerModelCacheKey(providerCode: string): string {
+    return `${providerCode}:${createScopeParams.value?.systemAccountId ?? 'self'}:${options.isManagementView.value ? 'management' : 'self'}`
   }
 
   async function loadProviderGroupOptions(providerCode: string): Promise<void> {
@@ -544,6 +566,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isApiKeyForm,
     isOAuthForm,
     isOpenAIOAuthForm,
+    mappingTargetModelOptions,
     modalConfirmLoading,
     modalOkButtonProps,
     modalOpen,
@@ -638,6 +661,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       callbackUrl: '',
       oauthMode: 'manual',
       supportedModels: [...(account.supportedModels ?? [])],
+      modelMappings: cloneAccountModelMappings(account.modelMappings),
       availabilitySchedule,
       notes: account.notes ?? ''
     })
@@ -651,6 +675,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function cloneAccountName(name: string): string {
     const trimmed = name.trim()
     return trimmed ? `${trimmed} - 克隆` : ''
+  }
+
+  function cloneAccountModelMappings(value: AccountSummary['modelMappings']): AccountFormModel['modelMappings'] {
+    return (value ?? []).map((item) => ({ ...item }))
   }
 
   function setFormGroup(group: GroupSelection | undefined): void {

@@ -125,9 +125,13 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
         FROM groups
         WHERE groups.system_account_id = ?
         UNION ALL
-        SELECT ${groupRowSelectColumns('groups')}, ${authorizedAuthorizationColumns()}
+        SELECT ${authorizedGroupRowSelectColumns('groups', 'authorization_settings')}, ${authorizedAuthorizationColumns()}
         FROM resource_authorizations ra
         INNER JOIN groups ON groups.id = ra.resource_id
+        LEFT JOIN group_authorization_settings authorization_settings
+          ON authorization_settings.authorization_id = ra.id
+          AND authorization_settings.system_account_id = ra.grantee_system_account_id
+          AND authorization_settings.group_id = ra.resource_id
         WHERE ra.resource_type = 'group'
           AND ra.grantee_system_account_id = ?
           AND ra.status IN ('active', 'paused', 'expired')
@@ -160,9 +164,13 @@ export function findGroupRowForAccess(access: AccessScope | undefined, groupId: 
         WHERE groups.id = ?
           AND groups.system_account_id = ?
         UNION ALL
-        SELECT ${groupRowSelectColumns('groups')}, ${authorizedAuthorizationColumns()}
+        SELECT ${authorizedGroupRowSelectColumns('groups', 'authorization_settings')}, ${authorizedAuthorizationColumns()}
         FROM resource_authorizations ra
         INNER JOIN groups ON groups.id = ra.resource_id
+        LEFT JOIN group_authorization_settings authorization_settings
+          ON authorization_settings.authorization_id = ra.id
+          AND authorization_settings.system_account_id = ra.grantee_system_account_id
+          AND authorization_settings.group_id = ra.resource_id
         WHERE groups.id = ?
           AND ra.resource_type = 'group'
           AND ra.grantee_system_account_id = ?
@@ -180,7 +188,9 @@ function ownerAuthorizationColumns(): string {
     'NULL AS authorization_id',
     'NULL AS authorization_status',
     'NULL AS authorization_expires_at',
-    'NULL AS authorization_limits_json'
+    'NULL AS authorization_limits_json',
+    'NULL AS authorization_effective_source_type',
+    'NULL AS authorization_effective_source_team_id'
   ].join(', ')
 }
 
@@ -190,7 +200,9 @@ function authorizedAuthorizationColumns(): string {
     'ra.id AS authorization_id',
     'ra.status AS authorization_status',
     'ra.expires_at AS authorization_expires_at',
-    'ra.limits_json AS authorization_limits_json'
+    'ra.limits_json AS authorization_limits_json',
+    'ra.effective_source_type AS authorization_effective_source_type',
+    'ra.effective_source_team_id AS authorization_effective_source_team_id'
   ].join(', ')
 }
 
@@ -210,6 +222,23 @@ function groupRowSelectColumns(alias: string): string {
   ].map((column) => `${alias}.${column}`).join(', ')
 }
 
+function authorizedGroupRowSelectColumns(groupAlias: string, settingsAlias: string): string {
+  const localGroupType = `COALESCE(${settingsAlias}.group_type, ${groupAlias}.group_type)`
+  return [
+    `${groupAlias}.id`,
+    `${groupAlias}.system_account_id`,
+    `${groupAlias}.name`,
+    `${groupAlias}.provider_code`,
+    `${groupAlias}.description`,
+    `CASE WHEN ${groupAlias}.enabled = 1 THEN COALESCE(${settingsAlias}.enabled, 1) ELSE 0 END AS enabled`,
+    `${groupAlias}.is_default`,
+    `${localGroupType} AS group_type`,
+    `CASE WHEN ${localGroupType} = 'high_concurrency' THEN COALESCE(${settingsAlias}.scheduling_policy_json, ${groupAlias}.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json`,
+    `${groupAlias}.created_at`,
+    `COALESCE(${settingsAlias}.updated_at, ${groupAlias}.updated_at) AS updated_at`
+  ].join(', ')
+}
+
 function groupListRowOuterSelectColumns(): string {
   return [
     'id',
@@ -227,7 +256,9 @@ function groupListRowOuterSelectColumns(): string {
     'authorization_id',
     'authorization_status',
     'authorization_expires_at',
-    'authorization_limits_json'
+    'authorization_limits_json',
+    'authorization_effective_source_type',
+    'authorization_effective_source_team_id'
   ].join(', ')
 }
 

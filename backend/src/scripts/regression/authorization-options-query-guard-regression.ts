@@ -45,13 +45,13 @@ try {
   })
   const wildcardAccount = repositories.createSystemAccount({
     username: 'grant-percent-literal',
-    displayName: 'percent%literal 用户',
+    displayName: 'percent%literal用户',
     password: 'Password-123456',
     mustChangePassword: false
   })
   const wildcardNeighborAccount = repositories.createSystemAccount({
     username: 'grant-percent-neighbor',
-    displayName: 'percentXliteral 用户',
+    displayName: 'percentXliteral用户',
     password: 'Password-123456',
     mustChangePassword: false
   })

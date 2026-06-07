@@ -28,13 +28,13 @@ const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
 try {
   const userA = repositories.createSystemAccount({
     username: 'team-page-user-a',
-    displayName: '团队分页用户 A',
+    displayName: '团队分页用户A',
     password: 'Password-123456',
     mustChangePassword: false
   })
   const userB = repositories.createSystemAccount({
     username: 'team-page-user-b',
-    displayName: '团队分页用户 B',
+    displayName: '团队分页用户B',
     password: 'Password-123456',
     mustChangePassword: false
   })

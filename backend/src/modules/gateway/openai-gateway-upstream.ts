@@ -13,6 +13,7 @@ import {
 } from './openai-oauth-codex-adapter.js'
 import { type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
 import { requestStream } from './openai-gateway-usage.js'
+import { buildOpenAIModelMappedJsonBody, resolveOpenAIRequestModelMapping } from './openai-gateway-model-mapping.js'
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody, type OpenAIClientCompatibilityAccount } from './openai-api-key-client-compatibility.js'
 import {
   openAICodexOriginator,
@@ -42,6 +43,7 @@ interface UpstreamHeaderAccount extends OpenAIClientCompatibilityAccount {
   id?: string
   apiKey: string
   type?: string
+  modelMappings?: Array<{ sourceModel: string; upstreamModel: string; enabled: boolean }>
   credentials?: Record<string, unknown>
 }
 
@@ -256,15 +258,20 @@ export async function buildUpstreamRequestParts(
   identity: OpenAIOAuthCodexIdentity,
   signal?: AbortSignal
 ): Promise<{ headers: Headers; body?: Buffer | string }> {
+  const modelMapping = resolveOpenAIRequestModelMapping(req, account)
   if (account.type === 'oauth') {
-    return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal)
+    return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
+      modelOverride: modelMapping?.upstreamModel
+    })
   }
-  const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal)
+  const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
+    modelOverride: modelMapping?.upstreamModel
+  })
   const headers = buildUpstreamHeaders(req.headers, account)
   applyOpenAIClientCompatibilityHeaders(req, account, headers)
   return {
     headers,
-    body: compatibilityBody ?? buildUpstreamRequestBody(req)
+    body: compatibilityBody ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req))
   }
 }
 

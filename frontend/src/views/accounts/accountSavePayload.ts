@@ -21,6 +21,7 @@ export type AccountSavePayload = {
   priority: number
   clientCompatibility: AccountFormModel['clientCompatibility']
   supportedModels: string[]
+  modelMappings: AccountFormModel['modelMappings']
   proxyProfileId?: string | null
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
@@ -36,6 +37,7 @@ export type AccountOAuthCreateCommonPayload = {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
+  modelMappings: AccountFormModel['modelMappings']
   proxyProfileId?: string
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
@@ -68,7 +70,8 @@ export function validateAccountSaveForm(input: {
     return errorPolicyValidation.message || '错误处理策略配置不完整'
   }
   const streamPolicyValidation = validateAccountStreamInterceptRules(input.streamInterceptRules)
-  return streamPolicyValidation.valid ? undefined : streamPolicyValidation.message || '账户流式拦截规则配置不完整'
+  if (!streamPolicyValidation.valid) return streamPolicyValidation.message || '账户流式拦截规则配置不完整'
+  return validateAccountModelMappings(form.modelMappings)
 }
 
 export function buildAccountSavePayload(input: {
@@ -88,6 +91,7 @@ export function buildAccountSavePayload(input: {
     priority: input.form.priority,
     clientCompatibility: input.form.clientCompatibility,
     supportedModels: [...(input.form.supportedModels ?? [])],
+    modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
@@ -104,6 +108,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     priority: payload.priority,
     clientCompatibility: payload.clientCompatibility,
     supportedModels: payload.supportedModels,
+    modelMappings: payload.modelMappings,
     proxyProfileId: payload.proxyProfileId,
     accountExpiresAt: payload.accountExpiresAt,
     availabilitySchedule: payload.availabilitySchedule,
@@ -126,6 +131,7 @@ export function buildOAuthCreateCommonPayload(input: {
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
     supportedModels: [...(input.form.supportedModels ?? [])],
+    modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     proxyProfileId: input.form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
@@ -159,4 +165,45 @@ function accountCredentials(input: {
     streamInterceptRules: input.streamInterceptRules,
     form: input.form
   })
+}
+
+function normalizeAccountModelMappings(value: AccountFormModel['modelMappings']): AccountFormModel['modelMappings'] {
+  const output: AccountFormModel['modelMappings'] = []
+  const seenSources = new Set<string>()
+  for (const item of value ?? []) {
+    const sourceModel = item.sourceModel.trim()
+    const upstreamModel = item.upstreamModel.trim()
+    if (!sourceModel || !upstreamModel || sourceModel === upstreamModel || seenSources.has(sourceModel)) {
+      continue
+    }
+    seenSources.add(sourceModel)
+    output.push({
+      sourceModel,
+      upstreamModel,
+      enabled: item.enabled !== false
+    })
+  }
+  return output
+}
+
+function validateAccountModelMappings(value: AccountFormModel['modelMappings']): string | undefined {
+  const seenSources = new Set<string>()
+  for (const item of value ?? []) {
+    const sourceModel = item.sourceModel.trim()
+    const upstreamModel = item.upstreamModel.trim()
+    if (!sourceModel && !upstreamModel) {
+      continue
+    }
+    if (!sourceModel || !upstreamModel) {
+      return '模型映射需要同时选择下游模型和上游模型'
+    }
+    if (sourceModel === upstreamModel) {
+      return '模型映射的下游模型和上游模型不能相同'
+    }
+    if (seenSources.has(sourceModel)) {
+      return `下游模型 ${sourceModel} 已重复配置映射`
+    }
+    seenSources.add(sourceModel)
+  }
+  return undefined
 }

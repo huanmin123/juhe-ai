@@ -141,9 +141,17 @@ export interface ProviderDefinition {
 export interface ProviderModelPricing {
   providerCode: ProviderCode
   model: string
+  id?: string
+  scope?: 'built_in' | 'global' | 'personal'
+  visibility?: 'public' | 'mapping_target_only'
+  status?: 'draft' | 'active' | 'disabled'
+  systemAccountId?: string
+  displayName?: string
+  pricingModel?: string
   mode?: string
   releaseDate?: string
   shutdownDate?: string
+  contextWindowTokens?: number
   supportedApiProtocols: Array<'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'>
   inputUsdPer1M?: number
   outputUsdPer1M?: number
@@ -152,12 +160,19 @@ export interface ProviderModelPricing {
   cacheWrite1hUsdPer1M?: number
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
+  pricingNotes?: string
+  capabilityNotes?: string
+  notes?: string
+  createdAt?: string
+  updatedAt?: string
   source: string
 }
 
@@ -272,6 +287,7 @@ export interface ResourcePermissions {
   canAuthorize: boolean
   canViewCredentials: boolean
   canManageAccounts?: boolean
+  canBindToApiKey?: boolean
 }
 
 export interface AccountOAuthUsageWindow {
@@ -357,6 +373,12 @@ export interface AccountEffectiveAvailability {
   retryAt?: string
 }
 
+export interface AccountModelMapping {
+  sourceModel: string
+  upstreamModel: string
+  enabled: boolean
+}
+
 export interface GroupAccountStats {
   total: number
   available: number
@@ -391,6 +413,7 @@ export interface AccountSummary {
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
+  modelMappings?: AccountModelMapping[]
   lastSuccessfulTestModel?: string
   qualityScore?: number
   qualityState?: string

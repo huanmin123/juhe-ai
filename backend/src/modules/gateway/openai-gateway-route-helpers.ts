@@ -1,7 +1,11 @@
 import type { Request } from 'express'
 
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
-import { listProviderModelPricing } from '../model-pricing/model-pricing.service.js'
+import {
+  buildOpenAIModelsResponseFromCatalog,
+  type OpenAIModelsListResponse,
+  type ProviderModelCatalogItem
+} from '../model-pricing/model-catalog.service.js'
 
 export type UpstreamAccount = OpenAIAccountSecret
 
@@ -64,16 +68,10 @@ export function isOpenAIModelsRequest(req: Request): boolean {
   return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/models'
 }
 
-export function buildOpenAIModelsResponse(): { object: 'list'; data: Array<{ id: string; object: 'model'; created: number; owned_by: string }> } {
-  return {
-    object: 'list',
-    data: listProviderModelPricing('openai').map((item) => ({
-      id: item.model,
-      object: 'model',
-      created: item.releaseDate ? Math.trunc(Date.parse(`${item.releaseDate}T00:00:00.000Z`) / 1000) : 0,
-      owned_by: 'openai'
-    }))
-  }
+export type { OpenAIModelsListResponse }
+
+export function buildOpenAIModelsResponse(catalog: ProviderModelCatalogItem[]): OpenAIModelsListResponse {
+  return buildOpenAIModelsResponseFromCatalog(catalog)
 }
 
 const openAICodexBaseUrl = 'https://chatgpt.com/backend-api/codex'

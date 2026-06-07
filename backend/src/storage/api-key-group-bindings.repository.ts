@@ -1,6 +1,6 @@
 import type { ApiKeyGroupBindingSummary } from '../domain/types.js'
 import { normalizeApiKeyGroupBindingWeight } from '../domain/api-key-routing.js'
-import { getBusinessDatabase } from './database.js'
+import { getBusinessDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export interface ApiKeyGroupBindingRow {
@@ -22,6 +22,7 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
   if (!ids.length) return result
 
   const database = getBusinessDatabase()
+  const now = nowIso()
   for (const chunk of chunkValues(ids, 500)) {
     const rows = database
       .prepare(`
@@ -35,9 +36,24 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
           api_key_group_bindings.status,
           groups.name AS group_name,
           groups.provider_code,
-          groups.enabled AS group_enabled
-        FROM api_key_group_bindings
-        LEFT JOIN groups ON groups.id = api_key_group_bindings.group_id
+        CASE
+          WHEN groups.id IS NULL THEN 0
+          WHEN groups.system_account_id = api_key_group_bindings.system_account_id THEN groups.enabled
+          WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
+          ELSE 0
+        END AS group_enabled
+      FROM api_key_group_bindings
+      LEFT JOIN groups ON groups.id = api_key_group_bindings.group_id
+        LEFT JOIN resource_authorizations group_authorization
+          ON group_authorization.resource_type = 'group'
+          AND group_authorization.resource_id = groups.id
+          AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+          AND group_authorization.status = 'active'
+          AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+        LEFT JOIN group_authorization_settings
+          ON group_authorization_settings.authorization_id = group_authorization.id
+          AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
+          AND group_authorization_settings.group_id = groups.id
         WHERE api_key_group_bindings.api_key_id IN (${sqlPlaceholders(chunk.length)})
         ORDER BY api_key_group_bindings.api_key_id ASC,
           CASE WHEN api_key_group_bindings.status = 'active' THEN 0 ELSE 1 END ASC,
@@ -45,7 +61,7 @@ export function loadApiKeyGroupBindingSummariesByApiKeyIds(apiKeyIds: string[]):
           api_key_group_bindings.created_at ASC,
           api_key_group_bindings.id ASC
       `)
-      .all(...chunk) as unknown as ApiKeyGroupBindingRow[]
+      .all(now, ...chunk) as unknown as ApiKeyGroupBindingRow[]
     for (const row of rows) {
       if (!Number.isInteger(row.priority) || row.priority <= 0) {
         throw new Error(`API Key 分组绑定优先级无效：${row.id}`)

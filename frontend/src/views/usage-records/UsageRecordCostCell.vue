@@ -29,6 +29,18 @@
             <span>图片输出成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.outputImageCostUsd) }}</span>
           </div>
+          <div v-if="showInputAudioCost" class="cost-detail-row">
+            <span>音频输入成本</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.inputAudioCostUsd) }}</span>
+          </div>
+          <div v-if="showOutputAudioCost" class="cost-detail-row">
+            <span>音频输出成本</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.outputAudioCostUsd) }}</span>
+          </div>
+          <div v-if="showOutputImageUnitCost" class="cost-detail-row">
+            <span>图片张数成本</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.outputImageUnitCostUsd) }}</span>
+          </div>
           <div class="cost-detail-row">
             <span>账户计费</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.accountChargeUsd) }}</span>
@@ -58,6 +70,18 @@
             <span>图片输出单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputImageUsdPer1M) }}</span>
           </div>
+          <div v-if="showInputAudioPrice" class="cost-detail-row">
+            <span>音频输入单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputAudioUsdPer1M) }}</span>
+          </div>
+          <div v-if="showOutputAudioPrice" class="cost-detail-row">
+            <span>音频输出单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputAudioUsdPer1M) }}</span>
+          </div>
+          <div v-if="showOutputImageUnitPrice" class="cost-detail-row">
+            <span>每张图片单价</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.outputUsdPerImage) }}</span>
+          </div>
         </div>
       </template>
       <InfoCircleOutlined class="cost-detail-icon" />
@@ -79,10 +103,19 @@ const props = defineProps<{
 const costBreakdown = computed(() => props.record.costBreakdown)
 const hasInputImagePrice = computed(() => costBreakdown.value?.inputImageUsdPer1M !== undefined && costBreakdown.value.inputImageUsdPer1M !== costBreakdown.value.inputUsdPer1M)
 const hasOutputImagePrice = computed(() => costBreakdown.value?.outputImageUsdPer1M !== undefined && costBreakdown.value.outputImageUsdPer1M !== costBreakdown.value.outputUsdPer1M)
+const hasInputAudioPrice = computed(() => costBreakdown.value?.inputAudioUsdPer1M !== undefined && costBreakdown.value.inputAudioUsdPer1M !== costBreakdown.value.inputUsdPer1M)
+const hasOutputAudioPrice = computed(() => costBreakdown.value?.outputAudioUsdPer1M !== undefined && costBreakdown.value.outputAudioUsdPer1M !== costBreakdown.value.outputUsdPer1M)
+const hasOutputImageUnitPrice = computed(() => costBreakdown.value?.outputUsdPerImage !== undefined)
 const showInputImageCost = computed(() => hasInputImagePrice.value && costBreakdown.value?.inputImageCostUsd !== undefined)
 const showOutputImageCost = computed(() => hasOutputImagePrice.value && costBreakdown.value?.outputImageCostUsd !== undefined)
+const showInputAudioCost = computed(() => hasInputAudioPrice.value && costBreakdown.value?.inputAudioCostUsd !== undefined)
+const showOutputAudioCost = computed(() => hasOutputAudioPrice.value && costBreakdown.value?.outputAudioCostUsd !== undefined)
+const showOutputImageUnitCost = computed(() => hasOutputImageUnitPrice.value && costBreakdown.value?.outputImageUnitCostUsd !== undefined)
 const showInputImagePrice = computed(() => hasInputImagePrice.value)
 const showOutputImagePrice = computed(() => hasOutputImagePrice.value)
+const showInputAudioPrice = computed(() => hasInputAudioPrice.value)
+const showOutputAudioPrice = computed(() => hasOutputAudioPrice.value)
+const showOutputImageUnitPrice = computed(() => hasOutputImageUnitPrice.value)
 </script>
 
 <style scoped>

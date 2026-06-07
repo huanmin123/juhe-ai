@@ -20,7 +20,7 @@ export const OPENAI_PROVIDER_SEED = {
   baseUrl: 'https://api.openai.com/v1',
   defaultTestModel: 'gpt-5.5',
   accountTypes: ['oauth', 'api_key'],
-  capabilities: ['models', 'responses', 'stream', 'passthrough']
+  capabilities: ['responses', 'chat']
 } as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [

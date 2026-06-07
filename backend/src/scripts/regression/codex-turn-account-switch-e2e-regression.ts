@@ -701,7 +701,7 @@ function seedGatewayAccess(): { systemAccountId: string; role: 'user' } {
   if (!seedOwnerAccess) {
     const owner = repositories.createSystemAccount({
       username: 'codex_turn_switch_owner',
-      displayName: 'Codex turn 切号回归用户',
+      displayName: 'CodexTurn切号回归用户',
       password: 'password',
       role: 'user',
       status: 'active',

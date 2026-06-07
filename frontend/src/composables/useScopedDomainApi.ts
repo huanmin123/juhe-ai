@@ -53,6 +53,9 @@ export function useScopedGroupsApi(isManagementView: Ref<boolean>) {
     update: (id: string, payload: GroupMutationPayload, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.update(id, payload, params)
       : api.myGroups.update(id, payload),
+    returnAuthorization: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
+      ? api.groups.returnAuthorization(id, params)
+      : api.myGroups.returnAuthorization(id),
     delete: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.delete(id, params)
       : api.myGroups.delete(id)

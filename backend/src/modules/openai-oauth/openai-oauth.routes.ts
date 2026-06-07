@@ -31,6 +31,12 @@ const oauthCredentialsPatchSchema = z.object({
   stream_intercept_rules: z.unknown().optional()
 }).strict()
 
+const accountModelMappingSchema = z.object({
+  sourceModel: z.string().trim().min(1),
+  upstreamModel: z.string().trim().min(1),
+  enabled: z.boolean().optional()
+}).strict()
+
 const createFromCodeSchema = z.object({
   sessionId: z.string().min(1),
   callbackUrl: z.string().min(1),
@@ -40,6 +46,7 @@ const createFromCodeSchema = z.object({
   priority: z.number().int().optional(),
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
+  modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
@@ -56,6 +63,7 @@ const createFromRefreshTokenSchema = z.object({
   priority: z.number().int().optional(),
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
+  modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
@@ -132,6 +140,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
         supportedModels: parsed.data.supportedModels,
+        modelMappings: parsed.data.modelMappings,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt,
@@ -202,6 +211,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
         supportedModels: parsed.data.supportedModels,
+        modelMappings: parsed.data.modelMappings,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt,
@@ -458,6 +468,7 @@ function buildOAuthCreateLog(
       safeChange('type', '账户类型', undefined, account.type),
       safeChange('credentials', 'OAuth 凭据', undefined, account.credentials),
       safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
+      safeChange('modelMappings', '模型映射', undefined, account.modelMappings),
       safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
       safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
       safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),

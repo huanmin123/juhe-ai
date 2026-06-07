@@ -57,6 +57,47 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS custom_provider_models (
+      id TEXT PRIMARY KEY,
+      provider_code TEXT NOT NULL,
+      model TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      system_account_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      visibility TEXT NOT NULL DEFAULT 'public',
+      display_name TEXT,
+      mode TEXT,
+      supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+      pricing_model TEXT,
+      release_date TEXT,
+      shutdown_date TEXT,
+      context_window_tokens INTEGER,
+      max_output_tokens INTEGER,
+      input_usd_per_1m REAL,
+      output_usd_per_1m REAL,
+      cached_input_usd_per_1m REAL,
+      cache_write_usd_per_1m REAL,
+      image_input_usd_per_1m REAL,
+      image_output_usd_per_1m REAL,
+      audio_input_usd_per_1m REAL,
+      audio_output_usd_per_1m REAL,
+      output_usd_per_image REAL,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      pricing_notes TEXT,
+      capability_notes TEXT,
+      notes TEXT,
+      created_by TEXT NOT NULL,
+      updated_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      CHECK (scope IN ('global', 'personal')),
+      CHECK (status IN ('draft', 'active', 'disabled')),
+      CHECK (visibility IN ('public', 'mapping_target_only')),
+      CHECK ((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id IS NOT NULL))
+    );
+
     CREATE TABLE IF NOT EXISTS proxy_profiles (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -190,6 +231,19 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
 
+    CREATE TABLE IF NOT EXISTS account_model_mappings (
+      account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      source_model TEXT NOT NULL,
+      upstream_model TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, source_model),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
+    );
+
     CREATE TABLE IF NOT EXISTS account_test_tasks (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
@@ -202,6 +256,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       diagnostics TEXT NOT NULL DEFAULT 'full',
       model TEXT,
       client_compatibility TEXT,
+      draft_account_encrypted TEXT,
       status TEXT NOT NULL DEFAULT 'queued',
       status_message TEXT,
       result_json TEXT,
@@ -211,8 +266,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       started_at TEXT,
       finished_at TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (account_id) REFERENCES accounts(id)
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS system_teams (
@@ -322,6 +376,20 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code)
+    );
+
+    CREATE TABLE IF NOT EXISTS group_authorization_settings (
+      authorization_id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      group_type TEXT NOT NULL DEFAULT 'personal',
+      scheduling_policy_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS group_accounts (
@@ -451,7 +519,17 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_unique_lower
+      ON custom_provider_models(provider_code, lower(model))
+      WHERE scope = 'global';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique_lower
+      ON custom_provider_models(provider_code, system_account_id, lower(model))
+      WHERE scope = 'personal';
+    CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
+      ON custom_provider_models(provider_code, status, visibility, scope, system_account_id, model);
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_request_updated ON account_test_tasks(request_system_account_id, updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_status_queued ON account_test_tasks(status, queued_at ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_finished_cleanup ON account_test_tasks(finished_at ASC, id ASC) WHERE finished_at IS NOT NULL;
@@ -489,6 +567,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON group_accounts(group_id, system_account_id, enabled, local_fallback_enabled ASC, local_super_priority_enabled DESC, local_priority ASC, created_at ASC, account_id ASC);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_account_scope_enabled ON group_accounts(account_id, system_account_id, enabled);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_scope_enabled_updated ON group_accounts(system_account_id, account_id, enabled, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_group_authorization_settings_scope_group
+      ON group_authorization_settings(system_account_id, group_id);
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);

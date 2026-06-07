@@ -14,6 +14,7 @@ import type {
   SystemTeamMemberStatus,
   SystemTeamStatus
 } from '../domain/types.js'
+import type { AccountModelMapping } from '../domain/types.js'
 
 export interface AccountRow {
   id: string
@@ -36,6 +37,7 @@ export interface AccountRow {
   fallback_enabled: number
   client_compatibility: AccountClientCompatibility
   supported_models?: string[]
+  model_mappings?: AccountModelMapping[]
   schedulable: number
   availability_schedule_json: string | null
   account_expires_at: string | null
@@ -230,4 +232,6 @@ export type GroupListRow = GroupRow & {
   authorization_status?: AuthorizationStatus | null
   authorization_expires_at?: string | null
   authorization_limits_json?: string | null
+  authorization_effective_source_type?: ResourceAuthorizationSourceType | null
+  authorization_effective_source_team_id?: string | null
 }

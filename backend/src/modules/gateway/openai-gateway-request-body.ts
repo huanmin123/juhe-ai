@@ -1,4 +1,6 @@
-import type { Request } from 'express'
+import type { Request, Response } from 'express'
+
+import { runtimeConfig } from '../../config/runtime.js'
 
 export const gatewayJsonBodyLargeWarningBytes = 2 * 1024 * 1024
 export const gatewayJsonBodyInlineParseMaxBytes = 256 * 1024
@@ -8,6 +10,10 @@ export const gatewayImageRawBodyHardLimitBytes = 64 * 1024 * 1024
 export const gatewayImageRawBodyHardLimit = '64mb'
 export const gatewayRawBodyHardLimitBytes = gatewayImageRawBodyHardLimitBytes
 export const gatewayRawBodyHardLimit = gatewayImageRawBodyHardLimit
+let gatewayBodyInFlightBytes = 0
+let gatewayBodyInFlightRequestCount = 0
+let gatewayBodyInFlightRejectedCount = 0
+let gatewayBodyInFlightMaxBytesForTest: number | undefined
 
 export type GatewayJsonBodyParseStatus =
   | 'empty'
@@ -36,6 +42,25 @@ export type GatewayRawBodyRequest = Request & {
   gatewayUpstreamBodyCache?: {
     passthrough?: { body: Buffer | undefined }
   }
+  gatewayBodyInFlightLease?: GatewayBodyInFlightLease
+}
+
+export interface GatewayBodyInFlightState {
+  currentBytes: number
+  requestCount: number
+  maxBytes: number
+  rejectedCount: number
+}
+
+interface GatewayBodyInFlightLease {
+  bytes: number
+  release: () => void
+}
+
+type ListenerTarget = {
+  once?: (event: string, listener: () => void) => unknown
+  off?: (event: string, listener: () => void) => unknown
+  removeListener?: (event: string, listener: () => void) => unknown
 }
 
 export interface GatewayImageGenerationToolDowngradeResult {
@@ -93,6 +118,73 @@ export function createGatewayRequestBodyState(input: {
 
 export function getGatewayRequestBodyState(req: Request): GatewayRequestBodyState | undefined {
   return (req as GatewayRawBodyRequest).gatewayRequestBody
+}
+
+export function tryAcquireGatewayRequestBodyInFlightBytes(
+  req: GatewayRawBodyRequest,
+  res: Response,
+  rawBodyBytes: number
+): boolean {
+  const bytes = normalizeGatewayBodyInFlightBytes(rawBodyBytes)
+  if (bytes <= 0) {
+    return true
+  }
+  releaseGatewayRequestBodyInFlightBytes(req)
+  const maxBytes = gatewayRequestBodyInFlightMaxBytes()
+  if (bytes > maxBytes || gatewayBodyInFlightBytes + bytes > maxBytes) {
+    gatewayBodyInFlightRejectedCount += 1
+    return false
+  }
+
+  gatewayBodyInFlightBytes += bytes
+  gatewayBodyInFlightRequestCount += 1
+  let released = false
+  const release = () => {
+    if (released) {
+      return
+    }
+    released = true
+    gatewayBodyInFlightBytes = Math.max(0, gatewayBodyInFlightBytes - bytes)
+    gatewayBodyInFlightRequestCount = Math.max(0, gatewayBodyInFlightRequestCount - 1)
+    if (req.gatewayBodyInFlightLease === lease) {
+      req.gatewayBodyInFlightLease = undefined
+    }
+    removeListener(req, 'aborted', release)
+    removeListener(res, 'finish', release)
+    removeListener(res, 'close', release)
+  }
+  const lease: GatewayBodyInFlightLease = { bytes, release }
+  req.gatewayBodyInFlightLease = lease
+  addOneShotListener(req, 'aborted', release)
+  addOneShotListener(res, 'finish', release)
+  addOneShotListener(res, 'close', release)
+  return true
+}
+
+export function releaseGatewayRequestBodyInFlightBytes(req: GatewayRawBodyRequest): void {
+  req.gatewayBodyInFlightLease?.release()
+}
+
+export function getGatewayRequestBodyInFlightState(): GatewayBodyInFlightState {
+  return {
+    currentBytes: gatewayBodyInFlightBytes,
+    requestCount: gatewayBodyInFlightRequestCount,
+    maxBytes: gatewayRequestBodyInFlightMaxBytes(),
+    rejectedCount: gatewayBodyInFlightRejectedCount
+  }
+}
+
+export function setGatewayRequestBodyInFlightMaxBytesForTest(value: number | undefined): void {
+  gatewayBodyInFlightMaxBytesForTest = typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(1, Math.trunc(value))
+    : undefined
+}
+
+export function clearGatewayRequestBodyInFlightForTest(): void {
+  gatewayBodyInFlightBytes = 0
+  gatewayBodyInFlightRequestCount = 0
+  gatewayBodyInFlightRejectedCount = 0
+  gatewayBodyInFlightMaxBytesForTest = undefined
 }
 
 export function buildGatewayRequestBodySummary(req: Request): Record<string, unknown> | undefined {
@@ -300,6 +392,34 @@ function replaceGatewayJsonBody(req: Request, body: Record<string, unknown>): vo
     jsonParseStatus: previousState?.jsonParseStatus ?? 'parsed',
     parsedBody: body
   })
+}
+
+function gatewayRequestBodyInFlightMaxBytes(): number {
+  return gatewayBodyInFlightMaxBytesForTest ?? runtimeConfig.gateway.bodyInFlightMaxBytes
+}
+
+function normalizeGatewayBodyInFlightBytes(value: unknown): number {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(number) || number <= 0) {
+    return 0
+  }
+  return Math.trunc(number)
+}
+
+function addOneShotListener(target: ListenerTarget, event: string, listener: () => void): void {
+  if (typeof target.once === 'function') {
+    target.once(event, listener)
+  }
+}
+
+function removeListener(target: ListenerTarget, event: string, listener: () => void): void {
+  if (typeof target.off === 'function') {
+    target.off(event, listener)
+    return
+  }
+  if (typeof target.removeListener === 'function') {
+    target.removeListener(event, listener)
+  }
 }
 
 export interface GatewayJsonBodyMetadata {

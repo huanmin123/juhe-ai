@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs'
-import { dirname, join, normalize, resolve } from 'node:path'
+import { unlink } from 'node:fs/promises'
+import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 
 import { defaultUsageShardRoot, runtimeConfig } from '../config/runtime.js'
@@ -29,6 +30,12 @@ export interface UsageRecordShardLocationPage {
   locations: UsageRecordShardLocation[]
   hasMore: boolean
   total: number
+}
+
+export interface EmptyUsageRecordShardFileCleanupResult {
+  usageRecordShards: number
+  usageShardFiles: number
+  hasMore: boolean
 }
 
 export interface UsageRecordShardEntryInput {
@@ -117,6 +124,54 @@ export function closeUsageRecordShardDatabases(): void {
     }
   }
   shardDatabases.clear()
+}
+
+export async function cleanupEmptyUsageRecordShardFilesBefore(cutoffAt: string, limit = 1000): Promise<EmptyUsageRecordShardFileCleanupResult> {
+  const cutoffDate = bucketDateFromBucketDateKey(bucketDateKeyFromIso(cutoffAt))
+  const batchLimit = Math.max(1, Math.trunc(limit))
+  const rows = getDatasetDatabase()
+    .prepare(`
+      SELECT s.shard_key, s.bucket_date, s.shard_id, s.file_path
+      FROM usage_record_shards s
+      WHERE s.status = 'active'
+        AND s.bucket_date <= ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM usage_record_shard_entries ue
+          WHERE ue.shard_key = s.shard_key
+          LIMIT 1
+        )
+      ORDER BY s.bucket_date ASC, s.shard_id ASC
+      LIMIT ?
+    `)
+    .all(cutoffDate, batchLimit + 1) as Array<{ shard_key?: string; bucket_date?: string; shard_id?: number; file_path?: string }>
+  const locations = rows
+    .slice(0, batchLimit)
+    .map(usageRecordShardLocationFromRegistryRow)
+    .filter((location): location is UsageRecordShardLocation => Boolean(location))
+  if (locations.length === 0) {
+    return { usageRecordShards: 0, usageShardFiles: 0, hasMore: rows.length > batchLimit }
+  }
+
+  closeUsageRecordShardDatabases()
+  let usageShardFiles = 0
+  for (const location of locations) {
+    usageShardFiles += await deleteUsageShardFileSet(location.filePath)
+  }
+
+  let usageRecordShards = 0
+  const shardKeys = locations.map((location) => location.shardKey)
+  for (const chunk of chunkValues(shardKeys, 900)) {
+    usageRecordShards += Number(getDatasetDatabase()
+      .prepare(`DELETE FROM usage_record_shards WHERE shard_key IN (${sqlPlaceholders(chunk.length)})`)
+      .run(...chunk).changes ?? 0)
+  }
+
+  return {
+    usageRecordShards,
+    usageShardFiles,
+    hasMore: rows.length > batchLimit
+  }
 }
 
 export function listUsageRecordShardLocations(window: UsageRecordShardQueryWindow = {}): UsageRecordShardLocation[] {
@@ -407,17 +462,19 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
   upsertUsageRecordScopeShardCatalog(entries)
 }
 
-export function deleteUsageRecordShardEntries(ids: string[]): void {
+export function deleteUsageRecordShardEntries(ids: string[]): number {
   const normalizedIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
-  if (normalizedIds.length === 0) return
+  if (normalizedIds.length === 0) return 0
   const database = getDatasetDatabase()
+  let deletedRows = 0
   for (const chunk of chunkValues(normalizedIds, 900)) {
     const scopes = listUsageRecordShardEntryScopes(database, chunk)
-    database
+    deletedRows += Number(database
       .prepare(`DELETE FROM usage_record_shard_entries WHERE usage_id IN (${sqlPlaceholders(chunk.length)})`)
-      .run(...chunk)
+      .run(...chunk).changes ?? 0)
     cleanupUsageRecordScopeShardCatalog(database, scopes)
   }
+  return deletedRows
 }
 
 function upsertUsageRecordScopeShardCatalog(entries: UsageRecordShardEntryInput[]): void {
@@ -578,6 +635,34 @@ function usageRecordShardLocation(bucketDateKey: string, shardIdInput: number): 
   return { shardKey, bucketDate, bucketDateKey, shardId, filePath }
 }
 
+async function deleteUsageShardFileSet(filePath: string): Promise<number> {
+  const target = usageShardFilePath(filePath)
+  let deleted = 0
+  for (const path of [target, `${target}-wal`, `${target}-shm`, `${target}-journal`]) {
+    deleted += await unlinkIfExists(path)
+  }
+  return deleted
+}
+
+function usageShardFilePath(filePath: string): string {
+  const root = usageRecordShardRoot()
+  const target = resolve(filePath)
+  const relativePath = relative(root, target)
+  if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+    throw new Error('usage shard 存储路径非法')
+  }
+  return target
+}
+
+async function unlinkIfExists(path: string): Promise<number> {
+  try {
+    await unlink(path)
+    return 1
+  } catch {
+    return 0
+  }
+}
+
 function isDefaultUsageShardRoot(value: string): boolean {
   const normalized = normalize(value).toLowerCase()
   return normalized === normalize(defaultUsageShardRoot).toLowerCase()
@@ -688,6 +773,10 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
       endpoint TEXT,
       provider_code TEXT,
       model TEXT,
+      upstream_model TEXT,
+      pricing_model TEXT,
+      model_mapping_applied INTEGER NOT NULL DEFAULT 0,
+      model_mapping_source TEXT,
       stream INTEGER NOT NULL DEFAULT 0,
       status_code INTEGER,
       success INTEGER NOT NULL DEFAULT 0,

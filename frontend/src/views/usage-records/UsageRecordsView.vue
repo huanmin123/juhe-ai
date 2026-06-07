@@ -111,7 +111,10 @@
           <span :class="record.endpoint ? 'endpoint-cell' : 'muted-cell'">{{ formatEndpoint(record.endpoint) }}</span>
         </template>
         <template v-else-if="column.key === 'model'">
-          <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
+          <span v-if="record.model" class="model-cell">
+            <a-tag color="blue">{{ record.model }}</a-tag>
+            <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
+          </span>
           <span v-else class="muted-cell">-</span>
         </template>
         <template v-else-if="column.key === 'stream'">
@@ -795,6 +798,14 @@ onMounted(loadData)
   color: #475569;
   font-size: 12px;
   line-height: 1.3;
+}
+
+.model-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 260px;
+  vertical-align: bottom;
 }
 
 .trace-id-cell {

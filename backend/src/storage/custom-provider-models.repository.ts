@@ -1,0 +1,376 @@
+import type { SQLInputValue } from 'node:sqlite'
+
+import type { ProviderModelPricing } from '../domain/types.js'
+import { getBusinessDatabase, newId, nowIso } from './database.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+
+type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
+export type CustomProviderModelScope = 'global' | 'personal'
+export type CustomProviderModelStatus = 'draft' | 'active' | 'disabled'
+export type CustomProviderModelVisibility = 'public' | 'mapping_target_only'
+
+export interface CustomProviderModelRecord {
+  id: string
+  providerCode: string
+  model: string
+  scope: CustomProviderModelScope
+  systemAccountId?: string
+  status: CustomProviderModelStatus
+  visibility: CustomProviderModelVisibility
+  displayName?: string
+  mode?: string
+  supportedApiProtocols: CustomProviderModelApiProtocol[]
+  pricingModel?: string
+  releaseDate?: string
+  shutdownDate?: string
+  contextWindowTokens?: number
+  maxOutputTokens?: number
+  inputUsdPer1M?: number
+  outputUsdPer1M?: number
+  cachedInputUsdPer1M?: number
+  cacheWriteUsdPer1M?: number
+  imageInputUsdPer1M?: number
+  imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
+  outputUsdPerImage?: number
+  currency: 'USD'
+  pricingNotes?: string
+  capabilityNotes?: string
+  notes?: string
+  createdBy: string
+  updatedBy?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface UpsertCustomProviderModelInput {
+  id?: string
+  providerCode: string
+  model: string
+  scope: CustomProviderModelScope
+  systemAccountId?: string
+  status?: CustomProviderModelStatus
+  visibility?: CustomProviderModelVisibility
+  displayName?: string | null
+  mode?: string | null
+  supportedApiProtocols?: string[] | null
+  pricingModel?: string | null
+  releaseDate?: string | null
+  shutdownDate?: string | null
+  contextWindowTokens?: number | null
+  maxOutputTokens?: number | null
+  inputUsdPer1M?: number | null
+  outputUsdPer1M?: number | null
+  cachedInputUsdPer1M?: number | null
+  cacheWriteUsdPer1M?: number | null
+  imageInputUsdPer1M?: number | null
+  imageOutputUsdPer1M?: number | null
+  audioInputUsdPer1M?: number | null
+  audioOutputUsdPer1M?: number | null
+  outputUsdPerImage?: number | null
+  pricingNotes?: string | null
+  capabilityNotes?: string | null
+  notes?: string | null
+  actorSystemAccountId: string
+}
+
+interface CustomProviderModelRow {
+  id: string
+  provider_code: string
+  model: string
+  scope: CustomProviderModelScope
+  system_account_id?: string | null
+  status: CustomProviderModelStatus
+  visibility: CustomProviderModelVisibility
+  display_name?: string | null
+  mode?: string | null
+  supported_api_protocols_json?: string | null
+  pricing_model?: string | null
+  release_date?: string | null
+  shutdown_date?: string | null
+  context_window_tokens?: number | null
+  max_output_tokens?: number | null
+  input_usd_per_1m?: number | null
+  output_usd_per_1m?: number | null
+  cached_input_usd_per_1m?: number | null
+  cache_write_usd_per_1m?: number | null
+  image_input_usd_per_1m?: number | null
+  image_output_usd_per_1m?: number | null
+  audio_input_usd_per_1m?: number | null
+  audio_output_usd_per_1m?: number | null
+  output_usd_per_image?: number | null
+  currency?: string | null
+  pricing_notes?: string | null
+  capability_notes?: string | null
+  notes?: string | null
+  created_by: string
+  updated_by?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export function listCustomProviderModelsForCatalog(input: {
+  providerCode: string
+  systemAccountId?: string
+  includeMappingTargets?: boolean
+  includeInactive?: boolean
+}): CustomProviderModelRecord[] {
+  const clauses = ['provider_code = ?']
+  const params: SQLInputValue[] = [input.providerCode]
+  if (!input.includeInactive) {
+    clauses.push("status = 'active'")
+  }
+  if (!input.includeMappingTargets) {
+    clauses.push("visibility = 'public'")
+  }
+  if (input.systemAccountId) {
+    clauses.push("(scope = 'global' OR (scope = 'personal' AND system_account_id = ?))")
+    params.push(input.systemAccountId)
+  } else {
+    clauses.push("scope = 'global'")
+  }
+
+  const rows = getBusinessDatabase()
+    .prepare(`
+      SELECT ${customProviderModelColumns()}
+      FROM custom_provider_models
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY scope ASC, model COLLATE NOCASE ASC, id ASC
+    `)
+    .all(...params) as unknown as CustomProviderModelRow[]
+  return rows.map(customProviderModelFromRow)
+}
+
+export function findCustomProviderModelById(id: string): CustomProviderModelRecord | undefined {
+  const row = getBusinessDatabase()
+    .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE id = ? LIMIT 1`)
+    .get(id) as unknown as CustomProviderModelRow | undefined
+  return row ? customProviderModelFromRow(row) : undefined
+}
+
+export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput): CustomProviderModelRecord {
+  const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
+  const model = requiredText(input.model, '模型 ID 不能为空')
+  const scope = normalizeScope(input.scope)
+  const systemAccountId = scope === 'personal'
+    ? requiredText(input.systemAccountId, '个人模型必须归属系统账户')
+    : undefined
+  const status = input.status ?? 'active'
+  const visibility = input.visibility ?? 'public'
+  const now = nowIso()
+  const existing = input.id
+    ? findCustomProviderModelById(input.id)
+    : findCustomProviderModelByScope(providerCode, scope, systemAccountId, model)
+  const id = existing?.id ?? input.id ?? newId('custom_model')
+
+  getBusinessDatabase()
+    .prepare(`
+      INSERT INTO custom_provider_models (
+        id, provider_code, model, scope, system_account_id, status, visibility,
+        display_name, mode, supported_api_protocols_json, pricing_model,
+        release_date, shutdown_date, context_window_tokens, max_output_tokens,
+        input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+        image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+        output_usd_per_image, currency, pricing_notes, capability_notes, notes,
+        created_by, updated_by, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        provider_code = excluded.provider_code,
+        model = excluded.model,
+        scope = excluded.scope,
+        system_account_id = excluded.system_account_id,
+        status = excluded.status,
+        visibility = excluded.visibility,
+        display_name = excluded.display_name,
+        mode = excluded.mode,
+        supported_api_protocols_json = excluded.supported_api_protocols_json,
+        pricing_model = excluded.pricing_model,
+        release_date = excluded.release_date,
+        shutdown_date = excluded.shutdown_date,
+        context_window_tokens = excluded.context_window_tokens,
+        max_output_tokens = excluded.max_output_tokens,
+        input_usd_per_1m = excluded.input_usd_per_1m,
+        output_usd_per_1m = excluded.output_usd_per_1m,
+        cached_input_usd_per_1m = excluded.cached_input_usd_per_1m,
+        cache_write_usd_per_1m = excluded.cache_write_usd_per_1m,
+        image_input_usd_per_1m = excluded.image_input_usd_per_1m,
+        image_output_usd_per_1m = excluded.image_output_usd_per_1m,
+        audio_input_usd_per_1m = excluded.audio_input_usd_per_1m,
+        audio_output_usd_per_1m = excluded.audio_output_usd_per_1m,
+        output_usd_per_image = excluded.output_usd_per_image,
+        pricing_notes = excluded.pricing_notes,
+        capability_notes = excluded.capability_notes,
+        notes = excluded.notes,
+        updated_by = excluded.updated_by,
+        updated_at = excluded.updated_at
+    `)
+    .run(
+      id,
+      providerCode,
+      model,
+      scope,
+      systemAccountId ?? null,
+      status,
+      visibility,
+      optionalText(input.displayName) ?? null,
+      optionalText(input.mode) ?? null,
+      JSON.stringify(normalizeProtocols(input.supportedApiProtocols)),
+      optionalText(input.pricingModel) ?? null,
+      optionalDate(input.releaseDate) ?? null,
+      optionalDate(input.shutdownDate) ?? null,
+      optionalInteger(input.contextWindowTokens) ?? null,
+      optionalInteger(input.maxOutputTokens) ?? null,
+      optionalNumber(input.inputUsdPer1M) ?? null,
+      optionalNumber(input.outputUsdPer1M) ?? null,
+      optionalNumber(input.cachedInputUsdPer1M) ?? null,
+      optionalNumber(input.cacheWriteUsdPer1M) ?? null,
+      optionalNumber(input.imageInputUsdPer1M) ?? null,
+      optionalNumber(input.imageOutputUsdPer1M) ?? null,
+      optionalNumber(input.audioInputUsdPer1M) ?? null,
+      optionalNumber(input.audioOutputUsdPer1M) ?? null,
+      optionalNumber(input.outputUsdPerImage) ?? null,
+      optionalText(input.pricingNotes) ?? null,
+      optionalText(input.capabilityNotes) ?? null,
+      optionalText(input.notes) ?? null,
+      existing?.createdBy ?? input.actorSystemAccountId,
+      input.actorSystemAccountId,
+      existing?.createdAt ?? now,
+      now
+    )
+
+  const saved = findCustomProviderModelById(id)
+  if (!saved) {
+    throw new Error('自定义模型保存失败')
+  }
+  notifyGatewayRuntimeCacheInvalidation('custom_provider_model_saved')
+  return saved
+}
+
+export function deleteCustomProviderModel(id: string): boolean {
+  const result = getBusinessDatabase()
+    .prepare('DELETE FROM custom_provider_models WHERE id = ?')
+    .run(id)
+  if (result.changes > 0) {
+    notifyGatewayRuntimeCacheInvalidation('custom_provider_model_deleted')
+  }
+  return result.changes > 0
+}
+
+function findCustomProviderModelByScope(
+  providerCode: string,
+  scope: CustomProviderModelScope,
+  systemAccountId: string | undefined,
+  model: string
+): CustomProviderModelRecord | undefined {
+  const row = scope === 'global'
+    ? getBusinessDatabase()
+      .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE provider_code = ? AND scope = 'global' AND lower(model) = lower(?) LIMIT 1`)
+      .get(providerCode, model)
+    : getBusinessDatabase()
+      .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE provider_code = ? AND scope = 'personal' AND system_account_id = ? AND lower(model) = lower(?) LIMIT 1`)
+      .get(providerCode, systemAccountId ?? '', model)
+  return row ? customProviderModelFromRow(row as unknown as CustomProviderModelRow) : undefined
+}
+
+function customProviderModelColumns(): string {
+  return `
+    id, provider_code, model, scope, system_account_id, status, visibility,
+    display_name, mode, supported_api_protocols_json, pricing_model,
+    release_date, shutdown_date, context_window_tokens, max_output_tokens,
+    input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+    image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+    output_usd_per_image, currency, pricing_notes, capability_notes, notes,
+    created_by, updated_by, created_at, updated_at
+  `
+}
+
+function customProviderModelFromRow(row: CustomProviderModelRow): CustomProviderModelRecord {
+  return {
+    id: row.id,
+    providerCode: row.provider_code,
+    model: row.model,
+    scope: row.scope,
+    systemAccountId: optionalText(row.system_account_id),
+    status: row.status,
+    visibility: row.visibility,
+    displayName: optionalText(row.display_name),
+    mode: optionalText(row.mode),
+    supportedApiProtocols: parseStringArray(row.supported_api_protocols_json),
+    pricingModel: optionalText(row.pricing_model),
+    releaseDate: optionalText(row.release_date),
+    shutdownDate: optionalText(row.shutdown_date),
+    contextWindowTokens: optionalInteger(row.context_window_tokens),
+    maxOutputTokens: optionalInteger(row.max_output_tokens),
+    inputUsdPer1M: optionalNumber(row.input_usd_per_1m),
+    outputUsdPer1M: optionalNumber(row.output_usd_per_1m),
+    cachedInputUsdPer1M: optionalNumber(row.cached_input_usd_per_1m),
+    cacheWriteUsdPer1M: optionalNumber(row.cache_write_usd_per_1m),
+    imageInputUsdPer1M: optionalNumber(row.image_input_usd_per_1m),
+    imageOutputUsdPer1M: optionalNumber(row.image_output_usd_per_1m),
+    audioInputUsdPer1M: optionalNumber(row.audio_input_usd_per_1m),
+    audioOutputUsdPer1M: optionalNumber(row.audio_output_usd_per_1m),
+    outputUsdPerImage: optionalNumber(row.output_usd_per_image),
+    currency: 'USD',
+    pricingNotes: optionalText(row.pricing_notes),
+    capabilityNotes: optionalText(row.capability_notes),
+    notes: optionalText(row.notes),
+    createdBy: row.created_by,
+    updatedBy: optionalText(row.updated_by),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function normalizeScope(scope: CustomProviderModelScope): CustomProviderModelScope {
+  if (scope !== 'global' && scope !== 'personal') {
+    throw new Error('自定义模型 scope 无效')
+  }
+  return scope
+}
+
+function normalizeProtocols(values: string[] | null | undefined): CustomProviderModelApiProtocol[] {
+  const allowed = new Set<CustomProviderModelApiProtocol>(['chat_completions', 'responses', 'completions', 'images', 'audio', 'realtime'])
+  return [...new Set((values ?? [])
+    .map((value) => value.trim())
+    .filter((value): value is CustomProviderModelApiProtocol => allowed.has(value as CustomProviderModelApiProtocol)))]
+}
+
+function parseStringArray(raw: string | null | undefined): CustomProviderModelApiProtocol[] {
+  if (!raw) return []
+  const allowed = new Set<CustomProviderModelApiProtocol>(['chat_completions', 'responses', 'completions', 'images', 'audio', 'realtime'])
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return Array.isArray(parsed) ? parsed.filter((item): item is CustomProviderModelApiProtocol => typeof item === 'string' && allowed.has(item as CustomProviderModelApiProtocol)) : []
+  } catch {
+    return []
+  }
+}
+
+function requiredText(value: unknown, message: string): string {
+  const text = optionalText(value)
+  if (!text) throw new Error(message)
+  return text
+}
+
+function optionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function optionalDate(value: unknown): string | undefined {
+  const text = optionalText(value)
+  return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : undefined
+}
+
+function optionalInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const number = Number(value)
+  return Number.isInteger(number) && number >= 0 ? number : undefined
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : undefined
+}

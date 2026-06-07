@@ -2,7 +2,7 @@ import axios from 'axios'
 import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onDeactivated, reactive, ref, type ComputedRef } from 'vue'
 
-import { api } from '@/api/client'
+import { api, type AccountDraftTestPayload } from '@/api/client'
 import type { AccountSummary, AccountTestResult, AccountTestTask, ProviderDefinition, ProviderModelPricing } from '@/types/domain'
 import {
   type AccountBatchTestItem,
@@ -53,6 +53,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testResult = ref<AccountTestResult>()
   const providerModels = ref<ProviderModelPricing[]>([])
   const providerModelsProviderCode = ref('')
+  const draftTestingAccountPayload = ref<AccountDraftTestPayload['account']>()
   const testForm = reactive<AccountTestForm>({ model: '', clientCompatibility: 'account_default' })
   const testTargetAccountSelection = computed(() => (
     testMode.value === 'batch' ? batchTestingAccounts.value : testingAccount.value
@@ -118,6 +119,24 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testingAccount.value = account
     batchTestingAccounts.value = []
     batchTestItems.value = []
+    draftTestingAccountPayload.value = undefined
+    testResult.value = undefined
+    testForm.model = defaultModelForSelection(account)
+    testForm.clientCompatibility = 'account_default'
+    testModalOpen.value = true
+    void loadTestModels()
+  }
+
+  async function openDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
+    if (account.providerCode !== OPENAI_PROVIDER_CODE) {
+      message.warning('当前仅支持测试 OpenAI 账户')
+      return
+    }
+    testMode.value = 'single'
+    testingAccount.value = account
+    batchTestingAccounts.value = []
+    batchTestItems.value = []
+    draftTestingAccountPayload.value = draftPayload
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.clientCompatibility = 'account_default'
@@ -146,6 +165,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testingAccount.value = undefined
     batchTestingAccounts.value = [...testableAccounts]
     batchTestItems.value = testableAccounts.map((account) => ({ account, status: 'pending' }))
+    draftTestingAccountPayload.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(testableAccounts)
     testForm.clientCompatibility = 'account_default'
@@ -163,8 +183,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     const account = testingAccount.value
     try {
       const payload = buildAccountSpecificTestPayload(account)
-      const task = await submitAccountTest(account, payload, controller.signal)
+      const task = await submitAccountTest(account, payload)
       activeAccountTestTasks.set(task.id, account)
+      if (controller.signal.aborted) {
+        await cancelCreatedAccountTestTask(task.id, account)
+        activeAccountTestTasks.delete(task.id)
+        throw new DOMException('测试已停止', 'AbortError')
+      }
       const result = await waitForAccountTestResult(task, account, controller.signal)
       testResult.value = result
       if (result.success) {
@@ -217,8 +242,14 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         updateBatchTestItem(index, { status: 'running', message: '提交后台测试任务', startedAt })
         const payload = buildAccountSpecificTestPayload(account)
         try {
-          const task = await submitAccountTest(account, payload, controller.signal)
+          const task = await submitAccountTest(account, payload)
           activeAccountTestTasks.set(task.id, account)
+          if (controller.signal.aborted) {
+            await cancelCreatedAccountTestTask(task.id, account)
+            activeAccountTestTasks.delete(task.id)
+            updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
+            return
+          }
           submittedTasks.set(task.id, { account, index, task })
           updateBatchTestItem(index, { taskId: task.id, status: 'running', message: task.message ?? '等待后台测试', startedAt })
         } catch (error) {
@@ -315,15 +346,22 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     )
   }
 
-  function submitAccountTest(account: AccountSummary, payload: AccountTestPayload, signal?: AbortSignal): Promise<AccountTestTask> {
+  function submitAccountTest(account: AccountSummary, payload: AccountTestPayload): Promise<AccountTestTask> {
+    const draftPayload = activeDraftTestPayload(account)
+    if (draftPayload) {
+      const requestPayload: AccountDraftTestPayload = { account: draftPayload, ...payload }
+      return options.isManagementView.value
+        ? api.accounts.testDraft(requestPayload, options.accountScopeParams.value)
+        : api.myAccounts.testDraft(requestPayload)
+    }
     return options.isManagementView.value
-      ? api.accounts.test(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value), { signal })
-      : api.myAccounts.test(account.id, payload, { signal })
+      ? api.accounts.test(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
+      : api.myAccounts.test(account.id, payload)
   }
 
   function fetchAccountTestTask(taskId: string, account: AccountSummary, signal?: AbortSignal): Promise<AccountTestTask> {
     return options.isManagementView.value
-      ? api.accounts.testTask(taskId, accountOperationScopeParams(account, options.accountScopeParams.value), { signal })
+      ? api.accounts.testTask(taskId, accountTestTaskScopeParams(account), { signal })
       : api.myAccounts.testTask(taskId, { signal })
   }
 
@@ -352,8 +390,26 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   function cancelAccountTestTask(taskId: string, account?: AccountSummary): Promise<AccountTestTask> {
     return options.isManagementView.value
-      ? api.accounts.cancelTestTask(taskId, account ? accountOperationScopeParams(account, options.accountScopeParams.value) : options.accountScopeParams.value)
+      ? api.accounts.cancelTestTask(taskId, account ? accountTestTaskScopeParams(account) : options.accountScopeParams.value)
       : api.myAccounts.cancelTestTask(taskId)
+  }
+
+  function activeDraftTestPayload(account: AccountSummary): AccountDraftTestPayload['account'] | undefined {
+    return testingAccount.value?.id === account.id ? draftTestingAccountPayload.value : undefined
+  }
+
+  function accountTestTaskScopeParams(account: AccountSummary): ReturnType<typeof accountOperationScopeParams> {
+    return activeDraftTestPayload(account)
+      ? options.accountScopeParams.value
+      : accountOperationScopeParams(account, options.accountScopeParams.value)
+  }
+
+  async function cancelCreatedAccountTestTask(taskId: string, account: AccountSummary): Promise<void> {
+    try {
+      await cancelAccountTestTask(taskId, account)
+    } catch (error) {
+      console.error(error)
+    }
   }
 
   async function waitForAccountTestResult(
@@ -488,6 +544,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     batchTestingAccounts,
     closeTestModal,
     openBatchTestModal,
+    openDraftTestModal,
     openTestModal,
     runAccountTest,
     stopAccountTest,

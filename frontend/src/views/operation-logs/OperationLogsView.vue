@@ -531,6 +531,7 @@ const actionOptions = [
   { label: '重置密码', value: 'reset_password' },
   { label: '检测', value: 'test' },
   { label: '测试改状态', value: 'test_status_changed' },
+  { label: '清理非业务数据', value: 'cleanup_non_business_data' },
   { label: '清理使用记录', value: 'cleanup_usage_records' }
 ]
 const resourceTypeOptions = [
@@ -545,6 +546,7 @@ const resourceTypeOptions = [
   { label: '系统账户', value: 'system_account' },
   { label: '系统设置', value: 'system_settings' },
   { label: '系统团队', value: 'system_team' },
+  { label: '非业务数据', value: 'non_business_data' },
   { label: '使用记录', value: 'usage_records' }
 ]
 
@@ -892,6 +894,7 @@ const moduleTextMap: Record<string, string> = {
 const actionTextMap: Record<string, string> = {
   add_members: '添加成员',
   bind_group: '绑定分组',
+  cleanup_non_business_data: '清理非业务数据',
   cleanup_usage_records: '清理使用记录',
   create: '创建',
   create_account: '创建账户',
@@ -926,6 +929,7 @@ const resourceTypeTextMap: Record<string, string> = {
   system_account: '系统账户',
   system_settings: '系统设置',
   system_team: '系统团队',
+  non_business_data: '非业务数据',
   usage_records: '使用记录'
 }
 const relationTextMap: Record<string, string> = {

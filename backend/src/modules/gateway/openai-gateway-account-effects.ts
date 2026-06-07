@@ -84,6 +84,18 @@ export function handleStreamFailure(
   recordGatewayUpstreamBucketFailure(account, '流式响应失败')
   const reasonWithCode = errorCode ? `${errorCode}；${reason}` : reason
   if (usageContext?.trafficSource === 'gateway') {
+    if (!shouldApplyGatewayStreamFailureAccountSideEffects(context)) {
+      getRequestLogger().info({
+        event: 'gateway_stream_failure_account_side_effect_skipped',
+        accountId: account.id,
+        accountName: account.name,
+        errorCode,
+        reason,
+        downstreamBytesWritten: context.downstreamBytesWritten,
+        outputReceived: context.outputReceived
+      }, '流式失败未产生可见模型输出，已跳过账号运行态副作用')
+      return
+    }
     const runtimeReason = `流式响应失败：${reason}`
     const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)
     recordGatewayAccountFailureForPrecheck(account, settings, {
@@ -113,6 +125,10 @@ export function handleStreamFailure(
       downstreamBytesWritten: context.downstreamBytesWritten
     }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态屏障' : '流式失败已写入账号错误处理队列')
   }
+}
+
+function shouldApplyGatewayStreamFailureAccountSideEffects(context: StreamFailureContext): boolean {
+  return context.outputReceived
 }
 
 export function clearAccountStreamFailureStateWithCacheInvalidation(account: UpstreamAccount | string): void {

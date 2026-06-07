@@ -1265,6 +1265,7 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
     fallbackEnabled: account.fallbackEnabled,
     clientCompatibility: account.clientCompatibility,
     supportedModels: account.supportedModels,
+    modelMappings: account.modelMappings,
     lastSuccessfulTestModel: account.lastSuccessfulTestModel,
     proxyProfileId: account.proxyProfileId,
     errorPolicyId: account.errorPolicyId,

@@ -54,6 +54,11 @@ export interface AuditPayloadBlobPersistencePlan {
   shouldWriteFile: boolean
 }
 
+export interface AuditPayloadBlobCleanupResult {
+  deletedRows: number
+  deletedFiles: number
+}
+
 const auditBlobRoot = resolve(backendRoot, 'data', 'audit', 'blobs')
 const auditBlobCompressionThresholdBytes = 4 * 1024
 const auditPayloadDefaultReadLimitBytes = 256 * 1024
@@ -282,6 +287,26 @@ export async function cleanupUnreferencedAuditPayloadBlobsAsync(limit = 1000): P
   return Number(result.changes ?? 0)
 }
 
+export async function cleanupAuditPayloadBlobsBeforeAsync(cutoffCreatedAt: string, limit = 1000): Promise<AuditPayloadBlobCleanupResult> {
+  const database = getDatasetDatabase()
+  const rows = listAuditPayloadBlobRowsBefore(database, cutoffCreatedAt, limit)
+  if (rows.length === 0) {
+    return {
+      deletedRows: 0,
+      deletedFiles: 0
+    }
+  }
+
+  const ids = rows.map((row) => String(row.id)).filter(Boolean)
+  const deletedFiles = await deleteBlobFilesAsync(rows.map((row) => optionalString(row.storage_key)))
+  const placeholders = ids.map(() => '?').join(',')
+  const result = database.prepare(`DELETE FROM audit_payload_blobs WHERE id IN (${placeholders})`).run(...ids)
+  return {
+    deletedRows: Number(result.changes ?? 0),
+    deletedFiles
+  }
+}
+
 export function cleanupCreatedAuditBlobFiles(storageKeys: string[]): void {
   for (const storageKey of storageKeys) {
     deleteBlobFile(storageKey)
@@ -477,6 +502,18 @@ function listUnreferencedAuditPayloadBlobRows(database: DatabaseSync, limit: num
     .all(Math.max(1, Math.trunc(limit))) as AuditPayloadBlobRow[]
 }
 
+function listAuditPayloadBlobRowsBefore(database: DatabaseSync, cutoffCreatedAt: string, limit: number): AuditPayloadBlobRow[] {
+  return database
+    .prepare(`
+      SELECT id, storage_key
+      FROM audit_payload_blobs
+      WHERE created_at < ?
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(cutoffCreatedAt, Math.max(1, Math.trunc(limit))) as AuditPayloadBlobRow[]
+}
+
 function deleteBlobFile(storageKey: string | undefined): void {
   if (!storageKey) return
   try {
@@ -488,19 +525,24 @@ function deleteBlobFile(storageKey: string | undefined): void {
   }
 }
 
-async function deleteBlobFilesAsync(storageKeys: Array<string | undefined>): Promise<void> {
+async function deleteBlobFilesAsync(storageKeys: Array<string | undefined>): Promise<number> {
+  let deleted = 0
   for (let offset = 0; offset < storageKeys.length; offset += auditBlobCleanupDeleteConcurrency) {
     const chunk = storageKeys.slice(offset, offset + auditBlobCleanupDeleteConcurrency)
-    await Promise.all(chunk.map((storageKey) => deleteBlobFileAsync(storageKey)))
+    const counts = await Promise.all(chunk.map((storageKey) => deleteBlobFileAsync(storageKey)))
+    deleted += counts.reduce((sum, count) => sum + count, 0)
   }
+  return deleted
 }
 
-async function deleteBlobFileAsync(storageKey: string | undefined): Promise<void> {
-  if (!storageKey) return
+async function deleteBlobFileAsync(storageKey: string | undefined): Promise<number> {
+  if (!storageKey) return 0
   try {
     const filePath = blobFilePath(storageKey)
     await unlinkAsync(filePath)
+    return 1
   } catch {
+    return 0
   }
 }
 

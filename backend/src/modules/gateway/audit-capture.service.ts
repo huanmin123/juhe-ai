@@ -558,7 +558,7 @@ function summarizePayloadForLimit(payload: Omit<AuditLogPayloadInput, 'sequenceI
   }
   const originalContentType = payload.contentType
   const originalContentEncoding = payload.contentEncoding
-  const originalSha256 = payload.bodySha256 ?? sha256BufferIfSmall(bodyBuffer)
+  const originalSha256 = payload.bodySha256 ?? sha256Buffer(bodyBuffer)
   payload.body = JSON.stringify(buildPayloadSummary({
     body: bodyBuffer,
     originalSha256,

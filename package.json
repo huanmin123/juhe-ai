@@ -62,7 +62,9 @@
     "test:authorized-account-dispatch-query": "pnpm --filter juhe-ai-backend test:authorized-account-dispatch-query",
     "test:authorized-account-dispatch-flags": "pnpm --filter juhe-ai-backend test:authorized-account-dispatch-flags",
     "test:authorized-account-admin-dispatch": "pnpm --filter juhe-ai-backend test:authorized-account-admin-dispatch",
+    "test:account-test-local-restore": "pnpm --filter juhe-ai-backend test:account-test-local-restore",
     "test:authorized-account-test-local-restore": "pnpm --filter juhe-ai-backend test:authorized-account-test-local-restore",
+    "test:model-catalog": "pnpm --filter juhe-ai-backend test:model-catalog",
     "test:authorized-account-name-sync": "pnpm --filter juhe-ai-backend test:authorized-account-name-sync",
     "test:authorized-account-runtime-side-effects": "pnpm --filter juhe-ai-backend test:authorized-account-runtime-side-effects",
     "test:deleted-api-key-aggregation-cleanup": "pnpm --filter juhe-ai-backend test:deleted-api-key-aggregation-cleanup",
@@ -88,6 +90,7 @@
     "test:usage-stats-batch-statement": "pnpm --filter juhe-ai-backend test:usage-stats-batch-statement",
     "test:authorization-quota-batch": "pnpm --filter juhe-ai-backend test:authorization-quota-batch",
     "test:data-retention-cleanup-catalog-window": "pnpm --filter juhe-ai-backend test:data-retention-cleanup-catalog-window",
+    "test:non-business-data-hard-cleanup": "pnpm --filter juhe-ai-backend test:non-business-data-hard-cleanup",
     "test:upstream-base-url-ssrf-policy": "pnpm --filter juhe-ai-backend test:upstream-base-url-ssrf-policy"
   },
   "engines": {

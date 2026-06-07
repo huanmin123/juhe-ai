@@ -27,6 +27,7 @@ export function defaultAccountForm(
     priority: 0,
     clientCompatibility: providerCode === 'openai' && type === 'oauth' ? 'codex_responses' : 'openai_standard',
     supportedModels: [],
+    modelMappings: [],
     proxyProfileId: undefined,
     availabilitySchedule: createAccountAvailabilityScheduleForm(),
     notes: ''

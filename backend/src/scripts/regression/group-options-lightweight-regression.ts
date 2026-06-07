@@ -57,6 +57,7 @@ interface GroupOptionSummary {
   systemAccountId?: string
   permissions?: {
     canAuthorize?: boolean
+    canBindToApiKey?: boolean
   }
   accountIds?: string[]
   accountStats?: unknown
@@ -97,7 +98,9 @@ try {
   assert.equal(adminTargetOption.systemAccountId, seed.userId, '管理侧分组选项应保留系统账户归属字段')
   assert.equal(adminTargetOption.permissions?.canAuthorize, true, '自有分组选项应保留可授权权限')
   assertLightweightGroupOption(adminTargetOption)
-  assert(adminOptions.some((group) => group.id === seed.adminAuthorizedGroupId), '普通分组选项仍应包含用户可见的授权分组')
+  const adminAuthorizedOption = adminOptions.find((group) => group.id === seed.adminAuthorizedGroupId)
+  assert(adminAuthorizedOption, '普通分组选项仍应包含用户可见的授权分组')
+  assert.equal(adminAuthorizedOption.permissions?.canBindToApiKey, true, '有效授权分组选项应标记为可绑定 API Key')
 
   const userOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/my-groups/options?systemAccountId=sys_admin`, seed.userCookie)
   assert.equal(userOptions.some((group) => group.id === seed.userGroupId), true, '用户侧分组选项应包含当前用户分组')
@@ -106,7 +109,9 @@ try {
   assert(userTargetOption, '用户侧分组选项应包含目标分组')
   assert.equal(userTargetOption.systemAccountId, undefined, '用户侧分组选项不应暴露管理侧系统账户字段')
   assertLightweightGroupOption(userTargetOption)
-  assert(userOptions.some((group) => group.id === seed.adminAuthorizedGroupId), '用户侧普通分组选项应保留已授权给当前用户的分组')
+  const userAuthorizedOption = userOptions.find((group) => group.id === seed.adminAuthorizedGroupId)
+  assert(userAuthorizedOption, '用户侧普通分组选项应保留已授权给当前用户的分组')
+  assert.equal(userAuthorizedOption.permissions?.canBindToApiKey, true, '用户侧有效授权分组选项应标记为可绑定 API Key')
 
   const accountOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, '/__aisys__/api/my-groups/account-options', seed.userCookie)
   const accountTargetOption = accountOptions.find((group) => group.id === seed.userGroupId)

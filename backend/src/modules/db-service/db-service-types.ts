@@ -10,6 +10,7 @@ import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.
 import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { AuditFullBodyCaptureRuntimeConfig } from '../../config/runtime.js'
+import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
@@ -195,6 +196,14 @@ export type DbServiceOperation =
     systemAccountId?: string
   }
   | {
+    type: 'list_provider_model_catalog'
+    providerCode: string
+    systemAccountId?: string
+    includeMappingTargets?: boolean
+    includeInactive?: boolean
+    includeUnpriced?: boolean
+  }
+  | {
     type: 'check_api_key_quota'
     apiKey: GatewayApiKeyRow
   }
@@ -303,6 +312,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'list_openai_accounts_for_group' } ? OpenAIAccountSecret[] :
   T extends { type: 'list_openai_accounts_for_group_result' } ? OpenAIAccountsForGroupResult :
   T extends { type: 'read_gateway_runtime' } ? DbServiceGatewayRuntime :
+  T extends { type: 'list_provider_model_catalog' } ? ProviderModelCatalogItem[] :
   T extends { type: 'check_api_key_quota' } ? ApiKeyQuotaDecision :
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
   T extends { type: 'check_authorization_quota_batch' } ? AuthorizationQuotaDecision[] :

@@ -36,6 +36,9 @@ export interface RuntimeConfig {
     fullBodyCaptureEnabled: boolean
     fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
   }
+  gateway: {
+    bodyInFlightMaxBytes: number
+  }
   log: {
     level: LogLevel
     directory: string
@@ -104,6 +107,9 @@ export const runtimeConfig: RuntimeConfig = {
       scope: 'global',
       includeSuccess: false
     }
+  },
+  gateway: {
+    bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024
   },
   log: {
     level: logLevelConfig('JUHE_AI_LOG_LEVEL', 'info'),

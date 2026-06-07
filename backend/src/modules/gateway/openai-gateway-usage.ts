@@ -54,6 +54,9 @@ export interface ParsedUsage {
   cacheReadTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
+  inputAudioTokens?: number
+  outputAudioTokens?: number
+  outputImageCount?: number
 }
 
 export function extractBearerToken(authorization?: string): string | undefined {
@@ -321,7 +324,11 @@ export function extractUsage(value: unknown): ParsedUsage {
   const inputImageTokens = numberValue(responsesInputDetails?.image_tokens)
     ?? numberValue(chatInputDetails?.image_tokens)
   const outputImageTokens = numberValue(outputDetails?.image_tokens)
-  return { inputTokens, outputTokens, cacheReadTokens, inputImageTokens, outputImageTokens }
+  const inputAudioTokens = numberValue(responsesInputDetails?.audio_tokens)
+    ?? numberValue(chatInputDetails?.audio_tokens)
+  const outputAudioTokens = numberValue(outputDetails?.audio_tokens)
+  const outputImageCount = outputImageCountValue(usage)
+  return { inputTokens, outputTokens, cacheReadTokens, inputImageTokens, outputImageTokens, inputAudioTokens, outputAudioTokens, outputImageCount }
 }
 
 export function mergeUsage(current: ParsedUsage, next: ParsedUsage): ParsedUsage {
@@ -330,7 +337,10 @@ export function mergeUsage(current: ParsedUsage, next: ParsedUsage): ParsedUsage
     outputTokens: next.outputTokens ?? current.outputTokens,
     cacheReadTokens: next.cacheReadTokens ?? current.cacheReadTokens,
     inputImageTokens: next.inputImageTokens ?? current.inputImageTokens,
-    outputImageTokens: next.outputImageTokens ?? current.outputImageTokens
+    outputImageTokens: next.outputImageTokens ?? current.outputImageTokens,
+    inputAudioTokens: next.inputAudioTokens ?? current.inputAudioTokens,
+    outputAudioTokens: next.outputAudioTokens ?? current.outputAudioTokens,
+    outputImageCount: next.outputImageCount ?? current.outputImageCount
   }
 }
 
@@ -340,6 +350,16 @@ export function hasAnyUsageValue(value: ParsedUsage): boolean {
     || value.cacheReadTokens !== undefined
     || value.inputImageTokens !== undefined
     || value.outputImageTokens !== undefined
+    || value.inputAudioTokens !== undefined
+    || value.outputAudioTokens !== undefined
+    || value.outputImageCount !== undefined
+}
+
+function outputImageCountValue(usage: Record<string, unknown>): number | undefined {
+  const value = numberValue(usage.output_image_count)
+    ?? numberValue(usage.output_images)
+    ?? numberValue(usage.image_count)
+  return value && value > 0 ? value : undefined
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

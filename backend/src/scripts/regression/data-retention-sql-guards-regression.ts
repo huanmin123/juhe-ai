@@ -47,7 +47,7 @@ try {
 
   const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
   statsDatabase.prepare = ((sql: string) => {
-    if (/^\s*DELETE\s+FROM\s+usage_stats_minute\b/i.test(sql)) {
+    if (/^\s*DELETE\s+FROM\s+"?usage_stats_minute"?\b/i.test(sql)) {
       throw new Error('模拟 usage_stats_minute 清理失败')
     }
     return originalPrepare(sql)

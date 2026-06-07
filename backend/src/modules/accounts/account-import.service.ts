@@ -1,5 +1,5 @@
-import { isAdminRole, type AccountAvailabilitySchedule, type AccountType, type ProviderDefinition } from '../../domain/types.js'
-import type { AccessScope } from '../../storage/access-scope.js'
+import { isAdminRole, type AccountAvailabilitySchedule, type AccountModelMapping, type AccountType, type ProviderDefinition } from '../../domain/types.js'
+import { currentSystemAccountId, manageableSystemAccountId, type AccessScope } from '../../storage/access-scope.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
 import {
   createAccount,
@@ -11,6 +11,8 @@ import {
   listProviders,
   listProxyOptions,
   normalizeAccountCredentialsForWrite,
+  normalizeAccountModelMappingsForProvider,
+  normalizeAccountSupportedModelsForProvider,
   type GroupOptionSummary,
   type ProxyProfileOptionSummary,
   type ProxyProfileSummary
@@ -106,6 +108,7 @@ interface NormalizedImportAccount {
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
   supportedModels?: string[]
+  modelMappings?: AccountModelMapping[]
   accountExpiresAt?: string
   availabilitySchedule?: AccountAvailabilitySchedule
   notes?: string
@@ -154,6 +157,7 @@ interface ImportPlan {
 interface ImportContext {
   access?: AccessScope
   options: Required<AccountImportOptions>
+  targetSystemAccountId?: string
   providers: ProviderDefinition[]
   providerByCode: Map<string, ProviderDefinition>
   groupLookup: Map<string, GroupOptionSummary | undefined>
@@ -188,6 +192,7 @@ const importAccountKeys = new Set([
   'superPriorityEnabled',
   'fallbackEnabled',
   'supportedModels',
+  'modelMappings',
   'accountExpiresAt',
   'availabilitySchedule',
   'notes'
@@ -235,6 +240,7 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
       if (account.source.superPriorityEnabled !== undefined) accountInput.superPriorityEnabled = account.source.superPriorityEnabled
       if (account.source.fallbackEnabled !== undefined) accountInput.fallbackEnabled = account.source.fallbackEnabled
       if (account.source.supportedModels !== undefined) accountInput.supportedModels = account.source.supportedModels
+      if (account.source.modelMappings !== undefined) accountInput.modelMappings = account.source.modelMappings
       if (account.source.accountExpiresAt !== undefined) accountInput.accountExpiresAt = account.source.accountExpiresAt
       if (account.source.availabilitySchedule !== undefined) accountInput.availabilitySchedule = account.source.availabilitySchedule
       if (account.source.notes !== undefined) accountInput.notes = account.source.notes
@@ -275,6 +281,7 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
   const context: ImportContext = {
     access,
     options,
+    targetSystemAccountId: importTargetSystemAccountId(access),
     providers,
     providerByCode: new Map(providers.map((provider) => [provider.code, provider])),
     groupLookup: new Map(),
@@ -507,6 +514,7 @@ function planAccount(
   source.superPriorityEnabled = optionalBooleanField(value, 'superPriorityEnabled', '账户 superPriorityEnabled', item.messages)
   source.fallbackEnabled = optionalBooleanField(value, 'fallbackEnabled', '账户 fallbackEnabled', item.messages)
   source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
+  source.modelMappings = optionalModelMappingsField(value, 'modelMappings', '账户 modelMappings', item.messages)
   source.accountExpiresAt = optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)
   const availabilityScheduleInput = importAvailabilityScheduleInput(value)
   source.availabilitySchedule = availabilityScheduleInput.present
@@ -528,6 +536,7 @@ function planAccount(
   item.proxyRef = source.proxyRef
 
   validateAccountBasics(source, context)
+  validateAccountModelCatalogFields(source, context)
   const groupId = resolveAccountGroup(source, context, groupIdsByKey, groupNamesToCreate, item)
   const proxyProfileId = resolveAccountProxy(source, proxyByRef, item)
   if (item.messages.length > 0) {
@@ -560,6 +569,23 @@ function validateAccountBasics(account: NormalizedImportAccount, context: Import
   if (account.accountExpiresAt && !optionalServerDateTimeIso(account.accountExpiresAt)) {
     account.messages.push('accountExpiresAt 必须是有效时间字符串')
   }
+}
+
+function validateAccountModelCatalogFields(account: NormalizedImportAccount, context: ImportContext): void {
+  if (!account.providerCode || !context.providerByCode.has(account.providerCode) || !context.targetSystemAccountId) {
+    return
+  }
+  try {
+    account.supportedModels = normalizeAccountSupportedModelsForProvider(account.supportedModels, account.providerCode, context.targetSystemAccountId)
+    account.modelMappings = normalizeAccountModelMappingsForProvider(account.modelMappings, account.providerCode, context.targetSystemAccountId)
+  } catch (error) {
+    account.messages.push(errorMessage(error))
+  }
+}
+
+function importTargetSystemAccountId(access: AccessScope | undefined): string | undefined {
+  if (!access) return undefined
+  return manageableSystemAccountId(access) ?? currentSystemAccountId(access)
 }
 
 function importAvailabilityScheduleInput(record: Record<string, unknown>): { present: boolean; value: unknown } {
@@ -971,6 +997,50 @@ function optionalStringArrayField(record: Record<string, unknown>, key: string, 
     items.push(item.trim())
   }
   return items
+}
+
+function optionalModelMappingsField(record: Record<string, unknown>, key: string, label: string, messages: string[]): AccountModelMapping[] | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (!Array.isArray(value)) {
+    messages.push(`${label}必须是模型映射数组`)
+    return undefined
+  }
+  const output: AccountModelMapping[] = []
+  const seenSources = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      messages.push(`${label}条目必须是对象`)
+      return undefined
+    }
+    const itemRecord = item as Record<string, unknown>
+    const sourceModel = optionalModelMappingText(itemRecord.sourceModel)
+    const upstreamModel = optionalModelMappingText(itemRecord.upstreamModel)
+    if (!sourceModel || !upstreamModel) {
+      messages.push(`${label}条目必须包含 sourceModel 和 upstreamModel`)
+      return undefined
+    }
+    if (sourceModel === upstreamModel) {
+      continue
+    }
+    if (seenSources.has(sourceModel)) {
+      messages.push(`${label}不能重复配置同一个 sourceModel：${sourceModel}`)
+      return undefined
+    }
+    seenSources.add(sourceModel)
+    output.push({
+      sourceModel,
+      upstreamModel,
+      enabled: itemRecord.enabled !== false
+    })
+  }
+  return output
+}
+
+function optionalModelMappingText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  return text || undefined
 }
 
 function optionalDateTimeField(record: Record<string, unknown>, key: string, label: string, messages: string[]): string | undefined {

@@ -1,6 +1,6 @@
 import type { Dayjs } from 'dayjs'
 
-import type { AccountClientCompatibility, AccountStatus, AccountType } from '@/types/domain'
+import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountType } from '@/types/domain'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
@@ -22,6 +22,7 @@ export interface AccountFormModel {
   priority: number
   clientCompatibility: AccountClientCompatibility
   supportedModels: string[]
+  modelMappings: AccountModelMapping[]
   proxyProfileId?: string
   availabilitySchedule: AccountAvailabilityScheduleForm
   notes: string

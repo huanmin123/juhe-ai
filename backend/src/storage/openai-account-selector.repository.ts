@@ -1,6 +1,7 @@
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountClientCompatibility, AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ResourceAuthorizationSourceType } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ResourceAuthorizationSourceType } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { loadModelMappingsByAccountIds, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
 import { decryptJson } from './crypto.js'
@@ -41,6 +42,7 @@ export interface OpenAIAccountSecret {
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
+  modelMappings?: AccountModelMapping[]
   lastSuccessfulTestModel?: string
   qualityScore?: number
   qualityState?: string
@@ -110,10 +112,12 @@ type OpenAIAccountSecretOptions = {
   accountAuthorizationsByIdOrResourceId?: Map<string, ResourceAuthorizationRow>
   proxyProfilesById?: Map<string, ProxyProfileUrlResolution>
   supportedModelsByAccountId?: Map<string, string[]>
+  modelMappingsByAccountId?: Map<string, AccountModelMapping[]>
   accountAccess?: OpenAIAccountAccess
 }
 
 const gatewayDispatchAccountCandidateLimit = 256
+const gatewayDispatchAccountCandidateScanLimit = gatewayDispatchAccountCandidateLimit * 2
 
 type AccountAvailabilityScheduleCandidateFilter = 'without_schedule' | 'with_schedule'
 
@@ -194,16 +198,18 @@ export function findOpenAIAccountForGroup(
   }
   return openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount, {
     supportedModelsByAccountId: new Map([[openAIAccountResourceAccountId(row), loadSupportedModelsForAccount(openAIAccountResourceAccountId(row))]]),
+    modelMappingsByAccountId: new Map([[openAIAccountResourceAccountId(row), loadModelMappingsForAccount(openAIAccountResourceAccountId(row))]]),
     accountAccess
   })
 }
 
 export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
   const groupRow = getBusinessDatabase()
-    .prepare('SELECT system_account_id, group_type, scheduling_policy_json FROM groups WHERE id = ?')
-    .get(groupId) as unknown as { system_account_id?: string; group_type?: GroupType | null; scheduling_policy_json?: string | null } | undefined
+    .prepare('SELECT system_account_id, enabled, group_type, scheduling_policy_json FROM groups WHERE id = ?')
+    .get(groupId) as unknown as { system_account_id?: string; enabled?: number; group_type?: GroupType | null; scheduling_policy_json?: string | null } | undefined
   const groupOwnerSystemAccountId = groupRow?.system_account_id
   if (!groupOwnerSystemAccountId) return undefined
+  if (groupRow.enabled !== 1) return undefined
   const groupType = normalizeGroupType(groupRow?.group_type)
   const schedulingPolicy = parseGroupSchedulingPolicyJson(groupRow?.scheduling_policy_json ?? null, groupType)
   if (groupOwnerSystemAccountId === systemAccountId) {
@@ -211,11 +217,17 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
   }
   const authorization = activeResourceAuthorization('group', groupId, systemAccountId)
   if (!authorization) return undefined
+  const localSettings = getBusinessDatabase()
+    .prepare('SELECT enabled, group_type, scheduling_policy_json FROM group_authorization_settings WHERE authorization_id = ? AND system_account_id = ? AND group_id = ? LIMIT 1')
+    .get(authorization.id, systemAccountId, groupId) as unknown as { enabled?: number; group_type?: GroupType | null; scheduling_policy_json?: string | null } | undefined
+  if (localSettings?.enabled === 0) return undefined
+  const localGroupType = normalizeGroupType(localSettings?.group_type ?? groupRow.group_type)
+  const localSchedulingPolicy = parseGroupSchedulingPolicyJson(localSettings?.scheduling_policy_json ?? groupRow.scheduling_policy_json ?? null, localGroupType)
   return {
     groupOwnerSystemAccountId,
     groupAccessType: 'authorized',
-    groupType,
-    schedulingPolicy,
+    groupType: localGroupType,
+    schedulingPolicy: localSchedulingPolicy,
     groupAuthorizationId: authorization.id,
     groupAuthorizationExpiresAt: authorization.expires_at ?? undefined,
     groupAuthorizationQuotaLimited: resourceAuthorizationQuotaLimited(authorization),
@@ -277,10 +289,12 @@ export function listOpenAIAccountsForGroupResult(
   const orderedEligibleRows = orderOpenAIGroupAccountRowsForDispatch(eligibleRows)
   for (let offset = 0; offset < orderedEligibleRows.length && accounts.length < gatewayDispatchAccountCandidateLimit; offset += gatewayDispatchAccountCandidateLimit) {
     const hydrationRows = orderedEligibleRows.slice(offset, offset + gatewayDispatchAccountCandidateLimit)
-    const supportedModelsByAccountId = loadSupportedModelsByAccountIds(hydrationRows.map((item) => openAIAccountResourceAccountId(item.row)))
+    const resourceAccountIds = hydrationRows.map((item) => openAIAccountResourceAccountId(item.row))
+    const supportedModelsByAccountId = loadSupportedModelsByAccountIds(resourceAccountIds)
+    const modelMappingsByAccountId = loadModelMappingsByAccountIds(resourceAccountIds)
     const proxyProfilesById = loadProxyProfilesForSelection(hydrationRows.map((item) => item.row))
     for (const { row, accountAccess } of hydrationRows) {
-      const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId, proxyProfilesById, supportedModelsByAccountId, accountAccess })
+      const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId, proxyProfilesById, supportedModelsByAccountId, modelMappingsByAccountId, accountAccess })
       if (account) {
         accounts.push(account)
         if (accounts.length >= gatewayDispatchAccountCandidateLimit) {
@@ -432,7 +446,7 @@ function listOpenAIGroupAccountSelectionRows(
         group_accounts.account_id ASC
       LIMIT ?
     `)
-    .all(groupId, groupOwnerSystemAccountId, now, now, now, now, gatewayDispatchAccountCandidateLimit) as unknown as OpenAIGroupAccountSelectionRow[]
+    .all(groupId, groupOwnerSystemAccountId, now, now, now, now, gatewayDispatchAccountCandidateScanLimit) as unknown as OpenAIGroupAccountSelectionRow[]
 }
 
 export function hasOpenAIAccountAvailabilityScheduleForGroup(
@@ -607,6 +621,7 @@ function openAIAccountSecretFromRow(
     fallbackEnabled: runtimeStatus === 'active' && dispatchFallbackEnabled,
     clientCompatibility: openAIAccountResourceClientCompatibility(row),
     supportedModels: [...(options.supportedModelsByAccountId?.get(resourceAccountId) ?? [])],
+    modelMappings: [...(options.modelMappingsByAccountId?.get(resourceAccountId) ?? [])],
     lastSuccessfulTestModel: row.last_successful_test_model?.trim() || undefined,
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,

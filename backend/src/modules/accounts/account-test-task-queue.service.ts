@@ -6,24 +6,32 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   accountTestUnavailableMessage,
   clearAuthorizedAccountBindingFailureState,
+  clearAccountFailureStateResult,
   findAccountForTest,
   findRecentOpenAIRequestShapeForAccount,
   markAccountTestTemporaryUnavailable,
-  recordAccountSuccessfulTestModel
+  recordAccountSuccessfulTestModel,
+  resolveProxyUrlForProfile,
+  runtimeOpenAIAccountCredentials,
+  type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
+  type AccountTestDraftSnapshot,
   cleanupExpiredAccountTestTasks,
   completeAccountTestTask,
   failAccountTestTask,
   getAccountTestTaskRecord,
   isAccountTestTaskCancelRequested,
+  listRunnableAccountTestTaskIds,
   markAccountTestTaskCanceled,
   markAccountTestTaskRunning,
   requeueInterruptedAccountTestTasks
 } from '../../storage/account-test-tasks.repository.js'
 import { sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
+import { diagnosticTaskBusyMessage, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 interface AccountTestQueueItem {
@@ -31,6 +39,7 @@ interface AccountTestQueueItem {
 }
 
 const manualAccountTestConcurrency = 3
+const manualAccountTestRefillBatchSize = 500
 const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
 
@@ -39,8 +48,12 @@ const manualAccountTestQueue = createRetryQueue<AccountTestQueueItem>({
   policy: manualAccountTestRetryPolicy,
   concurrency: manualAccountTestConcurrency,
   run: runAccountTestQueueItem,
+  onSuccess: () => {
+    refillManualAccountTestQueue()
+  },
   onExhausted: (event) => {
     failAccountTestTask(event.item.taskId, event.error instanceof Error ? event.error.message : '账号测试任务执行失败')
+    refillManualAccountTestQueue()
   }
 })
 
@@ -98,7 +111,15 @@ export function startAccountTestTaskQueue(): void {
     return
   }
   cleanupExpiredAccountTestTasks()
-  const taskIds = requeueInterruptedAccountTestTasks()
+  requeueInterruptedAccountTestTasks()
+  refillManualAccountTestQueue()
+}
+
+function refillManualAccountTestQueue(): void {
+  if (runtimeConfig.processRole !== 'worker') {
+    return
+  }
+  const taskIds = listRunnableAccountTestTaskIds(manualAccountTestRefillBatchSize)
   for (const taskId of taskIds) {
     enqueueAccountTestTaskLocal(taskId)
   }
@@ -128,6 +149,29 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       return true
     }
 
+    if (task.draftAccount) {
+      const account = accountSummaryFromDraftSnapshot(task.draftAccount)
+      if (account.providerCode !== 'openai') {
+        failAccountTestTask(task.id, '当前仅支持测试 OpenAI 账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 账户', task.model))
+        return true
+      }
+      const result = await runAccountTestWithDiagnosticSlot(task.id, account, task.model, () => runOpenAIDraftAccountTest(account, task.draftAccount as AccountTestDraftSnapshot, {
+        model: task.model,
+        clientCompatibility: task.clientCompatibility,
+        diagnostics: task.diagnostics,
+        signal: controller.signal
+      }))
+      if (!result) {
+        return true
+      }
+      if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
+        markAccountTestTaskCanceled(task.id, '已停止测试')
+        return true
+      }
+      completeAccountTestTask(task.id, result)
+      return true
+    }
+
     const account = findAccountForTest(task.accountId, access)
     if (!account) {
       failAccountTestTask(task.id, '账户不存在')
@@ -143,12 +187,15 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       return true
     }
 
-    const result = await runOpenAIAccountTestWithSideEffects(account, access, {
+    const result = await runAccountTestWithDiagnosticSlot(task.id, account, task.model, () => runOpenAIAccountTestWithSideEffects(account, access, {
       model: task.model,
       clientCompatibility: task.clientCompatibility,
       diagnostics: task.diagnostics,
       signal: controller.signal
-    })
+    }))
+    if (!result) {
+      return true
+    }
 
     if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
       markAccountTestTaskCanceled(task.id, '已停止测试')
@@ -174,6 +221,46 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   }
 }
 
+async function runAccountTestWithDiagnosticSlot(
+  taskId: string,
+  account: AccountSummary,
+  model: string | undefined,
+  action: () => Promise<AccountTestResult>
+): Promise<AccountTestResult | undefined> {
+  const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
+  if (!releaseDiagnosticSlot) {
+    failAccountTestTask(taskId, diagnosticTaskBusyMessage, failedAccountTestResult(account, diagnosticTaskBusyMessage, model))
+    return undefined
+  }
+  try {
+    return await action()
+  } finally {
+    releaseDiagnosticSlot()
+  }
+}
+
+async function runOpenAIDraftAccountTest(
+  account: AccountSummary,
+  draft: AccountTestDraftSnapshot,
+  input: {
+    model?: string
+    clientCompatibility?: AccountSummary['clientCompatibility']
+    diagnostics: 'full' | 'limited'
+    signal: AbortSignal
+  }
+): Promise<AccountTestResult> {
+  const candidateAccount = await openAIDraftAccountSecret(draft, input.signal)
+  return testOpenAIAccount(account, {
+    model: input.model,
+    groupId: draft.groupId,
+    systemAccountId: draft.ownerSystemAccountId,
+    clientCompatibility: input.clientCompatibility,
+    diagnostics: input.diagnostics,
+    signal: input.signal,
+    candidateAccount
+  })
+}
+
 async function runOpenAIAccountTestWithSideEffects(
   account: AccountSummary,
   access: AccessScope,
@@ -197,13 +284,13 @@ async function runOpenAIAccountTestWithSideEffects(
     return result
   }
 
-  if (result.success && shouldClearAuthorizedAccountTestInstanceFailure(account)) {
-    const restored = clearAuthorizedAccountBindingFailureState(account.id, access)
+  if (result.success && shouldClearAccountAfterSuccessfulTest(account)) {
+    const restored = clearAccountAfterSuccessfulTest(account, access)
     if (restored.changed && restored.account) {
       accountTestStatusChanges = accountTestStatusLogChanges(account, restored.account)
       result = {
         ...result,
-        accountStatusChanged: accountTestStatusChanges.length > 0,
+        accountStatusChanged: restored.changed,
         accountStatus: restored.account.status
       }
     }
@@ -251,6 +338,141 @@ async function runOpenAIAccountTestWithSideEffects(
   return result
 }
 
+async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal: AbortSignal): Promise<OpenAIAccountSecret> {
+  const proxy = draftProxyProfile(draft.proxyProfileId)
+  let credentials = { ...draft.credentials }
+  if (draft.type === 'oauth' && shouldRefreshOpenAIOAuthCredentials(credentials)) {
+    const refreshToken = stringCredential(credentials.refresh_token)
+    if (!refreshToken) {
+      throw new Error('OAuth 草稿缺少 Refresh Token，无法刷新 Access Token')
+    }
+    const refreshedCredentials = buildOpenAIOAuthCredentials(await refreshOpenAIOAuthToken({
+      refreshToken,
+      clientId: stringCredential(credentials.client_id),
+      proxyUrl: proxy.proxyUrl,
+      signal
+    }), { refreshToken })
+    credentials = {
+      ...credentials,
+      ...refreshedCredentials,
+      error_handling_rules: credentials.error_handling_rules,
+      stream_intercept_rules: credentials.stream_intercept_rules
+    }
+  }
+  const apiKey = draft.type === 'oauth'
+    ? stringCredential(credentials.access_token)
+    : stringCredential(credentials.api_key)
+  if (!apiKey) {
+    throw new Error(draft.type === 'oauth' ? 'OAuth 草稿缺少 Access Token' : '账户草稿缺少 API Key')
+  }
+  const baseUrl = stringCredential(credentials.base_url) || 'https://api.openai.com/v1'
+  return {
+    id: draft.id,
+    providerCode: 'openai',
+    systemAccountId: draft.ownerSystemAccountId,
+    accountOwnerSystemAccountId: draft.ownerSystemAccountId,
+    groupOwnerSystemAccountId: draft.ownerSystemAccountId,
+    accountAccessType: 'owner',
+    groupAccessType: 'owner',
+    boundGroupId: draft.groupId,
+    name: draft.name,
+    type: draft.type,
+    status: 'active',
+    concurrencyLimit: draft.concurrencyLimit,
+    priority: draft.priority,
+    superPriorityEnabled: draft.superPriorityEnabled,
+    fallbackEnabled: draft.fallbackEnabled,
+    clientCompatibility: draft.clientCompatibility,
+    supportedModels: draft.supportedModels ?? [],
+    modelMappings: draft.modelMappings ?? [],
+    baseUrl,
+    apiKey,
+    refreshToken: stringCredential(credentials.refresh_token) || undefined,
+    clientId: stringCredential(credentials.client_id) || undefined,
+    proxyProfileId: draft.proxyProfileId,
+    proxyUrl: proxy.proxyUrl,
+    proxyProfileUnavailable: proxy.unavailable,
+    proxyProfileErrorMessage: proxy.errorMessage,
+    streamFailureCount: 0,
+    availabilityScheduleJson: draft.availabilityScheduleJson,
+    accountExpiresAt: draft.accountExpiresAt,
+    expiresAt: stringCredential(credentials.expires_at) || undefined,
+    credentials: runtimeOpenAIAccountCredentials(credentials)
+  }
+}
+
+function accountSummaryFromDraftSnapshot(draft: AccountTestDraftSnapshot): AccountSummary {
+  const usage = emptyAccountUsageSummary()
+  return {
+    id: draft.id,
+    systemAccountId: draft.ownerSystemAccountId,
+    ownerSystemAccountId: draft.ownerSystemAccountId,
+    providerCode: draft.providerCode,
+    name: draft.name,
+    notes: draft.notes,
+    type: draft.type,
+    credentials: draft.credentials,
+    status: 'active',
+    concurrencyLimit: draft.concurrencyLimit,
+    currentConcurrency: 0,
+    priority: draft.priority,
+    superPriorityEnabled: draft.superPriorityEnabled,
+    fallbackEnabled: draft.fallbackEnabled,
+    clientCompatibility: draft.clientCompatibility,
+    supportedModels: draft.supportedModels ?? [],
+    modelMappings: draft.modelMappings ?? [],
+    proxyProfileId: draft.proxyProfileId,
+    schedulable: true,
+    availabilitySchedule: draft.availabilitySchedule,
+    availabilityScheduleActive: true,
+    accountExpiresAt: draft.accountExpiresAt,
+    todayUsage: usage,
+    usage,
+    boundGroupId: draft.groupId,
+    boundGroupName: draft.groupName,
+    groupBindStatus: 'bound',
+    accessType: 'owner',
+    permissions: {
+      canUse: true,
+      canEdit: true,
+      canDelete: true,
+      canAuthorize: false,
+      canViewCredentials: true,
+      canManageAccounts: true,
+      canBindToApiKey: true
+    },
+    effectiveAvailability: {
+      available: true,
+      status: 'available',
+      label: '可用',
+      color: 'green'
+    }
+  }
+}
+
+function draftProxyProfile(proxyProfileId: string | undefined): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {
+  try {
+    return { proxyUrl: resolveProxyUrlForProfile(proxyProfileId) }
+  } catch (error) {
+    return {
+      unavailable: true,
+      errorMessage: error instanceof Error ? error.message : '代理配置不可用'
+    }
+  }
+}
+
+function emptyAccountUsageSummary(): AccountSummary['usage'] {
+  return {
+    requestCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheReadCost: 0,
+    totalTokens: 0,
+    totalCost: 0
+  }
+}
+
 function clearAccountGatewayRuntimeAfterRestore(account: AccountSummary, access?: AccessScope): void {
   const systemAccountId = account.accessType === 'authorized'
     ? account.bindingSystemAccountId ?? effectiveRequestSystemAccountId(access)
@@ -267,14 +489,28 @@ function clearAccountGatewayRuntimeAfterRestore(account: AccountSummary, access?
   })
 }
 
-function shouldClearAuthorizedAccountTestInstanceFailure(account: AccountSummary): boolean {
-  if (account.accessType !== 'authorized') return false
+function shouldClearAccountAfterSuccessfulTest(account: AccountSummary): boolean {
   if (account.status === 'disabled') return false
   return Boolean(
     account.status !== 'active'
+    || !account.schedulable
     || account.cooldownUntil
     || account.lastErrorMessage
+    || account.lastErrorCode
+    || account.cooldownRetestFailureCount
+    || account.cooldownRetestObservationStartedAt
+    || account.cooldownRetestLastAt
+    || account.cooldownRetestLastStatusCode
+    || account.streamFailureCount
+    || account.streamFailureWindowStartedAt
   )
+}
+
+function clearAccountAfterSuccessfulTest(account: AccountSummary, access: AccessScope) {
+  if (account.accessType === 'authorized') {
+    return clearAuthorizedAccountBindingFailureState(account.id, access)
+  }
+  return clearAccountFailureStateResult(account.id, access)
 }
 
 function accountTestStatusLogChanges(before: AccountSummary, after: AccountSummary): ReturnType<typeof safeChange>[] {
@@ -282,11 +518,35 @@ function accountTestStatusLogChanges(before: AccountSummary, after: AccountSumma
   if (before.status !== after.status) {
     changes.push(safeChange('status', '状态', before.status, after.status))
   }
+  if (before.schedulable !== after.schedulable) {
+    changes.push(safeChange('schedulable', '是否参与调度', before.schedulable, after.schedulable))
+  }
   if ((before.cooldownUntil ?? null) !== (after.cooldownUntil ?? null)) {
     changes.push(safeChange('cooldownUntil', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例冷却结束时间' : '冷却结束时间', before.cooldownUntil, after.cooldownUntil))
   }
+  if ((before.lastErrorCode ?? null) !== (after.lastErrorCode ?? null)) {
+    changes.push(safeChange('lastErrorCode', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例错误码' : '错误码', before.lastErrorCode, after.lastErrorCode))
+  }
   if ((before.lastErrorMessage ?? null) !== (after.lastErrorMessage ?? null)) {
     changes.push(safeChange('lastErrorMessage', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例错误信息' : '错误信息', before.lastErrorMessage, after.lastErrorMessage))
+  }
+  if ((before.cooldownRetestFailureCount ?? 0) !== (after.cooldownRetestFailureCount ?? 0)) {
+    changes.push(safeChange('cooldownRetestFailureCount', '后台复测失败次数', before.cooldownRetestFailureCount ?? 0, after.cooldownRetestFailureCount ?? 0))
+  }
+  if ((before.cooldownRetestObservationStartedAt ?? null) !== (after.cooldownRetestObservationStartedAt ?? null)) {
+    changes.push(safeChange('cooldownRetestObservationStartedAt', '自动恢复观察开始时间', before.cooldownRetestObservationStartedAt, after.cooldownRetestObservationStartedAt))
+  }
+  if ((before.cooldownRetestLastAt ?? null) !== (after.cooldownRetestLastAt ?? null)) {
+    changes.push(safeChange('cooldownRetestLastAt', '最近后台复测时间', before.cooldownRetestLastAt, after.cooldownRetestLastAt))
+  }
+  if ((before.cooldownRetestLastStatusCode ?? null) !== (after.cooldownRetestLastStatusCode ?? null)) {
+    changes.push(safeChange('cooldownRetestLastStatusCode', '最近后台复测状态码', before.cooldownRetestLastStatusCode, after.cooldownRetestLastStatusCode))
+  }
+  if ((before.streamFailureCount ?? 0) !== (after.streamFailureCount ?? 0)) {
+    changes.push(safeChange('streamFailureCount', '流式失败次数', before.streamFailureCount ?? 0, after.streamFailureCount ?? 0))
+  }
+  if ((before.streamFailureWindowStartedAt ?? null) !== (after.streamFailureWindowStartedAt ?? null)) {
+    changes.push(safeChange('streamFailureWindowStartedAt', '流式失败窗口开始时间', before.streamFailureWindowStartedAt, after.streamFailureWindowStartedAt))
   }
   return changes
 }
@@ -388,6 +648,10 @@ function sendAccountTestCancelFromDbService(taskId: string): boolean {
     }), 'DB service 投递账号测试取消到父进程失败')
     return false
   }
+}
+
+function stringCredential(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 function normalizedString(value: unknown): string | undefined {

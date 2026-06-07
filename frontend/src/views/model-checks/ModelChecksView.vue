@@ -165,7 +165,7 @@
         :mobile-data-source="runs"
         :loading="runsLoading"
         :pagination="runsTablePagination"
-        :scroll-x="1100"
+        :scroll-x="1360"
         :loading-more="runsMobileLoadingMore"
         :mobile-has-more="runsMobileHasMore"
         mobile-pagination
@@ -181,9 +181,14 @@
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'target'">
             <div class="target-cell">
-              <a-tag>AI 账户</a-tag>
               <span class="target-name-cell">{{ targetDisplayName(record) }}</span>
             </div>
+          </template>
+          <template v-else-if="column.key === 'targetType'">
+            <a-tag>{{ targetTypeText(record.targetType) }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'providerCode'">
+            <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
           </template>
           <template v-else-if="column.key === 'status'">
             <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
@@ -209,11 +214,12 @@
             <div class="model-check-mobile-head">
               <div>
                 <div class="model-check-mobile-title">{{ targetDisplayName(record) }}</div>
-                <div class="model-check-mobile-subtitle">AI 账户</div>
               </div>
               <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
             </div>
             <div class="model-check-mobile-tags">
+              <a-tag>{{ targetTypeText(record.targetType) }}</a-tag>
+              <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
               <a-tag>{{ modelText(record.model) }}</a-tag>
               <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
               <a-tag v-if="runTrustedComparison(record)" color="blue">可信对比</a-tag>
@@ -364,7 +370,9 @@ const levelOptions = [
   { label: '不可检测', value: 'unavailable' }
 ]
 const columns = [
-  { title: '目标', key: 'target', width: 300 },
+  { title: '目标', key: 'target', width: 280 },
+  { title: '账户类型', key: 'targetType', width: 110 },
+  { title: '供应商', key: 'providerCode', width: 110 },
   { title: '模型', key: 'model', width: 130 },
   { title: '状态', key: 'status', width: 110 },
   { title: '级别', key: 'level', width: 100 },
@@ -921,10 +929,14 @@ function targetDisplayName(run: Pick<ModelCheckRunSummary, 'targetName' | 'targe
   return name || '未记录账户名称'
 }
 
-function accountTypeText(value: string) {
-  if (value === 'api_key') return 'API Key 账户'
-  if (value === 'oauth') return 'OAuth 账户'
+function targetTypeText(value: ModelCheckRunSummary['targetType']) {
+  if (value === 'account') return 'AI 账户'
   return value
+}
+
+function providerText(value: ModelCheckRunSummary['providerCode']) {
+  if (value === 'openai') return 'OpenAI'
+  return value || '未知供应商'
 }
 
 function runTrustedComparison(run: Pick<ModelCheckRunSummary, 'trustedComparison'>) {
@@ -1341,10 +1353,10 @@ onBeforeUnmount(() => {
 .target-name-cell {
   display: block;
   min-width: 0;
-  max-width: 210px;
+  max-width: 240px;
   overflow: hidden;
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1379,14 +1391,8 @@ onBeforeUnmount(() => {
 
 .model-check-mobile-title {
   color: #0f172a;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1.35;
-}
-
-.model-check-mobile-subtitle {
-  margin-top: 4px;
-  color: #64748b;
-  word-break: break-all;
 }
 
 .model-check-mobile-tags {

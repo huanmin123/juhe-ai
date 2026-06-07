@@ -16,12 +16,14 @@ import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-servi
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
+import { listProviderModelCatalog, type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 
 const gatewayRuntimeTtlMs = 60_000
 const invalidGatewayRuntimeTtlMs = 10_000
 const gatewaySettingsTtlMs = 60_000
 const groupUsageAccessTtlMs = 60_000
 const openAIAccountsTtlMs = 60_000
+const providerModelCatalogTtlMs = 60_000
 
 interface GatewayRuntimeCacheEntry {
   runtime: DbServiceGatewayRuntime
@@ -51,6 +53,12 @@ const openAIAccountsCache = createAppCache<string, OpenAIAccountSecret[]>({
   name: 'gateway:openai-accounts',
   max: 1000,
   ttlMs: openAIAccountsTtlMs
+})
+
+const providerModelCatalogCache = createAppCache<string, ProviderModelCatalogItem[]>({
+  name: 'gateway:provider-model-catalog',
+  max: 1000,
+  ttlMs: providerModelCatalogTtlMs
 })
 
 const pendingGatewayRuntimeLoads = new Map<string, Promise<DbServiceGatewayRuntime>>()
@@ -150,6 +158,39 @@ export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, sys
   return cloneOpenAIAccountsWithCurrentConcurrency(result.accounts)
 }
 
+export async function listCachedProviderModelCatalogAsync(input: {
+  providerCode: string
+  systemAccountId?: string
+  includeMappingTargets?: boolean
+  includeInactive?: boolean
+  includeUnpriced?: boolean
+}): Promise<ProviderModelCatalogItem[]> {
+  if (runtimeConfig.processRole !== 'server') {
+    return listProviderModelCatalog(input)
+  }
+  const cacheKey = [
+    input.providerCode,
+    input.systemAccountId ?? '',
+    input.includeMappingTargets === true ? 'all' : 'public',
+    input.includeInactive === true ? 'inactive' : 'active',
+    input.includeUnpriced === true ? 'unpriced' : 'priced'
+  ].join(':')
+  const cached = providerModelCatalogCache.get(cacheKey)
+  if (cached) {
+    return cached.map((item) => ({ ...item }))
+  }
+  const value = await requestDbService({
+    type: 'list_provider_model_catalog',
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId,
+    includeMappingTargets: input.includeMappingTargets,
+    includeInactive: input.includeInactive,
+    includeUnpriced: input.includeUnpriced
+  })
+  providerModelCatalogCache.set(cacheKey, value.map((item) => ({ ...item })))
+  return value.map((item) => ({ ...item }))
+}
+
 export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbServiceGatewayRuntime> {
   const cacheKey = hashSecret(apiKey)
   const cached = gatewayRuntimeCache.get(cacheKey)
@@ -186,6 +227,7 @@ export function clearGatewayRuntimeCacheLocal(): void {
   gatewaySettingsCache.clear()
   groupUsageAccessCache.clear()
   openAIAccountsCache.clear()
+  providerModelCatalogCache.clear()
   clearSettingsRepositoryCache()
 }
 
@@ -269,6 +311,7 @@ function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAcc
     ...account,
     currentConcurrency: undefined,
     supportedModels: [...(account.supportedModels ?? [])],
+    modelMappings: (account.modelMappings ?? []).map((mapping) => ({ ...mapping })),
     credentials: { ...account.credentials }
   }
 }

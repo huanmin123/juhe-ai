@@ -8,6 +8,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
 const dispatchCandidateLimit = 256
+const dispatchCandidateScanLimit = dispatchCandidateLimit * 2
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-dispatch-candidate-window-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
@@ -146,20 +147,77 @@ try {
     for (const accountId of expectedAlwaysAvailableIds.slice(0, dispatchCandidateLimit - 1)) {
       assert(ids.has(accountId), `无计划主窗口账号应稳定进入候选：${accountId}`)
     }
+
+    assert.equal(capturedCalls.length, 2, '调度候选读取应拆成有计划/无计划两条有界 SQL，不应按账号逐条查询')
+    assert.equal(supportedModelHydrationCalls.length, 1, '候选水合应只读取最终 256 个主候选的模型列表，不能按两个窗口扩大到 512 个')
+
+    const refillGroup = repositories.createGroup({
+      name: '调度候选补齐回归分组',
+      providerCode: 'openai',
+      enabled: true
+    }, access)
+    const brokenAccountIds: string[] = []
+    for (let index = 0; index < dispatchCandidateLimit; index += 1) {
+      const account = repositories.createAccount({
+        providerCode: 'openai',
+        name: `调度窗口损坏凭据账号 ${String(index).padStart(3, '0')}`,
+        type: 'api_key',
+        credentials: {
+          api_key: `sk-dispatch-window-broken-${index}`,
+          base_url: 'https://api.openai.com/v1'
+        },
+        groupId: refillGroup.id,
+        priority: index
+      }, access)
+      brokenAccountIds.push(account.id)
+    }
+    const refillAccountIds: string[] = []
+    for (let index = 0; index < 8; index += 1) {
+      const account = repositories.createAccount({
+        providerCode: 'openai',
+        name: `调度窗口补齐可用账号 ${String(index).padStart(3, '0')}`,
+        type: 'api_key',
+        credentials: {
+          api_key: `sk-dispatch-window-refill-${index}`,
+          base_url: 'https://api.openai.com/v1'
+        },
+        groupId: refillGroup.id,
+        priority: dispatchCandidateLimit + index
+      }, access)
+      refillAccountIds.push(account.id)
+    }
+    database
+      .prepare(`UPDATE accounts SET credentials_encrypted = ? WHERE id IN (${brokenAccountIds.map(() => '?').join(', ')})`)
+      .run('broken-credentials', ...brokenAccountIds)
+
+    const capturedCallsBeforeRefill = capturedCalls.length
+    const hydrationCallsBeforeRefill = supportedModelHydrationCalls.length
+    const refillResult = repositories.listOpenAIAccountsForGroupResult(refillGroup.id, access.systemAccountId)
+    const refillIds = new Set(refillResult.accounts.map((account) => account.id))
+
+    assert.equal(refillResult.accounts.length, refillAccountIds.length, '前 256 个候选水合失败后，应继续扫描后续窗口补齐可用账号')
+    for (const accountId of refillAccountIds) {
+      assert(refillIds.has(accountId), `后续窗口可用账号应进入最终候选：${accountId}`)
+    }
+    for (const accountId of brokenAccountIds) {
+      assert.equal(refillIds.has(accountId), false, `凭据损坏账号不应进入最终候选：${accountId}`)
+    }
+    assert.equal(capturedCalls.length - capturedCallsBeforeRefill, 2, '补齐场景仍应只读取有计划/无计划两条有界 SQL')
+    assert.equal(supportedModelHydrationCalls.length - hydrationCallsBeforeRefill, 2, '补齐场景应先水合失败窗口，再水合后续补齐窗口')
   } finally {
     database.prepare = originalPrepare
   }
 
-  assert.equal(capturedCalls.length, 2, '调度候选读取应拆成有计划/无计划两条有界 SQL，不应按账号逐条查询')
   for (const call of capturedCalls) {
     assert(/\bLIMIT\s+\?/i.test(call.sql), '调度候选 SQL 必须带参数化 LIMIT')
-    assert.equal(call.params.at(-1), dispatchCandidateLimit, '调度候选 SQL LIMIT 参数应为 256')
-    assert(call.rowCount <= dispatchCandidateLimit, '单条调度候选 SQL 返回行数不应超过 256')
+    assert.equal(call.params.at(-1), dispatchCandidateScanLimit, '调度候选 SQL 扫描窗口参数应为 512')
+    assert(call.rowCount <= dispatchCandidateScanLimit, '单条调度候选 SQL 返回行数不应超过扫描窗口上限')
   }
-  assert.equal(supportedModelHydrationCalls.length, 1, '候选水合应只读取最终 256 个主候选的模型列表，不能按两个窗口扩大到 512 个')
-  assert(supportedModelHydrationCalls[0].length <= dispatchCandidateLimit, '模型水合 IN 参数不应超过调度候选上限')
+  for (const params of supportedModelHydrationCalls) {
+    assert(params.length <= dispatchCandidateLimit, '模型水合 IN 参数不应超过调度候选上限')
+  }
 
-  console.log('网关调度候选窗口回归通过：分组候选读取按 256 有界窗口返回，冷却前置过滤，计划账号不被无计划窗口误漏，查询计划不使用临时排序树，后续水合不扩大候选集')
+  console.log('网关调度候选窗口回归通过：分组候选按 512 扫描窗口读取、最终候选保持 256 上限，冷却前置过滤，计划账号不被无计划窗口误漏，水合失败时可继续补齐后续可用账号，查询计划不使用临时排序树，后续水合不扩大候选集')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -211,6 +269,6 @@ function explainDispatchCandidateWindowQuery(
         group_accounts.account_id ASC
       LIMIT ?
     `)
-    .all(groupId, systemAccountId, now, now, dispatchCandidateLimit) as Array<{ detail?: string }>
+    .all(groupId, systemAccountId, now, now, dispatchCandidateScanLimit) as Array<{ detail?: string }>
   return rows.map((row) => row.detail ?? '').join('\n')
 }

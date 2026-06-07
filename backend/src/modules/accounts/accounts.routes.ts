@@ -2,9 +2,12 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { isAdminRole, type AccountSummary } from '../../domain/types.js'
+import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { accountAvailabilityScheduleFromRequest, accountAvailabilityScheduleJson } from '../../storage/account-availability-schedule.js'
+import { newId } from '../../storage/database.js'
+import { ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, normalizeAccountCredentialsForWrite, normalizeAccountModelMappingsForProvider, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
@@ -12,7 +15,7 @@ import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerpr
 import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, ownerTarget, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
-import { cancelAccountTestTask, createAccountTestTask, failAccountTestTask, getAccountTestTask, listAccountTestTasks } from '../../storage/account-test-tasks.repository.js'
+import { cancelAccountTestTask, createAccountTestTask, failAccountTestTask, getAccountTestTask, listAccountTestTasks, type AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
@@ -22,12 +25,19 @@ import { dispatchAccountTestCancel, dispatchAccountTestTasks } from './account-t
 
 export const accountsRouter = Router()
 
+const accountModelMappingSchema = z.object({
+  sourceModel: z.string().trim().min(1),
+  upstreamModel: z.string().trim().min(1),
+  enabled: z.boolean().optional()
+}).strict()
+
 const accountCreateSchema = z.object({
   providerCode: z.string().trim().min(1),
   name: z.string().trim().min(1),
   type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
+  modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   status: z.enum(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
@@ -47,6 +57,7 @@ const accountUpdateSchema = z.object({
   name: z.string().trim().min(1).optional(),
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
+  modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   status: z.enum(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().min(0).optional(),
@@ -68,6 +79,34 @@ const accountTestSchema = z.object({
   prompt: z.string().trim().optional(),
   clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional()
 }).strict().optional()
+
+const accountDraftTestAccountSchema = z.object({
+  providerCode: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  type: z.string().trim().min(1),
+  credentials: z.record(z.unknown()).optional(),
+  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
+  modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
+  concurrencyLimit: z.number().int().min(1).optional(),
+  priority: z.number().int().min(0).optional(),
+  superPriorityEnabled: z.boolean().optional(),
+  fallbackEnabled: z.boolean().optional(),
+  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
+  proxyProfileId: z.string().nullable().optional(),
+  groupId: z.string().trim().min(1),
+  accountExpiresAt: z.string().nullable().optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  notes: z.string().optional()
+}).strict()
+
+const accountDraftTestSchema = z.object({
+  account: accountDraftTestAccountSchema,
+  model: z.string().trim().optional(),
+  prompt: z.string().trim().optional(),
+  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional()
+}).strict()
+
+type AccountDraftTestAccountRequest = z.infer<typeof accountDraftTestAccountSchema>
 
 const accountGroupSchema = z.object({
   groupId: z.string().trim().min(1, '分组不能为空')
@@ -259,6 +298,98 @@ accountsRouter.post('/test-tasks/:taskId/cancel', (req, res) => {
   }
   dispatchAccountTestCancel(task.id)
   res.json(ok(task))
+})
+
+accountsRouter.post('/test-draft', async (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  if (!requestAccess) {
+    res.status(403).json({ message: '缺少系统账户上下文' })
+    return
+  }
+  const parsed = accountDraftTestSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '账户草稿测试参数无效'))
+    return
+  }
+  const accountInput = parsed.data.account
+  if (accountInput.providerCode !== 'openai') {
+    res.status(400).json({ message: '当前仅支持测试 OpenAI 账户' })
+    return
+  }
+  const group = findGroupSummary(accountInput.groupId, requestAccess)
+  if (!group || group.providerCode !== accountInput.providerCode || group.permissions?.canManageAccounts === false) {
+    res.status(400).json(badRequest('账户分组无效'))
+    return
+  }
+  const provider = listProviders().find((item) => item.code === accountInput.providerCode)
+  if (!provider || !provider.accountTypes.includes(accountInput.type)) {
+    res.status(400).json(badRequest(`供应商 ${accountInput.providerCode} 不支持账户类型 ${accountInput.type}`))
+    return
+  }
+  const ownerSystemAccountId = group.ownerSystemAccountId ?? group.systemAccountId ?? requestAccess.systemAccountFilterId ?? requestAccess.systemAccountId
+  if (!ownerSystemAccountId) {
+    res.status(400).json(badRequest('账户分组缺少归属用户，无法测试'))
+    return
+  }
+
+  try {
+    const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, provider.baseUrl))
+    const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
+    const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
+    const clientCompatibility = normalizeOpenAIAccountClientCompatibility(accountInput.providerCode, accountInput.type, accountInput.clientCompatibility)
+    const account = draftTestAccountSummary({
+      account: accountInput,
+      availabilitySchedule,
+      clientCompatibility,
+      credentials,
+      groupName: group.name,
+      ownerSystemAccountId
+    })
+    const { prompt: _ignoredPrompt, ...testOptions } = parsed.data
+    const draftAccount: AccountTestDraftSnapshot = {
+      id: account.id,
+      ownerSystemAccountId,
+      groupId: accountInput.groupId,
+      groupName: group.name,
+      providerCode: accountInput.providerCode,
+      name: account.name,
+      type: accountInput.type,
+      credentials,
+      concurrencyLimit: account.concurrencyLimit,
+      priority: account.priority,
+      superPriorityEnabled: account.superPriorityEnabled,
+      fallbackEnabled: account.fallbackEnabled,
+      clientCompatibility,
+      supportedModels: account.supportedModels,
+      modelMappings: account.modelMappings,
+      proxyProfileId: account.proxyProfileId,
+      accountExpiresAt: account.accountExpiresAt,
+      availabilitySchedule,
+      availabilityScheduleJson,
+      notes: account.notes
+    }
+    const task = createAccountTestTask({
+      account,
+      access: requestAccess,
+      diagnostics: 'full',
+      model: testOptions.model,
+      clientCompatibility: testOptions.clientCompatibility,
+      draftAccount
+    })
+    if (!dispatchAccountTestTasks([task.id])) {
+      failAccountTestTask(task.id, '后台 worker 暂不可用，账号草稿测试任务未能投递')
+      res.status(503).json({ message: '后台 worker 暂不可用，账号草稿测试任务未能投递' })
+      return
+    }
+    res.status(202).json(ok(task))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '创建账户草稿测试任务失败'))
+  }
 })
 
 accountsRouter.get('/:id', async (req, res, next) => {
@@ -555,6 +686,7 @@ accountsRouter.post('/', mutationGuard({
             safeChange('clientCompatibility', '客户端兼容', undefined, account.clientCompatibility),
             safeChange('credentials', '凭据', undefined, parsed.data.credentials),
             safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
+            safeChange('modelMappings', '模型映射', undefined, account.modelMappings),
             safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
             safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
             safeChange('errorPolicyId', '错误策略', undefined, account.errorPolicyId),
@@ -873,6 +1005,7 @@ accountsRouter.patch('/:id', async (req, res) => {
               fallbackEnabled: '降级备用',
               clientCompatibility: '客户端兼容',
               supportedModels: '支持模型',
+              modelMappings: '模型映射',
               proxyProfileId: '代理',
               errorPolicyId: '错误策略',
               schedulable: '参与调度',
@@ -1074,6 +1207,103 @@ accountsRouter.delete('/:id', (req, res) => {
   }
   res.status(204).send()
 })
+
+function draftAccountCredentials(account: AccountDraftTestAccountRequest, providerBaseUrl: string): Record<string, unknown> {
+  const credentials = credentialsRecordValue(account.credentials) ?? {}
+  if (account.type !== 'oauth' || hasCredentialText(credentials.base_url)) {
+    return credentials
+  }
+  return {
+    ...credentials,
+    base_url: providerBaseUrl || 'https://api.openai.com/v1'
+  }
+}
+
+function draftTestAccountSummary(input: {
+  account: AccountDraftTestAccountRequest
+  availabilitySchedule: ReturnType<typeof accountAvailabilityScheduleFromRequest>
+  clientCompatibility: AccountSummary['clientCompatibility']
+  credentials: Record<string, unknown>
+  groupName?: string
+  ownerSystemAccountId: string
+}): AccountSummary {
+  const usage = emptyAccountUsageSummary()
+  return {
+    id: newId('acctdraft'),
+    systemAccountId: input.ownerSystemAccountId,
+    ownerSystemAccountId: input.ownerSystemAccountId,
+    providerCode: input.account.providerCode,
+    name: input.account.name,
+    notes: optionalText(input.account.notes),
+    type: input.account.type,
+    credentials: input.credentials,
+    status: 'active',
+    concurrencyLimit: input.account.concurrencyLimit ?? 20,
+    currentConcurrency: 0,
+    priority: input.account.priority ?? 0,
+    superPriorityEnabled: input.account.superPriorityEnabled ?? false,
+    fallbackEnabled: input.account.fallbackEnabled ?? false,
+    clientCompatibility: input.clientCompatibility,
+    supportedModels: normalizedTextList(input.account.supportedModels),
+    modelMappings: normalizeDraftAccountModelMappings(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId),
+    proxyProfileId: optionalText(input.account.proxyProfileId),
+    schedulable: true,
+    availabilitySchedule: input.availabilitySchedule,
+    availabilityScheduleActive: true,
+    accountExpiresAt: optionalText(input.account.accountExpiresAt),
+    todayUsage: usage,
+    usage,
+    accessType: 'owner',
+    boundGroupId: input.account.groupId,
+    boundGroupName: input.groupName,
+    groupBindStatus: 'bound',
+    permissions: {
+      canUse: true,
+      canEdit: true,
+      canDelete: true,
+      canAuthorize: false,
+      canViewCredentials: true,
+      canManageAccounts: true,
+      canBindToApiKey: true
+    },
+    effectiveAvailability: {
+      available: true,
+      status: 'available',
+      label: '草稿测试',
+      color: 'blue'
+    }
+  }
+}
+
+function emptyAccountUsageSummary(): AccountSummary['usage'] {
+  return {
+    requestCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheReadCost: 0,
+    totalTokens: 0,
+    totalCost: 0
+  }
+}
+
+function normalizedTextList(value: string[] | undefined): string[] {
+  return [...new Set((value ?? []).map((item) => item.trim()).filter(Boolean))]
+}
+
+function normalizeDraftAccountModelMappings(
+  value: AccountDraftTestAccountRequest['modelMappings'],
+  providerCode: string,
+  ownerSystemAccountId: string
+): AccountSummary['modelMappings'] {
+  return normalizeAccountModelMappingsForProvider(value ?? [], providerCode, ownerSystemAccountId) ?? []
+}
+
+function optionalText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  return text || undefined
+}
 
 function accountCredentialFingerprint(credentials: unknown): string {
   if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) {

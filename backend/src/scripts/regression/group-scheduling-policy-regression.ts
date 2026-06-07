@@ -40,6 +40,16 @@ try {
     'created_at',
     'updated_at'
   ])
+  assertCurrentColumns('group_authorization_settings', [
+    'authorization_id',
+    'system_account_id',
+    'group_id',
+    'enabled',
+    'group_type',
+    'scheduling_policy_json',
+    'created_at',
+    'updated_at'
+  ])
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   assert.throws(

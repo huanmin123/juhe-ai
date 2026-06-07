@@ -38,15 +38,15 @@ export interface TableStorageOverview {
   tables: TableStorageSnapshotSummary[]
 }
 
-export interface UsageRecordsCleanupResult {
+export interface NonBusinessDataCleanupResult {
   cutoffAt: string
   deletedRows: number
+  deletedFiles: number
   batches: number
   batchSize: number
   maxBatches: number
   hasMore: boolean
   queued?: boolean
-  eligibleRows?: number
   jobId?: string
   submittedAt?: string
   blockedReason?: string

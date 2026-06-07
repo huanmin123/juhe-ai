@@ -146,7 +146,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
       lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
       lines.push(isAuthorizedAccount(account)
         ? '可手动测试，测试通过后恢复正常；也可在更多菜单恢复正常'
-        : '等待后台复测；也可手动测试或在更多菜单恢复正常')
+        : '可手动测试，测试通过后恢复正常；也可等待后台复测或在更多菜单恢复正常')
       if (account.cooldownRetestFailureCount) {
         lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
       }
@@ -158,8 +158,8 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
         lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
       }
       lines.push(account.lastErrorCode === 'oauth_token_refresh_failed'
-        ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动恢复异常'
-        : '异常账户不会参与调度，仅保留测试和恢复异常')
+        ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动测试或手动恢复异常'
+        : '异常账户不会参与调度，可手动测试，测试通过后恢复正常')
     }
     if (account.cooldownRetestLastAt) {
       const suffix = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''

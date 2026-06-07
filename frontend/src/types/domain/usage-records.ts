@@ -13,6 +13,12 @@ export interface UsageRecordCostBreakdown {
   outputImageCostUsd?: number
   inputImageUsdPer1M?: number
   outputImageUsdPer1M?: number
+  inputAudioCostUsd?: number
+  outputAudioCostUsd?: number
+  inputAudioUsdPer1M?: number
+  outputAudioUsdPer1M?: number
+  outputImageUnitCostUsd?: number
+  outputUsdPerImage?: number
   accountChargeUsd?: number
   multiplier: 1
 }
@@ -35,6 +41,10 @@ export interface UsageRecordSummary {
   endpoint?: string
   providerCode?: string
   model?: string
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
   stream: boolean
   statusCode?: number
   success: boolean

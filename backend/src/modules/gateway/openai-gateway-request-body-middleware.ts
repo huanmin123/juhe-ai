@@ -8,7 +8,10 @@ import {
   gatewayJsonBodyLargeWarningBytes,
   gatewayRawBodyHardLimitBytes,
   gatewayTextRawBodyHardLimitBytes,
+  getGatewayRequestBodyInFlightState,
   isGatewayJsonContentType,
+  releaseGatewayRequestBodyInFlightBytes,
+  tryAcquireGatewayRequestBodyInFlightBytes,
   type GatewayJsonBodyMetadata,
   type GatewayRawBodyRequest
 } from './openai-gateway-request-body.js'
@@ -35,6 +38,18 @@ export async function captureGatewayRawBody(
         jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
       }
       rejectGatewayRawBodyTooLarge(req, res, rawBody, gatewayRawBodyHardLimitBytes, 'gateway')
+      return
+    }
+
+    if (!tryAcquireGatewayRequestBodyInFlightBytes(req, res, rawBody.length)) {
+      req.gatewayRequestBody = {
+        rawBodyBytes: rawBody.length,
+        contentType: String(contentType ?? ''),
+        isJson,
+        jsonParseStatus: isJson ? 'deferred_large_json' : 'not_json',
+        jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
+      }
+      rejectGatewayRawBodyInFlightLimit(req, res, rawBody)
       return
     }
 
@@ -153,11 +168,43 @@ function rejectGatewayRawBodyTooLarge(
     : '网关请求体超过当前请求类型上限，已拒绝以保护主进程')
   req.rawBody = undefined
   req.body = undefined
+  releaseGatewayRequestBodyInFlightBytes(req)
   if (!res.headersSent) {
     res.status(413).json({
       error: {
         message: '请求体过大',
         type: 'request_too_large'
+      }
+    })
+  }
+}
+
+function rejectGatewayRawBodyInFlightLimit(
+  req: GatewayRawBodyRequest,
+  res: Response,
+  rawBody: Buffer
+): void {
+  const state = getGatewayRequestBodyInFlightState()
+  getRequestLogger().warn({
+    event: 'gateway_raw_body_in_flight_limit_rejected',
+    method: req.method,
+    path: req.path,
+    originalUrl: sanitizeUrlForLog(req.originalUrl),
+    rawBodyBytes: rawBody.length,
+    bodyInFlightBytes: state.currentBytes,
+    bodyInFlightRequestCount: state.requestCount,
+    bodyInFlightMaxBytes: state.maxBytes,
+    bodyInFlightRejectedCount: state.rejectedCount
+  }, '网关请求体在途总量超过上限，已拒绝以保护主进程')
+  req.rawBody = undefined
+  req.body = undefined
+  if (!res.headersSent) {
+    res.setHeader('Retry-After', '1')
+    res.status(503).json({
+      error: {
+        message: '网关请求体在途总量过高，请稍后重试',
+        type: 'server_overloaded',
+        code: 'gateway_body_in_flight_limit_exceeded'
       }
     })
   }

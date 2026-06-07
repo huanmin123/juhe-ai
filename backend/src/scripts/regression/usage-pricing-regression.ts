@@ -333,6 +333,29 @@ assert.deepEqual(defined(imageUsage), {
   inputImageTokens: 25
 })
 
+const audioUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
+  usage: {
+    input_tokens: 100,
+    output_tokens: 60,
+    input_tokens_details: {
+      audio_tokens: 30,
+      cached_tokens: 10
+    },
+    output_tokens_details: {
+      audio_tokens: 40
+    },
+    output_image_count: 2
+  }
+}))
+assert.deepEqual(defined(audioUsage), {
+  inputTokens: 100,
+  outputTokens: 60,
+  cacheReadTokens: 10,
+  inputAudioTokens: 30,
+  outputAudioTokens: 40,
+  outputImageCount: 2
+})
+
 const imageCost = estimateProviderCostUsd({
   providerCode: 'openai',
   model: 'gpt-image-2',
@@ -453,7 +476,7 @@ assert.match(accountErrorPolicySource, /accountErrorPolicyUpstreamSummary/)
 assert.match(accountErrorPolicySource, /accountErrorPolicyReason\(statusCode,\s*decision,\s*upstreamSummary\)/)
 
 const backgroundJobsSource = readSource('modules/background/background-jobs.ts')
-const backgroundSettingsNumberSource = sourceBetween(backgroundJobsSource, 'function settingsNumber', 'function settingsString')
+const backgroundSettingsNumberSource = sourceBetween(backgroundJobsSource, 'function settingsNumber', 'async function databaseFileBytes')
 assert.match(backgroundJobsSource, /enqueueCooldownAccountRetest/)
 assert.match(backgroundJobsSource, /getCooldownAccountRetestQueueSnapshot/)
 assert.doesNotMatch(backgroundJobsSource, /prompt:\s*'hi'/)
@@ -537,7 +560,9 @@ assert.match(accountsRoutesSource, /\}\)\.strict\(\)/)
 
 const repositoriesSource = readSource('storage/repositories.ts')
 assert.doesNotMatch(repositoriesSource, /SET type = \?,\s*credentials_encrypted = \?/s)
-assert.match(repositoriesSource, /authorization_instance_source_account_id = NULL/)
+assert.match(repositoriesSource, /function logicallyDeleteSourceAccountWithInstances/)
+assert.match(repositoriesSource, /WHERE authorization_instance_source_account_id = \?/)
+assert.doesNotMatch(repositoriesSource, /authorization_instance_source_account_id = NULL/)
 assert.match(repositoriesSource, /function normalizedAccountType\(value: unknown\): string/)
 assert.match(repositoriesSource, /function normalizedAccountStatusInput\(value: unknown, fallback: AccountStatus\): AccountStatus/)
 assert.match(repositoriesSource, /function normalizedPositiveIntegerInput\(value: unknown, fallback: number, label: string\): number/)
@@ -562,7 +587,7 @@ assert.match(proxiesRoutesSource, /const proxyUpdateSchema = proxySchema\.partia
 assert.match(proxiesRoutesSource, /proxyUpdateSchema\.safeParse\(req\.body\)/)
 
 const externalPublicApiCatalogSource = readSource('modules/external-integrations/external-public-api-catalog.ts')
-assert.match(externalPublicApiCatalogSource, /id: 'api-key-delete'[\s\S]+groupRouteStrategy:\s*'priority_failover'[\s\S]+groupBindings: \[\{ groupId: 'grp_xxx'/)
+assert.match(externalPublicApiCatalogSource, /id: 'api-key-delete'[\s\S]+groupRouteStrategy:\s*'priority_failover'[\s\S]+groupBindings: \[\{[^}]*groupId: 'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /apiKey:\s*\{[^\n]*groupId:\s*'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /新的主绑定分组 ID/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /绑定分组 ID；与 groupName/)
@@ -636,11 +661,11 @@ assert.match(ipPolicyBodySchemaSource, /durationDays:\s*z\.number\(\)\.int\(\)\.
 assert.doesNotMatch(ipPolicyBodySchemaSource, /z\.coerce\.number/)
 
 const tableMonitorRoutesSource = readSource('modules/table-monitor/table-monitor.routes.ts')
-const usageRecordsCleanupSchemaSource = sourceBetween(tableMonitorRoutesSource, 'const usageRecordsCleanupSchema', 'interface UsageRecordsCleanupResult')
-assert.match(usageRecordsCleanupSchemaSource, /batchSize:\s*z\.number\(\)\.int\(\)\.min\(100\)\.max\(10000\)\.optional\(\)/)
-assert.match(usageRecordsCleanupSchemaSource, /maxBatches:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(100\)\.optional\(\)/)
-assert.match(usageRecordsCleanupSchemaSource, /\}\)\.strict\(\)/)
-assert.doesNotMatch(usageRecordsCleanupSchemaSource, /z\.coerce\.number/)
+const nonBusinessDataCleanupSchemaSource = sourceBetween(tableMonitorRoutesSource, 'const nonBusinessDataCleanupSchema', 'interface NonBusinessDataCleanupResult')
+assert.match(nonBusinessDataCleanupSchemaSource, /batchSize:\s*z\.number\(\)\.int\(\)\.min\(100\)\.max\(10000\)\.optional\(\)/)
+assert.match(nonBusinessDataCleanupSchemaSource, /maxBatches:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(100\)\.optional\(\)/)
+assert.match(nonBusinessDataCleanupSchemaSource, /\}\)\.strict\(\)/)
+assert.doesNotMatch(nonBusinessDataCleanupSchemaSource, /z\.coerce\.number/)
 
 const gatewayBodySource = readSource('modules/gateway/openai-gateway-body.ts')
 assert.match(gatewayBodySource, /responseBackpressureWarnThresholdMs\s*=\s*50/)

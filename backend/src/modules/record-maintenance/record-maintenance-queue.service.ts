@@ -2,7 +2,11 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
-import { cleanupProcessedUsageRecordsBeforeWithResult } from '../../storage/data-retention.repository.js'
+import {
+  cleanupNonBusinessDataBeforeWithResult,
+  cleanupProcessedUsageRecordsBeforeWithResult,
+  type NonBusinessDataHardCleanupResult
+} from '../../storage/data-retention.repository.js'
 import { newId, nowIso } from '../../storage/database.js'
 import {
   cleanupDeletedAccountRelatedRecordDataAsync,
@@ -32,6 +36,14 @@ export type RecordMaintenanceJob =
   }
   | {
     type: 'usage_records_cleanup'
+    id?: string
+    cutoffAt: string
+    batchSize: number
+    maxBatches: number
+    createdAt?: string
+  }
+  | {
+    type: 'non_business_data_cleanup'
     id?: string
     cutoffAt: string
     batchSize: number
@@ -318,6 +330,19 @@ async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<v
       }, '使用记录后台清理完成')
       return
     }
+    case 'non_business_data_cleanup': {
+      const result = await cleanupNonBusinessDataBefore({
+        cutoffAt: job.cutoffAt,
+        batchSize: job.batchSize,
+        maxBatches: job.maxBatches
+      })
+      logger.info({
+        event: 'record_maintenance_non_business_data_cleanup_completed',
+        jobId: job.id,
+        ...result
+      }, '非业务数据后台硬清理完成')
+      return
+    }
     case 'account_usage_snapshot_upsert':
       processAccountUsageSnapshotUpsertJobs([job])
       return
@@ -416,6 +441,75 @@ function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number;
   }
 }
 
+async function cleanupNonBusinessDataBefore(input: { cutoffAt: string; batchSize: number; maxBatches: number }): Promise<NonBusinessDataHardCleanupResult & {
+  batches: number
+  batchSize: number
+  maxBatches: number
+}> {
+  const cutoffTime = Date.parse(input.cutoffAt)
+  const base = {
+    cutoffAt: input.cutoffAt,
+    deletedRows: 0,
+    deletedFiles: 0,
+    hasMore: false,
+    tableRows: {} as Record<string, number>,
+    fileDeletes: {} as Record<string, number>
+  }
+  if (Number.isNaN(cutoffTime)) {
+    return {
+      ...base,
+      batches: 0,
+      batchSize: input.batchSize,
+      maxBatches: input.maxBatches
+    }
+  }
+
+  let batches = 0
+  let result: NonBusinessDataHardCleanupResult = base
+  for (let index = 0; index < input.maxBatches; index += 1) {
+    const batch = await cleanupNonBusinessDataBeforeWithResult({
+      cutoffAt: input.cutoffAt,
+      limit: input.batchSize
+    })
+    result = mergeNonBusinessCleanupResult(result, batch)
+    if (batch.deletedRows > 0 || batch.deletedFiles > 0) {
+      batches += 1
+    }
+    if (!batch.hasMore || (batch.deletedRows === 0 && batch.deletedFiles === 0)) {
+      break
+    }
+  }
+
+  return {
+    ...result,
+    batches,
+    batchSize: input.batchSize,
+    maxBatches: input.maxBatches
+  }
+}
+
+function mergeNonBusinessCleanupResult(
+  current: NonBusinessDataHardCleanupResult,
+  batch: NonBusinessDataHardCleanupResult
+): NonBusinessDataHardCleanupResult {
+  const tableRows = { ...current.tableRows }
+  for (const [key, value] of Object.entries(batch.tableRows)) {
+    tableRows[key] = (tableRows[key] ?? 0) + value
+  }
+  const fileDeletes = { ...current.fileDeletes }
+  for (const [key, value] of Object.entries(batch.fileDeletes)) {
+    fileDeletes[key] = (fileDeletes[key] ?? 0) + value
+  }
+  return {
+    cutoffAt: batch.cutoffAt,
+    deletedRows: current.deletedRows + batch.deletedRows,
+    deletedFiles: current.deletedFiles + batch.deletedFiles,
+    hasMore: batch.hasMore,
+    tableRows,
+    fileDeletes
+  }
+}
+
 function normalizeRecordMaintenanceJob(input: RecordMaintenanceJob): RecordMaintenanceJob {
   return {
     ...input,
@@ -445,6 +539,15 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
       && (record.createdAt === undefined || typeof record.createdAt === 'string')
   }
   if (record.type === 'usage_records_cleanup') {
+    return typeof record.cutoffAt === 'string'
+      && typeof record.batchSize === 'number'
+      && Number.isFinite(record.batchSize)
+      && typeof record.maxBatches === 'number'
+      && Number.isFinite(record.maxBatches)
+      && (record.id === undefined || typeof record.id === 'string')
+      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+  }
+  if (record.type === 'non_business_data_cleanup') {
     return typeof record.cutoffAt === 'string'
       && typeof record.batchSize === 'number'
       && Number.isFinite(record.batchSize)

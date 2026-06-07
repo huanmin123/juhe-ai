@@ -1,13 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountModelMapping, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
 import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
 import { normalizeAccountStreamInterceptRules } from '../modules/accounts/account-stream-intercept-policy-validation.js'
-import { listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
+import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
@@ -15,6 +15,7 @@ import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, in
 import { accountCredentialFingerprint } from './account-identity.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { cleanupDeletedAccountDetachedStats, cleanupDeletedAccountRelatedRecordData as cleanupDeletedAccountRelatedRecordDataTarget, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
+import { normalizeAccountModelMappingsInput, replaceAccountModelMappings } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
 import {
   accountAvailabilityScheduleFromRequest,
@@ -455,7 +456,8 @@ function ownerPermissions(): ResourcePermissions {
     canReturnAuthorization: false,
     canAuthorize: true,
     canViewCredentials: true,
-    canManageAccounts: true
+    canManageAccounts: true,
+    canBindToApiKey: true
   }
 }
 
@@ -467,8 +469,22 @@ function authorizedPermissions(): ResourcePermissions {
     canReturnAuthorization: false,
     canAuthorize: false,
     canViewCredentials: false,
-    canManageAccounts: false
+    canManageAccounts: false,
+    canBindToApiKey: false
   }
+}
+
+function authorizedGroupPermissions(canBindToApiKey: boolean, canReturnAuthorization = false): ResourcePermissions {
+  return {
+    ...authorizedPermissions(),
+    canEdit: true,
+    canReturnAuthorization,
+    canBindToApiKey
+  }
+}
+
+function canBindAuthorizedGroupRowToApiKey(row: GroupListRow): boolean {
+  return row.enabled === 1 && row.authorization_status === 'active' && !isResourceAuthorizationExpired(row.authorization_expires_at)
 }
 
 function canUseAccount(accountId: string, systemAccountId: string): boolean {
@@ -1114,16 +1130,47 @@ function requiredAccountCredentialSource(accountType: string, credentials: Recor
   return requiredTextInput(credentials.api_key ?? credentials.refresh_token ?? credentials.access_token, '账户凭据')
 }
 
-function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string): string[] | undefined {
+export function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string, systemAccountId: string): string[] | undefined {
   const models = normalizeAccountSupportedModelsInput(value)
   if (!models?.length) return models
 
-  const providerModels = new Set(listProviderModelPricing(providerCode).map((item) => item.model))
+  const providerModels = new Set(listProviderModelCatalog({
+    providerCode,
+    systemAccountId
+  }).map((item) => item.model))
   const invalidModels = models.filter((model) => !providerModels.has(model))
   if (invalidModels.length > 0) {
     throw new Error(`账户支持模型不在供应商模型目录中：${invalidModels.slice(0, 5).join('、')}`)
   }
   return models
+}
+
+export function normalizeAccountModelMappingsForProvider(value: unknown, providerCode: string, systemAccountId: string): AccountModelMapping[] | undefined {
+  const mappings = normalizeAccountModelMappingsInput(value)
+  if (!mappings?.length) return mappings
+
+  const requestableModels = new Set(listProviderModelCatalog({
+    providerCode,
+    systemAccountId
+  }).map((item) => item.model))
+  const mappingTargetModels = new Set(listProviderModelCatalog({
+    providerCode,
+    systemAccountId,
+    includeMappingTargets: true
+  }).map((item) => item.model))
+  const invalidSourceModels = mappings
+    .map((mapping) => mapping.sourceModel)
+    .filter((model) => !requestableModels.has(model))
+  if (invalidSourceModels.length > 0) {
+    throw new Error(`映射下游模型不在可请求模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
+  }
+  const invalidUpstreamModels = mappings
+    .map((mapping) => mapping.upstreamModel)
+    .filter((model) => !mappingTargetModels.has(model))
+  if (invalidUpstreamModels.length > 0) {
+    throw new Error(`映射上游模型不在可用模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+  }
+  return mappings
 }
 
 function isDuplicateAccountNameError(error: unknown): boolean {
@@ -1622,6 +1669,7 @@ function accountSummariesFromRows(
       fallbackEnabled: dispatchFallbackEnabled,
       clientCompatibility,
       supportedModels: [...(row.supported_models ?? [])],
+      modelMappings: [...(row.model_mappings ?? [])],
       lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
@@ -1916,7 +1964,6 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
     .filter((row) => row.access_type !== 'authorized' || Boolean(row.source_provider_code))
   const accountNames = loadSystemAccountNameMapByIds(hydratedRows.map((row) => row.system_account_id))
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(hydratedRows.map((row) => row.id))
-  const supportedModelsByAccountId = loadSupportedModelsByAccountIds(hydratedRows.map((row) => accountResourceFactAccountId(row)))
   return hydratedRows.map((row) => {
     const groupBinding = accountGroupBinding(row.id, row.system_account_id)
     return accountSummaryWithEffectiveAvailability({
@@ -1937,7 +1984,8 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       superPriorityEnabled: row.super_priority_enabled === 1,
       fallbackEnabled: row.fallback_enabled === 1,
       clientCompatibility: accountResourceClientCompatibility(row),
-      supportedModels: supportedModelsByAccountId.get(accountResourceFactAccountId(row)) ?? [],
+      supportedModels: row.supported_models ?? [],
+      modelMappings: row.model_mappings ?? [],
       lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       errorPolicyId: accountResourceErrorPolicyId(row) ?? undefined,
@@ -2070,6 +2118,7 @@ const accountCreateInputKeys = new Set([
   'type',
   'credentials',
   'supportedModels',
+  'modelMappings',
   'status',
   'concurrencyLimit',
   'priority',
@@ -2089,6 +2138,7 @@ const accountUpdateInputKeys = new Set([
   'name',
   'credentials',
   'supportedModels',
+  'modelMappings',
   'status',
   'concurrencyLimit',
   'priority',
@@ -2131,7 +2181,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
     : null
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
-  const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode) ?? []
+  const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode, systemAccountId) ?? []
+  const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'active')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : initialStatus
@@ -2173,6 +2224,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     fallbackEnabled: createFallbackEnabled,
     clientCompatibility,
     supportedModels,
+    modelMappings,
     lastSuccessfulTestModel: undefined,
     proxyProfileId,
     errorPolicyId: normalizeNullableIdInput(input.errorPolicyId, '错误处理策略'),
@@ -2259,6 +2311,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         now
       )
     replaceAccountSupportedModels(account.id, providerCode, supportedModels)
+    replaceAccountModelMappings(account.id, providerCode, modelMappings)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -2307,8 +2360,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const hasSupportedModelsInput = hasOwnInput(input, 'supportedModels')
   const nextSupportedModels = hasSupportedModelsInput
-    ? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode) ?? []
+    ? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
+  const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
+  const nextModelMappings = hasModelMappingsInput
+    ? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId) ?? []
+    : current.modelMappings ?? []
   const hasAvailabilityScheduleInput = isAccountAvailabilityScheduleInputPresent(input)
   const nextAvailabilitySchedule = hasAvailabilityScheduleInput
     ? accountAvailabilityScheduleFromRequest(input)
@@ -2412,6 +2469,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     fallbackEnabled: nextFallbackEnabled,
     clientCompatibility: nextClientCompatibility,
     supportedModels: nextSupportedModels,
+    modelMappings: nextModelMappings,
     proxyProfileId: hasOwnInput(input, 'proxyProfileId')
       ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
       : current.proxyProfileId,
@@ -2486,6 +2544,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     }
     if (Number(result.changes ?? 0) > 0 && hasSupportedModelsInput) {
       replaceAccountSupportedModels(id, next.providerCode, nextSupportedModels)
+    }
+    if (Number(result.changes ?? 0) > 0 && hasModelMappingsInput) {
+      replaceAccountModelMappings(id, next.providerCode, nextModelMappings)
     }
     if (Number(result.changes ?? 0) > 0 && (hasPriorityInput || hasSuperPriorityInput || hasFallbackInput)) {
       database.prepare(`
@@ -3171,6 +3232,7 @@ function physicallyDeleteExpiredDeletedAccountBusinessRows(
     for (const chunk of chunkValues(accountIds, 900)) {
       result.groupBindings += statementChanges(database.prepare(`DELETE FROM group_accounts WHERE account_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk))
       database.prepare(`DELETE FROM account_supported_models WHERE account_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
+      database.prepare(`DELETE FROM account_model_mappings WHERE account_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
     }
     for (const chunk of chunkValues(authorizationIds, 900)) {
       result.groupBindings += statementChanges(database.prepare(`DELETE FROM group_accounts WHERE account_authorization_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk))
@@ -4580,7 +4642,7 @@ function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): 
       authorizationStatus: row.authorization_status ?? undefined,
       authorizationExpiresAt: row.authorization_expires_at ?? undefined,
       authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
-      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
+      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row)) : ownerPermissions()
     }
   })
 }
@@ -4635,7 +4697,9 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       authorizationExpiresAt: row.authorization_expires_at ?? undefined,
       authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
       authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(sourcesByAuthorization.get(row.authorization_id) ?? [], isAuthorizedView) : undefined,
-      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
+      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId
+        ? authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row), hasActiveManualAuthorizationSource(sourcesByAuthorization.get(row.authorization_id ?? '') ?? []))
+        : ownerPermissions()
     }
   })
 }
@@ -4669,6 +4733,12 @@ const groupUpdateInputKeys = new Set([
   'name',
   'providerCode',
   'description',
+  'enabled',
+  'groupType',
+  'schedulingPolicy'
+])
+
+const authorizedGroupSettingsInputKeys = new Set([
   'enabled',
   'groupType',
   'schedulingPolicy'
@@ -4719,6 +4789,10 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   if (!current) {
     return undefined
   }
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  if (current.accessType === 'authorized' && current.ownerSystemAccountId !== viewerSystemAccountId) {
+    return updateAuthorizedGroupSettings(id, input, current, access)
+  }
   if (current.isDefault) {
     throw new DefaultGroupReadonlyError()
   }
@@ -4763,6 +4837,72 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   return findGroupSummary(id, access)
 }
 
+function updateAuthorizedGroupSettings(
+  id: string,
+  input: Record<string, unknown>,
+  current: GroupSummary,
+  access?: AccessScope
+): GroupSummary | undefined {
+  assertKnownInputKeys(input, authorizedGroupSettingsInputKeys, '授权分组使用配置')
+  const granteeSystemAccountId = userVisibleSystemAccountId(access)
+  if (!granteeSystemAccountId || !current.groupAuthorizationId) {
+    return undefined
+  }
+  const database = getBusinessDatabase()
+  const authorization = database
+    .prepare(`
+      SELECT ${resourceAuthorizationSelectColumns()}
+      FROM resource_authorizations
+      WHERE id = ?
+        AND resource_type = 'group'
+        AND resource_id = ?
+        AND grantee_system_account_id = ?
+        AND status IN ('active', 'paused', 'expired')
+      LIMIT 1
+    `)
+    .get(current.groupAuthorizationId, id, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
+    return undefined
+  }
+  const existing = database
+    .prepare('SELECT enabled FROM group_authorization_settings WHERE authorization_id = ? LIMIT 1')
+    .get(authorization.id) as unknown as { enabled?: number } | undefined
+  const hasGroupTypeInput = hasOwnInput(input, 'groupType')
+  const hasSchedulingPolicyInput = hasGroupSchedulingPolicyInput(input)
+  const nextGroupType = hasGroupTypeInput ? normalizeGroupType(input.groupType) : current.groupType
+  const nextSchedulingPolicyInput = hasSchedulingPolicyInput ? groupSchedulingPolicyInput(input) : current.schedulingPolicy
+  const nextSchedulingPolicyJson = groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType)
+  const nextEnabled = normalizeOptionalBooleanInput(input, 'enabled', existing?.enabled === 0 ? false : true, '授权分组启用状态')
+  const now = nowIso()
+  database
+    .prepare(`
+      INSERT INTO group_authorization_settings (
+        authorization_id, system_account_id, group_id, enabled, group_type,
+        scheduling_policy_json, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(authorization_id) DO UPDATE SET
+        system_account_id = excluded.system_account_id,
+        group_id = excluded.group_id,
+        enabled = excluded.enabled,
+        group_type = excluded.group_type,
+        scheduling_policy_json = excluded.scheduling_policy_json,
+        updated_at = excluded.updated_at
+    `)
+    .run(
+      authorization.id,
+      granteeSystemAccountId,
+      id,
+      nextEnabled ? 1 : 0,
+      nextGroupType,
+      nextSchedulingPolicyJson,
+      now,
+      now
+    )
+  invalidateGatewayRuntimeAfterBusinessWrite('group_authorization_settings_updated')
+  return findGroupSummary(id, access)
+}
+
 export interface DeletedGroupApiKeyRouteChange {
   apiKeyId: string
   apiKeyName: string
@@ -4790,7 +4930,7 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
   const affectedApiKeyRoutes = preserveApiKeyRoutesBeforeGroupDelete(database, id, owner.systemAccountId, current?.name)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
+    database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ?').run(id)
     const result = database.prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
     deleted = Number(result.changes ?? 0) > 0
     commitDatabaseTransaction(database, transactionStarted)
@@ -4810,6 +4950,7 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
 type ApiKeyAffectedByGroupDeleteRow = {
   id: string
   name: string
+  systemAccountId: string
   targetBindingStatus?: string | null
 }
 
@@ -4824,17 +4965,17 @@ function preserveApiKeyRoutesBeforeGroupDelete(
       SELECT
         api_key_group_bindings.api_key_id AS id,
         api_keys.name,
+        api_keys.system_account_id AS systemAccountId,
         api_key_group_bindings.status AS targetBindingStatus
       FROM api_key_group_bindings
       INNER JOIN api_keys
         ON api_keys.id = api_key_group_bindings.api_key_id
         AND api_keys.system_account_id = api_key_group_bindings.system_account_id
-      WHERE api_key_group_bindings.system_account_id = ?
-        AND api_key_group_bindings.group_id = ?
+      WHERE api_key_group_bindings.group_id = ?
       ORDER BY api_key_group_bindings.api_key_id ASC
       LIMIT ?
     `)
-    .all(systemAccountId, groupId, maxGroupDeleteAffectedApiKeyRoutes + 1) as unknown as ApiKeyAffectedByGroupDeleteRow[]
+    .all(groupId, maxGroupDeleteAffectedApiKeyRoutes + 1) as unknown as ApiKeyAffectedByGroupDeleteRow[]
   if (!affectedApiKeys.length) return []
   if (affectedApiKeys.length > maxGroupDeleteAffectedApiKeyRoutes) {
     throw new Error(`该分组关联的 API Key 超过 ${maxGroupDeleteAffectedApiKeyRoutes} 个，请先分批解除绑定后再删除分组`)
@@ -4843,10 +4984,10 @@ function preserveApiKeyRoutesBeforeGroupDelete(
   const activeBindingCountByApiKeyId = loadActiveApiKeyGroupCountExcludingGroup(
     database,
     groupId,
-    systemAccountId,
     affectedApiKeys.map((apiKey) => apiKey.id)
   )
   const blockers = affectedApiKeys.filter((apiKey) => {
+    if (apiKey.systemAccountId !== systemAccountId) return false
     if (apiKey.targetBindingStatus !== 'active') return false
     return (activeBindingCountByApiKeyId.get(apiKey.id) ?? 0) === 0
   })
@@ -4870,11 +5011,11 @@ function preserveApiKeyRoutesBeforeGroupDelete(
 function loadActiveApiKeyGroupCountExcludingGroup(
   database: DatabaseSync,
   groupId: string,
-  systemAccountId: string,
   apiKeyIds: string[]
 ): Map<string, number> {
   const result = new Map<string, number>()
   const uniqueIds = [...new Set(apiKeyIds.filter(Boolean))]
+  const now = nowIso()
   for (const chunk of chunkValues(uniqueIds, 500)) {
     const rows = database
       .prepare(`
@@ -4884,15 +5025,27 @@ function loadActiveApiKeyGroupCountExcludingGroup(
         FROM api_key_group_bindings
         INNER JOIN groups
           ON groups.id = api_key_group_bindings.group_id
-          AND groups.system_account_id = api_key_group_bindings.system_account_id
           AND groups.enabled = 1
-        WHERE api_key_group_bindings.system_account_id = ?
-          AND api_key_group_bindings.status = 'active'
+        LEFT JOIN resource_authorizations group_authorization
+          ON group_authorization.resource_type = 'group'
+          AND group_authorization.resource_id = groups.id
+          AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+          AND group_authorization.status = 'active'
+          AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+        LEFT JOIN group_authorization_settings
+          ON group_authorization_settings.authorization_id = group_authorization.id
+          AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
+          AND group_authorization_settings.group_id = groups.id
+        WHERE api_key_group_bindings.status = 'active'
+          AND (
+            groups.system_account_id = api_key_group_bindings.system_account_id
+            OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
+          )
           AND api_key_group_bindings.group_id <> ?
           AND api_key_group_bindings.api_key_id IN (${sqlPlaceholders(chunk.length)})
         GROUP BY api_key_group_bindings.api_key_id
     `)
-      .all(systemAccountId, groupId, ...chunk) as unknown as Array<{ apiKeyId: string; activeBindingCount: number }>
+      .all(now, groupId, ...chunk) as unknown as Array<{ apiKeyId: string; activeBindingCount: number }>
     for (const row of rows) {
       result.set(row.apiKeyId, Number(row.activeBindingCount) || 0)
     }
@@ -5602,6 +5755,45 @@ export function returnAccountAuthorizationInstanceForGrantee(accountId: string, 
       LIMIT 1
     `)
     .get(row.authorization_instance_authorization_id, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
+    return undefined
+  }
+  if (!hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
+    return undefined
+  }
+  const grant = findReturnableDirectGrantForRuntimeAuthorization(authorization, granteeSystemAccountId, database)
+  if (!grant) return undefined
+  const now = nowIso()
+  const actor = currentSystemAccountId(access)
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    returnResourceAuthorizationGrant(grant, actor, database, now)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  refreshAfterResourceAuthorizationReturnedWrite()
+  return database
+    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
+    .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
+}
+
+export function returnGroupAuthorizationForGrantee(groupId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
+  expireDueResourceAuthorizations()
+  const granteeSystemAccountId = userVisibleSystemAccountId(access)
+  if (!granteeSystemAccountId) return undefined
+  const database = getBusinessDatabase()
+  const authorization = database
+    .prepare(`
+      SELECT ${resourceAuthorizationSelectColumns()}
+      FROM resource_authorizations
+      WHERE resource_type = 'group'
+        AND resource_id = ?
+        AND grantee_system_account_id = ?
+      LIMIT 1
+    `)
+    .get(groupId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
   if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
     return undefined
   }

@@ -6,6 +6,7 @@ import type {
   ApiKeySummary,
   GroupSummary,
   ResourceAuthorizationSummary,
+  SystemAccountRole,
   SystemAccountSummary,
   SystemTeamSummary
 } from '../../domain/types.js'
@@ -58,6 +59,7 @@ interface MockdataOptions {
 
 interface MockSystemAccounts {
   admin: SystemAccountSummary
+  manager: SystemAccountSummary
   ops: SystemAccountSummary
   dev: SystemAccountSummary
   tester: SystemAccountSummary
@@ -73,6 +75,12 @@ interface MockGroups {
   oauth: GroupSummary
   experiment: GroupSummary
   empty: GroupSummary
+  managerMain: GroupSummary
+  managerHighConcurrency: GroupSummary
+  adminGrantedDev: GroupSummary
+  adminGrantedOps: GroupSummary
+  adminGrantedTester: GroupSummary
+  managerDefault: GroupSummary
   devDefault: GroupSummary
   opsDefault: GroupSummary
   testerDefault: GroupSummary
@@ -94,6 +102,11 @@ interface MockAccounts {
   temporary: AccountSummary
   error: AccountSummary
   expired: AccountSummary
+  managerPrimary: AccountSummary
+  managerBurst: AccountSummary
+  devShared: AccountSummary
+  opsShared: AccountSummary
+  testerShared: AccountSummary
 }
 
 type ApiKeyWithSecret = ApiKeySummary & { key: string }
@@ -104,8 +117,11 @@ interface MockApiKeys {
   adminHighFrequency: ApiKeyWithSecret
   adminBackup: ApiKeyWithSecret
   adminOAuth: ApiKeyWithSecret
+  adminAuthorizedGroups: ApiKeyWithSecret
   adminDisabled: ApiKeyWithSecret
   adminExpired: ApiKeyWithSecret
+  managerMain: ApiKeyWithSecret
+  managerHighConcurrency: ApiKeyWithSecret
   devGroupAuthorized: ApiKeyWithSecret
   testerTeamAuthorized: ApiKeyWithSecret
   opsAccountAuthorized: ApiKeyWithSecret
@@ -221,7 +237,7 @@ const idPrefix = 'mockdata_'
 const tracePrefix = 'mockdata-'
 const namePrefix = '造数-'
 const mockPassword = 'mockdata123456'
-const apiKeyAuthorizedGroupBindingRule = '分组授权可在分组列表 / 我的授权中查看；API Key 绑定下拉只显示调用方自己的本地分组，不能直接绑定授权方分组。'
+const apiKeyAuthorizedGroupBindingRule = 'API Key 可以绑定当前系统账户自己的分组，也可以绑定有效授权给当前系统账户的分组；授权暂停、过期、回收或归还后，该授权分组号池保留配置但运行时不可用。'
 const dayMs = 24 * 60 * 60 * 1000
 const minuteMs = 60 * 1000
 const defaultDays = 31
@@ -332,13 +348,14 @@ function printHelp(): void {
 }
 
 function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): CreatedMockdata {
+  const unscopedAdminAccess: AccessScope = { systemAccountId: admin.id, role: adminAccess.role }
   const users = createMockUsers(admin)
   const policies = createErrorPolicies(admin.id)
   const proxies = createProxies(adminAccess)
   const groups = createGroups(adminAccess, users)
-  const accounts = createAccounts(adminAccess, groups, policies, proxies)
+  const accounts = createAccounts(adminAccess, groups, users, policies, proxies)
   const teams = createTeams(adminAccess, users)
-  const authorizations = createAuthorizations(adminAccess, groups, accounts, users, teams)
+  const authorizations = createAuthorizations(adminAccess, unscopedAdminAccess, groups, accounts, users, teams)
   assertNoMockSelfAuthorizations(admin.id)
   bindAuthorizedAccountToUserGroup(authorizationInstanceAccount(accounts.proxied, users.ops), groups.opsDefault, users.ops)
   const apiKeys = createApiKeys(adminAccess, groups, users)
@@ -363,6 +380,13 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
 function createMockUsers(admin: SystemAccountSummary): MockSystemAccounts {
   return {
     admin,
+    manager: ensureSystemAccount({
+      username: 'mockdata_admin',
+      displayName: `${namePrefix}管理员用户`,
+      description: 'Mockdata 普通管理员账号，用于管理员模式下验证管理员自有资源、筛选和创建目标',
+      role: 'admin',
+      status: 'active'
+    }),
     ops: ensureSystemAccount({
       username: 'mockdata_ops',
       displayName: `${namePrefix}运维用户`,
@@ -406,14 +430,16 @@ function ensureSystemAccount(input: {
   username: string
   displayName: string
   description: string
+  role?: SystemAccountRole
   status: 'active' | 'disabled'
 }): SystemAccountSummary {
+  const role = input.role ?? 'user'
   const existing = repositories.findSystemAccountByUsername(input.username)
   if (existing) {
     const updated = repositories.updateSystemAccount(existing.id, {
       displayName: input.displayName,
       description: input.description,
-      role: 'user',
+      role,
       status: input.status,
       mustChangePassword: false,
       password: mockPassword
@@ -426,7 +452,7 @@ function ensureSystemAccount(input: {
     displayName: input.displayName,
     description: input.description,
     password: mockPassword,
-    role: 'user',
+    role,
     status: input.status,
     mustChangePassword: false
   })
@@ -564,6 +590,10 @@ function createProxies(adminAccess: AccessScope): { http: string; socks: string;
   return { http: http.id, socks: socks.id, disabled: disabled.id }
 }
 
+function mockUserAccess(user: SystemAccountSummary): AccessScope {
+  return { systemAccountId: user.id, role: user.role }
+}
+
 function createGroups(adminAccess: AccessScope, users: MockSystemAccounts): MockGroups {
   const main = repositories.createGroup({
     name: `${namePrefix}主力分组`,
@@ -605,10 +635,55 @@ function createGroups(adminAccess: AccessScope, users: MockSystemAccounts): Mock
   }, adminAccess)
   const empty = repositories.createGroup({
     name: `${namePrefix}空分组`,
-    description: '空分组，用于无账户状态展示',
     providerCode,
     enabled: false
   }, adminAccess)
+  const managerMain = repositories.createGroup({
+    name: `${namePrefix}管理员自有分组`,
+    description: '普通管理员自有分组，用于管理员模式按管理员角色筛选和创建目标验收',
+    providerCode,
+    enabled: true
+  }, mockUserAccess(users.manager))
+  const managerHighConcurrency = repositories.createGroup({
+    name: `${namePrefix}管理员高并发分组`,
+    description: '普通管理员自有高并发分组，用于管理员角色下的 AI 分组管理验收',
+    providerCode,
+    enabled: true,
+    groupType: 'high_concurrency',
+    schedulingPolicy: {
+      defaultSoftConcurrency: 10,
+      maxQueueWaitMs: 40_000,
+      clientIpConcurrencyLimit: 6,
+      clientIpConcurrencyOverflowMode: 'queue',
+      imageLaneMaxConcurrency: 4
+    }
+  }, mockUserAccess(users.manager))
+  const adminGrantedDev = repositories.createGroup({
+    name: `${namePrefix}研发授权给超级管理员分组`,
+    description: '研发用户自有分组，主动授权给超级管理员，用于 AI 分组管理查看授权分组',
+    providerCode,
+    enabled: true
+  }, mockUserAccess(users.dev))
+  const adminGrantedOps = repositories.createGroup({
+    name: `${namePrefix}运维授权给超级管理员高并发分组`,
+    description: '运维用户自有高并发分组，授权给超级管理员后暂停，用于授权状态展示',
+    providerCode,
+    enabled: true,
+    groupType: 'high_concurrency',
+    schedulingPolicy: {
+      defaultSoftConcurrency: 6,
+      maxQueueWaitMs: 30_000,
+      clientIpConcurrencyLimit: 4,
+      clientIpConcurrencyOverflowMode: 'reject',
+      imageLaneMaxConcurrency: 2
+    }
+  }, mockUserAccess(users.ops))
+  const adminGrantedTester = repositories.createGroup({
+    name: `${namePrefix}测试授权给超级管理员过期分组`,
+    description: '测试用户自有分组，授权给超级管理员后过期，用于 AI 分组管理过期状态展示',
+    providerCode,
+    enabled: true
+  }, mockUserAccess(users.tester))
 
   return {
     main,
@@ -617,6 +692,12 @@ function createGroups(adminAccess: AccessScope, users: MockSystemAccounts): Mock
     oauth,
     experiment,
     empty,
+    managerMain,
+    managerHighConcurrency,
+    adminGrantedDev,
+    adminGrantedOps,
+    adminGrantedTester,
+    managerDefault: defaultOpenAIGroup(users.manager.id),
     devDefault: defaultOpenAIGroup(users.dev.id),
     opsDefault: defaultOpenAIGroup(users.ops.id),
     testerDefault: defaultOpenAIGroup(users.tester.id),
@@ -628,6 +709,7 @@ function createGroups(adminAccess: AccessScope, users: MockSystemAccounts): Mock
 function createAccounts(
   adminAccess: AccessScope,
   groups: MockGroups,
+  users: MockSystemAccounts,
   policies: { quota: string; strict: string; temporary: string },
   proxies: { http: string; socks: string }
 ): MockAccounts {
@@ -816,6 +898,69 @@ function createAccounts(
     notes: 'Mockdata 已到期停用账号'
   }, adminAccess)
 
+  const managerPrimary = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}管理员 API Key 账户`,
+    type: 'api_key',
+    groupId: groups.managerMain.id,
+    credentials: apiKeyCredentials('manager-primary'),
+    errorPolicyId: policies.quota,
+    supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1-mini'],
+    concurrencyLimit: 48,
+    priority: 8,
+    notes: 'Mockdata 普通管理员自有账号，用于管理员模式资源归属验收'
+  }, mockUserAccess(users.manager))
+
+  const managerBurst = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}管理员高并发账户`,
+    type: 'api_key',
+    groupId: groups.managerHighConcurrency.id,
+    credentials: apiKeyCredentials('manager-burst'),
+    errorPolicyId: policies.temporary,
+    supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+    concurrencyLimit: 120,
+    priority: 4,
+    superPriorityEnabled: true,
+    notes: 'Mockdata 普通管理员高并发账号，用于管理员角色高并发分组验收'
+  }, mockUserAccess(users.manager))
+
+  const devShared = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}研发共享给超级管理员账户`,
+    type: 'api_key',
+    groupId: groups.adminGrantedDev.id,
+    credentials: apiKeyCredentials('dev-admin-grant'),
+    supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'],
+    concurrencyLimit: 24,
+    priority: 20,
+    notes: 'Mockdata 研发用户自有账号，用于授权分组给超级管理员'
+  }, mockUserAccess(users.dev))
+
+  const opsShared = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}运维共享给超级管理员账户`,
+    type: 'api_key',
+    groupId: groups.adminGrantedOps.id,
+    credentials: apiKeyCredentials('ops-admin-grant'),
+    supportedModels: ['gpt-5.4', 'gpt-5.4-mini'],
+    concurrencyLimit: 40,
+    priority: 15,
+    notes: 'Mockdata 运维用户自有账号，用于暂停授权分组展示'
+  }, mockUserAccess(users.ops))
+
+  const testerShared = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}测试共享给超级管理员账户`,
+    type: 'api_key',
+    groupId: groups.adminGrantedTester.id,
+    credentials: apiKeyCredentials('tester-admin-grant'),
+    supportedModels: ['gpt-4.1-mini', 'gpt-4o-mini'],
+    concurrencyLimit: 12,
+    priority: 40,
+    notes: 'Mockdata 测试用户自有账号，用于过期授权分组展示'
+  }, mockUserAccess(users.tester))
+
   return {
     primary,
     proxied,
@@ -829,7 +974,12 @@ function createAccounts(
     rateLimited: refreshAccount(rateLimited.id),
     temporary: refreshAccount(temporary.id),
     error: refreshAccount(error.id),
-    expired: refreshAccount(expired.id)
+    expired: refreshAccount(expired.id),
+    managerPrimary,
+    managerBurst,
+    devShared,
+    opsShared,
+    testerShared
   }
 }
 
@@ -918,12 +1068,86 @@ function createTeams(adminAccess: AccessScope, users: MockSystemAccounts): MockT
 
 function createAuthorizations(
   adminAccess: AccessScope,
+  unscopedAdminAccess: AccessScope,
   groups: MockGroups,
   accounts: MockAccounts,
   users: MockSystemAccounts,
   teams: MockTeams
 ): ResourceAuthorizationSummary[] {
   const result: ResourceAuthorizationSummary[] = []
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.adminGrantedDev.id,
+    granteeType: 'system_account',
+    granteeId: users.admin.id,
+    remark: `${namePrefix}研发分组授权给超级管理员`,
+    limits: quotaLimits(12, 96, 360)
+  }, unscopedAdminAccess))
+
+  const adminPausedGroup = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.adminGrantedOps.id,
+    granteeType: 'system_account',
+    granteeId: users.admin.id,
+    remark: `${namePrefix}运维分组授权给超级管理员后暂停`,
+    limits: quotaLimits(9, 72, 260)
+  }, unscopedAdminAccess)
+  repositories.updateResourceAuthorization(adminPausedGroup.id, { status: 'paused' }, unscopedAdminAccess)
+  result.push(refreshAuthorization(adminPausedGroup.id, unscopedAdminAccess))
+
+  const adminExpiredGroup = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: groups.adminGrantedTester.id,
+    granteeType: 'system_account',
+    granteeId: users.admin.id,
+    remark: `${namePrefix}测试分组授权给超级管理员后过期`,
+    expiresAt: new Date(Date.now() + 3 * dayMs).toISOString(),
+    limits: quotaLimits(5, 30, 100)
+  }, unscopedAdminAccess)
+  repositories.updateResourceAuthorization(adminExpiredGroup.id, {
+    status: 'expired',
+    expiresAt: new Date(Date.now() - 3 * dayMs).toISOString()
+  }, unscopedAdminAccess)
+  result.push(refreshAuthorization(adminExpiredGroup.id, unscopedAdminAccess))
+
+  result.push(repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.devShared.id,
+    granteeType: 'system_account',
+    granteeId: users.admin.id,
+    targetGroupId: defaultOpenAIGroup(users.admin.id).id,
+    remark: `${namePrefix}研发账户授权给超级管理员`,
+    limits: quotaLimits(11, 88, 320)
+  }, unscopedAdminAccess))
+
+  const adminPausedAccount = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.opsShared.id,
+    granteeType: 'system_account',
+    granteeId: users.admin.id,
+    targetGroupId: defaultOpenAIGroup(users.admin.id).id,
+    remark: `${namePrefix}运维账户授权给超级管理员后暂停`,
+    limits: quotaLimits(7, 56, 210)
+  }, unscopedAdminAccess)
+  repositories.updateResourceAuthorization(adminPausedAccount.id, { status: 'paused' }, unscopedAdminAccess)
+  result.push(refreshAuthorization(adminPausedAccount.id, unscopedAdminAccess))
+
+  const adminExpiredAccount = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accounts.testerShared.id,
+    granteeType: 'system_account',
+    granteeId: users.admin.id,
+    targetGroupId: defaultOpenAIGroup(users.admin.id).id,
+    remark: `${namePrefix}测试账户授权给超级管理员后过期`,
+    expiresAt: new Date(Date.now() + 4 * dayMs).toISOString(),
+    limits: quotaLimits(4, 24, 96)
+  }, unscopedAdminAccess)
+  repositories.updateResourceAuthorization(adminExpiredAccount.id, {
+    status: 'expired',
+    expiresAt: new Date(Date.now() - 4 * dayMs).toISOString()
+  }, unscopedAdminAccess)
+  result.push(refreshAuthorization(adminExpiredAccount.id, unscopedAdminAccess))
+
   result.push(repositories.createResourceAuthorization({
     resourceType: 'group',
     resourceId: groups.main.id,
@@ -1204,6 +1428,13 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
     status: 'active',
     quotaLimits: quotaLimits(18, 140, 520)
   }, adminAccess)
+  const adminAuthorizedGroups = repositories.createApiKeyRecord({
+    name: `${namePrefix}超级管理员授权分组 Key`,
+    description: 'Mockdata 超级管理员使用别人授权给自己的分组，验证 AI 分组管理和授权分组路由',
+    groupBindings: [{ groupId: groups.adminGrantedDev.id, priority: 1, status: 'active' }],
+    status: 'active',
+    quotaLimits: quotaLimits(10, 80, 300)
+  }, adminAccess)
   const adminDisabled = repositories.createApiKeyRecord({
     name: `${namePrefix}停用网关 Key`,
     description: 'Mockdata 停用 Key，用于状态展示',
@@ -1220,42 +1451,80 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
     quotaLimits: quotaLimits(5, 30, 100)
   }, adminAccess)
 
+  const managerMain = repositories.createApiKeyRecord({
+    name: `${namePrefix}管理员网关 Key`,
+    description: 'Mockdata 普通管理员本地网关 Key，绑定管理员自有分组',
+    groupBindings: [{ groupId: groups.managerMain.id, priority: 1, status: 'active' }],
+    status: 'active',
+    quotaLimits: quotaLimits(16, 120, 420)
+  }, mockUserAccess(users.manager))
+
+  const managerHighConcurrency = repositories.createApiKeyRecord({
+    name: `${namePrefix}管理员高并发 Key`,
+    description: 'Mockdata 普通管理员高并发 Key，绑定管理员高并发分组',
+    groupBindings: [{ groupId: groups.managerHighConcurrency.id, priority: 1, status: 'active' }],
+    status: 'active',
+    quotaLimits: {
+      hourly: { enabled: true, hours: 1, limit: 90 },
+      daily: { enabled: true, limit: 720 },
+      monthly: { enabled: true, limit: 2600 }
+    }
+  }, mockUserAccess(users.manager))
+
   const devGroupAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}研发授权调用 Key`,
-    description: 'Mockdata 研发用户使用授权账户的 Key，绑定研发用户自己的默认分组',
-    groupBindings: [{ groupId: groups.devDefault.id, priority: 1, status: 'active' }],
+    description: 'Mockdata 研发用户使用授权分组和授权账户的 Key',
+    groupBindings: [
+      { groupId: groups.main.id, priority: 1, status: 'active' },
+      { groupId: groups.devDefault.id, priority: 2, status: 'active' }
+    ],
     status: 'active',
     quotaLimits: quotaLimits(8, 50, 180)
   }, { systemAccountId: users.dev.id, role: 'user' })
 
   const testerTeamAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}团队授权调用 Key`,
-    description: 'Mockdata 测试用户使用团队授权账户的 Key，绑定测试用户自己的默认分组',
-    groupBindings: [{ groupId: groups.testerDefault.id, priority: 1, status: 'active' }],
+    description: 'Mockdata 测试用户使用团队授权分组和团队授权账户的 Key',
+    groupBindings: [
+      { groupId: groups.backup.id, priority: 1, status: 'active' },
+      { groupId: groups.testerDefault.id, priority: 2, status: 'active' },
+      { groupId: groups.experiment.id, priority: 3, status: 'active' }
+    ],
     status: 'active',
     quotaLimits: quotaLimits(6, 40, 150)
   }, { systemAccountId: users.tester.id, role: 'user' })
 
   const opsAccountAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}账户授权调用 Key`,
-    description: 'Mockdata 运维用户使用授权账户的 Key，绑定运维用户自己的默认分组',
-    groupBindings: [{ groupId: groups.opsDefault.id, priority: 1, status: 'active' }],
+    description: 'Mockdata 运维用户使用授权分组和授权账户的 Key',
+    groupBindings: [
+      { groupId: groups.highConcurrency.id, priority: 1, status: 'active' },
+      { groupId: groups.oauth.id, priority: 2, status: 'active' },
+      { groupId: groups.opsDefault.id, priority: 3, status: 'active' }
+    ],
     status: 'active',
     quotaLimits: quotaLimits(6, 36, 120)
   }, { systemAccountId: users.ops.id, role: 'user' })
 
   const financeAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}财务授权调用 Key`,
-    description: 'Mockdata 财务用户使用授权账户的 Key，绑定财务用户自己的默认分组',
-    groupBindings: [{ groupId: groups.financeDefault.id, priority: 1, status: 'active' }],
+    description: 'Mockdata 财务用户使用授权分组和授权账户的 Key',
+    groupBindings: [
+      { groupId: groups.oauth.id, priority: 1, status: 'active' },
+      { groupId: groups.financeDefault.id, priority: 2, status: 'active' }
+    ],
     status: 'active',
     quotaLimits: quotaLimits(5, 30, 100)
   }, { systemAccountId: users.finance.id, role: 'user' })
 
   const viewerAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}观察授权调用 Key`,
-    description: 'Mockdata 观察用户使用授权账户的 Key，绑定观察用户自己的默认分组',
-    groupBindings: [{ groupId: groups.viewerDefault.id, priority: 1, status: 'active' }],
+    description: 'Mockdata 观察用户使用授权分组和授权账户的 Key',
+    groupBindings: [
+      { groupId: groups.backup.id, priority: 1, status: 'active' },
+      { groupId: groups.oauth.id, priority: 2, status: 'active' },
+      { groupId: groups.viewerDefault.id, priority: 3, status: 'active' }
+    ],
     status: 'active',
     quotaLimits: quotaLimits(4, 24, 80)
   }, { systemAccountId: users.viewer.id, role: 'user' })
@@ -1266,8 +1535,11 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
     adminHighFrequency,
     adminBackup,
     adminOAuth,
+    adminAuthorizedGroups,
     adminDisabled,
     adminExpired,
+    managerMain,
+    managerHighConcurrency,
     devGroupAuthorized,
     testerTeamAuthorized,
     opsAccountAuthorized,
@@ -1455,7 +1727,9 @@ function tuneGroupAccountBindings(groups: MockGroups, accounts: MockAccounts): v
     [0, 1, groups.highConcurrency, accounts.burstFallback],
     [0, 1, groups.backup, accounts.fallback],
     [0, 0, groups.oauth, accounts.oauth],
-    [0, 1, groups.oauth, accounts.oauthBackup]
+    [0, 1, groups.oauth, accounts.oauthBackup],
+    [0, 0, groups.managerMain, accounts.managerPrimary],
+    [1, 0, groups.managerHighConcurrency, accounts.managerBurst]
   ]
   for (const [localSuper, localFallback, group, account] of updates) {
     database.prepare(`
@@ -1518,6 +1792,30 @@ function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions)
       accounts: [created.accounts.oauth, created.accounts.oauthBackup],
       label: 'admin-oauth',
       clientIpBase: '10.10.4.'
+    },
+    {
+      key: created.apiKeys.adminAuthorizedGroups,
+      owner: created.users.admin,
+      group: created.groups.adminGrantedDev,
+      accounts: [created.accounts.devShared],
+      label: 'admin-authorized-dev-group',
+      clientIpBase: '10.10.8.'
+    },
+    {
+      key: created.apiKeys.managerMain,
+      owner: created.users.manager,
+      group: created.groups.managerMain,
+      accounts: [created.accounts.managerPrimary],
+      label: 'manager-main',
+      clientIpBase: '10.23.1.'
+    },
+    {
+      key: created.apiKeys.managerHighConcurrency,
+      owner: created.users.manager,
+      group: created.groups.managerHighConcurrency,
+      accounts: [created.accounts.managerBurst],
+      label: 'manager-high-concurrency',
+      clientIpBase: '10.23.2.'
     },
     {
       key: created.apiKeys.devGroupAuthorized,
@@ -2089,7 +2387,7 @@ function createOperationMockdata(created: CreatedMockdata, usageRecords: UsageRe
   const logs: OperationLogInput[] = []
   for (let index = 0; index < 90; index += 1) {
     const resource = resources[index % resources.length]
-    const actor = index % 7 === 0 ? created.users.dev : index % 11 === 0 ? created.users.ops : created.users.admin
+    const actor = index % 13 === 0 ? created.users.manager : index % 7 === 0 ? created.users.dev : index % 11 === 0 ? created.users.ops : created.users.admin
     const createdAt = new Date(Date.now() - Math.floor((index / 90) * 30 * dayMs)).toISOString()
     logs.push({
       id: `${idPrefix}operation_${String(index + 1).padStart(4, '0')}`,
@@ -3282,6 +3580,12 @@ function mockGroupOwnerById(groups: MockGroups, users: MockSystemAccounts): Map<
     [groups.oauth.id, users.admin],
     [groups.experiment.id, users.admin],
     [groups.empty.id, users.admin],
+    [groups.managerMain.id, users.manager],
+    [groups.managerHighConcurrency.id, users.manager],
+    [groups.adminGrantedDev.id, users.dev],
+    [groups.adminGrantedOps.id, users.ops],
+    [groups.adminGrantedTester.id, users.tester],
+    [groups.managerDefault.id, users.manager],
     [groups.devDefault.id, users.dev],
     [groups.opsDefault.id, users.ops],
     [groups.testerDefault.id, users.tester],
@@ -3290,33 +3594,44 @@ function mockGroupOwnerById(groups: MockGroups, users: MockSystemAccounts): Map<
   ])
 }
 
+function mockApiKeyOwnerByName(name: string, users: MockSystemAccounts): SystemAccountSummary | undefined {
+  if (name.startsWith('admin')) return users.admin
+  if (name.startsWith('manager')) return users.manager
+  if (name.startsWith('dev')) return users.dev
+  if (name.startsWith('tester')) return users.tester
+  if (name.startsWith('ops')) return users.ops
+  if (name.startsWith('finance')) return users.finance
+  if (name.startsWith('viewer')) return users.viewer
+  return undefined
+}
+
 function apiKeySummariesForMockdata(
   apiKeys: MockApiKeys,
   groupById: Map<string, GroupSummary>,
-  groupOwnerById: Map<string, SystemAccountSummary>
+  groupOwnerById: Map<string, SystemAccountSummary>,
+  users: MockSystemAccounts
 ): Array<Record<string, unknown>> {
   return (Object.entries(apiKeys) as Array<[string, ApiKeyWithSecret]>).map(([name, key]) => {
-    const firstOwner = key.groupBindings
-      .map((binding) => groupOwnerById.get(binding.groupId))
-      .find((owner): owner is SystemAccountSummary => Boolean(owner))
+    const keyOwner = mockApiKeyOwnerByName(name, users)
     return {
       name,
       id: key.id,
       label: key.name,
       description: key.description,
-      ownerSystemAccountId: key.systemAccountId ?? firstOwner?.id,
-      ownerSystemAccountName: key.systemAccountName ?? firstOwner?.displayName,
-      bindingScope: 'owner_local_group',
+      ownerSystemAccountId: key.systemAccountId ?? keyOwner?.id,
+      ownerSystemAccountName: key.systemAccountName ?? keyOwner?.displayName,
+      bindingScope: 'visible_group',
       bindingRule: apiKeyAuthorizedGroupBindingRule,
       groupBindings: key.groupBindings.map((binding) => {
         const group = groupById.get(binding.groupId)
         const owner = groupOwnerById.get(binding.groupId)
+        const accessType = keyOwner && owner?.id === keyOwner.id ? 'owner' : 'authorized'
         return {
           groupId: binding.groupId,
           groupName: binding.groupName ?? group?.name,
           groupOwnerSystemAccountId: owner?.id ?? group?.systemAccountId,
           groupOwnerSystemAccountName: owner?.displayName ?? group?.systemAccountName,
-          accessType: 'owner',
+          accessType,
           bindableToApiKey: true,
           priority: binding.priority,
           weight: binding.weight,
@@ -3348,7 +3663,7 @@ function groupAuthorizationSamples(authorizations: ResourceAuthorizationSummary[
       status: authorization.status,
       remark: authorization.remark,
       expiresAt: authorization.expiresAt,
-      bindableToApiKey: false,
+      bindableToApiKey: authorization.status === 'active',
       bindingRule: apiKeyAuthorizedGroupBindingRule
     }))
 }
@@ -3375,8 +3690,8 @@ function writeSummary(
     mockUserPassword: mockPassword,
     mockUsers: mockUserSummaries(created.users),
     apiKeyBindingRule: apiKeyAuthorizedGroupBindingRule,
-    authorizedUsageRecordNote: 'usage_records 中的 group_authorized 样本用于授权用量统计，不表示 API Key 可直接绑定授权方分组。',
-    apiKeys: apiKeySummariesForMockdata(created.apiKeys, groupById, groupOwnerById),
+    authorizedUsageRecordNote: 'usage_records 中的 group_authorized 样本用于授权分组直接作为 API Key 号池时的调度、审计和授权用量统计。',
+    apiKeys: apiKeySummariesForMockdata(created.apiKeys, groupById, groupOwnerById, created.users),
     authorizationSamples: groupAuthorizationSamples(created.authorizations),
     counts: {
       users: Object.keys(created.users).length - 1,
@@ -3487,17 +3802,6 @@ function assertNoMockSelfAuthorizations(adminId: string): void {
   `).get(adminId, likeName) as unknown as { id?: string } | undefined
   if (selfGrant?.id) {
     throw new Error(`Mockdata 不能生成自授权业务记录：${selfGrant.id}`)
-  }
-  const adminRuntime = database.prepare(`
-    SELECT id
-    FROM resource_authorizations
-    WHERE created_by = ?
-      AND remark LIKE ?
-      AND grantee_system_account_id = ?
-    LIMIT 1
-  `).get(adminId, likeName, adminId) as unknown as { id?: string } | undefined
-  if (adminRuntime?.id) {
-    throw new Error(`Mockdata 不应把超级管理员作为被授权人：${adminRuntime.id}`)
   }
 }
 

@@ -41,6 +41,10 @@ export interface UsageRecordSummary {
   endpoint?: string
   providerCode?: string
   model?: string
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
   stream: boolean
   statusCode?: number
   success: boolean
@@ -117,6 +121,10 @@ export interface UsageRecordInput {
   endpoint?: string
   providerCode?: string
   model?: string
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
   stream?: boolean
   statusCode?: number
   success: boolean
@@ -290,14 +298,14 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   const businessDatabase = getBusinessDatabase()
   const insertSql = `
     INSERT INTO usage_records (
-      id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
+      id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
       status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
       request_snapshot_json, response_snapshot_json,
       account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
       account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
       group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `
   const accountLastUsedAt = new Map<string, string>()
@@ -329,6 +337,10 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
           input.endpoint ?? null,
           input.providerCode ?? null,
           input.model ?? null,
+          input.upstreamModel ?? null,
+          input.pricingModel ?? null,
+          input.modelMappingApplied ? 1 : 0,
+          input.modelMappingSource ?? null,
           input.stream ? 1 : 0,
           input.statusCode ?? null,
           input.success ? 1 : 0,
@@ -476,6 +488,10 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.endpoint,
             ur.provider_code,
             ur.model,
+            ur.upstream_model,
+            ur.pricing_model,
+            ur.model_mapping_applied,
+            ur.model_mapping_source,
             ur.stream,
             ur.status_code,
             ur.success,
@@ -527,6 +543,10 @@ function listUsageRecordRowsFromShards(
           ur.endpoint,
           ur.provider_code,
           ur.model,
+          ur.upstream_model,
+          ur.pricing_model,
+          ur.model_mapping_applied,
+          ur.model_mapping_source,
           ur.stream,
           ur.status_code,
           ur.success,

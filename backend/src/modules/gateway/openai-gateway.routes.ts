@@ -12,8 +12,8 @@ import {
 } from './openai-gateway-upstream.js'
 import {
   gatewayErrorPayload,
-  isOpenAIStreamContentType,
-  sendGatewayErrorResponse
+  sendGatewayErrorResponse,
+  shouldHandleOpenAIUpstreamResponseAsStream
 } from './openai-gateway-responses.js'
 import { createAuditCapture } from './audit-capture.service.js'
 import {
@@ -271,8 +271,10 @@ export async function handleOpenAIGatewayRequest(
       try {
         const responseHandlingStartedAt = Date.now()
         const contentType = upstreamResponse.headers.get('content-type') ?? ''
-        const shouldHandleAsStream = isOpenAIStreamContentType(contentType)
-          || (isEffectiveOpenAIStreamRequest(req, account) && !isJsonResponseContentType(contentType))
+        const shouldHandleAsStream = shouldHandleOpenAIUpstreamResponseAsStream({
+          contentType,
+          streamRequest: isEffectiveOpenAIStreamRequest(req, account)
+        })
         persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
 
         let handledResponse: Awaited<ReturnType<typeof handleStreamUpstreamResponse>>
@@ -491,11 +493,6 @@ function shouldExcludeCurrentAccountForStreamRetry(decision: StreamInterceptDeci
     || decision.accountSwitch === 'avoid_account_ttl'
     || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
     || decision.accountState === 'runtime_avoidance'
-}
-
-function isJsonResponseContentType(contentType: string): boolean {
-  const normalized = contentType.toLowerCase()
-  return normalized.includes('application/json') || normalized.includes('+json')
 }
 
 function sendStreamServerRetryExhaustedResponse(input: {

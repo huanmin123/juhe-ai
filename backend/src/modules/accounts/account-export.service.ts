@@ -1,4 +1,4 @@
-import type { AccountAvailabilitySchedule, AccountSummary, AccountType } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getProxyTestConfig, listAccounts, type ProxyProfileTestConfig } from '../../storage/repositories.js'
 import {
@@ -41,6 +41,7 @@ export interface AccountExportAccount {
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
   supportedModels?: string[]
+  modelMappings?: AccountModelMapping[]
   accountExpiresAt?: string
   availabilitySchedule?: AccountAvailabilitySchedule
   credentials: Record<string, unknown>
@@ -165,6 +166,7 @@ function exportAccount(account: AccountSummary, proxyRefsById: Map<string, strin
     if (account.fallbackEnabled) output.fallbackEnabled = true
   }
   if (account.supportedModels?.length) output.supportedModels = [...account.supportedModels]
+  if (account.modelMappings?.length) output.modelMappings = account.modelMappings.map((item) => ({ ...item }))
   if (account.accountExpiresAt) output.accountExpiresAt = account.accountExpiresAt
   if (account.availabilitySchedule) output.availabilitySchedule = account.availabilitySchedule
   if (account.notes) output.notes = account.notes

@@ -667,7 +667,7 @@ function seedData(): SeedState {
   repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
   const userA = repositories.createSystemAccount({
     username: 'scope_user_a',
-    displayName: '作用域用户 A',
+    displayName: '作用域用户A',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -675,7 +675,7 @@ function seedData(): SeedState {
   })
   const userB = repositories.createSystemAccount({
     username: 'scope_user_b',
-    displayName: '作用域用户 B',
+    displayName: '作用域用户B',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -683,7 +683,7 @@ function seedData(): SeedState {
   })
   const userC = repositories.createSystemAccount({
     username: 'scope_user_c',
-    displayName: '作用域用户 C',
+    displayName: '作用域用户C',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -817,16 +817,11 @@ function seedData(): SeedState {
   }, userAAccess)
   const userAOwnedGroup = repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
   assert(userAOwnedGroup, '用户 A 应存在可绑定的自有分组')
-  let rejectedAuthorizedGroupApiKey = false
-  try {
-    repositories.createApiKeyRecord({
-      name: '用户 A 禁止绑定授权分组 Key',
-      groupBindings: [{ groupId: userBGroup.id, priority: 1, status: 'active' }],
-    }, userAAccess)
-  } catch (error) {
-    rejectedAuthorizedGroupApiKey = error instanceof Error && /API Key 只能绑定自己的分组/.test(error.message)
-  }
-  assert(rejectedAuthorizedGroupApiKey, 'API Key 不应允许绑定授权方的分组，调度范围必须停留在创建者自己的分组内')
+  const authorizedGroupApiKey = repositories.createApiKeyRecord({
+    name: '用户 A 授权分组 Key',
+    groupBindings: [{ groupId: userBGroup.id, priority: 1, status: 'active' }],
+  }, userAAccess)
+  assert(authorizedGroupApiKey.groupBindings[0]?.groupId === userBGroup.id, 'API Key 应允许绑定有效授权给当前用户的分组')
   const runtimeGroupAuthorization = databaseModule.getBusinessDatabase()
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
     .get(userBGroup.id, userA.id) as unknown as { id?: string } | undefined

@@ -5,7 +5,7 @@ import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-va
 import { getUsageRecordDetail, listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
-import { buildProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
+import { buildCatalogCostBreakdown } from '../model-pricing/model-catalog.service.js'
 
 export const usageRecordsRouter = Router()
 
@@ -34,9 +34,10 @@ const dayMs = 24 * 60 * 60 * 1000
 function withCostBreakdown(record: UsageRecordSummary) {
   return {
     ...record,
-    costBreakdown: buildProviderCostBreakdown({
+    costBreakdown: buildCatalogCostBreakdown({
       providerCode: requiredUsageRecordProviderCode(record),
-      model: record.model,
+      systemAccountId: record.systemAccountId,
+      model: record.pricingModel ?? record.upstreamModel ?? record.model,
       inputTokens: record.inputTokens,
       outputTokens: record.outputTokens,
       cacheReadTokens: record.cacheReadTokens,

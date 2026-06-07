@@ -1,5 +1,12 @@
 import type { AccountType, ProviderCode } from './base'
 
+export type ProviderModelScope = 'built_in' | 'global' | 'personal'
+export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
+export type ProviderModelVisibility = 'public' | 'mapping_target_only'
+export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
+export type ProviderModelMode = 'text' | 'image' | 'audio'
+export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'
+
 export interface ProviderDefinition {
   id: string
   code: ProviderCode
@@ -15,10 +22,18 @@ export interface ProviderDefinition {
 export interface ProviderModelPricing {
   providerCode: ProviderCode
   model: string
+  id?: string
+  scope?: ProviderModelScope
+  visibility?: ProviderModelVisibility
+  status?: ProviderModelStatus
+  systemAccountId?: string
+  displayName?: string
+  pricingModel?: string
   mode?: string
   releaseDate?: string
   shutdownDate?: string
-  supportedApiProtocols?: Array<'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'>
+  contextWindowTokens?: number
+  supportedApiProtocols?: ProviderModelApiProtocol[]
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
@@ -26,16 +41,53 @@ export interface ProviderModelPricing {
   cacheWrite1hUsdPer1M?: number
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
+  pricingNotes?: string
+  capabilityNotes?: string
+  notes?: string
+  createdAt?: string
+  updatedAt?: string
   source: string
 }
 
 export interface ProviderModelOption {
   providerCode: ProviderCode
   model: string
+}
+
+export interface ProviderModelsParams {
+  includeMappingTargets?: boolean
+  includeInactive?: boolean
+  includeUnpriced?: boolean
+}
+
+export interface ProviderModelUpsertPayload {
+  model: string
+  scope?: CustomProviderModelScope
+  status?: ProviderModelStatus
+  visibility?: ProviderModelVisibility
+  displayName?: string | null
+  mode?: ProviderModelMode | null
+  supportedApiProtocols?: ProviderModelApiProtocol[]
+  pricingModel?: null
+  releaseDate?: string | null
+  shutdownDate?: string | null
+  contextWindowTokens?: number | null
+  maxOutputTokens?: number | null
+  inputUsdPer1M?: number | null
+  outputUsdPer1M?: number | null
+  cachedInputUsdPer1M?: number | null
+  cacheWriteUsdPer1M?: number | null
+  imageInputUsdPer1M?: number | null
+  imageOutputUsdPer1M?: number | null
+  audioInputUsdPer1M?: number | null
+  audioOutputUsdPer1M?: number | null
+  outputUsdPerImage?: number | null
 }

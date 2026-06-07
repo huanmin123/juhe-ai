@@ -21,6 +21,7 @@ logger.level = 'silent'
 
 const [
   { accountsRouter },
+  { groupsRouter },
   { authorizationsRouter },
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
@@ -28,6 +29,7 @@ const [
   repositories
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
+  import('../../modules/groups/groups.routes.js'),
   import('../../modules/authorizations/authorizations.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
@@ -40,8 +42,10 @@ app.use(requestContextMiddleware)
 app.use(express.json({ limit: '1mb' }))
 app.use('/__aisys__/api', requireAuth)
 app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
+app.use('/__aisys__/api/my-groups', forceSelfAccessScope, groupsRouter)
 app.use('/__aisys__/api/my-authorizations', forceSelfAccessScope, authorizationsRouter)
 app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
+app.use('/__aisys__/api/groups', requireAdmin, groupsRouter)
 app.use('/__aisys__/api/authorizations', requireAdmin, authorizationsRouter)
 
 let server: ReturnType<typeof app.listen> | undefined
@@ -149,11 +153,53 @@ try {
     .listGroups({ systemAccountId: seed.granteeId, role: 'user' as const })
     .find((group) => group.id === seed.ownerGroupId)?.groupAuthorizationId
   assert(groupAuthorizationId, '被授权分组应带运行态授权 ID')
+  const authorizedGroup = repositories
+    .listGroups({ systemAccountId: seed.granteeId, role: 'user' as const })
+    .find((group) => group.id === seed.ownerGroupId)
+  assert.equal(authorizedGroup?.accessType, 'authorized', '被授权分组应在分组列表标记为授权资源')
+  assert.equal(authorizedGroup?.permissions?.canEdit, true, '被授权分组应允许调整使用方本地配置')
+  assert.equal(authorizedGroup?.permissions?.canReturnAuthorization, true, '个人直授权分组应允许在分组页归还')
+  await patchOk(baseUrl, `/__aisys__/api/my-groups/${seed.ownerGroupId}`, seed.granteeCookie, {
+    enabled: true,
+    groupType: 'high_concurrency',
+    schedulingPolicy: {
+      defaultSoftConcurrency: 2,
+      maxQueueWaitMs: 30000,
+      clientIpConcurrencyLimit: 3,
+      clientIpConcurrencyOverflowMode: 'queue',
+      imageLaneMaxConcurrency: 0
+    }
+  })
+  const updatedAuthorizedGroup = repositories
+    .listGroups({ systemAccountId: seed.granteeId, role: 'user' as const })
+    .find((group) => group.id === seed.ownerGroupId)
+  assert.equal(updatedAuthorizedGroup?.groupType, 'high_concurrency', '被授权人应能把授权分组切为自己的高并发配置')
+  assert.equal(updatedAuthorizedGroup?.schedulingPolicy?.defaultSoftConcurrency, 2, '授权分组本地调度配置应回显给被授权人')
+  const ownerGroupAfterAuthorizedUpdate = repositories.findGroupSummary(seed.ownerGroupId, ownerAccess)
+  assert.equal(ownerGroupAfterAuthorizedUpdate?.groupType, 'personal', '被授权人调整分组类型不应影响授权方原分组')
+  assert.equal(ownerGroupAfterAuthorizedUpdate?.schedulingPolicy, undefined, '被授权人调整调度配置不应写回授权方原分组')
+  const granteeRuntimeGroupAccess = repositories.resolveGroupUsageAccessMetadata(seed.ownerGroupId, seed.granteeId)
+  assert.equal(granteeRuntimeGroupAccess?.groupType, 'high_concurrency', '授权分组运行态应读取被授权人的本地分组类型')
+  assert.equal(granteeRuntimeGroupAccess?.schedulingPolicy?.clientIpConcurrencyLimit, 3, '授权分组运行态应读取被授权人的本地调度配置')
+  const ownerRuntimeGroupAccess = repositories.resolveGroupUsageAccessMetadata(seed.ownerGroupId, seed.ownerId)
+  assert.equal(ownerRuntimeGroupAccess?.groupType, 'personal', '授权方运行态仍应读取原分组配置')
+  await patchOk(baseUrl, `/__aisys__/api/my-groups/${seed.ownerGroupId}`, seed.granteeCookie, {
+    enabled: false,
+    groupType: 'high_concurrency',
+    schedulingPolicy: {
+      defaultSoftConcurrency: 2,
+      maxQueueWaitMs: 30000,
+      clientIpConcurrencyLimit: 3,
+      clientIpConcurrencyOverflowMode: 'queue',
+      imageLaneMaxConcurrency: 0
+    }
+  })
+  assert.equal(repositories.resolveGroupUsageAccessMetadata(seed.ownerGroupId, seed.granteeId), undefined, '被授权人本地停用授权分组后运行态不应继续可用')
   const inboundGroupGrant = repositories
     .listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAccess)
     .find((authorization) => authorization.resourceType === 'group' && authorization.resourceId === seed.ownerGroupId && authorization.granteeSystemAccountId === seed.granteeId)
   assert(inboundGroupGrant, '被授权分组应能在授权操作列表读取授权业务记录')
-  await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${inboundGroupGrant.id}/return`, seed.granteeCookie)
+  await postOk(baseUrl, `/__aisys__/api/my-groups/${seed.ownerGroupId}/return-authorization`, seed.granteeCookie)
   assert.equal(
     repositories.listGroups({ systemAccountId: seed.granteeId, role: 'user' as const }).some((group) => group.id === seed.ownerGroupId),
     false,
@@ -164,6 +210,10 @@ try {
     true,
     '被授权用户归还分组授权不应删除授权方原分组'
   )
+  const returnedGroupGrant = repositories
+    .listResourceAuthorizations({}, ownerAccess)
+    .find((authorization) => authorization.resourceType === 'group' && authorization.resourceId === seed.ownerGroupId && authorization.granteeSystemAccountId === seed.granteeId)
+  assert.equal(returnedGroupGrant?.status, 'returned', '分组页归还后，授权方授权列表仍应保留已归还记录')
 
   const adminManagedAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -325,6 +375,17 @@ async function returnOk(baseUrl: string, path: string, cookie: string): Promise<
 
 async function postOk(baseUrl: string, path: string, cookie: string): Promise<void> {
   const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { cookie } })
+  if (!response.ok) {
+    throw new Error(`${path} HTTP ${response.status}: ${await response.text()}`)
+  }
+}
+
+async function patchOk(baseUrl: string, path: string, cookie: string, body: unknown): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'PATCH',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
   if (!response.ok) {
     throw new Error(`${path} HTTP ${response.status}: ${await response.text()}`)
   }

@@ -11,7 +11,7 @@ import {
 } from '../domain/api-key-routing.js'
 import type { ApiKeyGroupRouteStrategy } from '../domain/types.js'
 import { hashSecret } from './crypto.js'
-import { getBusinessDatabase } from './database.js'
+import { getBusinessDatabase, nowIso } from './database.js'
 
 export interface GatewayApiKeyRow {
   id: string
@@ -227,6 +227,7 @@ function removeGatewayApiKeyCacheIndex(apiKeyId: string, keyHash: string): void 
 }
 
 export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAccountId: string): GatewayApiKeyGroupBindingRow[] {
+  const now = nowIso()
   return getBusinessDatabase().prepare(`
     SELECT
       api_key_group_bindings.id,
@@ -241,14 +242,27 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAcc
     FROM api_key_group_bindings
     INNER JOIN groups
       ON groups.id = api_key_group_bindings.group_id
-      AND groups.system_account_id = api_key_group_bindings.system_account_id
+      LEFT JOIN resource_authorizations group_authorization
+        ON group_authorization.resource_type = 'group'
+        AND group_authorization.resource_id = groups.id
+        AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization.status = 'active'
+        AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+      LEFT JOIN group_authorization_settings
+        ON group_authorization_settings.authorization_id = group_authorization.id
+        AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization_settings.group_id = groups.id
     WHERE api_key_group_bindings.api_key_id = ?
       AND api_key_group_bindings.system_account_id = ?
       AND api_key_group_bindings.status = 'active'
       AND groups.enabled = 1
+      AND (
+        groups.system_account_id = api_key_group_bindings.system_account_id
+        OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
+      )
     ORDER BY api_key_group_bindings.priority ASC, api_key_group_bindings.created_at ASC, api_key_group_bindings.id ASC
     LIMIT ?
-  `).all(apiKeyId, systemAccountId, maxApiKeyGroupBindings)
+  `).all(now, apiKeyId, systemAccountId, maxApiKeyGroupBindings)
     .map((row) => ({
       ...(row as unknown as GatewayApiKeyGroupBindingRow),
       weight: normalizeApiKeyGroupBindingWeight((row as unknown as GatewayApiKeyGroupBindingRow).weight)

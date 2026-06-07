@@ -3,7 +3,6 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { inspectProcessedUsageRecordsCleanupBefore } from '../../storage/data-retention.repository.js'
 import { nowIso } from '../../storage/database.js'
 import { getTableStorageOverview, listDatabaseStorageHistory, listTableStorageHistory, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
@@ -14,7 +13,6 @@ export const tableMonitorRouter = Router()
 
 const defaultCleanupBatchSize = 10000
 const defaultCleanupMaxBatches = 100
-const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
 
 const overviewQuerySchema = z.object({
   startAt: z.string().trim().optional(),
@@ -36,21 +34,21 @@ const databaseHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(10000).optional()
 })
 
-const usageRecordsCleanupSchema = z.object({
+const nonBusinessDataCleanupSchema = z.object({
   cutoffAt: z.string().trim().min(1, '请选择清理截止时间'),
   batchSize: z.number().int().min(100).max(10000).optional(),
   maxBatches: z.number().int().min(1).max(100).optional()
 }).strict()
 
-interface UsageRecordsCleanupResult {
+interface NonBusinessDataCleanupResult {
   cutoffAt: string
   deletedRows: number
+  deletedFiles: number
   batches: number
   batchSize: number
   maxBatches: number
   hasMore: boolean
   queued: boolean
-  eligibleRows?: number
   jobId?: string
   submittedAt?: string
   blockedReason?: string
@@ -69,17 +67,17 @@ tableMonitorRouter.get('/overview', (req, res) => {
   })))
 })
 
-tableMonitorRouter.post('/usage-records/cleanup', mutationGuard({
-  operationKey: 'table_monitor.cleanup_usage_records',
+tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
+  operationKey: 'table_monitor.cleanup_non_business_data',
   fingerprint: (req) => ({
     cutoffAt: bodyField(req, 'cutoffAt'),
     batchSize: bodyField(req, 'batchSize'),
     maxBatches: bodyField(req, 'maxBatches')
   })
 }), (req, res) => {
-  const parsed = usageRecordsCleanupSchema.safeParse(req.body)
+  const parsed = nonBusinessDataCleanupSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '使用记录清理参数无效')))
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '非业务数据清理参数无效')))
     return
   }
 
@@ -92,43 +90,27 @@ tableMonitorRouter.post('/usage-records/cleanup', mutationGuard({
     res.status(400).json(badRequest('清理截止时间不能晚于当前时间'))
     return
   }
-  if (cutoff.time > Date.now() - minimumUsageRecordCleanupAgeMs) {
-    res.status(400).json(badRequest('不能清理最近 1 天内的使用记录'))
-    return
-  }
 
   const batchSize = parsed.data.batchSize ?? defaultCleanupBatchSize
   const maxBatches = parsed.data.maxBatches ?? defaultCleanupMaxBatches
-  const preview = inspectProcessedUsageRecordsCleanupBefore(cutoff.iso, batchSize)
-  const baseResult: UsageRecordsCleanupResult = {
+  const baseResult: NonBusinessDataCleanupResult = {
     cutoffAt: cutoff.iso,
     deletedRows: 0,
+    deletedFiles: 0,
     batches: 0,
     batchSize,
     maxBatches,
-    hasMore: preview.hasMore,
-    queued: false,
-    eligibleRows: preview.eligibleRows,
-    blockedReason: preview.blockedReason
-  }
-
-  if (preview.eligibleRows <= 0) {
-    try {
-      recordUsageRecordsCleanupOperation(baseResult, req)
-    } catch (error) {
-      logger.warn(errorLogFields(error, { event: 'table_monitor_usage_records_cleanup_operation_log_failed' }), '表监控使用记录清理操作日志写入失败')
-    }
-    res.json(ok(baseResult))
-    return
+    hasMore: false,
+    queued: false
   }
 
   const enqueueResult = enqueueRecordMaintenanceJobWithResult({
-    type: 'usage_records_cleanup',
+    type: 'non_business_data_cleanup',
     cutoffAt: cutoff.iso,
     batchSize,
     maxBatches
   })
-  const result: UsageRecordsCleanupResult = {
+  const result: NonBusinessDataCleanupResult = {
     ...baseResult,
     queued: enqueueResult.queued,
     jobId: enqueueResult.job.id,
@@ -136,14 +118,14 @@ tableMonitorRouter.post('/usage-records/cleanup', mutationGuard({
     blockedReason: enqueueResult.queued
       ? undefined
       : enqueueResult.droppedReason === 'worker_ipc_unavailable'
-        ? '后台 worker 投递通道不可用，使用记录清理任务未提交；请确认后端主进程、DB service 和 background worker 都由同一个 supervisor 启动'
-        : '后台 worker 投递失败，使用记录清理任务未提交；请稍后重试或查看后台日志'
+        ? '后台 worker 投递通道不可用，非业务数据清理任务未提交；请确认后端主进程、DB service 和 background worker 都由同一个 supervisor 启动'
+        : '后台 worker 投递失败，非业务数据清理任务未提交；请稍后重试或查看后台日志'
   }
 
   try {
-    recordUsageRecordsCleanupOperation(result, req)
+    recordNonBusinessDataCleanupOperation(result, req)
   } catch (error) {
-    logger.warn(errorLogFields(error, { event: 'table_monitor_usage_records_cleanup_operation_log_failed' }), '表监控使用记录清理操作日志写入失败')
+    logger.warn(errorLogFields(error, { event: 'table_monitor_non_business_data_cleanup_operation_log_failed' }), '表监控非业务数据清理操作日志写入失败')
   }
 
   res.json(ok(result))
@@ -154,26 +136,25 @@ function normalizeCleanupCutoff(value: string): { iso: string; time: number } | 
   return Number.isNaN(time) ? undefined : { iso: new Date(time).toISOString(), time }
 }
 
-function recordUsageRecordsCleanupOperation(result: UsageRecordsCleanupResult, req: Parameters<typeof recordOperationLog>[1]): void {
+function recordNonBusinessDataCleanupOperation(result: NonBusinessDataCleanupResult, req: Parameters<typeof recordOperationLog>[1]): void {
   recordOperationLog({
     module: 'table_monitor',
-    action: 'cleanup_usage_records',
-    operationKey: 'table_monitor.cleanup_usage_records',
-    resourceType: 'usage_records',
-    resourceId: 'usage_records',
-    resourceName: 'usage_records',
+    action: 'cleanup_non_business_data',
+    operationKey: 'table_monitor.cleanup_non_business_data',
+    resourceType: 'non_business_data',
+    resourceId: 'dataset_stats_usage_shards',
+    resourceName: '非业务数据',
     summary: result.queued
-      ? `提交使用记录清理任务：${result.jobId ?? result.cutoffAt}`
+      ? `提交非业务数据硬清理任务：${result.jobId ?? result.cutoffAt}`
       : result.blockedReason
-        ? `使用记录清理未提交：${result.blockedReason}`
-        : '使用记录清理未提交：没有可清理记录',
+        ? `非业务数据清理未提交：${result.blockedReason}`
+        : '非业务数据清理未提交',
     detailLevel: 'full',
     visibilityScope: 'admin_only',
     changes: [
       safeChange('cutoffAt', '清理截止时间', undefined, result.cutoffAt),
       safeChange('batchSize', '单批数量', undefined, result.batchSize),
       safeChange('maxBatches', '最大批次', undefined, result.maxBatches),
-      safeChange('eligibleRows', '首批可清理记录', undefined, result.eligibleRows),
       safeChange('jobId', '后台任务', undefined, result.jobId),
       safeChange('blockedReason', '未提交原因', undefined, result.blockedReason)
     ],
@@ -181,7 +162,6 @@ function recordUsageRecordsCleanupOperation(result: UsageRecordsCleanupResult, r
       cutoffAt: result.cutoffAt,
       batchSize: result.batchSize,
       maxBatches: result.maxBatches,
-      eligibleRows: result.eligibleRows,
       queued: result.queued,
       jobId: result.jobId,
       submittedAt: result.submittedAt,

@@ -143,10 +143,41 @@ try {
   const afterApiKeyDisabled = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert.equal(afterApiKeyDisabled.apiKey, undefined, '直接停用 API Key 后运行配置缓存不应继续接受已停用 key')
 
+  const groupAuthorization = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: ownerGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '缓存失效分组授权'
+  }, ownerAccess)
+  const groupAuthorizationRuntimeRow = databaseModule.getBusinessDatabase()
+    .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
+    .get(ownerGroup.id, grantee.id) as { id?: string } | undefined
+  assert(groupAuthorizationRuntimeRow?.id, '回归需要最终用户分组授权主记录 ID')
+  const granteeAuthorizedGroupApiKey = repositories.createApiKeyRecord({
+    name: '缓存失效授权分组 API Key',
+    groupBindings: [{ groupId: ownerGroup.id, priority: 1, status: 'active' }],
+  }, granteeAccess)
+  const authorizedGroupRuntime = await gatewayCache.readCachedGatewayRuntimeAsync(granteeAuthorizedGroupApiKey.key)
+  assert.deepEqual(authorizedGroupRuntime.accounts.map((item) => item.id), [account.id], 'API Key 直接绑定授权分组后运行配置应读取授权方分组账号')
+  assert.equal(authorizedGroupRuntime.groupAccess?.groupAccessType, 'authorized', 'API Key 直接绑定授权分组后运行配置应携带授权分组访问类型')
+  assert.equal(authorizedGroupRuntime.groupAccess?.groupAuthorizationId, groupAuthorizationRuntimeRow.id, 'API Key 直接绑定授权分组后运行配置应携带最终用户分组授权 ID')
+  assert(repositories.revokeResourceAuthorization(groupAuthorization.id, ownerAccess), '回收分组授权失败')
+  assert.deepEqual(await runtimeAccountIds(granteeAuthorizedGroupApiKey.key), [], '直接回收分组授权后绑定该授权分组的 API Key 不应继续返回候选账号')
   const granteeGroup = repositories.createGroup({
     name: '缓存失效被授权分组',
     providerCode: 'openai'
   }, granteeAccess)
+  const retainedRevokedGroupBindingApiKey = repositories.updateApiKey(granteeAuthorizedGroupApiKey.id, {
+    name: '缓存失效授权分组 API Key 保留失效绑定',
+    groupBindings: [
+      { groupId: ownerGroup.id, priority: 1, status: 'disabled' },
+      { groupId: granteeGroup.id, priority: 2, status: 'active' }
+    ],
+  }, granteeAccess)
+  assert(retainedRevokedGroupBindingApiKey, '授权回收后应允许 API Key 保留原有授权分组绑定配置')
+  assert.deepEqual(await runtimeAccountIds(granteeAuthorizedGroupApiKey.key), [], '保留已回收授权分组绑定后运行配置仍不应返回候选账号')
+
   const granteeApiKey = repositories.createApiKeyRecord({
     name: '缓存失效被授权 API Key',
     groupBindings: [{ groupId: granteeGroup.id, priority: 1, status: 'active' }],

@@ -1,4 +1,5 @@
 import type {
+  AccountAvailabilitySchedule,
   AccountClientCompatibility,
   AccountSummary,
   AccountTestResult,
@@ -7,6 +8,7 @@ import type {
   SystemAccountRole
 } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { AccessScope } from './access-scope.js'
 
@@ -17,7 +19,31 @@ export interface AccountTestTaskRecord extends AccountTestTask {
   requestRole: SystemAccountRole
   requestSystemAccountFilterId?: string
   diagnostics: AccountTestTaskDiagnostics
+  draftAccount?: AccountTestDraftSnapshot
   errorMessage?: string
+}
+
+export interface AccountTestDraftSnapshot {
+  id: string
+  ownerSystemAccountId: string
+  groupId: string
+  groupName?: string
+  providerCode: AccountSummary['providerCode']
+  name: string
+  type: AccountSummary['type']
+  credentials: Record<string, unknown>
+  concurrencyLimit: number
+  priority: number
+  superPriorityEnabled: boolean
+  fallbackEnabled: boolean
+  clientCompatibility: AccountClientCompatibility
+  supportedModels?: string[]
+  modelMappings?: AccountSummary['modelMappings']
+  proxyProfileId?: string
+  accountExpiresAt?: string
+  availabilitySchedule?: AccountAvailabilitySchedule
+  availabilityScheduleJson?: string
+  notes?: string
 }
 
 interface AccountTestTaskRow {
@@ -32,6 +58,7 @@ interface AccountTestTaskRow {
   diagnostics: string
   model: string | null
   client_compatibility: string | null
+  draft_account_encrypted: string | null
   status: string
   status_message: string | null
   result_json: string | null
@@ -50,6 +77,7 @@ export interface CreateAccountTestTaskInput {
   diagnostics: AccountTestTaskDiagnostics
   model?: string
   clientCompatibility?: AccountClientCompatibility
+  draftAccount?: AccountTestDraftSnapshot
 }
 
 const accountTestTaskRetentionHours = 24
@@ -69,10 +97,10 @@ export function createAccountTestTask(input: CreateAccountTestTaskInput): Accoun
     INSERT INTO account_test_tasks (
       id, account_id, account_name, provider_code, account_type,
       request_system_account_id, request_role, request_system_account_filter_id,
-      diagnostics, model, client_compatibility, status, status_message,
+      diagnostics, model, client_compatibility, draft_account_encrypted, status, status_message,
       cancel_requested, queued_at, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
   `).run(
     id,
     input.account.id,
@@ -85,6 +113,7 @@ export function createAccountTestTask(input: CreateAccountTestTaskInput): Accoun
     input.diagnostics,
     normalizedOptionalText(input.model) ?? null,
     clientCompatibility ?? null,
+    encryptedDraftAccount(input.draftAccount),
     now,
     now,
     now
@@ -142,12 +171,22 @@ export function requeueInterruptedAccountTestTasks(): string[] {
   const now = nowIso()
   getBusinessDatabase().prepare(`
     UPDATE account_test_tasks
+    SET status = 'canceled',
+        status_message = '已停止测试',
+        finished_at = COALESCE(finished_at, ?),
+        updated_at = ?
+    WHERE status = 'running'
+      AND cancel_requested = 1
+  `).run(now, now)
+  getBusinessDatabase().prepare(`
+    UPDATE account_test_tasks
     SET status = 'queued',
         status_message = '后台 worker 重启后重新排队',
         started_at = NULL,
         cancel_requested = 0,
         updated_at = ?
     WHERE status = 'running'
+      AND cancel_requested = 0
   `).run(now)
   cleanupExpiredAccountTestTasks()
   return listRunnableAccountTestTaskIds()
@@ -328,6 +367,7 @@ function accountTestTaskRecordFromRow(row: AccountTestTaskRow): AccountTestTaskR
     requestRole: systemAccountRole(row.request_role),
     requestSystemAccountFilterId: row.request_system_account_filter_id ?? undefined,
     diagnostics: row.diagnostics === 'limited' ? 'limited' : 'full',
+    draftAccount: accountTestDraftSnapshot(row.draft_account_encrypted),
     errorMessage: row.error_message ?? undefined
   }
 }
@@ -373,6 +413,118 @@ function accountTestResult(value: string | null): AccountTestResult | undefined 
   } catch {
   }
   return undefined
+}
+
+function encryptedDraftAccount(value: AccountTestDraftSnapshot | undefined): string | null {
+  if (!value) return null
+  const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8')
+  if (bytes > 64 * 1024) {
+    throw new Error('账户测试草稿过大')
+  }
+  return encryptJson(value)
+}
+
+function accountTestDraftSnapshot(value: string | null): AccountTestDraftSnapshot | undefined {
+  if (!value) return undefined
+  try {
+    return normalizeAccountTestDraftSnapshot(decryptJson<unknown>(value))
+  } catch {
+    return undefined
+  }
+}
+
+function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnapshot | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const id = normalizedOptionalText(record.id)
+  const ownerSystemAccountId = normalizedOptionalText(record.ownerSystemAccountId)
+  const groupId = normalizedOptionalText(record.groupId)
+  const providerCode = normalizedOptionalText(record.providerCode)
+  const name = normalizedOptionalText(record.name)
+  const type = normalizedOptionalText(record.type)
+  const credentials = record.credentials
+  const clientCompatibility = accountClientCompatibility(normalizedOptionalText(record.clientCompatibility) ?? null)
+  if (!id || !ownerSystemAccountId || !groupId || !providerCode || !name || !type || !clientCompatibility) {
+    return undefined
+  }
+  if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) {
+    return undefined
+  }
+  return {
+    id,
+    ownerSystemAccountId,
+    groupId,
+    groupName: normalizedOptionalText(record.groupName),
+    providerCode,
+    name,
+    type,
+    credentials: credentials as Record<string, unknown>,
+    concurrencyLimit: positiveIntegerValue(record.concurrencyLimit, 1),
+    priority: integerValue(record.priority, 0),
+    superPriorityEnabled: booleanValue(record.superPriorityEnabled),
+    fallbackEnabled: booleanValue(record.fallbackEnabled),
+    clientCompatibility,
+    supportedModels: stringListValue(record.supportedModels),
+    modelMappings: accountModelMappingsValue(record.modelMappings),
+    proxyProfileId: normalizedOptionalText(record.proxyProfileId),
+    accountExpiresAt: normalizedOptionalText(record.accountExpiresAt),
+    availabilitySchedule: availabilityScheduleValue(record.availabilitySchedule),
+    availabilityScheduleJson: normalizedOptionalText(record.availabilityScheduleJson),
+    notes: normalizedOptionalText(record.notes)
+  }
+}
+
+function stringListValue(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const items = [...new Set(value.map(normalizedOptionalText).filter((item): item is string => Boolean(item)))].slice(0, 500)
+  return items.length ? items : undefined
+}
+
+function accountModelMappingsValue(value: unknown): AccountSummary['modelMappings'] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const output: NonNullable<AccountSummary['modelMappings']> = []
+  const seenSources = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      continue
+    }
+    const record = item as Record<string, unknown>
+    const sourceModel = normalizedOptionalText(record.sourceModel)
+    const upstreamModel = normalizedOptionalText(record.upstreamModel)
+    if (!sourceModel || !upstreamModel || sourceModel === upstreamModel || seenSources.has(sourceModel)) {
+      continue
+    }
+    seenSources.add(sourceModel)
+    output.push({
+      sourceModel,
+      upstreamModel,
+      enabled: record.enabled !== false
+    })
+    if (output.length >= 500) {
+      break
+    }
+  }
+  return output.length ? output : undefined
+}
+
+function availabilityScheduleValue(value: unknown): AccountAvailabilitySchedule | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as AccountAvailabilitySchedule
+    : undefined
+}
+
+function positiveIntegerValue(value: unknown, fallback: number): number {
+  const number = integerValue(value, fallback)
+  return number > 0 ? number : fallback
+}
+
+function integerValue(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.trunc(value)
+}
+
+function booleanValue(value: unknown): boolean {
+  return value === true
 }
 
 function normalizedOptionalText(value: unknown): string | undefined {

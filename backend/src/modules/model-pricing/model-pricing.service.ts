@@ -16,13 +16,15 @@ export interface ProviderModelPricing {
   cacheWrite1hUsdPer1M?: number
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
-  source: 'openai-pricing-snapshot'
+  source: string
 }
 
 interface RawModelPricing {
@@ -37,6 +39,8 @@ interface RawModelPricing {
   input_cost_per_image_token?: number
   output_cost_per_image?: number
   output_cost_per_image_token?: number
+  input_cost_per_audio_token?: number
+  output_cost_per_audio_token?: number
   max_input_tokens?: number
   max_output_tokens?: number
   max_tokens?: number
@@ -54,6 +58,9 @@ export interface CostInput {
   cacheReadTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
+  inputAudioTokens?: number
+  outputAudioTokens?: number
+  outputImageCount?: number
 }
 
 interface CostBreakdownInput extends CostInput {
@@ -71,6 +78,12 @@ export interface ProviderCostBreakdown {
   outputImageCostUsd?: number
   inputImageUsdPer1M?: number
   outputImageUsdPer1M?: number
+  inputAudioCostUsd?: number
+  outputAudioCostUsd?: number
+  inputAudioUsdPer1M?: number
+  outputAudioUsdPer1M?: number
+  outputImageUnitCostUsd?: number
+  outputUsdPerImage?: number
   accountChargeUsd?: number
   multiplier: 1
 }
@@ -92,7 +105,7 @@ export function getProviderModelPricing(providerCode: string, model?: string): P
 }
 
 export function estimateProviderCostUsd(input: CostInput): number | undefined {
-  if (!input.model || (input.inputTokens === undefined && input.outputTokens === undefined && input.cacheReadTokens === undefined)) {
+  if (!input.model || !hasAnyCostDimension(input)) {
     return undefined
   }
 
@@ -104,19 +117,28 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
   const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
   const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
   const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
-  if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined && inputImagePrice === undefined && outputImagePrice === undefined) return undefined
+  const inputAudioPrice = normalizePrice(pricing.input_cost_per_audio_token)
+  const outputAudioPrice = normalizePrice(pricing.output_cost_per_audio_token)
+  const outputImageUnitPrice = normalizePrice(pricing.output_cost_per_image)
+  if (!hasAnyPrice(inputPrice, outputPrice, cachedInputPrice, inputImagePrice, outputImagePrice, inputAudioPrice, outputAudioPrice, outputImageUnitPrice)) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
   const inputImageTokens = inputImagePrice === undefined ? 0 : Math.max(input.inputImageTokens ?? 0, 0)
   const outputImageTokens = outputImagePrice === undefined ? 0 : Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
-  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens, 0)
-  const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens, 0)
+  const inputAudioTokens = inputAudioPrice === undefined ? 0 : Math.max(input.inputAudioTokens ?? defaultInputAudioTokens(input, inputPrice, cacheReadTokens, inputImageTokens), 0)
+  const outputAudioTokens = outputAudioPrice === undefined ? 0 : Math.max(input.outputAudioTokens ?? defaultOutputAudioTokens(input, outputPrice, outputImageTokens), 0)
+  const outputImageCount = outputImageUnitPrice === undefined ? 0 : Math.max(input.outputImageCount ?? 0, 0)
+  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens - inputAudioTokens, 0)
+  const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens - outputAudioTokens, 0)
 
   const cost = uncachedInputTokens * (inputPrice ?? 0)
     + cacheReadTokens * (cachedInputPrice ?? 0)
     + inputImageTokens * (inputImagePrice ?? 0)
     + outputTokens * (outputPrice ?? 0)
     + outputImageTokens * (outputImagePrice ?? 0)
+    + inputAudioTokens * (inputAudioPrice ?? 0)
+    + outputAudioTokens * (outputAudioPrice ?? 0)
+    + outputImageCount * (outputImageUnitPrice ?? 0)
 
   return Number(cost.toFixed(10))
 }
@@ -148,18 +170,27 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
   const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
   const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
   const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
-  if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined && inputImagePrice === undefined && outputImagePrice === undefined) return undefined
+  const inputAudioPrice = normalizePrice(pricing.input_cost_per_audio_token)
+  const outputAudioPrice = normalizePrice(pricing.output_cost_per_audio_token)
+  const outputImageUnitPrice = normalizePrice(pricing.output_cost_per_image)
+  if (!hasAnyPrice(inputPrice, outputPrice, cachedInputPrice, inputImagePrice, outputImagePrice, inputAudioPrice, outputAudioPrice, outputImageUnitPrice)) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
   const inputImageTokens = inputImagePrice === undefined ? 0 : Math.max(input.inputImageTokens ?? 0, 0)
   const outputImageTokens = outputImagePrice === undefined ? 0 : Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
-  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens, 0)
-  const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens, 0)
+  const inputAudioTokens = inputAudioPrice === undefined ? 0 : Math.max(input.inputAudioTokens ?? defaultInputAudioTokens(input, inputPrice, cacheReadTokens, inputImageTokens), 0)
+  const outputAudioTokens = outputAudioPrice === undefined ? 0 : Math.max(input.outputAudioTokens ?? defaultOutputAudioTokens(input, outputPrice, outputImageTokens), 0)
+  const outputImageCount = outputImageUnitPrice === undefined ? 0 : Math.max(input.outputImageCount ?? 0, 0)
+  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens - inputAudioTokens, 0)
+  const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens - outputAudioTokens, 0)
   const inputCostUsd = inputPrice === undefined ? undefined : roundCost(uncachedInputTokens * inputPrice)
   const outputCostUsd = outputPrice === undefined ? undefined : roundCost(outputTokens * outputPrice)
   const cacheReadCostUsd = cachedInputPrice === undefined ? undefined : roundCost(cacheReadTokens * cachedInputPrice)
   const inputImageCostUsd = inputImageTokens > 0 && inputImagePrice !== undefined ? roundCost(inputImageTokens * inputImagePrice) : undefined
   const outputImageCostUsd = outputImageTokens > 0 && outputImagePrice !== undefined ? roundCost(outputImageTokens * outputImagePrice) : undefined
+  const inputAudioCostUsd = inputAudioTokens > 0 && inputAudioPrice !== undefined ? roundCost(inputAudioTokens * inputAudioPrice) : undefined
+  const outputAudioCostUsd = outputAudioTokens > 0 && outputAudioPrice !== undefined ? roundCost(outputAudioTokens * outputAudioPrice) : undefined
+  const outputImageUnitCostUsd = outputImageCount > 0 && outputImageUnitPrice !== undefined ? roundCost(outputImageCount * outputImageUnitPrice) : undefined
 
   return {
     inputCostUsd,
@@ -172,7 +203,13 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
     outputImageCostUsd,
     inputImageUsdPer1M: perMillion(inputImagePrice),
     outputImageUsdPer1M: perMillion(outputImagePrice),
-    accountChargeUsd: normalizePrice(input.costUsd) ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, inputImageCostUsd, outputImageCostUsd),
+    inputAudioCostUsd,
+    outputAudioCostUsd,
+    inputAudioUsdPer1M: perMillion(inputAudioPrice),
+    outputAudioUsdPer1M: perMillion(outputAudioPrice),
+    outputImageUnitCostUsd,
+    outputUsdPerImage: outputImageUnitPrice,
+    accountChargeUsd: normalizePrice(input.costUsd) ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
     multiplier: 1
   }
 }
@@ -198,6 +235,31 @@ function defaultImageOutputTokens(input: CostInput, pricing: RawModelPricing): n
     return 0
   }
   return Math.max(input.outputTokens ?? 0, 0)
+}
+
+function defaultInputAudioTokens(input: CostInput, inputPrice: number | undefined, cacheReadTokens: number, inputImageTokens: number): number {
+  if (input.inputAudioTokens !== undefined || inputPrice !== undefined) return 0
+  return Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens, 0)
+}
+
+function defaultOutputAudioTokens(input: CostInput, outputPrice: number | undefined, outputImageTokens: number): number {
+  if (input.outputAudioTokens !== undefined || outputPrice !== undefined) return 0
+  return Math.max((input.outputTokens ?? 0) - outputImageTokens, 0)
+}
+
+function hasAnyCostDimension(input: CostInput): boolean {
+  return input.inputTokens !== undefined
+    || input.outputTokens !== undefined
+    || input.cacheReadTokens !== undefined
+    || input.inputImageTokens !== undefined
+    || input.outputImageTokens !== undefined
+    || input.inputAudioTokens !== undefined
+    || input.outputAudioTokens !== undefined
+    || input.outputImageCount !== undefined
+}
+
+function hasAnyPrice(...prices: Array<number | undefined>): boolean {
+  return prices.some((price) => price !== undefined)
 }
 
 function isUnavailableOpenAIModel(model: string): boolean {
@@ -266,6 +328,8 @@ function toProviderModelPricing(item: RawModelPricing): ProviderModelPricing {
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr),
     imageInputUsdPer1M: perMillion(item.input_cost_per_image_token),
     imageOutputUsdPer1M: perMillion(item.output_cost_per_image_token),
+    audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token),
+    audioOutputUsdPer1M: perMillion(item.output_cost_per_audio_token),
     outputUsdPerImage: normalizePrice(item.output_cost_per_image),
     maxInputTokens: item.max_input_tokens,
     maxOutputTokens: item.max_output_tokens,

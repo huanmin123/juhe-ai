@@ -174,7 +174,7 @@ export async function buildPreparedUpstreamRequestParts(
         }
       })
       recordFailedUpstreamAttempt(req, usageContext, account, {
-        upstreamUrl: 'openai-oauth-codex:local-validation',
+        upstreamUrl: account.type === 'oauth' ? 'openai-oauth-codex:local-validation' : 'gateway:local-validation',
         startedAt: Date.now(),
         statusCode: error.statusCode,
         bodyText: responseBodyText,

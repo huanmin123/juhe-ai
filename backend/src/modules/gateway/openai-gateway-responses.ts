@@ -37,8 +37,55 @@ export function sendGatewayErrorResponse(res: Response, statusCode: number, payl
 }
 
 export function isOpenAIStreamContentType(contentType: string): boolean {
-  return contentType.includes('text/event-stream') || contentType.includes('application/octet-stream')
+  return responseMimeType(contentType) === 'text/event-stream'
 }
+
+export function isOpenAIJsonResponseContentType(contentType: string): boolean {
+  const mimeType = responseMimeType(contentType)
+  return mimeType === 'application/json' || mimeType.endsWith('+json')
+}
+
+export function isOpenAIBinaryResponseContentType(contentType: string): boolean {
+  const mimeType = responseMimeType(contentType)
+  return mimeType === 'application/octet-stream'
+    || mimeType.startsWith('image/')
+    || mimeType.startsWith('audio/')
+    || mimeType.startsWith('video/')
+    || binaryApplicationMimeTypes.has(mimeType)
+}
+
+export function shouldHandleOpenAIUpstreamResponseAsStream(input: {
+  contentType: string
+  streamRequest: boolean
+}): boolean {
+  if (isOpenAIStreamContentType(input.contentType)) {
+    return true
+  }
+  if (!input.streamRequest) {
+    return false
+  }
+  if (isOpenAIJsonResponseContentType(input.contentType)) {
+    return false
+  }
+  if (isOpenAIBinaryResponseContentType(input.contentType)) {
+    return false
+  }
+  return true
+}
+
+function responseMimeType(contentType: string): string {
+  return contentType.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+}
+
+const binaryApplicationMimeTypes = new Set([
+  'application/pdf',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/gzip',
+  'application/x-gzip',
+  'application/x-tar',
+  'application/x-7z-compressed'
+])
 
 export const gatewayStreamClientRetryErrorCode = 'upstream_retryable_error'
 

@@ -30,6 +30,7 @@ export interface ResourcePermissions {
   canAuthorize: boolean
   canViewCredentials: boolean
   canManageAccounts?: boolean
+  canBindToApiKey?: boolean
 }
 
 export interface AccountOAuthUsageWindow {
@@ -162,6 +163,12 @@ export interface GroupAccountStats {
   usage: AccountUsageSummary
 }
 
+export interface AccountModelMapping {
+  sourceModel: string
+  upstreamModel: string
+  enabled: boolean
+}
+
 export interface AccountSummary {
   id: string
   systemAccountId?: string
@@ -182,6 +189,7 @@ export interface AccountSummary {
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
+  modelMappings?: AccountModelMapping[]
   lastSuccessfulTestModel?: string
   qualityScore?: number
   qualityState?: string

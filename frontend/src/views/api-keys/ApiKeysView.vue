@@ -238,12 +238,6 @@
         </a-form-item>
         <a-form-item label="绑定分组路由" required>
           <div class="api-key-group-bindings-field">
-            <a-alert
-              class="binding-scope-alert"
-              type="info"
-              show-icon
-              message="这里只能选择当前系统账户自己的本地分组；授权给你的分组可在分组列表和我的授权里查看，但不能直接绑定到 API Key。"
-            />
             <div v-for="(binding, index) in form.groupBindings" :key="binding.key" class="api-key-group-binding-row" :class="{ 'api-key-group-binding-row-weighted': form.groupRouteStrategy === 'weighted_round_robin' }">
               <span class="binding-priority">{{ groupBindingPriorityText(index) }}</span>
               <GroupSelect
@@ -428,6 +422,8 @@ interface ApiKeyGroupBindingFormRow {
   key: string
   groupId: string
   group?: GroupSelection
+  providerCode?: string
+  groupEnabled?: boolean
   weight: number
   status: ApiKeyGroupBindingFormStatus
 }
@@ -674,7 +670,7 @@ function apiKeyGroupBindingTagText(apiKey: ApiKeySummary, binding: ApiKeyGroupBi
   const name = displayGroupName(binding.groupName, binding.groupId)
   const suffix = binding.status === 'disabled'
     ? '停用'
-    : binding.groupEnabled ? undefined : '分组停用'
+    : binding.groupEnabled ? undefined : '分组不可用'
   const routeLabel = groupBindingLabelByStrategy(apiKey.groupRouteStrategy, binding, index)
   const text = suffix ? `${routeLabel}：${name}（${suffix}）` : `${routeLabel}：${name}`
   if (apiKey.groupRouteStrategy !== 'weighted_round_robin' || binding.status !== 'active') {
@@ -852,7 +848,7 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false, sc
   groupOptionsLoadingKey = requestKey
   groupOptionsLoadingPromise = (async () => {
     try {
-      let nextGroups = await groupsApi.options({ systemAccountId: scope.systemAccountId || undefined, keyword: requestKeyword, limit: 50, manageableOnly: true, preferDefault: true })
+      let nextGroups = await groupsApi.options({ systemAccountId: scope.systemAccountId || undefined, keyword: requestKeyword, limit: 50, preferDefault: true })
       nextGroups = await ensureSelectedGroupOptions(nextGroups, scope, optionWindowKey)
       rememberGroupLabels(nextGroups)
       syncSelectedGroupSelections(nextGroups)
@@ -941,7 +937,7 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], scop
   if (!missingIds.length) return nextGroups
   const selectedGroups = await Promise.all(missingIds.map(async (id) => {
     try {
-      return await groupsApi.options({ systemAccountId: scope.systemAccountId || undefined, ids: [id], limit: 1, manageableOnly: true, preferDefault: true })
+      return await groupsApi.options({ systemAccountId: scope.systemAccountId || undefined, ids: [id], limit: 1, preferDefault: true })
     } catch {
       return []
     }
@@ -954,19 +950,32 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], scop
 function handleMissingGroupOptions(ids: string[], optionWindowKey: string): void {
   const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
   if (!missingIds.length) return
-  removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
-  removeLocalSelectPreferenceValues('groups', missingIds)
   let clearedFilter = false
+  let clearedFilterId: string | undefined
   if (groupFilter.value && missingIds.includes(groupFilter.value)) {
+    clearedFilterId = groupFilter.value
     groupFilterSelection.value = undefined
     clearedFilter = true
   }
+  const clearedBindingIds: string[] = []
   for (const binding of form.groupBindings) {
     if (!missingIds.includes(binding.groupId)) continue
+    if (binding.group?.id === binding.groupId) continue
+    const bindingId = binding.groupId
     binding.groupId = ''
     binding.group = undefined
+    binding.providerCode = undefined
+    binding.groupEnabled = undefined
+    clearedBindingIds.push(bindingId)
   }
-  message.warning('已移除不存在或无权访问的分组，请重新选择')
+  const removableIds = [...new Set([...clearedBindingIds, ...(clearedFilterId ? [clearedFilterId] : [])])]
+  if (removableIds.length) {
+    removeLocalSelectOptionWindowValues(optionWindowKey, removableIds)
+    removeLocalSelectPreferenceValues('groups', removableIds)
+  }
+  if (clearedFilter || clearedBindingIds.length) {
+    message.warning('已移除不存在或无权访问的分组，请重新选择')
+  }
   if (clearedFilter) {
     resetPagination()
     void loadData({ forceOptions: true })
@@ -989,6 +998,11 @@ function syncSelectedGroupSelections(nextGroups = groups.value): void {
   }
   for (const binding of form.groupBindings) {
     if (binding.groupId) {
+      const groupOption = nextGroups.find((group) => group.id === binding.groupId)
+      if (groupOption) {
+        binding.providerCode = groupOption.providerCode
+        binding.groupEnabled = groupOption.enabled
+      }
       binding.group = selectedGroupFromOptions(binding.groupId, nextGroups, binding.group)
     }
   }
@@ -1122,7 +1136,10 @@ async function openCreate() {
   Object.assign(form, {
     name: '',
     groupRouteStrategy: 'priority_failover',
-    groupBindings: [createGroupBindingFormRow({ id: defaultGroup.id, name: defaultGroup.name })],
+    groupBindings: [createGroupBindingFormRow({ id: defaultGroup.id, name: defaultGroup.name }, 'active', 1, {
+      providerCode: defaultGroup.providerCode,
+      groupEnabled: defaultGroup.enabled
+    })],
     status: 'active',
     expiresAt: undefined,
     description: '',
@@ -1145,10 +1162,7 @@ async function openEdit(apiKey: ApiKeySummary) {
   try {
     bindings = apiKeyGroupBindings(apiKey).map((binding) => {
       rememberGroupLabel(binding.groupId, binding.groupName)
-      return createExistingGroupBindingFormRow({
-        id: binding.groupId,
-        name: displayGroupName(binding.groupName, binding.groupId)
-      }, binding.status, binding.weight)
+      return createExistingGroupBindingFormRow(binding)
     })
     quotaLimits = createQuotaLimitForm(apiKey.quotaLimits)
     expiresAt = parseStrictDatePickerValue(apiKey.expiresAt, 'API Key 过期时间')
@@ -1201,23 +1215,36 @@ function normalizeGroupBindingStatus(value: unknown): ApiKeyGroupBindingFormStat
   throw new Error('API Key 分组绑定状态异常，请清理后再编辑')
 }
 
-function createGroupBindingFormRow(group?: GroupSelection, status: ApiKeyGroupBindingFormStatus = 'active', weight = 1): ApiKeyGroupBindingFormRow {
+function createGroupBindingFormRow(
+  group?: GroupSelection,
+  status: ApiKeyGroupBindingFormStatus = 'active',
+  weight = 1,
+  metadata: { providerCode?: string; groupEnabled?: boolean } = {}
+): ApiKeyGroupBindingFormRow {
   return {
     key: `binding_${Date.now()}_${groupBindingFormKeySeed += 1}`,
     groupId: group?.id ?? '',
     group,
+    providerCode: metadata.providerCode,
+    groupEnabled: metadata.groupEnabled,
     weight: normalizeGroupBindingWeight(weight),
     status: normalizeGroupBindingStatus(status)
   }
 }
 
-function createExistingGroupBindingFormRow(group: GroupSelection, status: unknown, weight: unknown): ApiKeyGroupBindingFormRow {
+function createExistingGroupBindingFormRow(binding: ApiKeyGroupBindingSummary): ApiKeyGroupBindingFormRow {
+  const group = {
+    id: binding.groupId,
+    name: displayGroupName(binding.groupName, binding.groupId)
+  }
   return {
     key: `binding_${Date.now()}_${groupBindingFormKeySeed += 1}`,
     groupId: group.id,
     group,
-    weight: normalizeExistingGroupBindingWeight(weight),
-    status: normalizeGroupBindingStatus(status)
+    providerCode: binding.providerCode,
+    groupEnabled: binding.groupEnabled,
+    weight: normalizeExistingGroupBindingWeight(binding.weight),
+    status: normalizeGroupBindingStatus(binding.status)
   }
 }
 
@@ -1349,7 +1376,10 @@ function addGroupBinding() {
     message.warning('没有可继续绑定的分组')
     return
   }
-  form.groupBindings.push(createGroupBindingFormRow({ id: nextGroup.id, name: nextGroup.name }))
+  form.groupBindings.push(createGroupBindingFormRow({ id: nextGroup.id, name: nextGroup.name }, 'active', 1, {
+    providerCode: nextGroup.providerCode,
+    groupEnabled: nextGroup.enabled
+  }))
 }
 
 function handleGroupBindingChange(index: number) {
@@ -1358,9 +1388,11 @@ function handleGroupBindingChange(index: number) {
   const group = groupOptionForId(binding.groupId)
   if (!group) return
   if (!isApiKeyBindableGroup(group)) {
-    message.warning('授权分组不能直接绑定到 API Key，请选择自己的本地分组')
+    message.warning('该分组当前不可用，请选择其他 API Key 号池')
     binding.groupId = ''
     binding.group = undefined
+    binding.providerCode = undefined
+    binding.groupEnabled = undefined
     return
   }
   const providerCode = selectedGroupBindingProviderCode(index)
@@ -1368,8 +1400,12 @@ function handleGroupBindingChange(index: number) {
     message.warning('同一个 API Key 的绑定号池必须属于同一供应商')
     binding.groupId = ''
     binding.group = undefined
+    binding.providerCode = undefined
+    binding.groupEnabled = undefined
     return
   }
+  binding.providerCode = group.providerCode
+  binding.groupEnabled = group.enabled
   if (!group.enabled && binding.status === 'active') {
     message.warning('已停用分组只能作为停用号池保留，不能参与路由')
     binding.status = 'disabled'
@@ -1435,7 +1471,7 @@ function hiddenGroupBindingIds(index: number): string[] {
 function selectedGroupBindingProviderCode(excludeIndex?: number): string | undefined {
   for (const [index, binding] of form.groupBindings.entries()) {
     if (excludeIndex === index) continue
-    const providerCode = groupOptionForId(binding.groupId)?.providerCode
+    const providerCode = groupOptionForId(binding.groupId)?.providerCode ?? binding.providerCode
     if (providerCode) return providerCode
   }
   return undefined
@@ -1448,7 +1484,13 @@ function groupOptionForId(groupId: string | undefined): GroupOptionSummary | und
 }
 
 function isApiKeyBindableGroup(group: GroupOptionSummary): boolean {
-  return group.accessType !== 'authorized'
+  if (!group.enabled) return false
+  if (group.permissions?.canBindToApiKey === false) return false
+  if (group.accessType !== 'authorized') return true
+  if (group.authorizationStatus !== 'active') return false
+  if (!group.authorizationExpiresAt) return true
+  const expiresAt = Date.parse(group.authorizationExpiresAt)
+  return !Number.isFinite(expiresAt) || expiresAt > Date.now()
 }
 
 function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
@@ -1513,14 +1555,7 @@ const saveApiKey = submitAction('api_keys.save', async () => {
       message.warning('绑定分组不能重复')
       return
     }
-    const authorizedGroups = groupBindings
-      .map((binding) => groupOptionForId(binding.groupId))
-      .filter((group): group is GroupOptionSummary => Boolean(group && !isApiKeyBindableGroup(group)))
-    if (authorizedGroups.length) {
-      message.warning(`API Key 不能直接绑定授权分组：${authorizedGroups.map((group) => group.name).join('、')}`)
-      return
-    }
-    const providerCodes = new Set(groupBindings.map((binding) => groupOptionForId(binding.groupId)?.providerCode).filter(Boolean))
+    const providerCodes = new Set(groupBindings.map((binding, index) => groupOptionForId(binding.groupId)?.providerCode ?? form.groupBindings[index]?.providerCode).filter(Boolean))
     if (providerCodes.size > 1) {
       message.warning('同一个 API Key 的绑定号池必须属于同一供应商')
       return
@@ -1828,10 +1863,6 @@ onMounted(loadData)
 .api-key-group-bindings-field {
   display: grid;
   gap: 10px;
-}
-
-.binding-scope-alert {
-  font-size: 12px;
 }
 
 .api-key-group-binding-row {

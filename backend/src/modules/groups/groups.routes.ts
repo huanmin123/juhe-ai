@@ -3,12 +3,12 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroupsPage, listProviders, updateGroup, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroupsPage, listProviders, returnGroupAuthorizationForGrantee, updateGroup, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountConcurrencyToGroupList } from '../gateway/gateway-runtime-snapshot.service.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const groupsRouter = Router()
 
@@ -182,11 +182,13 @@ groupsRouter.patch('/:id', (req, res) => {
       if (!group) {
         throw new Error('分组不存在')
       }
-      const ownerSystemAccountId = resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
+      const operationScopeSystemAccountId = group.accessType === 'authorized'
+        ? effectiveRequestSystemAccountId(requestAccess)
+        : resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
       return {
         result: group,
         log: {
-          operationScopeSystemAccountId: ownerSystemAccountId,
+          operationScopeSystemAccountId,
           mode: operationMode(requestAccess),
           module: 'groups',
           action: 'update',
@@ -194,7 +196,7 @@ groupsRouter.patch('/:id', (req, res) => {
           resourceType: 'group',
           resourceId: group.id,
           resourceName: group.name,
-          summary: `更新分组：${group.name}`,
+          summary: group.accessType === 'authorized' ? `更新授权分组使用配置：${group.name}` : `更新分组：${group.name}`,
           changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, group as unknown as Record<string, unknown>, {
             name: '名称',
             providerCode: '供应商',
@@ -203,7 +205,7 @@ groupsRouter.patch('/:id', (req, res) => {
             schedulingPolicy: '调度策略',
             enabled: '启用状态'
           }),
-          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+          viewers: viewer(operationScopeSystemAccountId, group.accessType === 'authorized' ? 'authorization_grantee' : 'resource_owner')
         }
       }
     }, req)
@@ -220,6 +222,73 @@ groupsRouter.patch('/:id', (req, res) => {
     const message = error instanceof Error ? error.message : '更新分组失败'
     res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
     return
+  }
+})
+
+groupsRouter.post('/:id/return-authorization', mutationGuard({
+  operationKey: 'groups.return_authorization',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    groupId: normalizedText(req.params.id),
+    grantee: normalizedText(queryField(req, 'systemAccountId'))
+  })
+}), (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const before = findGroupSummary(req.params.id, requestAccess)
+  try {
+    runLoggedOperation(() => {
+      const authorization = returnGroupAuthorizationForGrantee(req.params.id, requestAccess)
+      if (!authorization) {
+        throw new Error('授权分组不存在或不可归还')
+      }
+      const resourceName = before?.name ?? authorization.resource_id
+      return {
+        result: true,
+        log: {
+          operationScopeSystemAccountId: authorization.grantee_system_account_id,
+          mode: operationMode(requestAccess),
+          module: 'authorizations',
+          action: 'return',
+          operationKey: 'groups.return_authorization',
+          resourceType: 'authorization',
+          resourceId: authorization.id,
+          resourceName,
+          summary: `归还授权分组：${resourceName}`,
+          changes: [safeChange('returned', '归还授权分组', false, true)],
+          targets: [
+            {
+              targetType: authorization.resource_type,
+              targetId: authorization.resource_id,
+              targetName: resourceName,
+              targetOwnerSystemAccountId: authorization.resource_owner_system_account_id,
+              relation: 'owner' as const
+            },
+            {
+              targetType: 'system_account',
+              targetId: authorization.grantee_system_account_id,
+              targetOwnerSystemAccountId: authorization.grantee_system_account_id,
+              relation: 'grantee' as const
+            }
+          ],
+          viewers: viewers(
+            viewer(authorization.resource_owner_system_account_id, 'authorization_owner'),
+            viewer(authorization.grantee_system_account_id, 'authorization_grantee')
+          )
+        }
+      }
+    }, req)
+    res.status(204).send()
+  } catch (error) {
+    if (error instanceof Error && error.message === '授权分组不存在或不可归还') {
+      res.status(404).json({ message: '授权分组不存在或不可归还' })
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '归还授权分组失败'))
   }
 })
 
@@ -291,4 +360,8 @@ function summarizeDeletedGroupApiKeyRouteChanges(changes: DeletedGroupApiKeyRout
     return `${change.apiKeyName}：${removedText}`
   }).join('；')
   return changes.length > 3 ? `${sample}；另有 ${changes.length - 3} 个 API Key 受影响` : sample
+}
+
+function effectiveRequestSystemAccountId(access: ReturnType<typeof getRequestAccessScope>): string | undefined {
+  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }

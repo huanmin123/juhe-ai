@@ -38,6 +38,7 @@ import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-k
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
+import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
 import type {
   DbServiceGatewayRuntime,
   DbServiceOperation,
@@ -107,6 +108,14 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return listOpenAIAccountsForGroupResult(operation.groupId, operation.systemAccountId)
     case 'read_gateway_runtime':
       return readGatewayRuntime(operation)
+    case 'list_provider_model_catalog':
+      return listProviderModelCatalog({
+        providerCode: operation.providerCode,
+        systemAccountId: operation.systemAccountId,
+        includeMappingTargets: operation.includeMappingTargets,
+        includeInactive: operation.includeInactive,
+        includeUnpriced: operation.includeUnpriced
+      })
     case 'check_api_key_quota':
       return checkGatewayApiKeyQuota(operation.apiKey)
     case 'check_authorization_quota':

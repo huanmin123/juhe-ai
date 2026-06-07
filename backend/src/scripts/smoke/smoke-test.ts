@@ -250,6 +250,14 @@ async function main(): Promise<void> {
     }, gatewayKeyTestTimeoutMs)
     assert(models.object === 'list', '/v1/models 未返回 list')
     assert(Array.isArray(models.data), '/v1/models 未返回 data 数组')
+    for (const item of models.data as unknown[]) {
+      const model = item as Record<string, unknown>
+      assert(JSON.stringify(Object.keys(model).sort()) === JSON.stringify(['created', 'id', 'object', 'owned_by']), '/v1/models 模型项包含非标准字段')
+      assert(typeof model.id === 'string' && model.id.length > 0, '/v1/models 模型项缺少 id')
+      assert(model.object === 'model', '/v1/models 模型项 object 不是 model')
+      assert(Number.isInteger(model.created), '/v1/models 模型项 created 不是 Unix 秒整数')
+      assert(typeof model.owned_by === 'string' && model.owned_by.length > 0, '/v1/models 模型项缺少 owned_by')
+    }
     summary.push(`临时网关 API Key 检查通过：${gatewayKey.name}`)
     summary.push(`/v1/models 检查通过：${(models.data as unknown[]).length} 个模型`)
 

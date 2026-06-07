@@ -94,8 +94,7 @@
         </template>
         <template v-else-if="column.key === 'source'">
           <div class="source-cell">
-            <strong>{{ record.sourceName || '未认证来源' }}</strong>
-            <span>{{ record.tokenName || record.tokenPrefix || '-' }}</span>
+            <span class="source-name-text">{{ record.sourceName || '未认证来源' }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'path'">
@@ -196,6 +195,7 @@
 <script setup lang="ts">
 import { computed, onDeactivated, ref, watch } from 'vue'
 import dayjs, { type Dayjs } from 'dayjs'
+import axios from 'axios'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
@@ -207,6 +207,7 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
 
 type TimeRangeValue = [Dayjs | null | undefined, Dayjs | null | undefined] | null | undefined
@@ -359,7 +360,13 @@ async function openDetail(record: PublicApiLogSummary): Promise<void> {
     }
   } catch (error) {
     console.error(error)
-    message.error('加载公开接口日志详情失败')
+    if (isNotFoundError(error)) {
+      closeDetail()
+      message.warning('公开接口日志不存在或已被清理，已刷新列表')
+      void loadData()
+      return
+    }
+    message.error(extractApiErrorMessage(error, '加载公开接口日志详情失败'))
   } finally {
     if (requestId === detailRequestId) {
       detailLoading.value = false
@@ -411,6 +418,10 @@ function validateStatusCodeFilter(): boolean {
   if (!hasInvalidStatusCodeFilter.value) return true
   message.warning('状态码须为 100-599 的整数')
   return false
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return axios.isAxiosError(error) && error.response?.status === 404
 }
 
 function formatDuration(value?: number): string {
@@ -484,14 +495,11 @@ onDeactivated(closeDetail)
   gap: 2px;
 }
 
-.source-cell strong {
+.source-name-text {
   overflow: hidden;
+  color: #0f172a;
+  font-weight: 400;
   text-overflow: ellipsis;
-}
-
-.source-cell span {
-  color: #64748b;
-  font-size: 12px;
 }
 
 .mono-cell,

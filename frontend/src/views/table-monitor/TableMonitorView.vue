@@ -40,7 +40,7 @@
             <template #icon>
               <DeleteOutlined />
             </template>
-            清理使用记录
+            清理非业务数据
           </a-button>
         </template>
       </ResponsiveListToolbar>
@@ -48,22 +48,22 @@
 
     <a-modal
       v-model:open="cleanupModalOpen"
-      title="清理使用记录"
+      title="清理非业务数据"
       width="560px"
       ok-text="提交清理"
       cancel-text="取消"
       :confirm-loading="cleanupSubmitting"
       :ok-button-props="{ danger: true, disabled: cleanupSubmitting || !cleanupCutoffAt }"
-      @ok="submitUsageRecordsCleanup"
+      @ok="submitNonBusinessDataCleanup"
     >
       <a-alert
         show-icon
         type="warning"
-        message="清理最近 1 天之前的使用记录"
-        description="系统会提交后台任务分批清理所选截止时间之前的 usage_records，最近 1 天强制保留。删除后 SQLite 文件大小不会立即变小，释放出的空闲页会留在库内供后续新增数据复用；只有需要归还磁盘时，才需要停服执行 VACUUM。"
+        message="硬清理业务库之外的历史数据"
+        description="系统会提交后台任务，按所选截止时间清理数据集目录库、统计结果库中具备时间列的全部非业务表，以及 usage shard 和审计 payload 外部文件；业务库不会清理。删除后 SQLite 文件大小不会立即变小，释放出的空闲页会留在库内供后续新增数据复用；只有需要归还磁盘时，才需要停服执行 VACUUM。"
       />
       <a-form class="cleanup-form" layout="vertical">
-        <a-form-item label="清理这个时间之前的 usage_records" required>
+        <a-form-item label="清理这个时间之前的非业务数据" required>
           <a-date-picker
             v-model:value="cleanupCutoffAt"
             class="cleanup-date-picker"
@@ -227,7 +227,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { disposeChart, ensureChartFromElement, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatServerDateTimeInput, serverDateTimeTimestamp } from '@/shared/formatters'
-import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverview, TableStorageSnapshotSummary, UsageRecordsCleanupResult } from '@/types/domain'
+import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, NonBusinessDataCleanupResult, TableStorageOverview, TableStorageSnapshotSummary } from '@/types/domain'
 
 const columns = [
   { title: '库', key: 'databaseRole', width: 92, fixed: 'left' },
@@ -248,7 +248,7 @@ const overview = ref<TableStorageOverview>()
 const cleanupModalOpen = ref(false)
 const cleanupSubmitting = ref(false)
 const cleanupCutoffAt = ref<Dayjs | undefined>(defaultCleanupCutoffAt())
-const cleanupResult = ref<UsageRecordsCleanupResult>()
+const cleanupResult = ref<NonBusinessDataCleanupResult>()
 const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'stats']
 const historyChartPointLimit = 720
 const databaseHistoryRows = ref<DatabaseStorageSnapshotSummary[]>([])
@@ -305,14 +305,12 @@ const cleanupResultMessage = computed(() => {
   const result = cleanupResult.value
   if (!result) return ''
   if (result.queued) {
-    return result.eligibleRows && result.eligibleRows > 0
-      ? `后台清理任务已提交，首批预计清理 ${formatInteger(result.eligibleRows)} 条`
-      : '后台清理任务已提交'
+    return '后台清理任务已提交'
   }
   if (result.blockedReason) return '本次未清理'
   return result.deletedRows > 0
-    ? `已清理 ${formatInteger(result.deletedRows)} 条使用记录`
-    : '没有可清理的使用记录'
+    ? `已清理 ${formatInteger(result.deletedRows)} 行非业务数据`
+    : '没有可清理的非业务数据'
 })
 
 const cleanupResultDescription = computed(() => {
@@ -322,10 +320,9 @@ const cleanupResultDescription = computed(() => {
   if (result.queued) {
     const details = [
       `截止时间：${formatDateTime(result.cutoffAt)}`,
-      result.eligibleRows !== undefined ? `首批可清理：${formatInteger(result.eligibleRows)} 条` : undefined,
       result.submittedAt ? `提交时间：${formatDateTime(result.submittedAt)}` : undefined,
       result.jobId ? `任务：${result.jobId}` : undefined,
-      'worker 会在后台分批清理，稍后刷新表监控可查看数据集目录库变化。'
+      'worker 会在后台分批清理，稍后刷新表监控可查看数据集目录库、统计结果库和 usage shard 变化。'
     ].filter((item): item is string => Boolean(item))
     return details.join('；')
   }
@@ -363,37 +360,37 @@ function openCleanupModal() {
   cleanupModalOpen.value = true
 }
 
-async function submitUsageRecordsCleanup() {
+async function submitNonBusinessDataCleanup() {
   const cutoffAt = formatServerDateTimeInput(cleanupCutoffAt.value)
   if (!cutoffAt) {
     message.warning('请选择清理截止时间')
     return
   }
   if (cleanupCutoffAt.value?.isAfter(latestAllowedCleanupCutoff())) {
-    message.warning('不能清理最近 1 天内的使用记录')
+    message.warning('清理截止时间不能晚于当前时间')
     return
   }
   cleanupSubmitting.value = true
   try {
-    const result = await api.tableMonitor.cleanupUsageRecords({
+    const result = await api.tableMonitor.cleanupNonBusinessData({
       cutoffAt,
       batchSize: 10000,
       maxBatches: 100
     })
     cleanupResult.value = result
     if (result.queued) {
-      message.success(result.eligibleRows && result.eligibleRows > 0 ? `使用记录清理任务已提交后台，首批预计 ${formatInteger(result.eligibleRows)} 条` : '使用记录清理任务已提交后台')
+      message.success('非业务数据清理任务已提交后台')
     } else if (result.deletedRows > 0) {
-      message.success(`已清理 ${formatInteger(result.deletedRows)} 条使用记录`)
+      message.success(`已清理 ${formatInteger(result.deletedRows)} 行非业务数据`)
       await loadData()
     } else if (result.blockedReason) {
       message.warning(result.blockedReason)
     } else {
-      message.info('没有可清理的使用记录')
+      message.info('没有可清理的非业务数据')
     }
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '清理使用记录失败'))
+    message.error(extractApiErrorMessage(error, '清理非业务数据失败'))
   } finally {
     cleanupSubmitting.value = false
   }
@@ -456,7 +453,7 @@ function disabledCleanupTime(current?: Dayjs | null) {
 }
 
 function latestAllowedCleanupCutoff() {
-  return dayjs().subtract(1, 'day')
+  return dayjs()
 }
 
 function range(start: number, end: number) {

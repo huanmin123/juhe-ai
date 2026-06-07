@@ -26,7 +26,7 @@ import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimit
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { optionalServerDateTimeIso, optionalString } from './value-utils.js'
 
-const API_KEY_GROUP_BOUNDARY_ERROR = 'API Key 只能绑定自己的分组'
+const API_KEY_GROUP_BOUNDARY_ERROR = 'API Key 只能绑定自己的分组或有效授权给自己的分组'
 const API_KEY_GROUP_PROVIDER_ERROR = 'API Key 不能绑定不同供应商的分组'
 const apiKeyMutationInputKeys = new Set([
   'name',
@@ -276,7 +276,9 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
 
   const hasBindingInput = hasApiKeyGroupBindingInput(input)
   const nextBindings = hasBindingInput
-    ? normalizeApiKeyGroupBindings(apiKeyGroupBindingInputsFromRequest(input) ?? [], systemAccountId)
+    ? normalizeApiKeyGroupBindings(apiKeyGroupBindingInputsFromRequest(input) ?? [], systemAccountId, {
+      retainableGroupIds: current.groupBindings.map((binding) => binding.groupId)
+    })
     : undefined
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
   const nextExpiresAt = hasExpiresAtInput
@@ -439,7 +441,11 @@ function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiK
   return { groupId, priority, weight: normalizeApiKeyGroupBindingWeight(item.weight), status }
 }
 
-function normalizeApiKeyGroupBindings(inputs: ApiKeyGroupBindingInput[], systemAccountId: string): ApiKeyGroupBindingWrite[] {
+function normalizeApiKeyGroupBindings(
+  inputs: ApiKeyGroupBindingInput[],
+  systemAccountId: string,
+  options: { retainableGroupIds?: string[] } = {}
+): ApiKeyGroupBindingWrite[] {
   if (!inputs.length) {
     throw new Error('API Key 至少需要绑定一个分组')
   }
@@ -474,12 +480,14 @@ function normalizeApiKeyGroupBindings(inputs: ApiKeyGroupBindingInput[], systemA
     throw new Error('API Key 至少需要一个启用分组')
   }
 
-  const groups = loadApiKeyBindableGroups([...seenGroupIds])
+  const groups = loadApiKeyBindableGroups([...seenGroupIds], systemAccountId)
+  const retainableGroupIds = new Set((options.retainableGroupIds ?? []).filter(Boolean))
   let providerCode: string | undefined
   return normalized
     .map((binding) => {
       const group = groups.get(binding.groupId)
-      if (!group || !canBindApiKeyGroup(binding.groupId, systemAccountId)) {
+      const canBindNow = group ? canBindApiKeyGroup(binding.groupId, systemAccountId) : false
+      if (!group || (!canBindNow && !retainableGroupIds.has(binding.groupId))) {
         throw new Error(API_KEY_GROUP_BOUNDARY_ERROR)
       }
       if (providerCode && group.provider_code !== providerCode) {
@@ -500,15 +508,39 @@ function normalizeApiKeyGroupBindings(inputs: ApiKeyGroupBindingInput[], systemA
     .sort((left, right) => left.priority - right.priority || left.groupId.localeCompare(right.groupId))
 }
 
-function loadApiKeyBindableGroups(groupIds: string[]): Map<string, ApiKeyBindableGroupRow> {
+function loadApiKeyBindableGroups(groupIds: string[], systemAccountId: string): Map<string, ApiKeyBindableGroupRow> {
   const ids = [...new Set(groupIds.filter(Boolean))]
   const result = new Map<string, ApiKeyBindableGroupRow>()
   if (!ids.length) return result
   const database = getBusinessDatabase()
+  const now = nowIso()
   for (const chunk of chunkValues(ids, 500)) {
     const rows = database
-      .prepare(`SELECT id, system_account_id, provider_code, name, enabled FROM groups WHERE id IN (${sqlPlaceholders(chunk.length)})`)
-      .all(...chunk) as unknown as ApiKeyBindableGroupRow[]
+      .prepare(`
+        SELECT
+          groups.id,
+          groups.system_account_id,
+          groups.provider_code,
+          groups.name,
+          CASE
+            WHEN groups.system_account_id = ? THEN groups.enabled
+            WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
+            ELSE 0
+          END AS enabled
+        FROM groups
+        LEFT JOIN resource_authorizations group_authorization
+          ON group_authorization.resource_type = 'group'
+          AND group_authorization.resource_id = groups.id
+          AND group_authorization.grantee_system_account_id = ?
+          AND group_authorization.status = 'active'
+          AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+        LEFT JOIN group_authorization_settings
+          ON group_authorization_settings.authorization_id = group_authorization.id
+          AND group_authorization_settings.system_account_id = ?
+          AND group_authorization_settings.group_id = groups.id
+        WHERE groups.id IN (${sqlPlaceholders(chunk.length)})
+      `)
+      .all(systemAccountId, systemAccountId, now, systemAccountId, ...chunk) as unknown as ApiKeyBindableGroupRow[]
     for (const row of rows) {
       result.set(row.id, row)
     }

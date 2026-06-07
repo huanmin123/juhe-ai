@@ -262,6 +262,7 @@ import { formatCompactInteger, formatCost, formatDuration, formatInteger, format
 type TableSortOrder = 'ascend' | 'descend' | null
 type PolicyAction = 'blacklist' | 'unblock'
 type PolicyDurationMode = 'permanent' | 'minutes' | 'days'
+type UsageWindow = 'recent7d'
 
 const columns = [
   { title: 'IP', key: 'ip', width: 180, fixed: 'left', align: 'left' },
@@ -298,6 +299,7 @@ const policyDurationOptions = [
 const loading = ref(false)
 const keyword = ref('')
 const statusFilter = ref<ClientIpStatus>('all')
+const usageWindow = ref<UsageWindow>('recent7d')
 const lastUsedDateRange = ref<[Dayjs, Dayjs]>(defaultLastUsedDateRange())
 const rows = ref<ClientIpStatsRow[]>([])
 const paginationUpperBound = ref(0)
@@ -355,7 +357,7 @@ async function loadData(): Promise<void> {
 }
 
 function buildListParams(): ClientIpStatsListParams {
-  const usageRange = defaultUsageDateRange()
+  const usageRange = usageWindowDateRange(usageWindow.value)
   return {
     page: pagination.current,
     pageSize: pagination.pageSize,
@@ -535,7 +537,8 @@ function defaultLastUsedDateRange(): [Dayjs, Dayjs] {
   return [dayjs().subtract(6, 'day'), dayjs()]
 }
 
-function defaultUsageDateRange(): [Dayjs, Dayjs] {
+function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
+  if (value === 'recent7d') return defaultLastUsedDateRange()
   return defaultLastUsedDateRange()
 }
 

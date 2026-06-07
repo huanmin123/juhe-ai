@@ -63,6 +63,14 @@
           <a-descriptions-item v-for="item in publicCredentialItems" :key="item.key" :label="item.label">
             {{ item.value }}
           </a-descriptions-item>
+          <a-descriptions-item label="模型映射" :span="2">
+            <div v-if="readonlyModelMappings.length" class="readonly-model-mappings">
+              <a-tag v-for="item in readonlyModelMappings" :key="`${item.sourceModel}:${item.upstreamModel}`">
+                {{ item.sourceModel }} -> {{ item.upstreamModel }}{{ item.enabled === false ? '（停用）' : '' }}
+              </a-tag>
+            </div>
+            <span v-else>-</span>
+          </a-descriptions-item>
         </a-descriptions>
       </section>
 
@@ -71,6 +79,7 @@
         :form="form"
         :is-management-view="isManagementView"
         :is-o-auth-form="isOAuthForm"
+        :mapping-target-model-options="mappingTargetModelOptions"
         :model-options="modelOptions"
         :models-loading="modelsLoading"
         :proxy-options="proxyOptions"
@@ -98,6 +107,16 @@
         :readonly="authorizedEditing"
       />
     </a-form>
+
+    <template #footer>
+      <div class="account-modal-footer">
+        <a-button :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
+        <a-space>
+          <a-button @click="$emit('cancel')">取消</a-button>
+          <a-button v-bind="okButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>
+        </a-space>
+      </div>
+    </template>
   </a-modal>
 </template>
 
@@ -135,7 +154,7 @@ const open = defineModel<boolean>('open', { required: true })
 const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
 const streamInterceptRules = defineModel<AccountStreamInterceptRuleForm[]>('streamInterceptRules', { required: true })
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
   accountDetail?: AccountSummary
   authorizedEditing: boolean
@@ -154,15 +173,21 @@ const props = defineProps<{
   isManagementView: boolean
   isOAuthForm: boolean
   isOpenAIOAuthForm: boolean
+  mappingTargetModelOptions: SelectOption[]
   modelOptions: SelectOption[]
   modelsLoading: boolean
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
   selectedProvider?: ProviderDefinition
+  testButtonDisabled?: boolean
+  testLoading?: boolean
   title: string
   targetSystemAccountLabel?: string
-}>()
+}>(), {
+  testButtonDisabled: false,
+  testLoading: false
+})
 
 const cloneAlertMessage = computed(() => {
   const targetText = props.targetSystemAccountLabel ? `，创建目标：${props.targetSystemAccountLabel}` : ''
@@ -193,6 +218,7 @@ const sourceAccountStatusText = computed(() => {
 })
 
 const sourceAccountExpiresAtText = computed(() => formatDateTime(props.accountDetail?.authorizationInstanceSourceAccountExpiresAt))
+const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
 
 function credentialItem(key: string, label: string, value: unknown): { key: string; label: string; value: string } | undefined {
   if (typeof value !== 'string') return undefined
@@ -214,6 +240,7 @@ defineEmits<{
   (event: 'ok'): void
   (event: 'open-auth-url'): void
   (event: 'select-provider', providerCode: string): void
+  (event: 'test'): void
   (event: 'select-type', type: AccountType): void
 }>()
 </script>
@@ -245,5 +272,29 @@ defineEmits<{
 .readonly-config-section {
   border-color: #dbeafe;
   background: #f8fbff;
+}
+
+.readonly-model-mappings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.account-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .account-modal-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-modal-footer :deep(.ant-space) {
+    justify-content: flex-end;
+  }
 }
 </style>

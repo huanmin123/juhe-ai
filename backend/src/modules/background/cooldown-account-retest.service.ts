@@ -82,7 +82,7 @@ async function runCooldownAccountRetestQueueItem(
     }
   })
   if (result.success) {
-    const restored = clearAccountFailureStateResult(account.id, undefined, { allowErrorRestore: false })
+    const restored = clearAccountFailureStateResult(account.id)
     logger.info({
       event: 'background_cooldown_account_retest_restored',
       accountId: account.id,

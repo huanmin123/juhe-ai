@@ -8,9 +8,11 @@ import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/req
 import { parseErrorPayload } from './account-error-policy.service.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
 import {
-  estimateProviderCacheReadCostUsd,
-  estimateProviderCostUsd
-} from '../model-pricing/model-pricing.service.js'
+  estimateCatalogCacheReadCostUsd,
+  estimateCatalogCostUsd,
+  resolveCatalogPricingModel
+} from '../model-pricing/model-catalog.service.js'
+import { resolveOpenAIAccountModelMapping } from './openai-gateway-model-mapping.js'
 import {
   buildGatewayErrorResponseSnapshot,
   buildUsageRequestSnapshot,
@@ -98,6 +100,15 @@ export function recordFailedUpstreamAttempt(
     errorMessage?: string
   }
 ): void {
+  const model = requestModel(req)
+  const modelMapping = resolveOpenAIAccountModelMapping(account, model)
+  const upstreamModel = modelMapping?.upstreamModel ?? model
+  const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
+  const pricingModel = resolveCatalogPricingModel({
+    providerCode: 'openai',
+    systemAccountId: catalogSystemAccountId,
+    model: upstreamModel
+  })
   const errorPayload = input.bodyText && input.headers instanceof Headers
     ? parseErrorPayload(input.bodyText, input.headers)
     : {}
@@ -131,7 +142,11 @@ export function recordFailedUpstreamAttempt(
     ...accountUsageMetadata(account),
     endpoint: usageContext.endpoint,
     providerCode: 'openai',
-    model: requestModel(req),
+    model,
+    upstreamModel,
+    pricingModel,
+    modelMappingApplied: Boolean(modelMapping),
+    modelMappingSource: modelMapping ? 'account' : undefined,
     stream: requestStream(req),
     statusCode: input.statusCode,
     success: false,
@@ -173,6 +188,14 @@ export function recordCompletedUpstreamAttempt(
   }
 ): void {
   const model = requestModel(req)
+  const modelMapping = resolveOpenAIAccountModelMapping(input.account, model)
+  const upstreamModel = modelMapping?.upstreamModel ?? model
+  const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
+  const pricingModel = resolveCatalogPricingModel({
+    providerCode: 'openai',
+    systemAccountId: catalogSystemAccountId,
+    model: upstreamModel
+  })
   enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource,
@@ -185,6 +208,10 @@ export function recordCompletedUpstreamAttempt(
     endpoint: input.endpoint,
     providerCode: 'openai',
     model,
+    upstreamModel,
+    pricingModel,
+    modelMappingApplied: Boolean(modelMapping),
+    modelMappingSource: modelMapping ? 'account' : undefined,
     stream: input.stream,
     statusCode: input.statusCode,
     success: input.success,
@@ -195,19 +222,24 @@ export function recordCompletedUpstreamAttempt(
     cacheReadTokens: input.usage.cacheReadTokens,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
-    cacheReadCostUsd: estimateProviderCacheReadCostUsd({
+    cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
       providerCode: 'openai',
-      model,
+      systemAccountId: catalogSystemAccountId,
+      model: upstreamModel,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
-    costUsd: estimateProviderCostUsd({
+    costUsd: estimateCatalogCostUsd({
       providerCode: 'openai',
-      model,
+      systemAccountId: catalogSystemAccountId,
+      model: upstreamModel,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
       inputImageTokens: input.usage.inputImageTokens,
-      outputImageTokens: input.usage.outputImageTokens
+      outputImageTokens: input.usage.outputImageTokens,
+      inputAudioTokens: input.usage.inputAudioTokens,
+      outputAudioTokens: input.usage.outputAudioTokens,
+      outputImageCount: input.usage.outputImageCount
     }),
     errorCode: input.errorCode,
     errorMessage: input.errorMessage,

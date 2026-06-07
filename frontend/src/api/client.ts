@@ -69,8 +69,10 @@ import type {
   PublicApiLogListResult,
   PublicApiLogResultFilter,
   ProviderDefinition,
+  ProviderModelsParams,
   ProviderModelOption,
   ProviderModelPricing,
+  ProviderModelUpsertPayload,
   ProxyProfileOptionSummary,
   ProxyProfileListResult,
   ProxyProfileSummary,
@@ -99,9 +101,9 @@ import type {
   ModelCheckRunListResult,
   ModelCheckRunPayload,
   MonitoredDatabaseRole,
+  NonBusinessDataCleanupResult,
   TableStorageOverview,
   TableStorageSnapshotSummary,
-  UsageRecordsCleanupResult,
   UsageStatsOverview,
   UsageRecordListResult,
   UsageRecordSummary,
@@ -235,6 +237,27 @@ export interface AccountTestPayload {
   clientCompatibility?: AccountClientCompatibility
 }
 
+export interface AccountDraftTestAccountPayload {
+  providerCode: string
+  name: string
+  type: string
+  credentials: Record<string, unknown>
+  concurrencyLimit: number
+  priority: number
+  clientCompatibility: AccountClientCompatibility
+  supportedModels: string[]
+  modelMappings: Array<{ sourceModel: string; upstreamModel: string; enabled: boolean }>
+  proxyProfileId?: string | null
+  groupId: string
+  accountExpiresAt?: string | null
+  availabilitySchedule?: Record<string, unknown> | null
+  notes?: string
+}
+
+export interface AccountDraftTestPayload extends AccountTestPayload {
+  account: AccountDraftTestAccountPayload
+}
+
 export interface ApiKeyListParams extends ListParams {
   page?: number
   pageSize?: number
@@ -353,7 +376,7 @@ interface TableMonitorDatabaseHistoryParams {
   limit?: number
 }
 
-interface UsageRecordsCleanupPayload {
+interface NonBusinessDataCleanupPayload {
   cutoffAt: string
   batchSize?: number
   maxBatches?: number
@@ -682,7 +705,10 @@ export const api = {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
     options: () => unwrap<ProviderDefinition[]>(http.get('/providers/options')),
     modelOptions: () => unwrap<ProviderModelOption[]>(http.get('/providers/models/options')),
-    models: (code: string) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`))
+    models: (code: string, params?: ProviderModelsParams) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`, { params })),
+    createModel: (code: string, payload: ProviderModelUpsertPayload) => unwrap<ProviderModelPricing>(http.post(`/providers/${code}/models`, payload)),
+    updateModel: (code: string, id: string, payload: Partial<ProviderModelUpsertPayload>) => unwrap<ProviderModelPricing>(http.patch(`/providers/${code}/models/${id}`, payload)),
+    deleteModel: (code: string, id: string) => unwrap<{ deleted: boolean }>(http.delete(`/providers/${code}/models/${id}`))
   },
   errorPolicies: {
     list: () => unwrap<ErrorPolicySummary[]>(http.get('/error-policies'))
@@ -706,6 +732,7 @@ export const api = {
     bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
     test: (id: string, payload?: AccountTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, signal: options?.signal })),
+    testDraft: (payload: AccountDraftTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post('/accounts/test-draft', payload, { params, signal: options?.signal })),
     testTasks: (taskIds: string[], params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask[]>(http.get('/accounts/test-tasks', { params: { ...params, ids: taskIds.join(',') }, signal: options?.signal })),
     testTask: (taskId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.get(`/accounts/test-tasks/${taskId}`, { params, signal: options?.signal })),
     cancelTestTask: (taskId: string, params?: ListParams) => unwrap<AccountTestTask>(http.post(`/accounts/test-tasks/${taskId}/cancel`, {}, { params })),
@@ -725,6 +752,7 @@ export const api = {
     bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
     test: (id: string, payload?: AccountTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { signal: options?.signal })),
+    testDraft: (payload: AccountDraftTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post('/my-accounts/test-draft', payload, { signal: options?.signal })),
     testTasks: (taskIds: string[], options?: RequestControlOptions) => unwrap<AccountTestTask[]>(http.get('/my-accounts/test-tasks', { params: { ids: taskIds.join(',') }, signal: options?.signal })),
     testTask: (taskId: string, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.get(`/my-accounts/test-tasks/${taskId}`, { signal: options?.signal })),
     cancelTestTask: (taskId: string) => unwrap<AccountTestTask>(http.post(`/my-accounts/test-tasks/${taskId}/cancel`, {})),
@@ -738,6 +766,7 @@ export const api = {
     accountOptions: (params?: GroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params: groupOptionParams(params) })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.post('/groups', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.patch(`/groups/${id}`, payload, { params })),
+    returnAuthorization: (id: string, params?: ListParams) => http.post(`/groups/${id}/return-authorization`, {}, { params }),
     delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
   },
   myGroups: {
@@ -747,6 +776,7 @@ export const api = {
     accountOptions: (params?: Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
     create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/my-groups/${id}`, payload)),
+    returnAuthorization: (id: string) => http.post(`/my-groups/${id}/return-authorization`, {}),
     delete: (id: string) => http.delete(`/my-groups/${id}`)
   },
   systemTeams: {
@@ -868,7 +898,7 @@ export const api = {
   },
   publicApiLogs: {
     list: (params?: PublicApiLogListParams) => unwrap<PublicApiLogListResult>(http.get('/public-api-logs', { params })),
-    detail: (id: string) => unwrap<PublicApiLogDetail>(http.get(`/public-api-logs/${id}`))
+    detail: (id: string) => unwrap<PublicApiLogDetail>(http.get(`/public-api-logs/${encodeURIComponent(id)}`))
   },
   myOperationLogs: {
     list: (params?: OperationLogListParams) => unwrap<OperationLogListResult>(http.get('/my-operation-logs', { params: stripAdminOperationLogParams(params) })),
@@ -885,7 +915,7 @@ export const api = {
     overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
     databaseHistory: (params?: TableMonitorDatabaseHistoryParams) => unwrap<DatabaseStorageSnapshotSummary[]>(http.get('/table-monitor/database-history', { params })),
     history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params })),
-    cleanupUsageRecords: (payload: UsageRecordsCleanupPayload) => unwrap<UsageRecordsCleanupResult>(http.post('/table-monitor/usage-records/cleanup', payload, noTimeout))
+    cleanupNonBusinessData: (payload: NonBusinessDataCleanupPayload) => unwrap<NonBusinessDataCleanupResult>(http.post('/table-monitor/non-business-data/cleanup', payload, noTimeout))
   },
   ipStats: {
     list: (params?: ClientIpStatsListParams) => unwrap<ClientIpStatsListResult>(http.get('/ip-stats', { params })),

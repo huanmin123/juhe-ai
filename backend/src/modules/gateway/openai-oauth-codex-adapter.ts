@@ -42,10 +42,11 @@ export async function buildOpenAIOAuthCodexRequestParts(
   inputHeaders: Record<string, string | string[] | undefined>,
   account: OpenAIOAuthCodexAccount,
   identity: OpenAIOAuthCodexIdentity,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: { modelOverride?: string } = {}
 ): Promise<OpenAIOAuthCodexRequestParts> {
   const compact = isOpenAIOAuthCodexCompactRequest(req)
-  const normalizedBody = await normalizeOpenAIOAuthCodexBody(req, inputHeaders, account, identity, compact, signal)
+  const normalizedBody = await normalizeOpenAIOAuthCodexBody(req, inputHeaders, account, identity, compact, signal, options)
   return {
     headers: buildOpenAIOAuthCodexHeaders(inputHeaders, account, {
       compact,
@@ -67,7 +68,8 @@ async function normalizeOpenAIOAuthCodexBody(
   account: OpenAIOAuthCodexAccount,
   identity: OpenAIOAuthCodexIdentity,
   compact: boolean,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: { modelOverride?: string } = {}
 ): Promise<NormalizedCodexBody> {
   if (req.method === 'GET' || req.method === 'HEAD') {
     return { stream: false, session: {} }
@@ -80,7 +82,8 @@ async function normalizeOpenAIOAuthCodexBody(
         inputHeaders,
         account,
         identity,
-        compact
+        compact,
+        modelOverride: options.modelOverride
       }, undefined, signal)
     } catch (error) {
       if (error instanceof OpenAIOAuthCodexAdapterError) {
@@ -101,7 +104,8 @@ async function normalizeOpenAIOAuthCodexBody(
     inputHeaders,
     account,
     identity,
-    compact
+    compact,
+    modelOverride: options.modelOverride
   })
 }
 

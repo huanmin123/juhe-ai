@@ -18,7 +18,7 @@ import {
   openAICodexUserAgent,
   openAICodexVersion
 } from './openai-codex-client-headers.js'
-import { normalizeOpenAICodexBuiltinTools } from './openai-oauth-codex-normalizer.js'
+import { normalizeOpenAICodexBuiltinTools } from './openai-codex-builtin-tools.js'
 
 export interface OpenAIClientCompatibilityAccount {
   clientCompatibility?: AccountClientCompatibility
@@ -27,7 +27,8 @@ export interface OpenAIClientCompatibilityAccount {
 export async function buildOpenAIClientCompatibilityBody(
   req: Request,
   account: OpenAIClientCompatibilityAccount,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: { modelOverride?: string } = {}
 ): Promise<Buffer | undefined> {
   if (normalizeAccountClientCompatibility(account.clientCompatibility) !== 'codex_responses') {
     return undefined
@@ -37,6 +38,9 @@ export async function buildOpenAIClientCompatibilityBody(
   }
   const body = await parseOpenAIClientCompatibilityJsonBody(req, signal)
   applyCodexResponsesCompatibility(body)
+  if (options.modelOverride) {
+    body.model = options.modelOverride
+  }
   return Buffer.from(JSON.stringify(body), 'utf8')
 }
 

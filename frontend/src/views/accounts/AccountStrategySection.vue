@@ -20,6 +20,42 @@
       />
       <div class="form-help">不选择表示该账户不做模型限制。</div>
     </a-form-item>
+    <a-form-item label="模型映射">
+      <div v-if="form.modelMappings.length" class="model-mapping-list">
+        <div v-for="(mapping, index) in form.modelMappings" :key="index" class="model-mapping-row">
+          <a-select
+            v-model:value="mapping.sourceModel"
+            allow-clear
+            :disabled="authorizedEditing"
+            option-filter-prop="label"
+            :options="modelOptions"
+            placeholder="下游模型"
+            show-search
+          />
+          <SwapRightOutlined class="model-mapping-arrow" />
+          <a-select
+            v-model:value="mapping.upstreamModel"
+            allow-clear
+            :disabled="authorizedEditing"
+            option-filter-prop="label"
+            :options="mappingTargetModelOptions"
+            placeholder="上游模型"
+            show-search
+          />
+          <a-switch v-model:checked="mapping.enabled" :disabled="authorizedEditing" />
+          <a-tooltip title="删除映射">
+            <a-button type="text" danger :disabled="authorizedEditing" @click="removeModelMapping(index)">
+              <template #icon><DeleteOutlined /></template>
+            </a-button>
+          </a-tooltip>
+        </div>
+      </div>
+      <a-button v-if="!authorizedEditing" block type="dashed" @click="addModelMapping">
+        <template #icon><PlusOutlined /></template>
+        新增映射
+      </a-button>
+      <div class="form-help">请求先按下游模型选择账户，选中该账户后再改写为上游模型。</div>
+    </a-form-item>
     <a-form-item v-if="isOAuthForm" label="客户端兼容">
       <a-input value="Codex Responses（OAuth 固定）" disabled />
       <div class="form-help">OpenAI OAuth 账户固定使用 Codex Responses 适配器。</div>
@@ -55,6 +91,7 @@
 </template>
 
 <script setup lang="ts">
+import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import type { AccountFormModel } from './accountFormTypes'
@@ -64,15 +101,28 @@ const clientCompatibilityOptions = [
   { label: 'Codex Responses', value: 'codex_responses' }
 ]
 
-defineProps<{
+const props = defineProps<{
   authorizedEditing: boolean
   form: AccountFormModel
   isOAuthForm: boolean
   isManagementView: boolean
+  mappingTargetModelOptions: Array<{ label: string; value: string }>
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
   proxyOptions: SelectOption[]
 }>()
+
+function addModelMapping(): void {
+  props.form.modelMappings.push({
+    sourceModel: '',
+    upstreamModel: '',
+    enabled: true
+  })
+}
+
+function removeModelMapping(index: number): void {
+  props.form.modelMappings.splice(index, 1)
+}
 </script>
 
 <style scoped>
@@ -111,6 +161,24 @@ defineProps<{
   font-size: 12px;
 }
 
+.model-mapping-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.model-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) auto 32px;
+  gap: 8px;
+  align-items: center;
+}
+
+.model-mapping-arrow {
+  color: #64748b;
+  font-size: 16px;
+}
+
 .strategy-help {
   margin-top: -8px;
   margin-bottom: 16px;
@@ -123,6 +191,15 @@ defineProps<{
 @media (max-width: 992px) {
   .strategy-grid {
     grid-template-columns: 1fr;
+  }
+
+  .model-mapping-row {
+    grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
+  }
+
+  .model-mapping-row :deep(.ant-switch),
+  .model-mapping-row :deep(.ant-btn) {
+    justify-self: end;
   }
 }
 </style>

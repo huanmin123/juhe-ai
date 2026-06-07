@@ -4,6 +4,7 @@ import type { GroupUsageAccessMetadata } from '../../storage/repositories.js'
 import { responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { gatewayErrorPayload } from './openai-gateway-responses.js'
 import { buildOpenAIModelsResponse } from './openai-gateway-route-helpers.js'
+import { listCachedProviderModelCatalogAsync } from './gateway-runtime-cache.service.js'
 import { extractBearerToken } from './openai-gateway-usage.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
@@ -56,9 +57,13 @@ export function finalizeGatewayAuthFailureAudit(
   })
 }
 
-export function sendOpenAIModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput): void {
+export async function sendOpenAIModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput): Promise<void> {
   const { res, auditCapture, usageContext, startedAt } = input
-  const responsePayload = buildOpenAIModelsResponse()
+  const catalog = await listCachedProviderModelCatalogAsync({
+    providerCode: 'openai',
+    systemAccountId: usageContext.systemAccountId
+  })
+  const responsePayload = buildOpenAIModelsResponse(catalog)
   res.status(200).json(responsePayload)
   enqueueUsageRecord({
     ...usageContext,
