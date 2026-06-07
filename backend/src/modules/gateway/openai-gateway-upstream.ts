@@ -5,7 +5,7 @@ import type { Request } from 'express'
 
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
 import { prepareSafeUpstreamRequestUrl } from '../../shared/upstream-url-policy.js'
-import type { GatewaySettings } from './account-error-policy.service.js'
+import type { GatewaySettings } from './request-error-policy.service.js'
 import {
   buildOpenAIOAuthCodexRequestParts,
   isOpenAIOAuthCodexCompactRequest,

@@ -20,7 +20,6 @@ import { diffSafeFields, operationMode, ownerTarget, recordOperationLog, resolve
 import { cancelAccountTestTask, createAccountTestTask, failAccountTestTask, getAccountTestTask, getAccountTestTaskRecord, listAccountTestTasks, type AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
-import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from './account-stream-intercept-policy-validation.js'
 import { dispatchAccountTestCancel, dispatchAccountTestTasks } from './account-test-task-queue.service.js'
@@ -49,7 +48,6 @@ const accountCreateSchema = z.object({
   fallbackEnabled: z.boolean().optional(),
   clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
   proxyProfileId: z.string().optional(),
-  errorPolicyId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
   groupId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
@@ -69,7 +67,6 @@ const accountUpdateSchema = z.object({
   fallbackEnabled: z.boolean().optional(),
   clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
   proxyProfileId: z.string().nullable().optional(),
-  errorPolicyId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
   groupId: z.string().trim().min(1, '账户分组不能为空').optional(),
   accountExpiresAt: z.string().nullable().optional(),
@@ -651,11 +648,6 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest('账户参数无效'))
     return
   }
-  const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(parsed.data.credentials))
-  if (errorPolicyValidationMessage) {
-    res.status(400).json(badRequest(errorPolicyValidationMessage))
-    return
-  }
   const streamPolicyValidationMessage = accountStreamInterceptValidationMessage(validateAccountStreamInterceptRules(parsed.data.credentials?.stream_intercept_rules))
   if (streamPolicyValidationMessage) {
     res.status(400).json(badRequest(streamPolicyValidationMessage))
@@ -742,7 +734,6 @@ accountsRouter.post('/', mutationGuard({
             safeChange('modelMappings', '模型映射', undefined, account.modelMappings),
             safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
             safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
-            safeChange('errorPolicyId', '错误策略', undefined, account.errorPolicyId),
             safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
             safeChange('availabilitySchedule', '可用时段计划', undefined, account.availabilitySchedule),
             safeChange('notes', '备注', undefined, account.notes)
@@ -1004,11 +995,6 @@ accountsRouter.patch('/:id', async (req, res) => {
       return
     }
   }
-  const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(body.credentials))
-  if (errorPolicyValidationMessage) {
-    res.status(400).json(badRequest(errorPolicyValidationMessage))
-    return
-  }
   const streamPolicyValidationMessage = accountStreamInterceptValidationMessage(validateAccountStreamInterceptRules(credentialsRecordValue(body.credentials)?.stream_intercept_rules))
   if (streamPolicyValidationMessage) {
     res.status(400).json(badRequest(streamPolicyValidationMessage))
@@ -1064,7 +1050,6 @@ accountsRouter.patch('/:id', async (req, res) => {
               supportedModels: '支持模型',
               modelMappings: '模型映射',
               proxyProfileId: '代理',
-              errorPolicyId: '错误策略',
               schedulable: '参与调度',
               accountExpiresAt: '过期时间',
               availabilitySchedule: '可用时段计划',

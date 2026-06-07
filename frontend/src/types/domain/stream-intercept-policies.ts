@@ -6,6 +6,8 @@ export type StreamInterceptPolicyAction =
   | 'avoid_account_ttl'
   | 'avoid_upstream_bucket_ttl'
 
+export type StreamInterceptPolicyScopeType = 'protocol' | 'provider'
+
 export interface StreamInterceptPolicyMatch {
   eventTypes?: string[]
   dataTypes?: string[]
@@ -23,6 +25,9 @@ export interface StreamInterceptPolicySummary {
   name: string
   enabled: boolean
   priority: number
+  scopeType: StreamInterceptPolicyScopeType
+  protocolCode: string
+  providerCode?: string
   match: StreamInterceptPolicyMatch
   action: StreamInterceptPolicyAction
   notes?: string

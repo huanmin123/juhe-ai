@@ -30,6 +30,9 @@ export interface StreamInterceptDecision {
   policyId?: string
   policyName?: string
   policySource?: 'system_default' | 'management' | 'account'
+  policyScopeType?: 'protocol' | 'provider'
+  policyProtocolCode?: string
+  policyProviderCode?: string
   executionMode?: 'intercept' | 'dry_run'
   dataHandling?: StreamInterceptPolicyDataHandling
   retryEnabled?: boolean
@@ -309,6 +312,9 @@ function buildConfiguredPolicyDecision(
     policyId: policy.id,
     policyName: policy.name,
     policySource: policy.source,
+    policyScopeType: policy.scopeType,
+    policyProtocolCode: policy.protocolCode,
+    policyProviderCode: policy.providerCode,
     executionMode: policy.executionMode,
     dataHandling: policy.dataHandling,
     retryEnabled: policy.retryEnabled,

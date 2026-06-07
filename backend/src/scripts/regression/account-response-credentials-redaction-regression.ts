@@ -81,7 +81,7 @@ try {
 
   const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie)
   assert.equal(detail.credentials.base_url, 'https://api.openai.com/v1', '详情响应应保留前端编辑需要的 Base URL')
-  assert.deepEqual(detail.credentials.error_handling_rules, seed.errorHandlingRules, '详情响应应保留非敏感错误策略配置')
+  assert(!Object.prototype.hasOwnProperty.call(detail.credentials, 'error_handling_rules'), '详情响应不应再返回账号内嵌错误策略')
   assert.equal(detail.credentials.api_key, 'sk-redaction-existing-api-key', '详情响应应返回完整 API Key 供编辑弹窗查看')
 
   const created = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
@@ -168,7 +168,6 @@ try {
 function seedData(): {
   adminCookie: string
   apiKeyAccountId: string
-  errorHandlingRules: unknown[]
   groupAId: string
   groupBId: string
   oauthAccountId: string
@@ -186,23 +185,13 @@ function seedData(): {
     name: '响应脱敏分组 B',
     providerCode: 'gpt'
   }, access)
-  const errorHandlingRules = [{
-    enabled: true,
-    name: '响应脱敏限流规则',
-    priority: 10,
-    status_codes: [429],
-    action: 'rate_limited',
-    reset_strategy: 'duration',
-    duration_hours: 1
-  }]
   const apiKeyAccount = repositories.createAccount({
     providerCode: 'gpt',
     name: '响应脱敏 API Key 账号',
     type: 'api_key',
     credentials: {
       api_key: 'sk-redaction-existing-api-key',
-      base_url: 'https://api.openai.com/v1',
-      error_handling_rules: errorHandlingRules
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     groupId: groupA.id
@@ -240,7 +229,6 @@ function seedData(): {
   return {
     adminCookie: `juhe_ai_session=${repositories.createSession(admin.id, 1).token}`,
     apiKeyAccountId: apiKeyAccount.id,
-    errorHandlingRules,
     groupAId: groupA.id,
     groupBId: groupB.id,
     oauthAccountId: oauthAccount.id,

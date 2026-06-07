@@ -61,7 +61,6 @@ export interface OpenAIAccountSecret {
   proxyUrl?: string
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
-  errorPolicyId?: string
   cooldownUntil?: string
   lastErrorMessage?: string
   streamFailureCount: number
@@ -164,7 +163,7 @@ export function findOpenAIAccountForGroup(
   const row = getBusinessDatabase()
     .prepare(`
       SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
-        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
+        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.availability_schedule_json, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.provider_code AS resource_provider_code,
@@ -181,7 +180,6 @@ export function findOpenAIAccountForGroup(
         source_accounts.credentials_encrypted AS resource_credentials_encrypted,
         source_accounts.proxy_profile_id AS resource_proxy_profile_id,
         source_accounts.concurrency_limit AS resource_concurrency_limit,
-        source_accounts.error_policy_id AS resource_error_policy_id,
         source_accounts.client_compatibility AS resource_client_compatibility,
         NULL AS quality_score,
         NULL AS quality_state,
@@ -295,7 +293,6 @@ export interface OpenAIAccountsForGroupDiagnostics {
 export function runtimeOpenAIAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   copyRuntimeCredentialText(credentials, output, 'account_id')
-  copyRuntimeCredentialValue(credentials, output, 'error_handling_rules')
   copyRuntimeCredentialValue(credentials, output, 'stream_intercept_rules')
   return output
 }
@@ -474,7 +471,7 @@ function listOpenAIGroupAccountSelectionRows(
       SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
         accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
-        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
+        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.availability_schedule_json, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.provider_code AS resource_provider_code,
@@ -491,7 +488,6 @@ function listOpenAIGroupAccountSelectionRows(
         source_accounts.credentials_encrypted AS resource_credentials_encrypted,
         source_accounts.proxy_profile_id AS resource_proxy_profile_id,
         source_accounts.concurrency_limit AS resource_concurrency_limit,
-        source_accounts.error_policy_id AS resource_error_policy_id,
         source_accounts.client_compatibility AS resource_client_compatibility,
         NULL AS quality_score,
         NULL AS quality_state,
@@ -599,7 +595,6 @@ interface OpenAIAccountRow {
   client_compatibility: AccountClientCompatibility
   credentials_encrypted: string
   proxy_profile_id: string | null
-  error_policy_id: string | null
   cooldown_until: string | null
   last_error_message: string | null
   stream_failure_count: number
@@ -625,7 +620,6 @@ interface OpenAIAccountRow {
   resource_credentials_encrypted?: string | null
   resource_proxy_profile_id?: string | null
   resource_concurrency_limit?: number | null
-  resource_error_policy_id?: string | null
   resource_client_compatibility?: AccountClientCompatibility | null
   quality_score?: number | null
   quality_state?: string | null
@@ -666,10 +660,6 @@ function openAIAccountResourceProxyProfileId(row: OpenAIAccountRow): string | nu
 
 function openAIAccountResourceConcurrencyLimit(row: OpenAIAccountRow): number {
   return Number(row.resource_concurrency_limit ?? row.concurrency_limit ?? 1)
-}
-
-function openAIAccountResourceErrorPolicyId(row: OpenAIAccountRow): string | null {
-  return row.resource_error_policy_id ?? row.error_policy_id
 }
 
 function openAIAccountResourceClientCompatibility(row: OpenAIAccountRow): AccountClientCompatibility {
@@ -768,7 +758,6 @@ function openAIAccountSecretFromRow(
     proxyUrl: proxyProfile.proxyUrl,
     proxyProfileUnavailable: proxyProfile.unavailable,
     proxyProfileErrorMessage: proxyProfile.errorMessage,
-    errorPolicyId: openAIAccountResourceErrorPolicyId(row) ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
     streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),

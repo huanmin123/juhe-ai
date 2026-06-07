@@ -43,7 +43,7 @@
 | `backend/src/config/` | 运行配置读取、路径解析和默认配置 | 新增环境变量时同步 `.env.example`、开发和部署文档 |
 | `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
-| `backend/src/modules/gateway/` | OpenAI 兼容中转、账号选择、错误策略、SSE 透传和用量解析 | 不把网关细节泄漏成前端多套复杂选项 |
+| `backend/src/modules/gateway/` | OpenAI 兼容中转、账号选择、请求错误策略、SSE 透传和用量解析 | 不把网关细节泄漏成前端多套复杂选项 |
 | `backend/src/modules/background/` | 统计聚合、系统采样、账号质量缓存、冷却账号复测、运行日志索引、审计批量落库和数据清理等后台任务 | 任务注册和执行只允许在独立 background worker 进程内发生，不引入重型分布式队列；新增或调整任务先看 [后台任务使用说明](后台任务使用说明.md) |
 | `backend/src/modules/db-service/` | DB service 进程、内部系统 API app、HTTP 代理、IPC 操作和 supervisor | 系统管理 API 与高频 SQLite 读写只在 DB service 或 worker 内执行，主 Web 进程不能回退同步访问 SQLite |
 | `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
@@ -72,7 +72,7 @@
 | 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
 | API Key | `modules/api-keys/` | 本地网关密钥创建、展示、状态和分组绑定 |
 | 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |
-| 错误策略 | `modules/error-policies/`、`modules/gateway/account-error-policy.service.ts` | 账号级错误匹配、冷却、异常标记和切换动作 |
+| 请求错误策略 | `modules/error-policies/`、`modules/gateway/request-error-policy.service.ts` | 系统级非 2xx 错误分层匹配、冷却 / 限流 / 异常目标和切号动作 |
 | 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
 | 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
 | 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
@@ -122,7 +122,7 @@ flowchart LR
 - API Key 可以绑定并访问调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组；被授权 AI 账户需要先加入调用方自有分组后再参与自有分组调度，授权分组则按有效分组授权直接参与调度。当前 API Key 模型不需要额外授权分组绑定字段。
 - 账号选择必须过滤停用、异常、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
 - 上游认证由后端替换；客户端提交的上游敏感头不应直接透传。
-- 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按错误策略或默认冷却规则处理。
+- 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按请求错误策略、流式拦截策略或默认冷却规则处理。
 - 原始审计日志只允许在网关内维护内存捕获上下文，必须等请求结束、失败或客户端中断后终态入队；网关请求链路不能同步写审计表。
 - SSE 和其他流式响应不能按 chunk 实时写库，必须在流自然结束、失败、超时或客户端断开后，以终态记录进入审计队列。
 - 网关错误保持 OpenAI 兼容结构；网关日志、请求快照、原始审计日志和敏感头处理见 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
@@ -136,7 +136,7 @@ flowchart LR
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
 - 使用记录、原始审计、操作日志、运行日志索引和账号状态副作用都必须异步投递到 worker 或 DB service；server 到 worker 的 IPC、worker 本地落库队列、运行日志索引队列和账号状态副作用本地队列都必须有数量或字节上限。投递失败或队列满时按各自策略降级、合并或丢弃新副作用，不能反向阻塞已经可返回的网关响应，也不能在 worker / DB service 慢或不可用时无限堆积内存。
-- 真实上游派发开始后，网关可以在已选分组内按账号切换和错误策略处理；普通上游失败和已写下游输出后的失败不能因为另一个分组可能可用而跨分组透明重放请求。配置化流式拦截在写下游前命中并耗尽当前号池时，可以按 API Key 绑定优先级尝试后续分组。
+- 真实上游派发开始后，网关可以在已选分组内按账号切换和系统级请求错误策略处理；普通上游失败和已写下游输出后的失败不能因为另一个分组可能可用而跨分组透明重放请求。配置化流式拦截在写下游前命中并耗尽当前号池时，可以按 API Key 绑定优先级尝试后续分组。
 
 ## 6. 数据库设计
 
@@ -162,7 +162,7 @@ flowchart LR
 | --- | --- | --- |
 | 登录与权限 | `system_accounts`、`system_sessions` | 后台账号、角色、状态、密码哈希和登录会话 |
 | 设置 | `global_settings`、`system_settings` | 平台公开设置和全局系统运行策略单例 |
-| 供应商与资源 | `providers`、`accounts`、`proxy_profiles`、`error_policies` | 上游供应商、AI 账户、代理和账号错误策略 |
+| 供应商、账号与运维策略 | `providers`、`accounts`、`proxy_profiles`、`error_policies` | 上游供应商、AI 账户、代理和系统级请求错误策略 |
 | 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_accounts` | 系统团队、团队成员、授权操作、最终用户授权、授权来源、分组和分组账号绑定 |
 | 网关访问 | `api_keys`、`api_key_group_bindings` | 本地网关密钥、分组绑定、状态、过期和额度配置 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
@@ -268,7 +268,7 @@ erDiagram
 ## 9. 开发约束
 
 - 新管理接口：先确认模块归属，再补 route、repository、领域类型、前端 API 和文档。
-- 新网关能力：先确认是否改变 `/*` / `/v1/*` 客户端入口、OpenAI `/v1` 上游归一化、错误策略、调度规则或使用记录字段。
+- 新网关能力：先确认是否改变 `/*` / `/v1/*` 客户端入口、OpenAI `/v1` 上游归一化、请求错误策略、调度规则或使用记录字段。
 - 新审计能力：先确认是否改变原始审计采样、队列、终态入队、SSE 结束后入队或 payload 加密边界。
 - 新数据库字段：先写清默认值、数据清洗方案、敏感边界和索引需求。
 - 新接口契约或权限变化：先确认 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。

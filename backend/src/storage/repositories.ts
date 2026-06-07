@@ -6,7 +6,6 @@ import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../d
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
 import { normalizeAccountStreamInterceptRules } from '../modules/accounts/account-stream-intercept-policy-validation.js'
 import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
@@ -37,7 +36,6 @@ import { createApiKeyRecord, deleteApiKey, findApiKeySecret, findApiKeySummary, 
 import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
 import { findGroupRowForAccess, listGroupOptionRowsForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions, type GroupOptionListOptions } from './group-read.repository.js'
 import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
@@ -189,7 +187,6 @@ interface OpenAIOAuthRefreshCandidateRow {
   status: AccountStatus
   credentials_encrypted: string
   proxy_profile_id: string | null
-  error_policy_id: string | null
   concurrency_limit: number
   priority: number
   super_priority_enabled: number
@@ -698,10 +695,6 @@ function accountResourceProxyProfileId(row: AccountListRow): string | null {
   return row.access_type === 'authorized' ? row.source_proxy_profile_id ?? null : row.proxy_profile_id
 }
 
-function accountResourceErrorPolicyId(row: AccountListRow): string | null {
-  return row.access_type === 'authorized' ? row.source_error_policy_id ?? null : row.error_policy_id
-}
-
 function accountResourceClientCompatibility(row: AccountListRow): AccountClientCompatibility {
   return normalizeOpenAIAccountClientCompatibility(
     accountResourceProviderCode(row),
@@ -1041,7 +1034,6 @@ function requiredTextInput(value: unknown, label: string): string {
 const apiKeyAccountCredentialKeys = new Set([
   'api_key',
   'base_url',
-  'error_handling_rules',
   'stream_intercept_rules'
 ])
 
@@ -1056,7 +1048,6 @@ const oauthAccountCredentialKeys = new Set([
   'chatgpt_user_id',
   'plan_type',
   'base_url',
-  'error_handling_rules',
   'stream_intercept_rules'
 ])
 
@@ -1130,9 +1121,6 @@ function normalizeOAuthAccountCredentials(input: Record<string, unknown>): Recor
 }
 
 function normalizeAccountCredentialPolicies(input: Record<string, unknown>, credentials: Record<string, unknown>): void {
-  if (Object.prototype.hasOwnProperty.call(input, 'error_handling_rules')) {
-    credentials.error_handling_rules = normalizeAccountErrorHandlingRules(input.error_handling_rules)
-  }
   if (Object.prototype.hasOwnProperty.call(input, 'stream_intercept_rules')) {
     credentials.stream_intercept_rules = normalizeAccountStreamInterceptRules(input.stream_intercept_rules)
   }
@@ -1749,7 +1737,6 @@ function accountSummariesFromRows(
       qualityRecentSuccessRate: typeof row.quality_recent_success_rate === 'number' ? row.quality_recent_success_rate : undefined,
       qualityUpdatedAt: row.quality_updated_at ?? undefined,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
-      errorPolicyId: isAuthorizedView ? undefined : accountResourceErrorPolicyId(row) ?? undefined,
       schedulable: effectiveAuthorizedSchedulable,
       availabilitySchedule,
       availabilityScheduleActive,
@@ -1972,8 +1959,7 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
   return {
     ...visibleAccount,
     credentials: decryptJson<Record<string, unknown>>(credentialsRow.credentials_encrypted),
-    proxyProfileId: credentialsRow.proxy_profile_id ?? undefined,
-    errorPolicyId: credentialsRow.error_policy_id ?? undefined
+    proxyProfileId: credentialsRow.proxy_profile_id ?? undefined
   }
 }
 
@@ -2062,7 +2048,6 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       modelMappings: row.model_mappings ?? [],
       lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
-      errorPolicyId: accountResourceErrorPolicyId(row) ?? undefined,
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
       accountExpiresAt: row.account_expires_at ?? undefined,
@@ -2097,7 +2082,7 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
-        proxy_profile_id, error_policy_id, concurrency_limit, priority,
+        proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
         last_error_code, last_error_message, last_successful_test_model
       FROM accounts
@@ -2123,7 +2108,7 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
-        proxy_profile_id, error_policy_id, concurrency_limit, priority,
+        proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
         last_error_code, last_error_message, last_successful_test_model
       FROM accounts
@@ -2166,7 +2151,6 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
     supportedModels: [],
     lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
     proxyProfileId: row.proxy_profile_id ?? undefined,
-    errorPolicyId: row.error_policy_id ?? undefined,
     schedulable: row.schedulable === 1,
     accountExpiresAt: row.account_expires_at ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
@@ -2210,7 +2194,6 @@ const accountCreateInputKeys = new Set([
   'fallbackEnabled',
   'clientCompatibility',
   'proxyProfileId',
-  'errorPolicyId',
   'schedulable',
   'groupId',
   'accountExpiresAt',
@@ -2230,7 +2213,6 @@ const accountUpdateInputKeys = new Set([
   'fallbackEnabled',
   'clientCompatibility',
   'proxyProfileId',
-  'errorPolicyId',
   'schedulable',
   'accountExpiresAt',
   'availabilitySchedule',
@@ -2311,7 +2293,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     modelMappings,
     lastSuccessfulTestModel: undefined,
     proxyProfileId,
-    errorPolicyId: normalizeNullableIdInput(input.errorPolicyId, '错误处理策略'),
     schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
     availabilityScheduleActive: isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(availabilitySchedule), new Date(nowMs)),
@@ -2343,10 +2324,10 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
       .prepare(`
         INSERT INTO accounts (
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
-          oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit, error_policy_id,
+          oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -2365,7 +2346,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         oauthRefreshMetadata.refreshTokenPresent ? 1 : 0,
         account.proxyProfileId ?? null,
         account.concurrencyLimit,
-        account.errorPolicyId ?? null,
         account.priority,
         account.superPriorityEnabled ? 1 : 0,
         account.fallbackEnabled ? 1 : 0,
@@ -2463,9 +2443,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     : current.availabilitySchedule
   const hasPriorityInput = hasOwnInput(input, 'priority')
   const hasNotesInput = hasOwnInput(input, 'notes')
-  const rawErrorPolicyId = hasOwnInput(input, 'errorPolicyId')
-    ? input.errorPolicyId
-    : undefined
 
   const hasStatusInput = hasOwnInput(input, 'status')
   const requestedStatus = hasStatusInput ? normalizedAccountStatusInput(input.status, current.status) : current.status
@@ -2574,7 +2551,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     proxyProfileId: hasOwnInput(input, 'proxyProfileId')
       ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
       : current.proxyProfileId,
-    errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : normalizeNullableIdInput(rawErrorPolicyId, '错误处理策略'),
     schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus)
       ? false
       : hasStatusInput
@@ -2606,7 +2582,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
@@ -2621,7 +2597,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         oauthRefreshMetadata.refreshTokenPresent ? 1 : 0,
         next.proxyProfileId ?? null,
         next.concurrencyLimit,
-        next.errorPolicyId ?? null,
         next.priority,
         next.superPriorityEnabled ? 1 : 0,
         next.fallbackEnabled ? 1 : 0,

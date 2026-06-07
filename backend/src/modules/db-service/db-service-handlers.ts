@@ -8,7 +8,11 @@ import {
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listPublicGlobalSettings,
+  markAccountCooldown,
+  markAccountDisabledByFailure,
   markAccountTemporaryUnavailable,
+  markAuthorizedAccountBindingCooldownByContext,
+  markAuthorizedAccountBindingDisabledByFailure,
   markAuthorizedAccountBindingTemporaryUnavailableByContext,
   recordAccountStreamFailure,
   recordAuthorizedAccountBindingStreamFailure,
@@ -28,6 +32,7 @@ import {
   findActiveClientIpPolicyByHash,
   recordClientIpPolicyHits
 } from '../../storage/client-ip-stats.repository.js'
+import { listActiveErrorPoliciesForGateway } from '../../storage/error-policy.repository.js'
 import { listActiveStreamInterceptPoliciesForGateway } from '../../storage/stream-intercept-policy.repository.js'
 import {
   clearGatewayRuntimeCacheLocal,
@@ -37,7 +42,7 @@ import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
-import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
+import { applyAccountErrorHandling } from '../gateway/request-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
 import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
 import type {
@@ -168,12 +173,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       if (staleReason) {
         return { updated: false, skippedReason: staleReason }
       }
-      const updated = authorizedTarget
-        ? markAuthorizedAccountBindingTemporaryUnavailableByContext({
-            ...authorizedTarget,
-            reason: operation.reason
-          })
-        : markAccountTemporaryUnavailable(operation.account.id, operation.reason)
+      const updated = applyPrecheckErrorPolicyTarget(operation, authorizedTarget)
       if (updated) {
         clearGatewayRuntimeCacheLocal()
       }
@@ -211,8 +211,16 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return { cleared: true }
     case 'find_active_client_ip_policy':
       return findActiveClientIpPolicyByHash(operation.ipHash)
+    case 'list_active_error_policies':
+      return listActiveErrorPoliciesForGateway({
+        protocolCode: operation.protocolCode,
+        providerCode: operation.providerCode
+      })
     case 'list_active_stream_intercept_policies':
-      return listActiveStreamInterceptPoliciesForGateway()
+      return listActiveStreamInterceptPoliciesForGateway({
+        protocolCode: operation.protocolCode,
+        providerCode: operation.providerCode
+      })
     case 'record_client_ip_policy_hits':
       return recordClientIpPolicyHits(operation.hits)
     case 'list_runtime_logs':
@@ -250,6 +258,35 @@ function precheckTemporaryUnavailableSkipReason(
     return 'stale_account_updated'
   }
   return undefined
+}
+
+function applyPrecheckErrorPolicyTarget(
+  operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>,
+  authorizedTarget: ReturnType<typeof authorizedBindingRuntimeTarget>
+): unknown {
+  const decision = operation.errorPolicyDecision
+  if (decision?.action === 'disable') {
+    return authorizedTarget
+      ? markAuthorizedAccountBindingDisabledByFailure({ ...authorizedTarget, reason: operation.reason })
+      : markAccountDisabledByFailure(operation.account.id, operation.reason)
+  }
+  if (decision?.action === 'cooldown' && decision.cooldownStatus === 'rate_limited') {
+    const cooldownUntil = decision.cooldownUntil ?? new Date(Date.now() + 60_000).toISOString()
+    return authorizedTarget
+      ? markAuthorizedAccountBindingCooldownByContext({
+          ...authorizedTarget,
+          cooldownUntil,
+          reason: operation.reason,
+          status: 'rate_limited'
+        })
+      : markAccountCooldown(operation.account.id, cooldownUntil, operation.reason, 'rate_limited')
+  }
+  return authorizedTarget
+    ? markAuthorizedAccountBindingTemporaryUnavailableByContext({
+        ...authorizedTarget,
+        reason: operation.reason
+      })
+    : markAccountTemporaryUnavailable(operation.account.id, operation.reason)
 }
 
 function authorizedBindingRuntimeTarget(account: OpenAIAccountSecret | undefined): {
@@ -308,7 +345,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     }
   }
 
-  const streamInterceptPolicies = listActiveStreamInterceptPoliciesForGateway()
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
   const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
   apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id
@@ -331,6 +367,14 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
+    const streamInterceptPolicies = listActiveStreamInterceptPoliciesForGateway({
+      protocolCode: groupAccess.protocolCode,
+      providerCode: groupAccess.providerCode
+    })
+    const errorPolicies = listActiveErrorPoliciesForGateway({
+      protocolCode: groupAccess.protocolCode,
+      providerCode: groupAccess.providerCode
+    })
     return {
       apiKey: {
         ...apiKey,
@@ -342,6 +386,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       accounts,
       hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
       accountDispatchDiagnostics: groupAccountsResult.diagnostics,
+      errorPolicies,
       streamInterceptPolicies
     }
   }
@@ -351,7 +396,8 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     settings,
     accounts: [],
     hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
-    streamInterceptPolicies
+    errorPolicies: [],
+    streamInterceptPolicies: []
   }
 }
 

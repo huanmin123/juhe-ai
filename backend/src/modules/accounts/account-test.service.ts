@@ -17,7 +17,7 @@ import {
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/payload-sanitizer.js'
-import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
+import type { GatewaySettings } from '../gateway/request-error-policy.service.js'
 import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-effects.service.js'
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'

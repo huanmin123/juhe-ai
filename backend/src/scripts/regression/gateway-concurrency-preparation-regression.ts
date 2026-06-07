@@ -11,7 +11,7 @@ import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { fetchFirstAvailableUpstream, UpstreamAttemptError } from '../../modules/gateway/openai-gateway-upstream-dispatch.js'
 import { resolveOpenAIGatewayRequestLane } from '../../modules/gateway/openai-gateway-request-lane.js'
-import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
+import type { GatewaySettings } from '../../modules/gateway/request-error-policy.service.js'
 import type { AuditCaptureContext } from '../../modules/gateway/audit-capture.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/openai-gateway-usage-records.js'
 import type { UpstreamAccount } from '../../modules/gateway/openai-gateway-route-helpers.js'

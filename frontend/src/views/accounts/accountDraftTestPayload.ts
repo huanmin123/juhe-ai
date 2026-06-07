@@ -1,7 +1,6 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import type { AccountSummary } from '@/types/domain'
-import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { buildAccountSavePayload, validateAccountSaveForm } from './accountSavePayload'
@@ -10,7 +9,6 @@ interface AccountDraftTestPayloadInput {
   accountDetail?: AccountSummary
   accounts: AccountSummary[]
   editingId?: string
-  errorPolicyRules: AccountErrorPolicyRuleForm[]
   form: AccountFormModel
   streamInterceptRules: AccountStreamInterceptRuleForm[]
 }

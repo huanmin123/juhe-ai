@@ -7,7 +7,7 @@
       :refresh-loading="loading"
       @search="applySearch"
       @reset="resetSearch"
-      @refresh="loadPolicies"
+      @refresh="loadPageData"
     >
       <template #actions>
         <a-button @click="guideOpen = true">
@@ -25,10 +25,10 @@
       row-key="id"
       :loading="loading"
       :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
-      :scroll-x="2600"
+      :scroll-x="2980"
       pull-refresh-enabled
       :refreshing="loading"
-      @mobile-refresh="loadPolicies"
+      @mobile-refresh="loadPageData"
     >
       <template #emptyText>
         <a-empty class="page-empty-card" description="暂无流式拦截策略" />
@@ -39,6 +39,15 @@
         </template>
         <template v-else-if="column.key === 'type'">
           <a-tag :color="record.defaultRule ? 'blue' : 'purple'">{{ record.defaultRule ? '默认' : '自定义' }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'scope'">
+          <a-tag :color="record.scopeType === 'provider' ? 'geekblue' : 'green'">{{ scopeText(record) }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'protocol'">
+          <span>{{ protocolText(record.protocolCode) }}</span>
+        </template>
+        <template v-else-if="column.key === 'provider'">
+          <span>{{ providerText(record.providerCode) }}</span>
         </template>
         <template v-else-if="column.key === 'priority'">
           <span>{{ record.priority }}</span>
@@ -93,6 +102,18 @@
             <div class="mobile-list-meta-item">
               <span>类型</span>
               <strong>{{ record.defaultRule ? '默认' : '自定义' }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>层级</span>
+              <strong>{{ scopeText(record) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>协议</span>
+              <strong>{{ protocolText(record.protocolCode) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>供应商</span>
+              <strong>{{ providerText(record.providerCode) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>优先级</span>
@@ -167,6 +188,19 @@
             <a-form-item label="策略名称" required>
               <a-input v-model:value="form.name" :disabled="modalReadonly" placeholder="例如 中转广告污染拦截" />
             </a-form-item>
+            <a-form-item label="作用层级" required>
+              <a-segmented v-model:value="form.scopeType" :disabled="modalReadonly" :options="scopeOptions" block @change="handleScopeChange" />
+            </a-form-item>
+            <a-form-item v-if="form.scopeType === 'provider'" label="供应商" required>
+              <a-select
+                v-model:value="form.providerCode"
+                :disabled="modalReadonly"
+                :options="providerSelectOptions"
+                placeholder="选择 OpenAI v1 供应商"
+                show-search
+                option-filter-prop="label"
+              />
+            </a-form-item>
             <a-form-item label="优先级">
               <a-input-number v-model:value="form.priority" :disabled="modalReadonly" :min="1" :max="9999" style="width: 100%" />
             </a-form-item>
@@ -235,7 +269,7 @@
     <a-modal v-model:open="guideOpen" title="流式拦截策略配置指南" width="900px" :footer="null">
       <div class="policy-guide">
         <p class="guide-note guide-intro">
-          策略作用于运行时识别为 AI 对话的 SSE 流；客户端类型、接口路径和具体协议不需要配置，运行时按下游是否已写出内容和客户端能力决定具体重试方式。
+          策略作用于运行时识别为 AI 对话的 SSE 流；协议层用于 OpenAI v1 全局语义，供应商层用于 GPT 或其他 OpenAI v1 兼容供应商的局部优化，运行时按下游是否已写出内容和客户端能力决定具体重试方式。
         </p>
 
         <section class="guide-section">
@@ -293,7 +327,9 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type {
+  ProviderDefinition,
   StreamInterceptPolicyAction,
+  StreamInterceptPolicyScopeType,
   StreamInterceptPolicySummary
 } from '@/types/domain'
 import {
@@ -312,6 +348,8 @@ interface StreamPolicyForm {
   name: string
   enabled: boolean
   priority: number
+  scopeType: StreamInterceptPolicyScopeType
+  providerCode: string
   eventTypes: string
   dataTypes: string
   errorCodes: string
@@ -328,6 +366,7 @@ const listSeparators = /[,;，；\n]/
 const loading = ref(false)
 const saving = ref(false)
 const keyword = ref('')
+const providers = ref<ProviderDefinition[]>([])
 const defaultRules = ref<StreamInterceptPolicySummary[]>([])
 const policies = ref<StreamInterceptPolicySummary[]>([])
 const modalOpen = ref(false)
@@ -339,6 +378,9 @@ const form = reactive<StreamPolicyForm>(defaultForm())
 const columns = [
   { title: '策略名称', key: 'name', width: 240, fixed: 'left' },
   { title: '类型', key: 'type', width: 90 },
+  { title: '层级', key: 'scope', width: 110 },
+  { title: '协议', key: 'protocol', width: 120 },
+  { title: '供应商', key: 'provider', width: 150 },
   { title: '优先级', key: 'priority', width: 90 },
   { title: '状态', key: 'status', width: 90 },
   { title: 'SSE event 类型', key: 'eventTypes', width: 190 },
@@ -374,6 +416,18 @@ const guideActionColumns = [
 ]
 
 const allPolicies = computed(() => [...defaultRules.value, ...policies.value])
+const scopeOptions = [
+  { label: '供应商层', value: 'provider' },
+  { label: '协议层', value: 'protocol' }
+]
+const openAIProviders = computed(() => providers.value
+  .filter((provider) => provider.enabled && provider.protocolProfiles.some((profile) => profile.enabled && profile.protocolCode === 'openai' && profile.protocolVersion === 'v1'))
+  .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN') || left.code.localeCompare(right.code)))
+const providerSelectOptions = computed(() => openAIProviders.value.map((provider) => ({
+  label: `${provider.name}（${provider.code}）`,
+  value: provider.code
+})))
+const providerNameByCode = computed(() => new Map(openAIProviders.value.map((provider) => [provider.code, provider.name])))
 const filteredPolicies = computed(() => {
   const text = keyword.value.trim().toLowerCase()
   if (!text) return allPolicies.value
@@ -390,6 +444,8 @@ function defaultForm(): StreamPolicyForm {
     name: '',
     enabled: true,
     priority: 1,
+    scopeType: 'provider',
+    providerCode: '',
     eventTypes: '',
     dataTypes: '',
     errorCodes: '',
@@ -417,11 +473,30 @@ async function loadPolicies(): Promise<void> {
   }
 }
 
+async function loadPageData(): Promise<void> {
+  loading.value = true
+  try {
+    const [policyResult, providerResult] = await Promise.all([
+      api.streamInterceptPolicies.list(),
+      api.providers.options()
+    ])
+    defaultRules.value = policyResult.defaultRules
+    policies.value = policyResult.policies
+    providers.value = providerResult
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载流式拦截策略失败'))
+  } finally {
+    loading.value = false
+  }
+}
+
 function openCreate(): void {
   editingId.value = undefined
   modalReadonly.value = false
   Object.assign(form, defaultForm(), {
-    priority: nextPriority()
+    priority: nextPriority(),
+    providerCode: defaultProviderCode()
   })
   modalOpen.value = true
 }
@@ -519,6 +594,8 @@ function fillForm(policy: StreamInterceptPolicySummary): boolean {
     name: policy.name,
     enabled: policy.enabled,
     priority: policy.priority,
+    scopeType: policy.scopeType,
+    providerCode: policy.providerCode ?? '',
     eventTypes: formatList(policy.match.eventTypes),
     dataTypes: formatList(policy.match.dataTypes),
     errorCodes: formatList(policy.match.errorCodes),
@@ -537,6 +614,8 @@ function buildPayload(): StreamInterceptPolicyPayload {
     name: form.name.trim(),
     enabled: form.enabled,
     priority: requiredPositiveInt(form.priority, '优先级', 9999),
+    scopeType: form.scopeType,
+    providerCode: form.scopeType === 'provider' ? form.providerCode.trim() : undefined,
     match: compactObject({
       eventTypes: splitList(form.eventTypes),
       dataTypes: splitList(form.dataTypes),
@@ -554,6 +633,7 @@ function buildPayload(): StreamInterceptPolicyPayload {
 
 function validateForm(): string | undefined {
   if (!form.name.trim()) return '请填写策略名称'
+  if (form.scopeType === 'provider' && !form.providerCode.trim()) return '请选择供应商'
   if (!positiveInt(form.priority, 9999)) return '优先级必须是 1-9999 的整数'
   const listValidation = validateMatchLists()
   if (listValidation) return listValidation
@@ -564,6 +644,16 @@ function validateForm(): string | undefined {
 function selectAction(action: StreamInterceptPolicyAction): void {
   if (modalReadonly.value) return
   form.action = action
+}
+
+function handleScopeChange(): void {
+  if (modalReadonly.value) return
+  if (form.scopeType === 'provider' && !form.providerCode) {
+    form.providerCode = defaultProviderCode()
+  }
+  if (form.scopeType === 'protocol') {
+    form.providerCode = ''
+  }
 }
 
 function applySearch(): void {
@@ -650,6 +740,9 @@ function validateMatchLists(): string | undefined {
 function searchableText(policy: StreamInterceptPolicySummary): string {
   return [
     policy.name,
+    scopeText(policy),
+    protocolText(policy.protocolCode),
+    providerText(policy.providerCode),
     matchSummary(policy),
     policy.defaultRule ? '默认' : '自定义',
     String(policy.priority),
@@ -663,11 +756,30 @@ function actionText(action: StreamInterceptPolicyAction): string {
   return streamInterceptActionLabel(action)
 }
 
+function scopeText(policy: Pick<StreamInterceptPolicySummary, 'scopeType'>): string {
+  return policy.scopeType === 'provider' ? '供应商层' : '协议层'
+}
+
+function protocolText(protocolCode: string): string {
+  if (protocolCode === 'openai') return 'OpenAI v1'
+  return protocolCode || '-'
+}
+
+function providerText(providerCode?: string): string {
+  if (!providerCode) return '-'
+  const name = providerNameByCode.value.get(providerCode)
+  return name ? `${name}（${providerCode}）` : providerCode
+}
+
 function actionTagText(template: StreamInterceptActionTemplate): string {
   if (template.action === 'observe') return '观察'
   if (template.action === 'drop_event') return '不重试'
   if (template.runtimeAvoidance) return '短期避让'
   return '重试'
+}
+
+function defaultProviderCode(): string {
+  return providerSelectOptions.value[0]?.value ?? ''
 }
 
 function actionTagColor(template: StreamInterceptActionTemplate): string {
@@ -699,7 +811,7 @@ function scopedList(label: string, values?: string[]): string {
   return `${label}: ${values.slice(0, 3).join(', ')}${values.length > 3 ? ` 等 ${values.length} 项` : ''}`
 }
 
-onMounted(loadPolicies)
+onMounted(loadPageData)
 </script>
 
 <style scoped>

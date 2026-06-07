@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     assert.match(featureResponseText, /没有可用的上游账户/, `所有账号失败不应透传上游原文，应返回网关统一错误：${featureResponseText}`)
     assert.notEqual(featureResponseText, invalidRequestRejectedRequestBody, '所有账号失败不应把上游原始错误体透传给客户端')
     assert.equal(invalidRequestUpstreamHitCount, 3, `通用失败流水线应尝试三个账号后再失败，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
-    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount, thirdAccount], /上游账号返回非成功状态：HTTP 422|Invalid value/, '未配置账号错误策略的上游失败应进入运行态屏障')
+    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount, thirdAccount], /上游账号返回非成功状态：HTTP 422|Invalid value/, '未命中请求错误策略的上游失败应进入运行态屏障')
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
     currentScenario = 'same_signature_third_account_success'

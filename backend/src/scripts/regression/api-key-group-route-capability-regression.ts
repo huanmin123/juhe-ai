@@ -174,7 +174,9 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
     name: '回归：未写下游污染流切后备',
     enabled: true,
     priority: 20,
+    scopeType: 'provider',
     protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: 'gpt',
     match: { textIncludes: ['route-stream-pollution'] },
     action: 'retry_next_account'
   })

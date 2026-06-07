@@ -43,7 +43,7 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/accounts/account-test.service.js'),
-  import('../../modules/gateway/account-error-policy.service.js'),
+  import('../../modules/gateway/request-error-policy.service.js'),
   import('../../modules/db-service/db-service-handlers.js')
 ])
 

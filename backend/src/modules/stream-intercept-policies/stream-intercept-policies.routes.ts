@@ -32,6 +32,11 @@ const policyBodySchema = z.object({
   name: z.string().trim().min(1, '规则名称不能为空').max(100, '规则名称不能超过 100 个字符'),
   enabled: z.boolean().optional(),
   priority: z.number().int().min(1).max(9999).optional(),
+  scopeType: z.enum(['protocol', 'provider'], {
+    required_error: '请选择流式拦截策略作用层级',
+    invalid_type_error: '流式拦截策略作用层级无效'
+  }),
+  providerCode: z.string().trim().min(1, '请选择供应商').max(80, '供应商编码不能超过 80 个字符').nullable().optional(),
   match: matchSchema,
   action: z.enum([
     'observe',
@@ -43,6 +48,20 @@ const policyBodySchema = z.object({
   ]),
   notes: z.string().trim().max(1000, '备注不能超过 1000 个字符').nullable().optional()
 }).strict().superRefine((value, context) => {
+  if (value.scopeType === 'protocol' && value.providerCode?.trim()) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['providerCode'],
+      message: '协议层流式拦截策略不能绑定供应商'
+    })
+  }
+  if (value.scopeType === 'provider' && !value.providerCode?.trim()) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['providerCode'],
+      message: '供应商层流式拦截策略必须选择供应商'
+    })
+  }
   const matcher = value.match ?? {}
   const hasMatcher = [
     matcher.eventTypes,
@@ -73,6 +92,8 @@ streamInterceptPoliciesRouter.post('/', mutationGuard({
   operationKey: 'stream_intercept_policies.create',
   fingerprint: (req) => ({
     name: normalizedText(bodyField(req, 'name')),
+    scopeType: bodyField(req, 'scopeType'),
+    providerCode: normalizedText(bodyField(req, 'providerCode')),
     priority: bodyField(req, 'priority')
   })
 }), (req, res) => {
@@ -90,6 +111,8 @@ streamInterceptPoliciesRouter.post('/', mutationGuard({
   }
   recordPolicyOperation(req, 'create', policy.id, policy.name, [
     safeChange('name', '规则名称', undefined, policy.name),
+    safeChange('scopeType', '作用层级', undefined, policy.scopeType),
+    safeChange('providerCode', '供应商', undefined, policy.providerCode ?? ''),
     safeChange('enabled', '启用状态', undefined, policy.enabled),
     safeChange('priority', '优先级', undefined, policy.priority)
   ])
@@ -101,6 +124,8 @@ streamInterceptPoliciesRouter.patch('/:id', mutationGuard({
   fingerprint: (req) => ({
     id: req.params.id,
     name: normalizedText(bodyField(req, 'name')),
+    scopeType: bodyField(req, 'scopeType'),
+    providerCode: normalizedText(bodyField(req, 'providerCode')),
     enabled: bodyField(req, 'enabled'),
     priority: bodyField(req, 'priority'),
     updatedAt: Date.now()
@@ -124,6 +149,8 @@ streamInterceptPoliciesRouter.patch('/:id', mutationGuard({
   }
   recordPolicyOperation(req, 'update', policy.id, policy.name, [
     safeChange('name', '规则名称', undefined, policy.name),
+    safeChange('scopeType', '作用层级', undefined, policy.scopeType),
+    safeChange('providerCode', '供应商', undefined, policy.providerCode ?? ''),
     safeChange('enabled', '启用状态', undefined, policy.enabled),
     safeChange('priority', '优先级', undefined, policy.priority)
   ])
@@ -177,8 +204,8 @@ function operationActionText(action: 'create' | 'update' | 'delete'): string {
   return '删除'
 }
 
-type PublicStreamInterceptPolicySummary = Omit<StreamInterceptPolicySummary, 'protocolCode'>
+type PublicStreamInterceptPolicySummary = StreamInterceptPolicySummary
 
-function publicPolicySummary({ protocolCode: _protocolCode, ...policy }: StreamInterceptPolicySummary): PublicStreamInterceptPolicySummary {
+function publicPolicySummary(policy: StreamInterceptPolicySummary): PublicStreamInterceptPolicySummary {
   return policy
 }

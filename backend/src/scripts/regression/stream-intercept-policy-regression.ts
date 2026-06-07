@@ -9,7 +9,7 @@ import { pipeUpstreamStream } from '../../modules/gateway/openai-gateway-stream.
 import {
   gatewayStreamClientRetryErrorCode
 } from '../../modules/gateway/openai-gateway-responses.js'
-import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
+import type { GatewaySettings } from '../../modules/gateway/request-error-policy.service.js'
 import {
   resolveRuntimeStreamInterceptPolicies,
   type RuntimeStreamInterceptPolicy
@@ -26,6 +26,9 @@ function policy(overrides: Partial<RuntimeStreamInterceptPolicy>): RuntimeStream
     action: 'retry_no_avoidance',
     executionMode: 'intercept',
     priority: 10,
+    scopeType: 'provider',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: GPT_VENDOR_CODE,
     match: {},
     dataHandling: 'discard_stream',
     retryEnabled: false,
@@ -417,31 +420,59 @@ const settings: GatewaySettings = {
         name: '默认低数字规则',
         enabled: true,
         priority: 1,
+        scopeType: 'protocol',
         protocolCode: OPENAI_PROTOCOL_CODE,
         match: { textIncludes: ['广告污染'] },
         action: 'retry_next_account'
       },
       {
-        id: 'management_rule_low_priority',
+        id: 'management_protocol_rule_low_priority',
         defaultRule: false,
         editable: true,
-        name: '管理端低数字规则',
+        name: '管理端协议低数字规则',
         enabled: true,
         priority: 1,
+        scopeType: 'protocol',
         protocolCode: OPENAI_PROTOCOL_CODE,
         match: { textIncludes: ['广告污染'] },
         action: 'retry_next_account'
+      },
+      {
+        id: 'management_provider_rule_high_priority',
+        defaultRule: false,
+        editable: true,
+        name: '管理端供应商高数字规则',
+        enabled: true,
+        priority: 9999,
+        scopeType: 'provider',
+        protocolCode: OPENAI_PROTOCOL_CODE,
+        providerCode: GPT_VENDOR_CODE,
+        match: { textIncludes: ['广告污染'] },
+        action: 'retry_no_avoidance'
+      },
+      {
+        id: 'management_other_provider_rule',
+        defaultRule: false,
+        editable: true,
+        name: '其他供应商规则',
+        enabled: true,
+        priority: 1,
+        scopeType: 'provider',
+        protocolCode: OPENAI_PROTOCOL_CODE,
+        providerCode: 'deepseek',
+        match: { textIncludes: ['广告污染'] },
+        action: 'avoid_account_ttl'
       }
     ]
   })
   assert.deepEqual(
     resolved.map((item) => item.id),
-    ['account_rule_high_priority', 'management_rule_low_priority', 'default_rule_low_priority'],
-    '运行时合并必须先按账户 / 管理端 / 默认来源排序，同来源内再按优先级排序'
+    ['account_rule_high_priority', 'management_provider_rule_high_priority', 'management_protocol_rule_low_priority', 'default_rule_low_priority'],
+    '运行时合并必须先按账户 / 管理端 / 默认来源排序，管理端同来源内供应商层先于协议层，其他供应商策略不得进入当前账户'
   )
 }
 
-console.log('流式拦截策略回归通过：策略读取上限、事件丢弃、流丢弃、失败替换、试运行、来源排序、写下游前服务端重试和图像文本扫描跳过符合预期')
+console.log('流式拦截策略回归通过：策略读取上限、协议/供应商层隔离、事件丢弃、流丢弃、失败替换、试运行、来源排序、写下游前服务端重试和图像文本扫描跳过符合预期')
 
 function assertStreamInterceptPolicyRepositoryGuards(): void {
   const repositorySource = readFileSync(new URL('../../storage/stream-intercept-policy.repository.ts', import.meta.url), 'utf8')
@@ -473,6 +504,9 @@ function assertStreamInterceptPolicyRepositoryGuards(): void {
   assert(dbServiceHandlersSource.includes('markAccountTemporaryUnavailable(operation.account.id, operation.reason)'), 'db-service 普通账号临时不可调用必须复用统一仓储入口')
   assert(dbServiceHandlersSource.includes('markAuthorizedAccountBindingTemporaryUnavailableByContext'), 'db-service 授权绑定临时不可调用必须复用统一仓储入口')
   assert(gatewayListBody.includes('protocol_code = ?'), '网关运行态读取流式拦截策略必须按协议收窄')
+  assert(gatewayListBody.includes("scope_type = 'protocol'"), '网关运行态读取流式拦截策略必须保留协议层策略')
+  assert(gatewayListBody.includes("scope_type = 'provider'"), '网关运行态读取流式拦截策略必须按供应商层收窄')
+  assert(gatewayListBody.includes('provider_code = ?'), '网关运行态读取流式拦截策略必须按当前供应商过滤')
   assert(gatewayListBody.includes('LIMIT ?'), '网关运行态读取流式拦截策略必须带固定上限')
   assert(gatewayListBody.includes('maxManagementStreamInterceptPolicies'), '网关运行态读取流式拦截策略必须复用管理端数量上限')
   assert(listBody.includes('LIMIT ?'), '管理端策略列表不能无上限读取策略表')

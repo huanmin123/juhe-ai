@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
-import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
+import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
+import type { GatewaySettings } from '../../modules/gateway/request-error-policy.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/openai-gateway-usage-records.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-precheck-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -301,15 +302,7 @@ function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
 }
 
 async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<void> {
-  const { account, gatewayAccount } = createGatewayAccount('落库错误清理运行态', {
-    error_handling_rules: [{
-      enabled: true,
-      name: '测试 529 冷却',
-      priority: 1,
-      status_codes: [529],
-      action: 'temp_unschedulable'
-    }]
-  })
+  const { account, gatewayAccount } = createGatewayAccount('落库错误清理运行态')
   gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 60_000, '写库前临时避让')
   assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.status, 'local_suppressed', '写库前应允许运行态短避让')
 
@@ -320,7 +313,9 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
       success: false,
       statusCode: 529,
       bodyText: '{"error":{"code":"overloaded","message":"模拟 529 失败"}}',
-      trafficSource: 'manual_account_test'
+      trafficSource: 'manual_account_test',
+      errorPolicies: [requestErrorPolicy('precheck_529', '测试 529 冷却', [529], 'temp_unschedulable')],
+      errorPolicyContext: { protocolCode: OPENAI_PROTOCOL_CODE, providerCode: 'gpt' }
     }
   })
   await withDbServiceRole(() => gatewaySideEffects.flushGatewayAccountSideEffectsForTest())
@@ -438,7 +433,7 @@ async function testPrecheckWaitsForInFlightConcurrencyBeforeMarking(): Promise<v
   assert.match(afterRelease?.lastErrorMessage ?? '', /模拟探针失败但仍有存量请求/, '并发归零后写库应保留探针失败原因')
 }
 
-function createGatewayAccount(name: string, credentialExtras: Record<string, unknown> = {}): {
+function createGatewayAccount(name: string): {
   account: AccountSummary
   group: ReturnType<typeof repositories.createGroup>
   gatewayAccount: OpenAIAccountSecret
@@ -454,8 +449,7 @@ function createGatewayAccount(name: string, credentialExtras: Record<string, unk
     groupId: group.id,
     credentials: {
       api_key: `sk-${Math.random().toString(16).slice(2)}`,
-      base_url: 'https://api.openai.com/v1',
-      ...credentialExtras
+      base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
     schedulable: true
@@ -464,6 +458,21 @@ function createGatewayAccount(name: string, credentialExtras: Record<string, unk
   assert(gatewayAccount, '应能读取到测试网关账号对象')
   assert.equal(gatewayAccount.status, 'active', '测试网关账号初始应为正常状态')
   return { account, group, gatewayAccount }
+}
+
+function requestErrorPolicy(id: string, name: string, statusCodes: number[], action: ErrorPolicySummary['action']): ErrorPolicySummary {
+  return {
+    id,
+    editable: true,
+    name,
+    enabled: true,
+    priority: 1,
+    scopeType: 'provider',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: 'gpt',
+    match: { statusCodes },
+    action
+  }
 }
 
 function assertActiveAccount(accountId: string, message: string): void {

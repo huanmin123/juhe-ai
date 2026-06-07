@@ -11,7 +11,7 @@ import {
   readCachedGatewaySettingsAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from './gateway-runtime-cache.service.js'
-import { type GatewaySettings } from './account-error-policy.service.js'
+import { type GatewaySettings } from './request-error-policy.service.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
 import {
   AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE,
@@ -85,8 +85,10 @@ import {
 } from './openai-gateway-usage-records.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 import type { GroupSchedulingPolicy } from '../../domain/types.js'
+import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import type { GatewayErrorPolicyRuntimeContext } from './request-error-policy.service.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -98,6 +100,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   identity?: OpenAIGatewayRequestIdentity
   apiKeyRecord?: GatewayApiKeyRow
   candidateAccounts?: UpstreamAccount[]
+  errorPolicies?: ErrorPolicySummary[]
   streamInterceptPolicies?: StreamInterceptPolicySummary[]
   disableSessionAffinity?: boolean
   trafficSource?: OpenAIGatewayTrafficSource
@@ -127,6 +130,8 @@ export interface OpenAIGatewayDispatchContext {
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
+  errorPolicies: ErrorPolicySummary[]
+  errorPolicyContext: GatewayErrorPolicyRuntimeContext
   streamInterceptPolicies: StreamInterceptPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
   releaseClientIpConcurrency: () => void
@@ -141,6 +146,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
   let runtimeAccounts: UpstreamAccount[] | undefined
   let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
+  let runtimeErrorPolicies: ErrorPolicySummary[] | undefined = options.errorPolicies
   let runtimeStreamInterceptPolicies: StreamInterceptPolicySummary[] | undefined = options.streamInterceptPolicies
 
   const identity = options.identity ?? await (async () => {
@@ -154,6 +160,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     runtimeGroupAccess = runtime.groupAccess
     runtimeAccounts = runtime.accounts
     runtimeAccountDispatchDiagnostics = runtime.accountDispatchDiagnostics
+    runtimeErrorPolicies = runtime.errorPolicies
+    options.errorPolicies = runtime.errorPolicies
     runtimeStreamInterceptPolicies = runtime.streamInterceptPolicies
     options.streamInterceptPolicies = runtime.streamInterceptPolicies
     return {
@@ -397,6 +405,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     endpoint
   })
+  const errorPolicyContext: GatewayErrorPolicyRuntimeContext = {
+    protocolCode: groupAccess?.protocolCode,
+    providerCode: groupAccess?.providerCode,
+    clientProfile: clientStrategy.clientProfile,
+    model: requestModel(req)
+  }
   const clientIpAccountAvoidanceTracker = createClientIpAccountAvoidanceTracker({
     systemAccountId,
     apiKeyId,
@@ -1048,6 +1062,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientIpAccountAvoidanceTracker,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
+    errorPolicies: runtimeErrorPolicies ?? [],
+    errorPolicyContext,
     streamInterceptPolicies: runtimeStreamInterceptPolicies ?? [],
     apiKeyRecord,
     releaseClientIpConcurrency

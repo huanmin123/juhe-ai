@@ -14,7 +14,8 @@ import { clearSettingsRepositoryCache } from '../../storage/settings.repository.
 import { availabilityScheduleCacheTtlMs } from '../../storage/availability-schedule-cache.js'
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
-import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
+import { readGatewaySettings, type GatewaySettings } from './request-error-policy.service.js'
+import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 import { listProviderModelCatalog, type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 
@@ -346,6 +347,7 @@ function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceG
     settings: { ...runtime.settings },
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
     accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret),
+    errorPolicies: runtime.errorPolicies ? runtime.errorPolicies.map(cloneErrorPolicy) : undefined,
     streamInterceptPolicies: runtime.streamInterceptPolicies ? runtime.streamInterceptPolicies.map(cloneStreamInterceptPolicy) : undefined
   }
 }
@@ -358,6 +360,13 @@ function cloneGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime): DbSer
 }
 
 function cloneStreamInterceptPolicy(policy: StreamInterceptPolicySummary): StreamInterceptPolicySummary {
+  return {
+    ...policy,
+    match: { ...policy.match }
+  }
+}
+
+function cloneErrorPolicy(policy: ErrorPolicySummary): ErrorPolicySummary {
   return {
     ...policy,
     match: { ...policy.match }

@@ -1,11 +1,13 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
+import { isOpenAIProtocolProviderCode } from './provider.repository.js'
 
 export type StreamInterceptPolicyExecutionMode = 'intercept' | 'dry_run'
 export type StreamInterceptPolicyDataHandling = 'discard_event' | 'discard_stream' | 'replace_with_failure'
 export type StreamInterceptPolicyAccountSwitch = 'none' | 'request_next_account' | 'avoid_account_ttl' | 'avoid_upstream_bucket_ttl'
 export type StreamInterceptPolicyAccountState = 'none' | 'runtime_avoidance'
+export type StreamInterceptPolicyScopeType = 'protocol' | 'provider'
 export type StreamInterceptPolicyAction =
   | 'observe'
   | 'drop_event'
@@ -31,7 +33,9 @@ export interface StreamInterceptPolicySummary {
   name: string
   enabled: boolean
   priority: number
+  scopeType: StreamInterceptPolicyScopeType
   protocolCode: string
+  providerCode?: string
   match: StreamInterceptPolicyMatch
   action: StreamInterceptPolicyAction
   notes?: string
@@ -43,7 +47,9 @@ export interface StreamInterceptPolicyInput {
   name?: string
   enabled?: boolean
   priority?: number
+  scopeType: StreamInterceptPolicyScopeType
   protocolCode: string
+  providerCode?: string | null
   match?: StreamInterceptPolicyMatch
   action?: StreamInterceptPolicyAction
   notes?: string | null
@@ -54,7 +60,9 @@ interface StreamInterceptPolicyRow {
   name: string
   enabled: number
   priority: number
+  scope_type: string
   protocol_code: string
+  provider_code: string | null
   match_json: string
   action: string
   notes: string | null
@@ -76,7 +84,9 @@ const streamInterceptPolicyInputKeys = new Set([
   'name',
   'enabled',
   'priority',
+  'scopeType',
   'protocolCode',
+  'providerCode',
   'match',
   'action',
   'notes'
@@ -99,6 +109,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI response.failed',
     enabled: true,
     priority: 1,
+    scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       eventTypes: ['response.failed']
@@ -113,6 +124,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI event:error',
     enabled: true,
     priority: 2,
+    scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       eventTypes: ['error']
@@ -127,6 +139,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI data.error',
     enabled: true,
     priority: 3,
+    scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       jsonPathsExists: ['error']
@@ -141,6 +154,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI response.error',
     enabled: true,
     priority: 4,
+    scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       jsonPathsExists: ['response.error']
@@ -155,6 +169,7 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     name: 'OpenAI cyber_policy',
     enabled: true,
     priority: 5,
+    scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
       errorCodes: ['cyber_policy']
@@ -180,19 +195,35 @@ export function listStreamInterceptPolicies(): StreamInterceptPolicyListResult {
   }
 }
 
-export function listActiveStreamInterceptPoliciesForGateway(): StreamInterceptPolicySummary[] {
+export function listActiveStreamInterceptPoliciesForGateway(input: {
+  protocolCode: string
+  providerCode?: string
+}): StreamInterceptPolicySummary[] {
+  const protocolCode = normalizeProtocolCode(input.protocolCode)
+  const providerCode = normalizeOptionalProviderCode(input.providerCode, '供应商编码')
+  const scopeFilter = providerCode
+    ? `AND (
+        (scope_type = 'protocol' AND provider_code IS NULL)
+        OR (scope_type = 'provider' AND provider_code = ?)
+      )`
+    : `AND scope_type = 'protocol'
+      AND provider_code IS NULL`
+  const params = providerCode
+    ? [protocolCode, providerCode, maxManagementStreamInterceptPolicies]
+    : [protocolCode, maxManagementStreamInterceptPolicies]
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT *
       FROM stream_intercept_policies
       WHERE enabled = 1
         AND protocol_code = ?
-      ORDER BY priority ASC, updated_at DESC, id ASC
+        ${scopeFilter}
+      ORDER BY CASE scope_type WHEN 'provider' THEN 0 ELSE 1 END ASC, priority ASC, updated_at DESC, id ASC
       LIMIT ?
     `)
-    .all('openai', maxManagementStreamInterceptPolicies) as unknown as StreamInterceptPolicyRow[]
+    .all(...params) as unknown as StreamInterceptPolicyRow[]
   return [
-    ...listStreamInterceptPolicyDefaultRules().filter((policy) => policy.enabled),
+    ...listStreamInterceptPolicyDefaultRules().filter((policy) => policy.enabled && policy.protocolCode === protocolCode),
     ...rows.map(policyFromRow)
   ]
 }
@@ -209,16 +240,18 @@ export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): 
   getBusinessDatabase()
     .prepare(`
       INSERT INTO stream_intercept_policies (
-        id, name, enabled, priority, protocol_code, match_json,
+        id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json,
         action, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       policy.id,
       policy.name,
       policy.enabled ? 1 : 0,
       policy.priority,
+      policy.scopeType,
       policy.protocolCode,
+      policy.providerCode ?? null,
       JSON.stringify(policy.match),
       policy.action,
       policy.notes ?? null,
@@ -246,7 +279,9 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
       SET name = ?,
           enabled = ?,
           priority = ?,
+          scope_type = ?,
           protocol_code = ?,
+          provider_code = ?,
           match_json = ?,
           action = ?,
           notes = ?,
@@ -257,7 +292,9 @@ export function updateStreamInterceptPolicy(id: string, input: StreamInterceptPo
       policy.name,
       policy.enabled ? 1 : 0,
       policy.priority,
+      policy.scopeType,
       policy.protocolCode,
+      policy.providerCode ?? null,
       JSON.stringify(policy.match),
       policy.action,
       policy.notes ?? null,
@@ -284,7 +321,7 @@ function listStreamInterceptPolicyRows(): StreamInterceptPolicyRow[] {
     .prepare(`
       SELECT *
       FROM stream_intercept_policies
-      ORDER BY priority ASC, updated_at DESC, id ASC
+      ORDER BY protocol_code ASC, CASE scope_type WHEN 'provider' THEN 0 ELSE 1 END ASC, provider_code ASC, priority ASC, updated_at DESC, id ASC
       LIMIT ?
     `)
     .all(maxManagementStreamInterceptPolicies) as unknown as StreamInterceptPolicyRow[]
@@ -318,6 +355,9 @@ function normalizePolicyInput(
   const action = input.action === undefined && fallback
     ? fallback.action
     : normalizePolicyAction(input.action)
+  const protocolCode = normalizeProtocolCode(input.protocolCode)
+  const scopeType = normalizeScopeType(input.scopeType, fallback?.scopeType)
+  const providerCode = normalizeScopeProviderCode(scopeType, input.providerCode, fallback?.providerCode, protocolCode)
   return {
     id: metadata.id,
     defaultRule: false,
@@ -325,7 +365,9 @@ function normalizePolicyInput(
     name: normalizePolicyName(input.name, fallback?.name),
     enabled: normalizeBooleanInput(input.enabled, fallback?.enabled ?? true, '启用状态'),
     priority: normalizePriority(input.priority, fallback?.priority),
-    protocolCode: normalizeProtocolCode(input.protocolCode),
+    scopeType,
+    protocolCode,
+    providerCode,
     match: normalizeMatch(input.match === undefined ? fallback?.match : input.match),
     action,
     notes: normalizeOptionalTextInput(input.notes, fallback?.notes, 1000, '备注'),
@@ -343,7 +385,9 @@ function policyFromRow(row: StreamInterceptPolicyRow): StreamInterceptPolicySumm
     name: row.name,
     enabled: row.enabled === 1,
     priority: normalizePriority(row.priority, 1),
+    scopeType: normalizeScopeType(row.scope_type),
     protocolCode: normalizeProtocolCode(row.protocol_code),
+    providerCode: normalizeRowProviderCode(row.scope_type, row.provider_code, row.protocol_code),
     match: normalizeMatch(parseJsonObject(row.match_json)),
     action,
     notes: row.notes ?? undefined,
@@ -394,6 +438,74 @@ function normalizeProtocolCode(value: unknown): string {
   }
   if (text.length > 80) {
     throw new Error('流式拦截策略协议编码不能超过 80 个字符')
+  }
+  return text
+}
+
+function normalizeScopeType(value: unknown, fallback?: StreamInterceptPolicyScopeType): StreamInterceptPolicyScopeType {
+  if (value === undefined) {
+    if (fallback) return fallback
+    throw new Error('流式拦截策略作用层级不能为空')
+  }
+  if (value === 'protocol' || value === 'provider') {
+    return value
+  }
+  throw new Error('流式拦截策略作用层级无效')
+}
+
+function normalizeScopeProviderCode(
+  scopeType: StreamInterceptPolicyScopeType,
+  value: unknown,
+  fallback: string | undefined,
+  protocolCode: string
+): string | undefined {
+  if (scopeType === 'protocol') {
+    if (value !== undefined && value !== null && normalizeOptionalProviderCode(value, '供应商编码')) {
+      throw new Error('协议层流式拦截策略不能绑定供应商')
+    }
+    return undefined
+  }
+  const providerCode = value === undefined
+    ? fallback
+    : normalizeOptionalProviderCode(value, '供应商编码')
+  if (!providerCode) {
+    throw new Error('供应商层流式拦截策略必须选择供应商')
+  }
+  if (protocolCode !== OPENAI_PROTOCOL_CODE || !isOpenAIProtocolProviderCode(providerCode)) {
+    throw new Error('供应商层流式拦截策略只能选择 OpenAI v1 协议下已启用的供应商')
+  }
+  return providerCode
+}
+
+function normalizeRowProviderCode(scopeTypeValue: unknown, providerCodeValue: unknown, protocolCodeValue: unknown): string | undefined {
+  const scopeType = normalizeScopeType(scopeTypeValue)
+  normalizeProtocolCode(protocolCodeValue)
+  if (scopeType === 'protocol') {
+    if (providerCodeValue !== null && providerCodeValue !== undefined && normalizeOptionalProviderCode(providerCodeValue, '供应商编码')) {
+      throw new Error('协议层流式拦截策略不能绑定供应商')
+    }
+    return undefined
+  }
+  const providerCode = normalizeOptionalProviderCode(providerCodeValue, '供应商编码')
+  if (!providerCode) {
+    throw new Error('供应商层流式拦截策略必须选择供应商')
+  }
+  return providerCode
+}
+
+function normalizeOptionalProviderCode(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${label}必须是字符串`)
+  }
+  const text = value.trim().toLowerCase()
+  if (!text) {
+    return undefined
+  }
+  if (text.length > 80) {
+    throw new Error(`${label}不能超过 80 个字符`)
   }
   return text
 }

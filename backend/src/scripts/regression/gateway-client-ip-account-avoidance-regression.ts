@@ -454,7 +454,6 @@ function createTestAccount(id: string): Parameters<typeof clientIpAvoidance.orde
     baseUrl: 'http://127.0.0.1/v1',
     proxyProfileId: undefined,
     concurrencyLimit: 1,
-    errorPolicyId: undefined,
     cooldownUntil: undefined,
     lastErrorMessage: undefined,
     streamFailureCount: 0,

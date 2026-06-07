@@ -17,7 +17,6 @@ export interface AccountCredentials {
   account_id?: string
   chatgpt_user_id?: string
   plan_type?: string
-  error_handling_rules?: unknown[]
   stream_intercept_rules?: unknown[]
   [key: string]: unknown
 }
@@ -206,7 +205,6 @@ export interface AccountSummary {
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
-  errorPolicyId?: string
   schedulable: boolean
   availabilitySchedule?: AccountAvailabilitySchedule
   availabilityScheduleActive?: boolean
@@ -438,11 +436,44 @@ export interface AccountExportResult {
   }
 }
 
+export type ErrorPolicyScopeType = 'global' | 'protocol' | 'provider' | 'client' | 'model'
+export type ErrorPolicyAction = 'retry_next' | 'temp_unschedulable' | 'rate_limited' | 'error_disabled'
+export type ErrorPolicyRecoveryStrategy = 'duration' | 'daily' | 'weekly'
+export type ErrorPolicyModelMatchType = 'exact' | 'prefix' | 'contains'
+
+export interface ErrorPolicyMatch {
+  statusCodes?: number[]
+  errorCodes?: string[]
+  errorTypes?: string[]
+  keywords?: string[]
+}
+
 export interface ErrorPolicySummary {
   id: string
+  editable: boolean
   name: string
   enabled: boolean
-  rules: Array<Record<string, unknown>>
+  priority: number
+  scopeType: ErrorPolicyScopeType
+  protocolCode?: string
+  providerCode?: string
+  clientProfile?: string
+  modelPattern?: string
+  modelMatchType?: ErrorPolicyModelMatchType
+  match: ErrorPolicyMatch
+  action: ErrorPolicyAction
+  resetStrategy?: ErrorPolicyRecoveryStrategy
+  durationHours?: number
+  dailyResetHour?: number
+  weeklyResetDay?: number
+  weeklyResetHour?: number
+  notes?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface ErrorPolicyListResult {
+  policies: ErrorPolicySummary[]
 }
 
 export interface GroupSchedulingPolicy {

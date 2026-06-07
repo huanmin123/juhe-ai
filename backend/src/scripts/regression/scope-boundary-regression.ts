@@ -410,8 +410,7 @@ async function main(): Promise<void> {
       assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, secretKey), `授权实例详情不应返回敏感凭据字段 ${secretKey}`)
     }
     assert(!authorizedDetailSecretJson.includes('sk-scope-user-b'), '授权实例详情不应泄露来源账户 API Key 明文')
-    const errorHandlingRules = authorizedDetailCredentials.error_handling_rules as Array<Record<string, unknown>> | undefined
-    assert(errorHandlingRules?.[0]?.name === '授权来源 429 限流', '授权实例详情应返回来源账户错误处理策略')
+    assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'error_handling_rules'), '授权实例详情不应返回账号级错误处理策略')
     const streamInterceptRules = authorizedDetailCredentials.stream_intercept_rules as Array<Record<string, unknown>> | undefined
     assert(streamInterceptRules?.[0]?.name === '授权来源流式异常', '授权实例详情应返回来源账户流式拦截规则')
     summary.push('我的账户自有作用域检查通过')
@@ -718,15 +717,6 @@ function seedData(): SeedState {
     repositories.clearAccountFailureStateResult(userAAccount.id, userAAccess, { allowPendingTestRestore: true }).account?.status === 'active',
     '作用域回归种子应模拟用户 A 账户测试成功'
   )
-  const userBErrorHandlingRules = [{
-    enabled: true,
-    name: '授权来源 429 限流',
-    priority: 10,
-    status_codes: [429],
-    action: 'rate_limited',
-    reset_strategy: 'duration',
-    duration_hours: 2
-  }]
   const userBStreamInterceptRules = [{
     enabled: true,
     name: '授权来源流式异常',
@@ -759,7 +749,6 @@ function seedData(): SeedState {
     credentials: {
       api_key: 'sk-scope-user-b',
       base_url: 'https://api.openai.com/v1',
-      error_handling_rules: userBErrorHandlingRules,
       stream_intercept_rules: userBStreamInterceptRules
     },
     concurrencyLimit: 3,

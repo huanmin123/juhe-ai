@@ -93,15 +93,6 @@
         :readonly="authorizedEditing"
       />
 
-      <AccountErrorPolicyCard
-        v-if="hasAccountType"
-        v-model:rules="errorPolicyRules"
-        :account-type="form.type"
-        :base-url="form.baseUrl"
-        :provider-code="form.providerCode"
-        :readonly="authorizedEditing"
-      />
-
       <AccountStreamInterceptPolicyCard
         v-if="hasAccountType"
         v-model:rules="streamInterceptRules"
@@ -129,13 +120,11 @@ import type { AccountSummary, AccountType, OpenAIAuthURLResult, ProviderDefiniti
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
-import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
 import AccountStreamInterceptPolicyCard from './AccountStreamInterceptPolicyCard.vue'
 import { statusText } from './accountFormatters'
-import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 
@@ -152,7 +141,6 @@ interface SelectOption<T = string> {
 }
 
 const open = defineModel<boolean>('open', { required: true })
-const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
 const streamInterceptRules = defineModel<AccountStreamInterceptRuleForm[]>('streamInterceptRules', { required: true })
 
 const props = withDefaults(defineProps<{

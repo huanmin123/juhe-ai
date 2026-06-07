@@ -319,7 +319,6 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     includeCredentials ? 'accounts.credentials_encrypted' : "'' AS credentials_encrypted",
     'accounts.proxy_profile_id',
     'accounts.concurrency_limit',
-    'accounts.error_policy_id',
     'accounts.priority',
     'accounts.super_priority_enabled',
     'accounts.fallback_enabled',
@@ -367,7 +366,6 @@ function sourceAccountSelectColumns(includeCredentials: boolean): string {
     includeCredentials ? 'source_accounts.credentials_encrypted AS source_credentials_encrypted' : "'' AS source_credentials_encrypted",
     'source_accounts.proxy_profile_id AS source_proxy_profile_id',
     'source_accounts.concurrency_limit AS source_concurrency_limit',
-    'source_accounts.error_policy_id AS source_error_policy_id',
     'source_accounts.client_compatibility AS source_client_compatibility'
   ].join(', ')
 }
@@ -388,7 +386,6 @@ function accountListOuterSelectColumns(): string {
     'credentials_encrypted',
     'proxy_profile_id',
     'concurrency_limit',
-    'error_policy_id',
     'priority',
     'super_priority_enabled',
     'fallback_enabled',
@@ -439,7 +436,6 @@ function accountListOuterSelectColumns(): string {
     'source_credentials_encrypted',
     'source_proxy_profile_id',
     'source_concurrency_limit',
-    'source_error_policy_id',
     'source_client_compatibility'
   ].map((column) => `account_rows.${column}`).join(', ')
 }
@@ -524,7 +520,6 @@ const publicAccountCredentialKeys = [
   'account_id',
   'chatgpt_user_id',
   'plan_type',
-  'error_handling_rules',
   'stream_intercept_rules'
 ] as const
 
@@ -553,7 +548,6 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     credentials_encrypted: string | null
     proxy_profile_id: string | null
     concurrency_limit: number | null
-    error_policy_id: string | null
     client_compatibility: AccountListRow['client_compatibility']
   }> = []
   const database = getBusinessDatabase()
@@ -563,7 +557,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
         SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
           last_error_code, last_error_message, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
-          proxy_profile_id, concurrency_limit, error_policy_id, client_compatibility
+          proxy_profile_id, concurrency_limit, client_compatibility
         FROM accounts
         WHERE deleted_at IS NULL
           AND id IN (${sqlPlaceholders(chunk.length)})
@@ -594,7 +588,6 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
       source_credentials_encrypted: source.credentials_encrypted,
       source_proxy_profile_id: source.proxy_profile_id,
       source_concurrency_limit: source.concurrency_limit,
-      source_error_policy_id: source.error_policy_id,
       source_client_compatibility: source.client_compatibility
     }
   })

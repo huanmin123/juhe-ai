@@ -2,10 +2,11 @@ import type { AccountSummary } from '../../domain/types.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput } from '../../storage/repositories.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
+import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
 import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
-import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
+import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/request-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
@@ -157,6 +158,7 @@ export interface DbServiceGatewayRuntime {
   accounts: OpenAIAccountSecret[]
   hasAccountAvailabilitySchedule?: boolean
   accountDispatchDiagnostics?: OpenAIAccountsForGroupDiagnostics
+  errorPolicies?: ErrorPolicySummary[]
   streamInterceptPolicies?: StreamInterceptPolicySummary[]
 }
 
@@ -247,6 +249,13 @@ export type DbServiceOperation =
       errorMessage?: string
       settings?: GatewaySettings
       trafficSource?: OpenAIGatewayTrafficSource
+      errorPolicies?: ErrorPolicySummary[]
+      errorPolicyContext?: {
+        protocolCode?: string
+        providerCode?: string
+        clientProfile?: string
+        model?: string
+      }
     }
   }
   | {
@@ -270,6 +279,12 @@ export type DbServiceOperation =
     account: OpenAIAccountSecret
     reason: string
     precheckStartedAt?: string
+    errorPolicyDecision?: {
+      action: 'retry_next' | 'cooldown' | 'disable'
+      ruleName?: string
+      cooldownUntil?: string
+      cooldownStatus?: 'rate_limited' | 'temporary_unavailable'
+    }
   }
   | {
     type: 'mark_account_temporary_unavailable'
@@ -284,7 +299,14 @@ export type DbServiceOperation =
     ipHash: string
   }
   | {
+    type: 'list_active_error_policies'
+    protocolCode?: string
+    providerCode?: string
+  }
+  | {
     type: 'list_active_stream_intercept_policies'
+    protocolCode: string
+    providerCode?: string
   }
   | {
     type: 'record_client_ip_policy_hits'
@@ -327,6 +349,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'find_active_client_ip_policy' } ? ActiveClientIpPolicy | undefined :
+  T extends { type: 'list_active_error_policies' } ? ErrorPolicySummary[] :
   T extends { type: 'list_active_stream_intercept_policies' } ? StreamInterceptPolicySummary[] :
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :

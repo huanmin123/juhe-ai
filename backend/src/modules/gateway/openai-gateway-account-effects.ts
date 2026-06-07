@@ -1,7 +1,8 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getRequestLogger } from '../../shared/request-context.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import { type GatewaySettings } from './account-error-policy.service.js'
+import { type GatewayErrorPolicyRuntimeContext, type GatewaySettings } from './request-error-policy.service.js'
+import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
 import {
   clearGatewayAccountRuntimeAvailability,
   enqueueGatewayAccountErrorHandlingSideEffect,
@@ -27,6 +28,8 @@ export function applyAccountErrorHandlingWithCacheInvalidation(
     errorMessage?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
+    errorPolicies?: ErrorPolicySummary[]
+    errorPolicyContext?: GatewayErrorPolicyRuntimeContext
   }
 ): void {
   const normalizedInput = {
@@ -123,7 +126,7 @@ export function handleStreamFailure(
       errorCode,
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten
-    }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态屏障' : '流式失败已写入账号错误处理队列')
+    }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态屏障' : '流式失败已写入账号运行态处理队列')
   }
 }
 

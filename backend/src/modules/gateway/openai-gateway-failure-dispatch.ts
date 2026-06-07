@@ -2,9 +2,14 @@ import type { Request } from 'express'
 
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import {
+  requestErrorPolicyReason,
+  decideRequestErrorPolicy,
   parseErrorPayload,
+  type RequestErrorPolicyDecision,
+  type GatewayErrorPolicyRuntimeContext,
   type GatewaySettings
-} from './account-error-policy.service.js'
+} from './request-error-policy.service.js'
+import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
 import type { AuditCaptureContext } from './audit-capture.service.js'
 import {
   applyAccountErrorHandlingWithCacheInvalidation,
@@ -68,6 +73,8 @@ interface HandleFailedUpstreamResponseInput {
   lastAttempt?: UpstreamAttempt
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
+  errorPolicies?: ErrorPolicySummary[]
+  errorPolicyContext?: GatewayErrorPolicyRuntimeContext
   retrySameAccount?: boolean
 }
 
@@ -187,6 +194,12 @@ export async function handleFailedUpstreamResponse(
   if (!responseBodyRead.truncated) {
     parsedError = parseErrorPayload(responseBodyText, response.headers)
   }
+  const policyDecision = responseBodyRead.truncated
+    ? undefined
+    : decideRequestErrorPolicy(account, response.status, response.headers, Buffer.from(responseBodyText), settings, {
+        policies: input.errorPolicies,
+        context: input.errorPolicyContext
+      })
   const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
   if (input.retrySameAccount) {
@@ -211,7 +224,7 @@ export async function handleFailedUpstreamResponse(
   if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource)) {
     const reason = responseBodyRead.truncated
       ? `上游账号返回非成功状态：HTTP ${response.status}`
-      : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`
+      : errorPolicyFailureReason(response.status, policyDecision, parsedErrorMessage || diagnosticErrorMessage)
     const localSuppression = suppressGatewayAccountLocally(
       account,
       settings,
@@ -226,10 +239,15 @@ export async function handleFailedUpstreamResponse(
         endpoint: requestEndpoint(req),
         reason,
         statusCode: response.status,
+        errorPolicyDecision: policyDecision,
         forcePrecheck: localSuppression.action === 'precheck_required'
       })
     } else {
-      applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
+      applyAccountErrorHandlingWithCacheInvalidation(account, {
+        ...failureInput,
+        errorPolicies: input.errorPolicies,
+        errorPolicyContext: input.errorPolicyContext
+      })
     }
   }
 
@@ -243,6 +261,17 @@ export async function handleFailedUpstreamResponse(
   })
 
   return { action: 'skip_account', lastAttempt }
+}
+
+function errorPolicyFailureReason(
+  statusCode: number,
+  decision: RequestErrorPolicyDecision | undefined,
+  fallbackMessage: string | undefined
+): string {
+  if (decision) {
+    return requestErrorPolicyReason(statusCode, decision, fallbackMessage)
+  }
+  return fallbackMessage || `上游账号返回非成功状态：HTTP ${statusCode}`
 }
 
 export async function handleUpstreamRequestError(

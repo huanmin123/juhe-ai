@@ -5,6 +5,7 @@ import type {
   StreamInterceptPolicyDataHandling,
   StreamInterceptPolicyExecutionMode,
   StreamInterceptPolicyMatch,
+  StreamInterceptPolicyScopeType,
   StreamInterceptPolicySummary
 } from '../../storage/stream-intercept-policy.repository.js'
 import { streamInterceptPolicyActionRuntime } from '../../storage/stream-intercept-policy.repository.js'
@@ -23,6 +24,9 @@ export interface RuntimeStreamInterceptPolicy {
   action: StreamInterceptPolicyAction
   executionMode: StreamInterceptPolicyExecutionMode
   priority: number
+  scopeType: StreamInterceptPolicyScopeType
+  protocolCode: string
+  providerCode?: string
   match: StreamInterceptPolicyMatch
   dataHandling: StreamInterceptPolicyDataHandling
   retryEnabled: boolean
@@ -47,10 +51,15 @@ const textScanMaxEventChars = 64 * 1024
 
 export function resolveRuntimeStreamInterceptPolicies(input: ResolveStreamInterceptPoliciesInput): RuntimeStreamInterceptPolicy[] {
   const management = (input.managementPolicies ?? [])
-    .filter((policy) => policy.enabled && policyMatchesOpenAIProtocol(policy))
+    .filter((policy) => policy.enabled && policyMatchesAccountScope(policy, input.account))
     .map(runtimePolicyFromSummary)
-  const accountRules = accountStreamInterceptRules(input.account.credentials)
-  return [...management, ...accountRules].sort((left, right) => sourceOrder(left.source) - sourceOrder(right.source) || left.priority - right.priority || left.id.localeCompare(right.id))
+  const accountRules = accountStreamInterceptRules(input.account)
+  return [...management, ...accountRules].sort((left, right) =>
+    sourceOrder(left.source) - sourceOrder(right.source)
+    || scopeOrder(left) - scopeOrder(right)
+    || left.priority - right.priority
+    || left.id.localeCompare(right.id)
+  )
 }
 
 export function matchRuntimeStreamInterceptPolicy(
@@ -73,8 +82,10 @@ export function matchRuntimeStreamInterceptPolicy(
   return undefined
 }
 
-function policyMatchesOpenAIProtocol(policy: StreamInterceptPolicySummary): boolean {
-  return normalizeProviderToken(policy.protocolCode) === OPENAI_PROTOCOL_CODE
+function policyMatchesAccountScope(policy: StreamInterceptPolicySummary, account: UpstreamAccount): boolean {
+  if (normalizeProviderToken(policy.protocolCode) !== OPENAI_PROTOCOL_CODE) return false
+  if (policy.scopeType === 'protocol') return true
+  return normalizeProviderToken(policy.providerCode) === normalizeProviderToken(account.providerCode)
 }
 
 function runtimePolicyFromSummary(policy: StreamInterceptPolicySummary): RuntimeStreamInterceptPolicy {
@@ -86,6 +97,9 @@ function runtimePolicyFromSummary(policy: StreamInterceptPolicySummary): Runtime
     enabled: policy.enabled,
     action: policy.action,
     priority: policy.priority,
+    scopeType: policy.scopeType,
+    protocolCode: policy.protocolCode,
+    providerCode: policy.providerCode,
     match: policy.match,
     ...runtime
   }
@@ -195,15 +209,16 @@ function stringPath(value: unknown, path: string[]): string | undefined {
   return typeof current === 'string' ? current : undefined
 }
 
-function accountStreamInterceptRules(credentials: Record<string, unknown>): RuntimeStreamInterceptPolicy[] {
+function accountStreamInterceptRules(account: UpstreamAccount): RuntimeStreamInterceptPolicy[] {
+  const credentials = account.credentials
   if (credentials.stream_intercept_rules === undefined) return []
   if (!Array.isArray(credentials.stream_intercept_rules)) {
     throw new Error('账户流式拦截规则格式无效')
   }
-  return credentials.stream_intercept_rules.map((item, index) => accountStreamInterceptRule(item, index))
+  return credentials.stream_intercept_rules.map((item, index) => accountStreamInterceptRule(item, index, account.providerCode))
 }
 
-function accountStreamInterceptRule(value: unknown, index: number): RuntimeStreamInterceptPolicy {
+function accountStreamInterceptRule(value: unknown, index: number, providerCode: string): RuntimeStreamInterceptPolicy {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`第 ${index + 1} 条账户流式拦截规则格式无效`)
   }
@@ -219,6 +234,9 @@ function accountStreamInterceptRule(value: unknown, index: number): RuntimeStrea
     enabled: requiredBoolean(record.enabled, `第 ${index + 1} 条账户流式拦截规则启用状态`),
     action,
     priority: requiredPositiveInt(record.priority, `第 ${index + 1} 条账户流式拦截规则优先级`),
+    scopeType: 'provider',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode,
     match,
     ...runtime
   }
@@ -277,6 +295,12 @@ function sourceOrder(source: StreamInterceptPolicySource): number {
   if (source === 'account') return 0
   if (source === 'management') return 1
   return 2
+}
+
+function scopeOrder(policy: RuntimeStreamInterceptPolicy): number {
+  if (policy.source === 'account') return 0
+  if (policy.scopeType === 'provider') return 0
+  return 1
 }
 
 

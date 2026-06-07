@@ -176,12 +176,36 @@ export function applyBusinessSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS error_policies (
       id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
-      rules_json TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 100,
+      scope_type TEXT NOT NULL DEFAULT 'global',
+      protocol_code TEXT,
+      provider_code TEXT,
+      client_profile TEXT,
+      model_pattern TEXT,
+      model_match_type TEXT,
+      match_json TEXT NOT NULL DEFAULT '{}',
+      action TEXT NOT NULL DEFAULT 'temp_unschedulable',
+      reset_strategy TEXT,
+      duration_hours INTEGER,
+      daily_reset_hour INTEGER,
+      weekly_reset_day INTEGER,
+      weekly_reset_hour INTEGER,
+      notes TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      CHECK (scope_type IN ('global', 'protocol', 'provider', 'client', 'model')),
+      CHECK (action IN ('retry_next', 'temp_unschedulable', 'rate_limited', 'error_disabled')),
+      CHECK (reset_strategy IS NULL OR reset_strategy IN ('duration', 'daily', 'weekly')),
+      CHECK (model_match_type IS NULL OR model_match_type IN ('exact', 'prefix', 'contains')),
+      CHECK (
+        (scope_type = 'global' AND protocol_code IS NULL AND provider_code IS NULL AND client_profile IS NULL AND model_pattern IS NULL AND model_match_type IS NULL)
+        OR (scope_type = 'protocol' AND protocol_code IS NOT NULL AND provider_code IS NULL AND client_profile IS NULL AND model_pattern IS NULL AND model_match_type IS NULL)
+        OR (scope_type = 'provider' AND protocol_code IS NOT NULL AND provider_code IS NOT NULL AND client_profile IS NULL AND model_pattern IS NULL AND model_match_type IS NULL)
+        OR (scope_type = 'client' AND protocol_code IS NOT NULL AND provider_code IS NULL AND client_profile IS NOT NULL AND model_pattern IS NULL AND model_match_type IS NULL)
+        OR (scope_type = 'model' AND protocol_code IS NOT NULL AND client_profile IS NULL AND model_pattern IS NOT NULL AND model_match_type IS NOT NULL)
+      )
     );
 
     CREATE TABLE IF NOT EXISTS stream_intercept_policies (
@@ -189,12 +213,19 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       priority INTEGER NOT NULL DEFAULT 100,
+      scope_type TEXT NOT NULL DEFAULT 'protocol',
       protocol_code TEXT NOT NULL,
+      provider_code TEXT,
       match_json TEXT NOT NULL DEFAULT '{}',
       action TEXT NOT NULL DEFAULT 'avoid_account_ttl',
       notes TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      CHECK (scope_type IN ('protocol', 'provider')),
+      CHECK (
+        (scope_type = 'protocol' AND provider_code IS NULL)
+        OR (scope_type = 'provider' AND provider_code IS NOT NULL)
+      )
     );
 
     CREATE TABLE IF NOT EXISTS external_integration_sources (
@@ -245,7 +276,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
       proxy_profile_id TEXT,
       concurrency_limit INTEGER NOT NULL DEFAULT 20,
-      error_policy_id TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
       super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       fallback_enabled INTEGER NOT NULL DEFAULT 0,
@@ -275,7 +305,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (provider_code) REFERENCES providers(code),
       FOREIGN KEY (provider_protocol_profile_id) REFERENCES provider_protocol_profiles(id),
       FOREIGN KEY (proxy_profile_id) REFERENCES proxy_profiles(id),
-      FOREIGN KEY (error_policy_id) REFERENCES error_policies(id),
       FOREIGN KEY (authorization_instance_source_account_id) REFERENCES accounts(id),
       FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id)
     );
@@ -686,6 +715,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  ensureErrorPolicyIndexes(database)
   ensureStreamInterceptPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureApiKeyGroupBindingUniqueIndexes(database)
@@ -703,6 +733,14 @@ function ensureStreamInterceptPolicyIndexes(database: DatabaseSync): void {
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_enabled_priority ON stream_intercept_policies(enabled, priority, updated_at DESC, id);
     CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_protocol_priority ON stream_intercept_policies(protocol_code, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_scope_priority ON stream_intercept_policies(protocol_code, scope_type, provider_code, priority, updated_at DESC, id);
+  `)
+}
+
+function ensureErrorPolicyIndexes(database: DatabaseSync): void {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_error_policies_enabled_priority ON error_policies(enabled, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_error_policies_scope_priority ON error_policies(protocol_code, scope_type, provider_code, client_profile, model_pattern, priority, updated_at DESC, id);
   `)
 }
 

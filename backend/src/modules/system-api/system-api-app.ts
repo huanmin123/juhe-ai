@@ -77,7 +77,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
   app.use(`${systemApiPrefix}/providers`, providersRouter)
-  app.use(`${systemApiPrefix}/error-policies`, errorPoliciesRouter)
+  app.use(`${systemApiPrefix}/error-policies`, requireAdmin, errorPoliciesRouter)
   app.use(`${systemApiPrefix}/stream-intercept-policies`, requireAdmin, streamInterceptPoliciesRouter)
   app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)
   app.use(`${systemApiPrefix}/groups`, requireAdmin, groupsRouter)

@@ -41,6 +41,7 @@ import type {
   CreatedApiKey,
   CurrentUserSummary,
   DatabaseStorageSnapshotSummary,
+  ErrorPolicyListResult,
   ErrorPolicySummary,
   ExternalIntegrationScopeOption,
   ExternalPublicApiCatalog,
@@ -409,7 +410,8 @@ export interface ExternalIntegrationSourceListParams {
   status?: ExternalIntegrationSourceStatus | 'all'
 }
 
-export type StreamInterceptPolicyPayload = Omit<StreamInterceptPolicySummary, 'id' | 'defaultRule' | 'editable' | 'createdAt' | 'updatedAt'>
+export type StreamInterceptPolicyPayload = Omit<StreamInterceptPolicySummary, 'id' | 'defaultRule' | 'editable' | 'protocolCode' | 'createdAt' | 'updatedAt'>
+export type ErrorPolicyPayload = Omit<ErrorPolicySummary, 'id' | 'editable' | 'protocolCode' | 'createdAt' | 'updatedAt'>
 
 export interface ModelCheckScopeParams {
   systemAccountId?: string
@@ -712,7 +714,10 @@ export const api = {
     deleteModel: (code: string, id: string) => unwrap<{ deleted: boolean }>(http.delete(`/providers/${code}/models/${id}`))
   },
   errorPolicies: {
-    list: () => unwrap<ErrorPolicySummary[]>(http.get('/error-policies'))
+    list: () => unwrap<ErrorPolicyListResult>(http.get('/error-policies')),
+    create: (payload: ErrorPolicyPayload) => unwrap<ErrorPolicySummary>(http.post('/error-policies', payload)),
+    update: (id: string, payload: ErrorPolicyPayload) => unwrap<ErrorPolicySummary>(http.patch(`/error-policies/${id}`, payload)),
+    delete: (id: string) => http.delete(`/error-policies/${id}`)
   },
   streamInterceptPolicies: {
     list: () => unwrap<StreamInterceptPolicyListResult>(http.get('/stream-intercept-policies')),

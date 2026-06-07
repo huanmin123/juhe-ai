@@ -483,9 +483,9 @@ assert.match(accountTestSource, /candidateAccounts:\s*\[resolved\.account\]/)
 assert.match(accountTestSource, /disableSessionAffinity:\s*true/)
 assert.match(accountTestSource, /trafficSource:\s*input\.trafficSource\s*\?\?\s*'manual_account_test'/)
 
-const accountErrorPolicySource = readSource('modules/gateway/account-error-policy.service.ts')
-assert.match(accountErrorPolicySource, /accountErrorPolicyUpstreamSummary/)
-assert.match(accountErrorPolicySource, /accountErrorPolicyReason\(statusCode,\s*decision,\s*upstreamSummary\)/)
+const requestErrorPolicySource = readSource('modules/gateway/request-error-policy.service.ts')
+assert.match(requestErrorPolicySource, /requestErrorPolicyUpstreamSummary/)
+assert.match(requestErrorPolicySource, /requestErrorPolicyReason\(statusCode,\s*decision,\s*upstreamSummary\)/)
 
 const backgroundJobsSource = readSource('modules/background/background-jobs.ts')
 const backgroundSettingsNumberSource = sourceBetween(backgroundJobsSource, 'function settingsNumber', 'async function databaseFileBytes')

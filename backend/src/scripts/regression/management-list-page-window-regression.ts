@@ -82,8 +82,8 @@ try {
   assert.equal(modelChecks.page, 10, '模型检测列表 pageSize=100 时页码应收敛到 10 页以内')
   assert.equal((modelChecks.page - 1) * modelChecks.pageSize, 900, '模型检测列表深翻页 offset 应限制在 1000 行内')
 
-  const errorPolicies = errorPolicyRepository.listErrorPolicies(access)
-  assert.equal(errorPolicies.length, errorPolicyRepository.maxErrorPolicyDefinitions, '错误策略列表应固定最多返回 50 条，避免管理端无界读取')
+  const errorPolicies = errorPolicyRepository.listErrorPolicies().policies
+  assert.equal(errorPolicies.length, errorPolicyRepository.maxErrorPolicyDefinitions, '错误策略列表应固定最多返回 200 条，避免管理端无界读取')
 
   console.log('管理端列表页码窗口回归通过：IP 统计、账号用量、授权用量和模型检测列表 offset 被限制在 1000 行内，错误策略列表固定窗口读取')
 } finally {

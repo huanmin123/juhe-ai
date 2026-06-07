@@ -22,6 +22,7 @@ import type { OperationLogInput } from '../../storage/operation-logs.repository.
 import type { RuntimeLogIndexInput } from '../../storage/runtime-logs.repository.js'
 import type { UsageRecordInput } from '../../storage/usage-records.repository.js'
 import { createPublicApiLog } from '../../storage/public-api-logs.repository.js'
+import { createErrorPolicy } from '../../storage/error-policy.repository.js'
 import { createStreamInterceptPolicy } from '../../storage/stream-intercept-policy.repository.js'
 import {
   aggregateClientIpStatsBatch,
@@ -351,10 +352,10 @@ function printHelp(): void {
 function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): CreatedMockdata {
   const unscopedAdminAccess: AccessScope = { systemAccountId: admin.id, role: adminAccess.role }
   const users = createMockUsers(admin)
-  const policies = createErrorPolicies(admin.id)
+  createErrorPolicies()
   const proxies = createProxies(adminAccess)
   const groups = createGroups(adminAccess, users)
-  const accounts = createAccounts(adminAccess, groups, users, policies, proxies)
+  const accounts = createAccounts(adminAccess, groups, users, proxies)
   const teams = createTeams(adminAccess, users)
   const authorizations = createAuthorizations(adminAccess, unscopedAdminAccess, groups, accounts, users, teams)
   assertNoMockSelfAuthorizations(admin.id)
@@ -459,89 +460,77 @@ function ensureSystemAccount(input: {
   })
 }
 
-function createErrorPolicies(adminId: string): { quota: string; strict: string; temporary: string } {
-  const now = nowIso()
-  const policies = [
-    {
-      id: `${idPrefix}policy_quota`,
-      name: `${namePrefix}额度与限流策略`,
-      rules: [
-        {
-          enabled: true,
-          name: '429 日额度耗尽',
-          priority: 10,
-          status_codes: [429],
-          keywords: ['DAILY_LIMIT_EXCEEDED', 'daily quota', '每日额度'],
-          action: 'rate_limited',
-          reset_strategy: 'daily',
-          daily_reset_hour: 0,
-          description: '按天额度耗尽处理'
-        },
-        {
-          enabled: true,
-          name: '402 余额不足',
-          priority: 20,
-          status_codes: [402],
-          action: 'rate_limited',
-          reset_strategy: 'daily',
-          daily_reset_hour: 0
-        }
-      ]
+function createErrorPolicies(): void {
+  createErrorPolicy({
+    name: `${namePrefix}全局上游临时故障`,
+    enabled: true,
+    priority: 100,
+    scopeType: 'global',
+    match: {
+      statusCodes: [502, 503],
+      keywords: ['upstream', 'temporarily unavailable', '服务不可用']
     },
-    {
-      id: `${idPrefix}policy_strict`,
-      name: `${namePrefix}认证异常严格策略`,
-      rules: [
-        {
-          enabled: true,
-          name: '401 认证失败',
-          priority: 10,
-          status_codes: [401],
-          action: 'error_disabled',
-          description: '认证失败直接标记异常'
-        },
-        {
-          enabled: true,
-          name: '403 禁止访问',
-          priority: 20,
-          status_codes: [403],
-          action: 'error_disabled'
-        }
-      ]
+    action: 'temp_unschedulable',
+    notes: 'Mockdata 系统级兜底策略，所有协议和供应商默认继承。'
+  })
+  createErrorPolicy({
+    name: `${namePrefix}OpenAI 协议通用切号`,
+    enabled: true,
+    priority: 120,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      statusCodes: [500, 529]
     },
-    {
-      id: `${idPrefix}policy_temporary`,
-      name: `${namePrefix}临时故障避让策略`,
-      rules: [
-        {
-          enabled: true,
-          name: '503 服务不可用',
-          priority: 30,
-          status_codes: [503],
-          action: 'temp_unschedulable'
-        },
-        {
-          enabled: true,
-          name: '500 上游错误',
-          priority: 40,
-          status_codes: [500],
-          action: 'temp_unschedulable'
-        }
-      ]
-    }
-  ]
-  const statement = getBusinessDatabase().prepare(`
-    INSERT INTO error_policies (id, system_account_id, name, enabled, rules_json, created_at, updated_at)
-    VALUES (?, ?, ?, 1, ?, ?, ?)
-  `)
-  for (const policy of policies) {
-    statement.run(policy.id, adminId, policy.name, JSON.stringify(policy.rules), now, now)
-  }
-  return {
-    quota: policies[0].id,
-    strict: policies[1].id,
-    temporary: policies[2].id
-  }
+    action: 'retry_next',
+    notes: 'Mockdata OpenAI 兼容协议层策略，优先尝试同一调度容器后续账号。'
+  })
+  createErrorPolicy({
+    name: `${namePrefix}GPT 额度限流`,
+    enabled: true,
+    priority: 10,
+    scopeType: 'provider',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: GPT_VENDOR_CODE,
+    match: {
+      statusCodes: [402, 429],
+      errorCodes: ['insufficient_quota', 'rate_limit_exceeded'],
+      keywords: ['daily quota', '余额不足', '额度耗尽']
+    },
+    action: 'rate_limited',
+    resetStrategy: 'daily',
+    dailyResetHour: 0,
+    notes: 'Mockdata GPT 供应商层额度恢复策略。'
+  })
+  createErrorPolicy({
+    name: `${namePrefix}Codex 客户端临时避让`,
+    enabled: true,
+    priority: 20,
+    scopeType: 'client',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    clientProfile: 'codex',
+    match: {
+      statusCodes: [429],
+      keywords: ['codex', 'turn', 'rate limit']
+    },
+    action: 'temp_unschedulable',
+    notes: 'Mockdata Codex 客户端层策略，覆盖协议和供应商层。'
+  })
+  createErrorPolicy({
+    name: `${namePrefix}GPT-5 模型认证失败停用`,
+    enabled: true,
+    priority: 30,
+    scopeType: 'model',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: GPT_VENDOR_CODE,
+    modelPattern: 'gpt-5',
+    modelMatchType: 'prefix',
+    match: {
+      statusCodes: [401, 403]
+    },
+    action: 'error_disabled',
+    notes: 'Mockdata 模型层策略，展示模型维度覆盖能力。'
+  })
 }
 
 function createProxies(adminAccess: AccessScope): { http: string; socks: string; disabled: string } {
@@ -711,7 +700,6 @@ function createAccounts(
   adminAccess: AccessScope,
   groups: MockGroups,
   users: MockSystemAccounts,
-  policies: { quota: string; strict: string; temporary: string },
   proxies: { http: string; socks: string }
 ): MockAccounts {
   const primary = repositories.createAccount({
@@ -721,7 +709,6 @@ function createAccounts(
     groupId: groups.main.id,
     credentials: apiKeyCredentials('primary'),
     proxyProfileId: proxies.http,
-    errorPolicyId: policies.quota,
     supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1-mini'],
     concurrencyLimit: 80,
     priority: 0,
@@ -736,7 +723,6 @@ function createAccounts(
     groupId: groups.main.id,
     credentials: apiKeyCredentials('proxied'),
     proxyProfileId: proxies.http,
-    errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-4o-mini'],
     concurrencyLimit: 45,
     priority: 10,
@@ -749,7 +735,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.main.id,
     credentials: apiKeyCredentials('normal'),
-    errorPolicyId: policies.strict,
     supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini', 'gpt-4o-mini'],
     concurrencyLimit: 35,
     priority: 30,
@@ -762,7 +747,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.highConcurrency.id,
     credentials: apiKeyCredentials('burst-fast'),
-    errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
     concurrencyLimit: 180,
     priority: 2,
@@ -776,7 +760,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.highConcurrency.id,
     credentials: apiKeyCredentials('burst-image'),
-    errorPolicyId: policies.quota,
     supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1-mini'],
     concurrencyLimit: 120,
     priority: 12,
@@ -789,7 +772,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.highConcurrency.id,
     credentials: apiKeyCredentials('burst-fallback'),
-    errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.4', 'gpt-5.4-mini'],
     concurrencyLimit: 90,
     priority: 70,
@@ -803,7 +785,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.backup.id,
     credentials: apiKeyCredentials('fallback'),
-    errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.4', 'gpt-4.1-mini'],
     concurrencyLimit: 25,
     priority: 80,
@@ -818,7 +799,6 @@ function createAccounts(
     groupId: groups.oauth.id,
     credentials: oauthCredentials('oauth-main', 2),
     proxyProfileId: proxies.socks,
-    errorPolicyId: policies.quota,
     supportedModels: ['gpt-5.5', 'gpt-5.4'],
     concurrencyLimit: 50,
     priority: 5,
@@ -831,7 +811,6 @@ function createAccounts(
     type: 'oauth',
     groupId: groups.oauth.id,
     credentials: oauthCredentials('oauth-backup', 6),
-    errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.4', 'gpt-5.4-mini'],
     concurrencyLimit: 20,
     priority: 60,
@@ -845,7 +824,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.backup.id,
     credentials: apiKeyCredentials('rate-limited'),
-    errorPolicyId: policies.quota,
     supportedModels: ['gpt-5.4-mini'],
     concurrencyLimit: 15,
     priority: 120,
@@ -864,7 +842,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.experiment.id,
     credentials: apiKeyCredentials('temporary'),
-    errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.4', 'gpt-4.1-mini'],
     concurrencyLimit: 15,
     priority: 130,
@@ -878,7 +855,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.experiment.id,
     credentials: apiKeyCredentials('error'),
-    errorPolicyId: policies.strict,
     supportedModels: ['gpt-5.5'],
     concurrencyLimit: 10,
     priority: 160,
@@ -892,7 +868,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.experiment.id,
     credentials: apiKeyCredentials('expired'),
-    errorPolicyId: policies.strict,
     supportedModels: ['gpt-4.1-mini'],
     concurrencyLimit: 5,
     accountExpiresAt: new Date(Date.now() - dayMs).toISOString(),
@@ -905,7 +880,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.managerMain.id,
     credentials: apiKeyCredentials('manager-primary'),
-    errorPolicyId: policies.quota,
     supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1-mini'],
     concurrencyLimit: 48,
     priority: 8,
@@ -918,7 +892,6 @@ function createAccounts(
     type: 'api_key',
     groupId: groups.managerHighConcurrency.id,
     credentials: apiKeyCredentials('manager-burst'),
-    errorPolicyId: policies.temporary,
     supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
     concurrencyLimit: 120,
     priority: 4,
@@ -987,23 +960,7 @@ function createAccounts(
 function apiKeyCredentials(suffix: string): Record<string, unknown> {
   return {
     api_key: `sk-mockdata-admin-${suffix}-${'x'.repeat(24)}`,
-    base_url: 'https://api.openai.com/v1',
-    error_handling_rules: [
-      {
-        enabled: true,
-        name: '429 临时限流',
-        priority: 40,
-        status_codes: [429],
-        action: 'temp_unschedulable'
-      },
-      {
-        enabled: true,
-        name: '503 服务不可用',
-        priority: 80,
-        status_codes: [503],
-        action: 'temp_unschedulable'
-      }
-    ]
+    base_url: 'https://api.openai.com/v1'
   }
 }
 
@@ -1014,19 +971,7 @@ function oauthCredentials(suffix: string, expiresHours: number): Record<string, 
     client_id: 'mockdata-openai-oauth-client',
     account_id: `mockdata-openai-user-${suffix}`,
     expires_at: new Date(Date.now() + expiresHours * 60 * 60_000).toISOString(),
-    base_url: 'https://api.openai.com/v1',
-    error_handling_rules: [
-      {
-        enabled: true,
-        name: 'OAuth 429 Codex 限流',
-        priority: 10,
-        status_codes: [429],
-        keywords: ['rate limit', 'codex'],
-        action: 'rate_limited',
-        reset_strategy: 'duration',
-        duration_hours: 5
-      }
-    ]
+    base_url: 'https://api.openai.com/v1'
   }
 }
 
@@ -1593,7 +1538,9 @@ function createStreamInterceptPolicies(): number {
       name: `${namePrefix}流式错误切换账户`,
       enabled: true,
       priority: 20,
+      scopeType: 'provider' as const,
       protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
       match: {
         eventTypes: ['response.failed', 'error'],
         errorCodes: ['rate_limit_exceeded', 'server_error'],
@@ -1606,6 +1553,7 @@ function createStreamInterceptPolicies(): number {
       name: `${namePrefix}安全策略干跑观察`,
       enabled: true,
       priority: 35,
+      scopeType: 'protocol' as const,
       protocolCode: OPENAI_PROTOCOL_CODE,
       match: {
         errorCodes: ['cyber_policy'],
@@ -1619,7 +1567,9 @@ function createStreamInterceptPolicies(): number {
       name: `${namePrefix}图像流异常账号避让`,
       enabled: false,
       priority: 55,
+      scopeType: 'provider' as const,
       protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
       match: {
         dataTypes: ['response.output_item.done'],
         textIncludes: ['image_generation'],

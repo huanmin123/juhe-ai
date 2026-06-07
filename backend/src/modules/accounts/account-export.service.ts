@@ -69,7 +69,6 @@ export interface AccountExportResult {
 const apiKeyExportCredentialKeys = [
   'api_key',
   'base_url',
-  'error_handling_rules',
   'stream_intercept_rules'
 ]
 
@@ -84,7 +83,6 @@ const oauthExportCredentialKeys = [
   'email',
   'chatgpt_user_id',
   'plan_type',
-  'error_handling_rules',
   'stream_intercept_rules'
 ]
 

@@ -2,7 +2,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { AccountRuntimeAvailability, DbServiceOperation } from '../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
-import type { GatewaySettings } from './account-error-policy.service.js'
+import type { RequestErrorPolicyDecision, GatewaySettings } from './request-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
 import {
   getAccountCurrentConcurrency,
@@ -87,6 +87,7 @@ export interface GatewayAccountFailurePrecheckInput {
   endpoint?: string
   reason: string
   statusCode?: number
+  errorPolicyDecision?: RequestErrorPolicyDecision
   forcePrecheck?: boolean
 }
 
@@ -108,6 +109,7 @@ interface PrecheckState {
   attemptCount: number
   failureCount: number
   reason: string
+  errorPolicyDecision?: RequestErrorPolicyDecision
   distinctClientIpCount: number
   distinctApiKeyCount: number
   running: boolean
@@ -264,6 +266,7 @@ export async function completeGatewayAccountPrecheckForTest(
     attemptCount: precheckMaxAttempts,
     failureCount: failureStormThresholdCount,
     reason: input.reason,
+    errorPolicyDecision: input.errorPolicyDecision,
     distinctClientIpCount: input.clientIp ? 1 : 0,
     distinctApiKeyCount: input.apiKeyId ? 1 : 0,
     running: false
@@ -324,6 +327,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
     attemptCount: 0,
     failureCount: entry.failureCount,
     reason,
+    errorPolicyDecision: input.errorPolicyDecision,
     distinctClientIpCount: entry.clientIps.size,
     distinctApiKeyCount: entry.apiKeyIds.size,
     running: false
@@ -1168,7 +1172,8 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       type: 'mark_account_precheck_temporary_unavailable',
       account: finalState.account,
       reason,
-      precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
+      precheckStartedAt: new Date(finalState.startedAtMs).toISOString(),
+      errorPolicyDecision: finalState.errorPolicyDecision
     })
     if (markResult.updated) {
       clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
@@ -1268,7 +1273,6 @@ function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: 
     modelMappings: account.modelMappings,
     lastSuccessfulTestModel: account.lastSuccessfulTestModel,
     proxyProfileId: account.proxyProfileId,
-    errorPolicyId: account.errorPolicyId,
     schedulable: true,
     cooldownUntil: account.cooldownUntil,
     lastErrorMessage: account.lastErrorMessage,

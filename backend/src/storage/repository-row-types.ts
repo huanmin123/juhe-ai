@@ -34,7 +34,6 @@ export interface AccountRow {
   oauth_refresh_token_present?: number
   proxy_profile_id: string | null
   concurrency_limit: number
-  error_policy_id: string | null
   priority: number
   super_priority_enabled: number
   fallback_enabled: number
@@ -207,7 +206,6 @@ export type AccountListRow = AccountRow & {
   source_credentials_encrypted?: string | null
   source_proxy_profile_id?: string | null
   source_concurrency_limit?: number | null
-  source_error_policy_id?: string | null
   source_client_compatibility?: AccountClientCompatibility | null
   quality_score?: number | null
   quality_state?: string | null

@@ -356,7 +356,6 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     credentials = {
       ...credentials,
       ...refreshedCredentials,
-      error_handling_rules: credentials.error_handling_rules,
       stream_intercept_rules: credentials.stream_intercept_rules
     }
   }

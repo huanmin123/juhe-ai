@@ -1,5 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
-import type { GatewaySettings } from './account-error-policy.service.js'
+import type { GatewaySettings } from './request-error-policy.service.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 
 export interface ClientIpAccountAvoidanceScopeInput {
