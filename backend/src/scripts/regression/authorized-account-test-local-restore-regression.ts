@@ -124,6 +124,7 @@ try {
     providerCode: 'gpt',
     name: '授权测试本地恢复账户',
     type: 'api_key',
+    status: 'active',
     credentials: { api_key: 'sk-authorized-local-restore', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
@@ -198,6 +199,7 @@ try {
     providerCode: 'gpt',
     name: '授权测试本地失败账户',
     type: 'api_key',
+    status: 'active',
     credentials: { api_key: 'sk-authorized-local-failure', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
@@ -273,6 +275,7 @@ try {
     providerCode: 'gpt',
     name: '授权测试本地异常账户',
     type: 'api_key',
+    status: 'active',
     credentials: { api_key: 'sk-authorized-local-error-success', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)

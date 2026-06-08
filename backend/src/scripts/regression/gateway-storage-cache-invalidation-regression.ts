@@ -67,6 +67,7 @@ try {
     providerCode: 'gpt',
     name: '缓存失效主账户',
     type: 'api_key',
+    status: 'active',
     groupId: ownerGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-owner', base_url: 'https://api.openai.com/v1' },
     proxyProfileId: proxy.id
@@ -186,6 +187,7 @@ try {
     providerCode: 'gpt',
     name: '缓存失效共享账户',
     type: 'api_key',
+    status: 'active',
     groupId: ownerGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-shared', base_url: 'https://api.openai.com/v1' }
   }, ownerAccess)
@@ -264,6 +266,7 @@ try {
     providerCode: 'gpt',
     name: '缓存失效状态账户',
     type: 'api_key',
+    status: 'active',
     groupId: statusGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-status', base_url: 'https://api.openai.com/v1' }
   }, statusOwnerAccess)

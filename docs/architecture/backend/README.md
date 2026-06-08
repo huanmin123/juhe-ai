@@ -12,6 +12,7 @@
   - 后端变更前应优先阅读哪些文档
 - 本文不替代具体业务架构和阶段计划：
   - [../架构总览.md](../架构总览.md)
+  - [../../functions/请求处理分层设计.md](../../functions/请求处理分层设计.md)
   - [../../functions/OpenAI账号接入.md](../../functions/OpenAI账号接入.md)
   - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
   - [后台任务使用说明](后台任务使用说明.md)
@@ -43,7 +44,7 @@
 | `backend/src/config/` | 运行配置读取、路径解析和默认配置 | 新增环境变量时同步 `.env.example`、开发和部署文档 |
 | `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
-| `backend/src/modules/gateway/` | OpenAI 兼容中转、账号选择、账户错误处理策略、SSE 透传和用量解析 | 不把网关细节泄漏成前端多套复杂选项 |
+| `backend/src/modules/gateway/` | OpenAI 兼容中转、请求侧入口保护、账号选择、上游请求准备、账户错误处理策略、SSE 透传和用量解析 | 请求进入上游前的新增处理先按 [请求处理分层设计](../../functions/请求处理分层设计.md) 判断落点；不把网关细节泄漏成前端多套复杂选项 |
 | `backend/src/modules/background/` | 统计聚合、系统采样、账号质量缓存、冷却账号复测、运行日志索引、审计批量落库和数据清理等后台任务 | 任务注册和执行只允许在独立 background worker 进程内发生，不引入重型分布式队列；新增或调整任务先看 [后台任务使用说明](后台任务使用说明.md) |
 | `backend/src/modules/db-service/` | DB service 进程、内部系统 API app、HTTP 代理、IPC 操作和 supervisor | 系统管理 API 与高频 SQLite 读写只在 DB service 或 worker 内执行，主 Web 进程不能回退同步访问 SQLite |
 | `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
@@ -118,6 +119,7 @@ flowchart LR
 ```
 
 - 网关入口不使用后台登录态，而使用本地 API Key 作为调用方身份。
+- 请求进入上游前的代码必须按 [请求处理分层设计](../../functions/请求处理分层设计.md) 拆分：入口装配、认证前运行态、请求体保护、请求上下文、授权与本地校验、协议与客户端画像、候选账号筛选、调度运行态、派发保护和上游请求准备分别维护；上游返回后的响应转发、流式拦截、usage 解析和账号响应侧副作用不写进请求 preflight。
 - 本地 API Key 校验先按 `key_hash` 命中进程内短 TTL 缓存；命中会刷新空闲 TTL，但最多 5 分钟必须重新查库。禁用、删除、修改 API Key 会主动清理对应缓存。
 - API Key 可以绑定并访问调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组；被授权 AI 账户需要先加入调用方自有分组后再参与自有分组调度，授权分组则按有效分组授权直接参与调度。当前 API Key 模型不需要额外授权分组绑定字段。
 - 账号选择必须过滤停用、异常、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
@@ -285,7 +287,7 @@ erDiagram
 - 涉及数据库表、字段、统计缓存、敏感字段或 schema 演进时，同时看 [SQLite 存储说明](../../functions/SQLite存储说明.md)。
 - 涉及管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，同时看 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
 - 涉及敏感字段、凭据展示、请求快照、原始审计日志、日志脱敏、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
-- 涉及 GPT OAuth、API Key 账户、上游请求或账号测试时，同时看 [OpenAI 账号接入](../../functions/OpenAI账号接入.md)。
+- 涉及 GPT OAuth、API Key 账户、上游请求或账号测试时，同时看 [OpenAI 账号接入](../../functions/OpenAI账号接入.md) 和 [请求处理分层设计](../../functions/请求处理分层设计.md)。
 - 涉及后台定时任务、worker IPC、队列 flush、统计聚合或批量清理时，同时看 [后台任务使用说明](后台任务使用说明.md)。
 - 涉及透传、请求头、SSE、错误切换或网关行为时，同时看 [中转透传机制调研与定位修正](../../functions/中转透传机制调研与定位修正.md)。
 - 涉及运行、联调和验证时，按 [开发运行说明](../../develop/运行说明.md) 和 [开发测试与验证说明](../../develop/测试与验证说明.md) 执行。

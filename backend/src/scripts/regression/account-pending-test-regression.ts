@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
@@ -362,6 +363,9 @@ function draftActivationSnapshot(payload: RouteAccountCreatePayload, ownerSystem
     groupId: payload.groupId,
     groupName: '待测试账户回归分组',
     providerCode: payload.providerCode,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     name: payload.name,
     type: payload.type,
     credentials: repositories.normalizeAccountCredentialsForWrite(payload.type, payload.credentials),
