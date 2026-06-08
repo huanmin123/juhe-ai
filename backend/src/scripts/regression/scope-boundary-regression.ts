@@ -410,8 +410,7 @@ async function main(): Promise<void> {
       assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, secretKey), `授权实例详情不应返回敏感凭据字段 ${secretKey}`)
     }
     assert(!authorizedDetailSecretJson.includes('sk-scope-user-b'), '授权实例详情不应泄露来源账户 API Key 明文')
-    const errorHandlingRules = authorizedDetailCredentials.error_handling_rules as Array<Record<string, unknown>> | undefined
-    assert(errorHandlingRules?.[0]?.name === '授权来源错误处理', '授权实例详情应返回来源账户错误处理策略')
+    assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'error_handling_rules'), '授权实例详情不应返回来源账户错误处理策略')
     const streamInterceptRules = authorizedDetailCredentials.stream_intercept_rules as Array<Record<string, unknown>> | undefined
     assert(streamInterceptRules?.[0]?.name === '授权来源流式异常', '授权实例详情应返回来源账户流式拦截规则')
     summary.push('我的账户自有作用域检查通过')

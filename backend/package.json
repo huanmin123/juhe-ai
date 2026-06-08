@@ -37,6 +37,7 @@
     "test:account-list-stable-sort": "tsx src/scripts/regression/account-list-stable-sort-regression.ts",
     "test:account-list-query-guard": "tsx src/scripts/regression/account-list-query-guard-regression.ts",
     "test:account-priority-field-contract": "tsx src/scripts/regression/account-priority-field-contract-regression.ts",
+    "test:account-error-policy-validation": "tsx src/scripts/regression/account-error-policy-validation-regression.ts",
     "test:account-response-credentials-redaction": "tsx src/scripts/regression/account-response-credentials-redaction-regression.ts",
     "test:account-list-visible": "tsx src/scripts/regression/account-list-visible-regression.ts",
     "test:account-options-lightweight": "tsx src/scripts/regression/account-options-lightweight-regression.ts",

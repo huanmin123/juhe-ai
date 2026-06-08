@@ -86,7 +86,7 @@ function normalizeAccountErrorHandlingRule(value: unknown, index: number): Accou
     priority: requiredPositiveInteger(value.priority, `第 ${index} 条规则优先级`),
     action: requiredAction(value.action, index),
     status_codes: optionalStatusCodes(value.status_codes, index),
-    error_codes: optionalStringList(value.error_codes, `第 ${index} 条规则错误码`),
+    error_codes: optionalErrorCodeList(value.error_codes, `第 ${index} 条规则错误码`),
     error_types: optionalStringList(value.error_types, `第 ${index} 条规则错误类型`),
     keywords: optionalStringList(value.keywords, `第 ${index} 条规则关键字`),
     description: optionalText(value.description, `第 ${index} 条规则描述`)
@@ -184,10 +184,15 @@ function optionalStringList(value: unknown, label: string): string[] | undefined
   if (value === undefined) return undefined
   if (!Array.isArray(value)) throw new Error(`${label}必须是字符串数组`)
   const output = value.map((item) => requiredString(item, label))
-  if (output.some((item) => /^\d+$/.test(item) && isSuccessStatusCode(Number(item)))) {
+  return output.length ? [...new Set(output)] : undefined
+}
+
+function optionalErrorCodeList(value: unknown, label: string): string[] | undefined {
+  const output = optionalStringList(value, label)
+  if (output?.some((item) => /^\d+$/.test(item) && isSuccessStatusCode(Number(item)))) {
     throw new Error(`${label}不能填写 2xx 成功码，例如 200`)
   }
-  return output.length ? [...new Set(output)] : undefined
+  return output
 }
 
 function optionalText(value: unknown, label: string): string | undefined {
