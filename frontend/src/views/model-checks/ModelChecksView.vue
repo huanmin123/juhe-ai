@@ -327,6 +327,7 @@ import {
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
@@ -936,8 +937,7 @@ function targetTypeText(value: ModelCheckRunSummary['targetType']) {
 }
 
 function providerText(value: ModelCheckRunSummary['providerCode']) {
-  if (isGptVendorCode(value)) return 'GPT'
-  return value || '未知供应商'
+  return providerDisplayName(value)
 }
 
 function runTrustedComparison(run: Pick<ModelCheckRunSummary, 'trustedComparison'>) {

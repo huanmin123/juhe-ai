@@ -234,6 +234,7 @@ import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import type { AccountUsageSummary, GroupAccountStats, GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
@@ -628,8 +629,7 @@ function groupStatusColor(group: GroupSummary) {
 }
 
 function providerName(providerCode?: string) {
-  if (!providerCode) return '未知供应商'
-  return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
+  return providerDisplayName(providerCode, availableProviders.value)
 }
 
 function defaultProviderProtocolProfileId(providerCode = form.providerCode): string {

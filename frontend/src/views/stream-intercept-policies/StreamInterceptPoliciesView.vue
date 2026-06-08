@@ -326,6 +326,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import type {
   ProviderDefinition,
   StreamInterceptPolicyAction,
@@ -424,7 +425,7 @@ const openAIProviders = computed(() => providers.value
   .filter((provider) => provider.enabled && provider.protocolProfiles.some((profile) => profile.enabled && profile.protocolCode === 'openai' && profile.protocolVersion === 'v1'))
   .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN') || left.code.localeCompare(right.code)))
 const providerSelectOptions = computed(() => openAIProviders.value.map((provider) => ({
-  label: `${provider.name}（${provider.code}）`,
+  label: provider.name,
   value: provider.code
 })))
 const providerNameByCode = computed(() => new Map(openAIProviders.value.map((provider) => [provider.code, provider.name])))
@@ -767,8 +768,7 @@ function protocolText(protocolCode: string): string {
 
 function providerText(providerCode?: string): string {
   if (!providerCode) return '-'
-  const name = providerNameByCode.value.get(providerCode)
-  return name ? `${name}（${providerCode}）` : providerCode
+  return providerNameByCode.value.get(providerCode) ?? providerDisplayName(providerCode, openAIProviders.value)
 }
 
 function actionTagText(template: StreamInterceptActionTemplate): string {

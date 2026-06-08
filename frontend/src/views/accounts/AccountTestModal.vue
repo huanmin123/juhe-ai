@@ -276,7 +276,7 @@ function handleOpenUpdate(value: boolean) {
 }
 
 function providerLabel(account: AccountSummary): string {
-  return props.providerName?.(account.providerCode) ?? account.providerCode
+  return props.providerName?.(account.providerCode) ?? '未知供应商'
 }
 
 function handleCompatibilityUpdate(value: string): void {

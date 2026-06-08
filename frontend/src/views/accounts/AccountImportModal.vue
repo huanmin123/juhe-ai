@@ -101,7 +101,10 @@
           :scroll="{ x: 1000 }"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'action'">
+            <template v-if="column.key === 'providerCode'">
+              <span>{{ providerDisplayName(record.providerCode) }}</span>
+            </template>
+            <template v-else-if="column.key === 'action'">
               <a-tag :color="actionColor(record.action)">{{ actionText(record.action) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'message'">
@@ -141,6 +144,7 @@ import { reactive, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '@/shared/providerProtocol'
 import type { AccountImportItem, AccountImportOptions, AccountImportProxyItem, AccountImportResult } from '@/types/domain'
 

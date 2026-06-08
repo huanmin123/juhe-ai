@@ -1,5 +1,6 @@
 import type { EChartsOption } from 'echarts'
 
+import { providerDisplayName } from '@/shared/providerDisplay'
 import type { AiPerformanceOverview } from '@/types/domain'
 import { formatInteger } from '@/views/stats/statsFormatters'
 
@@ -26,7 +27,7 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
   const displayName = (accountId: string, accountName: string) => {
     const account = accountById.get(accountId)
     return (nameCounts.get(accountName) ?? 0) > 1 && account?.providerCode
-      ? `${accountName}（${account.providerCode}）`
+      ? `${accountName}（${providerDisplayName(account.providerCode)}）`
       : accountName
   }
   return {

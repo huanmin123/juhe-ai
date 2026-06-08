@@ -63,6 +63,7 @@ async function runChild(): Promise<void> {
     externalIntegrationGroupListReadScope,
     externalIntegrationGroupUpdateWriteScope,
     externalIntegrationIpUsageReadScope,
+    externalIntegrationScopeOptions,
     externalIntegrationSourceAuthDemoScope,
     builtInExternalIntegrationTestSourceId,
     builtInExternalIntegrationTestTokenId,
@@ -239,6 +240,7 @@ async function runChild(): Promise<void> {
     assert.equal(Object.prototype.hasOwnProperty.call(apiDocs.body.data, 'testToken'), false, '公开接口接入文档不能返回内置测试 Token 明文')
     assert.equal(Object.prototype.hasOwnProperty.call(apiDocs.body.data, 'testTokenName'), false, '公开接口接入文档不能返回测试 Token 字段')
     assert.equal(JSON.stringify(apiDocs.body.data).includes(builtInTestToken), false, '公开接口接入文档不能包含内置测试 Token 明文')
+    assert(apiDocs.body.data.items.every((item: any) => item.status === 'mock'), '公开接口接入文档应统一标识为 Mock 数据接口')
 
     const builtInList = await requestJson(baseUrl, '/__aisys__/api/external-integration-sources?pageSize=100', {
       Cookie: adminCookie
@@ -248,10 +250,12 @@ async function runChild(): Promise<void> {
     assert(builtInSource, '外部来源授权列表应默认包含内置测试来源')
     assert.equal(builtInSource.isBuiltIn, true, '内置测试来源应带只读标识')
     assert.equal(builtInSource.name, '内置测试来源')
+    assert.deepEqual(builtInSource.scopes, externalIntegrationScopeOptions.map((item) => item.value).sort(), '内置测试来源应授权全部公开接口资源')
     assert.deepEqual(builtInSource.rateLimits, [{ windowSeconds: 60, maxRequests: 10 }], '内置测试来源应固定为 1 分钟 10 次')
     const builtInToken = builtInSource.tokens.find((token: any) => token.id === builtInExternalIntegrationTestTokenId)
     assert(builtInToken, '内置测试来源应默认包含内置测试 Token')
     assert.equal(builtInToken.isBuiltIn, true, '内置测试 Token 应带只读标识')
+    assert.deepEqual(builtInToken.scopes, builtInSource.scopes, '内置测试 Token 应同步授权全部公开接口资源')
 
     const builtInSourceEdit = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInExternalIntegrationTestSourceId}`, {
       Cookie: adminCookie
@@ -1375,4 +1379,3 @@ async function requestStatus(
   })
   return response.status
 }
-

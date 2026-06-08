@@ -115,6 +115,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
 import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -678,7 +679,7 @@ function performanceAccountLabel(
     return `${accountName}（${account.systemAccountName}）`
   }
   if ((nameCounts.get(accountName) ?? 0) > 1 && account?.providerCode) {
-    return `${accountName}（${account.providerCode}）`
+    return `${accountName}（${providerDisplayName(account.providerCode)}）`
   }
   return accountName
 }

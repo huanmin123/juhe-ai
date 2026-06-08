@@ -109,12 +109,6 @@
         <template v-else-if="column.key === 'duration'">
           {{ formatDuration(record.durationMs) }}
         </template>
-        <template v-else-if="column.key === 'capture'">
-          <a-space size="small">
-            <a-tag>{{ captureStatusText(record.requestCaptureStatus) }}</a-tag>
-            <a-tag>{{ captureStatusText(record.responseCaptureStatus) }}</a-tag>
-          </a-space>
-        </template>
         <template v-else-if="column.key === 'traceId'">
           <a-tooltip :title="record.traceId || '-'">
             <span class="hash-cell">{{ preview(record.traceId) }}</span>
@@ -172,17 +166,9 @@
 
           <a-tabs>
             <a-tab-pane key="request" tab="请求数据">
-              <div class="payload-meta">
-                <a-tag>{{ captureStatusText(detail.requestCaptureStatus) }}</a-tag>
-                <span>{{ formatBytes(detail.requestSizeBytes) }}</span>
-              </div>
               <ReadonlyCodeViewer content-type="application/json" :text="prettyJson(detail.requestData)" title="请求摘要" />
             </a-tab-pane>
             <a-tab-pane key="response" tab="响应数据">
-              <div class="payload-meta">
-                <a-tag>{{ captureStatusText(detail.responseCaptureStatus) }}</a-tag>
-                <span>{{ formatBytes(detail.responseSizeBytes) }}</span>
-              </div>
               <ReadonlyCodeViewer content-type="application/json" :text="prettyJson(detail.responseData)" title="响应摘要" />
             </a-tab-pane>
           </a-tabs>
@@ -300,7 +286,6 @@ const columns = [
   { title: '状态码', key: 'statusCode', width: 92 },
   { title: '耗时', key: 'duration', width: 100 },
   { title: '客户端 IP', dataIndex: 'clientIp', key: 'clientIp', width: 140 },
-  { title: '捕获', key: 'capture', width: 160 },
   { title: 'traceId', key: 'traceId', width: 150 },
   { title: '操作', key: 'actions', fixed: 'right', actionCount: 1 }
 ]
@@ -430,23 +415,6 @@ function formatDuration(value?: number): string {
   return `${(value / 1000).toFixed(2)} s`
 }
 
-function formatBytes(value?: number): string {
-  const size = value ?? 0
-  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)} MB`
-  if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${size} B`
-}
-
-function captureStatusText(value: string): string {
-  const labels: Record<string, string> = {
-    complete: '完整',
-    truncated: '已截断',
-    empty: '空',
-    dropped: '已丢弃'
-  }
-  return labels[value] ?? value
-}
-
 function statusColor(value?: number): string {
   if (!value) return 'default'
   if (value >= 200 && value < 300) return 'green'
@@ -524,15 +492,6 @@ onDeactivated(closeDetail)
 
 .detail-descriptions {
   margin-bottom: 16px;
-}
-
-.payload-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  color: #64748b;
-  font-size: 12px;
 }
 
 .log-mobile-card {

@@ -5,6 +5,7 @@ import { api, type AccountDraftTestPayload } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import type {
   AccountSummary,
   AccountType,
@@ -18,7 +19,6 @@ import {
   defaultGroupForProvider as selectDefaultGroupForProvider,
   groupOptionsForProviderWithSelected,
   isManageableGroupForProvider,
-  providerNameByCodeMap,
   targetSystemAccountLabel as buildTargetSystemAccountLabel
 } from './accountDerivedState'
 import {
@@ -104,7 +104,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId], form.providerProtocolProfileId))
   const availableProviders = computed(() => options.providers.value.length ? options.providers.value : FALLBACK_PROVIDERS)
-  const providerNameByCode = computed(() => providerNameByCodeMap(availableProviders.value))
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
   const selectedProtocolProfile = computed(() => selectedProvider.value
     ? selectedProvider.value.protocolProfiles.find((profile) => profile.id === form.providerProtocolProfileId)
@@ -162,8 +161,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function providerName(providerCode?: string) {
-    if (!providerCode) return '未知供应商'
-    return providerNameByCode.value.get(providerCode) ?? providerCode
+    return providerDisplayName(providerCode, availableProviders.value)
   }
 
   function providerModelsToOptions(models: ProviderModelPricing[]): SelectOption[] {

@@ -1,5 +1,6 @@
 import type { EChartsOption } from 'echarts'
 
+import { providerDisplayName } from '@/shared/providerDisplay'
 import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import {
   axisNumberLabel,
@@ -333,7 +334,7 @@ function modelTooltip(params: unknown) {
   const data = tooltipData(point)
   return [
     `<strong>${point?.name ?? ''}</strong>`,
-    `供应商：${data.providerCode ?? '-'}`,
+    `供应商：${providerDisplayName(tooltipRawText(data.providerCode, ''))}`,
     `请求数：${formatInteger(numberFromTooltip(data.requestCount))}`,
     `Token 消耗：${formatCompactInteger(numberFromTooltip(data.totalTokens))}`,
     `成本：${formatCost(numberFromTooltip(data.totalCost))}`
@@ -348,7 +349,7 @@ function errorTooltip(params: unknown) {
   const shouldShowMessage = Boolean(errorMessage && errorMessage !== errorCode)
   const rows = [
     tooltipRow('错误码', errorCode),
-    tooltipRow('供应商', data.providerCode),
+    tooltipRow('供应商', providerDisplayName(tooltipRawText(data.providerCode, ''))),
     tooltipRow('状态码', data.statusCode),
     tooltipRow('次数', formatInteger(numberFromTooltip(data.value)))
   ].join('')

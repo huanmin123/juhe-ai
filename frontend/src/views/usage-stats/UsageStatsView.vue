@@ -242,6 +242,7 @@ import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelecti
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -718,8 +719,7 @@ function disabledDate(current: Dayjs) {
 }
 
 function providerName(providerCode?: string) {
-  if (!providerCode) return '未知供应商'
-  return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
+  return providerDisplayName(providerCode, availableProviders.value)
 }
 
 function trendAccountLabel(account: AccountUsageStatsRow) {

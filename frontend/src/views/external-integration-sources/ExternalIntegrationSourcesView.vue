@@ -42,7 +42,7 @@
       row-key="id"
       :loading="loading"
       :pagination="tablePagination"
-      :scroll-x="1380"
+      :scroll-x="1620"
       @change="handleTableChange"
     >
       <template #emptyText>
@@ -54,7 +54,9 @@
             <div class="source-name-line">
               <strong>{{ record.name }}</strong>
               <a-tag v-if="record.isBuiltIn" color="blue">内置</a-tag>
+              <a-tag v-if="record.isBuiltIn" color="orange">Mock 数据</a-tag>
             </div>
+            <span v-if="record.isBuiltIn" class="source-description">{{ builtInSourceShortDescription }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'status'">
@@ -81,12 +83,18 @@
         </template>
         <template v-else-if="column.key === 'scopes'">
           <div class="scope-tag-line">
-            <a-tag v-for="scope in record.scopes" :key="scope">{{ scopeLabel(scope) }}</a-tag>
-            <span v-if="!record.scopes.length" class="muted-cell">未授权</span>
+            <a-tag v-if="record.isBuiltIn" color="blue">全部</a-tag>
+            <template v-else>
+              <a-tag v-for="scope in record.scopes" :key="scope">{{ scopeLabel(scope) }}</a-tag>
+            </template>
+            <span v-if="!record.isBuiltIn && !record.scopes.length" class="muted-cell">未授权</span>
           </div>
         </template>
         <template v-else-if="column.key === 'rateLimits'">
           <span>{{ formatRateLimits(record.rateLimits) }}</span>
+        </template>
+        <template v-else-if="column.key === 'notes'">
+          <span class="source-note-cell" :title="sourceNotes(record)">{{ sourceNotes(record) }}</span>
         </template>
         <template v-else-if="column.key === 'expiresAt'">
           <span :class="record.expiresAt ? 'name-cell' : 'muted-cell'">{{ formatDateTime(record.expiresAt) }}</span>
@@ -105,6 +113,7 @@
               <div class="mobile-list-card-title">
                 {{ record.name }}
                 <a-tag v-if="record.isBuiltIn" color="blue">内置</a-tag>
+                <a-tag v-if="record.isBuiltIn" color="orange">Mock 数据</a-tag>
               </div>
             </div>
             <a-tag :color="sourceStatusColor(record.status)">{{ sourceStatusText(record.status) }}</a-tag>
@@ -126,6 +135,10 @@
               <span>最近调用</span>
               <strong>{{ formatDateTime(record.lastUsedAt) }}</strong>
             </div>
+          </div>
+          <div class="mobile-list-note">
+            <span>备注</span>
+            <strong>{{ sourceNotes(record) }}</strong>
           </div>
           <div class="mobile-list-card-actions">
             <RowActions variant="button" :actions="sourceActions(record)" @action-click="handleSourceAction($event, record)" />
@@ -149,7 +162,6 @@
               allow-clear
               placeholder="搜索接口名称"
             />
-            <a-alert class="api-doc-token-note" type="info" show-icon message="测试 Token 请在公开接口授权列表复制“内置测试来源”的完整 Token；文档和 curl 示例不展示明文 Token。" />
             <div class="api-doc-list">
               <button
                 v-for="item in filteredApiDocs"
@@ -459,6 +471,8 @@ const sourceForm = reactive<{
 const createdTokenPlain = ref('')
 const tokenCopyingKey = ref('')
 const createdTokenAuthHeader = computed(() => `Authorization: Bearer ${createdTokenPlain.value || '<source_token>'}`)
+const builtInSourceShortDescription = '系统内置联调用来源'
+const builtInSourceDescription = '系统内置联调用来源，已授权全部公开接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -476,6 +490,7 @@ const columns = [
   { title: '状态', key: 'status', width: 100, align: 'left' },
   { title: 'Token', key: 'tokens', width: 220, align: 'left' },
   { title: '接口资源授权', key: 'scopes', width: 300, className: 'scope-column', align: 'left' },
+  { title: '备注', key: 'notes', width: 260, align: 'left' },
   { title: '限频', key: 'rateLimits', width: 180, align: 'left' },
   { title: '到期时间', key: 'expiresAt', width: 180, align: 'left' },
   { title: '最近调用', key: 'lastUsedAt', width: 180, align: 'left' },
@@ -772,7 +787,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function apiStatusText(status: ExternalPublicApiStatus): string {
-  return status === 'mock' ? 'Mock' : '可用'
+  return status === 'mock' ? 'Mock 数据' : '可用'
 }
 
 function apiStatusColor(status: ExternalPublicApiStatus): string {
@@ -1039,6 +1054,13 @@ function formatRateLimits(rules: ExternalIntegrationRateLimitRule[]): string {
   return rules.length ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join('，') : '不限制'
 }
 
+function sourceNotes(record: ExternalIntegrationSourceSummary): string {
+  if (record.isBuiltIn) {
+    return builtInSourceDescription
+  }
+  return record.notes?.trim() || '无备注'
+}
+
 function sourceStatusText(status: ExternalIntegrationSourceStatus): string {
   return status === 'active' ? '启用' : '停用'
 }
@@ -1116,6 +1138,10 @@ function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
   font-size: 12px;
 }
 
+.source-name-cell .source-description {
+  font-family: inherit;
+}
+
 .tag-line {
   display: flex;
   flex-wrap: wrap;
@@ -1136,6 +1162,39 @@ function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
   margin-inline-end: 0;
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.source-note-cell {
+  display: -webkit-box;
+  max-width: 260px;
+  overflow: hidden;
+  color: #475569;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.mobile-list-note {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid #f1f5f9;
+  padding-top: 10px;
+}
+
+.mobile-list-note span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.mobile-list-note strong {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .external-source-table :deep(.scope-column) {
