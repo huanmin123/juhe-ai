@@ -13,9 +13,7 @@ import {
   waitForRetryDelayMs,
   type RetryPolicy
 } from '../../shared/retry-policy.js'
-import type { GatewaySettings } from './request-error-policy.service.js'
-import type { GatewayErrorPolicyRuntimeContext } from './request-error-policy.service.js'
-import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
+import type { GatewaySettings } from './account-error-policy.service.js'
 import type { AuditCaptureContext } from './audit-capture.service.js'
 import {
   buildPreparedUpstreamRequestParts,
@@ -87,9 +85,7 @@ export async function fetchFirstAvailableUpstream(
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker,
   requestLane: OpenAIGatewayRequestLane = 'text',
   groupSchedulingPolicy?: GroupSchedulingPolicy,
-  accountStateMutationEnabled = true,
-  errorPolicies: ErrorPolicySummary[] = [],
-  errorPolicyContext?: GatewayErrorPolicyRuntimeContext
+  accountStateMutationEnabled = true
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -294,8 +290,6 @@ export async function fetchFirstAvailableUpstream(
                 lastAttempt,
                 clientIpAccountAvoidanceTracker,
                 accountStateMutationEnabled,
-                errorPolicies,
-                errorPolicyContext,
                 retrySameAccount: shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
               })
               lastAttempt = failedResponseResult.lastAttempt

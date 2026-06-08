@@ -520,6 +520,7 @@ const publicAccountCredentialKeys = [
   'account_id',
   'chatgpt_user_id',
   'plan_type',
+  'error_handling_rules',
   'stream_intercept_rules'
 ] as const
 

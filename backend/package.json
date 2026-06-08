@@ -42,7 +42,6 @@
     "test:account-options-lightweight": "tsx src/scripts/regression/account-options-lightweight-regression.ts",
     "test:account-name-uniqueness": "tsx src/scripts/regression/account-name-uniqueness-regression.ts",
     "test:account-credential-duplicates": "tsx src/scripts/regression/account-credential-duplicates-regression.ts",
-    "test:request-error-policy-validation": "tsx src/scripts/regression/request-error-policy-validation-regression.ts",
     "test:group-options-lightweight": "tsx src/scripts/regression/group-options-lightweight-regression.ts",
     "test:default-group-current-contract": "tsx src/scripts/regression/default-group-current-contract-regression.ts",
     "test:group-scheduling-policy": "tsx src/scripts/regression/group-scheduling-policy-regression.ts",

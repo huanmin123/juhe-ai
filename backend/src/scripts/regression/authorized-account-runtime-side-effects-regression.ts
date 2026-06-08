@@ -6,8 +6,8 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
-import type { GatewaySettings } from '../../modules/gateway/request-error-policy.service.js'
-import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
+import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
+import type { AccountErrorHandlingRule, AccountErrorHandlingRuleAction } from '../../modules/accounts/account-error-policy-validation.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-runtime-side-effects-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorized-account-runtime-side-effects.sqlite3')
@@ -28,7 +28,7 @@ const [
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/request-error-policy.service.js'),
+  import('../../modules/gateway/account-error-policy.service.js'),
   import('../../modules/db-service/db-service-ipc.js')
 ])
 
@@ -68,8 +68,12 @@ try {
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   }, granteeAccess)
 
-  const cooldownAccount = createAuthorizedAccount('授权副作用临时不可调用账户', 'sk-runtime-side-effect-cooldown', ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
-  const disableAccount = createAuthorizedAccount('授权副作用异常账户', 'sk-runtime-side-effect-disable', ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
+  const cooldownAccount = createAuthorizedAccount('授权副作用临时不可调用账户', 'sk-runtime-side-effect-cooldown', ownerAccess, grantee.id, granteeGroup.id, granteeAccess, [
+    accountErrorRule('授权副本 500 临时不可调用', [500], 'temp_unschedulable')
+  ])
+  const disableAccount = createAuthorizedAccount('授权副作用异常账户', 'sk-runtime-side-effect-disable', ownerAccess, grantee.id, granteeGroup.id, granteeAccess, [
+    accountErrorRule('授权副本 503 标记异常', [503], 'error_disabled')
+  ])
   const streamAccount = createAuthorizedAccount('授权副作用流式失败账户', 'sk-runtime-side-effect-stream', ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
 
   const cooldownGatewayAccount = authorizedGatewayAccount(cooldownAccount.instanceId, granteeGroup.id, grantee.id)
@@ -77,32 +81,28 @@ try {
     success: false,
     statusCode: 500,
     bodyText: JSON.stringify({ error: { code: 'insufficient_quota', message: 'runtime side effect cooldown' } }),
-    settings: gatewaySettings,
-    errorPolicies: [requestErrorPolicy('authorized_cooldown', '授权副本 500 临时不可调用', [500], 'temp_unschedulable')],
-    errorPolicyContext: requestErrorPolicyContext()
+    settings: gatewaySettings
   })
-  assert.equal(cooldownResult.action, 'cooldown', '授权副本命中错误策略后应进入本地临时不可调用')
-  assert.equal(cooldownResult.changed, true, '授权副本错误策略应写入本地绑定状态')
-  assert.match(cooldownResult.reason ?? '', /insufficient_quota；runtime side effect cooldown/, '错误策略返回原因应带上真实上游错误摘要')
-  assertOwnerStillActive(cooldownAccount.sourceId, ownerAccess, '错误策略临时不可调用不应修改归属人原账户')
-  assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'temporary_unavailable', '错误策略临时不可调用应只写入被授权实例状态')
-  assertAuthorizedInstanceError(cooldownAccount.instanceId, granteeAccess, /insufficient_quota；runtime side effect cooldown/, '错误策略临时不可调用应保留真实上游错误摘要')
+  assert.equal(cooldownResult.action, 'cooldown', '授权副本命中账户错误处理规则后应进入本地临时不可调用')
+  assert.equal(cooldownResult.changed, true, '授权副本账户错误处理规则应写入本地绑定状态')
+  assert.match(cooldownResult.reason ?? '', /insufficient_quota；runtime side effect cooldown/, '账户错误处理返回原因应带上真实上游错误摘要')
+  assertOwnerStillActive(cooldownAccount.sourceId, ownerAccess, '账户错误处理临时不可调用不应修改归属人原账户')
+  assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'temporary_unavailable', '账户错误处理临时不可调用应只写入被授权实例状态')
+  assertAuthorizedInstanceError(cooldownAccount.instanceId, granteeAccess, /insufficient_quota；runtime side effect cooldown/, '账户错误处理临时不可调用应保留真实上游错误摘要')
 
   const disableGatewayAccount = authorizedGatewayAccount(disableAccount.instanceId, granteeGroup.id, grantee.id)
   const disableResult = applyAccountErrorHandling(disableGatewayAccount, {
     success: false,
     statusCode: 503,
     bodyText: JSON.stringify({ error: { code: 'server_is_overloaded', message: 'runtime side effect disable' } }),
-    settings: gatewaySettings,
-    errorPolicies: [requestErrorPolicy('authorized_disable', '授权副本 503 标记异常', [503], 'error_disabled')],
-    errorPolicyContext: requestErrorPolicyContext()
+    settings: gatewaySettings
   })
   assert.equal(disableResult.action, 'disable', '授权副本命中禁用策略后应进入本地异常')
   assert.equal(disableResult.changed, true, '授权副本禁用策略应写入本地绑定状态')
   assert.match(disableResult.reason ?? '', /server_is_overloaded；runtime side effect disable/, '禁用策略返回原因应带上真实上游错误摘要')
-  assertOwnerStillActive(disableAccount.sourceId, ownerAccess, '错误策略异常不应修改归属人原账户')
-  assertAuthorizedInstanceStatus(disableAccount.instanceId, granteeAccess, 'error', '错误策略异常应只写入被授权实例状态')
-  assertAuthorizedInstanceError(disableAccount.instanceId, granteeAccess, /server_is_overloaded；runtime side effect disable/, '错误策略异常应保留真实上游错误摘要')
+  assertOwnerStillActive(disableAccount.sourceId, ownerAccess, '账户错误处理异常不应修改归属人原账户')
+  assertAuthorizedInstanceStatus(disableAccount.instanceId, granteeAccess, 'error', '账户错误处理异常应只写入被授权实例状态')
+  assertAuthorizedInstanceError(disableAccount.instanceId, granteeAccess, /server_is_overloaded；runtime side effect disable/, '账户错误处理异常应保留真实上游错误摘要')
 
   const streamGatewayAccount = authorizedGatewayAccount(streamAccount.instanceId, granteeGroup.id, grantee.id)
   const streamResult = await withDbServiceRole(() => requestDbService({
@@ -136,7 +136,8 @@ function createAuthorizedAccount(
   ownerAccess: { systemAccountId: string; role: 'user' },
   granteeId: string,
   granteeGroupId: string,
-  granteeAccess: { systemAccountId: string; role: 'user' }
+  granteeAccess: { systemAccountId: string; role: 'user' },
+  errorHandlingRules: AccountErrorHandlingRule[] = []
 ) {
   const ownerSourceGroup = repositories.createGroup({
     name: `${name} 来源分组`,
@@ -151,7 +152,8 @@ function createAuthorizedAccount(
     status: 'active',
     credentials: {
       api_key: apiKey,
-      base_url: 'https://example.invalid/v1'
+      base_url: 'https://example.invalid/v1',
+      error_handling_rules: errorHandlingRules
     },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
@@ -168,23 +170,14 @@ function createAuthorizedAccount(
   return { sourceId: account.id, instanceId: instance.id }
 }
 
-function requestErrorPolicy(id: string, name: string, statusCodes: number[], action: ErrorPolicySummary['action']): ErrorPolicySummary {
+function accountErrorRule(name: string, statusCodes: number[], action: AccountErrorHandlingRuleAction): AccountErrorHandlingRule {
   return {
-    id,
-    editable: true,
-    name,
     enabled: true,
+    name,
     priority: 1,
-    scopeType: 'provider',
-    protocolCode: 'openai',
-    providerCode: 'gpt',
-    match: { statusCodes },
+    status_codes: statusCodes,
     action
   }
-}
-
-function requestErrorPolicyContext(): { protocolCode: string; providerCode: string } {
-  return { protocolCode: 'openai', providerCode: 'gpt' }
 }
 
 function authorizedGatewayAccount(accountId: string, granteeGroupId: string, granteeId: string) {

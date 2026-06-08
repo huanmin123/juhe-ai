@@ -2,14 +2,12 @@ import type { Request } from 'express'
 
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
 import {
-  requestErrorPolicyReason,
-  decideRequestErrorPolicy,
+  accountErrorPolicyReason,
+  decideAccountErrorPolicy,
   parseErrorPayload,
-  type RequestErrorPolicyDecision,
-  type GatewayErrorPolicyRuntimeContext,
+  type AccountErrorPolicyDecision,
   type GatewaySettings
-} from './request-error-policy.service.js'
-import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
+} from './account-error-policy.service.js'
 import type { AuditCaptureContext } from './audit-capture.service.js'
 import {
   applyAccountErrorHandlingWithCacheInvalidation,
@@ -73,8 +71,6 @@ interface HandleFailedUpstreamResponseInput {
   lastAttempt?: UpstreamAttempt
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
-  errorPolicies?: ErrorPolicySummary[]
-  errorPolicyContext?: GatewayErrorPolicyRuntimeContext
   retrySameAccount?: boolean
 }
 
@@ -196,10 +192,7 @@ export async function handleFailedUpstreamResponse(
   }
   const policyDecision = responseBodyRead.truncated
     ? undefined
-    : decideRequestErrorPolicy(account, response.status, response.headers, Buffer.from(responseBodyText), settings, {
-        policies: input.errorPolicies,
-        context: input.errorPolicyContext
-      })
+    : decideAccountErrorPolicy(account, response.status, response.headers, Buffer.from(responseBodyText), settings)
   const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
   if (input.retrySameAccount) {
@@ -243,11 +236,7 @@ export async function handleFailedUpstreamResponse(
         forcePrecheck: localSuppression.action === 'precheck_required'
       })
     } else {
-      applyAccountErrorHandlingWithCacheInvalidation(account, {
-        ...failureInput,
-        errorPolicies: input.errorPolicies,
-        errorPolicyContext: input.errorPolicyContext
-      })
+      applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
     }
   }
 
@@ -265,11 +254,11 @@ export async function handleFailedUpstreamResponse(
 
 function errorPolicyFailureReason(
   statusCode: number,
-  decision: RequestErrorPolicyDecision | undefined,
+  decision: AccountErrorPolicyDecision | undefined,
   fallbackMessage: string | undefined
 ): string {
   if (decision) {
-    return requestErrorPolicyReason(statusCode, decision, fallbackMessage)
+    return accountErrorPolicyReason(statusCode, decision, fallbackMessage)
   }
   return fallbackMessage || `上游账号返回非成功状态：HTTP ${statusCode}`
 }

@@ -2,7 +2,7 @@ import type { Request, Response } from 'express'
 
 import { logger } from '../../shared/logger.js'
 import { getRequestLogger } from '../../shared/request-context.js'
-import { parseErrorPayload, type GatewaySettings } from './request-error-policy.service.js'
+import { parseErrorPayload, type GatewaySettings } from './account-error-policy.service.js'
 import { responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import {
   applyAccountErrorHandlingWithCacheInvalidation,

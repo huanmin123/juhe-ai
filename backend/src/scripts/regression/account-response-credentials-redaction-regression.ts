@@ -81,7 +81,13 @@ try {
 
   const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie)
   assert.equal(detail.credentials.base_url, 'https://api.openai.com/v1', '详情响应应保留前端编辑需要的 Base URL')
-  assert(!Object.prototype.hasOwnProperty.call(detail.credentials, 'error_handling_rules'), '详情响应不应再返回账号内嵌错误策略')
+  assert.deepEqual(detail.credentials.error_handling_rules, [{
+    enabled: true,
+    name: '响应脱敏账户错误处理',
+    priority: 10,
+    status_codes: [429],
+    action: 'temp_unschedulable'
+  }], '详情响应应返回账户级错误处理策略供编辑弹窗维护')
   assert.equal(detail.credentials.api_key, 'sk-redaction-existing-api-key', '详情响应应返回完整 API Key 供编辑弹窗查看')
 
   const created = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
@@ -191,7 +197,14 @@ function seedData(): {
     type: 'api_key',
     credentials: {
       api_key: 'sk-redaction-existing-api-key',
-      base_url: 'https://api.openai.com/v1'
+      base_url: 'https://api.openai.com/v1',
+      error_handling_rules: [{
+        enabled: true,
+        name: '响应脱敏账户错误处理',
+        priority: 10,
+        status_codes: [429],
+        action: 'temp_unschedulable'
+      }]
     },
     status: 'active',
     groupId: groupA.id

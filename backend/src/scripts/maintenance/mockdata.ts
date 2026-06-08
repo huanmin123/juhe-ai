@@ -22,7 +22,6 @@ import type { OperationLogInput } from '../../storage/operation-logs.repository.
 import type { RuntimeLogIndexInput } from '../../storage/runtime-logs.repository.js'
 import type { UsageRecordInput } from '../../storage/usage-records.repository.js'
 import { createPublicApiLog } from '../../storage/public-api-logs.repository.js'
-import { createErrorPolicy } from '../../storage/error-policy.repository.js'
 import { createStreamInterceptPolicy } from '../../storage/stream-intercept-policy.repository.js'
 import {
   aggregateClientIpStatsBatch,
@@ -352,7 +351,6 @@ function printHelp(): void {
 function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): CreatedMockdata {
   const unscopedAdminAccess: AccessScope = { systemAccountId: admin.id, role: adminAccess.role }
   const users = createMockUsers(admin)
-  createErrorPolicies()
   const proxies = createProxies(adminAccess)
   const groups = createGroups(adminAccess, users)
   const accounts = createAccounts(adminAccess, groups, users, proxies)
@@ -457,79 +455,6 @@ function ensureSystemAccount(input: {
     role,
     status: input.status,
     mustChangePassword: false
-  })
-}
-
-function createErrorPolicies(): void {
-  createErrorPolicy({
-    name: `${namePrefix}全局上游临时故障`,
-    enabled: true,
-    priority: 100,
-    scopeType: 'global',
-    match: {
-      statusCodes: [502, 503],
-      keywords: ['upstream', 'temporarily unavailable', '服务不可用']
-    },
-    action: 'temp_unschedulable',
-    notes: 'Mockdata 系统级兜底策略，所有协议和供应商默认继承。'
-  })
-  createErrorPolicy({
-    name: `${namePrefix}OpenAI 协议通用切号`,
-    enabled: true,
-    priority: 120,
-    scopeType: 'protocol',
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    match: {
-      statusCodes: [500, 529]
-    },
-    action: 'retry_next',
-    notes: 'Mockdata OpenAI 兼容协议层策略，优先尝试同一调度容器后续账号。'
-  })
-  createErrorPolicy({
-    name: `${namePrefix}GPT 额度限流`,
-    enabled: true,
-    priority: 10,
-    scopeType: 'provider',
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    providerCode: GPT_VENDOR_CODE,
-    match: {
-      statusCodes: [402, 429],
-      errorCodes: ['insufficient_quota', 'rate_limit_exceeded'],
-      keywords: ['daily quota', '余额不足', '额度耗尽']
-    },
-    action: 'rate_limited',
-    resetStrategy: 'daily',
-    dailyResetHour: 0,
-    notes: 'Mockdata GPT 供应商层额度恢复策略。'
-  })
-  createErrorPolicy({
-    name: `${namePrefix}Codex 客户端临时避让`,
-    enabled: true,
-    priority: 20,
-    scopeType: 'client',
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    clientProfile: 'codex',
-    match: {
-      statusCodes: [429],
-      keywords: ['codex', 'turn', 'rate limit']
-    },
-    action: 'temp_unschedulable',
-    notes: 'Mockdata Codex 客户端层策略，覆盖协议和供应商层。'
-  })
-  createErrorPolicy({
-    name: `${namePrefix}GPT-5 模型认证失败停用`,
-    enabled: true,
-    priority: 30,
-    scopeType: 'model',
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    providerCode: GPT_VENDOR_CODE,
-    modelPattern: 'gpt-5',
-    modelMatchType: 'prefix',
-    match: {
-      statusCodes: [401, 403]
-    },
-    action: 'error_disabled',
-    notes: 'Mockdata 模型层策略，展示模型维度覆盖能力。'
   })
 }
 
@@ -1553,15 +1478,16 @@ function createStreamInterceptPolicies(): number {
       name: `${namePrefix}安全策略干跑观察`,
       enabled: true,
       priority: 35,
-      scopeType: 'protocol' as const,
+      scopeType: 'provider' as const,
       protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
       match: {
         errorCodes: ['cyber_policy'],
         jsonPathsExists: ['response.error'],
         textIncludes: ['policy']
       },
       action: 'observe' as const,
-      notes: 'Mockdata 管理端策略：只观察安全策略命中，不改变流'
+      notes: 'Mockdata GPT 供应商层策略：只观察安全策略命中，不改变流'
     },
     {
       name: `${namePrefix}图像流异常账号避让`,
@@ -2941,7 +2867,6 @@ function createStorageMockdata(created: CreatedMockdata, options: MockdataOption
     'api_keys',
     'api_key_group_bindings',
     'proxy_profiles',
-    'error_policies',
     'stream_intercept_policies',
     'external_integration_sources',
     'external_integration_source_tokens',
@@ -3236,9 +3161,7 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     deleteWhereIn(database, 'system_teams', 'id', mockTeamIds)
 
     const mockProxyIds = selectIds(database, 'SELECT id FROM proxy_profiles WHERE name LIKE ?', likeName)
-    const mockPolicyIds = selectIds(database, 'SELECT id FROM error_policies WHERE name LIKE ? OR id LIKE ?', likeName, `${idPrefix}%`)
     deleteWhereIn(database, 'proxy_profiles', 'id', mockProxyIds)
-    deleteWhereIn(database, 'error_policies', 'id', mockPolicyIds)
 
     deleteWhereIn(database, 'system_sessions', 'system_account_id', mockUserIds)
     deleteWhereIn(database, 'system_accounts', 'id', mockUserIds)

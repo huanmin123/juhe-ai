@@ -422,19 +422,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/request-error-policies',
-    component: () => import('@/views/request-error-policies/RequestErrorPoliciesView.vue'),
-    meta: {
-      title: '请求错误策略',
-      description: '按全局、协议、供应商、客户端和模型层管理上游非 2xx 错误处理策略。',
-      menuGroup: 'system-operations',
-      menuGroupTitle: '系统运维',
-      viewScope: 'admin',
-      roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
     path: '/stream-intercept-policies',
     component: () => import('@/views/stream-intercept-policies/StreamInterceptPoliciesView.vue'),
     meta: {

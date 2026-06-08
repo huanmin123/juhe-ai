@@ -8,9 +8,9 @@ import { logger } from '../../shared/logger.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
-import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
-import type { GatewaySettings } from '../../modules/gateway/request-error-policy.service.js'
+import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/openai-gateway-usage-records.js'
+import type { AccountErrorHandlingRule, AccountErrorHandlingRuleAction } from '../../modules/accounts/account-error-policy-validation.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-precheck-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -302,7 +302,9 @@ function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): void {
 }
 
 async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<void> {
-  const { account, gatewayAccount } = createGatewayAccount('落库错误清理运行态')
+  const { account, gatewayAccount } = createGatewayAccount('落库错误清理运行态', [
+    accountErrorRule('测试 529 冷却', [529], 'temp_unschedulable')
+  ])
   gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 60_000, '写库前临时避让')
   assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.status, 'local_suppressed', '写库前应允许运行态短避让')
 
@@ -313,15 +315,13 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
       success: false,
       statusCode: 529,
       bodyText: '{"error":{"code":"overloaded","message":"模拟 529 失败"}}',
-      trafficSource: 'manual_account_test',
-      errorPolicies: [requestErrorPolicy('precheck_529', '测试 529 冷却', [529], 'temp_unschedulable')],
-      errorPolicyContext: { protocolCode: OPENAI_PROTOCOL_CODE, providerCode: 'gpt' }
+      trafficSource: 'manual_account_test'
     }
   })
   await withDbServiceRole(() => gatewaySideEffects.flushGatewayAccountSideEffectsForTest())
 
   const latest = repositories.findAccountSummary(account.id, adminAccess)
-  assert.equal(latest?.status, 'temporary_unavailable', '错误策略落库后账号应进入临时不可调用')
+  assert.equal(latest?.status, 'temporary_unavailable', '账户错误处理落库后账号应进入临时不可调用')
   assert.match(latest?.lastErrorMessage ?? '', /模拟 529 失败/, '落库后的最后错误应保留策略命中的真实摘要')
   assert.equal(
     gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id],
@@ -433,7 +433,7 @@ async function testPrecheckWaitsForInFlightConcurrencyBeforeMarking(): Promise<v
   assert.match(afterRelease?.lastErrorMessage ?? '', /模拟探针失败但仍有存量请求/, '并发归零后写库应保留探针失败原因')
 }
 
-function createGatewayAccount(name: string): {
+function createGatewayAccount(name: string, errorHandlingRules: AccountErrorHandlingRule[] = []): {
   account: AccountSummary
   group: ReturnType<typeof repositories.createGroup>
   gatewayAccount: OpenAIAccountSecret
@@ -449,7 +449,8 @@ function createGatewayAccount(name: string): {
     groupId: group.id,
     credentials: {
       api_key: `sk-${Math.random().toString(16).slice(2)}`,
-      base_url: 'https://api.openai.com/v1'
+      base_url: 'https://api.openai.com/v1',
+      error_handling_rules: errorHandlingRules
     },
     status: 'active',
     schedulable: true
@@ -460,17 +461,12 @@ function createGatewayAccount(name: string): {
   return { account, group, gatewayAccount }
 }
 
-function requestErrorPolicy(id: string, name: string, statusCodes: number[], action: ErrorPolicySummary['action']): ErrorPolicySummary {
+function accountErrorRule(name: string, statusCodes: number[], action: AccountErrorHandlingRuleAction): AccountErrorHandlingRule {
   return {
-    id,
-    editable: true,
-    name,
     enabled: true,
+    name,
     priority: 1,
-    scopeType: 'provider',
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    providerCode: 'gpt',
-    match: { statusCodes },
+    status_codes: statusCodes,
     action
   }
 }

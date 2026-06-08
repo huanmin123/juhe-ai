@@ -6,7 +6,7 @@ import { assertSafeUpstreamBaseUrl } from '../../shared/upstream-url-policy.js'
 import { runtimeOpenAIAccountCredentials } from '../../storage/repositories.js'
 import { shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
-import type { GatewaySettings } from './request-error-policy.service.js'
+import type { GatewaySettings } from './account-error-policy.service.js'
 import {
   type GatewayAccountFailurePrecheckInput,
   recordGatewayAccountFailureForPrecheck,

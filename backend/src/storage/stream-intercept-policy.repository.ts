@@ -1,5 +1,5 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { isOpenAIProtocolProviderCode } from './provider.repository.js'
 
@@ -163,19 +163,20 @@ const systemDefaultRules: StreamInterceptPolicySummary[] = [
     notes: 'OpenAI SSE response.error 默认规则；是否写客户端可重试错误码由运行时客户端能力决定。'
   },
   {
-    id: 'default_openai_cyber_policy',
+    id: 'default_gpt_cyber_policy',
     defaultRule: true,
     editable: false,
-    name: 'OpenAI cyber_policy',
+    name: 'GPT cyber_policy',
     enabled: true,
     priority: 5,
-    scopeType: 'protocol',
+    scopeType: 'provider',
     protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: GPT_VENDOR_CODE,
     match: {
       errorCodes: ['cyber_policy']
     },
     action: 'retry_no_avoidance',
-    notes: '安全拦截过滤替换为可重试失败事件'
+    notes: 'GPT / Codex 安全拦截过滤替换为可重试失败事件'
   }
 ]
 
@@ -223,9 +224,19 @@ export function listActiveStreamInterceptPoliciesForGateway(input: {
     `)
     .all(...params) as unknown as StreamInterceptPolicyRow[]
   return [
-    ...listStreamInterceptPolicyDefaultRules().filter((policy) => policy.enabled && policy.protocolCode === protocolCode),
+    ...listStreamInterceptPolicyDefaultRules().filter((policy) => policyMatchesGatewayScope(policy, protocolCode, providerCode)),
     ...rows.map(policyFromRow)
   ]
+}
+
+function policyMatchesGatewayScope(
+  policy: StreamInterceptPolicySummary,
+  protocolCode: string,
+  providerCode: string | undefined
+): boolean {
+  if (!policy.enabled || policy.protocolCode !== protocolCode) return false
+  if (policy.scopeType === 'protocol') return policy.providerCode === undefined
+  return providerCode !== undefined && policy.providerCode === providerCode
 }
 
 export function createStreamInterceptPolicy(input: StreamInterceptPolicyInput): StreamInterceptPolicySummary {

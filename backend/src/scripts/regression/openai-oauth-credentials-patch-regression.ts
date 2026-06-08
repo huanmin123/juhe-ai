@@ -35,7 +35,7 @@ assert.equal(tokenCredentials.refresh_token, 'server-refresh', 'credentialsPatch
 assert.equal(tokenCredentials.expires_at, '2026-01-01T00:00:00.000Z', 'credentialsPatch 不能覆盖服务端 token 过期时间')
 assert.equal(tokenCredentials.client_id, 'server-client', 'credentialsPatch 不能覆盖 OAuth client_id')
 assert.equal(tokenCredentials.base_url, 'https://api.openai.com/v1', 'credentialsPatch 不能覆盖 OpenAI base_url')
-assert(!Object.prototype.hasOwnProperty.call(tokenCredentials, 'error_handling_rules'), 'credentialsPatch 不再保留账号内嵌错误处理规则')
+assert.deepEqual(tokenCredentials.error_handling_rules, legacyErrorHandlingRules, 'credentialsPatch 应保留账户级错误处理规则')
 
 const fallbackCredentials = buildSafeOpenAIOAuthCredentials({
   accessToken: 'server-access-with-fallback',
@@ -46,4 +46,4 @@ const fallbackCredentials = buildSafeOpenAIOAuthCredentials({
 
 assert.equal(fallbackCredentials.refresh_token, 'fallback-refresh', 'token 响应缺 refresh_token 时只能使用服务端传入的 fallback refresh token')
 
-console.log('OpenAI OAuth credentialsPatch 回归通过：客户端补丁不能覆盖服务端 token 凭据，也不能写入账号级错误规则')
+console.log('OpenAI OAuth credentialsPatch 回归通过：客户端补丁不能覆盖服务端 token 凭据，且允许写入账户级错误处理规则')

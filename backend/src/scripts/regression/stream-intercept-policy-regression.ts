@@ -9,13 +9,13 @@ import { pipeUpstreamStream } from '../../modules/gateway/openai-gateway-stream.
 import {
   gatewayStreamClientRetryErrorCode
 } from '../../modules/gateway/openai-gateway-responses.js'
-import type { GatewaySettings } from '../../modules/gateway/request-error-policy.service.js'
+import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
 import {
   resolveRuntimeStreamInterceptPolicies,
   type RuntimeStreamInterceptPolicy
 } from '../../modules/gateway/openai-gateway-stream-policy.js'
 import { listStreamInterceptPolicyDefaultRules } from '../../storage/stream-intercept-policy.repository.js'
-import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 
 function policy(overrides: Partial<RuntimeStreamInterceptPolicy>): RuntimeStreamInterceptPolicy {
   return {
@@ -233,6 +233,10 @@ const settings: GatewaySettings = {
     [1, 2, 3, 4, 5],
     '默认流式拦截规则优先级应从 1 开始连续注册'
   )
+  const defaultCyberPolicy = defaultRules.find((item) => item.id === 'default_gpt_cyber_policy')
+  assert(defaultCyberPolicy, 'cyber_policy 默认规则必须注册为 GPT 供应商层规则')
+  assert.equal(defaultCyberPolicy.scopeType, 'provider', 'cyber_policy 默认规则不能落在 OpenAI 协议层')
+  assert.equal(defaultCyberPolicy.providerCode, GPT_VENDOR_CODE, 'cyber_policy 默认规则必须绑定 GPT 供应商')
   const defaultPolicies = resolveRuntimeStreamInterceptPolicies({
     account: {
       providerCode: GPT_VENDOR_CODE,
@@ -240,6 +244,39 @@ const settings: GatewaySettings = {
     } as never,
     managementPolicies: defaultRules
   })
+  const cyberPolicyResult = new OpenAIStreamInterceptBuffer({
+    policies: defaultPolicies
+  }).pushChunk(sseEvent('response.failed', {
+    response: {
+      error: {
+        code: 'cyber_policy',
+        message: '安全策略拦截'
+      }
+    }
+  }))
+  assert.equal(cyberPolicyResult.intercepted?.policyId, 'default_gpt_cyber_policy', 'GPT cyber_policy 应由 GPT 供应商层默认规则命中')
+  const genericOpenAIPolicies = resolveRuntimeStreamInterceptPolicies({
+    account: {
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      credentials: {}
+    } as never,
+    managementPolicies: defaultRules
+  })
+  assert(
+    !genericOpenAIPolicies.some((item) => item.id === 'default_gpt_cyber_policy'),
+    '通用 OpenAI-compatible 供应商不能继承 GPT cyber_policy 默认规则'
+  )
+  const genericCyberPolicyResult = new OpenAIStreamInterceptBuffer({
+    policies: genericOpenAIPolicies
+  }).pushChunk(sseEvent('response.failed', {
+    response: {
+      error: {
+        code: 'cyber_policy',
+        message: '安全策略拦截'
+      }
+    }
+  }))
+  assert.equal(genericCyberPolicyResult.intercepted?.policyId, 'default_openai_response_failed', '非 GPT 供应商只能由协议层 response.failed 规则兜底，不应命中 GPT cyber_policy')
   const interceptor = new OpenAIStreamInterceptBuffer({
     policies: defaultPolicies
   })
@@ -487,6 +524,8 @@ function assertStreamInterceptPolicyRepositoryGuards(): void {
   const createBody = sourceFunctionBlock(repositorySource, 'export function createStreamInterceptPolicy')
   const runtimeSideEffectsBody = sourceFunctionBlock(responseFinalizationSource, 'function applyStreamInterceptPolicyRuntimeSideEffects')
   assert(repositorySource.includes('maxManagementStreamInterceptPolicies'), '管理端流式拦截策略必须有固定数量上限')
+  assert(repositorySource.includes("id: 'default_gpt_cyber_policy'"), 'cyber_policy 默认规则必须命名为 GPT 供应商层规则')
+  assert(!repositorySource.includes("id: 'default_openai_cyber_policy'"), 'cyber_policy 默认规则不能继续命名为 OpenAI 协议层规则')
   assert(!repositorySource.includes('normalizeSetValue('), '流式拦截策略不应再用旧动作兜底模板吞掉非法 action')
   assert(!repositorySource.includes('Number(value)'), '流式拦截策略写入路径不应接收数字字符串')
   assert(!repositorySource.includes('value.split(/[,;'), '流式拦截策略匹配条件不应接收旧字符串列表格式')

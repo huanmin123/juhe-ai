@@ -32,7 +32,6 @@ import {
   findActiveClientIpPolicyByHash,
   recordClientIpPolicyHits
 } from '../../storage/client-ip-stats.repository.js'
-import { listActiveErrorPoliciesForGateway } from '../../storage/error-policy.repository.js'
 import { listActiveStreamInterceptPoliciesForGateway } from '../../storage/stream-intercept-policy.repository.js'
 import {
   clearGatewayRuntimeCacheLocal,
@@ -42,7 +41,7 @@ import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
-import { applyAccountErrorHandling } from '../gateway/request-error-policy.service.js'
+import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
 import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
 import type {
@@ -211,11 +210,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return { cleared: true }
     case 'find_active_client_ip_policy':
       return findActiveClientIpPolicyByHash(operation.ipHash)
-    case 'list_active_error_policies':
-      return listActiveErrorPoliciesForGateway({
-        protocolCode: operation.protocolCode,
-        providerCode: operation.providerCode
-      })
     case 'list_active_stream_intercept_policies':
       return listActiveStreamInterceptPoliciesForGateway({
         protocolCode: operation.protocolCode,
@@ -371,10 +365,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       protocolCode: groupAccess.protocolCode,
       providerCode: groupAccess.providerCode
     })
-    const errorPolicies = listActiveErrorPoliciesForGateway({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
     return {
       apiKey: {
         ...apiKey,
@@ -386,7 +376,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       accounts,
       hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
       accountDispatchDiagnostics: groupAccountsResult.diagnostics,
-      errorPolicies,
       streamInterceptPolicies
     }
   }
@@ -396,7 +385,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     settings,
     accounts: [],
     hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
-    errorPolicies: [],
     streamInterceptPolicies: []
   }
 }

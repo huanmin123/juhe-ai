@@ -8,7 +8,6 @@ import { authorizationOptionsRouter } from '../authorization-options/authorizati
 import { authorizationsRouter } from '../authorizations/authorizations.routes.js'
 import { forceSelfAccessScope, requireAdmin, requireAuth } from '../auth/auth.middleware.js'
 import { authRouter } from '../auth/auth.routes.js'
-import { errorPoliciesRouter } from '../error-policies/error-policies.routes.js'
 import { externalIntegrationsRouter } from '../external-integrations/external-integrations.routes.js'
 import { externalIntegrationSourcesRouter } from '../external-integrations/external-integration-sources.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
@@ -77,7 +76,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
   app.use(`${systemApiPrefix}/providers`, providersRouter)
-  app.use(`${systemApiPrefix}/error-policies`, requireAdmin, errorPoliciesRouter)
   app.use(`${systemApiPrefix}/stream-intercept-policies`, requireAdmin, streamInterceptPoliciesRouter)
   app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)
   app.use(`${systemApiPrefix}/groups`, requireAdmin, groupsRouter)

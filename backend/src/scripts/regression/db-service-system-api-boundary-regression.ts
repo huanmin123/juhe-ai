@@ -17,7 +17,6 @@ const forbiddenServerImports = [
   'modules/authorizations/',
   'modules/auth/auth.middleware',
   'modules/auth/auth.routes',
-  'modules/error-policies/',
   'modules/groups/',
   'modules/operation-logs/operation-logs.routes',
   'modules/openai-oauth/openai-oauth.routes',

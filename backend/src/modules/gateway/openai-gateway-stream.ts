@@ -1,7 +1,7 @@
 import type { Response } from 'express'
 
 import { getRequestLogger } from '../../shared/request-context.js'
-import type { GatewaySettings } from './request-error-policy.service.js'
+import type { GatewaySettings } from './account-error-policy.service.js'
 import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort.js'
 import { emptyUsage, type ParsedUsage } from './openai-gateway-usage.js'
 import {

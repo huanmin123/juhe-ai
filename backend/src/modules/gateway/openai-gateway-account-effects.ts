@@ -1,8 +1,7 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getRequestLogger } from '../../shared/request-context.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import { type GatewayErrorPolicyRuntimeContext, type GatewaySettings } from './request-error-policy.service.js'
-import type { ErrorPolicySummary } from '../../storage/error-policy.repository.js'
+import { type GatewaySettings } from './account-error-policy.service.js'
 import {
   clearGatewayAccountRuntimeAvailability,
   enqueueGatewayAccountErrorHandlingSideEffect,
@@ -28,8 +27,6 @@ export function applyAccountErrorHandlingWithCacheInvalidation(
     errorMessage?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
-    errorPolicies?: ErrorPolicySummary[]
-    errorPolicyContext?: GatewayErrorPolicyRuntimeContext
   }
 ): void {
   const normalizedInput = {

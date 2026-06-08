@@ -1,5 +1,5 @@
 import type { UpstreamAttempt } from './openai-gateway-usage.js'
-import { parseErrorPayload } from './request-error-policy.service.js'
+import { parseErrorPayload } from './account-error-policy.service.js'
 import { gatewayErrorPayload } from './openai-gateway-responses.js'
 import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 import { sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'

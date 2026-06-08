@@ -436,46 +436,6 @@ export interface AccountExportResult {
   }
 }
 
-export type ErrorPolicyScopeType = 'global' | 'protocol' | 'provider' | 'client' | 'model'
-export type ErrorPolicyAction = 'retry_next' | 'temp_unschedulable' | 'rate_limited' | 'error_disabled'
-export type ErrorPolicyRecoveryStrategy = 'duration' | 'daily' | 'weekly'
-export type ErrorPolicyModelMatchType = 'exact' | 'prefix' | 'contains'
-
-export interface ErrorPolicyMatch {
-  statusCodes?: number[]
-  errorCodes?: string[]
-  errorTypes?: string[]
-  keywords?: string[]
-}
-
-export interface ErrorPolicySummary {
-  id: string
-  editable: boolean
-  name: string
-  enabled: boolean
-  priority: number
-  scopeType: ErrorPolicyScopeType
-  protocolCode?: string
-  providerCode?: string
-  clientProfile?: string
-  modelPattern?: string
-  modelMatchType?: ErrorPolicyModelMatchType
-  match: ErrorPolicyMatch
-  action: ErrorPolicyAction
-  resetStrategy?: ErrorPolicyRecoveryStrategy
-  durationHours?: number
-  dailyResetHour?: number
-  weeklyResetDay?: number
-  weeklyResetHour?: number
-  notes?: string
-  createdAt?: string
-  updatedAt?: string
-}
-
-export interface ErrorPolicyListResult {
-  policies: ErrorPolicySummary[]
-}
-
 export interface GroupSchedulingPolicy {
   mode?: 'balanced_fast'
   defaultSoftConcurrency?: number

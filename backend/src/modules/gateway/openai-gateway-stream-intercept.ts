@@ -283,7 +283,7 @@ function buildStreamFailureDecision(event: ParsedOpenAIStreamEvent, downstreamWr
 }
 
 export function isCodexRetryableAfterOutputStreamFailureCode(errorCode: string | undefined): boolean {
-  // 维护者注意：cyber_policy 是生产里确认过的 OpenAI 200 + SSE 流内异常，
+  // 维护者注意：cyber_policy 是生产里确认过的 GPT / Codex 200 + SSE 流内异常，
   // 输出后也需要改写为客户端可重试错误，否则客户端会表现为半截断开、持续重连。
   // 这不是可随意扩散的通用错误码白名单；改动或删除前必须先告知用户并同步回归用例。
   return errorCode === 'cyber_policy'

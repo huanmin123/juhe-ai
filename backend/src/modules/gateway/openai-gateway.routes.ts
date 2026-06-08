@@ -44,7 +44,7 @@ import {
   UpstreamAttemptError
 } from './openai-gateway-upstream-dispatch.js'
 import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
-import type { GatewaySettings } from './request-error-policy.service.js'
+import type { GatewaySettings } from './account-error-policy.service.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import { recordClientIpErrorCircuitSample } from './openai-gateway-client-ip-error-circuit.service.js'
 import { transferClientIpAccountPendingFailures } from './openai-gateway-client-ip-account-avoidance.service.js'
@@ -217,9 +217,7 @@ export async function handleOpenAIGatewayRequest(
         sessionAffinityKey,
         clientStrategy,
         clientIpAccountAvoidanceTracker,
-        streamInterceptPolicies,
-        errorPolicies,
-        errorPolicyContext
+        streamInterceptPolicies
       } = currentPreflight
       const dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
       if (dispatchAccounts.length === 0) {
@@ -248,9 +246,7 @@ export async function handleOpenAIGatewayRequest(
           clientIpAccountAvoidanceTracker,
           currentPreflight.requestLane,
           currentPreflight.groupSchedulingPolicy,
-          options.disableAccountStateMutation !== true,
-          errorPolicies,
-          errorPolicyContext
+          options.disableAccountStateMutation !== true
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {

@@ -5,7 +5,7 @@ import type {
   OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../shared/request-context.js'
-import { parseErrorPayload } from './request-error-policy.service.js'
+import { parseErrorPayload } from './account-error-policy.service.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
 import {
   estimateCatalogCacheReadCostUsd,

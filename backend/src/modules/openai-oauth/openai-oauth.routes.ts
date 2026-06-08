@@ -11,6 +11,7 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
 import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
+import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from '../accounts/account-stream-intercept-policy-validation.js'
 import {
   buildOpenAIOAuthCredentials,
@@ -27,6 +28,7 @@ export const openAIOAuthRouter = Router()
 
 const authUrlSchema = z.object({}).strict()
 const oauthCredentialsPatchSchema = z.object({
+  error_handling_rules: z.unknown().optional(),
   stream_intercept_rules: z.unknown().optional()
 }).strict()
 
@@ -407,6 +409,9 @@ function resolveOpenAIOAuthProviderProfile(providerProtocolProfileId?: string): 
 
 function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchSchema>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
+  if (patch?.error_handling_rules !== undefined) {
+    output.error_handling_rules = patch.error_handling_rules
+  }
   if (patch?.stream_intercept_rules !== undefined) {
     output.stream_intercept_rules = patch.stream_intercept_rules
   }
@@ -414,6 +419,10 @@ function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchS
 }
 
 function oauthCredentialsPatchValidationMessage(patch?: z.infer<typeof oauthCredentialsPatchSchema>): string | undefined {
+  if (patch?.error_handling_rules !== undefined) {
+    const accountErrorPolicyMessage = accountErrorPolicyValidationMessage(validateAccountErrorHandlingRules(patch.error_handling_rules))
+    if (accountErrorPolicyMessage) return accountErrorPolicyMessage
+  }
   if (patch?.stream_intercept_rules !== undefined) {
     const streamPolicyMessage = accountStreamInterceptValidationMessage(validateAccountStreamInterceptRules(patch.stream_intercept_rules))
     if (streamPolicyMessage) return streamPolicyMessage

@@ -2,7 +2,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { AccountRuntimeAvailability, DbServiceOperation } from '../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
-import type { RequestErrorPolicyDecision, GatewaySettings } from './request-error-policy.service.js'
+import type { AccountErrorPolicyDecision, GatewaySettings } from './account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
 import {
   getAccountCurrentConcurrency,
@@ -87,7 +87,7 @@ export interface GatewayAccountFailurePrecheckInput {
   endpoint?: string
   reason: string
   statusCode?: number
-  errorPolicyDecision?: RequestErrorPolicyDecision
+  errorPolicyDecision?: AccountErrorPolicyDecision
   forcePrecheck?: boolean
 }
 
@@ -109,7 +109,7 @@ interface PrecheckState {
   attemptCount: number
   failureCount: number
   reason: string
-  errorPolicyDecision?: RequestErrorPolicyDecision
+  errorPolicyDecision?: AccountErrorPolicyDecision
   distinctClientIpCount: number
   distinctApiKeyCount: number
   running: boolean

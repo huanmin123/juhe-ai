@@ -1,5 +1,7 @@
 import type { AccountSummary } from '@/types/domain'
 import { formatServerDateTimeInput } from './accountFormatters'
+import { validateAccountErrorPolicyRules } from './accountErrorPolicyPayload'
+import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import { validateAccountStreamInterceptRules } from './accountStreamInterceptPolicyPayload'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { buildAccountCredentials, currentAccountCredentials } from './accountCredentials'
@@ -42,7 +44,7 @@ export type AccountOAuthCreateCommonPayload = {
   proxyProfileId?: string
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
-  credentialsPatch?: { stream_intercept_rules?: unknown }
+  credentialsPatch?: { error_handling_rules?: unknown; stream_intercept_rules?: unknown }
   notes?: string
 }
 
@@ -50,6 +52,7 @@ export function validateAccountSaveForm(input: {
   editingId?: string
   form: AccountFormModel
   hasAuthSession: boolean
+  errorPolicyRules: AccountErrorPolicyRuleForm[]
   streamInterceptRules: AccountStreamInterceptRuleForm[]
 }): string | undefined {
   const { editingId, form } = input
@@ -66,6 +69,8 @@ export function validateAccountSaveForm(input: {
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
   const scheduleValidation = validateAccountAvailabilityScheduleForm(form.availabilitySchedule)
   if (scheduleValidation) return scheduleValidation
+  const accountErrorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
+  if (!accountErrorPolicyValidation.valid) return accountErrorPolicyValidation.message || '账户错误处理策略配置不完整'
   const streamPolicyValidation = validateAccountStreamInterceptRules(input.streamInterceptRules)
   if (!streamPolicyValidation.valid) return streamPolicyValidation.message || '账户流式拦截规则配置不完整'
   return validateAccountModelMappings(form.modelMappings)
@@ -76,6 +81,7 @@ export function buildAccountSavePayload(input: {
   accountDetail?: AccountSummary
   editingId?: string
   form: AccountFormModel
+  errorPolicyRules: AccountErrorPolicyRuleForm[]
   streamInterceptRules: AccountStreamInterceptRuleForm[]
 }): AccountSavePayload {
   return {
@@ -118,6 +124,7 @@ export function buildOAuthCreateCommonPayload(input: {
   accounts: AccountSummary[]
   editingId?: string
   form: AccountFormModel
+  errorPolicyRules: AccountErrorPolicyRuleForm[]
   streamInterceptRules: AccountStreamInterceptRuleForm[]
 }): AccountOAuthCreateCommonPayload {
   const credentials = accountCredentials(input)
@@ -137,6 +144,9 @@ export function buildOAuthCreateCommonPayload(input: {
   if (Object.prototype.hasOwnProperty.call(credentials, 'stream_intercept_rules')) {
     payload.credentialsPatch = { ...(payload.credentialsPatch ?? {}), stream_intercept_rules: credentials.stream_intercept_rules }
   }
+  if (Object.prototype.hasOwnProperty.call(credentials, 'error_handling_rules')) {
+    payload.credentialsPatch = { ...(payload.credentialsPatch ?? {}), error_handling_rules: credentials.error_handling_rules }
+  }
   return payload
 }
 
@@ -150,10 +160,12 @@ function accountCredentials(input: {
   accountDetail?: AccountSummary
   editingId?: string
   form: AccountFormModel
+  errorPolicyRules: AccountErrorPolicyRuleForm[]
   streamInterceptRules: AccountStreamInterceptRuleForm[]
 }): Record<string, unknown> {
   return buildAccountCredentials({
     currentCredentials: input.accountDetail?.credentials ?? currentAccountCredentials(input.accounts, input.editingId),
+    errorPolicyRules: input.errorPolicyRules,
     streamInterceptRules: input.streamInterceptRules,
     form: input.form
   })

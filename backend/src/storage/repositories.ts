@@ -6,6 +6,7 @@ import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../d
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
+import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
 import { normalizeAccountStreamInterceptRules } from '../modules/accounts/account-stream-intercept-policy-validation.js'
 import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
@@ -268,7 +269,6 @@ export {
   listApiKeysPage,
   updateApiKey
 } from './api-key.repository.js'
-export { listErrorPolicies } from './error-policy.repository.js'
 export { defaultProviderProtocolProfile, findProviderDefaultTestModel, findProviderProtocolProfile, isOpenAIProtocolProviderCode, listOpenAIProtocolProfileIds, listOpenAIProtocolProviderCodes, listProviders } from './provider.repository.js'
 export {
   createSession,
@@ -1034,6 +1034,7 @@ function requiredTextInput(value: unknown, label: string): string {
 const apiKeyAccountCredentialKeys = new Set([
   'api_key',
   'base_url',
+  'error_handling_rules',
   'stream_intercept_rules'
 ])
 
@@ -1048,6 +1049,7 @@ const oauthAccountCredentialKeys = new Set([
   'chatgpt_user_id',
   'plan_type',
   'base_url',
+  'error_handling_rules',
   'stream_intercept_rules'
 ])
 
@@ -1121,6 +1123,9 @@ function normalizeOAuthAccountCredentials(input: Record<string, unknown>): Recor
 }
 
 function normalizeAccountCredentialPolicies(input: Record<string, unknown>, credentials: Record<string, unknown>): void {
+  if (Object.prototype.hasOwnProperty.call(input, 'error_handling_rules')) {
+    credentials.error_handling_rules = normalizeAccountErrorHandlingRules(input.error_handling_rules)
+  }
   if (Object.prototype.hasOwnProperty.call(input, 'stream_intercept_rules')) {
     credentials.stream_intercept_rules = normalizeAccountStreamInterceptRules(input.stream_intercept_rules)
   }

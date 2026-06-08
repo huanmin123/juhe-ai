@@ -19,13 +19,12 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, clientIpStats, accountUsageRepository, authorizationUsageRepository, errorPolicyRepository] = await Promise.all([
+const [databaseModule, repositories, clientIpStats, accountUsageRepository, authorizationUsageRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/client-ip-stats.repository.js'),
   import('../../storage/account-usage.repository.js'),
-  import('../../storage/authorization-usage.repository.js'),
-  import('../../storage/error-policy.repository.js')
+  import('../../storage/authorization-usage.repository.js')
 ])
 
 const range: AccountUsageStatsRange = {
@@ -44,7 +43,6 @@ try {
   seedAuthorizationTeamWindow(statsDatabase, 'sys_admin', 'team_page_window_0', 20)
   seedAuthorizationUserWindow(statsDatabase, 'sys_admin', 'user_page_window_0', 40)
   seedModelCheckRun()
-  seedErrorPolicies()
 
   const ipList = clientIpStats.listClientIpStats({
     startDate: range.startDate,
@@ -82,10 +80,7 @@ try {
   assert.equal(modelChecks.page, 10, '模型检测列表 pageSize=100 时页码应收敛到 10 页以内')
   assert.equal((modelChecks.page - 1) * modelChecks.pageSize, 900, '模型检测列表深翻页 offset 应限制在 1000 行内')
 
-  const errorPolicies = errorPolicyRepository.listErrorPolicies().policies
-  assert.equal(errorPolicies.length, errorPolicyRepository.maxErrorPolicyDefinitions, '错误策略列表应固定最多返回 200 条，避免管理端无界读取')
-
-  console.log('管理端列表页码窗口回归通过：IP 统计、账号用量、授权用量和模型检测列表 offset 被限制在 1000 行内，错误策略列表固定窗口读取')
+  console.log('管理端列表页码窗口回归通过：IP 统计、账号用量、授权用量和模型检测列表 offset 被限制在 1000 行内')
 } finally {
   try {
     databaseModule.closeStorageDatabases()
@@ -170,16 +165,4 @@ function seedModelCheckRun(): void {
     probeSetVersion: 'page-window',
     startedAt: '2026-02-03T00:04:00.000Z'
   })
-}
-
-function seedErrorPolicies(): void {
-  const database = databaseModule.getBusinessDatabase()
-  const insert = database.prepare(`
-    INSERT INTO error_policies (id, system_account_id, name, enabled, rules_json, created_at, updated_at)
-    VALUES (?, 'sys_admin', ?, 1, '[]', ?, ?)
-  `)
-  const now = '2026-02-03T00:05:00.000Z'
-  for (let index = 0; index < errorPolicyRepository.maxErrorPolicyDefinitions + 1; index += 1) {
-    insert.run(`error_policy_page_window_${index}`, `错误策略窗口 ${String(index).padStart(2, '0')}`, now, now)
-  }
 }

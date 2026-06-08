@@ -123,6 +123,7 @@
     <AccountEditModal
       v-if="modalOpen"
       v-model:open="modalOpen"
+      v-model:error-policy-rules="accountErrorPolicyRules"
       v-model:stream-intercept-rules="accountStreamInterceptRules"
       :account-type-choices="accountTypeChoices"
       :authorized-editing="editingAuthorizedAccount"
@@ -385,6 +386,7 @@ const {
   })
 })
 const {
+  accountErrorPolicyRules,
   accountStreamInterceptRules,
   accountTypeChoices,
   authLoading,
@@ -651,6 +653,7 @@ async function testAccountFromEditModal() {
     editingId: editingId.value,
     form,
     hasAuthSession: Boolean(authResult.value?.sessionId),
+    errorPolicyRules: accountErrorPolicyRules.value,
     streamInterceptRules: accountStreamInterceptRules.value
   })
   if (validationMessage) {
@@ -664,6 +667,7 @@ async function testAccountFromEditModal() {
       accountDetail: editingAccountDetail.value,
       editingId: editingId.value,
       form,
+      errorPolicyRules: accountErrorPolicyRules.value,
       streamInterceptRules: accountStreamInterceptRules.value
     })
     if (!draftPayload.groupId) {

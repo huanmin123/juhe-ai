@@ -22,6 +22,10 @@ import {
   targetSystemAccountLabel as buildTargetSystemAccountLabel
 } from './accountDerivedState'
 import {
+  loadAccountErrorPolicyRules
+} from './accountErrorPolicyPayload'
+import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import {
   loadAccountStreamInterceptRules
 } from './accountStreamInterceptPolicyPayload'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
@@ -82,6 +86,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const editingScheduleFingerprint = ref<string>()
   const cloningScheduleFingerprint = ref<string>()
   const form = reactive<AccountFormModel>(defaultForm())
+  const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
   const accountStreamInterceptRules = ref<AccountStreamInterceptRuleForm[]>(loadAccountStreamInterceptRules())
   const providerModelOptions = ref<SelectOption[]>([])
   const mappingTargetModelOptions = ref<SelectOption[]>([])
@@ -147,6 +152,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     mappingTargetModelOptions.value = []
     providerModelsLoading.value = false
     ensureDefaultGroupSelected(providerCode)
+    accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     accountStreamInterceptRules.value = loadAccountStreamInterceptRules()
     authResult.value = undefined
   }
@@ -255,8 +261,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
     const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
     const baseUrl = credentialBaseUrlForForm(sourceAccount.credentials, '账户详情凭据')
+    const errorPolicyRules = loadCredentialErrorPolicyRules(sourceAccount.credentials, '账户详情错误处理策略')
     const streamInterceptRules = loadCredentialStreamInterceptRules(sourceAccount.credentials, '账户详情流式拦截策略')
-    if (!baseUrl || !streamInterceptRules) return
+    if (!baseUrl || !errorPolicyRules || !streamInterceptRules) return
     const selectedGroup = sourceAccount.boundGroupId
       ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
       : undefined
@@ -298,6 +305,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
     cloningScheduleFingerprint.value = undefined
+    accountErrorPolicyRules.value = errorPolicyRules
     accountStreamInterceptRules.value = streamInterceptRules
     authResult.value = undefined
     modalOpen.value = true
@@ -414,6 +422,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       editingId: editingId.value,
       form,
       hasAuthSession: Boolean(authResult.value?.sessionId),
+      errorPolicyRules: accountErrorPolicyRules.value,
       streamInterceptRules: accountStreamInterceptRules.value
     })
     if (validationMessage) {
@@ -426,6 +435,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountDetail: editingAccountDetail.value,
       editingId: editingId.value,
       form,
+      errorPolicyRules: accountErrorPolicyRules.value,
       streamInterceptRules: accountStreamInterceptRules.value
     })
 
@@ -525,6 +535,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accounts: options.accounts.value,
       editingId: editingId.value,
       form,
+      errorPolicyRules: accountErrorPolicyRules.value,
       streamInterceptRules: accountStreamInterceptRules.value
     })
 
@@ -551,6 +562,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   return {
+    accountErrorPolicyRules,
     accountStreamInterceptRules,
     accountTypeChoices,
     authLoading,
@@ -626,7 +638,19 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
   }
 
+  function loadCredentialErrorPolicyRules(credentials: Record<string, unknown>, label: string): AccountErrorPolicyRuleForm[] | undefined {
+    try {
+      return loadAccountErrorPolicyRules(credentials)
+    } catch (error) {
+      console.error(error)
+      message.error(`${label}配置异常，请先修正已保存的账户凭据`)
+      return undefined
+    }
+  }
+
   function fillCloneForm(account: AccountSummary, credentials: Record<string, unknown>): boolean {
+    const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '克隆来源错误处理策略')
+    if (!errorPolicyRules) return false
     const streamInterceptRules = loadCredentialStreamInterceptRules(credentials, '克隆来源流式拦截策略')
     if (!streamInterceptRules) return false
     const baseUrl = credentialBaseUrlForForm(credentials, '克隆来源凭据')
@@ -669,6 +693,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       notes: account.notes ?? ''
     })
     cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
+    accountErrorPolicyRules.value = errorPolicyRules
     accountStreamInterceptRules.value = streamInterceptRules
     authResult.value = undefined
     return true
