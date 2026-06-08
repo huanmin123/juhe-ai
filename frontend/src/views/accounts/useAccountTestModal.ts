@@ -33,6 +33,7 @@ interface UseAccountTestModalOptions {
 }
 
 type AccountTestPayload = ReturnType<typeof buildAccountTestPayload>
+type DraftTestMode = 'create' | 'saved'
 
 export interface SuccessfulDraftActivationTest {
   taskId: string
@@ -61,6 +62,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const providerModels = ref<ProviderModelPricing[]>([])
   const providerModelsProviderCode = ref('')
   const draftTestingAccountPayload = ref<AccountDraftTestPayload['account']>()
+  const draftTestMode = ref<DraftTestMode>()
   const successfulDraftActivationTest = options.successfulDraftActivationTest ?? ref<SuccessfulDraftActivationTest>()
   const testForm = reactive<AccountTestForm>({ model: '', clientCompatibility: 'account_default' })
   const testTargetAccountSelection = computed(() => (
@@ -128,6 +130,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     batchTestingAccounts.value = []
     batchTestItems.value = []
     draftTestingAccountPayload.value = undefined
+    draftTestMode.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.clientCompatibility = 'account_default'
@@ -145,7 +148,26 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     batchTestingAccounts.value = []
     batchTestItems.value = []
     draftTestingAccountPayload.value = draftPayload
+    draftTestMode.value = 'create'
     successfulDraftActivationTest.value = undefined
+    testResult.value = undefined
+    testForm.model = defaultModelForSelection(account)
+    testForm.clientCompatibility = 'account_default'
+    testModalOpen.value = true
+    void loadTestModels()
+  }
+
+  async function openSavedDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
+    if (!isOpenAIProtocolProfile(account)) {
+      message.warning('当前仅支持测试 OpenAI v1 协议账户')
+      return
+    }
+    testMode.value = 'single'
+    testingAccount.value = account
+    batchTestingAccounts.value = []
+    batchTestItems.value = []
+    draftTestingAccountPayload.value = draftPayload
+    draftTestMode.value = 'saved'
     testResult.value = undefined
     testForm.model = defaultModelForSelection(account)
     testForm.clientCompatibility = 'account_default'
@@ -175,6 +197,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     batchTestingAccounts.value = [...testableAccounts]
     batchTestItems.value = testableAccounts.map((account) => ({ account, status: 'pending' }))
     draftTestingAccountPayload.value = undefined
+    draftTestMode.value = undefined
     testResult.value = undefined
     testForm.model = defaultModelForSelection(testableAccounts)
     testForm.clientCompatibility = 'account_default'
@@ -190,7 +213,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     accountTestAbortController = controller
     const startedAt = Date.now()
     const account = testingAccount.value
-    const activationDraftPayload = activeDraftTestPayload(account)
+    const activationDraftPayload = activeActivationDraftTestPayload(account)
     try {
       const payload = buildAccountSpecificTestPayload(account)
       const task = await submitAccountTest(account, payload)
@@ -369,6 +392,11 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     const draftPayload = activeDraftTestPayload(account)
     if (draftPayload) {
       const requestPayload: AccountDraftTestPayload = { account: draftPayload, ...payload }
+      if (draftTestMode.value === 'saved') {
+        return options.isManagementView.value
+          ? api.accounts.test(account.id, requestPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
+          : api.myAccounts.test(account.id, requestPayload)
+      }
       return options.isManagementView.value
         ? api.accounts.testDraft(requestPayload, options.accountScopeParams.value)
         : api.myAccounts.testDraft(requestPayload)
@@ -417,8 +445,12 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     return testingAccount.value?.id === account.id ? draftTestingAccountPayload.value : undefined
   }
 
+  function activeActivationDraftTestPayload(account: AccountSummary): AccountDraftTestPayload['account'] | undefined {
+    return draftTestMode.value === 'create' ? activeDraftTestPayload(account) : undefined
+  }
+
   function accountTestTaskScopeParams(account: AccountSummary): ReturnType<typeof accountOperationScopeParams> {
-    return activeDraftTestPayload(account)
+    return draftTestMode.value === 'create' && activeDraftTestPayload(account)
       ? options.accountScopeParams.value
       : accountOperationScopeParams(account, options.accountScopeParams.value)
   }
@@ -564,6 +596,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     closeTestModal,
     openBatchTestModal,
     openDraftTestModal,
+    openSavedDraftTestModal,
     openTestModal,
     runAccountTest,
     stopAccountTest,

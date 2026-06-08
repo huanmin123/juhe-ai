@@ -76,12 +76,6 @@ const accountUpdateSchema = z.object({
   clearFailureState: z.boolean().optional()
 }).strict()
 
-const accountTestSchema = z.object({
-  model: z.string().trim().optional(),
-  prompt: z.string().trim().optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional()
-}).strict().optional()
-
 const accountDraftTestAccountSchema = z.object({
   providerCode: z.string().trim().min(1),
   providerProtocolProfileId: z.string().trim().min(1).optional(),
@@ -101,6 +95,13 @@ const accountDraftTestAccountSchema = z.object({
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   notes: z.string().optional()
 }).strict()
+
+const accountTestSchema = z.object({
+  model: z.string().trim().optional(),
+  prompt: z.string().trim().optional(),
+  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
+  account: accountDraftTestAccountSchema.optional()
+}).strict().optional()
 
 const accountDraftTestSchema = z.object({
   account: accountDraftTestAccountSchema,
@@ -320,88 +321,19 @@ accountsRouter.post('/test-draft', async (req, res) => {
     res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '账户草稿测试参数无效'))
     return
   }
-  const accountInput = parsed.data.account
-  const group = findGroupSummary(accountInput.groupId, requestAccess)
-  if (!group || group.providerCode !== accountInput.providerCode || group.permissions?.canManageAccounts === false) {
-    res.status(400).json(badRequest('账户分组无效'))
-    return
-  }
-  const provider = listProviders().find((item) => item.code === accountInput.providerCode)
-  const providerProfile = provider?.protocolProfiles.find((item) => item.id === (accountInput.providerProtocolProfileId ?? group.providerProtocolProfileId))
-    ?? provider?.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
-  if (!provider || !providerProfile || !providerProfile.accountTypes.includes(accountInput.type)) {
-    res.status(400).json(badRequest(`供应商 ${accountInput.providerCode} 不支持账户类型 ${accountInput.type}`))
-    return
-  }
-  if (!provider.enabled) {
-    res.status(400).json(badRequest(`供应商已停用：${accountInput.providerCode}`))
-    return
-  }
-  if (group.providerProtocolProfileId !== providerProfile.id || !isOpenAIProtocolProfile(providerProfile)) {
-    res.status(400).json({ message: '当前仅支持测试 OpenAI 协议账户' })
-    return
-  }
-  const ownerSystemAccountId = group.ownerSystemAccountId ?? group.systemAccountId ?? requestAccess.systemAccountFilterId ?? requestAccess.systemAccountId
-  if (!ownerSystemAccountId) {
-    res.status(400).json(badRequest('账户分组缺少归属用户，无法测试'))
-    return
-  }
-
   try {
-    const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl))
-    const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
-    const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
-    const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
-      accountInput.providerCode,
-      accountInput.type,
-      accountInput.clientCompatibility,
-      'openai_standard',
-      providerProfile
-    )
-    const account = draftTestAccountSummary({
-      account: accountInput,
-      availabilitySchedule,
-      clientCompatibility,
-      credentials,
-      groupName: group.name,
-      ownerSystemAccountId,
-      providerProtocolProfileId: providerProfile.id,
-      protocolCode: providerProfile.protocolCode,
-      protocolVersion: providerProfile.protocolVersion
+    const preparedDraft = prepareAccountDraftTestSnapshot({
+      accountInput: parsed.data.account,
+      requestAccess
     })
     const { prompt: _ignoredPrompt, ...testOptions } = parsed.data
-    const draftAccount: AccountTestDraftSnapshot = {
-      id: account.id,
-      ownerSystemAccountId,
-      groupId: accountInput.groupId,
-      groupName: group.name,
-      providerCode: accountInput.providerCode,
-      providerProtocolProfileId: providerProfile.id,
-      protocolCode: providerProfile.protocolCode,
-      protocolVersion: providerProfile.protocolVersion,
-      name: account.name,
-      type: accountInput.type,
-      credentials,
-      concurrencyLimit: account.concurrencyLimit,
-      priority: account.priority,
-      superPriorityEnabled: account.superPriorityEnabled,
-      fallbackEnabled: account.fallbackEnabled,
-      clientCompatibility,
-      supportedModels: account.supportedModels,
-      modelMappings: account.modelMappings,
-      proxyProfileId: account.proxyProfileId,
-      accountExpiresAt: account.accountExpiresAt,
-      availabilitySchedule,
-      availabilityScheduleJson,
-      notes: account.notes
-    }
     const task = createAccountTestTask({
-      account,
+      account: preparedDraft.account,
       access: requestAccess,
       diagnostics: 'full',
       model: testOptions.model,
       clientCompatibility: testOptions.clientCompatibility,
-      draftAccount
+      draftAccount: preparedDraft.draftAccount
     })
     if (!dispatchAccountTestTasks([task.id])) {
       failAccountTestTask(task.id, '后台 worker 暂不可用，账号草稿测试任务未能投递')

@@ -803,7 +803,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 授权实例运行态以授权实例 `accounts` 行为准；冷却、最近错误和流式失败窗口不落在 `group_accounts` 本地绑定字段上。
 - 来源 AI 账户删除时，来源账户和对应授权实例账户都只做逻辑删除并立即隐藏；对应 `resource_authorization_grants` 和 `resource_authorizations` 必须标记为 `revoked`，历史统计和用量在逻辑删除阶段继续保留原授权 ID；默认授权列表不再把它作为生效授权展示。超过 1 个月后，物理清理任务再删除授权实例、授权记录、绑定关系、历史记录和统计窗口。
 - `api_keys` 不保存主号池字段；API Key 的分组路由事实只来自 `api_key_group_bindings`。
-- `api_keys.availability_schedule_json` 保存 API Key 可用时段计划；为空表示不限制时段。该字段只作为网关门禁和列表展示事实，不驱动 `api_keys.status` 自动改写，也不写入统计缓存。
+- `api_keys.availability_schedule_json` 保存 API Key 强制启停计划；为空表示不接管手动状态。启用计划后，命中允许时段时网关强制视为可用，未命中时段时网关强制关闭；该字段不自动改写 `api_keys.status` 原始值，也不写入统计缓存。未配置计划的 API Key 仍完全按 `api_keys.status` 手动启停。
 - `accounts.availability_schedule_json` 与 API Key 计划使用同一结构；账户计划作用在具体账户行上，授权实例账户按自己的实例行计划参与调度，来源账户计划作为来源账户可用性的一部分参与授权实例实际可用性判断。
 - `api_key_group_bindings.api_key_id / group_id / priority / status` 保存 API Key 到多个可用分组号池的路由绑定；新建和编辑时可以绑定 API Key 所属系统账户自己的分组，也可以绑定有效授权给该系统账户的分组。至少保留一个 `active` 绑定，同一个 Key 下 active 绑定优先级唯一，同一个 Key 下所有绑定分组必须属于同一供应商协议档案。
 - 授权实例账户通过 `group_accounts.account_authorization_id` 进入被授权用户自己的分组后参与调度；调度时必须重新校验最终用户授权、调用方系统账户、实例账户状态、实例绑定状态、额度缓存和来源账户可用性。上游凭据、`base_url`、模型、代理、并发、可用时段和账户追加流式规则从来源账户补齐，并随来源账户资源配置更新同步进入列表、账户测试和网关运行缓存；列表读取来源账户状态、调度开关、到期和错误摘要作为 `effectiveAvailability` 的来源侧阻断依据，但这些来源状态字段不能覆盖或回写授权实例自己的本地运行态。
@@ -968,7 +968,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 本地网关 API Key 的完整明文在创建成功时返回，也可通过单条完整密钥读取接口按资源权限返回；列表和更新响应只返回空 `key` 以及 `key_prefix` / `key_suffix` 组成的安全标识，不能批量暴露完整密钥。授权账户和授权分组接口不能返回完整密钥，只能返回列表摘要和必要状态。数据库中必须通过 `key_secret_encrypted` 密文保存本地 API Key，`key_hash` 用于网关校验，`key_prefix` 和 `key_suffix` 用于摘要展示；API Key 列表通用搜索只按名称匹配。缺少 `key_secret_encrypted` 或密文不可解的数据不进入运行时，应停机离线修复或重建 API Key。
 
-API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。API Key 可用时段计划也不属于敏感凭据，保存在 `api_keys.availability_schedule_json`；计划以分钟为粒度判断，网关运行态缓存命中计划边界时最多保留到下一分钟，避免时段切换长时间滞后。
+API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。API Key 强制启停计划也不属于敏感凭据，保存在 `api_keys.availability_schedule_json`；计划以分钟为粒度判断，网关运行态缓存命中计划边界时最多保留到下一分钟，避免时段切换长时间滞后。
 
 外部来源授权 token 在创建响应中返回完整明文，也可通过单条 token 复制接口按管理员权限读取；业务库 `external_integration_source_tokens` 保存带用途前缀的 SHA-256 摘要 `token_hash`、完整 token 密文 `token_secret_encrypted`、安全展示用 `token_prefix` / `token_suffix`、状态、scope 和过期时间。每一个公开接口都是独立资源 scope，来源授权和 token 都必须包含目标接口 scope，才允许调用。默认种子会写入固定来源 `extsrc_builtin_test` 和固定 token `exttok_builtin_test` 作为内置测试 Token，完整明文只加密保存在业务库，可在公开接口授权列表按管理员权限复制；接入文档和 curl 示例只展示 `<source_token>` 占位符，不返回内置测试 Token 明文。内置测试来源固定授权当前所有公开接口 scope，固定限频 `60s/10次`，只返回公开接口 mock 数据；允许停用和重置，不允许编辑名称、scope、限频、到期时间、备注、新增 token 或删除。普通日志、运行日志、错误响应、操作记录和 demo 成功响应都不能输出真实明文 token 或 token hash。
 

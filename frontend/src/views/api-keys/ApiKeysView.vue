@@ -48,7 +48,7 @@
       </template>
       <template #filters>
         <label class="mobile-filter-field">
-          <span>状态</span>
+          <span>手动状态</span>
           <a-select v-model:value="statusFilter" :options="listStatusOptions" />
         </label>
         <label class="mobile-filter-field">
@@ -85,17 +85,17 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="managedColumns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 2060 : 1880" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="managedColumns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 2120 : 1940" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">
-          <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
+          <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
         </template>
         <template v-else-if="column.key === 'availabilitySchedule'">
           <a-tag class="schedule-tag" :color="apiKeyScheduleTagColor(record)">
-            {{ apiKeyScheduleSummary(record.availabilitySchedule) }}
+            {{ apiKeyScheduleSummary(record.availabilitySchedule, record.availabilityScheduleActive) }}
           </a-tag>
         </template>
         <template v-else-if="column.key === 'usage'">
@@ -149,7 +149,7 @@
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">{{ record.name }}</div>
             <div class="mobile-list-card-tags">
-              <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
+              <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
               <a-tag
                 v-for="(binding, index) in apiKeyGroupBindings(record).slice(0, 2)"
                 :key="binding.id"
@@ -174,8 +174,8 @@
               <strong>{{ formatDateTime(record.expiresAt) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>时间计划</span>
-              <strong>{{ apiKeyScheduleSummary(record.availabilitySchedule) }}</strong>
+              <span>强制启停计划</span>
+              <strong>{{ apiKeyScheduleSummary(record.availabilitySchedule, record.availabilityScheduleActive) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>累计用量</span>
@@ -290,13 +290,13 @@
             </a-button>
           </div>
         </a-form-item>
-        <a-form-item label="状态">
+        <a-form-item label="手动状态">
           <a-select v-model:value="form.status" :options="statusOptions" />
         </a-form-item>
         <a-form-item class="api-key-schedule-form-item">
           <div class="api-key-schedule-field">
             <div class="schedule-toggle-row">
-              <span class="schedule-toggle-label">可用时段计划</span>
+              <span class="schedule-toggle-label">强制启停计划</span>
               <a-switch v-model:checked="form.availabilitySchedule.enabled" />
             </div>
             <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
@@ -304,7 +304,7 @@
                 class="schedule-help"
                 type="info"
                 show-icon
-                message="按重复日期和起止时间设置使用范围。"
+                message="计划开启后，窗口内强制启用 API Key，窗口外强制关闭 API Key。"
               />
               <div class="schedule-window-list">
                 <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
@@ -556,8 +556,8 @@ const rawColumns = computed(() => {
   }
   baseColumns.push(
     { title: '绑定分组', key: 'group', width: 220 },
-    { title: '状态', key: 'status', width: 100 },
-    { title: '时间计划', key: 'availabilitySchedule', width: 220 },
+    { title: '运行状态', key: 'status', width: 120 },
+    { title: '强制启停计划', key: 'availabilitySchedule', width: 260 },
     { title: '累计用量', key: 'usage', width: 180 },
     { title: '美元额度', key: 'quotaLimits', width: 220 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
@@ -582,7 +582,7 @@ const statusOptions = [
   { label: '停用', value: 'disabled' }
 ]
 const listStatusOptions = [
-  { label: '全部状态', value: 'all' },
+  { label: '全部手动状态', value: 'all' },
   ...statusOptions
 ]
 const bindingStatusOptions = [
@@ -694,7 +694,25 @@ function groupBindingLabelByStrategy(strategy: ApiKeyGroupRouteStrategy | undefi
   return groupBindingPriorityTextByPriority(binding.priority)
 }
 
-function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {
+function apiKeyStatusTagLabel(apiKey: ApiKeySummary): string {
+  if (apiKey.availabilitySchedule?.enabled) {
+    if (apiKey.availabilityScheduleActive === true) return '计划启用'
+    if (apiKey.availabilityScheduleActive === false) return '计划关闭'
+    return '计划接管'
+  }
+  return apiKey.status === 'active' ? '启用' : '停用'
+}
+
+function apiKeyStatusTagColor(apiKey: ApiKeySummary): string {
+  if (apiKey.availabilitySchedule?.enabled) {
+    if (apiKey.availabilityScheduleActive === true) return 'green'
+    if (apiKey.availabilityScheduleActive === false) return 'orange'
+    return 'blue'
+  }
+  return apiKey.status === 'active' ? 'green' : 'default'
+}
+
+function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule, active?: boolean): string {
   if (!schedule?.enabled || !schedule.windows.length) return '未设置'
   try {
     assertApiKeyAvailabilitySchedule(schedule)
@@ -705,13 +723,16 @@ function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule): string {
     .slice(0, 2)
     .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
   const suffix = schedule.windows.length > 2 ? ` 等 ${schedule.windows.length} 段` : ''
-  return `${windows.join(' / ')}${suffix}`
+  const state = active === true ? '当前强制启用' : active === false ? '当前强制关闭' : '计划接管'
+  return `${state}：${windows.join(' / ')}${suffix}`
 }
 
 function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
   if (!apiKey.availabilitySchedule?.enabled) return 'default'
   try {
     assertApiKeyAvailabilitySchedule(apiKey.availabilitySchedule)
+    if (apiKey.availabilityScheduleActive === true) return 'green'
+    if (apiKey.availabilityScheduleActive === false) return 'orange'
     return 'blue'
   } catch {
     return 'red'
@@ -769,6 +790,23 @@ async function copyKeyPreview(apiKey: ApiKeySummary): Promise<void> {
 
 function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {
   const updating = statusUpdatingId.value === apiKey.id
+  const actions: RowActionItem[] = [
+    { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: updating }
+  ]
+  if (apiKey.availabilitySchedule?.enabled) {
+    return [
+      ...actions,
+      {
+        key: 'delete',
+        label: '删除',
+        icon: 'delete',
+        tone: 'danger',
+        disabled: updating,
+        confirmTitle: '确认删除这个 API Key？删除后会立即失效，关联历史记录和统计将由后台分批清理。',
+        confirmOkText: '删除'
+      }
+    ]
+  }
   const statusAction: RowActionItem = apiKey.status === 'active'
     ? {
         key: 'disable',
@@ -787,7 +825,7 @@ function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {
         disabled: updating
       }
   return [
-    { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: updating },
+    ...actions,
     statusAction,
     {
       key: 'delete',

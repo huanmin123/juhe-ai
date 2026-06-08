@@ -71,7 +71,7 @@
                   class="token-copy-button"
                   type="text"
                   size="small"
-                  :loading="tokenCopyingKey === tokenCopyKey(record)"
+                  :loading="Boolean(tokenCopyingKey) && tokenCopyingKey === tokenCopyKey(record)"
                   :disabled="!primaryToken(record) || (Boolean(tokenCopyingKey) && tokenCopyingKey !== tokenCopyKey(record))"
                   @click="copyTokenPreview(record)"
                 >
@@ -451,6 +451,7 @@ type CurlCommandPlatform = 'windows' | 'posix'
 const sourceModalOpen = ref(false)
 const createdTokenOpen = ref(false)
 const sourceSaving = ref(false)
+const generatingTokenSourceId = ref('')
 const editingSourceId = ref<string>()
 const sourceForm = reactive<{
   name: string
@@ -940,8 +941,20 @@ function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[
       }
     ]
   }
+  const generateTokenAction: RowActionItem | undefined = primaryToken(record)
+    ? undefined
+    : {
+        key: 'generateToken',
+        label: '生成 Token',
+        icon: 'password',
+        tone: 'info' as const,
+        disabled: Boolean(generatingTokenSourceId.value) && generatingTokenSourceId.value !== record.id,
+        confirmTitle: `确认给来源授权“${record.name}”生成新的生产 Token？`,
+        confirmOkText: '生成'
+      }
   return [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
+    ...(generateTokenAction ? [generateTokenAction] : []),
     statusAction,
     { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: `确认删除来源授权“${record.name}”？`, confirmOkText: '删除' }
   ]
@@ -958,6 +971,10 @@ function handleSourceAction(key: string, record: ExternalIntegrationSourceSummar
   }
   if (key === 'delete') {
     void deleteSource(record)
+    return
+  }
+  if (key === 'generateToken') {
+    void generateSourceToken(record)
     return
   }
   if (key === 'resetToken') {
@@ -995,6 +1012,29 @@ async function resetBuiltInTestToken(): Promise<void> {
     await loadData()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '重置内置测试 Token 失败'))
+  }
+}
+
+async function generateSourceToken(record: ExternalIntegrationSourceSummary): Promise<void> {
+  if (record.isBuiltIn || primaryToken(record) || generatingTokenSourceId.value) return
+  generatingTokenSourceId.value = record.id
+  try {
+    const result = await api.externalIntegrationSources.createToken(record.id, {
+      name: `${record.name} 生产 Token`,
+      status: 'active',
+      scopes: [...record.scopes],
+      expiresAt: record.expiresAt ?? null
+    })
+    createdTokenPlain.value = result.token.token
+    createdTokenOpen.value = true
+    message.success('生产 Token 已生成')
+    await loadData()
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '生成生产 Token 失败'))
+  } finally {
+    if (generatingTokenSourceId.value === record.id) {
+      generatingTokenSourceId.value = ''
+    }
   }
 }
 

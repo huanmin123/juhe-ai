@@ -166,6 +166,20 @@ try {
   const groupAccountsAfterInactiveKeySchedule = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.listCachedOpenAIAccountsForGroupAsync(apiKey.accountGroupId, 'sys_admin'))
   assert.equal(groupAccountsAfterInactiveKeySchedule.length, 2, 'API Key 时段外不应污染同分组账户候选缓存')
 
+  const disabledScheduledOperationCount = fakeChild.sentOperationCount
+  const disabledScheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
+  assert.equal(disabledScheduledFirst.apiKey?.status, 'disabled', '手动停用但配置计划的 API Key 应保留原始状态')
+  assert.equal(disabledScheduledFirst.apiKey?.availability_schedule_active, 1, '计划窗口内应强制启用手动停用的 API Key')
+  assert.equal(disabledScheduledFirst.accounts.length, 2, '计划窗口内手动停用 API Key 仍应返回候选账号')
+  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '首次读取手动停用计划 API Key 应请求 DB service')
+  const disabledScheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
+  assert.equal(disabledScheduledSecond.apiKey?.availability_schedule_active, 1, '手动停用计划 API Key 在计划边界前应继续命中可用缓存')
+  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '手动停用计划 API Key 边界前重复读取应命中缓存')
+  const disabledScheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
+  assert.equal(disabledScheduledAfterBoundary.apiKey?.availability_schedule_active, 0, '手动停用计划 API Key 时段外应强制关闭')
+  assert.equal(disabledScheduledAfterBoundary.accounts.length, 0, '手动停用计划 API Key 时段外不应返回候选账号')
+  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 2, '手动停用计划 API Key 跨计划边界后应重新请求 DB service')
+
   gatewayCache.clearGatewayRuntimeCacheLocal()
   const unscheduledGroupListOperationCount = fakeChild.sentOperationCount
   const unscheduledGroupListFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.listCachedOpenAIAccountsForGroupAsync(apiKey.accountGroupId, 'sys_admin'))
@@ -241,7 +255,7 @@ try {
   assert(concurrentRuntimeReads.every((runtime) => runtime.apiKey?.id === apiKey.id), '冷缓存并发读取应全部返回同一个 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, coldConcurrentOperationCount + 1, '同一 API Key 冷缓存并发读取应合并为一次 DB service 请求')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，API Key 停用不污染分组账号缓存，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划、API Key 过期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，手动停用计划 API Key 按计划强制启停，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划、API Key 过期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -258,6 +272,7 @@ function seedGatewayRuntime(): {
   id: string
   key: string
   scheduledKey: string
+  disabledScheduledKey: string
   accountScheduledKey: string
   multiGroupAccountScheduledKey: string
   expiringKeyId: string
@@ -307,6 +322,19 @@ function seedGatewayRuntime(): {
   const scheduledApiKey = repositories.createApiKeyRecord({
     name: '运行配置缓存计划 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    availabilitySchedule: {
+      enabled: true,
+      timezone: 'UTC',
+      mode: 'allow_windows',
+      windows: [
+        { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '00:01' }
+      ]
+    }
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const disabledScheduledApiKey = repositories.createApiKeyRecord({
+    name: '运行配置缓存手动停用计划 API Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'disabled',
     availabilitySchedule: {
       enabled: true,
       timezone: 'UTC',
@@ -432,6 +460,7 @@ function seedGatewayRuntime(): {
     id: apiKey.id,
     key: apiKey.key,
     scheduledKey: scheduledApiKey.key,
+    disabledScheduledKey: disabledScheduledApiKey.key,
     accountScheduledKey: accountScheduledApiKey.key,
     multiGroupAccountScheduledKey: multiGroupAccountScheduledApiKey.key,
     expiringKeyId: expiringApiKey.id,

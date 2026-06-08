@@ -1,7 +1,7 @@
 import type { ApiKeyGroupBindingSummary, ApiKeySummary } from '../domain/types.js'
 import { normalizeApiKeyGroupRouteStrategy } from '../domain/api-key-routing.js'
 import { includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { parseApiKeyAvailabilityScheduleJson } from './api-key-availability-schedule.js'
+import { evaluateApiKeyAvailabilitySchedule, parseApiKeyAvailabilityScheduleJson } from './api-key-availability-schedule.js'
 import { loadApiKeyGroupBindingSummariesByApiKeyIds } from './api-key-group-bindings.repository.js'
 import { decryptJson } from './crypto.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -36,8 +36,10 @@ export function apiKeySummariesFromRows(
   const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
   const usageByApiKey = loadApiKeyUsageSummariesForScopes(usageScopes)
   const bindingsByApiKeyId = options.bindingsByApiKeyId ?? loadApiKeyGroupBindingSummariesByApiKeyIds(rows.map((row) => row.id))
+  const now = new Date()
   return rows.map((row) => {
     const groupBindings = bindingsByApiKeyId.get(row.id) ?? []
+    const availabilitySchedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
     return {
       id: row.id,
       systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
@@ -53,7 +55,10 @@ export function apiKeySummariesFromRows(
       groupOwnerSystemAccountName: row.group_owner_system_account_name ?? undefined,
       expiresAt: row.expires_at ?? undefined,
       quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
-      availabilitySchedule: parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json),
+      availabilitySchedule,
+      availabilityScheduleActive: availabilitySchedule?.enabled
+        ? evaluateApiKeyAvailabilitySchedule(availabilitySchedule, now).allowed
+        : undefined,
       usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
     }
   })

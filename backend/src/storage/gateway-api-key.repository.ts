@@ -93,7 +93,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     WHERE api_keys.key_hash = ?
       AND system_accounts.status = 'active'
   `).get(keyHash) as unknown as GatewayApiKeyRow | undefined
-  if (!row || row.status !== 'active') {
+  if (!row) {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
@@ -102,6 +102,10 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     return undefined
   }
   applyGatewayApiKeyScheduleState(row, now)
+  if (isGatewayApiKeyManuallyDisabledWithoutSchedule(row)) {
+    gatewayApiKeyCache.delete(keyHash)
+    return undefined
+  }
   row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
   row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
   if (!row.group_bindings.length) {
@@ -139,13 +143,16 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       AND system_accounts.status = 'active'
     LIMIT 1
   `).get(apiKeyId) as unknown as GatewayApiKeyRow | undefined
-  if (!row || row.status !== 'active') {
+  if (!row) {
     return undefined
   }
   if (isGatewayApiKeyRowExpired(row)) {
     return undefined
   }
   applyGatewayApiKeyScheduleState(row)
+  if (isGatewayApiKeyManuallyDisabledWithoutSchedule(row)) {
+    return undefined
+  }
   row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
   row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
   if (!row.group_bindings.length) {
@@ -194,6 +201,10 @@ function isGatewayApiKeyCacheEntryScheduleFresh(entry: GatewayApiKeyCacheEntry, 
 
 export function isGatewayApiKeyScheduleInactive(row: GatewayApiKeyRow | undefined): boolean {
   return Boolean(row?.availability_schedule_json && row.availability_schedule_active === 0)
+}
+
+function isGatewayApiKeyManuallyDisabledWithoutSchedule(row: GatewayApiKeyRow): boolean {
+  return row.status !== 'active' && !row.availability_schedule_json
 }
 
 function applyGatewayApiKeyScheduleState(row: GatewayApiKeyRow, now = Date.now()): void {

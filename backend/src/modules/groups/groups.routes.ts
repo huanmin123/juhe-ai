@@ -15,6 +15,7 @@ export const groupsRouter = Router()
 const groupSchema = z.object({
   name: z.string().trim().min(1),
   providerCode: z.string().trim().min(1),
+  providerProtocolProfileId: z.string().trim().min(1).optional(),
   description: z.string().trim().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional(),

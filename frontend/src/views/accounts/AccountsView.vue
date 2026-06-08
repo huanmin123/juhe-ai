@@ -446,6 +446,7 @@ const {
   closeTestModal,
   openBatchTestModal,
   openDraftTestModal,
+  openSavedDraftTestModal,
   openTestModal,
   runAccountTest,
   stopAccountTest,
@@ -680,12 +681,17 @@ async function testAccountFromEditModal() {
     const draftAccount = buildAccountDraftTestSummary({
       accountDetail: editingAccountDetail.value,
       draftPayload,
+      protocolProfile: selectedProtocolProfile.value,
       scopeSystemAccountId: draftTestScopeSystemAccountId()
     })
     if (form.group?.id === draftPayload.groupId && form.group.name) {
       draftAccount.boundGroupName = form.group.name
     }
-    await openDraftTestModal(draftAccount, draftPayload)
+    if (editingId.value && editingAccountDetail.value) {
+      await openSavedDraftTestModal(draftAccount, draftPayload)
+    } else {
+      await openDraftTestModal(draftAccount, draftPayload)
+    }
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '生成账户测试草稿失败'))

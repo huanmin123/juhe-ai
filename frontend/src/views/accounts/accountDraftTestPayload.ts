@@ -1,6 +1,6 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { groupLabelForId } from '@/shared/groupLabelCache'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
@@ -18,6 +18,7 @@ interface AccountDraftTestPayloadInput {
 interface AccountDraftTestSummaryInput {
   accountDetail?: AccountSummary
   draftPayload: AccountDraftTestAccountPayload
+  protocolProfile?: ProviderProtocolProfileDefinition
   scopeSystemAccountId?: string
 }
 
@@ -60,13 +61,13 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
   const usage = emptyAccountUsageSummary()
   const ownerSystemAccountId = input.accountDetail?.ownerSystemAccountId ?? input.accountDetail?.systemAccountId ?? input.scopeSystemAccountId
   return {
-    id: input.accountDetail?.id ? `draft:${input.accountDetail.id}` : `draft:${Date.now()}`,
+    id: input.accountDetail?.id ?? `draft:${Date.now()}`,
     systemAccountId: ownerSystemAccountId,
     ownerSystemAccountId,
     providerCode: input.draftPayload.providerCode,
     providerProtocolProfileId: input.draftPayload.providerProtocolProfileId,
-    protocolCode: input.accountDetail?.protocolCode,
-    protocolVersion: input.accountDetail?.protocolVersion,
+    protocolCode: input.accountDetail?.protocolCode ?? input.protocolProfile?.protocolCode,
+    protocolVersion: input.accountDetail?.protocolVersion ?? input.protocolProfile?.protocolVersion,
     name: input.draftPayload.name || input.accountDetail?.name || '未命名账户',
     notes: input.draftPayload.notes,
     type: input.draftPayload.type,

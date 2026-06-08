@@ -234,6 +234,7 @@ export interface AccountTestPayload {
   model?: string
   prompt?: string
   clientCompatibility?: AccountClientCompatibility
+  account?: AccountDraftTestAccountPayload
 }
 
 export interface AccountDraftTestAccountPayload {

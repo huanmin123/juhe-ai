@@ -1020,6 +1020,7 @@ export interface ApiKeySummary {
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule
+  availabilityScheduleActive?: boolean
   usage: AccountUsageSummary
 }
 

@@ -260,6 +260,7 @@ interface PublicApiKeySummary {
   groupBindings: ApiKeySummary['groupBindings']
   expiresAt?: string
   availabilitySchedule?: ApiKeySummary['availabilitySchedule']
+  availabilityScheduleActive?: ApiKeySummary['availabilityScheduleActive']
 }
 
 type ResolvedTarget = {
@@ -1435,7 +1436,8 @@ function sanitizeApiKey(apiKey: ApiKeySummary & { key?: string }, options: { inc
     groupRouteStrategy: apiKey.groupRouteStrategy,
     groupBindings: apiKey.groupBindings,
     expiresAt: apiKey.expiresAt,
-    availabilitySchedule: apiKey.availabilitySchedule
+    availabilitySchedule: apiKey.availabilitySchedule,
+    availabilityScheduleActive: apiKey.availabilityScheduleActive
   }
 }
 
