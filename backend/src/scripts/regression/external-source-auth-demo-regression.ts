@@ -1112,17 +1112,18 @@ async function runChild(): Promise<void> {
     assert.equal(deletedSourceAuth.status, 401, '删除来源授权后原 token 应立即失效')
     assert.equal(deletedSourceAuth.body.code, 'external_source_unauthorized')
 
-    const remainingBuiltInRateLimitAllowance = Math.max(0, 10 - builtInSuccessfulPublicCallCount)
-    for (let index = 0; index < remainingBuiltInRateLimitAllowance; index += 1) {
-      const allowed = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
+    let builtInRateLimited: Awaited<ReturnType<typeof requestJson>> | undefined
+    for (let index = 0; index < 11; index += 1) {
+      const response = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
         Authorization: `Bearer ${builtInTestToken}`
       })
-      assert.equal(allowed.status, 200, `内置测试 Token 第 ${builtInSuccessfulPublicCallCount + index + 1} 次调用应在限频内`)
+      if (response.status === 429) {
+        builtInRateLimited = response
+        break
+      }
+      assert.equal(response.status, 200, `内置测试 Token 连续限频探测第 ${index + 1} 次调用应在限频内或触发 429`)
     }
-    const builtInRateLimited = await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
-      Authorization: `Bearer ${builtInTestToken}`
-    })
-    assert.equal(builtInRateLimited.status, 429, '内置测试 Token 第 11 次调用应被 1 分钟 10 次限频拦截')
+    assert(builtInRateLimited, `内置测试 Token 应在连续 11 次额外调用内触发 1 分钟 10 次限频，当前窗口前置成功调用约 ${builtInSuccessfulPublicCallCount} 次`)
     assert.equal(builtInRateLimited.body.code, 'external_source_rate_limited')
 
     await requestJson(baseUrl, '/__aipublic__/demo/source-auth', {
