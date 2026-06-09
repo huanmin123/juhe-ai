@@ -327,6 +327,7 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { providerDisplayName } from '@/shared/providerDisplay'
+import { isOpenAIProtocolProfile, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import type {
   ProviderDefinition,
   StreamInterceptPolicyAction,
@@ -422,7 +423,7 @@ const scopeOptions = [
   { label: '协议层', value: 'protocol' }
 ]
 const openAIProviders = computed(() => providers.value
-  .filter((provider) => provider.enabled && provider.protocolProfiles.some((profile) => profile.enabled && profile.protocolCode === 'openai' && profile.protocolVersion === 'v1'))
+  .filter((provider) => provider.enabled && provider.protocolProfiles.some((profile) => profile.enabled && isOpenAIProtocolProfile(profile)))
   .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN') || left.code.localeCompare(right.code)))
 const providerSelectOptions = computed(() => openAIProviders.value.map((provider) => ({
   label: provider.name,
@@ -779,7 +780,7 @@ function actionTagText(template: StreamInterceptActionTemplate): string {
 }
 
 function defaultProviderCode(): string {
-  return providerSelectOptions.value[0]?.value ?? ''
+  return preferredDefaultProviderCode(openAIProviders.value)
 }
 
 function actionTagColor(template: StreamInterceptActionTemplate): string {

@@ -150,7 +150,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerModelOptions.value = []
     mappingTargetModelOptions.value = []
     providerModelsLoading.value = false
-    ensureDefaultGroupSelected(providerCode)
+    ensureDefaultGroupSelected(form.providerCode, form.providerProtocolProfileId)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     accountStreamInterceptRules.value = loadAccountStreamInterceptRules()
     authResult.value = undefined
@@ -203,7 +203,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
     resetForm('', '')
-    void options.loadGroupOptions('', true, { systemAccountId: options.accountScopeParams.value?.systemAccountId })
+    void options.loadGroupOptions('', true, {
+      providerCode: form.providerCode,
+      systemAccountId: options.accountScopeParams.value?.systemAccountId
+    })
+    void loadProviderModelOptions(form.providerCode)
     modalOpen.value = true
   }
 

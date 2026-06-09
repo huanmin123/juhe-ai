@@ -31,3 +31,21 @@ export function isOpenAICompatibleProviderCode(value: unknown): boolean {
   const normalized = normalizeProviderToken(value)
   return normalized === OPENAI_COMPATIBLE_PROVIDER_CODE || normalized === GPT_VENDOR_CODE
 }
+
+export function preferredDefaultProvider(providers: ProviderDefinition[]): ProviderDefinition | undefined {
+  const enabledProviders = providers.filter((provider) => provider.enabled)
+  return enabledProviders.find((provider) => isGptVendorCode(provider.code)) ?? enabledProviders[0]
+}
+
+export function preferredDefaultProviderCode(providers: ProviderDefinition[]): string {
+  return preferredDefaultProvider(providers)?.code ?? ''
+}
+
+export function defaultProviderProtocolProfileId(provider?: Pick<ProviderDefinition, 'defaultProtocolProfileId' | 'protocolProfiles'>): string {
+  if (!provider) return ''
+  return provider.protocolProfiles.find((profile) => profile.id === provider.defaultProtocolProfileId)?.id
+    || provider.protocolProfiles.find((profile) => profile.enabled)?.id
+    || provider.protocolProfiles[0]?.id
+    || provider.defaultProtocolProfileId
+    || ''
+}

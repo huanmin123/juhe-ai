@@ -235,6 +235,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
+import { defaultProviderProtocolProfileId as resolveDefaultProviderProtocolProfileId, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import type { AccountUsageSummary, GroupAccountStats, GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
@@ -634,7 +635,7 @@ function providerName(providerCode?: string) {
 
 function defaultProviderProtocolProfileId(providerCode = form.providerCode): string {
   const provider = availableProviders.value.find((item) => item.code === providerCode)
-  return provider?.defaultProtocolProfileId || provider?.protocolProfiles.find((profile) => profile.enabled)?.id || provider?.protocolProfiles[0]?.id || ''
+  return resolveDefaultProviderProtocolProfileId(provider)
 }
 
 function handleGroupProviderChange(providerCode: string) {
@@ -809,9 +810,9 @@ function formatCost(value?: number): string {
 }
 
 function defaultProviderCode() {
-  const provider = availableProviders.value.find((item) => item.enabled)
-  if (!provider) throw new Error('没有可用供应商')
-  return provider.code
+  const providerCode = preferredDefaultProviderCode(availableProviders.value)
+  if (!providerCode) throw new Error('没有可用供应商')
+  return providerCode
 }
 
 function groupListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -872,10 +873,11 @@ function openCreate() {
   }
   editingId.value = undefined
   void loadGroupOptions()
+  const providerCode = defaultProviderCode()
   Object.assign(form, {
     name: '',
-    providerCode: defaultProviderCode(),
-    providerProtocolProfileId: defaultProviderProtocolProfileId(defaultProviderCode()),
+    providerCode,
+    providerProtocolProfileId: defaultProviderProtocolProfileId(providerCode),
     description: '',
     enabled: true,
     groupType: 'personal' as GroupType,

@@ -77,7 +77,7 @@ export const GPT_PROVIDER: ProviderDefinition = {
   ]
 }
 
-export const FALLBACK_PROVIDERS: ProviderDefinition[] = [OPENAI_COMPATIBLE_PROVIDER, GPT_PROVIDER]
+export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, OPENAI_COMPATIBLE_PROVIDER]
 
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20

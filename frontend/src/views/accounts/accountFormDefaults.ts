@@ -1,4 +1,5 @@
 import type { AccountType, ProviderDefinition } from '@/types/domain'
+import { defaultProviderProtocolProfileId, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import type { AccountFormModel } from './accountFormTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
@@ -10,13 +11,14 @@ export function defaultAccountForm(
   providerProtocolProfileId = ''
 ): AccountFormModel {
   const providerList = providers.length ? providers : FALLBACK_PROVIDERS
-  const provider = providerList.find((item) => item.code === providerCode)
+  const resolvedProviderCode = providerCode || preferredDefaultProviderCode(providerList)
+  const provider = providerList.find((item) => item.code === resolvedProviderCode)
   const profile = provider?.protocolProfiles.find((item) => item.id === (providerProtocolProfileId || provider.defaultProtocolProfileId))
     ?? provider?.protocolProfiles.find((item) => item.enabled)
     ?? provider?.protocolProfiles[0]
   return {
-    providerCode,
-    providerProtocolProfileId: profile?.id ?? providerProtocolProfileId,
+    providerCode: resolvedProviderCode,
+    providerProtocolProfileId: profile?.id || providerProtocolProfileId || defaultProviderProtocolProfileId(provider),
     name: '',
     type,
     groupId: undefined,
@@ -30,7 +32,7 @@ export function defaultAccountForm(
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
-    clientCompatibility: providerCode === GPT_VENDOR_CODE && type === 'oauth' ? 'codex_responses' : 'openai_standard',
+    clientCompatibility: resolvedProviderCode === GPT_VENDOR_CODE && type === 'oauth' ? 'codex_responses' : 'openai_standard',
     supportedModels: [],
     modelMappings: [],
     proxyProfileId: undefined,
