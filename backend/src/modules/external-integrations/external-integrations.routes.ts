@@ -154,11 +154,11 @@ const accountUpdateSchema = z.object({
   { message: '账号修改至少提供一个要修改的字段' }
 )
 const accountDeleteSchema = z.object({
-  targetUsername: z.string().trim().min(2).max(80),
-  targetGroupName: z.string().trim().min(1).max(80),
-  providerCode: providerCodeSchema,
+  accountId: z.string().trim().min(1).max(120),
+  targetUsername: z.string().trim().min(2).max(80).optional(),
+  targetGroupName: z.string().trim().min(1).max(80).optional(),
+  providerCode: providerCodeSchema.optional(),
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
-  accountId: z.string().trim().min(1).max(120)
 }).strict()
 const accountListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
@@ -183,8 +183,9 @@ const groupAddSchema = z.object({
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
 }).strict()
+const groupUpdateMutableFields = ['name', 'providerCode', 'providerProtocolProfileId', 'description', 'enabled', 'groupType'] as const
 const groupUpdateSchema = z.object({
-  targetUsername: z.string().trim().min(2).max(80),
+  targetUsername: z.string().trim().min(2).max(80).optional(),
   groupId: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(80).optional(),
   providerCode: z.string().trim().min(1).max(60).optional(),
@@ -192,9 +193,12 @@ const groupUpdateSchema = z.object({
   description: z.string().trim().max(500).nullable().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
-}).strict()
+}).strict().refine(
+  (value) => groupUpdateMutableFields.some((field) => Object.prototype.hasOwnProperty.call(value, field)),
+  { message: '分组修改至少提供一个要修改的字段' }
+)
 const groupDeleteSchema = z.object({
-  targetUsername: z.string().trim().min(2).max(80),
+  targetUsername: z.string().trim().min(2).max(80).optional(),
   groupId: z.string().trim().min(1).max(120)
 }).strict()
 const groupListQuerySchema = z.object({
@@ -222,8 +226,18 @@ const apiKeyAddSchema = z.object({
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
   availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
 }).strict()
+const apiKeyUpdateMutableFields = [
+  'name',
+  'description',
+  'groupBindings',
+  'groupRouteStrategy',
+  'status',
+  'expiresAt',
+  'quotaLimits',
+  'availabilitySchedule'
+] as const
 const apiKeyUpdateSchema = z.object({
-  targetUsername: z.string().trim().min(2).max(80),
+  targetUsername: z.string().trim().min(2).max(80).optional(),
   apiKeyId: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(120).optional(),
   description: z.string().trim().max(200).nullable().optional(),
@@ -233,9 +247,12 @@ const apiKeyUpdateSchema = z.object({
   expiresAt: z.string().trim().nullable().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
   availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
-}).strict()
+}).strict().refine(
+  (value) => apiKeyUpdateMutableFields.some((field) => Object.prototype.hasOwnProperty.call(value, field)),
+  { message: 'API Key 修改至少提供一个要修改的字段' }
+)
 const apiKeyDeleteSchema = z.object({
-  targetUsername: z.string().trim().min(2).max(80),
+  targetUsername: z.string().trim().min(2).max(80).optional(),
   apiKeyId: z.string().trim().min(1).max(120)
 }).strict()
 const apiKeyListQuerySchema = z.object({

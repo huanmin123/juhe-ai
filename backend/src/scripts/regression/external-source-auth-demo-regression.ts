@@ -528,9 +528,6 @@ async function runChild(): Promise<void> {
     const mockAccountDelete = await requestJson(baseUrl, '/__aipublic__/account/del', {
       Authorization: `Bearer ${builtInTestToken}`
     }, 'POST', {
-      targetUsername: 'huanmin',
-      targetGroupName: '福利',
-      providerCode: 'gpt',
       accountId: 'acc_mock_delete'
     })
     assert.equal(mockAccountDelete.status, 200)
@@ -809,21 +806,15 @@ async function runChild(): Promise<void> {
     const disabledTargetAccountDelete = await requestJson(baseUrl, '/__aipublic__/account/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'huanmin',
-      targetGroupName: '福利',
-      providerCode: 'gpt',
       accountId: accountAdd.body.data.account.id
     })
-    assert.equal(disabledTargetAccountDelete.status, 400, '目标用户停用后公开账号删除应被拒绝')
+    assert.equal(disabledTargetAccountDelete.status, 400, '目标用户停用后公开账号删除即使只传 accountId 也应被拒绝')
     assert.match(disabledTargetAccountDelete.body.message, /目标用户已停用/)
     assert.equal(updateSystemAccount(targetAccount.id, { status: 'active' })?.status, 'active', '回归准备：目标用户 huanmin 应可恢复启用')
 
     const accountDelete = await requestJson(baseUrl, '/__aipublic__/account/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'huanmin',
-      targetGroupName: '福利',
-      providerCode: 'gpt',
       accountId: accountAdd.body.data.account.id
     })
     assert.equal(accountDelete.status, 200)
@@ -844,9 +835,6 @@ async function runChild(): Promise<void> {
     const accountDeleteAgain = await requestJson(baseUrl, '/__aipublic__/account/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'huanmin',
-      targetGroupName: '福利',
-      providerCode: 'gpt',
       accountId: accountAdd.body.data.account.id
     })
     assert.equal(accountDeleteAgain.status, 200)
@@ -880,7 +868,6 @@ async function runChild(): Promise<void> {
     const publicGroupUpdate = await requestJson(baseUrl, '/__aipublic__/group/update', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'public_control_user',
       groupId: publicGroupId,
       name: '公开接口控制分组新版',
       enabled: true
@@ -888,6 +875,7 @@ async function runChild(): Promise<void> {
     assert.equal(publicGroupUpdate.status, 200)
     assert.equal(publicGroupUpdate.body.data.action, 'updated')
     assert.equal(publicGroupUpdate.body.data.group.name, '公开接口控制分组新版')
+    assert.equal(publicGroupUpdate.body.data.target.username, 'public_control_user', '公开分组修改应支持只传 groupId 并按归属用户回显 target')
 
     const missingPublicGroupUpdate = await requestJson(baseUrl, '/__aipublic__/group/update', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -1003,20 +991,18 @@ async function runChild(): Promise<void> {
     const disabledPublicGroupUpdate = await requestJson(baseUrl, '/__aipublic__/group/update', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'public_control_user',
       groupId: publicGroupId,
       name: '停用用户不应修改的分组'
     })
-    assert.equal(disabledPublicGroupUpdate.status, 400, '目标用户停用后公开分组修改应被拒绝')
+    assert.equal(disabledPublicGroupUpdate.status, 400, '目标用户停用后公开分组修改即使只传 groupId 也应被拒绝')
     assert.match(disabledPublicGroupUpdate.body.message, /目标用户已停用/)
 
     const disabledPublicGroupDelete = await requestJson(baseUrl, '/__aipublic__/group/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'public_control_user',
       groupId: publicGroupId
     })
-    assert.equal(disabledPublicGroupDelete.status, 400, '目标用户停用后公开分组删除应被拒绝')
+    assert.equal(disabledPublicGroupDelete.status, 400, '目标用户停用后公开分组删除即使只传 groupId 也应被拒绝')
     assert.match(disabledPublicGroupDelete.body.message, /目标用户已停用/)
 
     const disabledPublicApiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
@@ -1033,27 +1019,35 @@ async function runChild(): Promise<void> {
     const disabledPublicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'public_control_user',
       apiKeyId: publicApiKeyId,
       status: 'disabled'
     })
-    assert.equal(disabledPublicApiKeyUpdate.status, 400, '目标用户停用后公开 API Key 修改应被拒绝')
+    assert.equal(disabledPublicApiKeyUpdate.status, 400, '目标用户停用后公开 API Key 修改即使只传 apiKeyId 也应被拒绝')
     assert.match(disabledPublicApiKeyUpdate.body.message, /目标用户已停用/)
 
     const disabledPublicApiKeyDelete = await requestJson(baseUrl, '/__aipublic__/api-key/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'public_control_user',
       apiKeyId: publicApiKeyId
     })
-    assert.equal(disabledPublicApiKeyDelete.status, 400, '目标用户停用后公开 API Key 删除应被拒绝')
+    assert.equal(disabledPublicApiKeyDelete.status, 400, '目标用户停用后公开 API Key 删除即使只传 apiKeyId 也应被拒绝')
     assert.match(disabledPublicApiKeyDelete.body.message, /目标用户已停用/)
     assert.equal(updateSystemAccount(publicControlTarget.id, { status: 'active' })?.status, 'active', '回归准备：公开控制面目标用户应可恢复启用')
+
+    const publicApiKeyStatusUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      apiKeyId: publicApiKeyId,
+      status: 'disabled'
+    })
+    assert.equal(publicApiKeyStatusUpdate.status, 200, `公开 API Key 修改应支持只传 apiKeyId 和 status：${JSON.stringify(publicApiKeyStatusUpdate.body)}`)
+    assert.equal(publicApiKeyStatusUpdate.body.data.action, 'updated')
+    assert.equal(publicApiKeyStatusUpdate.body.data.target.username, 'public_control_user', '公开 API Key 修改应支持只传 apiKeyId 并按归属用户回显 target')
+    assert.equal(publicApiKeyStatusUpdate.body.data.apiKey.status, 'disabled')
 
     const publicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'public_control_user',
       apiKeyId: publicApiKeyId,
       status: 'disabled',
       groupBindings: [{ groupId: publicGroupId, priority: 1, weight: 1, status: 'active' }],
@@ -1071,7 +1065,6 @@ async function runChild(): Promise<void> {
     const publicApiKeyDelete = await requestJson(baseUrl, '/__aipublic__/api-key/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'public_control_user',
       apiKeyId: publicApiKeyId
     })
     assert.equal(publicApiKeyDelete.status, 200)
@@ -1080,7 +1073,6 @@ async function runChild(): Promise<void> {
     const publicGroupDelete = await requestJson(baseUrl, '/__aipublic__/group/del', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
-      targetUsername: 'public_control_user',
       groupId: publicGroupId
     })
     assert.equal(publicGroupDelete.status, 200)

@@ -95,11 +95,11 @@ export interface PublicAccountPushResponse {
 }
 
 export interface PublicAccountDeleteInput {
-  targetUsername: string
-  targetGroupName: string
-  providerCode: string
-  providerProtocolProfileId?: string
   accountId: string
+  targetUsername?: string
+  targetGroupName?: string
+  providerCode?: string
+  providerProtocolProfileId?: string
 }
 
 export interface PublicAccountDeleteResponse {
@@ -152,7 +152,7 @@ export interface PublicGroupAddInput {
 }
 
 export interface PublicGroupUpdateInput {
-  targetUsername: string
+  targetUsername?: string
   groupId: string
   name?: string
   providerCode?: string
@@ -163,7 +163,7 @@ export interface PublicGroupUpdateInput {
 }
 
 export interface PublicGroupDeleteInput {
-  targetUsername: string
+  targetUsername?: string
   groupId: string
 }
 
@@ -208,7 +208,7 @@ export interface PublicApiKeyAddInput {
 }
 
 export interface PublicApiKeyUpdateInput {
-  targetUsername: string
+  targetUsername?: string
   apiKeyId: string
   name?: string
   description?: string | null
@@ -221,7 +221,7 @@ export interface PublicApiKeyUpdateInput {
 }
 
 export interface PublicApiKeyDeleteInput {
-  targetUsername: string
+  targetUsername?: string
   apiKeyId: string
 }
 
@@ -361,7 +361,7 @@ function updatePublicWelfareAccountById(input: PublicAccountUpdateInput): Public
     if (!accountOwner) {
       throw new Error('账号不存在')
     }
-    const target = resolvePublicAccountUpdateTarget(input, accountOwner.systemAccountId)
+    const target = resolvePublicOwnedResourceTarget(input.targetUsername, accountOwner.systemAccountId)
     if (!target) {
       throw new Error('账号不存在')
     }
@@ -380,7 +380,7 @@ function updatePublicWelfareAccountById(input: PublicAccountUpdateInput): Public
     if (hasPublicInput(input, 'type')) {
       assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
     }
-    const targetGroup = resolvePublicAccountUpdateGroupFilter(input, existing, access)
+    const targetGroup = resolvePublicAccountGroupFilter(input, existing, access)
     const payload = accountPartialUpdateInputForPush(input, existing)
     const updated = updateAccount(existing.id, payload, access)
     if (!updated) {
@@ -406,63 +406,38 @@ function updatePublicWelfareAccountById(input: PublicAccountUpdateInput): Public
 }
 
 export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): PublicAccountDeleteResponse {
-  const providerCode = requiredProviderCode(input.providerCode)
-  const provider = listProviders().find((item) => item.code === providerCode)
-  if (!provider) {
-    throw new Error(`不支持的供应商：${providerCode}`)
-  }
-  const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId)
-
-  const username = normalizedText(input.targetUsername)
-  if (!username) {
-    throw new Error('目标用户不能为空')
-  }
-  const groupName = normalizedText(input.targetGroupName)
-  if (!groupName) {
-    throw new Error('目标分组不能为空')
-  }
   const accountId = normalizedText(input.accountId)
   if (!accountId) {
     throw new Error('删除账号时必须提供 accountId')
   }
 
-  const fallbackTarget = targetFromInput(username, groupName)
-  const targetAccount = findSystemAccountByUsername(username)
-  if (!targetAccount) {
+  const fallbackTarget = targetFromInput(input.targetUsername, input.targetGroupName)
+  const accountOwner = findPublicAccountOwnerById(accountId)
+  if (!accountOwner) {
     return notFoundAccountDeleteResponse(fallbackTarget)
   }
-  assertTargetActive(targetAccount)
-
-  const access: TargetAccess = { systemAccountId: targetAccount.id, role: 'user' }
-  const targetGroup = findExistingTargetGroup({
-    access,
-    providerCode,
-    providerProtocolProfileId: providerProfile.id,
-    groupName
-  })
-  const resolvedTarget = {
-    username: targetAccount.username,
-    displayName: targetAccount.displayName,
-    systemAccountId: targetAccount.id,
-    created: false,
-    groupId: targetGroup?.id ?? '',
-    groupName,
-    groupCreated: false
+  const target = resolvePublicOwnedResourceTarget(input.targetUsername, accountOwner.systemAccountId)
+  if (!target) {
+    return notFoundAccountDeleteResponse(fallbackTarget)
   }
-  if (!targetGroup) {
-    return notFoundAccountDeleteResponse(resolvedTarget)
-  }
-
-  const account = findTargetAccountById({
-    access,
-    providerCode,
-    providerProtocolProfileId: providerProfile.id,
-    groupId: targetGroup.id,
-    accountId
-  })
-
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const account = findAccountSummary(accountId, access)
   if (!account) {
-    return notFoundAccountDeleteResponse(resolvedTarget)
+    return notFoundAccountDeleteResponse(fallbackTarget)
+  }
+  if (account.type !== 'api_key') {
+    throw new Error('公开账号删除仅支持 API Key 账户')
+  }
+  const targetGroup = resolvePublicAccountGroupFilter(input, account, access)
+  const resolvedTarget = {
+    username: target.account.username,
+    displayName: target.account.displayName,
+    systemAccountId: target.account.id,
+    created: false,
+    groupId: targetGroup?.id ?? account.boundGroupId ?? '',
+    groupName: targetGroup?.name ?? account.boundGroupName ?? normalizedText(input.targetGroupName) ?? '',
+    groupCreated: false
   }
 
   const deletedAccount = sanitizeAccount(account)
@@ -541,18 +516,21 @@ export async function addPublicGroup(input: PublicGroupAddInput): Promise<Public
 }
 
 export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupResponse {
-  const target = findPublicTarget(input.targetUsername)
+  const groupId = normalizedText(input.groupId)
+  if (!groupId) {
+    throw new Error('分组修改必须提供 groupId')
+  }
+  const owner = findPublicGroupOwnerById(groupId)
+  if (!owner) {
+    return publicGroupNotFoundResponse(input.targetUsername)
+  }
+  const target = resolvePublicOwnedResourceTarget(input.targetUsername, owner.systemAccountId)
   if (!target) {
     return publicGroupNotFoundResponse(input.targetUsername)
   }
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
-  const group = resolvePublicGroup(access, {
-    groupId: input.groupId,
-    name: input.name,
-    providerCode: input.providerCode,
-    providerProtocolProfileId: input.providerProtocolProfileId
-  })
+  const group = findGroupSummary(groupId, access)
   if (!group) {
     return publicGroupResponse('not_found', target, null)
   }
@@ -567,13 +545,21 @@ export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupRes
 }
 
 export function deletePublicGroup(input: PublicGroupDeleteInput): PublicGroupResponse {
-  const target = findPublicTarget(input.targetUsername)
+  const groupId = normalizedText(input.groupId)
+  if (!groupId) {
+    throw new Error('分组删除必须提供 groupId')
+  }
+  const owner = findPublicGroupOwnerById(groupId)
+  if (!owner) {
+    return publicGroupNotFoundResponse(input.targetUsername)
+  }
+  const target = resolvePublicOwnedResourceTarget(input.targetUsername, owner.systemAccountId)
   if (!target) {
     return publicGroupNotFoundResponse(input.targetUsername)
   }
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
-  const group = resolvePublicGroup(access, input)
+  const group = findGroupSummary(groupId, access)
   if (!group) {
     return publicGroupResponse('not_found', target, null)
   }
@@ -615,13 +601,21 @@ export function addPublicApiKey(input: PublicApiKeyAddInput): PublicApiKeyRespon
 }
 
 export function updatePublicApiKey(input: PublicApiKeyUpdateInput): PublicApiKeyResponse {
-  const target = findPublicTarget(input.targetUsername)
+  const apiKeyId = normalizedText(input.apiKeyId)
+  if (!apiKeyId) {
+    throw new Error('API Key 修改必须提供 apiKeyId')
+  }
+  const owner = findPublicApiKeyOwnerById(apiKeyId)
+  if (!owner) {
+    return publicApiKeyNotFoundResponse(input.targetUsername)
+  }
+  const target = resolvePublicOwnedResourceTarget(input.targetUsername, owner.systemAccountId)
   if (!target) {
     return publicApiKeyNotFoundResponse(input.targetUsername)
   }
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
-  const apiKey = resolvePublicApiKey(access, input)
+  const apiKey = findApiKeySummary(apiKeyId, access)
   if (!apiKey) {
     return publicApiKeyResponse('not_found', target, null)
   }
@@ -630,13 +624,21 @@ export function updatePublicApiKey(input: PublicApiKeyUpdateInput): PublicApiKey
 }
 
 export function deletePublicApiKey(input: PublicApiKeyDeleteInput): PublicApiKeyResponse {
-  const target = findPublicTarget(input.targetUsername)
+  const apiKeyId = normalizedText(input.apiKeyId)
+  if (!apiKeyId) {
+    throw new Error('API Key 删除必须提供 apiKeyId')
+  }
+  const owner = findPublicApiKeyOwnerById(apiKeyId)
+  if (!owner) {
+    return publicApiKeyNotFoundResponse(input.targetUsername)
+  }
+  const target = resolvePublicOwnedResourceTarget(input.targetUsername, owner.systemAccountId)
   if (!target) {
     return publicApiKeyNotFoundResponse(input.targetUsername)
   }
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
-  const apiKey = resolvePublicApiKey(access, input)
+  const apiKey = findApiKeySummary(apiKeyId, access)
   if (!apiKey) {
     return publicApiKeyResponse('not_found', target, null)
   }
@@ -739,7 +741,7 @@ export function mockPublicWelfareAccountDelete(input: PublicAccountDeleteInput):
   const generatedAt = new Date().toISOString()
   const username = normalizedText(input.targetUsername) || 'huanmin'
   const groupName = normalizedText(input.targetGroupName) || '福利'
-  const providerCode = requiredProviderCode(input.providerCode)
+  const providerCode = normalizedText(input.providerCode) || 'gpt'
   const accountId = normalizedText(input.accountId) || 'mock_account_public_welfare'
   return {
     source: 'mock',
@@ -1023,7 +1025,7 @@ function publicGroupListResponse(
   }
 }
 
-function publicGroupNotFoundResponse(usernameInput: string): PublicGroupResponse {
+function publicGroupNotFoundResponse(usernameInput?: string): PublicGroupResponse {
   const username = normalizedText(usernameInput) || ''
   return {
     source: 'stats',
@@ -1061,7 +1063,7 @@ function publicApiKeyResponse(action: PublicApiKeyResponse['action'], target: Re
   }
 }
 
-function publicApiKeyNotFoundResponse(usernameInput: string): PublicApiKeyResponse {
+function publicApiKeyNotFoundResponse(usernameInput?: string): PublicApiKeyResponse {
   const username = normalizedText(usernameInput) || ''
   return {
     source: 'stats',
@@ -1077,7 +1079,7 @@ function publicApiKeyNotFoundResponse(usernameInput: string): PublicApiKeyRespon
   }
 }
 
-function publicMockGroupResponse(action: PublicGroupResponse['action'], usernameInput: string, group: PublicGroupSummary): PublicGroupResponse {
+function publicMockGroupResponse(action: PublicGroupResponse['action'], usernameInput: string | undefined, group: PublicGroupSummary): PublicGroupResponse {
   const username = normalizedText(usernameInput) || 'huanmin'
   return {
     source: 'mock',
@@ -1093,7 +1095,7 @@ function publicMockGroupResponse(action: PublicGroupResponse['action'], username
   }
 }
 
-function publicMockApiKeyResponse(action: PublicApiKeyResponse['action'], usernameInput: string, apiKey: PublicApiKeySummary): PublicApiKeyResponse {
+function publicMockApiKeyResponse(action: PublicApiKeyResponse['action'], usernameInput: string | undefined, apiKey: PublicApiKeySummary): PublicApiKeyResponse {
   const username = normalizedText(usernameInput) || 'huanmin'
   return {
     source: 'mock',
@@ -1161,6 +1163,9 @@ function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUpdateInp
   if (!partial && !payload.groupBindings) {
     throw new Error('API Key 至少需要绑定一个分组')
   }
+  if (partial && Object.keys(payload).length === 0) {
+    throw new Error('API Key 修改至少提供一个要修改的字段')
+  }
   return payload
 }
 
@@ -1172,15 +1177,10 @@ function publicGroupUpdatePayload(input: PublicGroupUpdateInput): Record<string,
   if (input.description !== undefined) payload.description = input.description
   if (input.enabled !== undefined) payload.enabled = input.enabled
   if (input.groupType !== undefined) payload.groupType = input.groupType
-  return payload
-}
-
-function resolvePublicApiKey(access: TargetAccess, input: { apiKeyId?: string }): ApiKeySummary | undefined {
-  const apiKeyId = normalizedText(input.apiKeyId)
-  if (apiKeyId) {
-    return findApiKeySummary(apiKeyId, access)
+  if (Object.keys(payload).length === 0) {
+    throw new Error('分组修改至少提供一个要修改的字段')
   }
-  return undefined
+  return payload
 }
 
 function ensureTargetSystemAccount(input: { targetUsername: string; targetDisplayName?: string }, passwordHash?: string): ResolvedTarget {
@@ -1330,8 +1330,26 @@ function findPublicAccountOwnerById(accountId: string): { id: string; systemAcco
   `).get(accountId) as { id: string; systemAccountId: string } | undefined
 }
 
-function resolvePublicAccountUpdateTarget(input: PublicAccountUpdateInput, ownerSystemAccountId: string): ResolvedTarget | undefined {
-  const username = normalizedText(input.targetUsername)
+function findPublicGroupOwnerById(groupId: string): { id: string; systemAccountId: string } | undefined {
+  return getBusinessDatabase().prepare(`
+    SELECT id, system_account_id AS systemAccountId
+    FROM groups
+    WHERE id = ?
+    LIMIT 1
+  `).get(groupId) as { id: string; systemAccountId: string } | undefined
+}
+
+function findPublicApiKeyOwnerById(apiKeyId: string): { id: string; systemAccountId: string } | undefined {
+  return getBusinessDatabase().prepare(`
+    SELECT id, system_account_id AS systemAccountId
+    FROM api_keys
+    WHERE id = ?
+    LIMIT 1
+  `).get(apiKeyId) as { id: string; systemAccountId: string } | undefined
+}
+
+function resolvePublicOwnedResourceTarget(usernameInput: string | undefined, ownerSystemAccountId: string): ResolvedTarget | undefined {
+  const username = normalizedText(usernameInput)
   const account = username
     ? findSystemAccountByUsername(username)
     : findSystemAccountById(ownerSystemAccountId)
@@ -1344,7 +1362,11 @@ function resolvePublicAccountUpdateTarget(input: PublicAccountUpdateInput, owner
   }
 }
 
-function resolvePublicAccountUpdateGroupFilter(input: PublicAccountUpdateInput, account: AccountSummary, access: TargetAccess): GroupSummary | undefined {
+function resolvePublicAccountGroupFilter(
+  input: { targetGroupName?: string; providerCode?: string; providerProtocolProfileId?: string },
+  account: AccountSummary,
+  access: TargetAccess
+): GroupSummary | undefined {
   const providerCode = normalizedText(input.providerCode)
   if (providerCode && providerCode !== account.providerCode) {
     throw new Error('账号不存在')
@@ -1402,14 +1424,15 @@ function findTargetAccount(input: {
   }).items.find((item) => item.providerCode === input.providerCode && item.providerProtocolProfileId === input.providerProtocolProfileId && sameText(item.name, name))
 }
 
-function targetFromInput(username: string, groupName: string): PublicAccountDeleteResponse['target'] {
+function targetFromInput(usernameInput?: string, groupNameInput?: string): PublicAccountDeleteResponse['target'] {
+  const username = normalizedText(usernameInput) ?? ''
   return {
     username,
     displayName: username,
     systemAccountId: '',
     created: false,
     groupId: '',
-    groupName,
+    groupName: normalizedText(groupNameInput) ?? '',
     groupCreated: false
   }
 }
