@@ -57,8 +57,9 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
       return { outcome: 'fallback', context: fallback.context }
     }
     const statusCode = 400
-    const message = '当前分组无账户支持请求路径或客户端协议'
-    const responsePayload = gatewayErrorPayload(message, 'invalid_request_error', 'request_capability_mismatch')
+    const reason = capabilityFilter.reason ?? 'request_capability_mismatch'
+    const message = requestCapabilityMismatchMessage(reason)
+    const responsePayload = gatewayErrorPayload(message, 'invalid_request_error', reason)
     recordClientIpRequestErrorSample({
       auditCapture: input.auditCapture,
       systemAccountId: input.systemAccountId,
@@ -67,7 +68,9 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
       clientIp: input.clientIp,
       endpoint: input.endpoint,
       reason: 'request_capability_mismatch',
-      signature: `${input.req.method.toUpperCase()} ${input.req.path || input.req.originalUrl.split('?')[0] || '/'}`
+      signature: reason === 'request_capability_mismatch'
+        ? `${input.req.method.toUpperCase()} ${input.req.path || input.req.originalUrl.split('?')[0] || '/'}`
+        : reason
     })
     sendGatewayFailureResponse({
       req: input.req,
@@ -80,7 +83,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
       audit: {
         outcome: 'gateway_failed',
         errorPhase: 'request_validation',
-        errorCode: 'request_capability_mismatch',
+        errorCode: reason,
         errorMessage: message
       }
     })
@@ -139,4 +142,11 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   }
 
   return { outcome: 'accounts', accounts: modelFilter.accounts }
+}
+
+function requestCapabilityMismatchMessage(reason: string): string {
+  if (reason === 'responses_compact_not_supported_by_chat_bridge') {
+    return '当前账户使用 Chat Completions 上游，不支持 Responses compact'
+  }
+  return '当前分组无账户支持请求路径或客户端协议'
 }

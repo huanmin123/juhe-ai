@@ -53,6 +53,12 @@ export function isOpenAIResponsesPostRequest(req: Request): boolean {
   return normalizedOpenAIPath(path) === '/responses'
 }
 
+export function isOpenAIResponsesCompactRequest(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'POST') return false
+  const { path } = splitPathAndQuery(req.originalUrl || req.path || '')
+  return normalizedOpenAIPath(path) === '/responses/compact'
+}
+
 export function isOpenAIResponsesChatBridgeRequest(req: Request, account: OpenAIResponsesChatBridgeAccount): boolean {
   return isOpenAIResponsesChatBridgeAccount(account) && isOpenAIResponsesPostRequest(req)
 }

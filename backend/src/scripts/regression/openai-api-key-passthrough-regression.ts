@@ -5,9 +5,11 @@ import { requestModel } from '../../modules/gateway/openai-gateway-usage.js'
 import {
   buildOpenAICodexUpstreamUrls,
   buildUpstreamUrl,
+  buildUpstreamUrlsForAccount,
   isOpenAIModelsRequest
 } from '../../modules/gateway/openai-gateway-route-helpers.js'
 import { buildUpstreamHeaders, buildUpstreamRequestBody, buildUpstreamRequestParts, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
+import { filterGatewayAccountsByRequestCapability } from '../../modules/gateway/openai-gateway-account-capability-filter.js'
 import {
   createGatewayRequestBodyState,
   clearGatewayRequestBodyInFlightForTest,
@@ -21,6 +23,7 @@ import {
 } from '../../modules/gateway/openai-gateway-request-body.js'
 import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
 import { stopGatewayJsonParseWorker } from '../../modules/gateway/openai-gateway-json-parser.js'
+import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 
 type TestRequest = GatewayRawBodyRequest
 type MockResponse = EventEmitter & {
@@ -34,9 +37,29 @@ type MockResponse = EventEmitter & {
   json: (body: unknown) => MockResponse
 }
 
-const apiKeyAccount = {
+const apiKeyAccount: OpenAIAccountSecret = {
+  id: 'acc_test',
+  providerCode: 'gpt',
+  providerProtocolProfileId: 'profile_gpt_openai_v1',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  systemAccountId: 'sys_test',
+  accountOwnerSystemAccountId: 'sys_test',
+  groupOwnerSystemAccountId: 'sys_test',
+  accountAccessType: 'owner',
+  groupAccessType: 'owner',
+  name: 'OpenAI API Key passthrough regression',
   apiKey: 'sk-upstream',
   type: 'api_key',
+  status: 'active',
+  concurrencyLimit: 20,
+  priority: 0,
+  superPriorityEnabled: false,
+  fallbackEnabled: false,
+  clientCompatibility: 'openai_standard',
+  openAIResponsesUpstreamMode: 'passthrough',
+  baseUrl: 'https://api.openai.com/v1',
+  streamFailureCount: 0,
   credentials: {}
 }
 
@@ -51,6 +74,7 @@ async function main(): Promise<void> {
   testOpenAIBetaPreservedFromClient()
   testOpenAIUpstreamUrlNormalization()
   testOpenAIClientPathNormalization()
+  testResponsesCompactRouteCapability()
   testParsedJsonBodyPassthroughForGatewayMetadata()
   await testMediumJsonBodyDeferredByGatewayMiddleware()
   await testOversizeJsonBodyRejectedByGatewayMiddleware()
@@ -348,6 +372,40 @@ function testOpenAIClientPathNormalization(): void {
   assert.deepEqual(
     buildOpenAICodexUpstreamUrls(createRequest({ input: 'hello' }, {}, undefined, '/chat/completions')),
     []
+  )
+}
+
+function testResponsesCompactRouteCapability(): void {
+  const passthroughAccount: OpenAIAccountSecret = {
+    ...apiKeyAccount,
+    baseUrl: 'https://api.openai.com',
+    openAIResponsesUpstreamMode: 'passthrough' as const
+  }
+  const bridgeAccount: OpenAIAccountSecret = {
+    ...apiKeyAccount,
+    baseUrl: 'https://example.com/openai',
+    openAIResponsesUpstreamMode: 'chat_completions_bridge' as const
+  }
+
+  assert.deepEqual(
+    buildUpstreamUrlsForAccount(passthroughAccount, createRequest({ model: 'gpt-5.4', input: [] }, {}, undefined, '/v1/responses/compact')),
+    ['https://api.openai.com/v1/responses/compact']
+  )
+  assert.deepEqual(
+    buildUpstreamUrlsForAccount(bridgeAccount, createRequest({ model: 'gpt-5.4', input: [] }, {}, undefined, '/v1/responses/compact')),
+    []
+  )
+  assert.deepEqual(
+    buildUpstreamUrlsForAccount(bridgeAccount, createRequest({ model: 'gpt-5.4', input: 'hello' }, {}, undefined, '/v1/responses')),
+    ['https://example.com/openai/v1/chat/completions']
+  )
+  assert.deepEqual(
+    filterGatewayAccountsByRequestCapability(createRequest({ model: 'gpt-5.4', input: [] }, {}, undefined, '/v1/responses/compact'), [bridgeAccount]),
+    {
+      accounts: [],
+      skippedCount: 1,
+      reason: 'responses_compact_not_supported_by_chat_bridge'
+    }
   )
 }
 
