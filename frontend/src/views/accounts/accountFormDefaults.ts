@@ -16,11 +16,13 @@ export function defaultAccountForm(
   const profile = provider?.protocolProfiles.find((item) => item.id === (providerProtocolProfileId || provider.defaultProtocolProfileId))
     ?? provider?.protocolProfiles.find((item) => item.enabled)
     ?? provider?.protocolProfiles[0]
+  const accountTypes = profile?.accountTypes ?? provider?.accountTypes ?? []
+  const resolvedType = type || (accountTypes.includes('api_key') ? 'api_key' : accountTypes[0] ?? '')
   return {
     providerCode: resolvedProviderCode,
     providerProtocolProfileId: profile?.id || providerProtocolProfileId || defaultProviderProtocolProfileId(provider),
     name: '',
-    type,
+    type: resolvedType,
     groupId: undefined,
     group: undefined,
     apiKey: '',
@@ -32,7 +34,7 @@ export function defaultAccountForm(
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
-    clientCompatibility: resolvedProviderCode === GPT_VENDOR_CODE && type === 'oauth' ? 'codex_responses' : 'openai_standard',
+    clientCompatibility: resolvedProviderCode === GPT_VENDOR_CODE && resolvedType === 'oauth' ? 'codex_responses' : 'openai_standard',
     supportedModels: [],
     modelMappings: [],
     proxyProfileId: undefined,

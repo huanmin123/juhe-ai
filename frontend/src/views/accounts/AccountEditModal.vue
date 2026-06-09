@@ -1,5 +1,14 @@
 <template>
-  <a-modal v-model:open="open" :title="title" width="920px" :confirm-loading="confirmLoading" :ok-button-props="okButtonProps" @ok="$emit('ok')" @cancel="$emit('cancel')">
+  <a-modal
+    v-model:open="open"
+    :title="title"
+    width="920px"
+    :confirm-loading="confirmLoading"
+    :focus-trigger-after-close="false"
+    :ok-button-props="okButtonProps"
+    @ok="$emit('ok')"
+    @cancel="$emit('cancel')"
+  >
     <a-form layout="vertical" class="account-form">
       <a-alert v-if="cloning" class="form-alert" type="info" show-icon :message="cloneAlertMessage" />
       <a-alert v-else-if="authorizedEditing" class="form-alert" type="info" show-icon message="授权账户的上游配置由授权方维护；你只能调整加入分组和分组内优先级。" />
@@ -75,35 +84,53 @@
         </a-descriptions>
       </section>
 
-      <AccountStrategySection
+      <a-collapse
         v-if="hasAccountType"
-        :form="form"
-        :is-management-view="isManagementView"
-        :is-o-auth-form="isOAuthForm"
-        :mapping-target-model-options="mappingTargetModelOptions"
-        :model-options="modelOptions"
-        :models-loading="modelsLoading"
-        :proxy-options="proxyOptions"
-        :authorized-editing="authorizedEditing"
-      />
+        v-model:activeKey="advancedActiveKeys"
+        class="account-advanced-collapse"
+        expand-icon-position="end"
+      >
+        <a-collapse-panel key="advanced">
+          <template #header>
+            <div class="advanced-header">
+              <span>高级配置</span>
+              <small>{{ advancedSummary }}</small>
+            </div>
+          </template>
+          <div class="advanced-section-stack">
+            <AccountStrategySection
+              :form="form"
+              :is-management-view="isManagementView"
+              :is-o-auth-form="isOAuthForm"
+              :mapping-target-model-options="mappingTargetModelOptions"
+              :model-options="modelOptions"
+              :models-loading="modelsLoading"
+              :proxy-options="proxyOptions"
+              :authorized-editing="authorizedEditing"
+            />
 
-      <AccountAvailabilityScheduleSection
-        v-if="hasAccountType"
-        :form="form"
-        :readonly="authorizedEditing"
-      />
+            <AccountExtraInfoSection
+              :form="form"
+              :readonly="authorizedEditing"
+            />
 
-      <AccountErrorPolicyCard
-        v-if="hasAccountType"
-        v-model:rules="errorPolicyRules"
-        :readonly="authorizedEditing"
-      />
+            <AccountAvailabilityScheduleSection
+              :form="form"
+              :readonly="authorizedEditing"
+            />
 
-      <AccountStreamInterceptPolicyCard
-        v-if="hasAccountType"
-        v-model:rules="streamInterceptRules"
-        :readonly="authorizedEditing"
-      />
+            <AccountErrorPolicyCard
+              v-model:rules="errorPolicyRules"
+              :readonly="authorizedEditing"
+            />
+
+            <AccountStreamInterceptPolicyCard
+              v-model:rules="streamInterceptRules"
+              :readonly="authorizedEditing"
+            />
+          </div>
+        </a-collapse-panel>
+      </a-collapse>
     </a-form>
 
     <template #footer>
@@ -119,7 +146,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountSummary, AccountType, OpenAIAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
@@ -127,6 +154,7 @@ import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSec
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
+import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
@@ -135,6 +163,7 @@ import { statusText } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
+import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
 
 interface AccountTypeChoice {
   value: AccountType
@@ -151,6 +180,7 @@ interface SelectOption<T = string> {
 const open = defineModel<boolean>('open', { required: true })
 const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
 const streamInterceptRules = defineModel<AccountStreamInterceptRuleForm[]>('streamInterceptRules', { required: true })
+const advancedActiveKeys = ref<string[]>([])
 
 const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
@@ -218,6 +248,31 @@ const sourceAccountStatusText = computed(() => {
 
 const sourceAccountExpiresAtText = computed(() => formatDateTime(props.accountDetail?.authorizationInstanceSourceAccountExpiresAt))
 const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
+const advancedConfiguredCount = computed(() => {
+  const form = props.form
+  const checks = [
+    form.supportedModels.length > 0,
+    form.modelMappings.length > 0,
+    form.clientCompatibility !== (props.isOAuthForm ? 'codex_responses' : 'openai_standard'),
+    form.concurrencyLimit !== DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
+    form.priority !== 0,
+    Boolean(form.proxyProfileId),
+    Boolean(form.accountExpiresAt),
+    form.availabilitySchedule.enabled,
+    errorPolicyRules.value.length > 0,
+    streamInterceptRules.value.length > 0,
+    Boolean(form.notes.trim())
+  ]
+  return checks.filter(Boolean).length
+})
+const advancedSummary = computed(() => {
+  const count = advancedConfiguredCount.value
+  return count > 0 ? `已配置 ${count} 项，可展开查看` : '默认配置，可按需展开'
+})
+
+watch(open, (next) => {
+  if (next) advancedActiveKeys.value = props.authorizedEditing ? ['advanced'] : []
+})
 
 function credentialItem(key: string, label: string, value: unknown): { key: string; label: string; value: string } | undefined {
   if (typeof value !== 'string') return undefined
@@ -277,6 +332,53 @@ defineEmits<{
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.account-advanced-collapse {
+  border: 1px solid #e8edf5;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.account-advanced-collapse :deep(.ant-collapse-item) {
+  border-bottom: 0;
+}
+
+.account-advanced-collapse :deep(.ant-collapse-header) {
+  align-items: center;
+  padding: 14px 16px;
+}
+
+.account-advanced-collapse :deep(.ant-collapse-content) {
+  border-top-color: #e8edf5;
+}
+
+.account-advanced-collapse :deep(.ant-collapse-content-box) {
+  padding: 14px;
+  background: #f8fafc;
+}
+
+.advanced-header {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.advanced-header span {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.advanced-header small {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.advanced-section-stack {
+  display: grid;
+  gap: 12px;
 }
 
 .account-modal-footer {

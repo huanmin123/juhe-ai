@@ -115,7 +115,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     label: accountTypeTitle(selectedProvider.value?.code ?? form.providerCode, type),
     description: accountTypeDescription(selectedProvider.value?.code ?? form.providerCode, type),
     tag: accountTypeText(type)
-  })))
+  })).sort((left, right) => accountTypeSortWeight(left.value) - accountTypeSortWeight(right.value)))
   const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
   const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
@@ -158,6 +158,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function accountTypeTitle(providerCode: string, type: AccountType) {
     return buildAccountTypeTitle(providerName(providerCode), type)
+  }
+
+  function accountTypeSortWeight(type: AccountType): number {
+    if (type === 'api_key') return 0
+    if (type === 'oauth') return 1
+    return 2
   }
 
   function providerName(providerCode?: string) {

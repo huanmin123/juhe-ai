@@ -1,5 +1,5 @@
 <template>
-  <section class="form-section credential-section">
+  <section class="form-section credential-section" autocomplete="off">
     <div class="form-section-head">
       <div>
         <h4>{{ title }} 配置</h4>
@@ -8,10 +8,24 @@
       </div>
     </div>
     <a-form-item label="API Key" :required="!editing">
-      <a-input-password v-model:value="form.apiKey" autocomplete="off" :placeholder="editing ? '留空保留原 API Key' : '粘贴完整 API Key'" />
+      <a-input-password
+        v-model:value="form.apiKey"
+        autocomplete="new-password"
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-form-type="other"
+        :placeholder="editing ? '留空保留原 API Key' : '粘贴完整 API Key'"
+      />
     </a-form-item>
     <a-form-item label="Base URL" required>
-      <a-input v-model:value="form.baseUrl" :placeholder="baseUrlPlaceholder" />
+      <a-input
+        v-model:value="form.baseUrl"
+        autocomplete="off"
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-form-type="other"
+        :placeholder="baseUrlPlaceholder"
+      />
     </a-form-item>
   </section>
 </template>

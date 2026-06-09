@@ -1,5 +1,5 @@
 <template>
-  <section class="form-section">
+  <section class="form-section" autocomplete="off">
     <div class="form-section-head">
       <div>
         <h4>{{ title }} 配置</h4>
@@ -10,10 +10,26 @@
 
     <template v-if="editing">
       <a-form-item label="Access Token">
-        <a-textarea v-model:value="form.accessToken" :rows="3" placeholder="粘贴完整 Access Token" />
+        <a-textarea
+          v-model:value="form.accessToken"
+          :rows="3"
+          autocomplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+          placeholder="粘贴完整 Access Token"
+        />
       </a-form-item>
       <a-form-item label="Refresh Token">
-        <a-textarea v-model:value="form.refreshToken" :rows="3" placeholder="粘贴完整 Refresh Token" />
+        <a-textarea
+          v-model:value="form.refreshToken"
+          :rows="3"
+          autocomplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+          placeholder="粘贴完整 Refresh Token"
+        />
       </a-form-item>
     </template>
 

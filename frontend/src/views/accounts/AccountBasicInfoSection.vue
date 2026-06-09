@@ -8,37 +8,42 @@
     </div>
     <div class="form-grid">
       <a-form-item label="账户名称" :required="form.type === 'api_key' || editing">
-        <a-input v-model:value="form.name" :disabled="authorizedEditing" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
+        <a-input
+          v-model:value="form.name"
+          autocomplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+          :disabled="authorizedEditing"
+          :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'"
+        />
       </a-form-item>
       <a-form-item label="加入分组" required>
-        <GroupSelect
-          v-model:value="form.groupId"
-          v-model:selected-group="form.group"
-          :filter-option="false"
-          :loading="groupOptionsLoading"
-          :options="groupOptions"
-          placeholder="输入分组名称"
-          @dropdown-visible-change="$emit('group-options-dropdown', $event)"
-          @search="$emit('group-options-search', $event)"
-        />
+        <div @pointerdown.capture="markGroupDropdownRequested" @keydown.capture="markGroupDropdownRequested">
+          <GroupSelect
+            v-model:value="form.groupId"
+            v-model:selected-group="form.group"
+            :filter-option="false"
+            :open="groupDropdownOpen"
+            :loading="groupOptionsLoading"
+            :options="groupOptions"
+            placeholder="输入分组名称"
+            @dropdown-visible-change="handleGroupDropdownVisibleChange"
+            @search="$emit('group-options-search', $event)"
+          />
+        </div>
         <div class="form-help">统计、会话亲和和缓存按本地 API Key 与分组连续。</div>
       </a-form-item>
-      <a-form-item label="账户到期时间">
-        <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear :disabled="authorizedEditing" style="width: 100%" />
-        <div class="form-help">可选，表示套餐/账号购买到期时间；到期后后端会自动停用账户。</div>
-      </a-form-item>
     </div>
-    <a-form-item label="说明">
-      <a-textarea v-model:value="form.notes" :rows="2" :disabled="authorizedEditing" placeholder="可填写来源、用途或额度说明" />
-    </a-form-item>
   </section>
 </template>
 
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import type { AccountFormModel } from './accountFormTypes'
 
-defineProps<{
+const props = defineProps<{
   authorizedEditing: boolean
   editing: boolean
   form: AccountFormModel
@@ -46,10 +51,35 @@ defineProps<{
   groupOptions: Array<{ label: string; value: string }>
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void
 }>()
+
+const groupDropdownOpen = ref(false)
+const groupDropdownRequested = ref(false)
+
+watch(
+  () => props.form.providerCode,
+  () => {
+    groupDropdownOpen.value = false
+    groupDropdownRequested.value = false
+  }
+)
+
+function markGroupDropdownRequested(): void {
+  groupDropdownRequested.value = true
+}
+
+function handleGroupDropdownVisibleChange(open: boolean): void {
+  if (open && !groupDropdownRequested.value) {
+    groupDropdownOpen.value = false
+    return
+  }
+  groupDropdownOpen.value = open
+  if (!open) groupDropdownRequested.value = false
+  emit('group-options-dropdown', open)
+}
 </script>
 
 <style scoped>
