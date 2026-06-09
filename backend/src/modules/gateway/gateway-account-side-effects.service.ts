@@ -135,6 +135,8 @@ export interface GatewayAccountSideEffectState {
   processing: boolean
   enqueuedCount: number
   completedCount: number
+  coalescedCount: number
+  canceledBySuccessCount: number
   skippedHealthySuccessCount: number
   failedAttemptCount: number
   droppedCount: number
@@ -171,6 +173,8 @@ let drainTimer: NodeJS.Timeout | undefined
 let drainTimerDueAtMs: number | undefined
 let enqueuedCount = 0
 let completedCount = 0
+let coalescedCount = 0
+let canceledBySuccessCount = 0
 let skippedHealthySuccessCount = 0
 let failedAttemptCount = 0
 let droppedCount = 0
@@ -178,6 +182,15 @@ let expiredCount = 0
 let localHalfOpenLeaseSequence = 0
 
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
+  if (operation.input.success) {
+    const canceledCount = cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(gatewayAccountRuntimeKey(operation.account))
+    if (canceledCount > 0) {
+      canceledBySuccessCount += canceledCount
+      clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
+    }
+  } else if (coalesceQueuedAccountErrorHandlingSideEffect(operation)) {
+    return
+  }
   if (isHealthySuccessfulAccountSideEffect(operation)) {
     clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
     skippedHealthySuccessCount += 1
@@ -445,6 +458,8 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     processing: processingSideEffects,
     enqueuedCount,
     completedCount,
+    coalescedCount,
+    canceledBySuccessCount,
     skippedHealthySuccessCount,
     failedAttemptCount,
     droppedCount,
@@ -545,6 +560,52 @@ function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
   heapifySideEffectUp(sideEffectQueue.length - 1)
   enqueuedCount += 1
   scheduleSideEffectDrain(0)
+}
+
+function coalesceQueuedAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): boolean {
+  const runtimeKey = gatewayAccountRuntimeKey(operation.account)
+  const index = sideEffectQueue.findIndex((item) => (
+    item.operation.type === 'apply_account_error_handling'
+    && gatewayAccountRuntimeKey(item.operation.account) === runtimeKey
+  ))
+  if (index < 0) {
+    return false
+  }
+  const now = Date.now()
+  sideEffectQueue[index] = {
+    operation,
+    attempts: 0,
+    enqueuedAtMs: now,
+    nextAttemptAtMs: now,
+    expiresAtMs: now + sideEffectRetentionMs
+  }
+  coalescedCount += 1
+  heapifySideEffectQueue()
+  scheduleSideEffectDrain(0)
+  return true
+}
+
+function cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey: string): number {
+  let writeIndex = 0
+  let removed = 0
+  for (let index = 0; index < sideEffectQueue.length; index += 1) {
+    const item = sideEffectQueue[index]
+    if (
+      item.operation.type === 'apply_account_error_handling'
+      && gatewayAccountRuntimeKey(item.operation.account) === runtimeKey
+    ) {
+      removed += 1
+      continue
+    }
+    sideEffectQueue[writeIndex] = item
+    writeIndex += 1
+  }
+  if (removed === 0) {
+    return 0
+  }
+  sideEffectQueue.length = writeIndex
+  heapifySideEffectQueue()
+  return removed
 }
 
 function logDroppedAccountSideEffect(operation: AccountSideEffectOperation): void {

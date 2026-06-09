@@ -530,7 +530,12 @@ function handleParentMessage(message: unknown): void {
   finishProcessEventLoopRequest(record.requestId, nonEmptyProcessEventLoopSamples(record.samples))
 }
 
-function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
+function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
+  const message = coalesceWorkerMessage(inputMessage)
+  if (!message) {
+    flushWorkerMessageQueue()
+    return true
+  }
   const messageBytes = estimateWorkerMessageBytes(message)
   const queueKey = ipcQueueKeyForMessage(message)
   if (!canQueueWorkerMessage(message, messageBytes)) {
@@ -548,6 +553,78 @@ function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
 
   flushWorkerMessageQueue()
   return true
+}
+
+function coalesceWorkerMessage(message: BackgroundWorkerMessage): BackgroundWorkerMessage | undefined {
+  if (message.type !== 'background_worker_record_maintenance') {
+    return message
+  }
+  const compactedItems = compactRecordMaintenanceJobsForCoalescing(message.items)
+  const remainingItems: RecordMaintenanceJob[] = []
+  for (const job of compactedItems) {
+    if (coalesceRecordMaintenanceJobIntoPendingQueue(job)) {
+      continue
+    }
+    remainingItems.push(job)
+  }
+  if (remainingItems.length === 0) {
+    return undefined
+  }
+  return remainingItems.length === message.items.length
+    ? message
+    : { ...message, items: remainingItems }
+}
+
+function compactRecordMaintenanceJobsForCoalescing(items: RecordMaintenanceJob[]): RecordMaintenanceJob[] {
+  const lastIndexByKey = new Map<string, number>()
+  items.forEach((job, index) => {
+    const key = recordMaintenanceJobCoalescingKey(job)
+    if (key) {
+      lastIndexByKey.set(key, index)
+    }
+  })
+  if (lastIndexByKey.size === 0) {
+    return items
+  }
+  return items.filter((job, index) => {
+    const key = recordMaintenanceJobCoalescingKey(job)
+    return !key || lastIndexByKey.get(key) === index
+  })
+}
+
+function coalesceRecordMaintenanceJobIntoPendingQueue(job: RecordMaintenanceJob): boolean {
+  const key = recordMaintenanceJobCoalescingKey(job)
+  if (!key) {
+    return false
+  }
+  const queueIndex = regularWorkerMessageQueue.findIndex((queued) => (
+    queued.type === 'background_worker_record_maintenance'
+    && queued.items.some((item) => recordMaintenanceJobCoalescingKey(item) === key)
+  ))
+  if (queueIndex < 0) {
+    return false
+  }
+  const current = regularWorkerMessageQueue.at(queueIndex)
+  if (!current || current.type !== 'background_worker_record_maintenance') {
+    return false
+  }
+  const currentBytes = estimateWorkerMessageBytes(current)
+  const nextItems = compactRecordMaintenanceJobsForCoalescing(current.items.map((item) => (
+    recordMaintenanceJobCoalescingKey(item) === key ? job : item
+  )))
+  const nextMessage: BackgroundWorkerMessage = { ...current, items: nextItems }
+  const nextBytes = estimateWorkerMessageBytes(nextMessage)
+  regularWorkerMessageQueue.set(queueIndex, nextMessage)
+  regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - currentBytes + nextBytes)
+  const runtime = pendingQueueRuntime.recordMaintenance
+  runtime.queueBytes = Math.max(0, (runtime.queueBytes ?? 0) - currentBytes + nextBytes)
+  return true
+}
+
+function recordMaintenanceJobCoalescingKey(job: RecordMaintenanceJob): string | undefined {
+  return job.type === 'account_usage_snapshot_upsert'
+    ? `${job.accountId}\u0000${job.kind}`
+    : undefined
 }
 
 function canQueueWorkerMessage(message: BackgroundWorkerMessage, messageBytes: number): boolean {

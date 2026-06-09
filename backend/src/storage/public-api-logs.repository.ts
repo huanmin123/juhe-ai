@@ -1,4 +1,11 @@
-import { getDatasetDatabase, newId, nowIso } from './database.js'
+import {
+  beginDatabaseTransaction,
+  commitDatabaseTransaction,
+  getDatasetDatabase,
+  newId,
+  nowIso,
+  rollbackDatabaseTransaction
+} from './database.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString, optionalServerDateTimeIso } from './value-utils.js'
 
@@ -97,6 +104,93 @@ const publicApiLogMaxPageSize = 100
 const publicApiLogMaxListWindowRows = 1001
 
 export function createPublicApiLog(input: PublicApiLogInput): PublicApiLogSummary {
+  return createPublicApiLogsBatch([input])[0]
+}
+
+export function createPublicApiLogsBatch(inputs: PublicApiLogInput[]): PublicApiLogSummary[] {
+  if (inputs.length === 0) return []
+  const database = getDatasetDatabase()
+  const insert = database.prepare(`
+    INSERT INTO public_api_logs (
+      id, trace_id, source_ref_id, source_name, token_id, token_name, token_prefix, is_test_token,
+      method, path, query_string, client_ip, user_agent, status_code, success, duration_ms,
+      request_size_bytes, response_size_bytes, request_capture_status, response_capture_status,
+      request_data_json, response_data_json, error_code, error_message, started_at, ended_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const normalizedLogs = inputs.map(normalizePublicApiLogInput)
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const log of normalizedLogs) {
+      insert.run(
+        log.id,
+        log.traceId ?? null,
+        log.sourceRefId ?? null,
+        log.sourceName ?? null,
+        log.tokenId ?? null,
+        log.tokenName ?? null,
+        log.tokenPrefix ?? null,
+        log.isTestToken ? 1 : 0,
+        log.method,
+        log.path,
+        log.queryString ?? null,
+        log.clientIp ?? null,
+        log.userAgent ?? null,
+        log.statusCode,
+        log.success,
+        log.durationMs,
+        log.requestSizeBytes,
+        log.responseSizeBytes,
+        log.requestCaptureStatus,
+        log.responseCaptureStatus,
+        log.requestDataJson,
+        log.responseDataJson,
+        log.errorCode ?? null,
+        log.errorMessage ?? null,
+        log.startedAt,
+        log.endedAt,
+        log.createdAt
+      )
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  return normalizedLogs.map(publicApiLogSummaryFromNormalizedInput)
+}
+
+interface NormalizedPublicApiLogInput {
+  id: string
+  traceId?: string
+  sourceRefId?: string
+  sourceName?: string
+  tokenId?: string
+  tokenName?: string
+  tokenPrefix?: string
+  isTestToken: boolean
+  method: string
+  path: string
+  queryString?: string
+  clientIp?: string
+  userAgent?: string
+  statusCode: number | null
+  success: 0 | 1
+  durationMs: number | null
+  requestSizeBytes: number
+  responseSizeBytes: number
+  requestCaptureStatus: PublicApiLogCaptureStatus
+  responseCaptureStatus: PublicApiLogCaptureStatus
+  requestDataJson: string
+  responseDataJson: string
+  errorCode?: string
+  errorMessage?: string
+  startedAt: string
+  endedAt: string
+  createdAt: string
+}
+
+function normalizePublicApiLogInput(input: PublicApiLogInput): NormalizedPublicApiLogInput {
   const id = input.id ?? newId('publog')
   const createdAt = input.createdAt ?? nowIso()
   const statusCode = integerOrNull(input.statusCode)
@@ -105,45 +199,40 @@ export function createPublicApiLog(input: PublicApiLogInput): PublicApiLogSummar
   const responseSizeBytes = normalizeNonNegativeInteger(input.responseSizeBytes)
   const requestCaptureStatus = normalizeCaptureStatus(input.requestCaptureStatus)
   const responseCaptureStatus = normalizeCaptureStatus(input.responseCaptureStatus)
-  const success = input.success ? 1 : 0
-  getDatasetDatabase().prepare(`
-    INSERT INTO public_api_logs (
-      id, trace_id, source_ref_id, source_name, token_id, token_name, token_prefix, is_test_token,
-      method, path, query_string, client_ip, user_agent, status_code, success, duration_ms,
-      request_size_bytes, response_size_bytes, request_capture_status, response_capture_status,
-      request_data_json, response_data_json, error_code, error_message, started_at, ended_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  return {
     id,
-    input.traceId ?? null,
-    input.sourceRefId ?? null,
-    input.sourceName ?? null,
-    input.tokenId ?? null,
-    input.tokenName ?? null,
-    input.tokenPrefix ?? null,
-    input.isTestToken ? 1 : 0,
-    input.method,
-    input.path,
-    input.queryString ?? null,
-    input.clientIp ?? null,
-    input.userAgent ?? null,
+    traceId: input.traceId,
+    sourceRefId: input.sourceRefId,
+    sourceName: input.sourceName,
+    tokenId: input.tokenId,
+    tokenName: input.tokenName,
+    tokenPrefix: input.tokenPrefix,
+    isTestToken: input.isTestToken === true,
+    method: input.method,
+    path: input.path,
+    queryString: input.queryString,
+    clientIp: input.clientIp,
+    userAgent: input.userAgent,
     statusCode,
-    success,
+    success: input.success ? 1 : 0,
     durationMs,
     requestSizeBytes,
     responseSizeBytes,
     requestCaptureStatus,
     responseCaptureStatus,
-    safeJsonObjectStringify(input.requestData),
-    safeJsonObjectStringify(input.responseData),
-    input.errorCode ?? null,
-    input.errorMessage ?? null,
-    input.startedAt,
-    input.endedAt,
+    requestDataJson: safeJsonObjectStringify(input.requestData),
+    responseDataJson: safeJsonObjectStringify(input.responseData),
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    startedAt: input.startedAt,
+    endedAt: input.endedAt,
     createdAt
-  )
+  }
+}
+
+function publicApiLogSummaryFromNormalizedInput(input: NormalizedPublicApiLogInput): PublicApiLogSummary {
   return publicApiLogSummaryFromRow({
-    id,
+    id: input.id,
     trace_id: input.traceId,
     source_ref_id: input.sourceRefId,
     source_name: input.sourceName,
@@ -156,18 +245,18 @@ export function createPublicApiLog(input: PublicApiLogInput): PublicApiLogSummar
     query_string: input.queryString,
     client_ip: input.clientIp,
     user_agent: input.userAgent,
-    status_code: statusCode,
-    success,
-    duration_ms: durationMs,
-    request_size_bytes: requestSizeBytes,
-    response_size_bytes: responseSizeBytes,
-    request_capture_status: requestCaptureStatus,
-    response_capture_status: responseCaptureStatus,
+    status_code: input.statusCode,
+    success: input.success,
+    duration_ms: input.durationMs,
+    request_size_bytes: input.requestSizeBytes,
+    response_size_bytes: input.responseSizeBytes,
+    request_capture_status: input.requestCaptureStatus,
+    response_capture_status: input.responseCaptureStatus,
     error_code: input.errorCode,
     error_message: input.errorMessage,
     started_at: input.startedAt,
     ended_at: input.endedAt,
-    created_at: createdAt
+    created_at: input.createdAt
   })
 }
 

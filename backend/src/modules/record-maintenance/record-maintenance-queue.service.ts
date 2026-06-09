@@ -642,7 +642,6 @@ function mergeAccountUsageSnapshotJob(queued: QueuedRecordMaintenanceJob): 'not_
     return job.type === 'account_usage_snapshot_upsert'
       && job.accountId === snapshotJob.accountId
       && job.kind === snapshotJob.kind
-      && (job.source ?? '') === (snapshotJob.source ?? '')
   })
   if (index < 0) {
     return 'not_found'

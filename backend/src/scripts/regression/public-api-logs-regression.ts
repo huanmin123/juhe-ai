@@ -19,6 +19,7 @@ Object.assign(process.env, {
 const [
   { createSystemApiApp },
   {
+    createPublicApiLogsBatch,
     createPublicApiLog,
     createSession,
     cleanupPublicApiLogsBefore,
@@ -32,9 +33,9 @@ const [
     findExternalIntegrationSourceTokenSecret
   },
   { cleanupExpiredRetainedData },
-  { closeStorageDatabases },
+  { closeStorageDatabases, getDatasetDatabase },
   { logger },
-  { flushPublicApiLogQueueForTest },
+  { enqueuePublicApiLog, flushPublicApiLogQueueForTest },
   { default: express },
   { requestContextMiddleware },
   { capturePublicApiLog }
@@ -225,6 +226,41 @@ try {
   }
   assert.equal(cleanupPublicApiLogsBefore(batchCutoff, 5), 5, '公开接口日志 repository 清理必须遵守传入 limit')
   assert.equal(listPublicApiLogs({ traceId: 'publog_bounded_', pageSize: 20 }).items.length, 7, '限定批量清理不能一次删除全部过期记录')
+
+  const datasetDatabase = getDatasetDatabase()
+  const originalDatasetPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
+  let publicApiLogInsertPrepareCount = 0
+  datasetDatabase.prepare = ((sql: string) => {
+    if (/^\s*INSERT\s+INTO\s+public_api_logs\b/i.test(sql)) {
+      publicApiLogInsertPrepareCount += 1
+    }
+    return originalDatasetPrepare(sql)
+  }) as typeof datasetDatabase.prepare
+  try {
+    createPublicApiLogsBatch(Array.from({ length: 3 }, (_, index) => publicApiLogFixture(`publog_batch_insert_${index}`, new Date().toISOString())))
+  } finally {
+    datasetDatabase.prepare = originalDatasetPrepare
+  }
+  assert.equal(publicApiLogInsertPrepareCount, 1, '公开接口日志批量写入应复用单个 insert statement')
+  assert.equal(listPublicApiLogs({ traceId: 'publog_batch_insert_', pageSize: 10 }).items.length, 3, '公开接口日志批量写入应写入完整批次')
+
+  let simulatedQueueFailure = true
+  datasetDatabase.prepare = ((sql: string) => {
+    if (simulatedQueueFailure && /^\s*INSERT\s+INTO\s+public_api_logs\b/i.test(sql)) {
+      simulatedQueueFailure = false
+      throw new Error('模拟公开接口日志批量写入失败')
+    }
+    return originalDatasetPrepare(sql)
+  }) as typeof datasetDatabase.prepare
+  try {
+    assert.equal(enqueuePublicApiLog(publicApiLogFixture('publog_queue_retry_retained', new Date().toISOString())), true, '公开接口日志应可入队')
+    flushPublicApiLogQueueForTest()
+    assert.equal(listPublicApiLogs({ traceId: 'publog_queue_retry_retained', pageSize: 10 }).items.length, 0, '公开接口日志批量写失败时不应落入部分记录')
+  } finally {
+    datasetDatabase.prepare = originalDatasetPrepare
+  }
+  flushPublicApiLogQueueForTest()
+  assert.equal(listPublicApiLogs({ traceId: 'publog_queue_retry_retained', pageSize: 10 }).items.length, 1, '公开接口日志批量写失败后应保留队首批次并可重试成功')
 
   console.log('公开接口日志回归通过：公开请求记录、管理员查询、原文日志和 7 天保留清理均符合预期')
 } finally {

@@ -225,6 +225,7 @@ type GptAccountType = 'api_key' | 'oauth'
 OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过本地 API Key、分组授权、账号状态、冷却、到期时间、并发、账户错误处理策略和上游可用性判断。
 
 - 会话标识来源包括请求头或请求体里的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
+- Responses 转 Chat Completions bridge 本地续链命中后，应先把本地 `previous_response_id` 解析为稳定 `bridge_session_id`，再把该 session 交给会话亲和；不能让每轮变化的 response id 直接成为长期亲和 key。
 - 亲和键按 `system_account_id + api_key_id + session` 隔离，避免不同本地 API Key 或系统账户共享同一个上游会话绑定；`group_id` 不参与亲和键。
 - 手动迁移流量时，会话亲和迁移按源账号、系统账户和可选 API Key 反向索引定位候选绑定，不扫描全部亲和缓存；同一 API Key 下不同分组仍共享同一亲和绑定。
 - OAuth Codex adapter 写入上游的 `session_id`、`conversation_id` 和 `prompt_cache_key` 也按同一层本地边界隔离，不把上游账号 ID、账号类型或分组 ID 写进隔离 key；同一个本地 API Key 路由下因失败、冷却或并发切换上游账号时，尽量保留客户端会话和 prompt cache 连续性。

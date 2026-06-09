@@ -87,6 +87,37 @@ try {
   await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(accountUsageSnapshotCount('acct_codex_snapshot'), 1, 'worker 应能通过数据维护队列写入账号用量快照')
 
+  seedAccount('acct_codex_snapshot_lww', 'sys_admin')
+  recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'account_usage_snapshot_upsert',
+    id: 'recmaint_account_usage_snapshot_lww_old',
+    accountId: 'acct_codex_snapshot_lww',
+    kind: 'openai_codex',
+    source: 'old_source',
+    snapshot: {
+      codex_usage_updated_at: '2000-01-01T00:00:00.000Z',
+      codex_5h_used_percent: 41
+    },
+    updatedAt: '2000-01-01T00:00:00.000Z'
+  })
+  recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'account_usage_snapshot_upsert',
+    id: 'recmaint_account_usage_snapshot_lww_latest',
+    accountId: 'acct_codex_snapshot_lww',
+    kind: 'openai_codex',
+    source: 'latest_source',
+    snapshot: {
+      codex_usage_updated_at: '2000-01-01T00:00:01.000Z',
+      codex_5h_used_percent: 42
+    },
+    updatedAt: '2000-01-01T00:00:01.000Z'
+  })
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 1, '同账号同类型用量快照应在 worker 本地队列保留最后一次')
+  await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  const latestSnapshot = accountUsageSnapshot('acct_codex_snapshot_lww')
+  assert.equal(latestSnapshot?.source, 'latest_source', '账号用量快照本地队列合并后应写入最后一次 source')
+  assert.equal(latestSnapshot?.data.codex_5h_used_percent, 42, '账号用量快照本地队列合并后应写入最后一次 snapshot')
+
   for (let index = 0; index < 5; index += 1) {
     seedAccount(`acct_codex_snapshot_batch_${index}`, 'sys_admin')
   }
@@ -187,6 +218,23 @@ try {
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildUsageRecordsCleanupJob('server_ipc'))
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'server 角色不能进入本地数据维护队列')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, pendingBefore + 1, 'server 角色应把数据维护任务投递到 worker IPC 队列')
+
+  const ipcRecordMaintenanceBefore = backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength ?? 0
+  recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_ipc_old', 'acct_codex_snapshot_ipc', 51))
+  assert.equal(
+    backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength,
+    ipcRecordMaintenanceBefore + 1,
+    'server 角色首次账号用量快照应进入 worker IPC 队列'
+  )
+  recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    ...buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_ipc_latest', 'acct_codex_snapshot_ipc', 52),
+    source: 'regression_ipc_latest'
+  })
+  assert.equal(
+    backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength,
+    ipcRecordMaintenanceBefore + 1,
+    'server 到 worker 的账号用量快照 IPC pending 队列应按同账号同类型合并'
+  )
 
   runtimeConfig.processRole = 'db-service'
   const droppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
@@ -329,6 +377,17 @@ function accountUsageSnapshotCount(accountId: string): number {
     .prepare('SELECT COUNT(*) AS total FROM account_usage_snapshots WHERE account_id = ?')
     .get(accountId) as { total?: number } | undefined
   return Number(row?.total ?? 0)
+}
+
+function accountUsageSnapshot(accountId: string): { source?: string; data: Record<string, unknown> } | undefined {
+  const row = databaseModule.getStatsDatabase()
+    .prepare('SELECT source, snapshot_json FROM account_usage_snapshots WHERE account_id = ?')
+    .get(accountId) as { source?: string | null; snapshot_json?: string } | undefined
+  if (!row) return undefined
+  return {
+    source: row.source ?? undefined,
+    data: row.snapshot_json ? JSON.parse(row.snapshot_json) as Record<string, unknown> : {}
+  }
 }
 
 async function waitForImmediate(): Promise<void> {

@@ -67,6 +67,22 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 
 运行时代码不通过 `ATTACH` 跨库查询，也不读取当前 schema 之外的表结构。业务库是恢复的硬边界，必须保留；统计数据集目录库、usage shard 和统计结果库都可以丢弃、清空或重建。需要拆分、清理或取证本地保留数据时，只能使用停机后的显式离线脚本；不关心既有统计和排障明细时，可以直接新建空数据集目录库、usage shard 目录和统计结果库。
 
+## Responses bridge 短期上下文账本
+
+Responses 转 Chat Completions bridge 为了支持本地 `previous_response_id` 续链，需要保存短期可回放上下文。该数据不是长期业务事实，也不是统计结果；它包含用户输入、assistant 输出、function call 和 tool output，体积会随请求增长，因此 SQLite 只保存会话索引、顺序关系和本地文件引用，完整 payload 放本地文件，到期删除。
+
+落地表按 [Responses 转 Chat Completions 账户适配方案](Responses转ChatCompletions账户适配方案.md) 设计：
+
+- `responses_chat_bridge_sessions`：会话级索引，保存调用作用域、最新 response、活跃时间、过期时间、payload 总字节、可重放字节和 Chat body 预估字节等轻量诊断字段。
+- `responses_chat_bridge_response_index`：`response_id` 到 session / sequence 的主键索引，过期后保留轻量墓碑，用于把旧 `previous_response_id` 返回为明确错误。
+- `responses_chat_bridge_turn_payloads`：当前活跃窗口内每个 turn 的完整 payload 文件引用，保存 `storage_key`、hash、原始大小、落盘大小、可重放大小、Chat body 预估大小、压缩方式、状态和过期时间；完整内容默认放在 `backend/data/responses-bridge/payloads/`。
+
+热路径不能每轮同步打 SQLite。网关进程维护 Responses bridge 热会话缓存，先用 `response_id -> session_id` 和 hot session 命中连续请求；缓存 miss 时才通过 `response_id` 主键和 `session_id + sequence` 有界窗口读取这些表。命中热缓存或冷加载元数据后，先用累计大小、turn 大小、当前请求估算大小和系统设置 `gatewayTextRawBodyLimitMegabytes` 判断是否允许续链；只有通过后才按 `storage_key` 有界读取对应 payload 文件。超过上限时请求链路只返回 `responses_bridge_context_too_large`，不删除文件、不写 SQLite 状态；后台 cleanup job 后续按元数据批量清理完整 payload 文件和 payload 引用，并把 session / response index 标记为 `context_too_large`。不能扫描同一 API Key、同一系统账户、全部会话或 payload 目录来拼上下文。
+
+新 turn 写入必须先原子提交文件，再更新热缓存和 dirty session 队列；SQLite 引用、response index 和 session 累计字段由短间隔 / 空闲窗口批量 flush 到 DB service，不能在请求链路逐轮同步写 SQLite。dirty session 不能被静默淘汰；内存压力、队列满或 DB 长时间不可用时，要先尝试 flush，失败后返回明确本地错误并保留后台清理线索，payload 文件清理由后台 job 统一处理。流式响应在输出 `response.completed` / `response.incomplete` 之前至少要完成 payload 文件写入和热缓存更新，持久化失败时不能伪造可续链成功。
+
+默认保留策略是 24 小时活跃 TTL。成功续链刷新 `last_active_at` 和 `expires_at`；超过 TTL 或后台 job 判定上下文超限后，按 SQLite 中的 `storage_key` 删除完整 payload 文件和 payload 引用，保留 24 小时轻量墓碑；墓碑再过期后物理删除。清理任务走后台 worker 小批次推进，按 `status + expires_at` 和大小元数据索引删除，不执行 `COUNT(*)`、全表排序、目录全量扫描或大事务。
+
 ## 统计数据集与结果库拆分方案
 
 当前实现已经落地统计数据集域和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，数据集与统计职责按当前模型拆为：
@@ -429,6 +445,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
 | `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只做展示和排障聚合，不替代事件记录 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；表监控的非业务数据硬清理是管理员显式操作，不走这个安全保留口径 |
+| `responses_chat_bridge_sessions`、`responses_chat_bridge_response_index`、`responses_chat_bridge_turn_payloads` | Responses bridge 短期上下文账本 | 活跃 TTL 默认 24 小时，完整 payload 文件过期即清理，墓碑默认再保留 24 小时 | 落地后必须接入 `data-retention-cleanup` 或独立 bridge context cleanup | 只服务 `chat_completions_bridge` 的本地 `previous_response_id` 续链；请求路径只按主键和有界窗口读取索引，再按 `storage_key` 读取文件，不扫描历史会话或 payload 目录 |
 | `account_quality_minute_stats` | 账号质量分钟桶 | 默认 24 小时 | 是，`data-retention-cleanup` 每天在 worker 内清理；账号质量刷新任务也会兜底清理 | 只保存真实网关请求短窗口质量样本，不回扫 `usage_records` |
 | `usage_stats_minute`、`usage_model_minute`、`usage_error_minute`、`usage_latency_minute` | 分钟级统计缓存 | 默认 48 小时 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 供短窗口、账号质量和后续精细统计使用，不作为页面大范围查询事实源 |
 | `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly`、`usage_latency_hourly` | 小时级统计缓存 | 默认 60 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 覆盖 AI 性能最近 31 天小时趋势，并供 worker 刷新概览、排行、额度和 AI 性能窗口快照；API 摘要不在请求时聚合这些小时桶 |

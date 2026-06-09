@@ -113,8 +113,11 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 - `chat_completions_bridge` 不支持 `/responses/compact`。
 - 命中 `/responses/compact` 时返回本地 `400`，错误明确说明当前账户上游模式不支持 Responses compact。
-- 下游 `/responses` 请求里的 `context_management` 不转到 Chat 上游。
+- 下游 `/responses` 请求里的 `context_management` 不转到 Chat 上游；如果字段表达的是 Responses compaction 语义，返回本地 `400`，不能静默忽略。
+- 包含 `compaction_trigger` 的请求返回本地 `400` 或在候选账号筛选时跳过 bridge 账户，不能转成 Chat summarization。
 - 不伪造 compaction output item。
+- 客户端如果已经把历史压缩成明文摘要，并希望摘要替代旧历史，必须不携带 `previous_response_id`，让 bridge 按新会话处理。旧本地会话仅由 TTL 和后台 cleanup job 清理。
+- 客户端如果压缩后仍携带旧 `previous_response_id`，bridge 只能按普通续链理解，即先回放旧历史再追加当前摘要；网关不从 input 文本猜测“摘要替换”，避免把客户端意图误判为隐式上下文改写。
 - 后续如确需支持，只能单独设计“Chat summarization compact”，并明确它是本地摘要语义，不是官方 Responses compact。
 
 ### 国内 Chat-only 上游压缩结论
@@ -170,6 +173,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 | 上游不支持 `context_management` | 按上游失败处理，不标记本地 bug |
 | `/responses/compact` 命中 Chat bridge 账户 | 本地 `400`，不写账号失败 |
 | `compaction_trigger` 命中 Chat bridge 账户 | 本地 `400` 或跳过该账户，不伪造 Chat summarization |
+| 客户端摘要压缩后仍携带旧 `previous_response_id` | 按普通 bridge 续链处理；如果命中显式 compact 信号则本地 `400`，不猜测替换旧历史 |
 | compact 请求自身超上下文 | 返回 compact 失败，不继续重试 |
 | `/responses` 请求出现 `context_length_exceeded` | 不触发自动 compact；按现有上游错误或流式失败处理 |
 
@@ -220,6 +224,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - `codex_responses` 兼容模式：`compaction_trigger` 作为 Responses input item 透传，不被工具归一化或消息转换误删。
 - `chat_completions_bridge`：`/responses/compact` 返回本地 `400`，不请求上游。
 - `chat_completions_bridge`：包含 `compaction_trigger` 的请求不转成 Chat summarization。
+- `chat_completions_bridge`：客户端压缩摘要不携带 `previous_response_id` 时创建新本地会话；携带旧 ID 时按普通续链计算大小，不隐式替换历史。
 - OAuth Codex adapter：默认仍按现有字段边界，不被 API Key 调整影响。
 - 流式拦截：`context_length_exceeded` 仍按现有客户端策略处理，不触发 compact。
 - 性能：大请求体在不需要改写时仍 raw passthrough，不新增主线程完整解析。

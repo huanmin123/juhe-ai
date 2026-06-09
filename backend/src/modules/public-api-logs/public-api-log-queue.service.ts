@@ -1,13 +1,17 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { createPublicApiLog, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
+import { createPublicApiLogsBatch, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 
 const publicApiLogQueueMaxSize = 5000
 const publicApiLogFlushBatchSize = 50
 const publicApiLogDropWarnInterval = 100
+const publicApiLogRetryDelayMs = 1000
 
 const publicApiLogQueue: PublicApiLogInput[] = []
 let flushScheduled = false
+let flushRetryTimer: NodeJS.Timeout | undefined
+let flushing = false
 let droppedPublicApiLogCount = 0
+let publicApiLogFlushFailureCount = 0
 
 export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
   if (publicApiLogQueue.length >= publicApiLogQueueMaxSize) {
@@ -25,46 +29,78 @@ export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
   }
 
   publicApiLogQueue.push(input)
-  schedulePublicApiLogFlush()
+  schedulePublicApiLogFlush(0)
   return true
 }
 
 export function flushPublicApiLogQueueForTest(): void {
   while (publicApiLogQueue.length > 0) {
-    flushPublicApiLogQueueBatch()
+    if (!flushPublicApiLogQueueBatch()) {
+      break
+    }
   }
   flushScheduled = false
+  if (flushRetryTimer) {
+    clearTimeout(flushRetryTimer)
+    flushRetryTimer = undefined
+  }
 }
 
-function schedulePublicApiLogFlush(): void {
+function schedulePublicApiLogFlush(delayMs: number): void {
   if (flushScheduled) {
     return
   }
   flushScheduled = true
-  setImmediate(flushPublicApiLogQueue)
+  if (delayMs <= 0) {
+    setImmediate(flushPublicApiLogQueue)
+    return
+  }
+  flushRetryTimer = setTimeout(() => {
+    flushRetryTimer = undefined
+    flushPublicApiLogQueue()
+  }, delayMs)
+  flushRetryTimer.unref()
 }
 
 function flushPublicApiLogQueue(): void {
   flushScheduled = false
-  flushPublicApiLogQueueBatch()
+  if (flushing) {
+    return
+  }
+  flushing = true
+  let success = false
+  try {
+    success = flushPublicApiLogQueueBatch()
+  } finally {
+    flushing = false
+  }
   if (publicApiLogQueue.length > 0) {
-    schedulePublicApiLogFlush()
+    schedulePublicApiLogFlush(success ? 0 : publicApiLogRetryDelayMs)
   }
 }
 
-function flushPublicApiLogQueueBatch(): void {
-  const batch = publicApiLogQueue.splice(0, publicApiLogFlushBatchSize)
-  for (const input of batch) {
-    try {
-      createPublicApiLog(input)
-    } catch (error) {
-      logger.warn(errorLogFields(error, {
-        event: 'public_api_log_write_failed',
-        method: input.method,
-        path: input.path,
-        statusCode: input.statusCode,
-        traceId: input.traceId
-      }), '公开接口日志写入失败')
-    }
+function flushPublicApiLogQueueBatch(): boolean {
+  const batch = publicApiLogQueue.slice(0, publicApiLogFlushBatchSize)
+  if (batch.length === 0) {
+    return true
+  }
+  try {
+    createPublicApiLogsBatch(batch)
+    publicApiLogQueue.splice(0, batch.length)
+    return true
+  } catch (error) {
+    publicApiLogFlushFailureCount += 1
+    const first = batch[0]
+    logger.warn(errorLogFields(error, {
+      event: 'public_api_log_batch_write_failed',
+      batchSize: batch.length,
+      pendingCount: publicApiLogQueue.length,
+      flushFailureCount: publicApiLogFlushFailureCount,
+      method: first?.method,
+      path: first?.path,
+      statusCode: first?.statusCode,
+      traceId: first?.traceId
+    }), '公开接口日志批量写入失败，已保留批次等待重试')
+    return false
   }
 }

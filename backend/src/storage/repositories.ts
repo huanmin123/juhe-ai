@@ -423,6 +423,7 @@ export {
 export {
   cleanupPublicApiLogsBefore,
   createPublicApiLog,
+  createPublicApiLogsBatch,
   getPublicApiLogDetail,
   listPublicApiLogs,
   type PublicApiLogCaptureStatus,
