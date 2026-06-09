@@ -2,6 +2,7 @@ export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_failed' 
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
 export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest'
 export type AuditFullBodyCaptureScope = 'global' | 'account'
+export type AuditPayloadBlobStorageStatus = 'not_saved' | 'metadata_missing' | 'file_missing' | 'available'
 
 export interface AuditFullBodyCaptureConfig {
   enabled: boolean
@@ -103,6 +104,8 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   headers?: Record<string, string | string[]>
   bodyText?: string
   bodyBase64?: string
+  headersStorageStatus: AuditPayloadBlobStorageStatus
+  bodyStorageStatus: AuditPayloadBlobStorageStatus
   bodyOffset: number
   bodyLimit: number
   bodyBytesReturned: number

@@ -260,6 +260,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     clientIp: gatewayClientIp,
     endpoint,
+    gatewayTextRawBodyLimitMegabytes: activeGatewaySettings.gatewayTextRawBodyLimitMegabytes,
     signal
   })
   if (imagePermissionPreflight.outcome === 'completed') {

@@ -15,9 +15,10 @@ import {
   prepareAuditPayloadBlob,
   prepareAuditPayloadBlobAsync,
   planAuditPayloadBlobPersistence,
-  readAuditHeadersBlob,
+  readAuditHeadersBlobDetail,
   readAuditPayloadBlobWindow,
   writeAuditPayloadBlobFileForPlan,
+  type AuditPayloadBlobStorageStatus,
   type AuditPayloadBlobPersistencePlan,
   type PreparedAuditPayloadBlob
 } from './audit-log-payload-blobs.js'
@@ -34,6 +35,7 @@ import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMapByIds } f
 import { optionalString } from './value-utils.js'
 
 export { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
+export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
 
 export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'client_aborted'
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
@@ -201,6 +203,8 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   headers?: Record<string, string | string[]>
   bodyText?: string
   bodyBase64?: string
+  headersStorageStatus: AuditPayloadBlobStorageStatus
+  bodyStorageStatus: AuditPayloadBlobStorageStatus
   bodyOffset: number
   bodyLimit: number
   bodyBytesReturned: number
@@ -825,12 +829,14 @@ export async function getAuditLogPayload(
     .get(auditLogId, payloadId) as AuditLogRow | undefined
   if (row) {
     const summary = auditLogPayloadSummaryFromRow(row)
-    const headers = await readAuditHeadersBlob(optionalString(row.headers_blob_id))
+    const headers = await readAuditHeadersBlobDetail(optionalString(row.headers_blob_id))
     const bodyWindow = await readAuditPayloadBlobWindow(optionalString(row.body_blob_id), options)
     return {
       ...summary,
-      headers,
+      headers: headers.headers,
       ...auditPayloadBodyDetail(bodyWindow.bytes),
+      headersStorageStatus: headers.storageStatus,
+      bodyStorageStatus: bodyWindow.storageStatus,
       bodyOffset: bodyWindow.offset,
       bodyLimit: bodyWindow.limit,
       bodyBytesReturned: bodyWindow.bytes?.byteLength ?? 0,

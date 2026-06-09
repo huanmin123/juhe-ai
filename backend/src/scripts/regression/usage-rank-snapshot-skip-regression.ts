@@ -20,10 +20,14 @@ logger.level = 'silent'
 
 const [
   databaseModule,
-  usageStatsRepository
+  usageStatsRepository,
+  usageStatsHelpers,
+  usageStatsWindowHelpers
 ] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/usage-stats.repository.js')
+  import('../../storage/usage-stats.repository.js'),
+  import('../../storage/usage-stats-helpers.js'),
+  import('../../storage/usage-stats-window-helpers.js')
 ])
 
 const systemAccountId = 'sys_snapshot_skip'
@@ -34,7 +38,11 @@ const stageNames: UsageRankSnapshotStageName[] = ['usage_scope_range_windows']
 try {
   const database = databaseModule.getStatsDatabase()
   const today = usageStatsRepository.normalizeDefaultUsageStatsRange().endDate
+  const fixedDates = usageStatsWindowHelpers.fixedUsageStatsDateKeys(usageStatsHelpers.usageStatsTimezone(), today)
+  const yesterday = fixedDates[fixedDates.length - 2]
+  assert.ok(yesterday, '用量排行快照跳过回归需要至少两个固定日期')
 
+  seedDaily(yesterday, 3, '2000-01-01T00:00:00.000Z')
   seedDaily(today, 5, '2000-01-01T00:00:00.000Z')
 
   const first = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
@@ -45,7 +53,9 @@ try {
   })
   assert.equal(first.skipped, false, '首次没有水位标记时应刷新')
   assert.deepEqual(first.stages.map((stage) => stage.name), stageNames, '首次刷新应只运行指定 stage')
+  assert.equal(usageScopeRequestCount(yesterday), 3, '首次刷新应发布昨日范围窗口')
   assert.equal(usageScopeRequestCount(today), 5, '首次刷新应发布范围窗口')
+  markUsageScopeWindowUpdatedAt(yesterday, '1999-12-31T00:00:00.000Z')
 
   const second = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
     stageNames,
@@ -64,7 +74,29 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(third.skipped, false, '聚合表 updated_at 变化后应重新刷新')
+  assert.equal(usageScopeUpdatedAt(yesterday), '1999-12-31T00:00:00.000Z', '仅今日聚合变更时不应重写昨日 end_date 范围窗口')
   assert.equal(usageScopeRequestCount(today), 9, '重新刷新应发布新的范围窗口')
+
+  deleteDaily(yesterday)
+  const deletedYesterday = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(deletedYesterday.skipped, false, '非最大更新时间聚合行删除导致源表签名变化后应重新刷新')
+  assert.equal(usageScopeRequestCount(yesterday), 0, '昨日聚合行删除后不应保留旧范围窗口')
+  assert.equal(usageScopeRequestCount(today), 9, '昨日聚合行删除后今日范围窗口仍应按剩余数据发布')
+
+  deleteDaily(today)
+  const deletedToday = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(deletedToday.skipped, false, '聚合行删除导致源表签名变化后应重新刷新')
+  assert.equal(usageScopeRequestCount(today), 0, '今日聚合行删除后不应保留旧范围窗口')
 
   database.prepare(`
     UPDATE stats_job_state
@@ -117,6 +149,16 @@ function seedDaily(statDate: string, requestCount: number, updatedAt: string): v
   )
 }
 
+function deleteDaily(statDate: string): void {
+  databaseModule.getStatsDatabase().prepare(`
+    DELETE FROM usage_stats_daily
+    WHERE system_account_id = ?
+      AND scope_type = 'system_account'
+      AND scope_id = ?
+      AND stat_date = ?
+  `).run(systemAccountId, scopeId, statDate)
+}
+
 function usageScopeRequestCount(statDate: string): number {
   const row = databaseModule.getStatsDatabase().prepare(`
     SELECT request_count AS requestCount
@@ -128,4 +170,29 @@ function usageScopeRequestCount(statDate: string): number {
       AND end_date = ?
   `).get(systemAccountId, scopeId, statDate, statDate) as { requestCount?: number } | undefined
   return Number(row?.requestCount ?? 0)
+}
+
+function usageScopeUpdatedAt(statDate: string): string | undefined {
+  const row = databaseModule.getStatsDatabase().prepare(`
+    SELECT updated_at AS updatedAt
+    FROM usage_scope_range_windows
+    WHERE system_account_id = ?
+      AND scope_type = 'system_account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `).get(systemAccountId, scopeId, statDate, statDate) as { updatedAt?: string } | undefined
+  return row?.updatedAt
+}
+
+function markUsageScopeWindowUpdatedAt(statDate: string, updatedAt: string): void {
+  databaseModule.getStatsDatabase().prepare(`
+    UPDATE usage_scope_range_windows
+    SET updated_at = ?
+    WHERE system_account_id = ?
+      AND scope_type = 'system_account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `).run(updatedAt, systemAccountId, scopeId, statDate, statDate)
 }

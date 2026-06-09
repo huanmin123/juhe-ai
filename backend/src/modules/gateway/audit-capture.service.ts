@@ -196,7 +196,7 @@ export class AuditCaptureContext {
     return this.fullBodyCaptureAccountMatched
   }
 
-  private shouldPreserveFullPayloadBodies(): boolean {
+  shouldPreserveFullPayloadBodies(): boolean {
     if (!this.fullBodyCapture.enabled) {
       return false
     }
@@ -250,7 +250,7 @@ export class AuditCaptureContext {
     let omittedPayloadCount = 0
     let omittedBodyBytes = 0
     for (const payload of this.payloads) {
-      if (payload.partType === 'gateway_metadata' || payload.body === undefined) {
+      if (!shouldOmitExistingPayloadBody(payload.partType) || payload.body === undefined) {
         continue
       }
       const bodyBuffer = bodyToBuffer(payload.body)
@@ -496,6 +496,10 @@ export class AuditCaptureContext {
 
 function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
   return value
+}
+
+function shouldOmitExistingPayloadBody(partType: AuditPayloadPartType): boolean {
+  return partType === 'upstream_response' || partType === 'gateway_response' || partType === 'gateway_error'
 }
 
 export function createAuditCapture(input: AuditCaptureContextInput): AuditCaptureContext {

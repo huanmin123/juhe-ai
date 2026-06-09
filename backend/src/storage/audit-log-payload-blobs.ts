@@ -11,6 +11,7 @@ import { getDatasetDatabase, newId } from './database.js'
 import { optionalString } from './value-utils.js'
 
 export type StoredAuditPayloadCompression = 'none' | 'gzip'
+export type AuditPayloadBlobStorageStatus = 'not_saved' | 'metadata_missing' | 'file_missing' | 'available'
 
 export interface PreparedAuditPayloadBlob {
   sha256: string
@@ -29,6 +30,12 @@ export interface AuditPayloadBlobWindow {
   totalBytes: number
   nextOffset?: number
   truncated: boolean
+  storageStatus: AuditPayloadBlobStorageStatus
+}
+
+export interface AuditHeadersBlobDetail {
+  headers?: Record<string, string | string[]>
+  storageStatus: AuditPayloadBlobStorageStatus
 }
 
 interface StoredPayloadBlobMeta {
@@ -195,11 +202,12 @@ export function planAuditPayloadBlobPersistence(
     .get(blob.sha256, blob.rawSizeBytes, blob.contentType) as AuditPayloadBlobRow | undefined
   const existingId = optionalString(existing?.id)
   if (existingId) {
+    const storageKey = optionalString(existing?.storage_key) ?? ''
     return {
       blobId: existingId,
-      storageKey: optionalString(existing?.storage_key) ?? '',
+      storageKey,
       existing: true,
-      shouldWriteFile: false
+      shouldWriteFile: storageKey ? !blobStorageFileExists(storageKey) : false
     }
   }
   const blobId = newId('audblob')
@@ -324,15 +332,15 @@ export async function readAuditPayloadBlobWindow(
   const offset = normalizePayloadReadOffset(options.offset)
   const limit = normalizePayloadReadLimit(options.limit)
   if (!blobId) {
-    return emptyPayloadBlobWindow(offset, limit)
+    return emptyPayloadBlobWindow(offset, limit, 0, 'not_saved')
   }
   const meta = loadPayloadBlobMeta(blobId)
   if (!meta) {
-    return emptyPayloadBlobWindow(offset, limit)
+    return emptyPayloadBlobWindow(offset, limit, 0, 'metadata_missing')
   }
   const filePath = blobFilePath(meta.storageKey)
   if (!await fileExists(filePath)) {
-    return emptyPayloadBlobWindow(offset, limit, meta.rawSizeBytes)
+    return emptyPayloadBlobWindow(offset, limit, meta.rawSizeBytes, 'file_missing')
   }
   const bytes = meta.compression === 'gzip'
     ? await readGzipPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
@@ -345,21 +353,29 @@ export async function readAuditPayloadBlobWindow(
     limit,
     totalBytes: meta.rawSizeBytes,
     nextOffset: truncated ? nextOffset : undefined,
-    truncated
+    truncated,
+    storageStatus: 'available'
+  }
+}
+
+export async function readAuditHeadersBlobDetail(blobId: string | undefined): Promise<AuditHeadersBlobDetail> {
+  const window = await readAuditPayloadBlobWindow(blobId, {
+    offset: 0,
+    limit: auditPayloadMaxReadLimitBytes
+  })
+  if (!window.bytes) return { storageStatus: window.storageStatus }
+  try {
+    return {
+      headers: JSON.parse(window.bytes.toString('utf8')) as Record<string, string | string[]>,
+      storageStatus: window.storageStatus
+    }
+  } catch {
+    return { storageStatus: window.storageStatus }
   }
 }
 
 export async function readAuditHeadersBlob(blobId: string | undefined): Promise<Record<string, string | string[]> | undefined> {
-  const bytes = (await readAuditPayloadBlobWindow(blobId, {
-    offset: 0,
-    limit: auditPayloadMaxReadLimitBytes
-  })).bytes
-  if (!bytes) return undefined
-  try {
-    return JSON.parse(bytes.toString('utf8')) as Record<string, string | string[]>
-  } catch {
-    return undefined
-  }
+  return (await readAuditHeadersBlobDetail(blobId)).headers
 }
 
 export function auditPayloadBodyDetail(buffer: Buffer | undefined): { bodyText?: string; bodyBase64?: string } {
@@ -486,6 +502,14 @@ async function writeBlobFileIfMissingAsync(storageKey: string | undefined, bytes
   await writeFileAsync(filePath, bytes)
 }
 
+function blobStorageFileExists(storageKey: string): boolean {
+  try {
+    return existsSync(blobFilePath(storageKey))
+  } catch {
+    return false
+  }
+}
+
 function listUnreferencedAuditPayloadBlobRows(database: DatabaseSync, limit: number): AuditPayloadBlobRow[] {
   return database
     .prepare(`
@@ -567,12 +591,18 @@ function normalizePayloadReadLimit(value: unknown): number {
   return Math.min(auditPayloadMaxReadLimitBytes, Math.max(1, Math.trunc(number)))
 }
 
-function emptyPayloadBlobWindow(offset: number, limit: number, totalBytes = 0): AuditPayloadBlobWindow {
+function emptyPayloadBlobWindow(
+  offset: number,
+  limit: number,
+  totalBytes: number,
+  storageStatus: AuditPayloadBlobStorageStatus
+): AuditPayloadBlobWindow {
   return {
     offset,
     limit,
     totalBytes,
-    truncated: offset < totalBytes
+    truncated: offset < totalBytes,
+    storageStatus
   }
 }
 

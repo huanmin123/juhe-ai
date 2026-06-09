@@ -1,12 +1,12 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import express from 'express'
 
-import { runtimeConfig } from '../../config/runtime.js'
+import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-audit-payload-storage-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -99,16 +99,20 @@ try {
     await assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
     await assertFullCapturedStreamSuccess(gatewayBaseUrl, upstreamBaseUrl)
     await assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
+    await assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl, upstreamBaseUrl)
+    await assertFullCapturedImageStreamSuccessKeepsStreamBodies(gatewayBaseUrl, upstreamBaseUrl)
+    await assertMissingPayloadBlobReportsStatusAndRepairsAsync(gatewayBaseUrl, upstreamBaseUrl)
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)
   }
 
-  console.log('网关审计 payload 存储回归通过：非流式成功、先失败后成功、全失败、流式成功、流式失败均保留预期正文')
+  console.log('网关审计 payload 存储回归通过：非流式成功、先失败后成功、全失败、流式成功、流式失败和图像流省略均保留预期正文')
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
   try {
+    cleanupAuditBlobFilesForTest()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
@@ -243,6 +247,121 @@ async function assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseU
   await assertPayloadBodyContains(detail, 'gateway_response', 'response.failed')
 }
 
+async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: false })
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计图像流失败省略', ['sk-audit-image-stream-failure'])
+  const traceId = 'trace-audit-image-stream-failure-omission'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      input: 'audit image stream failure should keep request payload',
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `图像流失败会按 SSE 200 透传失败事件，实际 ${response.status}: ${text}`)
+  assert.match(text, /response\.failed/, '图像流失败响应应包含 failed 事件')
+
+  const detail = auditDetailByTrace(traceId)
+  assert.equal(detail.auditOutcome, 'stream_failed', '图像流失败应写入 stream_failed 审计')
+  await assertPayloadBodyContains(detail, 'client_request', 'audit image stream failure should keep request payload')
+  await assertPayloadBodyContains(detail, 'upstream_request', 'audit image stream failure should keep request payload')
+}
+
+async function assertFullCapturedImageStreamSuccessKeepsStreamBodies(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: true, scope: 'global', includeSuccess: true })
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计图像流全量捕获', ['sk-audit-image-stream-success'])
+  const traceId = 'trace-audit-image-stream-success-full-capture'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      input: 'audit image stream success should keep stream body',
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `图像流成功应返回 200，实际 ${response.status}: ${text}`)
+  assert.match(text, /partial_image_b64/, '图像流成功响应应包含图片增量事件')
+
+  const detail = auditDetailByTrace(traceId)
+  assert.equal(detail.auditOutcome, 'success', '全量捕获图像流成功应写入 success 审计')
+  await assertPayloadBodyContains(detail, 'client_request', 'audit image stream success should keep stream body')
+  await assertPayloadBodyContains(detail, 'upstream_request', 'audit image stream success should keep stream body')
+  await assertPayloadBodyContains(detail, 'upstream_response', 'partial_image_b64')
+  await assertPayloadBodyContains(detail, 'gateway_response', 'partial_image_b64')
+}
+
+async function assertMissingPayloadBlobReportsStatusAndRepairsAsync(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: true, scope: 'global', includeSuccess: true })
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计缺失文件状态', ['sk-audit-missing-blob-status'])
+  const traceId = 'trace-audit-missing-blob-status'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      input: 'audit missing blob status',
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `缺失文件状态样本应返回 200，实际 ${response.status}: ${text}`)
+
+  const detail = auditDetailByTrace(traceId)
+  const payload = detail.payloads.find((item) => item.partType === 'gateway_response')
+  assert(payload?.hasBody, '缺失文件状态样本应先保存 gateway_response body')
+  const payloadBefore = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
+  assert.equal(payloadBefore?.bodyStorageStatus, 'available', '删除文件前 payload 应可读取')
+  assert.equal(payloadBefore?.bodyText, nonStreamSuccessBody, '删除文件前 payload 正文应完整')
+
+  const storageKey = payloadBodyStorageKey(payload.id)
+  const filePath = auditBlobFilePath(storageKey)
+  rmSync(filePath, { force: true })
+  assert.equal(existsSync(filePath), false, '测试应能删除审计 blob 文件')
+
+  const payloadMissing = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
+  assert.equal(payloadMissing?.bodyStorageStatus, 'file_missing', 'blob 文件缺失时 payload API 应返回 file_missing')
+  assert.equal(payloadMissing?.bodyBytesReturned, 0, 'blob 文件缺失时不应返回正文 bytes')
+  assert.equal(payloadMissing?.bodyTotalBytes, Buffer.byteLength(nonStreamSuccessBody, 'utf8'), 'blob 文件缺失时仍应返回 DB 元数据中的原始大小')
+  assert.equal(payloadMissing?.bodyText, undefined, 'blob 文件缺失时不应伪造正文')
+
+  const now = new Date().toISOString()
+  auditLogQueue.enqueueAuditLogsLocal([{
+    traceId: 'trace-audit-missing-blob-async-repair',
+    trafficSource: 'gateway',
+    method: 'POST',
+    path: '/v1/responses',
+    model,
+    stream: false,
+    auditOutcome: 'success',
+    success: true,
+    finalStatusCode: 200,
+    sampleBucket: 0,
+    sampleReason: 'missing_blob_async_repair',
+    startedAt: now,
+    endedAt: now,
+    attempts: [],
+    payloads: [{
+      partType: 'gateway_response',
+      body: nonStreamSuccessBody,
+      contentType: payload.contentType
+    }]
+  }])
+  await auditLogQueue.flushAllAuditLogQueueAsync()
+  assert.equal(existsSync(filePath), true, '异步审计批量写入遇到已有 blob 元数据时应补回缺失文件')
+
+  const payloadRepaired = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
+  assert.equal(payloadRepaired?.bodyStorageStatus, 'available', '补回文件后原 payload 应恢复可读取状态')
+  assert.equal(payloadRepaired?.bodyText, nonStreamSuccessBody, '补回文件后原 payload 正文应可读')
+}
+
 function seedGatewayRoute(upstreamBaseUrl: string, label: string, upstreamKeys: string[]): { apiKey: string; groupId: string } {
   const group = repositories.createGroup({
     name: `${label}分组`,
@@ -294,6 +413,14 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       if (url.pathname === '/v1/responses') {
+        if (body.stream === true && String(body.input ?? '').includes('image stream failure')) {
+          sendImageStreamFailure(res)
+          return
+        }
+        if (body.stream === true && String(body.input ?? '').includes('image stream success')) {
+          sendImageStreamSuccess(res)
+          return
+        }
         if (body.stream === true && String(body.input ?? '').includes('failure')) {
           sendStreamFailure(res)
           return
@@ -335,6 +462,53 @@ function sendStreamFailure(res: http.ServerResponse): void {
     response: {
       status: 'failed',
       error: { message: 'mock stream failed for audit storage', code: 'audit_stream_failed' }
+    }
+  })}\n\n`)
+  res.end()
+}
+
+function sendImageStreamSuccess(res: http.ServerResponse): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache'
+  })
+  res.write(`event: response.output_item.added\ndata: ${JSON.stringify({
+    type: 'response.output_item.added',
+    item: { id: 'img_audit_success', type: 'image_generation_call' }
+  })}\n\n`)
+  res.write(`event: response.image_generation_call.partial_image\ndata: ${JSON.stringify({
+    type: 'response.image_generation_call.partial_image',
+    partial_image_b64: 'aW1hZ2UtYXVkaXQtc3VjY2Vzcw=='
+  })}\n\n`)
+  res.write(`event: response.completed\ndata: ${JSON.stringify({
+    type: 'response.completed',
+    response: {
+      status: 'completed',
+      output: [{ id: 'img_audit_success', type: 'image_generation_call' }],
+      usage: { input_tokens: 3, output_tokens: 2 }
+    }
+  })}\n\n`)
+  res.end()
+}
+
+function sendImageStreamFailure(res: http.ServerResponse): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache'
+  })
+  res.write(`event: response.output_item.added\ndata: ${JSON.stringify({
+    type: 'response.output_item.added',
+    item: { id: 'img_audit_failure', type: 'image_generation_call' }
+  })}\n\n`)
+  res.write(`event: response.image_generation_call.partial_image\ndata: ${JSON.stringify({
+    type: 'response.image_generation_call.partial_image',
+    partial_image_b64: 'aW1hZ2UtYXVkaXQtZmFpbHVyZQ=='
+  })}\n\n`)
+  res.write(`event: response.failed\ndata: ${JSON.stringify({
+    type: 'response.failed',
+    response: {
+      status: 'failed',
+      error: { message: 'mock image stream failed for audit storage', code: 'audit_image_stream_failed' }
     }
   })}\n\n`)
   res.end()
@@ -385,6 +559,37 @@ async function readPayload(
   const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
   assert(payloadDetail, `${detail.traceId} ${partType} payload 详情不存在`)
   return payloadDetail
+}
+
+function payloadBodyStorageKey(payloadId: string): string {
+  const row = databaseModule.getDatasetDatabase()
+    .prepare(`
+      SELECT b.storage_key
+      FROM audit_payload_refs r
+      INNER JOIN audit_payload_blobs b ON b.id = r.body_blob_id
+      WHERE r.id = ?
+    `)
+    .get(payloadId) as { storage_key?: string } | undefined
+  assert(row?.storage_key, `payload ${payloadId} 缺少 body blob storage_key`)
+  return row.storage_key
+}
+
+function cleanupAuditBlobFilesForTest(): void {
+  try {
+    const rows = databaseModule.getDatasetDatabase()
+      .prepare('SELECT storage_key FROM audit_payload_blobs')
+      .all() as Array<{ storage_key?: string }>
+    for (const row of rows) {
+      if (row.storage_key) {
+        rmSync(auditBlobFilePath(row.storage_key), { force: true })
+      }
+    }
+  } catch {
+  }
+}
+
+function auditBlobFilePath(storageKey: string): string {
+  return resolve(backendRoot, 'data', 'audit', 'blobs', storageKey)
 }
 
 function gatewayHeaders(apiKey: string, traceId: string): Record<string, string> {

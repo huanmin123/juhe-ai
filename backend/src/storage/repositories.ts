@@ -393,6 +393,7 @@ export {
   type AuditLogPayloadSummary,
   type AuditLogSummary,
   type AuditOutcome,
+  type AuditPayloadBlobStorageStatus,
   type AuditPayloadPartType,
   type AuditTrafficSource
 } from './audit-logs.repository.js'

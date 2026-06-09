@@ -216,6 +216,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
+        preserveImageStreamBodyCapture: auditCapture.shouldPreserveFullPayloadBodies(),
         streamInterceptPolicies: resolveRuntimeStreamInterceptPolicies({
           account,
           managementPolicies: input.streamInterceptPolicies

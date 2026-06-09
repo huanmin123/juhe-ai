@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -207,8 +207,8 @@ const usageRecordWorkerMessageMaxBytes = 8 * 1024 * 1024
 const regularWorkerMessageMaxBytes = 8 * 1024 * 1024
 const workerMessageEstimateMaxBytes = Math.max(usageRecordWorkerMessageMaxBytes, regularWorkerMessageMaxBytes) + 1
 const workerMessageEstimateMaxNodes = 20_000
-const auditWorkerMessageMaxBytes = 2 * 1024 * 1024
-const auditWorkerPayloadBodyInlineMaxBytes = 512 * 1024
+const auditWorkerMessageMaxBytes = 4 * 1024 * 1024
+const auditWorkerPayloadBodyInlineMaxBytes = 2 * 1024 * 1024
 const usageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 let usageRecordMessageQueueBytes = 0
@@ -930,12 +930,14 @@ function trimAuditPayloadBodyForWorkerIpc(
   payload: AuditLogInput['payloads'][number],
   bodyBytes = auditPayloadBodyBytes(payload.body)
 ): AuditLogInput['payloads'][number] {
+  const bodySha256 = payload.bodySha256 ?? auditPayloadBodySha256(payload.body)
   return {
     ...payload,
     body: undefined,
+    bodySha256,
     contentEncoding: undefined,
     rawBodySizeBytes: payload.rawBodySizeBytes ?? bodyBytes,
-    captureStatus: payload.bodySha256 ? 'hash_only' as const : 'dropped' as const
+    captureStatus: bodySha256 ? 'hash_only' as const : 'dropped' as const
   }
 }
 
@@ -962,6 +964,11 @@ function markAuditLogDroppedForWorkerIpc(
 function auditPayloadBodyBytes(body: Buffer | string | undefined): number {
   if (body === undefined) return 0
   return Buffer.isBuffer(body) ? body.byteLength : estimateJsonBytes(body)
+}
+
+function auditPayloadBodySha256(body: Buffer | string | undefined): string | undefined {
+  if (body === undefined) return undefined
+  return createHash('sha256').update(Buffer.isBuffer(body) ? body : Buffer.from(body)).digest('hex')
 }
 
 function truncateOptionalAuditIpcString(value: string | undefined, maxBytes: number): string | undefined {

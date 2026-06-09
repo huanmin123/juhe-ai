@@ -283,23 +283,25 @@
                     {{ formatBytes(record.sizeBytes) }}
                   </template>
                   <template v-else-if="column.key === 'captureStatus'">
-                    <a-tag>{{ captureStatusText(record.captureStatus) }}</a-tag>
+                    <a-tooltip :title="payloadCaptureStatusDescription(record)">
+                      <a-tag>{{ captureStatusText(record.captureStatus) }}</a-tag>
+                    </a-tooltip>
                   </template>
                   <template v-else-if="column.key === 'createdAt'">
                     <span class="detail-time-cell muted-cell">{{ formatDateTime(record.createdAt) }}</span>
                   </template>
                   <template v-else-if="column.key === 'headersSha256'">
-                    <a-tooltip :title="record.headersSha256 || '-'">
+                    <a-tooltip :title="record.headersSha256 || payloadHeadersHashMissingText(record)">
                       <span class="hash-cell">{{ formatHashPreview(record.headersSha256) }}</span>
                     </a-tooltip>
                   </template>
                   <template v-else-if="column.key === 'bodySha256'">
-                    <a-tooltip :title="record.bodySha256 || '-'">
+                    <a-tooltip :title="record.bodySha256 || payloadBodyHashMissingText(record)">
                       <span class="hash-cell">{{ formatHashPreview(record.bodySha256) }}</span>
                     </a-tooltip>
                   </template>
                   <template v-else-if="column.key === 'actions'">
-                    <RowActions :actions="payloadActions(record.id)" @action-click="loadPayload(record.id)" />
+                    <RowActions :actions="payloadActions(record)" @action-click="loadPayload(record.id)" />
                   </template>
                 </template>
                 <template #card="{ record }">
@@ -315,6 +317,10 @@
                       <strong>{{ record.contentType || '-' }}</strong>
                       <span>状态</span>
                       <strong>{{ captureStatusText(record.captureStatus) }}</strong>
+                      <span>Headers</span>
+                      <strong>{{ record.hasHeaders ? '已保存' : '未保存' }}</strong>
+                      <span>Body</span>
+                      <strong>{{ record.hasBody ? '已保存' : '未保存' }}</strong>
                       <span>时间</span>
                       <strong>{{ formatDateTime(record.createdAt) }}</strong>
                       <span>Headers SHA256</span>
@@ -322,7 +328,7 @@
                       <span>Body SHA256</span>
                       <strong class="hash-cell">{{ formatHashPreview(record.bodySha256) }}</strong>
                     </div>
-                    <RowActions :actions="payloadActions(record.id)" variant="button" @action-click="loadPayload(record.id)" />
+                    <RowActions :actions="payloadActions(record)" variant="button" @action-click="loadPayload(record.id)" />
                   </article>
                 </template>
               </ResponsiveDataList>
@@ -331,6 +337,12 @@
                   <div class="payload-viewer-main">
                     <strong>{{ payloadPartText(selectedPayload.partType) }}</strong>
                     <span>{{ formatBytes(selectedPayload.sizeBytes) }}</span>
+                    <a-tag class="payload-state-tag" :color="payloadStorageStatusColor(selectedPayload.headersStorageStatus)">
+                      {{ payloadStorageStatusText('Headers', selectedPayload.hasHeaders, selectedPayload.headersStorageStatus) }}
+                    </a-tag>
+                    <a-tag class="payload-state-tag" :color="payloadStorageStatusColor(selectedPayload.bodyStorageStatus)">
+                      {{ payloadStorageStatusText('Body', selectedPayload.hasBody, selectedPayload.bodyStorageStatus) }}
+                    </a-tag>
                     <span v-if="payloadContentTab === 'body' && selectedPayloadBodyWindowText" class="payload-window-range">{{ selectedPayloadBodyWindowText }}</span>
                     <a-tabs v-model:activeKey="payloadContentTab" class="payload-content-tabs" size="small">
                       <a-tab-pane key="headers" tab="Headers" />
@@ -351,12 +363,14 @@
                   </div>
                 </div>
                 <ReadonlyCodeViewer
+                  v-if="selectedPayloadCurrentText"
                   ref="payloadCodeViewer"
                   attached-toolbar
                   :content-type="selectedPayloadViewerContentType"
                   :show-toolbar="false"
                   :text="selectedPayloadCurrentText"
                 />
+                <a-empty v-else class="payload-empty" :description="selectedPayloadEmptyText" />
               </div>
             </a-tab-pane>
           </a-tabs>
@@ -373,7 +387,17 @@ import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { AccountOptionSummary, AuditFullBodyCaptureScope, AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, AuditTrafficSource } from '@/types/domain'
+import type {
+  AccountOptionSummary,
+  AuditFullBodyCaptureScope,
+  AuditLogDetail,
+  AuditLogPayloadDetail,
+  AuditLogRuntime,
+  AuditLogSummary,
+  AuditOutcome,
+  AuditPayloadBlobStorageStatus,
+  AuditTrafficSource
+} from '@/types/domain'
 import AccountSelect from '@/components/AccountSelect.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
@@ -416,6 +440,8 @@ import {
   auditOutcomeOptions,
   auditPayloadColumns
 } from './auditLogTableColumns'
+
+type AuditPayloadRow = AuditLogDetail['payloads'][number] | AuditLogPayloadDetail
 
 const detailLoading = ref(false)
 const payloadLoadingId = ref('')
@@ -628,14 +654,45 @@ const fullBodyCaptureEnabled = computed(() => runtime.value?.settings.fullBodyCa
 let skipNextRouteTraceRestore = false
 
 const selectedPayloadCurrentText = computed(() => {
-  if (!selectedPayload.value) return ''
-  return payloadContentTab.value === 'headers'
-    ? prettyJson(selectedPayload.value.headers ?? {})
-    : selectedPayload.value.bodyText ?? selectedPayload.value.bodyBase64 ?? ''
+  const payload = selectedPayload.value
+  if (!payload) return ''
+  if (payloadContentTab.value === 'headers') {
+    if (!payload.hasHeaders || !payload.headers) return ''
+    return prettyJson(payload.headers)
+  }
+  return payload.bodyText ?? payload.bodyBase64 ?? ''
 })
 const selectedPayloadViewerContentType = computed(() => payloadContentTab.value === 'headers'
   ? 'application/json'
   : selectedPayload.value?.contentType)
+const selectedPayloadEmptyText = computed(() => {
+  const payload = selectedPayload.value
+  if (!payload) return '未选择原始内容'
+  if (payloadContentTab.value === 'headers') {
+    if (payload.headersStorageStatus === 'file_missing') {
+      return 'Headers 文件缺失：数据库仍有 blob 引用，但 data/audit/blobs 下没有对应文件。'
+    }
+    if (payload.headersStorageStatus === 'metadata_missing') {
+      return 'Headers 元数据缺失：payload 引用了不存在的 blob 记录。'
+    }
+    return payload.hasHeaders
+      ? 'Headers 已保存，但当前窗口未读到内容。'
+      : 'Headers 未保存或该部分没有 Headers。'
+  }
+  if (payload.bodyStorageStatus === 'file_missing') {
+    return '正文文件缺失：数据库仍有 blob 引用，但 data/audit/blobs 下没有对应文件。'
+  }
+  if (payload.bodyStorageStatus === 'metadata_missing') {
+    return '正文元数据缺失：payload 引用了不存在的 blob 记录。'
+  }
+  if (!payload.hasBody) {
+    return payloadBodyUnavailableText(payload)
+  }
+  if (payload.bodyTotalBytes > 0 && payload.bodyBytesReturned === 0) {
+    return '正文文件暂时不可读取，或当前窗口没有返回内容。'
+  }
+  return '正文为空。'
+})
 const selectedPayloadBodyWindowText = computed(() => {
   const payload = selectedPayload.value
   if (!payload || payload.bodyTotalBytes <= 0) return ''
@@ -649,6 +706,97 @@ const selectedPayloadCanLoadMore = computed(() => Boolean(
   && selectedPayload.value.bodyTruncated
   && selectedPayload.value.bodyNextOffset !== undefined
 ))
+
+function payloadCaptureStatusDescription(record: AuditPayloadRow): string {
+  const available = [
+    record.hasHeaders ? 'Headers' : '',
+    record.hasBody ? 'Body' : ''
+  ].filter(Boolean).join('、') || '无原文'
+  const suffix = `当前可读：${available}。`
+  if (record.captureStatus === 'complete') {
+    return record.hasBody || record.hasHeaders
+      ? `已保存捕获到的原始内容。${suffix}`
+      : `该部分没有可保存的原始内容。${suffix}`
+  }
+  if (record.captureStatus === 'summary_only') {
+    return `正文超过全量保存限制，已保存摘要和原始 Body SHA256。${suffix}`
+  }
+  if (record.captureStatus === 'hash_only') {
+    return `正文未保存，只保留大小和 Body SHA256。${suffix}`
+  }
+  if (record.captureStatus === 'overflow') {
+    return `请求超过审计活跃捕获上限，原始内容未完整保存。${suffix}`
+  }
+  if (record.captureStatus === 'dropped') {
+    return `原始内容被审计保护裁剪，只保留大小、状态和仍可用的部分。${suffix}`
+  }
+  if (record.captureStatus === 'expired') {
+    return `原始内容已按保留策略过期。${suffix}`
+  }
+  return suffix
+}
+
+function payloadHeadersHashMissingText(record: AuditPayloadRow): string {
+  if (record.hasHeaders) return 'Headers 已保存，但 Headers SHA256 未返回。'
+  return 'Headers 未保存或该部分没有 Headers。'
+}
+
+function payloadBodyHashMissingText(record: AuditPayloadRow): string {
+  if (record.hasBody) return 'Body 已保存，但 Body SHA256 未返回。'
+  if (record.captureStatus === 'hash_only') return '正文未保存，仅 Hash 状态下未返回 Body SHA256。'
+  if (record.captureStatus === 'summary_only') return '正文仅保存摘要，Body SHA256 未返回。'
+  if (record.captureStatus === 'dropped') return '正文未保存，因此没有 Body SHA256。'
+  if (record.captureStatus === 'overflow') return '正文超过捕获上限，未生成 Body SHA256。'
+  return '正文为空或未保存。'
+}
+
+function payloadBodyUnavailableText(payload: AuditPayloadRow): string {
+  const storageStatus = payloadStorageStatus(payload, 'body')
+  if (storageStatus === 'file_missing') {
+    return '正文文件缺失：数据库仍有 blob 引用，但 data/audit/blobs 下没有对应文件。'
+  }
+  if (storageStatus === 'metadata_missing') {
+    return '正文元数据缺失：payload 引用了不存在的 blob 记录。'
+  }
+  if (payload.captureStatus === 'hash_only') {
+    return '正文未保存：该 payload 只保留 Body SHA256 和大小。'
+  }
+  if (payload.captureStatus === 'summary_only') {
+    return '正文未保存为原文：该 payload 只保留摘要。'
+  }
+  if (payload.captureStatus === 'overflow') {
+    return '正文未保存：请求超过审计活跃捕获上限。'
+  }
+  if (payload.captureStatus === 'dropped') {
+    return '正文未保存：该 payload 被审计保护裁剪，只保留大小、状态和可用的 Headers。'
+  }
+  return '正文未保存或该部分没有正文。'
+}
+
+function payloadStorageStatus(
+  payload: AuditPayloadRow,
+  part: 'headers' | 'body'
+): AuditPayloadBlobStorageStatus | undefined {
+  if (!('headersStorageStatus' in payload)) return undefined
+  return part === 'headers' ? payload.headersStorageStatus : payload.bodyStorageStatus
+}
+
+function payloadStorageStatusText(
+  label: 'Headers' | 'Body',
+  hasReference: boolean,
+  status: AuditPayloadBlobStorageStatus
+): string {
+  if (!hasReference || status === 'not_saved') return `${label} 未保存`
+  if (status === 'file_missing') return `${label} 文件缺失`
+  if (status === 'metadata_missing') return `${label} 元数据缺失`
+  return `${label} 可读取`
+}
+
+function payloadStorageStatusColor(status: AuditPayloadBlobStorageStatus): string | undefined {
+  if (status === 'file_missing' || status === 'metadata_missing') return 'error'
+  if (status === 'available') return 'success'
+  return undefined
+}
 
 async function refreshAuditRuntimeQuietly(): Promise<void> {
   const requestSeq = ++auditRuntimeRequestSeq
@@ -956,7 +1104,7 @@ async function loadPayload(payloadId: string): Promise<void> {
     const nextPayload = await api.auditLogs.payload(detail.value.id, payloadId)
     if (requestId === payloadRequestId) {
       selectedPayload.value = nextPayload
-      payloadContentTab.value = 'body'
+      payloadContentTab.value = nextPayload.hasBody ? 'body' : 'headers'
     }
   } catch (error) {
     console.error(error)
@@ -1007,14 +1155,15 @@ function closeTransientDetails(): void {
   selectedPayload.value = undefined
 }
 
-function payloadActions(payloadId: string): RowActionItem[] {
+function payloadActions(record: AuditPayloadRow): RowActionItem[] {
+  const hasReadablePayload = record.hasHeaders || record.hasBody
   return [
     {
       key: 'payload',
-      label: '查看原文',
+      label: record.hasBody ? '查看原文' : record.hasHeaders ? '查看 Headers' : '无原文',
       icon: 'detail',
       tone: 'info',
-      disabled: payloadLoadingId.value === payloadId
+      disabled: !hasReadablePayload || payloadLoadingId.value === record.id
     }
   ]
 }
@@ -1218,6 +1367,11 @@ onDeactivated(() => {
   color: #475569;
 }
 
+.payload-state-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
 .payload-viewer-actions {
   display: flex;
   align-items: center;
@@ -1234,6 +1388,13 @@ onDeactivated(() => {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.payload-empty {
+  padding: 28px 12px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
 }
 
 .payload-mobile-card {

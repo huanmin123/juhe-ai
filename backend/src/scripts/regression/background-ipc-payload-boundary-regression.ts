@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -114,24 +115,57 @@ const fakeWorker = new FakeWorkerProcess()
 backgroundIpc.attachBackgroundWorkerProcess(fakeWorker as unknown as ChildProcess)
 fakeWorker.ready()
 fakeWorker.sentMessages = []
+assert.equal(backgroundIpc.sendAuditLogsToWorker([buildMediumAudit()]), true, '2MB 内的审计 body 应保留原文投递给 worker')
 assert.equal(backgroundIpc.sendAuditLogsToWorker([buildLargeAudit('without-hash')]), true, '无 hash 的大审计应可降级投递')
 assert.equal(backgroundIpc.sendAuditLogsToWorker([buildLargeAudit('with-hash', 'sha256-large-body')]), true, '已有 hash 的大审计应可 hash_only 投递')
 assert.equal(backgroundIpc.sendAuditLogsToWorker([buildOversizedMetadataAudit()]), true, 'headers / attempts 过大的审计应继续二次降级后投递')
 const auditMessages = fakeWorker.sentMessages
   .filter((message): message is Extract<WorkerMessage, { type: 'background_worker_audit_logs' }> => message.type === 'background_worker_audit_logs')
-assert.equal(auditMessages.length, 3, 'fake worker 应收到三条降级后的审计消息')
-assert.equal(auditMessages[0].items[0]?.payloads[0]?.body, undefined, '降级审计不应向 worker IPC 发送大 body')
-assert.equal(auditMessages[0].items[0]?.payloads[0]?.captureStatus, 'dropped', '未计算 hash 时丢弃 body 必须标记 dropped')
-assert.equal(auditMessages[1].items[0]?.payloads[0]?.captureStatus, 'hash_only', '已有 hash 时丢弃 body 才能标记 hash_only')
-assert.equal(auditMessages[1].items[0]?.payloads[0]?.bodySha256, 'sha256-large-body', 'hash_only 降级必须保留既有 bodySha256')
-const metadataTrimmedAudit = auditMessages[2].items[0]
+assert.equal(auditMessages.length, 4, 'fake worker 应收到一条完整中等审计和三条降级后的审计消息')
+const mediumPayload = auditMessages[0].items[0]?.payloads[0]
+assert(Buffer.isBuffer(mediumPayload?.body), '2MB 内的审计 body 不应被 IPC 边界裁剪')
+assert.equal((mediumPayload?.body as Buffer).byteLength, 768 * 1024, '2MB 内的审计 body 应按原始大小投递')
+assert.equal(mediumPayload?.captureStatus, 'complete', '2MB 内的审计 body 应保持 complete')
+const trimmedLargePayload = auditMessages[1].items[0]?.payloads[0]
+assert.equal(trimmedLargePayload?.body, undefined, '降级审计不应向 worker IPC 发送超大 body')
+assert.equal(trimmedLargePayload?.captureStatus, 'hash_only', '降级超大 body 时应保留 hash_only 状态')
+assert.equal(trimmedLargePayload?.bodySha256, sha256Buffer(Buffer.alloc(4 * 1024 * 1024, 97)), '降级超大 body 时应补充 bodySha256')
+assert.equal(auditMessages[2].items[0]?.payloads[0]?.captureStatus, 'hash_only', '已有 hash 时丢弃 body 应保持 hash_only')
+assert.equal(auditMessages[2].items[0]?.payloads[0]?.bodySha256, 'sha256-large-body', 'hash_only 降级必须保留既有 bodySha256')
+const metadataTrimmedAudit = auditMessages[3].items[0]
 assert.equal(metadataTrimmedAudit?.captureStatus, 'dropped', 'metadata 过大时审计日志本身应标记为已降级')
 assert((metadataTrimmedAudit?.attempts.length ?? 0) <= 16, '过多 attempts 应在 IPC 投递前裁剪')
-assert((metadataTrimmedAudit?.payloads.length ?? 0) <= 32, '过多 payloads 应在 IPC 投递前裁剪')
+assert((metadataTrimmedAudit?.payloads.length ?? 0) <= 32, `过多 payloads 应在 IPC 投递前裁剪，actual=${metadataTrimmedAudit?.payloads.length ?? 0}`)
 assert.equal(metadataTrimmedAudit?.payloads[0]?.headers, undefined, '过大的 payload headers 应在 IPC 投递前丢弃')
 assert.equal(metadataTrimmedAudit?.payloads[0]?.body, undefined, 'metadata 二次降级后不应携带 body')
 
-console.log('后台 IPC payload 边界回归通过：大审计 body 会在投递前降级，状态读取不重新遍历队列，超大 usage 消息快速拒绝')
+console.log('后台 IPC payload 边界回归通过：2MB 内审计 body 保留投递，超大审计 body 会在投递前降级，状态读取不重新遍历队列，超大 usage 消息快速拒绝')
+
+function buildMediumAudit(): AuditLogInput {
+  return {
+    traceId: 'trace-background-ipc-medium-audit',
+    method: 'POST',
+    path: '/v1/responses',
+    auditOutcome: 'gateway_failed',
+    success: false,
+    finalStatusCode: 502,
+    errorPhase: 'upstream',
+    errorCode: 'medium_audit_payload',
+    errorMessage: '后台 IPC 中等审计 payload 原文保留回归',
+    sampleBucket: 0,
+    sampleReason: 'regression',
+    captureStatus: 'complete',
+    startedAt: '2000-01-01T00:00:00.000Z',
+    endedAt: '2000-01-01T00:00:00.000Z',
+    attempts: [],
+    payloads: [{
+      partType: 'upstream_request',
+      body: Buffer.alloc(768 * 1024, 97),
+      contentType: 'application/json',
+      captureStatus: 'complete'
+    }]
+  }
+}
 
 function buildLargeAudit(suffix: string, bodySha256?: string): AuditLogInput {
   return {
@@ -162,6 +196,7 @@ function buildLargeAudit(suffix: string, bodySha256?: string): AuditLogInput {
 
 function buildOversizedMetadataAudit(): AuditLogInput {
   const largeHeader = 'h'.repeat(128 * 1024)
+  const largeContentType = `application/json;${'m'.repeat(4096)}`
   const payloads: AuditLogInput['payloads'] = [
     ...Array.from({ length: 48 }, (_, index) => ({
       partType: index % 2 === 0 ? 'upstream_request' as const : 'upstream_response' as const,
@@ -172,9 +207,9 @@ function buildOversizedMetadataAudit(): AuditLogInput {
       contentType: 'application/json',
       captureStatus: 'complete' as const
     })),
-    ...Array.from({ length: 5000 }, (_, index) => ({
+    ...Array.from({ length: 10000 }, (_, index) => ({
       partType: 'gateway_metadata' as const,
-      contentType: 'application/json',
+      contentType: largeContentType,
       captureStatus: 'complete' as const,
       sequenceIndex: 1000 + index
     }))
@@ -208,4 +243,8 @@ function buildOversizedMetadataAudit(): AuditLogInput {
     })),
     payloads
   }
+}
+
+function sha256Buffer(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex')
 }

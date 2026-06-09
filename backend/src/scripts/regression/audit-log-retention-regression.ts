@@ -78,16 +78,18 @@ try {
   assert.equal(sensitiveHeaderSerializedDetail.includes('token=%5Bredacted%5D'), false, '审计 attempt upstreamUrl 不应写入脱敏占位')
   const sensitiveHeaderPayloads = await Promise.all(sensitiveHeaderDetail.payloads.map((payload) => repositories.getAuditLogPayload(sensitiveHeaderAuditId, payload.id)))
   const sensitiveHeaderSerialized = JSON.stringify(sensitiveHeaderPayloads)
-  assert(sensitiveHeaderSerialized.includes('Bearer client-secret-token'), '客户端 Authorization 应进入审计 payload')
-  assert(sensitiveHeaderSerialized.includes('Bearer upstream-secret-token'), '上游 Authorization 应进入审计 payload')
-  assert(sensitiveHeaderSerialized.includes('session-secret-cookie'), 'Cookie 应进入审计 payload')
-  assert(sensitiveHeaderSerialized.includes('upstream-set-cookie-secret'), 'Set-Cookie 应进入审计 payload')
-  assert(sensitiveHeaderSerialized.includes('gateway-set-cookie-secret'), '网关 Set-Cookie 应进入审计 payload')
-  assert(sensitiveHeaderSerialized.includes('upstream-x-api-key-secret'), 'X-API-Key 应进入审计 payload')
-  assert(sensitiveHeaderSerialized.includes('audit-google-key-secret'), '客户端 X-Goog-API-Key 应进入审计 payload')
-  assert(sensitiveHeaderSerialized.includes('upstream-google-key-secret'), '上游 X-Goog-API-Key 应进入审计 payload')
-  assert(sensitiveHeaderSerialized.includes('sk-account-secret'), '账号 API Key 应进入审计 payload')
-  assert.equal(sensitiveHeaderSerialized.includes('[redacted]'), false, '审计 payload 不应写入脱敏占位')
+  assertAllAbsent(sensitiveHeaderSerialized, [
+    'Bearer client-secret-token',
+    'Bearer upstream-secret-token',
+    'session-secret-cookie',
+    'upstream-set-cookie-secret',
+    'gateway-set-cookie-secret',
+    'upstream-x-api-key-secret',
+    'audit-google-key-secret',
+    'upstream-google-key-secret',
+    'sk-account-secret'
+  ], '审计 payload header 不应保留敏感原文')
+  assert(sensitiveHeaderSerialized.includes('[redacted]'), '审计 payload header 应写入脱敏占位')
 
   const proxyCredentialTraceId = 'trace-proxy-credential-redaction'
   finalizeProxyCredentialAudit(proxyCredentialTraceId)
@@ -159,18 +161,21 @@ try {
     requestSnapshot: sensitiveUsageRecord?.requestSnapshot,
     responseSnapshot: sensitiveUsageRecord?.responseSnapshot
   })
-  assert(sensitiveUsageSerialized.includes('usage-client-token'), '使用记录请求 snapshot 应保留 Authorization 原文')
-  assert(sensitiveUsageSerialized.includes('usage-api-key-secret'), '使用记录请求 snapshot 应保留 API-Key 原文')
-  assert(sensitiveUsageSerialized.includes('usage-openai-api-key-secret'), '使用记录请求 snapshot 应保留 OpenAI-API-Key 原文')
-  assert(sensitiveUsageSerialized.includes('usage-google-api-key-secret'), '使用记录请求 snapshot 应保留 X-Goog-API-Key 原文')
-  assert(sensitiveUsageSerialized.includes('usage-response-cookie'), '使用记录响应 snapshot 应保留 Set-Cookie 原文')
-  assert(sensitiveUsageSerialized.includes('usage-response-key'), '使用记录响应 snapshot 应保留 X-API-Key 原文')
-  assert(sensitiveUsageSerialized.includes('usage-last-upstream-token'), '使用记录 lastUpstreamAttempt 应保留 Authorization 原文')
-  assert(sensitiveUsageSerialized.includes('usage-proxy-token'), '使用记录 lastUpstreamAttempt 应保留 Proxy-Authorization 原文')
-  assert(sensitiveUsageSerialized.includes('usage-last-upstream-google-key'), '使用记录 lastUpstreamAttempt 应保留 X-Goog-API-Key 原文')
-  assert(sensitiveUsageSerialized.includes('usage-query-token'), '使用记录请求 snapshot 应保留敏感查询参数原文')
-  assert(sensitiveUsageSerialized.includes('usage-upstream-query-key'), '使用记录响应 snapshot 应保留上游 URL 敏感查询参数原文')
-  assert.equal(sensitiveUsageSerialized.includes('[redacted]'), false, '使用记录 snapshot 不应写入脱敏占位')
+  assertAllAbsent(sensitiveUsageSerialized, [
+    'usage-client-token',
+    'usage-api-key-secret',
+    'usage-openai-api-key-secret',
+    'usage-google-api-key-secret',
+    'usage-response-cookie',
+    'usage-response-key',
+    'usage-last-upstream-token',
+    'usage-proxy-token',
+    'usage-last-upstream-google-key',
+    'usage-query-token',
+    'usage-upstream-query-key'
+  ], '使用记录 header snapshot 不应保留敏感原文')
+  assert(sensitiveUsageSerialized.includes('safe=ok'), '使用记录请求 snapshot 应保留安全查询参数')
+  assert(sensitiveUsageSerialized.includes('[redacted]'), '使用记录 header snapshot 应写入脱敏占位')
 
   const overflowTraceId = 'trace-overflow-retained'
   finalizeOverflowFailedRequest(overflowTraceId)
@@ -835,6 +840,12 @@ function stableJsonStringify(value: unknown): string {
       .join(',')}}`
   }
   return JSON.stringify(value)
+}
+
+function assertAllAbsent(text: string, markers: string[], message: string): void {
+  for (const marker of markers) {
+    assert(!text.includes(marker), `${message}：${marker}`)
+  }
 }
 
 function auditLog(id: string, traceId: string, body: string): AuditLogInput {

@@ -42,12 +42,57 @@ function sseEvent(type: string, data: Record<string, unknown>, eventName = type)
   return Buffer.from(`event: ${eventName}\ndata: ${JSON.stringify({ type, ...data })}\n\n`, 'utf8')
 }
 
+function sseData(data: Record<string, unknown>): Buffer {
+  return Buffer.from(`data: ${JSON.stringify(data)}\n\n`, 'utf8')
+}
+
 const pollutedEvent = sseEvent('response.output_text.delta', {
   delta: '这里被插入了广告污染'
 })
 
 const visibleOutputEvent = sseEvent('response.output_text.delta', {
   delta: '这段正常输出还没有写给客户端'
+})
+
+const leadingChatRoleNoopEvent = sseData({
+  id: 'chatcmpl-dummy',
+  object: 'chat.completion.chunk',
+  created: 1781024363,
+  model: 'gpt-5.5',
+  choices: [
+    {
+      index: 0,
+      delta: {
+        role: 'assistant',
+        content: ''
+      }
+    }
+  ]
+})
+
+const chatContentEvent = sseData({
+  id: 'chatcmpl-normal',
+  object: 'chat.completion.chunk',
+  created: 1781024364,
+  model: 'gpt-5.5',
+  choices: [
+    {
+      index: 0,
+      delta: {
+        content: '正常输出'
+      }
+    }
+  ]
+})
+
+const invalidEncryptedContentEvent = sseData({
+  type: 'error',
+  error: {
+    type: 'invalid_request_error',
+    code: 'invalid_encrypted_content',
+    message: 'The encrypted content {"ty...":5} could not be verified. Reason: Encrypted content could not be decrypted or parsed.'
+  },
+  status: 400
 })
 
 const settings: GatewaySettings = {
@@ -145,6 +190,38 @@ const settings: GatewaySettings = {
     /不能超过 50 项/,
     '运行时账户流式规则不应截断超过 50 项的匹配列表'
   )
+}
+
+{
+  const interceptor = new OpenAIStreamInterceptBuffer({
+    clientRetryEnabled: true
+  })
+  const leading = interceptor.pushChunk(leadingChatRoleNoopEvent)
+  assert.equal(leading.chunks.length, 0, '首个空 Chat chunk 不应立刻写给下游')
+  assert.equal(leading.intercepted, undefined)
+  const failed = interceptor.pushChunk(invalidEncryptedContentEvent)
+  const text = Buffer.concat(failed.chunks).toString('utf8')
+  assert.equal(failed.intercepted?.reason, 'before_downstream_write_stream_failure', '空 Chat chunk 后的 error 仍应视为写下游前失败')
+  assert.equal(failed.intercepted?.upstreamEventType, 'error', '应在上游 type:error 事件处拦截')
+  assert.equal(failed.intercepted?.upstreamErrorCode, 'invalid_encrypted_content', '应保留真实上游错误码用于审计')
+  assert.equal(failed.intercepted?.downstreamWritten, false, '被缓冲的空 Chat chunk 不应改变下游写入状态')
+  assert.match(text, /response\.failed/, '客户端应收到 Responses 协议失败事件')
+  assert.match(text, new RegExp(gatewayStreamClientRetryErrorCode), '客户端可重试时应写入可重试错误码')
+  assert.doesNotMatch(text, /chatcmpl-dummy/, '失败收尾不应夹带上游空 Chat chunk')
+  assert.doesNotMatch(text, /"type":"error"/, '失败收尾不应继续透传原始 type:error 事件')
+}
+
+{
+  const interceptor = new OpenAIStreamInterceptBuffer({
+    clientRetryEnabled: true
+  })
+  const leading = interceptor.pushChunk(leadingChatRoleNoopEvent)
+  assert.equal(leading.chunks.length, 0, '正常输出前也先暂存首个空 Chat chunk')
+  const output = interceptor.pushChunk(chatContentEvent)
+  const text = Buffer.concat(output.chunks).toString('utf8')
+  assert.equal(output.intercepted, undefined)
+  assert.match(text, /chatcmpl-dummy/, '正常 Chat 流后续有内容时应补发首个 role chunk')
+  assert.match(text, /正常输出/, '正常 Chat 内容仍应继续转发')
 }
 
 {
@@ -418,6 +495,63 @@ const settings: GatewaySettings = {
 }
 
 {
+  let downstreamPrepared = false
+  const responseChunks: Buffer[] = []
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false,
+    writableLength: 0,
+    writableHighWaterMark: 1024,
+    once() { return this },
+    off() { return this },
+    write(buffer: Buffer) {
+      this.headersSent = true
+      responseChunks.push(Buffer.from(buffer))
+      return true
+    },
+    end() {
+      this.writableEnded = true
+      return this
+    }
+  }
+  async function* upstreamChunks(): AsyncIterable<Uint8Array> {
+    yield leadingChatRoleNoopEvent
+    yield invalidEncryptedContentEvent
+    yield sseEvent('response.failed', {
+      response: {
+        error: {
+          code: 'upstream_error',
+          message: 'Upstream request failed'
+        }
+      }
+    })
+  }
+  const result = await pipeUpstreamStream(
+    upstreamChunks(),
+    response as never,
+    settings,
+    Date.now(),
+    () => {},
+    undefined,
+    {
+      clientRetryEnabled: true,
+      prepareDownstream: () => { downstreamPrepared = true }
+    }
+  )
+  const text = Buffer.concat(responseChunks).toString('utf8')
+  assert.equal(result.completed, false)
+  assert.equal(result.streamIntercept?.upstreamErrorCode, 'invalid_encrypted_content', 'mock 上游样本应在真实 error 事件处结束')
+  assert.equal(result.streamIntercept?.downstreamWritten, false, 'mock 上游样本的空 Chat chunk 不应算作已写下游')
+  assert.equal(downstreamPrepared, true, '网关应准备下游响应并写入干净失败事件')
+  assert.equal(response.writableEnded, true, '失败事件写入后应结束下游响应')
+  assert.match(text, /response\.failed/, 'mock 上游样本应收尾为 Responses 失败事件')
+  assert.match(text, new RegExp(gatewayStreamClientRetryErrorCode), 'mock 上游样本应返回客户端可重试错误码')
+  assert.doesNotMatch(text, /chatcmpl-dummy/, 'mock 上游样本不应把空 Chat chunk 发给客户端')
+  assert.doesNotMatch(text, /"type":"error"/, 'mock 上游样本不应把原始 type:error 发给客户端')
+}
+
+{
   const interceptor = new OpenAIStreamInterceptBuffer({
     policies: [
       policy({
@@ -510,7 +644,7 @@ const settings: GatewaySettings = {
   )
 }
 
-console.log('流式拦截策略回归通过：策略读取上限、协议/供应商层隔离、事件丢弃、流丢弃、失败替换、试运行、来源排序、写下游前服务端重试和图像文本扫描跳过符合预期')
+console.log('流式拦截策略回归通过：策略读取上限、协议/供应商层隔离、首个空 Chat chunk 缓冲、事件丢弃、流丢弃、失败替换、试运行、来源排序、写下游前服务端重试和图像文本扫描跳过符合预期')
 
 function assertStreamInterceptPolicyRepositoryGuards(): void {
   const repositorySource = readFileSync(new URL('../../storage/stream-intercept-policy.repository.ts', import.meta.url), 'utf8')

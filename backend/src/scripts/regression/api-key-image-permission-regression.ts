@@ -180,13 +180,19 @@ try {
 
   const downgradedLargeTool = await requestLargeResponsesImageTool(baseUrl, seeded.apiKey)
   assert.equal(downgradedLargeTool.status, 200, `大 JSON 后段 auto image_generation 工具应被移除后继续文本请求，实际 ${downgradedLargeTool.status}: ${downgradedLargeTool.text}`)
-  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), 1, '禁用图像生成时 auto 图像工具请求应按文本请求继续进入上游')
+  const responsesHitsAfterDowngradedLargeTool = upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses')
+  assert.equal(responsesHitsAfterDowngradedLargeTool, 1, '禁用图像生成时 auto 图像工具请求应按文本请求继续进入上游')
   assert.equal(hasImageGenerationTool(lastUpstreamRequest(upstreamState, seeded.upstreamKey, '/v1/responses')?.body), false, '禁用图像生成时转发给上游的 Responses body 不应保留 image_generation 工具')
+
+  const oversizedTool = await requestOversizedResponsesImageTool(baseUrl, seeded.apiKey)
+  assert.equal(oversizedTool.status, 413, `超文本上限的 auto image_generation 大 JSON 降级后应直接拒绝，实际 ${oversizedTool.status}: ${oversizedTool.text}`)
+  assert.match(oversizedTool.text, /request_too_large/, '超文本上限的 auto image_generation 大 JSON 应返回请求体过大错误码')
+  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), responsesHitsAfterDowngradedLargeTool, '超文本上限的 auto image_generation 大 JSON 不应进入上游')
 
   const forcedTool = await requestForcedResponsesImageTool(baseUrl, seeded.apiKey)
   assert.equal(forcedTool.status, 403, `强制 image_generation 工具仍应被图像权限拦截，实际 ${forcedTool.status}: ${forcedTool.text}`)
   assert.match(forcedTool.text, /image_generation_disabled/, '强制 image_generation 工具应返回稳定错误码')
-  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), 1, '禁用图像生成时强制工具请求不应进入上游')
+  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), responsesHitsAfterDowngradedLargeTool, '禁用图像生成时强制工具请求不应进入上游')
 
   const text = await requestChatCompletion(baseUrl, seeded.apiKey)
   assert.equal(text.status, 200, `图像权限禁用不应影响文本请求，实际 ${text.status}: ${text.text}`)
@@ -201,10 +207,10 @@ try {
 
   const allowedResponsesTool = await requestLargeResponsesImageTool(baseUrl, seeded.apiKey)
   assert.equal(allowedResponsesTool.status, 200, `开启图像生成后 Responses image_generation 工具应原样通过，实际 ${allowedResponsesTool.status}: ${allowedResponsesTool.text}`)
-  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), 2, '开启图像生成后 Responses 工具请求应继续进入上游')
+  assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), responsesHitsAfterDowngradedLargeTool + 1, '开启图像生成后 Responses 工具请求应继续进入上游')
   assert.equal(hasImageGenerationTool(lastUpstreamRequest(upstreamState, seeded.upstreamKey, '/v1/responses')?.body), true, '开启图像生成后转发给上游的 Responses body 应保留 image_generation 工具')
 
-  console.log('API Key 图像生成权限回归通过：默认禁用图片接口不上游，auto image_generation 工具降级为文本，强制工具仍拦截，开启后同一 Key 立即放行')
+  console.log('API Key 图像生成权限回归通过：默认禁用图片接口不上游，auto image_generation 工具降级为文本，超文本上限的大请求直接拒绝，强制工具仍拦截，开启后同一 Key 立即放行')
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
@@ -269,7 +275,7 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
 function createGatewayServer(): http.Server {
   const app = express()
   app.use(requestContextMiddleware)
-  app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+  app.use('/v1', express.raw({ type: () => true, limit: requestBodyModule.gatewayRawBodyHardLimit }), captureGatewayRawBody, openAIGatewayRouter)
   return http.createServer(app)
 }
 
@@ -359,6 +365,25 @@ async function requestLargeResponsesImageTool(baseUrl: string, apiKey: string): 
     body: JSON.stringify({
       model: 'gpt-5.4',
       input: 'x'.repeat(requestBodyModule.gatewayJsonBodyInlineParseMaxBytes + 32 * 1024),
+      tools: [{ type: 'image_generation' }]
+    })
+  })
+  return {
+    status: response.status,
+    text: await response.text()
+  }
+}
+
+async function requestOversizedResponsesImageTool(baseUrl: string, apiKey: string): Promise<{ status: number; text: string }> {
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      input: 'x'.repeat(requestBodyModule.gatewayTextRawBodyLimitBytes() + 32 * 1024),
       tools: [{ type: 'image_generation' }]
     })
   })

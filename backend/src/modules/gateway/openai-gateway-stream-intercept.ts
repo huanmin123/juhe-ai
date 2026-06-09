@@ -61,6 +61,7 @@ export class OpenAIStreamInterceptBuffer {
   private readonly pendingBuffer = new PendingSseEventBuffer()
   private readonly clientRetryEnabled: boolean
   private readonly policies: RuntimeStreamInterceptPolicy[]
+  private readonly deferredLeadingNoopChunks: Buffer[] = []
   private parserSkipped = false
   private downstreamWritten = false
 
@@ -85,7 +86,7 @@ export class OpenAIStreamInterceptBuffer {
     }
     if (this.parserSkipped) {
       return {
-        chunks: [chunk],
+        chunks: [...this.drainDeferredLeadingNoopChunks(), chunk],
         parserSkipped: this.parserSkipped
       }
     }
@@ -95,7 +96,7 @@ export class OpenAIStreamInterceptBuffer {
       const buffered = this.pendingBuffer.drain()
       this.parserSkipped = true
       return {
-        chunks: [buffered],
+        chunks: [...this.drainDeferredLeadingNoopChunks(), buffered],
         parserSkipped: true
       }
     }
@@ -108,6 +109,10 @@ export class OpenAIStreamInterceptBuffer {
       if (!rawBuffer) break
       const rawText = rawBuffer.toString('utf8')
       const event = parseOpenAISseEventText(rawText)
+      if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
+        this.deferredLeadingNoopChunks.push(rawBuffer)
+        continue
+      }
       const policyDecision = this.buildPolicyDecision(event)
       if (policyDecision) {
         if (policyDecision.observation) {
@@ -117,6 +122,7 @@ export class OpenAIStreamInterceptBuffer {
           continue
         }
         if ('decision' in policyDecision) {
+          this.clearDeferredLeadingNoopChunks()
           if (policyDecision.failureEvent) {
             if (!this.downstreamWritten) {
               chunks.length = 0
@@ -133,6 +139,7 @@ export class OpenAIStreamInterceptBuffer {
       }
       const decision = this.clientRetryEnabled ? buildStreamFailureDecision(event, this.downstreamWritten) : undefined
       if (decision) {
+        this.clearDeferredLeadingNoopChunks()
         if (!this.downstreamWritten) {
           chunks.length = 0
         }
@@ -144,6 +151,7 @@ export class OpenAIStreamInterceptBuffer {
           parserSkipped: this.parserSkipped
         }
       }
+      chunks.push(...this.drainDeferredLeadingNoopChunks())
       chunks.push(rawBuffer)
     }
 
@@ -163,13 +171,21 @@ export class OpenAIStreamInterceptBuffer {
     }
     if (this.parserSkipped || this.pendingBuffer.length === 0) {
       return {
-        chunks: [],
+        chunks: this.parserSkipped ? this.drainDeferredLeadingNoopChunks() : [],
         parserSkipped: this.parserSkipped
       }
     }
 
     const rawBuffer = this.pendingBuffer.drainEnsuringBoundary()
     const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
+    if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
+      this.deferredLeadingNoopChunks.push(rawBuffer)
+      this.clearDeferredLeadingNoopChunks()
+      return {
+        chunks: [],
+        parserSkipped: this.parserSkipped
+      }
+    }
     const policyDecision = this.buildPolicyDecision(event)
     if (policyDecision) {
       if (policyDecision.action === 'discard_event') {
@@ -180,6 +196,7 @@ export class OpenAIStreamInterceptBuffer {
         }
       }
       if ('decision' in policyDecision) {
+        this.clearDeferredLeadingNoopChunks()
         return {
           chunks: policyDecision.failureEvent ? [policyDecision.failureEvent] : [],
           intercepted: policyDecision.decision,
@@ -197,6 +214,7 @@ export class OpenAIStreamInterceptBuffer {
     }
     const decision = this.clientRetryEnabled ? buildStreamFailureDecision(event, this.downstreamWritten) : undefined
     if (decision) {
+      this.clearDeferredLeadingNoopChunks()
       return {
         chunks: [buildGatewayStreamFailureEvent(decision.rewriteMessage ?? gatewayStreamClientRetryMessage, decision.rewriteErrorCode)],
         intercepted: decision,
@@ -204,9 +222,22 @@ export class OpenAIStreamInterceptBuffer {
       }
     }
     return {
-      chunks: [rawBuffer],
+      chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
       parserSkipped: this.parserSkipped
     }
+  }
+
+  private drainDeferredLeadingNoopChunks(): Buffer[] {
+    if (this.deferredLeadingNoopChunks.length === 0) {
+      return []
+    }
+    const chunks = [...this.deferredLeadingNoopChunks]
+    this.deferredLeadingNoopChunks.length = 0
+    return chunks
+  }
+
+  private clearDeferredLeadingNoopChunks(): void {
+    this.deferredLeadingNoopChunks.length = 0
   }
 
   private buildPolicyDecision(event: ParsedOpenAIStreamEvent): {
@@ -333,6 +364,48 @@ function configuredPolicyReason(policy: RuntimeStreamInterceptPolicy, event: Par
   return downstreamWritten && isCodexRetryableAfterOutputStreamFailureCode(event.errorCode)
     ? 'cyber_policy_stream_failure'
     : 'before_downstream_write_stream_failure'
+}
+
+function isDeferrableLeadingChatCompletionNoopEvent(event: ParsedOpenAIStreamEvent): boolean {
+  const data = event.data
+  if (!data || data.object !== 'chat.completion.chunk') {
+    return false
+  }
+  if (data.error !== undefined || data.usage !== undefined) {
+    return false
+  }
+  const choices = Array.isArray(data.choices) ? data.choices : []
+  if (choices.length === 0) {
+    return false
+  }
+  return choices.every(isNoopChatCompletionChoice)
+}
+
+function isNoopChatCompletionChoice(value: unknown): boolean {
+  const choice = objectValue(value)
+  if (!choice) return false
+  if (choice.finish_reason !== undefined && choice.finish_reason !== null) return false
+  if (hasNonEmptyString(choice.text)) return false
+  if (choice.message !== undefined) return false
+  const delta = objectValue(choice.delta)
+  if (!delta) return false
+  for (const key of Object.keys(delta)) {
+    const value = delta[key]
+    if (key === 'role' && typeof value === 'string') continue
+    if (key === 'content' && (value === '' || value === null || value === undefined)) continue
+    return false
+  }
+  return true
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function hasNonEmptyString(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0
 }
 
 class PendingSseEventBuffer {

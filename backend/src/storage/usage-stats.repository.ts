@@ -554,6 +554,8 @@ interface UsageRankSnapshotContext {
   earliestDate: string
   overviewScopes: Array<{ systemAccountId: string; scopeId: string }>
   uniqueSystemAccountIds: string[]
+  sourceWatermark?: string
+  previousSourceWatermark?: string
 }
 
 export type UsageRankSnapshotStageName =
@@ -583,6 +585,7 @@ type UsageRankSnapshotSourceTable =
 interface UsageRankSnapshotStage {
   name: UsageRankSnapshotStageName
   sourceTables: UsageRankSnapshotSourceTable[]
+  deletionAwareSourceTables?: UsageRankSnapshotSourceTable[]
   run: (database: DatabaseSync, context: UsageRankSnapshotContext) => void
   runInBackground?: (database: DatabaseSync, context: UsageRankSnapshotContext, options: UsageRankSnapshotBackgroundStageOptions) => Promise<void>
 }
@@ -648,19 +651,23 @@ export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRan
   const jobName = options.jobName ?? usageRankSnapshotDefaultJobName(stages)
   const startedAt = Date.now()
   const sourceWatermark = options.skipIfUnchanged ? usageRankSnapshotSourceWatermark(database, stages) : undefined
-  if (options.skipIfUnchanged && sourceWatermark !== undefined) {
-    const state = usageRankSnapshotRefreshJobState(database, jobName)
-    if (state?.cursor_created_at === sourceWatermark && state.cursor_id === context.todayKey) {
-      return {
-        durationMs: Date.now() - startedAt,
-        stages: [],
-        skipped: true,
-        skipReason: 'source_watermark_unchanged',
-        sourceWatermark,
-        refreshDate: context.todayKey,
-        jobName
-      }
+  const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
+    ? usageRankSnapshotRefreshJobState(database, jobName)
+    : undefined
+  if (previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
+    return {
+      durationMs: Date.now() - startedAt,
+      stages: [],
+      skipped: true,
+      skipReason: 'source_watermark_unchanged',
+      sourceWatermark,
+      refreshDate: context.todayKey,
+      jobName
     }
+  }
+  if (stages.length === 1 && previousState?.cursor_id === context.todayKey && previousState.cursor_created_at) {
+    context.sourceWatermark = sourceWatermark
+    context.previousSourceWatermark = previousState.cursor_created_at
   }
   const stageRuntimes: UsageRankSnapshotStageRuntime[] = []
   for (let index = 0; index < stages.length; index += 1) {
@@ -716,15 +723,35 @@ function usageRankSnapshotDefaultJobName(stages: UsageRankSnapshotStage[]): stri
 
 function usageRankSnapshotSourceWatermark(database: DatabaseSync, stages: UsageRankSnapshotStage[]): string {
   const sourceTables = [...new Set(stages.flatMap((stage) => stage.sourceTables))]
+  const deletionAwareSourceTables = new Set(stages.flatMap((stage) => stage.deletionAwareSourceTables ?? []))
   let watermark = USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
+  let rowCount = 0
   for (const table of sourceTables) {
     const row = database.prepare(`SELECT MAX(updated_at) AS updated_at FROM ${table}`).get() as { updated_at?: string | null } | undefined
     const updatedAt = row?.updated_at
     if (typeof updatedAt === 'string' && updatedAt > watermark) {
       watermark = updatedAt
     }
+    if (deletionAwareSourceTables.has(table)) {
+      const countRow = database.prepare(`SELECT COUNT(*) AS row_count FROM ${table}`).get() as { row_count?: number | bigint | null } | undefined
+      rowCount += Number(countRow?.row_count ?? 0)
+    }
   }
-  return watermark
+  return deletionAwareSourceTables.size > 0 ? `${watermark}|${rowCount}` : watermark
+}
+
+function usageRankSnapshotSourceWatermarkUpdatedAt(watermark?: string): string | undefined {
+  if (!watermark) return undefined
+  const [updatedAt] = watermark.split('|', 1)
+  return updatedAt || undefined
+}
+
+function usageRankSnapshotSourceWatermarkRowCount(watermark?: string): number | undefined {
+  if (!watermark) return undefined
+  const rowCountText = watermark.split('|')[1]
+  if (rowCountText === undefined) return undefined
+  const rowCount = Number(rowCountText)
+  return Number.isFinite(rowCount) ? rowCount : undefined
 }
 
 function usageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string): StatsJobStateRow | undefined {
@@ -841,8 +868,9 @@ function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
     {
       name: 'usage_scope_range_windows',
       sourceTables: ['usage_stats_daily'],
+      deletionAwareSourceTables: ['usage_stats_daily'],
       run: (database, context) => refreshUsageScopeRangeWindowSnapshots(database, context.updatedAt, context.timezone),
-      runInBackground: (database, context, options) => refreshUsageScopeRangeWindowSnapshotsInStages(database, context.updatedAt, context.timezone, options.yieldToEventLoop)
+      runInBackground: (database, context, options) => refreshUsageScopeRangeWindowSnapshotsInStages(database, context.updatedAt, context.timezone, options.yieldToEventLoop, context.previousSourceWatermark, context.sourceWatermark)
     },
     {
       name: 'authorization_usage_range_windows',
@@ -1480,11 +1508,15 @@ async function refreshUsageScopeRangeWindowSnapshotsInStages(
   database: DatabaseSync,
   updatedAt: string,
   timezone: string,
-  yieldToEventLoop: () => Promise<void>
+  yieldToEventLoop: () => Promise<void>,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
 ): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
   const dates = fixedUsageStatsDateKeys(timezone, todayKey)
   if (!dates.length) return
+  const refreshStartIndex = usageScopeRangeWindowRefreshStartIndex(database, dates, todayKey, previousSourceWatermark, sourceWatermark)
+  if (refreshStartIndex === undefined) return
   const tempTableName = 'usage_scope_range_windows_refresh_tmp'
   prepareUsageScopeRangeWindowRefreshTempTable(database, tempTableName)
   try {
@@ -1540,8 +1572,8 @@ async function refreshUsageScopeRangeWindowSnapshotsInStages(
         OR COALESCE(SUM(total_cost_usd), 0) > 0
     `)
     let processedRanges = 0
-    for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
-      for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
+    for (let endIndex = refreshStartIndex; endIndex < dates.length; endIndex += 1) {
+      for (let startIndex = 0; startIndex <= endIndex; startIndex += 1) {
         const startDate = dates[startIndex]
         const rangeEndDate = dates[endIndex]
         insert.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
@@ -1551,10 +1583,39 @@ async function refreshUsageScopeRangeWindowSnapshotsInStages(
         }
       }
     }
-    publishUsageScopeRangeWindowSnapshots(database, dates[0], todayKey, tempTableName)
+    await publishUsageScopeRangeWindowSnapshotsInStages(database, dates, refreshStartIndex, tempTableName, yieldToEventLoop)
   } finally {
     clearTemporaryRangeWindowTable(database, tempTableName)
   }
+}
+
+function usageScopeRangeWindowRefreshStartIndex(
+  database: DatabaseSync,
+  dates: string[],
+  todayKey: string,
+  previousSourceWatermark?: string,
+  sourceWatermark?: string
+): number | undefined {
+  if (!previousSourceWatermark) return 0
+  const previousUpdatedAt = usageRankSnapshotSourceWatermarkUpdatedAt(previousSourceWatermark)
+  const sourceUpdatedAt = usageRankSnapshotSourceWatermarkUpdatedAt(sourceWatermark)
+  const previousRowCount = usageRankSnapshotSourceWatermarkRowCount(previousSourceWatermark)
+  const sourceRowCount = usageRankSnapshotSourceWatermarkRowCount(sourceWatermark)
+  if (!previousUpdatedAt) return 0
+  if (sourceUpdatedAt && sourceUpdatedAt < previousUpdatedAt) return 0
+  if (previousRowCount !== undefined && sourceRowCount !== undefined && previousRowCount !== sourceRowCount) return 0
+  const row = database.prepare(`
+    SELECT MIN(stat_date) AS stat_date
+    FROM usage_stats_daily
+    WHERE updated_at > ?
+      AND stat_date >= ?
+      AND stat_date <= ?
+  `).get(previousUpdatedAt, dates[0], todayKey) as { stat_date?: string | null } | undefined
+  const changedDate = row?.stat_date
+  if (!changedDate && sourceWatermark !== previousSourceWatermark) return 0
+  if (!changedDate) return undefined
+  const index = dates.findIndex((date) => date >= changedDate)
+  return index >= 0 ? index : undefined
 }
 
 async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(
@@ -1729,10 +1790,23 @@ function prepareAuthorizationUsageRangeWindowRefreshTempTables(database: Databas
   `).run()
 }
 
-function publishUsageScopeRangeWindowSnapshots(database: DatabaseSync, startDate: string, endDate: string, tempTableName: string): void {
+async function publishUsageScopeRangeWindowSnapshotsInStages(
+  database: DatabaseSync,
+  dates: string[],
+  refreshStartIndex: number,
+  tempTableName: string,
+  yieldToEventLoop: () => Promise<void>
+): Promise<void> {
+  for (let endIndex = refreshStartIndex; endIndex < dates.length; endIndex += 1) {
+    publishUsageScopeRangeWindowSnapshotEndDate(database, dates[endIndex], tempTableName)
+    await yieldToEventLoop()
+  }
+}
+
+function publishUsageScopeRangeWindowSnapshotEndDate(database: DatabaseSync, endDate: string, tempTableName: string): void {
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date >= ? AND end_date <= ?').run(startDate, endDate)
+    database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ?').run(endDate)
     database.prepare(`
       INSERT INTO usage_scope_range_windows (
         system_account_id, scope_type, scope_id, start_date, end_date,
@@ -1766,7 +1840,8 @@ function publishUsageScopeRangeWindowSnapshots(database: DatabaseSync, startDate
         last_error_at,
         updated_at
       FROM ${tempTableName}
-    `).run()
+      WHERE end_date = ?
+    `).run(endDate)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)

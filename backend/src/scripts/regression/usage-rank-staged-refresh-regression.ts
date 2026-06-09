@@ -70,16 +70,31 @@ try {
   assert.equal(authorizationUserRequestCount(today), 1, '临时表构建失败后不应删除正式授权用户范围窗口')
 
   let yieldCount = 0
-  const result = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
-    yieldToEventLoop: async () => {
-      yieldCount += 1
-    }
-  })
+  let eventLoopTicks = 0
+  let keepTicking = true
+  const tick = (): void => {
+    if (!keepTicking) return
+    eventLoopTicks += 1
+    setImmediate(tick)
+  }
+  setImmediate(tick)
+  let result: Awaited<ReturnType<typeof usageStatsRepository.refreshUsageRankSnapshotsInStages>>
+  try {
+    result = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+      yieldToEventLoop: () => new Promise<void>((resolve) => {
+        yieldCount += 1
+        setImmediate(resolve)
+      })
+    })
+  } finally {
+    keepTicking = false
+  }
 
   assert.ok(result.durationMs >= 0, 'staged 刷新应返回总耗时')
   assert.ok(result.stages.some((stage) => stage.name === 'usage_scope_range_windows'), '结果应包含 usage scope 范围窗口 stage')
   assert.ok(result.stages.some((stage) => stage.name === 'authorization_usage_range_windows'), '结果应包含授权范围窗口 stage')
-  assert.ok(yieldCount >= fixedRangeCount * 2, '两个重型范围窗口 stage 应按日期区间分段 yield')
+  assert.ok(yieldCount >= fixedRangeCount * 2 + fixedDates.length, '两个重型范围窗口 stage 应按日期区间分段 yield，usage scope 发布也应按 end_date 分段 yield')
+  assert.ok(eventLoopTicks > 0, 'staged 刷新期间应真实让事件循环推进')
   assert.equal(usageScopeRequestCount(today), 5, '成功刷新后 usage scope 范围窗口应发布新数据')
   assert.equal(authorizationTeamRequestCount(today), 7, '成功刷新后授权团队范围窗口应发布新数据')
   assert.equal(authorizationUserRequestCount(today), 11, '成功刷新后授权用户范围窗口应发布新数据')

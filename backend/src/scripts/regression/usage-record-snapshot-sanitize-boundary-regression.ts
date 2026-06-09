@@ -92,7 +92,7 @@ try {
   const detail = repositories.getUsageRecordDetail(recordId)
   assert(detail, '应能读回写入的使用记录详情')
   const detailText = JSON.stringify(detail)
-  assertAllPresent(detailText, [
+  assertAllAbsent(detailText, [
     'top-usage-client-secret',
     'sk-top-usage-secret-token',
     'request-url-secret',
@@ -106,11 +106,23 @@ try {
     'sk-response-body-secret-token',
     'response-error-id-token',
     'sk-response-error-secret-token'
-  ], '使用记录落库内容应保留原文')
+  ], '使用记录落库内容不应保留敏感原文')
   assert(String(detail.responseSnapshot?.upstreamUrl ?? '').includes('safe=ok'), 'URL 安全查询参数应保留')
   assert(String(detail.requestSnapshot?.bodyText ?? '').includes('"safe":"ok"'), 'bodyText 中安全字段应保留')
+  assert.equal(
+    (detail.requestSnapshot?.headers as Record<string, unknown> | undefined)?.authorization,
+    '[redacted]',
+    '请求 Authorization 头应按字段脱敏'
+  )
+  assert.equal(
+    (detail.responseSnapshot?.headers as Record<string, unknown> | undefined)?.['set-cookie'],
+    '[redacted]',
+    '响应 Set-Cookie 头应按字段脱敏'
+  )
+  assert(String(detail.errorMessage ?? '').includes('[redacted]'), '顶层错误中的敏感内容应脱敏')
+  assert(String(detail.responseSnapshot?.errorMessage ?? '').includes('id_token=[redacted]'), '响应错误中的 id_token 应脱敏')
 
-  console.log('使用记录 snapshot 原文边界回归通过：对象字段上限仍生效，URL 凭据、敏感字符串和顶层错误按原文落库')
+  console.log('使用记录 snapshot 脱敏边界回归通过：对象字段上限仍生效，敏感字符串脱敏且安全字段保留')
 } finally {
   usageRecordQueue.clearUsageRecordQueueForTest()
   try {
@@ -134,8 +146,8 @@ function buildTrapSnapshot(): Record<string, string> {
   return snapshot
 }
 
-function assertAllPresent(text: string, markers: string[], message: string): void {
+function assertAllAbsent(text: string, markers: string[], message: string): void {
   for (const marker of markers) {
-    assert(text.includes(marker), `${message}：${marker}`)
+    assert(!text.includes(marker), `${message}：${marker}`)
   }
 }
