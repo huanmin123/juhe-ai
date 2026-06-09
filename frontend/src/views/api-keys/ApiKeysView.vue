@@ -713,7 +713,7 @@ function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule, active?: b
     .slice(0, 2)
     .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
   const suffix = schedule.windows.length > 2 ? ` 等 ${schedule.windows.length} 段` : ''
-  const state = active === true ? '启用窗口中' : active === false ? '关闭窗口中' : '等待边界'
+  const state = active === true ? '计划窗口内' : '等待窗口开启'
   return `${state}：${windows.join(' / ')}${suffix}`
 }
 
@@ -722,7 +722,6 @@ function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
   try {
     assertApiKeyAvailabilitySchedule(apiKey.availabilitySchedule)
     if (apiKey.availabilityScheduleActive === true) return 'green'
-    if (apiKey.availabilityScheduleActive === false) return 'orange'
     return 'blue'
   } catch {
     return 'red'
