@@ -1,19 +1,15 @@
 <template>
   <section class="account-entry-section">
-    <div class="account-entry-main">
-      <div class="account-entry-head">
-        <span class="entry-label">账户类型</span>
-        <a-segmented
-          :value="accountType"
-          :disabled="editing"
-          :options="segmentedTypeOptions"
-          @change="handleTypeChange"
-        />
-      </div>
-      <div class="entry-type-desc">{{ selectedTypeDescription }}</div>
+    <div class="account-entry-head">
+      <span class="entry-label">账户类型</span>
+      <a-segmented
+        :value="accountType"
+        :disabled="editing"
+        :options="segmentedTypeOptions"
+        @change="handleTypeChange"
+      />
     </div>
     <div class="account-entry-meta">
-      <span>供应商</span>
       <a-tag color="blue">{{ selectedProvider?.name || providerCode || '未选择' }}</a-tag>
       <a-dropdown v-if="!editing && enabledProviders.length > 1" trigger="click">
         <a-button size="small">切换</a-button>
@@ -63,11 +59,6 @@ const segmentedTypeOptions = computed(() => props.accountTypeChoices.map((item) 
   value: item.value
 })))
 
-const selectedTypeDescription = computed(() => {
-  const selected = props.accountTypeChoices.find((item) => item.value === props.accountType)
-  return selected?.description ?? '选择账户类型后填写必要配置。'
-})
-
 function handleTypeChange(value: string | number): void {
   emit('select-type', value as AccountType)
 }
@@ -89,23 +80,14 @@ function providerAccountTypeCount(provider: ProviderDefinition): number {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  border: 1px solid #e8edf5;
-  border-radius: 12px;
-  background: #f8fafc;
-}
-
-.account-entry-main {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 6px;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #eef2f7;
 }
 
 .account-entry-head {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
@@ -117,16 +99,12 @@ function providerAccountTypeCount(provider: ProviderDefinition): number {
   font-weight: 600;
 }
 
-.entry-type-desc {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
 .account-entry-meta {
   display: flex;
-  flex: 0 0 auto;
+  min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   color: #64748b;
   font-size: 12px;
@@ -141,5 +119,6 @@ function providerAccountTypeCount(provider: ProviderDefinition): number {
   .account-entry-meta {
     justify-content: flex-start;
   }
+
 }
 </style>

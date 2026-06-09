@@ -5,12 +5,6 @@
       <a-switch v-model:checked="form.availabilitySchedule.enabled" :disabled="readonly" />
     </div>
     <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
-      <a-alert
-        class="schedule-help"
-        type="info"
-        show-icon
-        message="按重复日期和起止时间设置使用范围。"
-      />
       <div class="schedule-window-list">
         <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
           <a-select
@@ -64,10 +58,9 @@ function removeScheduleWindow(index: number): void {
 
 <style scoped>
 .form-section {
-  padding: 16px;
-  border: 1px solid #e8edf5;
-  border-radius: 16px;
-  background: #fff;
+  padding: 0 0 16px;
+  border-bottom: 1px solid #eef2f7;
+  background: transparent;
 }
 
 .schedule-toggle-row {

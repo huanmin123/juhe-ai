@@ -3,8 +3,6 @@
     <div class="form-section-head">
       <div>
         <h4>{{ title }} 配置</h4>
-        <p v-if="editing">Access Token 与 Refresh Token 会在编辑时回显；可直接查看或替换。</p>
-        <p v-else>创建时支持手动授权或直接粘贴 Refresh Token；敏感凭据不会在列表展示。</p>
       </div>
     </div>
 
@@ -71,20 +69,20 @@ defineEmits<{
 
 <style scoped>
 .form-section {
-  padding: 16px;
-  border: 1px solid #e8edf5;
-  border-radius: 16px;
-  background: #fff;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .form-section-head {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .form-section-head h4 {
   margin: 0;
   color: #0f172a;
-  font-size: 16px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .form-section-head p {

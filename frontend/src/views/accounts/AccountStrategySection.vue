@@ -3,7 +3,6 @@
     <div class="form-section-head">
       <div>
         <h4>请求策略</h4>
-        <p>{{ authorizedEditing ? '上游模型、并发和代理来自授权方，只读展示；你只能调整自己的分组内优先级。' : '并发、优先级和代理会影响后续请求转发与账户选择。' }}</p>
       </div>
     </div>
     <a-form-item label="支持模型">
@@ -18,7 +17,6 @@
         :options="modelOptions"
         show-search
       />
-      <div class="form-help">不选择表示该账户不做模型限制。</div>
     </a-form-item>
     <a-form-item label="模型映射">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
@@ -54,11 +52,9 @@
         <template #icon><PlusOutlined /></template>
         新增映射
       </a-button>
-      <div class="form-help">请求先按下游模型选择账户，选中该账户后再改写为上游模型。</div>
     </a-form-item>
     <a-form-item v-if="isOAuthForm" label="客户端兼容">
       <a-input value="Codex Responses（OAuth 固定）" disabled />
-      <div class="form-help">GPT OAuth 账户固定使用 Codex Responses 适配器。</div>
     </a-form-item>
     <a-form-item v-else label="客户端兼容">
       <a-select
@@ -66,7 +62,6 @@
         :disabled="authorizedEditing"
         :options="clientCompatibilityOptions"
       />
-      <div class="form-help">OpenAI 标准保持透传；Codex Responses 会补齐 Codex 风格 Responses 请求。</div>
     </a-form-item>
     <div class="strategy-grid">
       <a-form-item label="并发上限">
@@ -76,7 +71,6 @@
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
       </a-form-item>
     </div>
-    <div class="form-help strategy-help">优先级数字越小越优先。</div>
     <a-form-item class="strategy-proxy-field" label="代理">
       <ProxySelect
         v-model:value="form.proxyProfileId"
@@ -85,7 +79,6 @@
         placeholder="不使用代理"
         :options="proxyOptions"
       />
-      <div v-if="!isManagementView" class="form-help">代理配置由管理员统一维护；这里可以选择已启用的全局代理。</div>
     </a-form-item>
   </section>
 </template>
@@ -127,20 +120,20 @@ function removeModelMapping(index: number): void {
 
 <style scoped>
 .form-section {
-  padding: 16px;
-  border: 1px solid #e8edf5;
-  border-radius: 16px;
-  background: #fff;
+  padding: 0 0 16px;
+  border-bottom: 1px solid #eef2f7;
+  background: transparent;
 }
 
 .form-section-head {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .form-section-head h4 {
   margin: 0;
   color: #0f172a;
-  font-size: 16px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .form-section-head p {

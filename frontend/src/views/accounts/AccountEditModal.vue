@@ -2,7 +2,7 @@
   <a-modal
     v-model:open="open"
     :title="title"
-    width="920px"
+    width="820px"
     :confirm-loading="confirmLoading"
     :focus-trigger-after-close="false"
     :ok-button-props="okButtonProps"
@@ -94,7 +94,7 @@
           <template #header>
             <div class="advanced-header">
               <span>高级配置</span>
-              <small>{{ advancedSummary }}</small>
+              <small v-if="advancedConfiguredCount > 0">已配置 {{ advancedConfiguredCount }} 项</small>
             </div>
           </template>
           <div class="advanced-section-stack">
@@ -265,11 +265,6 @@ const advancedConfiguredCount = computed(() => {
   ]
   return checks.filter(Boolean).length
 })
-const advancedSummary = computed(() => {
-  const count = advancedConfiguredCount.value
-  return count > 0 ? `已配置 ${count} 项，可展开查看` : '默认配置，可按需展开'
-})
-
 watch(open, (next) => {
   if (next) advancedActiveKeys.value = props.authorizedEditing ? ['advanced'] : []
 })
@@ -301,20 +296,20 @@ defineEmits<{
 
 <style scoped>
 .form-section {
-  padding: 16px;
-  border: 1px solid #e8edf5;
-  border-radius: 16px;
-  background: #fff;
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
 }
 
 .form-section-head {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .form-section-head h4 {
   margin: 0;
   color: #0f172a;
-  font-size: 16px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .form-section-head p {
@@ -324,7 +319,9 @@ defineEmits<{
 }
 
 .readonly-config-section {
-  border-color: #dbeafe;
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
   background: #f8fbff;
 }
 
@@ -335,8 +332,8 @@ defineEmits<{
 }
 
 .account-advanced-collapse {
-  border: 1px solid #e8edf5;
-  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
   background: #fff;
 }
 
@@ -346,28 +343,28 @@ defineEmits<{
 
 .account-advanced-collapse :deep(.ant-collapse-header) {
   align-items: center;
-  padding: 14px 16px;
+  padding: 14px 16px !important;
 }
 
 .account-advanced-collapse :deep(.ant-collapse-content) {
-  border-top-color: #e8edf5;
+  border-top: 1px solid #eef2f7;
 }
 
 .account-advanced-collapse :deep(.ant-collapse-content-box) {
-  padding: 14px;
+  padding: 16px !important;
   background: #f8fafc;
 }
 
 .advanced-header {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
 }
 
 .advanced-header span {
   color: #0f172a;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
 }
 
@@ -379,6 +376,44 @@ defineEmits<{
 .advanced-section-stack {
   display: grid;
   gap: 12px;
+}
+
+.advanced-section-stack :deep(.form-section:last-child) {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.advanced-section-stack :deep(.error-policy-collapse),
+.advanced-section-stack :deep(.stream-policy-collapse) {
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-header),
+.advanced-section-stack :deep(.stream-policy-collapse .ant-collapse-header) {
+  padding: 12px 14px !important;
+}
+
+.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content),
+.advanced-section-stack :deep(.stream-policy-collapse .ant-collapse-content) {
+  border-top-color: #eef2f7;
+}
+
+.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content-box),
+.advanced-section-stack :deep(.stream-policy-collapse .ant-collapse-content-box) {
+  padding: 12px 14px 14px !important;
+}
+
+.advanced-section-stack :deep(.policy-title-row h4) {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.advanced-section-stack :deep(.stream-policy-collapse) {
+  border-bottom: 0;
 }
 
 .account-modal-footer {

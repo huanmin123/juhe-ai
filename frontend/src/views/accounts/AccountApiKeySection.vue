@@ -3,8 +3,6 @@
     <div class="form-section-head">
       <div>
         <h4>{{ title }} 配置</h4>
-        <p v-if="editing">API Key 会在编辑时回显；可直接查看或替换。</p>
-        <p v-else>API Key 会加密保存在本地；创建后不会在页面回显。</p>
       </div>
     </div>
     <a-form-item label="API Key" :required="!editing">
@@ -43,20 +41,20 @@ defineProps<{
 
 <style scoped>
 .form-section {
-  padding: 16px;
-  border: 1px solid #e8edf5;
-  border-radius: 16px;
-  background: #fff;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .form-section-head {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .form-section-head h4 {
   margin: 0;
   color: #0f172a;
-  font-size: 16px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .form-section-head p {
@@ -66,7 +64,6 @@ defineProps<{
 }
 
 .credential-section {
-  border-color: #dbeafe;
-  background: #f8fbff;
+  padding-top: 2px;
 }
 </style>
