@@ -550,6 +550,7 @@ function classifyOversizedOpenAIStreamEvent(eventType: string, imageOutputHint =
   const terminal = eventType === '[DONE]'
     || eventType === 'response.completed'
     || eventType === 'response.done'
+    || eventType === 'response.incomplete'
     || eventType === 'response.failed'
     || eventType === 'image_generation.completed'
     || eventType === 'image_generation.failed'
@@ -562,6 +563,7 @@ function classifyOversizedOpenAIStreamEvent(eventType: string, imageOutputHint =
     || eventType === 'response.output_item.done'
     || eventType === 'response.completed'
     || eventType === 'response.done'
+    || eventType === 'response.incomplete'
     || imageOutput
   return { terminal, failed, visibleOutput, imageOutput }
 }
@@ -631,6 +633,7 @@ function isLightweightImageStreamEventType(eventType: string): boolean {
   return eventType === '[DONE]'
     || eventType === 'response.completed'
     || eventType === 'response.done'
+    || eventType === 'response.incomplete'
     || eventType === 'response.failed'
     || eventType === 'error'
     || isOpenAIImageStreamEventType(eventType)
@@ -641,6 +644,7 @@ function isLightweightTerminalSafeToEnd(eventType: string): boolean {
   return eventType === '[DONE]'
     || eventType === 'response.completed'
     || eventType === 'response.done'
+    || eventType === 'response.incomplete'
     || eventType === 'response.failed'
     || eventType === 'error'
 }
@@ -682,7 +686,7 @@ const lightweightImageStreamControlEventTypes = [
   'image_generation.failed',
   'response.completed',
   'response.done',
+  'response.incomplete',
   'response.failed',
   'error'
 ]
-

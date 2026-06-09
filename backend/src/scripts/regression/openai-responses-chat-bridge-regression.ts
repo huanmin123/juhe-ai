@@ -48,7 +48,7 @@ app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 
 const upstreamRequests: Array<{ path: string; body: Record<string, unknown>; authorization: string }> = []
-let upstreamScenario: 'json' | 'stream' = 'json'
+let upstreamScenario: 'json' | 'json_length' | 'stream' | 'stream_length' = 'json'
 
 try {
   gatewayCache.clearGatewayRuntimeCache()
@@ -105,6 +105,21 @@ try {
         input: 'hello bridge',
         max_output_tokens: 8,
         stream: false,
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'bridge_result',
+            schema: {
+              type: 'object',
+              properties: {
+                ok: { type: 'boolean' }
+              },
+              required: ['ok'],
+              additionalProperties: false
+            },
+            strict: true
+          }
+        },
         tools: [{
           type: 'function',
           name: 'noop',
@@ -120,10 +135,46 @@ try {
     assert.equal(upstreamRequests.at(-1)?.path, '/v1/chat/completions', '桥接请求应投递到上游 Chat Completions')
     assert.equal(upstreamRequests.at(-1)?.authorization, 'Bearer sk-responses-chat-bridge-upstream')
     assert.equal(upstreamRequests.at(-1)?.body.max_tokens, 8, 'max_output_tokens 应映射为 Chat max_tokens')
+    assert.deepEqual(upstreamRequests.at(-1)?.body.response_format, {
+      type: 'json_schema',
+      json_schema: {
+        name: 'bridge_result',
+        schema: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' }
+          },
+          required: ['ok'],
+          additionalProperties: false
+        },
+        strict: true
+      }
+    }, 'Responses text.format 应映射为 Chat response_format')
     assert.deepEqual(upstreamRequests.at(-1)?.body.messages, [
       { role: 'system', content: '只输出短句' },
       { role: 'user', content: 'hello bridge' }
     ])
+
+    upstreamScenario = 'json_length'
+    const lengthResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'length bridge',
+        max_output_tokens: 1,
+        stream: false
+      })
+    })
+    const lengthText = await lengthResponse.text()
+    assert.equal(lengthResponse.status, 200, `非流式截断桥接请求应成功，实际 HTTP ${lengthResponse.status}: ${lengthText}`)
+    const lengthBody = parseJsonObject(lengthText)
+    assert.equal(lengthBody.status, 'incomplete', 'Chat finish_reason=length 应转换为 Responses incomplete')
+    assert.deepEqual(lengthBody.incomplete_details, { reason: 'max_output_tokens' }, '截断原因应映射为 max_output_tokens')
+    assert.equal((lengthBody.output as Array<Record<string, unknown>> | undefined)?.[0]?.status, 'incomplete', '截断时 output item 状态应同步为 incomplete')
 
     upstreamScenario = 'stream'
     const streamResponse = await fetch(`${baseUrl}/v1/responses`, {
@@ -145,6 +196,25 @@ try {
     assert.match(streamText, /bridge stream ok/, '流式桥接应保留可见输出')
     assert.equal(upstreamRequests.at(-1)?.path, '/v1/chat/completions')
     assert.equal(upstreamRequests.at(-1)?.body.stream, true)
+
+    upstreamScenario = 'stream_length'
+    const streamLengthResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'stream length bridge',
+        stream: true
+      })
+    })
+    const streamLengthText = await streamLengthResponse.text()
+    assert.equal(streamLengthResponse.status, 200, `流式截断桥接请求应成功，实际 HTTP ${streamLengthResponse.status}: ${streamLengthText}`)
+    assert.match(streamLengthText, /event: response\.incomplete/, '流式 Chat length 应转换成 Responses incomplete 终止事件')
+    assert.doesNotMatch(streamLengthText, /event: response\.failed/, '流式截断不应被网关误判为缺少终止事件')
+    assert.match(streamLengthText, /"incomplete_details":\{"reason":"max_output_tokens"\}/, '流式截断事件应包含 incomplete_details')
 
     const unsupportedHitsBefore = upstreamRequests.length
     const unsupportedResponse = await fetch(`${baseUrl}/v1/responses`, {
@@ -213,16 +283,27 @@ function createMockChatUpstream(): http.Server {
         res.end('data: [DONE]\n\n')
         return
       }
+      if (upstreamScenario === 'stream_length') {
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+        res.write(`data: ${JSON.stringify({
+          id: 'chatcmpl_bridge_stream_length',
+          object: 'chat.completion.chunk',
+          model: body.model,
+          choices: [{ index: 0, delta: { content: 'cut' }, finish_reason: 'length' }]
+        })}\n\n`)
+        res.end('data: [DONE]\n\n')
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({
-        id: 'chatcmpl_bridge_json',
+        id: upstreamScenario === 'json_length' ? 'chatcmpl_bridge_json_length' : 'chatcmpl_bridge_json',
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
         model: body.model,
         choices: [{
           index: 0,
-          message: { role: 'assistant', content: 'bridge json ok' },
-          finish_reason: 'stop'
+          message: { role: 'assistant', content: upstreamScenario === 'json_length' ? 'cut' : 'bridge json ok' },
+          finish_reason: upstreamScenario === 'json_length' ? 'length' : 'stop'
         }],
         usage: {
           prompt_tokens: 3,

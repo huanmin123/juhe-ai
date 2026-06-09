@@ -9,6 +9,7 @@ import {
   gatewayJsonBodyLargeWarningBytes,
   gatewayRawBodyHardLimitBytes,
   gatewayTextRawBodyHardLimitBytes,
+  gatewayTextRawBodyLimitBytes,
   getGatewayRequestBodyInFlightState,
   isGatewayJsonContentType,
   releaseGatewayRequestBodyInFlightBytes,
@@ -150,7 +151,7 @@ function rejectGatewayRawBodyByRequestLane(
 function resolveGatewayRawBodyRequestLimit(req: GatewayRawBodyRequest): { limitBytes: number; scope: GatewayRawBodyLimitScope } {
   return resolveOpenAIGatewayRequestLane(req) === 'image'
     ? { limitBytes: gatewayImageRawBodyHardLimitBytes, scope: 'image' }
-    : { limitBytes: gatewayTextRawBodyHardLimitBytes, scope: 'text' }
+    : { limitBytes: gatewayTextRawBodyLimitBytes(req.gatewayRuntime?.settings?.gatewayTextRawBodyLimitMegabytes), scope: 'text' }
 }
 
 function rejectGatewayRawBodyTooLarge(

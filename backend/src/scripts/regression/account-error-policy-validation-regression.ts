@@ -7,6 +7,7 @@ import {
 import { decideAccountErrorPolicy, type GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
 
 const settings: GatewaySettings = {
+  gatewayTextRawBodyLimitMegabytes: 8,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,

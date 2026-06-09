@@ -235,9 +235,10 @@ Codex 长会话可能调用 `/responses/compact`。Chat Completions 没有等价
 
 - `chat_completions_bridge` 不支持 `/responses/compact`。
 - 命中时返回本地 `400`，错误信息说明“当前账户使用 Chat Completions 上游，不支持 Responses compact”。
-- 只有在真实验证 Codex 长会话必须依赖 compact 且可接受摘要语义时，再设计第二版：把 compact 请求转换为一次 Chat summarization，并返回 compact 兼容响应。
+- 国内 Chat-only 上游通常通过客户端截断、额外 Chat summarization、RAG 回填或长上下文模型来控制上下文，不提供官方 Responses compact 等价能力。
+- 只有在真实验证 Codex 长会话必须依赖 compact 且可接受摘要语义时，再设计第二版：新增显式实验策略，把 compact 请求转换为一次 Chat summarization，并返回降级响应。
 
-不建议第一版伪造 compact 成功，因为这会破坏 Codex 上下文管理语义。
+不建议第一版伪造 compact 成功，因为官方 `/responses/compact` 产出的是 Responses compaction item；Chat 明文摘要不能等价替代。强行包装会破坏 Codex 上下文管理语义，把明确不支持变成隐性上下文漂移。
 
 ## 候选与调度影响
 
@@ -472,6 +473,7 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 - Codex 对 function call output item 的字段要求：`call_id`、`item_id`、`output_index` 是否必须稳定复用。
 - Codex 对 `/responses/compact` 的触发频率和失败后行为：短会话是否可接受第一版不支持。
 - 国内目标上游对 `developer` role、`reasoning_effort`、`parallel_tool_calls`、`response_format`、stream usage 的兼容差异。
+- 国内 Chat-only 上游的上下文压缩默认不走 `/responses/compact`；如需支持，只能单独评估 `chat_summary_compact_experimental` 这类显式降级策略。
 - 是否需要账户级细分选项：`chatMaxTokensField = max_tokens | max_completion_tokens`、`developerRoleMode = passthrough | system`、`reasoningMode = passthrough | remove`。
 - 是否需要在审计日志 metadata 中固定记录 `upstreamEndpointFamily = chat_completions` 和 `downstreamEndpointFamily = responses`。
 - CC Switch 对 `previous_response_id` 的具体本地历史策略仍需读源码核对；当前只能确认它有相关处理路径。

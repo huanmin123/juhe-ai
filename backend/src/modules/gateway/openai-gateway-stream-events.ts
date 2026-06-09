@@ -100,6 +100,7 @@ export function classifyOpenAIStreamEvent(
   const terminal = event.eventType === '[DONE]'
     || event.eventType === 'response.completed'
     || event.eventType === 'response.done'
+    || event.eventType === 'response.incomplete'
     || event.eventType === 'response.failed'
     || event.eventType === 'image_generation.completed'
     || event.eventType === 'image_generation.failed'
@@ -151,7 +152,7 @@ export function openAIStreamEventHasVisibleOutput(event: Record<string, unknown>
   if (eventType === 'response.output_item.added' || eventType === 'response.output_item.done') {
     return estimateTokensFromOutputValue(event.item) > 0
   }
-  if (eventType === 'response.completed' || eventType === 'response.done') {
+  if (eventType === 'response.completed' || eventType === 'response.done' || eventType === 'response.incomplete') {
     return estimateTokensFromOutputValue((event.response as Record<string, unknown> | undefined)?.output) > 0
   }
   if (isOpenAIImageStreamEventType(eventType)) {
@@ -215,7 +216,7 @@ function estimateOpenAIStreamEventOutputTokens(event: Record<string, unknown>, e
   if (tokens === 0 && priorEstimatedOutputTokens === 0) {
     if (eventType === 'response.output_item.done') {
       tokens += estimateTokensFromOutputValue(event.item)
-    } else if (eventType === 'response.completed' || eventType === 'response.done') {
+    } else if (eventType === 'response.completed' || eventType === 'response.done' || eventType === 'response.incomplete') {
       tokens += estimateTokensFromOutputValue((event.response as Record<string, unknown> | undefined)?.output)
     }
   }

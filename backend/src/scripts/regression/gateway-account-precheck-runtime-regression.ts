@@ -43,6 +43,7 @@ const [
 
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const gatewaySettings: GatewaySettings = {
+  gatewayTextRawBodyLimitMegabytes: 8,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,

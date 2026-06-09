@@ -1,4 +1,5 @@
 export interface SystemSettings {
+  gatewayTextRawBodyLimitMegabytes: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number

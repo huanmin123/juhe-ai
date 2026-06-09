@@ -120,6 +120,7 @@ export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED = {
 } as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [
+  ['gatewayTextRawBodyLimitMegabytes', 8],
   ['defaultTemporaryUnschedulableMinutes', 5],
   ['temporaryUnschedulableRetryIntervalSeconds', 3],
   ['temporaryUnschedulableRetryAttempts', 3],

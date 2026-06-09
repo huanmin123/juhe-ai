@@ -35,6 +35,7 @@ const [databaseModule, usageRecordQueue, usageRecordShards] = await Promise.all(
 ])
 
 const settings: GatewaySettings = {
+  gatewayTextRawBodyLimitMegabytes: 8,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,

@@ -13,6 +13,7 @@ interface GlobalSettingRow {
 const SYSTEM_SETTINGS_ACCOUNT_ID = 'sys_admin'
 const settingsCacheTtlMs = 60_000
 export const systemSettingKeys = [
+  'gatewayTextRawBodyLimitMegabytes',
   'defaultTemporaryUnschedulableMinutes',
   'temporaryUnschedulableRetryIntervalSeconds',
   'temporaryUnschedulableRetryAttempts',
@@ -62,6 +63,7 @@ type SettingValidator = (value: unknown, key: string) => unknown
 const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
+  gatewayTextRawBodyLimitMegabytes: integerSetting(1, 64),
   defaultTemporaryUnschedulableMinutes: integerSetting(1, 1440),
   temporaryUnschedulableRetryIntervalSeconds: integerSetting(0, 3600),
   temporaryUnschedulableRetryAttempts: integerSetting(0, 10),

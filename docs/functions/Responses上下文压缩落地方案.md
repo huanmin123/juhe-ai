@@ -29,6 +29,7 @@
 | `context_management` compaction | Responses 请求语义 | 上游在阈值附近压缩上下文，并在响应里返回 compaction item | 依赖上游原生 Responses 支持和客户端后续携带 |
 | `/responses/compact` | Responses 独立端点 | 显式把一组 input 压缩成新的上下文 | compact 请求本身仍必须能放进上游窗口 |
 | `compaction_trigger` | Codex Responses input item | Codex Remote Compaction V2 通过普通 `/responses` 产出 `compaction` item | 属于 Codex SDK 特性，不是通用 OpenAI-compatible 默认能力 |
+| Chat summarization | Chat Completions 客户端或代理策略 | 用一次额外 Chat 调用把旧 `messages` 总结成明文摘要 | 不是官方 Responses compact，不产出 opaque compaction item |
 
 ## 官方能力口径
 
@@ -115,6 +116,25 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - 下游 `/responses` 请求里的 `context_management` 不转到 Chat 上游。
 - 不伪造 compaction output item。
 - 后续如确需支持，只能单独设计“Chat summarization compact”，并明确它是本地摘要语义，不是官方 Responses compact。
+
+### 国内 Chat-only 上游压缩结论
+
+多数国内 OpenAI v1 兼容模型当前主要承接 `/chat/completions`，上下文压缩通常由客户端或代理自行完成，而不是依赖官方 Responses `/responses/compact`。
+
+常见做法：
+
+- 截断旧 `messages`，只保留最近若干轮。
+- 额外调用一次 Chat 模型，把旧历史总结成明文摘要，再作为后续 `system` / `user` 消息携带。
+- 通过 RAG / 检索系统按需回填历史、文件和代码片段。
+- 选择更长上下文窗口的模型，降低压缩触发频率。
+- 使用供应商自有的 session、cache 或 Responses-like 能力；只有该能力明确支持 `/responses/compact` 时才应走原生透传。
+
+落地结论：
+
+- 国内 Chat-only 上游没有官方 Responses compact 等价能力。
+- `chat_completions_bridge` 继续返回 `responses_compact_not_supported_by_chat_bridge`，这是能力边界，不是账号故障。
+- 不把 Chat 明文摘要包装成 `response.compaction` 成功结果，因为 Codex 后续可能按官方 compact item 语义续链，伪造成功会把明确失败变成隐性上下文漂移。
+- 后续如果真实流量证明必须支持，只能新增显式实验策略，例如 `chat_summary_compact_experimental`；默认关闭，并在 UI、审计和使用记录中标明它是摘要降级，不是官方 compact。
 
 ## 请求处理落点
 

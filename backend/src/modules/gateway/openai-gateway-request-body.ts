@@ -2,8 +2,12 @@ import type { Request, Response } from 'express'
 
 export const gatewayJsonBodyLargeWarningBytes = 2 * 1024 * 1024
 export const gatewayJsonBodyInlineParseMaxBytes = 256 * 1024
-export const gatewayTextRawBodyHardLimitBytes = 8 * 1024 * 1024
-export const gatewayTextRawBodyHardLimit = '8mb'
+export const defaultGatewayTextRawBodyLimitMegabytes = 8
+export const gatewayTextRawBodyLimitMegabytesMin = 1
+export const gatewayTextRawBodyLimitMegabytesMax = 64
+export const defaultGatewayTextRawBodyLimitBytes = defaultGatewayTextRawBodyLimitMegabytes * 1024 * 1024
+export const gatewayTextRawBodyHardLimitBytes = defaultGatewayTextRawBodyLimitBytes
+export const gatewayTextRawBodyHardLimit = `${defaultGatewayTextRawBodyLimitMegabytes}mb`
 export const gatewayImageRawBodyHardLimitBytes = 64 * 1024 * 1024
 export const gatewayImageRawBodyHardLimit = '64mb'
 export const gatewayRawBodyHardLimitBytes = gatewayImageRawBodyHardLimitBytes
@@ -35,6 +39,11 @@ export interface GatewayRequestBodyState {
 
 export type GatewayRawBodyRequest = Request & {
   rawBody?: Buffer
+  gatewayRuntime?: {
+    settings?: {
+      gatewayTextRawBodyLimitMegabytes?: number
+    }
+  }
   gatewayRequestBody?: GatewayRequestBodyState
   gatewayParsedJsonBodyAvailable?: boolean
   gatewayParsedJsonBody?: unknown
@@ -178,6 +187,17 @@ export function setGatewayRequestBodyInFlightMaxBytesForTest(value: number | und
   gatewayBodyInFlightMaxBytesForTest = typeof value === 'number' && Number.isFinite(value)
     ? Math.max(1, Math.trunc(value))
     : undefined
+}
+
+export function gatewayTextRawBodyLimitBytes(configuredMegabytes?: number): number {
+  if (typeof configuredMegabytes !== 'number' || !Number.isFinite(configuredMegabytes)) {
+    return defaultGatewayTextRawBodyLimitBytes
+  }
+  const megabytes = Math.trunc(configuredMegabytes)
+  if (megabytes < gatewayTextRawBodyLimitMegabytesMin || megabytes > gatewayTextRawBodyLimitMegabytesMax) {
+    return defaultGatewayTextRawBodyLimitBytes
+  }
+  return megabytes * 1024 * 1024
 }
 
 export function clearGatewayRequestBodyInFlightForTest(): void {

@@ -23,6 +23,7 @@ import { sanitizeDiagnosticPayload } from './payload-sanitizer.js'
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
 export interface GatewaySettings {
+  gatewayTextRawBodyLimitMegabytes: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
@@ -68,6 +69,7 @@ export function readGatewaySettings(): GatewaySettings {
   assertLocalGatewayDatabaseAccess('readGatewaySettings')
   const settings = getSettings()
   return {
+    gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),

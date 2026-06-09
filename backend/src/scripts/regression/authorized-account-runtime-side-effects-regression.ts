@@ -33,6 +33,7 @@ const [
 ])
 
 const gatewaySettings: GatewaySettings = {
+  gatewayTextRawBodyLimitMegabytes: 8,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,

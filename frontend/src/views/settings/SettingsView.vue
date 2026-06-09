@@ -52,6 +52,27 @@
         <section class="settings-section">
           <div class="section-heading">
             <div>
+              <h3>网关请求体限制</h3>
+              <p>控制文本请求进入上游前可承载的最大上下文体积，保存后会随运行时缓存刷新生效。</p>
+            </div>
+          </div>
+
+          <a-alert class="setting-alert section-alert" type="info" show-icon>
+            <template #message>该配置只作用于文本请求体业务上限，默认 8MB；图像生成请求和网关入口硬保护仍保留 64MB 上限。</template>
+          </a-alert>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="文本请求体上限（MB）" extra="可设置 1 到 64；调大可承载更长上下文，也会增加单请求内存压力。">
+                <a-input-number v-model:value="systemForm.gatewayTextRawBodyLimitMegabytes" :min="1" :max="64" style="width: 100%" />
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-heading">
+            <div>
               <h3>账户调度默认值</h3>
               <p>这些配置是系统级运行策略，保存后会影响网关调度和后台任务。</p>
             </div>

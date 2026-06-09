@@ -51,6 +51,7 @@ const visibleOutputEvent = sseEvent('response.output_text.delta', {
 })
 
 const settings: GatewaySettings = {
+  gatewayTextRawBodyLimitMegabytes: 8,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,

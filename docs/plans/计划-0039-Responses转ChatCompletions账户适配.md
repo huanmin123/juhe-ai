@@ -163,6 +163,7 @@ Codex、OpenAI SDK 和部分新客户端固定使用 OpenAI v1 `POST /responses`
 | 2026-06-09 | bridge 能力放在账户维度，默认关闭 | 上游是否支持 Responses 取决于具体账号 `base_url` 和模型服务 | 不影响现有账户，支持按账号逐步试点 |
 | 2026-06-09 | OAuth 账户不接入 bridge | OAuth 走 ChatGPT / Codex backend 专用 adapter，不是公开 API Key Chat 上游 | 避免污染现有 OAuth Codex 链路 |
 | 2026-06-09 | 第一版不支持 `/responses/compact` | Chat Completions 无等价端点，伪造成功会破坏 Codex 上下文语义 | 长会话需后续真实验证后再设计 |
+| 2026-06-09 | 国内 Chat-only 上游不默认做 compact 伪兼容 | 国内 OpenAI v1 兼容模型通常基于 Chat 协议，通过客户端截断、Chat summarization、RAG 或长上下文模型控制上下文；这些都不是官方 Responses compact | `responses_compact_not_supported_by_chat_bridge` 保留；后续如确需支持，只能新增默认关闭的显式实验策略 |
 | 2026-06-09 | 不支持能力返回本地错误，不写账号失败 | 请求能力超出转换器子集不是账号物理故障 | 保护账号状态和错误治理准确性 |
 
 ## 验收标准
@@ -205,4 +206,3 @@ Codex、OpenAI SDK 和部分新客户端固定使用 OpenAI v1 `POST /responses`
 - 主要改动位置：`backend/src/modules/gateway/openai-responses-chat-bridge.ts`、网关 upstream / response finalization / stream、账户 routes / repository / selector、前端账户表单与测试弹窗、`docs/functions/` 与 `docs/plans/`。
 - 验证结果：前后端类型检查通过；新增 bridge 回归、默认透传、账户测试契约、导入导出、公开接口、OAuth adapter 和缓存失效关键回归通过。
 - 后续建议：拿真实国内 Chat-only 上游跑 Codex 短任务、工具调用和长会话；重点观察 `/responses/compact`、reasoning 字段、developer role 和 stream usage 差异。
-

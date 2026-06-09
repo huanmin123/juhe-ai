@@ -41,6 +41,8 @@ interface ChatToolCallState {
   added: boolean
 }
 
+type ResponsesCompletionStatus = 'completed' | 'incomplete'
+
 const defaultBridgeBaseUrlPath = '/v1/chat/completions'
 
 export function isOpenAIResponsesChatBridgeAccount(account: OpenAIResponsesChatBridgeAccount): boolean {
@@ -167,6 +169,13 @@ function transformResponsesRequestToChatCompletions(
   const reasoningEffort = stringValue(reasoning?.effort)
   if (reasoningEffort) {
     output.reasoning_effort = reasoningEffort
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(output, 'response_format')) {
+    const textFormat = transformResponsesTextFormatToChatResponseFormat(body.text)
+    if (textFormat !== undefined) {
+      output.response_format = textFormat
+    }
   }
 
   if (Array.isArray(body.tools)) {
@@ -352,28 +361,71 @@ function transformResponsesToolChoice(value: unknown): unknown {
   throw new OpenAIResponsesChatBridgeError(`tool_choice 类型 ${type || 'unknown'} 暂不支持转为 Chat Completions`)
 }
 
+function transformResponsesTextFormatToChatResponseFormat(value: unknown): unknown {
+  const text = objectValue(value)
+  if (!text || !Object.prototype.hasOwnProperty.call(text, 'format')) {
+    return undefined
+  }
+  const format = text.format
+  if (!isPlainObject(format)) {
+    throw new OpenAIResponsesChatBridgeError('text.format 必须是对象，无法转换为 Chat response_format')
+  }
+  const type = stringValue(format.type)
+  if (!type || type === 'text') {
+    return undefined
+  }
+  if (type === 'json_object') {
+    return { type: 'json_object' }
+  }
+  if (type === 'json_schema') {
+    const name = stringValue(format.name)
+    const schema = format.schema
+    if (!name) {
+      throw new OpenAIResponsesChatBridgeError('text.format json_schema 缺少 name，无法转换为 Chat response_format')
+    }
+    if (!isPlainObject(schema)) {
+      throw new OpenAIResponsesChatBridgeError('text.format json_schema 缺少 schema，无法转换为 Chat response_format')
+    }
+    const jsonSchema: Record<string, unknown> = {
+      name,
+      schema
+    }
+    const description = stringValue(format.description)
+    if (description) jsonSchema.description = description
+    if (typeof format.strict === 'boolean') jsonSchema.strict = format.strict
+    return {
+      type: 'json_schema',
+      json_schema: jsonSchema
+    }
+  }
+  throw new OpenAIResponsesChatBridgeError(`text.format 类型 ${type} 暂不支持转为 Chat response_format`)
+}
+
 function transformChatCompletionResponseToResponses(chat: Record<string, unknown>): Record<string, unknown> {
   const choice = firstChoice(chat)
   const message = objectValue(choice?.message) ?? {}
   const content = chatMessageContentText(message.content)
+  const finishReason = stringValue(choice?.finish_reason)
+  const status = chatFinishReasonToResponsesStatus(finishReason)
   const output: Array<Record<string, unknown>> = []
   if (content) {
-    output.push(responseMessageItem(content, 'completed'))
+    output.push(responseMessageItem(content, status))
   }
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
   for (const toolCall of toolCalls) {
-    const converted = chatToolCallToResponsesFunctionCall(toolCall)
+    const converted = chatToolCallToResponsesFunctionCall(toolCall, status)
     if (converted) output.push(converted)
   }
   return {
     id: responseId(chat.id),
     object: 'response',
     created_at: numberValue(chat.created) ?? Math.floor(Date.now() / 1000),
-    status: 'completed',
+    status,
     model: stringValue(chat.model),
     output,
     output_text: content,
-    usage: chatUsageToResponsesUsage(chat.usage)
+    usage: chatUsageToResponsesUsage(chat.usage),
+    ...responsesIncompleteDetails(finishReason)
   }
 }
 
@@ -394,6 +446,7 @@ class ChatCompletionSseToResponsesTransformer {
   private nextOutputIndex = 0
   private usage: unknown
   private finishSeen = false
+  private finishReason = ''
   private readonly toolCallsByIndex = new Map<number, ChatToolCallState>()
 
   constructor(input: { model?: string } = {}) {
@@ -495,6 +548,7 @@ class ChatCompletionSseToResponsesTransformer {
       }
       if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
         this.finishSeen = true
+        this.finishReason ||= stringValue(choice.finish_reason)
       }
     }
     return output
@@ -611,6 +665,7 @@ class ChatCompletionSseToResponsesTransformer {
     if (this.completed) return []
     this.completed = true
     const output = this.ensureResponseStarted()
+    const status = chatFinishReasonToResponsesStatus(this.finishReason)
     if (this.contentPartStarted && this.messageOutputIndex !== undefined) {
       output.push(sseEvent('response.output_text.done', {
         type: 'response.output_text.done',
@@ -633,7 +688,7 @@ class ChatCompletionSseToResponsesTransformer {
       output.push(sseEvent('response.output_item.done', {
         type: 'response.output_item.done',
         output_index: this.messageOutputIndex,
-        item: responseMessageItem(this.outputText, 'completed', this.messageItemId)
+        item: responseMessageItem(this.outputText, status, this.messageItemId)
       }))
     }
     for (const state of [...this.toolCallsByIndex.values()].sort((left, right) => left.outputIndex - right.outputIndex)) {
@@ -646,12 +701,13 @@ class ChatCompletionSseToResponsesTransformer {
       output.push(sseEvent('response.output_item.done', {
         type: 'response.output_item.done',
         output_index: state.outputIndex,
-        item: responseFunctionCallItem(state, 'completed')
+        item: responseFunctionCallItem(state, status)
       }))
     }
-    output.push(sseEvent('response.completed', {
-      type: 'response.completed',
-      response: this.responseObject('completed')
+    const terminalEventType = status === 'incomplete' ? 'response.incomplete' : 'response.completed'
+    output.push(sseEvent(terminalEventType, {
+      type: terminalEventType,
+      response: this.responseObject(status)
     }))
     return output
   }
@@ -670,13 +726,13 @@ class ChatCompletionSseToResponsesTransformer {
     return output
   }
 
-  private responseObject(status: 'in_progress' | 'completed' | 'failed', error?: { code: string; message: string }): Record<string, unknown> {
+  private responseObject(status: 'in_progress' | ResponsesCompletionStatus | 'failed', error?: { code: string; message: string }): Record<string, unknown> {
     const output: Array<Record<string, unknown>> = []
     if (this.outputText || this.messageOutputIndex !== undefined) {
-      output.push(responseMessageItem(this.outputText, status === 'completed' ? 'completed' : 'in_progress', this.messageItemId))
+      output.push(responseMessageItem(this.outputText, responseItemStatus(status), this.messageItemId))
     }
     for (const state of [...this.toolCallsByIndex.values()].sort((left, right) => left.outputIndex - right.outputIndex)) {
-      output.push(responseFunctionCallItem(state, status === 'completed' ? 'completed' : 'in_progress'))
+      output.push(responseFunctionCallItem(state, responseItemStatus(status)))
     }
     return {
       id: this.responseIdValue,
@@ -687,6 +743,7 @@ class ChatCompletionSseToResponsesTransformer {
       output,
       output_text: this.outputText,
       usage: chatUsageToResponsesUsage(this.usage),
+      ...responsesIncompleteDetails(this.finishReason),
       ...(error ? { error } : {})
     }
   }
@@ -736,7 +793,7 @@ function normalizeChatRole(value: unknown): string {
   return 'user'
 }
 
-function chatToolCallToResponsesFunctionCall(value: unknown): Record<string, unknown> | undefined {
+function chatToolCallToResponsesFunctionCall(value: unknown, status: ResponsesCompletionStatus = 'completed'): Record<string, unknown> | undefined {
   const toolCall = objectValue(value)
   const fn = objectValue(toolCall?.function)
   const name = stringValue(fn?.name)
@@ -745,14 +802,14 @@ function chatToolCallToResponsesFunctionCall(value: unknown): Record<string, unk
   return {
     id,
     type: 'function_call',
-    status: 'completed',
+    status,
     call_id: id,
     name,
     arguments: textValue(fn?.arguments)
   }
 }
 
-function responseMessageItem(text: string, status: 'in_progress' | 'completed', id = `msg_${Math.random().toString(16).slice(2)}`): Record<string, unknown> {
+function responseMessageItem(text: string, status: 'in_progress' | ResponsesCompletionStatus, id = `msg_${Math.random().toString(16).slice(2)}`): Record<string, unknown> {
   return {
     id,
     type: 'message',
@@ -766,7 +823,7 @@ function responseMessageItem(text: string, status: 'in_progress' | 'completed', 
   }
 }
 
-function responseFunctionCallItem(state: ChatToolCallState, status: 'in_progress' | 'completed'): Record<string, unknown> {
+function responseFunctionCallItem(state: ChatToolCallState, status: 'in_progress' | ResponsesCompletionStatus): Record<string, unknown> {
   return {
     id: state.id,
     type: 'function_call',
@@ -775,6 +832,24 @@ function responseFunctionCallItem(state: ChatToolCallState, status: 'in_progress
     name: state.name,
     arguments: state.argumentsText
   }
+}
+
+function chatFinishReasonToResponsesStatus(finishReason: string): ResponsesCompletionStatus {
+  return finishReason === 'length' ? 'incomplete' : 'completed'
+}
+
+function responsesIncompleteDetails(finishReason: string): Record<string, unknown> {
+  if (finishReason !== 'length') return {}
+  return {
+    incomplete_details: {
+      reason: 'max_output_tokens'
+    }
+  }
+}
+
+function responseItemStatus(status: 'in_progress' | ResponsesCompletionStatus | 'failed'): 'in_progress' | ResponsesCompletionStatus {
+  if (status === 'failed') return 'in_progress'
+  return status
 }
 
 function chatUsageToResponsesUsage(value: unknown): Record<string, unknown> | undefined {
