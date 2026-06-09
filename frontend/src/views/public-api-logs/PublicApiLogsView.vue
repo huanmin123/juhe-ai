@@ -110,9 +110,7 @@
           {{ formatDuration(record.durationMs) }}
         </template>
         <template v-else-if="column.key === 'traceId'">
-          <a-tooltip :title="record.traceId || '-'">
-            <span class="hash-cell">{{ preview(record.traceId) }}</span>
-          </a-tooltip>
+          <span class="trace-id-full">{{ record.traceId || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <RowActions :actions="detailActions" @action-click="openDetail(record)" />
@@ -137,7 +135,7 @@
             <span>客户端 IP</span>
             <strong>{{ record.clientIp || '-' }}</strong>
             <span>traceId</span>
-            <strong class="hash-cell">{{ preview(record.traceId) }}</strong>
+            <strong class="trace-id-full">{{ record.traceId || '-' }}</strong>
           </div>
           <RowActions :actions="detailActions" variant="button" @action-click="openDetail(record)" />
         </article>
@@ -286,7 +284,7 @@ const columns = [
   { title: '状态码', key: 'statusCode', width: 92 },
   { title: '耗时', key: 'duration', width: 100 },
   { title: '客户端 IP', dataIndex: 'clientIp', key: 'clientIp', width: 140 },
-  { title: 'traceId', key: 'traceId', width: 150 },
+  { title: 'traceId', key: 'traceId', width: 300 },
   { title: '操作', key: 'actions', fixed: 'right', actionCount: 1 }
 ]
 const detailActions: RowActionItem[] = [{ key: 'detail', label: '详情', icon: 'detail', tone: 'info' }]
@@ -423,11 +421,6 @@ function statusColor(value?: number): string {
   return 'blue'
 }
 
-function preview(value?: string): string {
-  if (!value) return '-'
-  return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value
-}
-
 function prettyJson(value: unknown): string {
   try {
     return JSON.stringify(value ?? {}, null, 2)
@@ -471,7 +464,7 @@ onDeactivated(closeDetail)
 }
 
 .mono-cell,
-.hash-cell,
+.trace-id-full,
 .path-cell {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
@@ -482,12 +475,11 @@ onDeactivated(closeDetail)
   overflow-wrap: anywhere;
 }
 
-.hash-cell {
+.trace-id-full {
   display: inline-block;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .detail-descriptions {

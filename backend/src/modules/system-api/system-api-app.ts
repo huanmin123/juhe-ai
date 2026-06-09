@@ -34,6 +34,7 @@ import { listPublicGlobalSettings } from '../../storage/repositories.js'
 export interface SystemApiAppOptions {
   systemApiPrefix: string
   publicApiPrefix?: string
+  trustProxy?: boolean | number
 }
 
 type BodyParserError = Error & {
@@ -48,6 +49,9 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   const app = express()
   const { systemApiPrefix } = options
   const publicApiPrefix = options.publicApiPrefix ?? '/__aipublic__'
+  if (options.trustProxy !== undefined) {
+    app.set('trust proxy', options.trustProxy)
+  }
 
   app.use(requestContextMiddleware)
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)

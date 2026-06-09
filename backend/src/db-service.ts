@@ -127,7 +127,7 @@ function isDbServiceParentMessage(message: unknown): message is DbServiceRequest
 }
 
 async function startDbServiceHttpServer(): Promise<DbServiceHttpEndpoint> {
-  const app = createSystemApiApp({ systemApiPrefix, publicApiPrefix })
+  const app = createSystemApiApp({ systemApiPrefix, publicApiPrefix, trustProxy: 1 })
   const host = runtimeConfig.dbServiceHttpHost
   const configuredPort = runtimeConfig.dbServiceHttpPort
   const server = app.listen(configuredPort, host)

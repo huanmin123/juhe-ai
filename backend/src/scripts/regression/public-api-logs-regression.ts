@@ -60,7 +60,7 @@ assert(builtInTokenSecret?.token, '内置测试 Token 应写入数据库并可�
 const builtInTestToken = builtInTokenSecret.token
 
 try {
-  const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' })
+  const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__', trustProxy: 1 })
   const server = await listen(app)
   const address = server.address()
   assert(address && typeof address !== 'string', '测试 HTTP 服务地址无效')
@@ -82,7 +82,8 @@ try {
 
     const success = await requestJson(baseUrl, '/__aipublic__/demo/source-auth?token=public-query-secret&safe=ok', {
       Authorization: `Bearer ${builtInTestToken}`,
-      'x-trace-id': 'trace-public-success'
+      'x-trace-id': 'trace-public-success',
+      'x-forwarded-for': '198.51.100.250, 203.0.113.88'
     })
     assert.equal(success.status, 200)
     assert.equal(success.body.data.mock, true)
@@ -92,6 +93,7 @@ try {
     assert.equal(successLog.success, true)
     assert.equal(successLog.isTestToken, true)
     assert.equal(successLog.sourceName, '内置测试来源')
+    assert.equal(successLog.clientIp, '203.0.113.88', '公开接口日志应记录主进程转发后的真实客户端 IP，不能退回 DB service 本地地址')
     assert.equal(successLog.queryString, 'token=public-query-secret&safe=ok', '公开接口日志 queryString 应保留敏感参数原文')
     const successDetail = requiredDetail(successLog.id)
     assert.equal((successDetail.requestData.query as Record<string, unknown>).token, 'public-query-secret', '请求快照 query 应保留 token 参数原文')
