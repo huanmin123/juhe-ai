@@ -5,6 +5,7 @@ import { downstreamConnectionClosedMessage } from './openai-gateway-client-abort
 import { gatewayErrorPayload, sendGatewayErrorResponse } from './openai-gateway-responses.js'
 import { isUpstreamRequestAbortedError } from './openai-gateway-upstream.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
+import { OpenAIResponsesChatBridgeError } from './openai-responses-chat-bridge.js'
 
 interface HandleGatewayRequestKnownErrorResponseInput {
   res: Response
@@ -34,6 +35,24 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
   if (error instanceof OpenAIOAuthCodexAdapterError) {
     const statusCode = error.statusCode
     const responsePayload = gatewayErrorPayload(error.message, error.type)
+    sendGatewayErrorResponse(res, statusCode, responsePayload)
+    auditCapture.finalize({
+      outcome: 'gateway_failed',
+      success: false,
+      statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(responsePayload),
+      responsePartType: 'gateway_error',
+      errorPhase: 'request_validation',
+      errorCode: error.code,
+      errorMessage: error.message
+    })
+    return true
+  }
+
+  if (error instanceof OpenAIResponsesChatBridgeError) {
+    const statusCode = error.statusCode
+    const responsePayload = gatewayErrorPayload(error.message, error.type, error.code)
     sendGatewayErrorResponse(res, statusCode, responsePayload)
     auditCapture.finalize({
       outcome: 'gateway_failed',

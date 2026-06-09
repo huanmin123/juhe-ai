@@ -452,6 +452,7 @@ function createTestAccount(id: string): Parameters<typeof clientIpAvoidance.orde
     credentials: {},
     apiKey: '',
     baseUrl: 'http://127.0.0.1/v1',
+    openAIResponsesUpstreamMode: 'passthrough',
     proxyProfileId: undefined,
     concurrencyLimit: 1,
     cooldownUntil: undefined,

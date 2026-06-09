@@ -3,6 +3,7 @@ import axios from 'axios'
 import type {
   AccountSummary,
   AccountClientCompatibility,
+  OpenAIResponsesUpstreamMode,
   AccountExportResult,
   AccountImportOptions,
   AccountImportResult,
@@ -246,6 +247,7 @@ export interface AccountDraftTestAccountPayload {
   concurrencyLimit: number
   priority: number
   clientCompatibility: AccountClientCompatibility
+  openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels: string[]
   modelMappings: Array<{ sourceModel: string; upstreamModel: string; enabled: boolean }>
   proxyProfileId?: string | null

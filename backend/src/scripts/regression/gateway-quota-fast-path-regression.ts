@@ -88,6 +88,7 @@ function upstreamAccountWithoutAuthorizationQuota(id: string): OpenAIAccountSecr
     type: 'api_key',
     status: 'active',
     supportedModels: [],
+    openAIResponsesUpstreamMode: 'passthrough',
     concurrencyLimit: 10,
     priority: 0,
     superPriorityEnabled: false,

@@ -1,6 +1,7 @@
 import type {
   AccountAvailabilitySchedule,
   AccountClientCompatibility,
+  OpenAIResponsesUpstreamMode,
   AccountSummary,
   AccountTestResult,
   AccountTestTask,
@@ -42,6 +43,7 @@ export interface AccountTestDraftSnapshot {
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
+  openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountSummary['modelMappings']
   proxyProfileId?: string
@@ -401,6 +403,13 @@ function accountClientCompatibility(value: string | null): AccountClientCompatib
   return value === 'openai_standard' || value === 'codex_responses' ? value : undefined
 }
 
+function openAIResponsesUpstreamMode(value: unknown, accountType?: unknown): OpenAIResponsesUpstreamMode {
+  if (accountType === 'oauth') {
+    return 'passthrough'
+  }
+  return value === 'chat_completions_bridge' ? 'chat_completions_bridge' : 'passthrough'
+}
+
 function normalizeAccountTestTaskClientCompatibility(account: AccountSummary, value: AccountClientCompatibility | undefined): AccountClientCompatibility | undefined {
   if (isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account) && account.type === 'oauth') {
     return 'codex_responses'
@@ -485,6 +494,7 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
     superPriorityEnabled: booleanValue(record.superPriorityEnabled),
     fallbackEnabled: booleanValue(record.fallbackEnabled),
     clientCompatibility,
+    openAIResponsesUpstreamMode: openAIResponsesUpstreamMode(record.openAIResponsesUpstreamMode, type),
     supportedModels: stringListValue(record.supportedModels),
     modelMappings: accountModelMappingsValue(record.modelMappings),
     proxyProfileId: normalizedOptionalText(record.proxyProfileId),

@@ -323,6 +323,7 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.super_priority_enabled',
     'accounts.fallback_enabled',
     'accounts.client_compatibility',
+    'accounts.openai_responses_upstream_mode',
     'accounts.schedulable',
     'accounts.availability_schedule_json',
     'accounts.account_expires_at',
@@ -366,7 +367,8 @@ function sourceAccountSelectColumns(includeCredentials: boolean): string {
     includeCredentials ? 'source_accounts.credentials_encrypted AS source_credentials_encrypted' : "'' AS source_credentials_encrypted",
     'source_accounts.proxy_profile_id AS source_proxy_profile_id',
     'source_accounts.concurrency_limit AS source_concurrency_limit',
-    'source_accounts.client_compatibility AS source_client_compatibility'
+    'source_accounts.client_compatibility AS source_client_compatibility',
+    'source_accounts.openai_responses_upstream_mode AS source_openai_responses_upstream_mode'
   ].join(', ')
 }
 
@@ -390,6 +392,7 @@ function accountListOuterSelectColumns(): string {
     'super_priority_enabled',
     'fallback_enabled',
     'client_compatibility',
+    'openai_responses_upstream_mode',
     'schedulable',
     'availability_schedule_json',
     'account_expires_at',
@@ -436,7 +439,8 @@ function accountListOuterSelectColumns(): string {
     'source_credentials_encrypted',
     'source_proxy_profile_id',
     'source_concurrency_limit',
-    'source_client_compatibility'
+    'source_client_compatibility',
+    'source_openai_responses_upstream_mode'
   ].map((column) => `account_rows.${column}`).join(', ')
 }
 
@@ -549,6 +553,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     proxy_profile_id: string | null
     concurrency_limit: number | null
     client_compatibility: AccountListRow['client_compatibility']
+    openai_responses_upstream_mode: AccountListRow['openai_responses_upstream_mode']
   }> = []
   const database = getBusinessDatabase()
   for (const chunk of chunkValues(sourceIds, 900)) {
@@ -557,7 +562,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
         SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
           last_error_code, last_error_message, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
-          proxy_profile_id, concurrency_limit, client_compatibility
+          proxy_profile_id, concurrency_limit, client_compatibility, openai_responses_upstream_mode
         FROM accounts
         WHERE deleted_at IS NULL
           AND id IN (${sqlPlaceholders(chunk.length)})
@@ -588,7 +593,8 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
       source_credentials_encrypted: source.credentials_encrypted,
       source_proxy_profile_id: source.proxy_profile_id,
       source_concurrency_limit: source.concurrency_limit,
-      source_client_compatibility: source.client_compatibility
+      source_client_compatibility: source.client_compatibility,
+      source_openai_responses_upstream_mode: source.openai_responses_upstream_mode
     }
   })
 }

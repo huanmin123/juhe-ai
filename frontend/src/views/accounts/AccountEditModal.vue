@@ -70,6 +70,7 @@
           <a-descriptions-item label="Base URL" :span="2">{{ form.baseUrl || '-' }}</a-descriptions-item>
           <a-descriptions-item label="来源账户状态">{{ sourceAccountStatusText }}</a-descriptions-item>
           <a-descriptions-item label="来源套餐到期">{{ sourceAccountExpiresAtText }}</a-descriptions-item>
+          <a-descriptions-item label="Responses 上游">{{ readonlyResponsesUpstreamModeText }}</a-descriptions-item>
           <a-descriptions-item v-for="item in publicCredentialItems" :key="item.key" :label="item.label">
             {{ item.value }}
           </a-descriptions-item>
@@ -159,7 +160,7 @@ import AccountFormSelector from './AccountFormSelector.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
 import AccountStreamInterceptPolicyCard from './AccountStreamInterceptPolicyCard.vue'
-import { statusText } from './accountFormatters'
+import { openAIResponsesUpstreamModeText, statusText } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
@@ -247,6 +248,9 @@ const sourceAccountStatusText = computed(() => {
 })
 
 const sourceAccountExpiresAtText = computed(() => formatDateTime(props.accountDetail?.authorizationInstanceSourceAccountExpiresAt))
+const readonlyResponsesUpstreamModeText = computed(() => (
+  props.isOAuthForm ? 'OAuth 固定 Codex' : openAIResponsesUpstreamModeText(props.form.openAIResponsesUpstreamMode)
+))
 const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
 const advancedConfiguredCount = computed(() => {
   const form = props.form
@@ -254,6 +258,7 @@ const advancedConfiguredCount = computed(() => {
     form.supportedModels.length > 0,
     form.modelMappings.length > 0,
     form.clientCompatibility !== (props.isOAuthForm ? 'codex_responses' : 'openai_standard'),
+    !props.isOAuthForm && form.openAIResponsesUpstreamMode !== 'passthrough',
     form.concurrencyLimit !== DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     form.priority !== 0,
     Boolean(form.proxyProfileId),

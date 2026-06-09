@@ -214,6 +214,7 @@ const importTemplate = JSON.stringify({
       concurrencyLimit: 3,
       priority: 50,
       proxyRef: 'proxy-hk-1',
+      openAIResponsesUpstreamMode: 'passthrough',
       credentials: {
         api_key: 'sk-xxx',
         base_url: 'https://api.openai.com/v1'
@@ -310,6 +311,7 @@ const accountImportProtocolMarkdown = [
   '| `priority` | 否 | number | 非负整数，调度优先级。 |',
   '| `superPriorityEnabled` | 否 | boolean | 超级优先开关。 |',
   '| `fallbackEnabled` | 否 | boolean | 降级备用开关。 |',
+  '| `openAIResponsesUpstreamMode` | 否 | string | API Key 账户的 Responses 上游模式：`passthrough` 或 `chat_completions_bridge`；OAuth 不支持桥接。 |',
   '| `supportedModels` | 否 | string[] | 支持模型列表；不确定时省略。 |',
   '| `modelMappings` | 否 | object[] | 模型映射列表，条目包含 `sourceModel`、`upstreamModel`、`enabled`。 |',
   '| `accountExpiresAt` | 否 | string | ISO 时间字符串。 |',
@@ -323,6 +325,7 @@ const accountImportProtocolMarkdown = [
   '- `proxyRef` 和 `proxyProfileId` 不能同时填写。',
   '- `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。',
   '- `supportedModels` 只填明确支持的模型名称；不确定时省略。',
+  '- 上游只支持 Chat Completions 时，API Key 账户可填 `openAIResponsesUpstreamMode: "chat_completions_bridge"`；不确定时省略或填 `passthrough`。',
   '- `modelMappings` 的 sourceModel 是下游请求模型，upstreamModel 是该账户实际转发模型。',
   '- `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。',
   '',
@@ -385,6 +388,7 @@ const accountImportProtocolMarkdown = [
   '- 账户缺少 `groupId` / `groupName`，或分组供应商和账户供应商不一致。',
   '- API Key 账户缺少 `credentials.api_key`。',
   '- OAuth 账户同时缺少 `credentials.refresh_token` 和 `credentials.access_token`。',
+  '- OAuth 账户设置 `openAIResponsesUpstreamMode: "chat_completions_bridge"`。',
   '- `proxyRef` 指向的代理不存在、未在 `proxies` 中声明，或普通用户尝试创建新代理。',
   '- 未知字段写入了错误层级，例如把外部系统字段直接放进 `credentials`。'
 ].join('\n')

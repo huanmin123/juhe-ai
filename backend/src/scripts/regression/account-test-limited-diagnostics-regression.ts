@@ -27,6 +27,7 @@ const account: AccountSummary = accountSummaryWithEffectiveAvailability({
   superPriorityEnabled: false,
   fallbackEnabled: false,
   clientCompatibility: 'openai_standard',
+  openAIResponsesUpstreamMode: 'passthrough',
   schedulable: true,
   todayUsage: emptyUsage,
   usage: emptyUsage,

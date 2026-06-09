@@ -63,6 +63,14 @@
         :options="clientCompatibilityOptions"
       />
     </a-form-item>
+    <a-form-item v-if="!isOAuthForm" label="Responses 上游">
+      <a-select
+        v-model:value="form.openAIResponsesUpstreamMode"
+        :disabled="authorizedEditing"
+        :options="responsesUpstreamModeOptions"
+      />
+      <div class="form-help">仅影响下游调用 /v1/responses 时选择的上游 endpoint。</div>
+    </a-form-item>
     <div class="strategy-grid">
       <a-form-item label="并发上限">
         <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
@@ -92,6 +100,11 @@ import type { AccountFormModel } from './accountFormTypes'
 const clientCompatibilityOptions = [
   { label: 'OpenAI 标准', value: 'openai_standard' },
   { label: 'Codex Responses', value: 'codex_responses' }
+]
+
+const responsesUpstreamModeOptions = [
+  { label: '直通 Responses', value: 'passthrough' },
+  { label: '转 Chat Completions', value: 'chat_completions_bridge' }
 ]
 
 const props = defineProps<{

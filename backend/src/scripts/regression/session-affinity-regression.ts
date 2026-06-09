@@ -363,6 +363,7 @@ function createAccount(
     type: options.type ?? 'api_key',
     status: 'active',
     supportedModels: [],
+    openAIResponsesUpstreamMode: 'passthrough',
     concurrencyLimit: options.concurrencyLimit ?? 20,
     currentConcurrency: options.currentConcurrency ?? 0,
     priority: options.priority,

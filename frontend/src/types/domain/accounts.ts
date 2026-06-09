@@ -4,6 +4,7 @@ import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
 export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
+export type OpenAIResponsesUpstreamMode = 'passthrough' | 'chat_completions_bridge'
 
 export interface AccountCredentials {
   api_key?: string
@@ -192,6 +193,7 @@ export interface AccountSummary {
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
+  openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   lastSuccessfulTestModel?: string
@@ -407,6 +409,28 @@ export interface AccountImportProxyItem {
   proxyProfileId?: string
 }
 
+export interface AccountExportAccount {
+  ref: string
+  name: string
+  providerCode: ProviderCode
+  type: AccountType
+  status: 'active' | 'pending_test' | 'disabled'
+  groupId?: string
+  groupName?: string
+  proxyRef?: string
+  concurrencyLimit?: number
+  priority?: number
+  superPriorityEnabled?: boolean
+  fallbackEnabled?: boolean
+  openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
+  supportedModels?: string[]
+  modelMappings?: AccountModelMapping[]
+  accountExpiresAt?: string
+  availabilitySchedule?: AccountAvailabilitySchedule
+  credentials: AccountCredentials
+  notes?: string
+}
+
 export interface AccountImportResult {
   type: 'juhe-ai-account-import'
   version: 1
@@ -423,7 +447,7 @@ export interface AccountExportDocument {
   type: 'juhe-ai-account-import'
   version: 1
   proxies?: Array<Record<string, unknown>>
-  accounts: Array<Record<string, unknown>>
+  accounts: AccountExportAccount[]
 }
 
 export interface AccountExportResult {

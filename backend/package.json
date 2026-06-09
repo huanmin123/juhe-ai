@@ -128,6 +128,7 @@
     "test:openai-oauth-refresh-hot-path-cache": "tsx src/scripts/regression/openai-oauth-refresh-hot-path-cache-regression.ts",
     "test:openai-oauth-token-response-boundary": "tsx src/scripts/regression/openai-oauth-token-response-boundary-regression.ts",
     "test:openai-api-key-passthrough": "tsx src/scripts/regression/openai-api-key-passthrough-regression.ts",
+    "test:openai-responses-chat-bridge": "tsx src/scripts/regression/openai-responses-chat-bridge-regression.ts",
     "test:openai-compatible-gateway-e2e": "tsx src/scripts/regression/openai-compatible-gateway-e2e-regression.ts",
     "test:runtime-log-grep-path": "tsx src/scripts/regression/runtime-log-grep-path-regression.ts",
     "test:runtime-log-keyword-only-sql": "tsx src/scripts/regression/runtime-log-keyword-only-sql-regression.ts",

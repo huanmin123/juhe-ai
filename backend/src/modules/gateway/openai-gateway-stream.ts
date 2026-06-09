@@ -27,7 +27,8 @@ import {
 } from './openai-gateway-body.js'
 import {
   OpenAIStreamInterceptBuffer,
-  type StreamInterceptDecision
+  type StreamInterceptDecision,
+  type StreamInterceptorResult
 } from './openai-gateway-stream-intercept.js'
 import type { RuntimeStreamInterceptPolicy } from './openai-gateway-stream-policy.js'
 
@@ -74,6 +75,8 @@ export interface StreamPipeOptions {
   captureSuccessPayloads?: boolean
   streamInterceptPolicies?: RuntimeStreamInterceptPolicy[]
   prepareDownstream?: () => void
+  transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
+  flushTransformedUpstreamChunks?: () => Buffer[]
 }
 
 const streamDiagnosticCaptureBytes = 256 * 1024
@@ -273,7 +276,8 @@ export async function pipeUpstreamStream(
       if (!bodyCaptureOmitted) {
         upstreamCapture.push(buffer)
       }
-      const interceptResult = interceptor.pushChunk(buffer)
+      const transformedChunks = options.transformUpstreamChunk ? options.transformUpstreamChunk(buffer) : [buffer]
+      const interceptResult = pushStreamInterceptorChunks(interceptor, transformedChunks)
       if (interceptResult.parserSkipped && !interceptParserSkipLogged) {
         interceptParserSkipLogged = true
         streamLogger.info({
@@ -413,7 +417,11 @@ export async function pipeUpstreamStream(
       }
     }
 
-    const eofInterceptResult = interceptor.flushPendingOnEof()
+    const eofTransformedChunks = options.flushTransformedUpstreamChunks?.() ?? []
+    const eofInterceptResult = mergeStreamInterceptorResults(
+      pushStreamInterceptorChunks(interceptor, eofTransformedChunks),
+      interceptor.flushPendingOnEof()
+    )
     if (eofInterceptResult.parserSkipped && !interceptParserSkipLogged) {
       interceptParserSkipLogged = true
       streamLogger.info({
@@ -880,6 +888,40 @@ function streamFailureContext(downstreamBytesWritten: number, outputReceived: bo
   return {
     downstreamBytesWritten,
     outputReceived
+  }
+}
+
+function pushStreamInterceptorChunks(
+  interceptor: OpenAIStreamInterceptBuffer,
+  chunks: Buffer[]
+): StreamInterceptorResult {
+  let result: StreamInterceptorResult = {
+    chunks: [],
+    parserSkipped: false
+  }
+  for (const chunk of chunks) {
+    result = mergeStreamInterceptorResults(result, interceptor.pushChunk(chunk))
+    if (result.intercepted) {
+      break
+    }
+  }
+  return result
+}
+
+function mergeStreamInterceptorResults(
+  left: StreamInterceptorResult,
+  right: StreamInterceptorResult
+): StreamInterceptorResult {
+  return {
+    chunks: [...left.chunks, ...right.chunks],
+    intercepted: left.intercepted ?? right.intercepted,
+    observations: [
+      ...(left.observations ?? []),
+      ...(right.observations ?? [])
+    ].length
+      ? [...(left.observations ?? []), ...(right.observations ?? [])]
+      : undefined,
+    parserSkipped: left.parserSkipped || right.parserSkipped
   }
 }
 

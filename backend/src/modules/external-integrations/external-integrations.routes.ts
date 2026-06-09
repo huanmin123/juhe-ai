@@ -115,6 +115,7 @@ const accountPushSchema = z.object({
   baseUrl: z.string().trim().min(1).max(500),
   apiKey: z.string().trim().min(1).max(1000),
   supportedModels: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
+  openAIResponsesUpstreamMode: z.enum(['passthrough', 'chat_completions_bridge']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   concurrencyLimit: z.number().int().min(1).max(100000).optional(),
   priority: z.number().int().min(0).max(100000).optional(),

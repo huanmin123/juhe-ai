@@ -16,6 +16,10 @@ import { requestStream } from './openai-gateway-usage.js'
 import { buildOpenAIModelMappedJsonBody, resolveOpenAIRequestModelMapping } from './openai-gateway-model-mapping.js'
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody, type OpenAIClientCompatibilityAccount } from './openai-api-key-client-compatibility.js'
 import {
+  buildOpenAIResponsesChatBridgeRequestBody,
+  isOpenAIResponsesChatBridgeRequest
+} from './openai-responses-chat-bridge.js'
+import {
   openAICodexOriginator,
   openAICodexResponsesBetaHeader,
   openAICodexUserAgent,
@@ -43,6 +47,7 @@ interface UpstreamHeaderAccount extends OpenAIClientCompatibilityAccount {
   id?: string
   apiKey: string
   type?: string
+  openAIResponsesUpstreamMode?: 'passthrough' | 'chat_completions_bridge'
   modelMappings?: Array<{ sourceModel: string; upstreamModel: string; enabled: boolean }>
   credentials?: Record<string, unknown>
 }
@@ -263,6 +268,19 @@ export async function buildUpstreamRequestParts(
     return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
       modelOverride: modelMapping?.upstreamModel
     })
+  }
+  if (isOpenAIResponsesChatBridgeRequest(req, account)) {
+    const headers = buildUpstreamHeaders(req.headers, account)
+    headers.set('content-type', 'application/json')
+    if (!headers.get('accept')) {
+      headers.set('accept', 'application/json, text/event-stream')
+    }
+    return {
+      headers,
+      body: await buildOpenAIResponsesChatBridgeRequestBody(req, account, signal, {
+        modelOverride: modelMapping?.upstreamModel
+      })
+    }
   }
   const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
     modelOverride: modelMapping?.upstreamModel

@@ -387,6 +387,7 @@ function buildAccount(input: {
     type: input.type,
     status: 'active',
     supportedModels: [],
+    openAIResponsesUpstreamMode: 'passthrough',
     apiKey: 'sk-concurrency-preparation',
     baseUrl: input.baseUrl,
     credentials: {

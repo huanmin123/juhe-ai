@@ -4,6 +4,8 @@ export type AccountStatus = 'active' | 'pending_test' | 'disabled' | 'error' | '
 export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled'
 export const ACCOUNT_CLIENT_COMPATIBILITIES = ['openai_standard', 'codex_responses'] as const
 export type AccountClientCompatibility = typeof ACCOUNT_CLIENT_COMPATIBILITIES[number]
+export const OPENAI_RESPONSES_UPSTREAM_MODES = ['passthrough', 'chat_completions_bridge'] as const
+export type OpenAIResponsesUpstreamMode = typeof OPENAI_RESPONSES_UPSTREAM_MODES[number]
 export const SYSTEM_ACCOUNT_ROLES = ['super_admin', 'admin', 'user'] as const
 export type SystemAccountRole = typeof SYSTEM_ACCOUNT_ROLES[number]
 export type ManagementSystemAccountRole = Extract<SystemAccountRole, 'super_admin' | 'admin'>
@@ -442,6 +444,7 @@ export interface AccountSummary {
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
+  openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   lastSuccessfulTestModel?: string

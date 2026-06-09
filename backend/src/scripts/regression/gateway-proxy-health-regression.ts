@@ -166,6 +166,7 @@ function account(id: string, proxyProfileId: string | undefined, baseUrl = 'http
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
+    openAIResponsesUpstreamMode: 'passthrough',
     schedulable: true,
     proxyProfileId,
     proxyUrl,
