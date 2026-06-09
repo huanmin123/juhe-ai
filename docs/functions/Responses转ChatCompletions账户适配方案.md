@@ -4,7 +4,13 @@
 
 本文记录 `POST /v1/responses` 在选中具体 API Key 账户后，按账户配置降级转发到上游 `POST /v1/chat/completions` 的落地方案、已落地边界和待核对细节。
 
-实现状态：第一版已于 2026-06-09 落地。当前支持账户级 `chat_completions_bridge`、基础 JSON / SSE 转换、导入导出、公开推送和前端配置；真实国内模型长会话、`/responses/compact` 和更复杂 Responses 内置工具仍需后续补测或扩展。
+实现状态：第一版已于 2026-06-09 落地，但 2026-06-09 已决定放弃继续推进 Responses 转 Chat Completions 的完整兼容方向。本文保留为调研和已实现边界记录；本地 `previous_response_id` 上下文账本、摘要 compact、长会话兼容和复杂 Responses 内置工具不再作为后续实现目标。
+
+方向调整：
+
+- 推荐路线回到原生 Responses passthrough：需要 Responses / Codex 长会话的上游应优先选择真实支持 `/responses` 的账号。
+- `chat_completions_bridge` 如果保留，只能作为短任务、基础文本和简单 tool call 的受控降级能力；不继续扩展本地会话状态、摘要压缩和完整 Responses 仿真。
+- 后续如果决定彻底移除 bridge，应单独拆除账户字段、前端配置、导入导出字段、网关转换器和相关测试，而不是继续补复杂兼容层。
 
 不在本文范围内：
 
@@ -229,6 +235,8 @@ Chat Completions 非流式响应转换为 Responses response 对象。
 
 ## 本地 `previous_response_id` 上下文续链方案
 
+> 2026-06-09 方向调整：本节方案已放弃，不进入实现。保留以下内容仅作为复杂度评估留档；实际策略是不在 bridge 中维护本地 `previous_response_id` 上下文账本，也不做服务端摘要 compact。
+
 ### 目标与边界
 
 该方案只服务 `openai_responses_upstream_mode = chat_completions_bridge`。原生 `passthrough` Responses 账户仍把 `previous_response_id` 交给上游处理，不读取本地 bridge 上下文。
@@ -245,7 +253,7 @@ Chat Completions 非流式响应转换为 Responses response 对象。
 - 不实现完整 Responses 服务端状态、`conversation` 对象、后台任务、文件、MCP、computer use 或永久记忆。
 - 不把本地 `response_id` 拿到 OpenAI 原生 `/responses/{id}` 查询。bridge 生成的 ID 是本地 ID，上游 Chat Completions 不认识。
 - 不在请求链路扫描审计、usage、日志或历史明细来拼上下文。
-- 不默认做摘要压缩。上下文超过上限时先明确失败，后续如果需要再单独设计显式摘要降级。
+- 不做专用摘要模型配置，不开放自定义压缩 prompt，不把本地摘要伪装成上游原生 opaque compact。bridge 摘要 compact 是内置降级能力，只使用当前会话同一账号和同一模型。
 
 ### ID 与调度规则
 
@@ -284,6 +292,8 @@ CREATE TABLE responses_chat_bridge_sessions (
   latest_response_id TEXT NOT NULL,
   status TEXT NOT NULL,
   turn_count INTEGER NOT NULL DEFAULT 0,
+  compaction_count INTEGER NOT NULL DEFAULT 0,
+  compacted_until_sequence INTEGER,
   payload_bytes INTEGER NOT NULL DEFAULT 0,
   replay_bytes INTEGER NOT NULL DEFAULT 0,
   chat_body_estimated_bytes INTEGER NOT NULL DEFAULT 0,
@@ -313,12 +323,18 @@ CREATE TABLE responses_chat_bridge_turn_payloads (
   response_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
   sequence INTEGER NOT NULL,
+  payload_kind TEXT NOT NULL,
   storage_key TEXT NOT NULL,
   sha256 TEXT NOT NULL,
   raw_size_bytes INTEGER NOT NULL,
   stored_size_bytes INTEGER NOT NULL,
   replay_size_bytes INTEGER NOT NULL,
   chat_body_estimated_bytes INTEGER NOT NULL,
+  compacted_from_sequence INTEGER,
+  compacted_to_sequence INTEGER,
+  source_replay_size_bytes INTEGER,
+  summary_model TEXT,
+  summary_account_id TEXT,
   compression TEXT NOT NULL,
   content_type TEXT NOT NULL,
   payload_status TEXT NOT NULL,
@@ -386,7 +402,7 @@ Responses bridge 会话是连续请求形态，不能每一轮都先查 SQLite�
 
 ### 完整 payload 文件内容
 
-每个成功 turn 写一个完整上下文 payload 文件，不做摘要、不截断成“伪完整”。文件建议保存为 JSON，可按审计 payload 的经验对 JSON / 文本使用 gzip 压缩；超过单次读取窗口或需要高频按 offset 读的内容才保留 plain。本地续链重放时，系统按文件元数据先校验大小，再读取文件。
+每个成功普通 turn 写一个完整上下文 payload 文件，不截断成“伪完整”。摘要 compact 成功时额外写一个 `payload_kind = summary_snapshot` 的完整摘要 payload，用它替换较早历史前缀参与后续 replay；被摘要覆盖的旧 turn 文件不在请求链路删除，等待后台 cleanup job 按引用状态和 TTL 清理。文件建议保存为 JSON，可按审计 payload 的经验对 JSON / 文本使用 gzip 压缩；超过单次读取窗口或需要高频按 offset 读的内容才保留 plain。本地续链重放时，系统按文件元数据先校验大小，再读取文件。
 
 文件内容建议包含：
 
@@ -397,6 +413,7 @@ Responses bridge 会话是连续请求形态，不能每一轮都先查 SQLite�
 - 当前有效的 instructions / developer / system 快照。
 - 转换后的 Responses output 摘要，用于后续 `/responses/{id}` 或排障扩展。
 - 模型、上游账号、分组、创建时间、sequence、usage 和 payload 字节数等诊断字段。
+- 如果是 summary snapshot，还需要包含摘要来源 sequence 范围、摘要提示版本、摘要模型、摘要账号、源 replay 字节数、摘要 replay 字节数和保留的最近原始 turn 范围。
 
 不保存：
 
@@ -406,7 +423,7 @@ Responses bridge 会话是连续请求形态，不能每一轮都先查 SQLite�
 边界：
 
 - 如果单个 turn 的完整 payload 超过本地 bridge context 硬上限，当前 turn 应明确失败，不能写半截文件后返回成功。
-- 如果累计会话重放大小或最终 Chat body 预估大小超过系统文本 lane 上限，本次续链直接返回 `responses_bridge_context_too_large`；请求链路不删除 payload 文件、不写会话状态，由后台 job 后续统一标记和清理。不通过摘要、截断或丢弃中间 turn 伪造连续上下文。
+- 如果累计会话重放大小或最终 Chat body 预估大小接近系统文本 lane 高水位，bridge 可以先做一次内置摘要 compact；摘要后仍超过系统文本 lane 上限时，本次续链返回 `responses_bridge_context_too_large`。请求链路不删除 payload 文件，由后台 job 后续统一标记和清理。
 - 文件写入必须使用临时文件 + fsync / rename 这类原子提交思路；SQLite 引用只在文件提交成功后写入。清理时先把引用标记为过期 / 删除中，再异步删除文件，失败后可按 `storage_key` 重试。
 
 instructions 处理建议：
@@ -415,17 +432,25 @@ instructions 处理建议：
 - 当前请求显式传入 `instructions` 时更新快照。
 - 组装 Chat 请求时只在消息最前面放一份当前有效 instructions，不把每一轮历史 instructions 重复插入，避免系统消息膨胀和语义重复。
 
-### 客户端会话压缩与续链边界
+### 本地摘要 compact 与客户端压缩边界
 
-这里的客户端会话压缩指客户端自行截断旧历史、调用 Chat summarization 生成明文摘要，或用 RAG 回填摘要后继续请求；不是 HTTP `Content-Encoding` 传输压缩。
+这里的会话压缩指模型上下文摘要、裁剪或 compact，不是 HTTP `Content-Encoding` 传输压缩。
 
-第一版按“显式替换”和“普通追加”分开处理：
+bridge 第一版内置本地摘要 compact：
 
-- 如果客户端压缩后的摘要要替代旧历史，必须不携带 `previous_response_id`，让 bridge 按新会话处理。旧 bridge session 不在请求链路主动删除，只等待 TTL 和后台 cleanup job 清理。
-- 如果客户端压缩后仍携带旧 `previous_response_id`，bridge 无法从普通 `input` 判断客户端意图是“替换旧历史”还是“在旧历史后追加摘要”。默认只能按普通续链处理：先按旧 ID 回放本地历史，再追加当前 input；这会造成摘要和旧历史同时进入 Chat body，可能重复上下文、增加 token 成本，并更早触发 `responses_bridge_context_too_large`。
-- 对可识别的官方压缩语义，例如 `/responses/compact`、`compaction_trigger`、要求 Responses compaction 的 `context_management`，bridge 模式返回本地 `400 responses_bridge_compaction_not_supported`，不转成 Chat summarization，不请求上游。
-- 不从自然语言、metadata 备注或消息文本里猜测“这是摘要替换请求”；请求路径不读取旧 payload 文件来做摘要归并，也不改写历史 payload。
-- 如后续确需支持“带旧 ID 但用新摘要替换旧链”，只能新增显式本地扩展，例如 `metadata.juhe_bridge_context_mode = "replace"`。该扩展也只能校验旧 `response_id` 的作用域和状态，创建一个新的 bridge session，并把当前压缩摘要作为新 session 的第一轮；不能继续回放旧 payload。
+- 不新增用户配置，不做专用摘要模型。本期摘要调用使用当前 bridge 会话同一账号、同一上游模型、同一代理、同一并发占用和同一错误处理边界。
+- `/responses/compact`、`compaction_trigger` 或明确要求 Responses compaction 的 `context_management` 在 bridge 模式下触发本地摘要 compact，不再返回“不支持”。
+- 自动触发只发生在续链预估接近系统文本 lane 高水位时。建议内置默认高水位为 `80%`，摘要目标为 `50%`，最近原始 turn 保留不少于 `6` 轮；这些先作为后端常量，不开放前端配置。
+- 摘要只压缩较早历史前缀，保留最近原始 messages、当前请求 input、未闭合 tool call、最近 tool output 和当前有效 instructions。
+- 摘要输出作为普通历史摘要 message 参与 replay，不能写入 system / developer instructions。
+- 摘要成功后写入 `summary_snapshot` payload，更新 hot session 的 `compacted_until_sequence`、`replay_bytes`、`chat_body_estimated_bytes` 和最新 response id；后续续链默认从 summary snapshot + 最近原始 turns 继续。
+- 单次用户请求最多触发一次摘要。摘要调用失败、摘要内容为空、摘要后仍超限或摘要 payload 持久化失败时，不输出可续链成功状态。
+
+客户端自行摘要仍按“显式替换”和“普通追加”分开处理：
+
+- 如果客户端压缩后的摘要要替代旧历史，应不携带 `previous_response_id`，让 bridge 按新会话处理。旧 bridge session 不在请求链路主动删除，只等待 TTL 和后台 cleanup job 清理。
+- 如果客户端压缩后仍携带旧 `previous_response_id`，且没有 `/responses/compact`、`compaction_trigger` 或其他受控 compact 信号，bridge 只能按普通续链处理：先回放旧本地上下文，再追加当前 input。
+- 不从自然语言、metadata 备注或消息文本里猜测“这是摘要替换请求”；请求路径不读取旧 payload 文件来做语义归并，也不改写旧 payload。
 
 ### 请求处理流程
 
@@ -443,10 +468,11 @@ instructions 处理建议：
 1. 客户端请求 `/responses`，携带 `previous_response_id = resp_bridge_...`。
 2. 先查热缓存里的 `response_id -> session_id`，命中后直接取 hot session；未命中才通过 DB service 按 `response_id` 主键查询 SQLite 索引。
 3. 校验调用作用域、会话状态、`expires_at` 和缓存/DB 元数据。
-4. 热缓存命中时先用缓存中的累计字段和当前请求大小判断是否超过系统文本 lane 上限；冷加载时读取该 session 中 `sequence <= previous.sequence` 的索引和 payload 文件引用窗口，先用 SQLite 元数据里的 `replay_size_bytes`、`chat_body_estimated_bytes`、session 累计字段和当前请求大小判断是否超过系统文本 lane 上限；通过后才按顺序读取文件并拼接历史 Chat messages，并回填热缓存。
-5. 追加当前请求 input 转换出的 Chat messages。
-6. 如果总 turn 数、字节数或最终 Chat body 超过上限，直接返回本地 `400 responses_bridge_context_too_large`；不读取历史 payload 文件、不请求上游、不删除文件、不写 SQLite 状态。
-7. 请求上游 Chat，成功后写入新 payload 文件，更新热缓存里的 response index / payload 引用 / 累计字段 / `latest_response_id / last_active_at / expires_at`，并把 session 标记为 dirty，等待异步批量 flush 到 SQLite。
+4. 热缓存命中时先用缓存中的累计字段和当前请求大小判断是否达到摘要高水位或超过系统文本 lane 上限；冷加载时读取该 session 中 `sequence <= previous.sequence` 的索引和 payload 文件引用窗口，先用 SQLite 元数据里的 `replay_size_bytes`、`chat_body_estimated_bytes`、session 累计字段和当前请求大小判断，不为了判断大小读取全部历史 payload。
+5. 如果命中摘要高水位且存在可压缩前缀，按 `storage_key` 有界读取待压缩前缀，调用当前账号 / 当前模型生成 summary snapshot；摘要成功后更新热缓存和 dirty session，再重新估算本轮 Chat body。
+6. 摘要后仍超过系统文本 lane 上限，或没有可压缩前缀时，返回本地 `400 responses_bridge_context_too_large`；不请求业务上游、不删除 payload 文件，由后台 job 后续统一标记和清理。
+7. 通过大小判断后按顺序读取当前有效 replay payload，拼接 summary snapshot、最近原始历史和当前请求 input 转换出的 Chat messages，并回填热缓存。
+8. 请求上游 Chat，成功后写入新 payload 文件，更新热缓存里的 response index / payload 引用 / 累计字段 / `latest_response_id / last_active_at / expires_at`，并把 session 标记为 dirty，等待异步批量 flush 到 SQLite。
 
 不可继续会话：
 
@@ -490,10 +516,13 @@ instructions 处理建议：
 - `responsesBridgeContextTtlHours = 24`
 - `responsesBridgeContextTombstoneHours = 24`
 - `responsesBridgeContextMaxTurns = 200`
+- `responsesBridgeSummaryCompactHighWaterRatio = 0.8`
+- `responsesBridgeSummaryCompactTargetRatio = 0.5`
+- `responsesBridgeSummaryCompactKeepRecentTurns = 6`
 - 单 turn 完整 payload、会话累计重放内容和最终组装出的 Chat 请求体都不能超过系统设置 `gatewayTextRawBodyLimitMegabytes` 对应的文本 lane 上限。
 - 最终 Chat body 还要为当前输入、协议 envelope、JSON 转义和模型字段预留余量；建议按当前文本 lane 上限的 90% 作为 bridge 上下文可用阈值，避免估算误差导致实际上游请求体超限。
 
-TTL 和 turn 数先作为后端系统默认值，不急于开放前端配置。大小类配置不另起一套，避免管理面显示一个文本上限、bridge 实际使用另一个上限。
+TTL、turn 数和摘要触发比例先作为后端内置默认值，不开放前端配置。大小类配置不另起一套，避免管理面显示一个文本上限、bridge 实际使用另一个上限。
 
 性能要求：
 
@@ -501,7 +530,10 @@ TTL 和 turn 数先作为后端系统默认值，不急于开放前端配置。�
 - 热缓存命中时不访问 SQLite；热缓存 miss 才按 `response_id` 主键和 `(session_id, sequence)` 有界窗口读取 SQLite 索引和 payload 引用。
 - 新会话只同步写一个本地 payload 文件并更新热缓存；SQLite session / response index / payload 引用由 dirty 队列批量落表。
 - 不能在请求链路扫描同一 API Key 的全部会话、全部 response、payload 目录或审计 payload。
-- 读取历史文件前必须先用元数据判断：热缓存或 SQLite 中的 session 级 `replay_bytes / chat_body_estimated_bytes`、turn 级 `replay_size_bytes / chat_body_estimated_bytes`、当前请求估算大小和系统文本 lane 上限。超过上限时直接返回错误；不会读完一批大文件后才发现超限，也不会在请求链路删除文件或写状态。
+- 读取历史文件前必须先用元数据判断：热缓存或 SQLite 中的 session 级 `replay_bytes / chat_body_estimated_bytes`、turn 级 `replay_size_bytes / chat_body_estimated_bytes`、当前请求估算大小和系统文本 lane 上限。达到摘要高水位时只读取可压缩前缀窗口；摘要后仍超限才返回错误。不会读完一批大文件后才发现超限，也不会在请求链路删除文件。
+- 摘要调用必须复用当前 bridge 账号和模型，不走专用摘要模型、不切到其他供应商账号、不绕过并发和额度。
+- 摘要调用产生真实用量，使用记录和审计 metadata 标记 `traffic_source = responses_bridge_summary_compact`，并关联到触发它的用户请求。
+- 摘要 prompt 必须是后端固定模板，输出长度有上限；不能允许用户自定义摘要 prompt。
 - 每次写入新 turn 时必须同步更新热缓存里的 session 级累计字段；如果写文件成功但热缓存更新失败，要清理本次文件并返回持久化失败，不能留下不可控的大小账。SQLite 累计字段由后续 flush 对齐。
 - 文件内容保存完整原始 payload 和转换后的 replay messages，续链时优先使用 replay messages，不为了历史 turn 重新做复杂 Responses 转换。
 - 流式转换继续按 chunk 增量输出，只累计当前 turn 需要持久化的 assistant message 和 tool call 参数，不能缓存完整上游流后再返回。
@@ -510,7 +542,7 @@ TTL 和 turn 数先作为后端系统默认值，不急于开放前端配置。�
 成本影响：
 
 - Chat bridge 续链会把历史 messages 每次重新发给上游，token 成本随会话增长，这是 Chat Completions 形态的固有限制。
-- 本地 TTL 只减少存储占用，不减少上游 token。后续如需降低长会话成本，必须单独做显式摘要或 compact 降级方案。
+- 本地摘要 compact 可以降低后续续链 token，但触发当轮会增加一次摘要调用成本和延迟。该成本按同一 API Key / 同一账号使用记录透明计入。
 
 ### 错误码建议
 
@@ -523,20 +555,25 @@ TTL 和 turn 数先作为后端系统默认值，不急于开放前端配置。�
 | `responses_bridge_context_too_large` | `400` | 历史 turn、payload 字节数或最终 Chat body 超过上限；请求链路只返回错误，后台 job 后续统一清理。 |
 | `responses_bridge_context_invalidated` | `400` | 会话此前已被后台 job 标记为过期、超限或其他不可继续状态。 |
 | `responses_bridge_context_persist_failed` | `500` | 上游已成功但本地上下文保存失败，不能安全返回可续链成功状态。 |
-| `responses_bridge_compaction_not_supported` | `400` | bridge 模式收到 `/responses/compact`、`compaction_trigger` 或要求 Responses compaction 的字段。 |
+| `responses_bridge_summary_compact_unavailable` | `400` | bridge 模式收到 compact 信号，但找不到可压缩本地 session、没有可压缩前缀或作用域不匹配。 |
+| `responses_bridge_summary_compact_failed` | `500` / `503` | 本地摘要 compact 调用、解析或持久化失败，不能安全生成新的可续链 response。 |
 
 ## `/responses/compact` 策略
+
+> 2026-06-09 方向调整：bridge 本地摘要 compact 已放弃。需要 compact 的客户端应走原生 Responses passthrough / OAuth Codex adapter 能力；Chat bridge 不继续补本地摘要兼容。
 
 Codex 长会话可能调用 `/responses/compact`。Chat Completions 没有等价端点。
 
 第一版建议：
 
-- `chat_completions_bridge` 不支持 `/responses/compact`。
-- 命中时返回本地 `400`，错误信息说明“当前账户使用 Chat Completions 上游，不支持 Responses compact”。
-- 国内 Chat-only 上游通常通过客户端截断、额外 Chat summarization、RAG 回填或长上下文模型来控制上下文，不提供官方 Responses compact 等价能力。
-- 只有在真实验证 Codex 长会话必须依赖 compact 且可接受摘要语义时，再设计第二版：新增显式实验策略，把 compact 请求转换为一次 Chat summarization，并返回降级响应。
+- `chat_completions_bridge` 承接 `/responses/compact`，但不请求上游 `/responses/compact`。
+- 请求必须能解析到本地 bridge session，或者请求体本身提供可摘要的 input；否则返回 `responses_bridge_summary_compact_unavailable`。
+- 摘要调用使用当前 bridge 会话同一账号和模型，生成明文 summary snapshot。
+- 成功后生成新的本地 `resp_bridge_...` response id，更新 session 最新指针、`compacted_until_sequence`、累计大小字段和 payload 引用。
+- 返回的 Responses 对象和 SSE 事件需要明确标记 `responses_bridge_summary_compact`，表示这是本地摘要 compact，不是上游原生 opaque compact。
+- 如果客户端后续继续携带 compact 返回的本地 response id，bridge 从 summary snapshot + 最近原始 turns 继续 replay。
 
-不建议第一版伪造 compact 成功，因为官方 `/responses/compact` 产出的是 Responses compaction item；Chat 明文摘要不能等价替代。强行包装会破坏 Codex 上下文管理语义，把明确不支持变成隐性上下文漂移。
+不把 Chat 明文摘要说成上游原生 compact。这里的目标是让 Responses -> Chat bridge 长会话能继续工作，并把降级语义、成本和审计边界显式记录下来。
 
 ## 候选与调度影响
 
@@ -551,7 +588,7 @@ Codex 长会话可能调用 `/responses/compact`。Chat Completions 没有等价
 - 请求 `/responses/compact` 时：
   - OAuth 账户可承接。
   - `passthrough` API Key 账户是否可承接取决于上游原生支持。
-  - `chat_completions_bridge` 第一版不可承接。
+  - `chat_completions_bridge` 可承接，但只能进入本地摘要 compact，不请求上游 `/responses/compact`。
 
 如果某账号因 endpoint 能力不匹配被跳过，不计为账号失败，不触发本地屏蔽、冷却或账户错误策略。
 
@@ -650,8 +687,8 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 
 候选过滤要在请求进入上游前完成：
 
-- bridge 模式账户可以承接 `/responses`，但不能承接第一版不支持的 `/responses/compact`。
-- 因 `/responses/compact` 不支持而跳过的 bridge 账户不算失败。
+- bridge 模式账户可以承接 `/responses` 和 `/responses/compact`；`/responses/compact` 只触发本地摘要 compact。
+- 因本地 session 不匹配、无可压缩前缀或摘要失败而无法 compact，不算上游账号普通业务失败；摘要上游调用自身失败按内部摘要请求记录使用记录和审计。
 - 授权实例从来源账户读取 bridge 模式；被授权用户不能单独改写来源账户的上游模式。
 - API Key 多分组 fallback 仍按分组顺序处理，不因为 bridge 模式跨分组混排账号。
 - 会话亲和命中 bridge 账户时仍要检查 endpoint 能力；如果本轮 endpoint 不支持，不能为了粘性强行使用。
@@ -665,7 +702,7 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 
 - 字段：`Responses 上游模式`
 - 选项：`透传 Responses`、`转为 Chat Completions`
-- 帮助：`仅用于上游不支持 /responses 的 API Key 账户。开启后 Codex 短任务和普通文本更容易兼容，但内置工具、compact 和部分 reasoning 字段可能不可用。`
+- 帮助：`仅用于上游不支持 /responses 的 API Key 账户。开启后网关会把 Responses 请求转换到 Chat Completions；compact 走本地摘要降级，复杂内置工具和部分 reasoning 字段可能不可用。`
 
 账户测试结果需要展示：
 
@@ -696,6 +733,7 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 - `modules/gateway/openai-responses-chat-bridge-context.service.ts`：封装本地 `previous_response_id` 解析、上下文组装、response index 写入、TTL 刷新、大小上限校验和错误码。
 - `modules/gateway/openai-responses-chat-bridge-session-cache.service.ts`：维护 `response_id -> session_id`、hot session、dirty sessions、容量限制、TTL 淘汰和 cache miss 冷加载。
 - `modules/gateway/openai-responses-chat-bridge-context-flush.service.ts`：按空闲、短间隔和批量阈值把 dirty session 批量落 SQLite；失败时退避重试，不阻塞请求线程。
+- `modules/gateway/openai-responses-chat-bridge-summary-compact.service.ts`：识别 `/responses/compact`、`compaction_trigger` 和高水位自动摘要；选择可压缩前缀、构造固定摘要 prompt、用当前账号 / 模型发起内部 Chat summarization，并写入 summary snapshot。
 - 可选 `storage` bridge context journal：用 JSONL 或等价轻量文件记录尚未 flush 的 session 索引水位，用于进程重启后恢复最近热会话索引。
 - `modules/gateway/openai-gateway-route-helpers.ts`：根据账号模式构造上游 URL。
 - `modules/gateway/openai-gateway-upstream.ts`：在 `buildUpstreamRequestParts` 中调用 Responses->Chat 请求转换。
@@ -710,6 +748,7 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 - `modules/gateway/openai-gateway-response-finalization.ts` 或现有非流式响应路径：将 Chat JSON 转 Responses JSON。
 - `modules/gateway/openai-gateway-stream-events.ts`：复用 Responses 事件分类和 usage 解析，必要时补 Chat chunk 到 Responses event 后的分类。
 - 流式终态写入：转换器需要在 `response.completed` / `response.incomplete` 前完成当前 turn 上下文持久化；持久化失败时不能输出可续链成功终态。
+- 摘要 compact 返回：显式 compact 请求需要返回新的本地 response id；自动摘要只更新本地 replay 窗口，不向客户端暴露额外中间 response，最终仍返回本轮业务 response。
 
 后台：
 
@@ -758,7 +797,10 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 - 默认 `passthrough` 行为不变。
 - OAuth 账户不受新字段影响。
 - `/chat/completions` 原路径不受 bridge 字段影响。
-- `/responses/compact` 在 bridge 模式下按第一版策略失败。
+- `/responses/compact` 在 bridge 模式下执行同账号同模型摘要 compact，成功后返回新的本地 response id。
+- `compaction_trigger` 在 bridge 模式下触发本地摘要 compact，不转发到上游 `/responses/compact`。
+- bridge 续链达到摘要高水位时最多自动摘要一次，摘要后 replay 窗口包含 summary snapshot 和最近原始 turns。
+- 摘要调用失败、摘要内容为空、摘要后仍超限或 summary snapshot 持久化失败时，不输出可续链成功 response。
 - bridge 模式收到 `previous_response_id` 且本地上下文续链未启用时返回 `responses_bridge_previous_response_unsupported`，不静默忽略。
 - bridge 模式本地 `previous_response_id` 命中后能按顺序还原历史 user / assistant / tool messages。
 - bridge 模式 `previous_response_id` 找不到、过期、作用域不匹配和上下文过大时分别返回明确错误，不请求上游、不写账号失败。
@@ -769,7 +811,7 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 - 本地 bridge 会话 24 小时无活跃后按 `storage_key` 删除完整 payload 文件和 payload 引用，保留轻量墓碑；墓碑超期后按批次物理删除。
 - 本地 bridge payload 文件使用临时文件 + rename 原子提交；文件提交失败不写 SQLite 成功引用，SQLite 写入失败要清理孤儿临时文件。
 - 本地 bridge 续链命中但 payload 文件缺失、hash 不匹配或大小超过元数据时返回明确本地错误，不请求上游。
-- 本地 bridge 续链在读取 payload 文件前，先用热缓存或 SQLite 维护的 session / turn 大小元数据和 `gatewayTextRawBodyLimitMegabytes` 判断是否超限；超限时不读取历史文件、不删除文件、不请求上游，只返回 `responses_bridge_context_too_large`。
+- 本地 bridge 续链在读取 payload 文件前，先用热缓存或 SQLite 维护的 session / turn 大小元数据和 `gatewayTextRawBodyLimitMegabytes` 判断是否达到摘要高水位或超限；需要摘要时只读取可压缩前缀窗口，摘要后仍超限才返回 `responses_bridge_context_too_large`。
 - 后台 cleanup job 会批量识别超限会话，按 `storage_key` 删除 payload 文件并把 session / response index 标记为 `context_too_large`；之后再携带该链上任意 `previous_response_id` 请求都返回 `responses_bridge_context_invalidated`。
 - 修改系统设置 `gatewayTextRawBodyLimitMegabytes` 后，bridge 上下文大小判断立即跟随新文本 lane 上限，不保留独立大小配置。
 - 本地 bridge 续链命中后会话亲和使用稳定 `bridge_session_id`，第三轮以后仍优先排序同一会话账户。
@@ -781,7 +823,7 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 - bridge 关闭时不解析普通透传请求体。
 - 大 JSON 请求体在 worker 中解析。
 - 长流式输出和长工具参数不造成无界内存增长。
-- 长会话续链只按 `response_id` 主键和 `session_id + sequence` 有界窗口读取 payload 引用，再按 `storage_key` 读取文件，不扫描同一 API Key 全部会话或 payload 目录。
+- 长会话续链和摘要 compact 只按 `response_id` 主键和 `session_id + sequence` 有界窗口读取 payload 引用，再按 `storage_key` 读取文件，不扫描同一 API Key 全部会话或 payload 目录。
 - 账号模型映射在转换前后仍记录下游模型、上游模型和计价模型。
 - 授权实例从来源账户读取 bridge 模式。
 - 会话亲和不能绕过 bridge endpoint 能力过滤。
@@ -799,9 +841,9 @@ Responses 转 Chat 不能绕过现有上游异常重试、账号运行态屏障�
 
 - Codex 当前版本对 Responses SSE 事件的最低事件集合要求：是否必须有 `response.content_part.added/done`，还是 `response.output_text.delta` 足够。
 - Codex 对 function call output item 的字段要求：`call_id`、`item_id`、`output_index` 是否必须稳定复用。
-- Codex 对 `/responses/compact` 的触发频率和失败后行为：短会话是否可接受第一版不支持。
+- Codex 对 `/responses/compact` 和 `compaction_trigger` 的实际返回格式要求：本地 summary snapshot response / SSE 是否满足当前客户端续链。
 - 国内目标上游对 `developer` role、`reasoning_effort`、`parallel_tool_calls`、`response_format`、stream usage 的兼容差异。
-- 国内 Chat-only 上游的上下文压缩默认不走 `/responses/compact`；如需支持，只能单独评估 `chat_summary_compact_experimental` 这类显式降级策略。
+- 国内 Chat-only 上游的本地摘要 compact 使用同账号同模型；后续只有在成本、质量或速度出现明确问题时，再评估专用摘要模型。
 - 是否需要账户级细分选项：`chatMaxTokensField = max_tokens | max_completion_tokens`、`developerRoleMode = passthrough | system`、`reasoningMode = passthrough | remove`。
 - 是否需要在审计日志 metadata 中固定记录 `upstreamEndpointFamily = chat_completions` 和 `downstreamEndpointFamily = responses`。
 - CC Switch 对 `previous_response_id` 的具体本地历史策略仍需读源码核对；当前只能确认它有相关处理路径。

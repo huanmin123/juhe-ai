@@ -69,15 +69,17 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 
 ## Responses bridge 短期上下文账本
 
+2026-06-09 方向调整：Responses 转 Chat Completions 的本地 `previous_response_id` 账本和摘要 compact 方案已放弃，不进入实现。下述表结构和缓存策略仅作为复杂度评估留档；当前不新增这些表，不新增 bridge context payload 文件目录，也不把 Chat bridge 做成服务端会话状态托管。
+
 Responses 转 Chat Completions bridge 为了支持本地 `previous_response_id` 续链，需要保存短期可回放上下文。该数据不是长期业务事实，也不是统计结果；它包含用户输入、assistant 输出、function call 和 tool output，体积会随请求增长，因此 SQLite 只保存会话索引、顺序关系和本地文件引用，完整 payload 放本地文件，到期删除。
 
 落地表按 [Responses 转 Chat Completions 账户适配方案](Responses转ChatCompletions账户适配方案.md) 设计：
 
-- `responses_chat_bridge_sessions`：会话级索引，保存调用作用域、最新 response、活跃时间、过期时间、payload 总字节、可重放字节和 Chat body 预估字节等轻量诊断字段。
+- `responses_chat_bridge_sessions`：会话级索引，保存调用作用域、最新 response、活跃时间、过期时间、payload 总字节、可重放字节、Chat body 预估字节、摘要次数和已摘要到的 sequence 等轻量诊断字段。
 - `responses_chat_bridge_response_index`：`response_id` 到 session / sequence 的主键索引，过期后保留轻量墓碑，用于把旧 `previous_response_id` 返回为明确错误。
-- `responses_chat_bridge_turn_payloads`：当前活跃窗口内每个 turn 的完整 payload 文件引用，保存 `storage_key`、hash、原始大小、落盘大小、可重放大小、Chat body 预估大小、压缩方式、状态和过期时间；完整内容默认放在 `backend/data/responses-bridge/payloads/`。
+- `responses_chat_bridge_turn_payloads`：当前活跃窗口内每个普通 turn 或 `summary_snapshot` 的完整 payload 文件引用，保存 `storage_key`、hash、原始大小、落盘大小、可重放大小、Chat body 预估大小、摘要来源范围、摘要模型 / 账号、压缩方式、状态和过期时间；完整内容默认放在 `backend/data/responses-bridge/payloads/`。
 
-热路径不能每轮同步打 SQLite。网关进程维护 Responses bridge 热会话缓存，先用 `response_id -> session_id` 和 hot session 命中连续请求；缓存 miss 时才通过 `response_id` 主键和 `session_id + sequence` 有界窗口读取这些表。命中热缓存或冷加载元数据后，先用累计大小、turn 大小、当前请求估算大小和系统设置 `gatewayTextRawBodyLimitMegabytes` 判断是否允许续链；只有通过后才按 `storage_key` 有界读取对应 payload 文件。超过上限时请求链路只返回 `responses_bridge_context_too_large`，不删除文件、不写 SQLite 状态；后台 cleanup job 后续按元数据批量清理完整 payload 文件和 payload 引用，并把 session / response index 标记为 `context_too_large`。不能扫描同一 API Key、同一系统账户、全部会话或 payload 目录来拼上下文。
+热路径不能每轮同步打 SQLite。网关进程维护 Responses bridge 热会话缓存，先用 `response_id -> session_id` 和 hot session 命中连续请求；缓存 miss 时才通过 `response_id` 主键和 `session_id + sequence` 有界窗口读取这些表。命中热缓存或冷加载元数据后，先用累计大小、turn 大小、当前请求估算大小和系统设置 `gatewayTextRawBodyLimitMegabytes` 判断是否允许续链或需要内置摘要 compact；只有通过后才按 `storage_key` 有界读取当前有效 replay payload。达到摘要高水位时，只读取可压缩前缀窗口并用当前 bridge 账号 / 模型生成 `summary_snapshot`；摘要后仍超过上限时请求链路返回 `responses_bridge_context_too_large`，不删除文件，由后台 cleanup job 后续按元数据批量清理完整 payload 文件和 payload 引用，并把 session / response index 标记为 `context_too_large`。不能扫描同一 API Key、同一系统账户、全部会话或 payload 目录来拼上下文或寻找可压缩内容。
 
 新 turn 写入必须先原子提交文件，再更新热缓存和 dirty session 队列；SQLite 引用、response index 和 session 累计字段由短间隔 / 空闲窗口批量 flush 到 DB service，不能在请求链路逐轮同步写 SQLite。dirty session 不能被静默淘汰；内存压力、队列满或 DB 长时间不可用时，要先尝试 flush，失败后返回明确本地错误并保留后台清理线索，payload 文件清理由后台 job 统一处理。流式响应在输出 `response.completed` / `response.incomplete` 之前至少要完成 payload 文件写入和热缓存更新，持久化失败时不能伪造可续链成功。
 
