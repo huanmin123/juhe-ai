@@ -3,7 +3,6 @@ import type { NextFunction, Request, Response } from 'express'
 import { createTraceId, getRequestContext, getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { recordDroppedAuditCapture } from '../audit-logs/audit-log-queue.service.js'
-import { isGatewayApiKeyScheduleInactive } from '../../storage/gateway-api-key.repository.js'
 import { readCachedGatewayRuntimeAsync } from './gateway-runtime-cache.service.js'
 import { inspectClientIpPolicy, recordClientIpPolicyHitAsync } from './client-ip-policy-cache.service.js'
 import { extractBearerToken, extractClientIp, requestStream } from './openai-gateway-usage.js'
@@ -45,10 +44,6 @@ export async function preResolveOpenAIGatewayRuntime(
     })
     if (!runtime?.apiKey) {
       recordEarlyGatewayAuthFailure(req, res)
-      return
-    }
-    if (isGatewayApiKeyScheduleInactive(runtime.apiKey)) {
-      sendEarlyApiKeyScheduleInactiveResponse(req, res)
       return
     }
     if (isImageGenerationDisabledForApiKey(runtime.apiKey, resolveOpenAIGatewayRequestLane(req))) {
@@ -120,17 +115,6 @@ export async function resolveGatewayRuntimeAsync(
     }, '网关认证失败')
     prepareEarlyAuthFailureResponse(res, options)
     sendGatewayJsonError(res, 401, gatewayErrorPayload('API Key 无效', 'invalid_request_error'))
-    return undefined
-  }
-  if (isGatewayApiKeyScheduleInactive(runtime.apiKey)) {
-    getRequestLogger().warn({
-      event: 'gateway_auth_failed',
-      reason: 'api_key_schedule_inactive',
-      apiKeyId: runtime.apiKey.id,
-      endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
-    }, 'API Key 当前不在允许使用时段')
-    prepareEarlyAuthFailureResponse(res, options)
-    sendApiKeyScheduleInactiveResponse(res)
     return undefined
   }
   if (options.loadClientIpPolicy !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: false })) {
@@ -234,15 +218,6 @@ function sendClientIpBlacklistResponse(res: Response, input: { reason?: string; 
   sendGatewayJsonError(res, 403, payload)
 }
 
-function sendApiKeyScheduleInactiveResponse(res: Response): void {
-  const message = 'API Key 当前不在允许使用时段'
-  setGatewayAuthFailureAudit(res, {
-    errorMessage: message,
-    errorCode: 'api_key_schedule_inactive'
-  })
-  sendGatewayJsonError(res, 403, gatewayErrorPayload(message, 'forbidden', 'api_key_schedule_inactive'))
-}
-
 function blacklistIpMessage(clientIp?: string, aggregateIpKey?: string): string {
   const displayIp = clientIp?.trim()
   const displayRange = aggregateIpKey?.trim()
@@ -309,34 +284,6 @@ function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): 
     errorPhase: 'authorization',
     errorCode: imageGenerationDisabledCode,
     errorMessage: imageGenerationDisabledMessage,
-    clientIp: context?.clientIp ?? extractClientIp(req),
-    userAgent: req.header('user-agent')
-  })
-}
-
-function sendEarlyApiKeyScheduleInactiveResponse(req: Request, res: Response): void {
-  const message = 'API Key 当前不在允许使用时段'
-  if (!res.headersSent) {
-    sendGatewayJsonError(
-      res,
-      403,
-      gatewayErrorPayload(message, 'forbidden', 'api_key_schedule_inactive')
-    )
-  }
-  const context = getRequestContext()
-  recordDroppedAuditCapture({
-    traceId: context?.traceId ?? createTraceId(),
-    auditOutcome: 'gateway_failed',
-    success: false,
-    bytes: 0,
-    reason: 'gateway_permission_rejected',
-    method: req.method,
-    path: req.originalUrl.split('?')[0] || req.path,
-    queryString: req.originalUrl.includes('?') ? req.originalUrl.split('?').slice(1).join('?') : undefined,
-    statusCode: 403,
-    errorPhase: 'authorization',
-    errorCode: 'api_key_schedule_inactive',
-    errorMessage: message,
     clientIp: context?.clientIp ?? extractClientIp(req),
     userAgent: req.header('user-agent')
   })

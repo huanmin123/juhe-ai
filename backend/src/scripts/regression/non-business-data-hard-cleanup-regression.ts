@@ -145,6 +145,7 @@ function seedUsageShard(): string {
     id: usageId,
     shardKey: location.shardKey,
     systemAccountId: 'sys_admin',
+    traceId: 'trace_non_business_cleanup',
     trafficSource: 'gateway',
     success: true,
     createdAt: oldIso

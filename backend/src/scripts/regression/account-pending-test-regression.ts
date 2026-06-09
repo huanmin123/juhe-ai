@@ -166,7 +166,7 @@ try {
     ownerSystemAccountId: owner.id
   })
 
-  console.log('待测试账户创建与调度保护回归通过：默认隔离、恢复防绕过、测试成功激活、导入导出状态一致，真实 mock 上游测试后才允许激活')
+  console.log('待测试账户创建与调度保护回归通过：默认隔离、恢复防绕过、测试成功激活、编辑快照测试使用当前表单、导入导出状态一致，真实 mock 上游测试后才允许激活')
 } finally {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
@@ -262,6 +262,37 @@ async function assertRouteCreateActivation(input: {
     '待测试账户真实手动测试通过后应进入网关调度候选'
   )
 
+  const editSnapshotPayload = routeAccountPayload(input.groupId, '编辑弹框快照测试账户', 'sk-edit-saved-should-not-be-used', input.mockBaseUrl)
+  const editSnapshotCreateResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, editSnapshotPayload)
+  assert.equal(editSnapshotCreateResponse.status, 201, `编辑快照回归账户应创建为待测试：${responseMessage(editSnapshotCreateResponse.body)}`)
+  const editSnapshotAccount = editSnapshotCreateResponse.body.data
+  assert(editSnapshotAccount?.id, '编辑快照回归账户应返回账户 ID')
+  assert.equal(editSnapshotAccount.status, 'pending_test', '编辑快照回归账户初始应为待测试')
+  const beforeEditSnapshotRequestCount = mockOpenAIRequests.length
+  const editSnapshotResult = await submitAccountTestAndWait<AccountTestResult>({
+    baseUrl: input.baseUrl,
+    path: `/__aisys__/api/my-accounts/${editSnapshotAccount.id}/test`,
+    cookie: input.cookie,
+    body: {
+      model: 'gpt-5.5',
+      account: routeAccountPayload(input.groupId, '编辑弹框快照测试账户（未保存）', 'sk-edit-current-input-test', input.mockBaseUrl)
+    }
+  })
+  assert.equal(editSnapshotResult.success, true, `编辑弹框快照测试应通过：${editSnapshotResult.message}`)
+  assert.equal(editSnapshotResult.accountStatusChanged, true, '编辑弹框快照测试成功后应报告状态变化')
+  assert.equal(editSnapshotResult.accountStatus, 'active', '编辑弹框快照测试成功后结果状态应为正常')
+  const editSnapshotRestored = repositories.findAccountSummary(editSnapshotAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
+  assert.equal(editSnapshotRestored?.status, 'active', '编辑弹框快照测试通过后应直接恢复已保存账户状态')
+  const editSnapshotRequests = mockOpenAIRequests.slice(beforeEditSnapshotRequestCount)
+  assert(
+    editSnapshotRequests.some((request) => request.authorization?.includes('sk-edit-current-input-test')),
+    '编辑弹框快照测试应使用当前表单 API Key'
+  )
+  assert(
+    editSnapshotRequests.every((request) => !request.authorization?.includes('sk-edit-saved-should-not-be-used')),
+    '编辑弹框快照测试不应使用已保存但被表单覆盖的 API Key'
+  )
+
   const failedTaskPayload = routeAccountPayload(input.groupId, '路由失败测试任务账户', 'sk-route-failed-task')
   const failedTaskId = createDraftActivationTask({
     payload: failedTaskPayload,
@@ -317,6 +348,10 @@ async function assertRouteCreateActivation(input: {
   assert(
     mockOpenAIRequests.some((request) => request.authorization?.includes('sk-real-manual-test-activate')),
     '待测试账户手动测试应命中 mock OpenAI 上游'
+  )
+  assert(
+    mockOpenAIRequests.some((request) => request.authorization?.includes('sk-edit-current-input-test')),
+    '编辑快照测试应命中 mock OpenAI 上游'
   )
 }
 
@@ -555,6 +590,11 @@ function createMockOpenAIServer(): http.Server {
       if (authorization?.includes('sk-real-fail-draft-test')) {
         res.writeHead(401, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: { code: 'invalid_api_key', message: 'mock invalid api key' } }))
+        return
+      }
+      if (authorization?.includes('sk-edit-saved-should-not-be-used')) {
+        res.writeHead(401, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: { code: 'saved_api_key_used', message: 'saved api key should not be used' } }))
         return
       }
       const completedEvent = {

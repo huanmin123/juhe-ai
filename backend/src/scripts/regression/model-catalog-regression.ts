@@ -115,11 +115,23 @@ try {
     outputUsdPerImage: 0.04,
     actorSystemAccountId: 'sys_admin'
   })
+  catalogService.saveCustomProviderModel({
+    providerCode: 'openai',
+    model: 'openai-regression-global',
+    scope: 'global',
+    visibility: 'public',
+    supportedApiProtocols: ['responses'],
+    releaseDate: '2026-05-03',
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 3,
+    actorSystemAccountId: 'sys_admin'
+  })
 
   const publicCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin'
   })
+  assertCatalogReleaseDateDescending(publicCatalog, 'GPT 公开模型目录')
   const publicModels = new Set(publicCatalog.map((item) => item.model))
   assert(publicModels.has('gpt-regression-global'), '全局自定义模型应进入公开模型目录')
   assert(publicModels.has('gpt-regression-alias'), '带 pricingModel 的个人模型应进入个人公开模型目录')
@@ -128,6 +140,16 @@ try {
   assert.equal(publicModels.has('gpt-regression-hidden-target'), false, 'mapping_target_only 模型不应进入公开模型目录')
   assert.equal(publicModels.has('gpt-regression-draft'), false, '草稿模型不应进入公开模型目录')
   assert.equal(publicModels.has('gpt-regression-overridden-pricing-alias'), false, 'pricingModel 目标被无价自定义模型覆盖时别名不应进入公开模型目录')
+  assert.equal(publicModels.has('openai-regression-global'), false, 'GPT 模型目录不应反向包含 OpenAI 兼容自定义模型')
+
+  const openAICompatibleCatalog = catalogService.listProviderModelCatalog({
+    providerCode: 'openai',
+    systemAccountId: 'sys_admin'
+  })
+  assertCatalogReleaseDateDescending(openAICompatibleCatalog, 'OpenAI 兼容聚合模型目录')
+  assert(openAICompatibleCatalog.some((item) => item.model === 'gpt-regression-global' && item.providerCode === 'gpt'), 'OpenAI 兼容模型目录应聚合 GPT 的 OpenAI v1 模型')
+  assert(openAICompatibleCatalog.some((item) => item.model === 'openai-regression-global' && item.providerCode === 'openai'), 'OpenAI 兼容模型目录应保留自身模型')
+  assert.equal(openAICompatibleCatalog[0]?.model, 'openai-regression-global', '模型目录应按发布时间倒序展示最新模型')
 
   const managementCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'gpt',
@@ -143,6 +165,7 @@ try {
     systemAccountId: 'sys_admin',
     includeMappingTargets: true
   })
+  assertCatalogReleaseDateDescending(mappingCatalog, 'GPT 映射目标模型目录')
   assert(mappingCatalog.some((item) => item.model === 'gpt-regression-hidden-target'), '映射目标目录应包含 mapping_target_only 模型')
 
   const response = catalogService.buildOpenAIModelsResponseFromCatalog(publicCatalog)
@@ -242,6 +265,23 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertCatalogReleaseDateDescending(items: Array<{ model: string; releaseDate?: string }>, label: string): void {
+  for (let index = 1; index < items.length; index += 1) {
+    const previous = items[index - 1]
+    const current = items[index]
+    if (previous.releaseDate && !current.releaseDate) continue
+    assert.ok(
+      Boolean(previous.releaseDate) || !current.releaseDate,
+      `${label}排序错误：未填写发布时间的 ${previous.model} 不应排在 ${current.model}(${current.releaseDate}) 前面`
+    )
+    if (!previous.releaseDate || !current.releaseDate) continue
+    assert.ok(
+      previous.releaseDate >= current.releaseDate,
+      `${label}排序错误：${previous.model}(${previous.releaseDate}) 应排在 ${current.model}(${current.releaseDate}) 前面`
+    )
+  }
 }
 
 async function assertProviderModelHttpContracts(): Promise<void> {

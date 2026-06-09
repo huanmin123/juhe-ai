@@ -329,10 +329,13 @@ export {
 export {
   clearGatewayApiKeyValidationCache,
   findActiveGatewayApiKeyById,
-  isGatewayApiKeyScheduleInactive,
   validateGatewayApiKey,
   type GatewayApiKeyRow
 } from './gateway-api-key.repository.js'
+export {
+  syncApiKeyAvailabilityScheduleStatuses,
+  type ApiKeyScheduleStatusSyncResult
+} from './api-key-schedule-status-sync.repository.js'
 export {
   expireDueResourceAuthorizations
 } from './resource-authorization-write-state.repository.js'
@@ -1968,6 +1971,16 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
   }
 }
 
+export function findAccountForCooldownRetest(accountId: string): AccountSummary | undefined {
+  disableExpiredAccounts()
+  return cooldownRetestDueAccountSummaries(queryAccountsDueForCooldownRetest(1, accountId))[0]
+}
+
+function findAccountCooldownRetestState(accountId: string): AccountSummary | undefined {
+  disableExpiredAccounts()
+  return cooldownRetestAccountSummaries(queryAccountCooldownRetestState(accountId))[0]
+}
+
 export function recordAccountSuccessfulTestModel(accountId: string, model: string, access?: AccessScope): AccountSummary | undefined {
   const normalizedModel = optionalString(model)?.trim()
   const current = findAccountSummary(accountId, access)
@@ -1995,51 +2008,138 @@ export function recordAccountSuccessfulTestModel(accountId: string, model: strin
 
 export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
   disableExpiredAccounts()
+  const normalizedLimit = normalizedCooldownRetestLimit(limit)
+  return cooldownRetestDueAccountSummaries(queryAccountsDueForCooldownRetest(cooldownRetestScanLimit(normalizedLimit))).slice(0, normalizedLimit)
+}
+
+function queryAccountsDueForCooldownRetest(limit: number, accountId?: string): AccountListRow[] {
   const providerProtocolProfileIds = openAIProtocolProfileIdsForQuery()
+  const now = nowIso()
+  const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
+  const params: Array<string | number> = [
+    ...providerProtocolProfileIds,
+    now,
+    now,
+    now
+  ]
+  if (accountId) {
+    params.push(accountId)
+  }
+  params.push(normalizedCooldownRetestLimit(limit))
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT accounts.*, CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
-        accounts.authorization_instance_authorization_id AS authorization_id,
-        NULL AS authorization_status
+      SELECT ${cooldownRetestAccountSelectColumns()}
       FROM accounts
-      WHERE provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
-        AND type IN ('api_key', 'oauth')
-        AND deleted_at IS NULL
-        AND status IN ('temporary_unavailable', 'rate_limited')
-        AND schedulable = 1
-        AND cooldown_until IS NOT NULL
-        AND cooldown_until <= ?
-        AND (account_expires_at IS NULL OR account_expires_at > ?)
+      LEFT JOIN resource_authorizations ra
+        ON ra.id = accounts.authorization_instance_authorization_id
+      WHERE accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+        AND accounts.type IN ('api_key', 'oauth')
+        AND accounts.deleted_at IS NULL
+        AND accounts.status IN ('temporary_unavailable', 'rate_limited')
+        AND accounts.schedulable = 1
+        AND accounts.cooldown_until IS NOT NULL
+        AND accounts.cooldown_until <= ?
+        AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+        AND (
+          accounts.authorization_instance_authorization_id IS NULL
+          OR (
+            ra.id IS NOT NULL
+            AND ra.status = 'active'
+            AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+          )
+        )
+        ${accountIdFilter}
         AND EXISTS (
           SELECT 1
           FROM group_accounts
           WHERE group_accounts.account_id = accounts.id
             AND group_accounts.system_account_id = accounts.system_account_id
             AND group_accounts.enabled = 1
+            AND (
+              accounts.authorization_instance_authorization_id IS NULL
+              OR group_accounts.account_authorization_id = accounts.authorization_instance_authorization_id
+            )
         )
-      ORDER BY cooldown_until ASC, priority ASC, created_at ASC, id ASC
+      ORDER BY accounts.cooldown_until ASC, accounts.priority ASC, accounts.created_at ASC, accounts.id ASC
       LIMIT ?
     `)
-    .all(...providerProtocolProfileIds, nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
+    .all(...params) as unknown as AccountListRow[]
   const scheduledRows = rows.filter((row) => isAccountAvailabilityScheduleAllowed(row.availability_schedule_json))
-  const hydratedRows = hydrateAccountRowsWithRuntimeState(scheduledRows, { includeCredentials: true })
-    .filter((row) => row.access_type !== 'authorized' || Boolean(row.source_provider_code))
-  const accountNames = loadSystemAccountNameMapByIds(hydratedRows.map((row) => row.system_account_id))
-  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(hydratedRows.map((row) => row.id))
-  return hydratedRows.map((row) => {
+  return hydrateAccountRowsWithRuntimeState(scheduledRows, { includeCredentials: true })
+    .filter((row) => row.access_type !== 'authorized' || (
+      Boolean(row.source_provider_code)
+      && isAuthorizedSourceAccountAvailableForDispatch(row, now)
+    ))
+}
+
+function normalizedCooldownRetestLimit(limit: number): number {
+  return Math.max(1, Math.min(Math.trunc(limit), 200))
+}
+
+function cooldownRetestScanLimit(limit: number): number {
+  return Math.max(limit, 200)
+}
+
+function queryAccountCooldownRetestState(accountId: string): AccountListRow[] {
+  const normalizedAccountId = accountId.trim()
+  if (!normalizedAccountId) return []
+  const providerProtocolProfileIds = openAIProtocolProfileIdsForQuery()
+  return hydrateAccountRowsWithRuntimeState(getBusinessDatabase()
+    .prepare(`
+      SELECT ${cooldownRetestAccountSelectColumns()}
+      FROM accounts
+      LEFT JOIN resource_authorizations ra
+        ON ra.id = accounts.authorization_instance_authorization_id
+      WHERE accounts.id = ?
+        AND accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+        AND accounts.type IN ('api_key', 'oauth')
+        AND accounts.deleted_at IS NULL
+      LIMIT 1
+    `)
+    .all(normalizedAccountId, ...providerProtocolProfileIds) as unknown as AccountListRow[], { includeCredentials: true })
+}
+
+function cooldownRetestAccountSelectColumns(): string {
+  return `
+        accounts.*,
+        CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
+        accounts.authorization_instance_authorization_id AS authorization_id,
+        ra.status AS authorization_status,
+        ra.expires_at AS authorization_expires_at,
+        ra.limits_json AS authorization_limits_json,
+        ra.effective_source_type AS authorization_effective_source_type,
+        ra.effective_source_team_id AS authorization_effective_source_team_id,
+        ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
+        ra.resource_id AS authorization_resource_id`
+}
+
+function cooldownRetestAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
+  if (!rows.length) return []
+  const accountNames = loadSystemAccountNameMapByIds(rows.flatMap((row) => [
+    row.system_account_id,
+    row.authorization_resource_owner_system_account_id ?? '',
+    row.authorization_instance_owner_system_account_id ?? ''
+  ]))
+  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(rows.map((row) => row.id))
+  const quotaExceededByAuthorization = loadAuthorizationQuotaExceededByAuthorizationId(rows)
+  return rows.map((row) => {
+    const isAuthorizedView = row.access_type === 'authorized'
     const groupBinding = accountGroupBinding(row.id, row.system_account_id)
+    const displayOwnerSystemAccountId = isAuthorizedView
+      ? row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
+      : row.system_account_id
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
       systemAccountId: row.system_account_id,
       systemAccountName: accountNames.get(row.system_account_id),
-      ownerSystemAccountId: row.system_account_id,
-      ownerSystemAccountName: accountNames.get(row.system_account_id),
+      ownerSystemAccountId: displayOwnerSystemAccountId,
+      ownerSystemAccountName: accountNames.get(displayOwnerSystemAccountId),
       providerCode: accountResourceProviderCode(row),
       providerProtocolProfileId: accountResourceProviderProtocolProfileId(row),
       protocolCode: accountResourceProtocolCode(row),
       protocolVersion: accountResourceProtocolVersion(row),
       name: row.name,
-      notes: row.notes ?? undefined,
+      notes: isAuthorizedView ? undefined : row.notes ?? undefined,
       type: accountResourceType(row),
       credentials: accountRuntimeCredentialsFromRow(row),
       status: row.status,
@@ -2067,12 +2167,47 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       todayUsage: emptyAccountUsageSummary(),
       usage: emptyAccountUsageSummary(),
       oauthUsage: undefined,
-      accessType: 'owner' as const,
+      accessType: row.access_type ?? 'owner',
+      accountAuthorizationId: isAuthorizedView ? row.authorization_id ?? undefined : undefined,
+      authorizationInstanceSourceAccountId: isAuthorizedView ? row.authorization_instance_source_account_id ?? undefined : undefined,
+      authorizationInstanceOwnerSystemAccountId: isAuthorizedView ? row.authorization_instance_owner_system_account_id ?? row.authorization_resource_owner_system_account_id ?? undefined : undefined,
+      authorizationInstanceSourceAccountStatus: isAuthorizedView ? row.source_status ?? undefined : undefined,
+      authorizationInstanceSourceAccountSchedulable: isAuthorizedView && typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
+      authorizationInstanceSourceAccountAvailabilitySchedule: isAuthorizedView ? parseAccountAvailabilityScheduleJson(row.source_availability_schedule_json) : undefined,
+      authorizationInstanceSourceAccountScheduleActive: isAuthorizedView ? isAccountAvailabilityScheduleAllowed(row.source_availability_schedule_json) : undefined,
+      authorizationInstanceSourceAccountExpiresAt: isAuthorizedView ? row.source_account_expires_at ?? undefined : undefined,
+      authorizationInstanceSourceAccountCooldownUntil: isAuthorizedView ? row.source_cooldown_until ?? undefined : undefined,
+      authorizationInstanceSourceAccountLastErrorCode: isAuthorizedView ? row.source_last_error_code ?? undefined : undefined,
+      authorizationInstanceSourceAccountLastErrorMessage: isAuthorizedView ? row.source_last_error_message ?? undefined : undefined,
       boundGroupId: groupBinding?.groupId,
       boundGroupName: groupBinding?.groupName,
       groupBindStatus: groupBinding?.groupBindStatus,
-      permissions: ownerPermissions()
+      bindingSystemAccountId: isAuthorizedView && groupBinding ? row.system_account_id : undefined,
+      authorizationStatus: isAuthorizedView ? row.authorization_status ?? undefined : undefined,
+      authorizationExpiresAt: isAuthorizedView ? row.authorization_expires_at ?? undefined : undefined,
+      authorizationLimits: isAuthorizedView ? parseRequestQuotaLimitsJson(row.authorization_limits_json) : undefined,
+      authorizationQuotaExceeded: isAuthorizedView && row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined,
+      permissions: isAuthorizedView ? authorizedAccountPermissions(false) : ownerPermissions()
     })
+  })
+}
+
+function cooldownRetestDueAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
+  return cooldownRetestAccountSummaries(rows).filter((account) => {
+    if (account.accessType !== 'authorized') return true
+    if (!account.accountAuthorizationId || !account.bindingSystemAccountId || !account.boundGroupId || account.groupBindStatus !== 'bound') {
+      return false
+    }
+    if (account.authorizationStatus && account.authorizationStatus !== 'active') {
+      return false
+    }
+    if (isResourceAuthorizationExpired(account.authorizationExpiresAt)) {
+      return false
+    }
+    if (account.authorizationQuotaExceeded) {
+      return false
+    }
+    return true
   })
 }
 
@@ -3863,6 +3998,7 @@ export function clearAccountStreamFailureState(id: string): boolean {
 }
 
 export interface CooldownAccountRetestFailureInput {
+  traceId?: string
   statusCode?: number
   errorCode?: string
   errorMessage?: string
@@ -3893,7 +4029,7 @@ export interface CooldownAccountRetestFailureResult {
 }
 
 export function recordCooldownAccountRetestFailure(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
-  const current = findInternalAccountSummary(id)
+  const current = findAccountCooldownRetestState(id)
   const errorCode = normalizedCooldownRetestErrorCode(input)
   const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
   if (!current || !isCoolingAccountStatus(current.status)) {
@@ -4017,12 +4153,16 @@ function normalizedCooldownRetestErrorCode(input: CooldownAccountRetestFailureIn
 }
 
 function failureAccountSummary(id: string, fallback: AccountSummary): AccountSummary {
-  return findInternalAccountSummary(id) ?? fallback
+  return findAccountCooldownRetestState(id) ?? fallback
 }
 
 function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailureInput, errorCode: string): string {
   const message = optionalString(input.errorMessage) ?? '后台冷却复测失败'
   const parts: string[] = []
+  const traceId = optionalString(input.traceId)
+  if (traceId && !message.includes(traceId)) {
+    parts.push(`traceId ${traceId}`)
+  }
   if (typeof input.statusCode === 'number' && Number.isFinite(input.statusCode)) {
     parts.push(`HTTP ${Math.trunc(input.statusCode)}`)
   }

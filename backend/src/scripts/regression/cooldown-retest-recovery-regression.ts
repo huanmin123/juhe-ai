@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-cooldown-retest-recovery-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -29,6 +30,7 @@ const [databaseModule, repositories, gatewayRuntimeCache, cooldownRetestService]
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 let mockOpenAIServer: http.Server | undefined
+let mockOpenAIResponseHitCount = 0
 
 try {
   mockOpenAIServer = createMockOpenAIServer()
@@ -114,9 +116,10 @@ try {
     .run(new Date().toISOString(), new Date(Date.now() - 1000).toISOString(), freshAccount.id)
 
   const stillRecovering = repositories.recordCooldownAccountRetestFailure(freshAccount.id, {
+    traceId: 'trace-cooldown-retest-quota',
     statusCode: 403,
     errorCode: 'insufficient_quota',
-    errorMessage: '余额和订阅额度均不足，请充值后再使用',
+    errorMessage: '余额和订阅额度均不足，请充值后再使用 (request id: upstream-request-id-should-display)',
     maxRecoveryHours: 1,
     maxPauseMinutes: 1440
   })
@@ -126,6 +129,8 @@ try {
   assert.equal(freshAfterRetest?.status, 'temporary_unavailable', '未超过观察窗口时账号应继续恢复')
   assert.equal(freshAfterRetest?.lastErrorCode, 'insufficient_quota', '后台复测应把上游真实错误码写入账户状态')
   assert.match(freshAfterRetest?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '后台复测状态原因应保留真实上游错误摘要')
+  assert.match(freshAfterRetest?.lastErrorMessage ?? '', /traceId trace-cooldown-retest-quota/, '后台复测状态原因应写入本地 traceId 作为追踪主键')
+  assert.match(freshAfterRetest?.lastErrorMessage ?? '', /request id: upstream-request-id-should-display/, '后台复测状态原因应保留上游 request id')
 
   const restored = repositories.clearAccountFailureState(freshAccount.id, access)
   assert.equal(restored?.cooldownRetestObservationStartedAt, undefined, '恢复正常时应清理自动恢复观察起点')
@@ -205,6 +210,179 @@ try {
   assert.equal(restoredByProbe.cooldownUntil, undefined, '后台探针测试通过后应清理冷却时间')
   assert.equal(restoredByProbe.lastErrorMessage, undefined, '后台探针测试通过后应清理错误原因')
 
+  const owner = repositories.createSystemAccount({
+    username: 'cooldown_auth_owner',
+    displayName: '冷却复测授权方',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const grantee = repositories.createSystemAccount({
+    username: 'cooldown_auth_grantee',
+    displayName: '冷却复测被授权方',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerGroup = repositories.createGroup({
+    name: '冷却复测授权来源分组',
+    providerCode: 'gpt'
+  }, ownerAccess)
+  const granteeGroup = repositories.createGroup({
+    name: '冷却复测授权目标分组',
+    providerCode: 'gpt'
+  }, granteeAccess)
+  const sourceAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '冷却复测授权来源账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cooldown-retest-authorized',
+      base_url: mockBaseUrl
+    },
+    status: 'active',
+    groupId: ownerGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: sourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
+    remark: '冷却复测授权实例恢复回归'
+  }, ownerAccess)
+  const authorizedInstance = repositories.listAccounts(granteeAccess)
+    .find((item) => item.authorizationInstanceSourceAccountId === sourceAccount.id)
+  assert(authorizedInstance, '授权后应创建被授权方本地账号实例')
+  const authorizedTestAccount = repositories.findAccountForTest(authorizedInstance.id, granteeAccess)
+  assert.equal(authorizedTestAccount?.accessType, 'authorized', '被授权方测试对象应保持授权视角')
+  assert.equal(authorizedTestAccount?.schedulable, true, '授权实例初始应可调度')
+  const authorizedCooled = repositories.markAccountTestTemporaryUnavailable(authorizedTestAccount, '模拟授权实例临时不可调用', granteeAccess)
+  assert.equal(authorizedCooled?.status, 'temporary_unavailable', '授权实例应进入本地临时不可调用状态')
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(Date.now() - 1000).toISOString(), authorizedInstance.id)
+  const authorizedRetestFailure = repositories.recordCooldownAccountRetestFailure(authorizedInstance.id, {
+    statusCode: 503,
+    errorMessage: '授权实例仍然不可用',
+    maxPauseMinutes: 10,
+    maxRecoveryHours: 1
+  })
+  assert.equal(authorizedRetestFailure.failureCount, 1, '授权实例后台复测失败应按本地实例累计失败次数')
+  assert.equal(authorizedRetestFailure.action, 'retry_immediately', '授权实例首次后台复测失败应继续快速恢复')
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(Date.now() - 1000).toISOString(), authorizedInstance.id)
+  const authorizedCandidate = repositories.listAccountsDueForCooldownRetest(20)
+    .find((item) => item.id === authorizedInstance.id)
+  assert(authorizedCandidate, '授权实例冷却到期后应进入后台复测候选')
+  assert.equal(authorizedCandidate.accessType, 'authorized', '后台复测候选应保留授权实例视角，不能伪装成普通账户')
+  assert.equal(authorizedCandidate.schedulable, true, '后台复测候选应读取本地实例原始可恢复调度状态')
+  assert.equal(authorizedCandidate.cooldownRetestFailureCount, 1, '后台复测候选应读取授权实例本地失败次数')
+  assert.equal(authorizedCandidate.bindingSystemAccountId, grantee.id, '后台复测候选应保留被授权方本地绑定系统账户')
+  assert.equal(authorizedCandidate.boundGroupId, granteeGroup.id, '后台复测候选应保留被授权方本地分组绑定')
+  assert(authorizedCandidate.accountAuthorizationId, '后台复测候选应保留账号授权 ID')
+  const authorizedProbeHitBefore = mockOpenAIResponseHitCount
+  assert(cooldownRetestService.enqueueCooldownAccountRetest(authorizedCandidate, {
+    maxPauseMinutes: 10,
+    maxRecoveryHours: 1
+  }), '授权实例冷却复测候选应能入队')
+  const restoredAuthorized = await waitForAccountStatus(authorizedInstance.id, 'active', granteeAccess)
+  assert.equal(restoredAuthorized.status, 'active', '后台探针测试通过后授权实例应恢复为正常')
+  assert.equal(restoredAuthorized.schedulable, true, '后台探针测试通过后授权实例应恢复调度')
+  assert.equal(restoredAuthorized.cooldownUntil, undefined, '后台探针测试通过后授权实例应清理冷却时间')
+  assert.equal(mockOpenAIResponseHitCount, authorizedProbeHitBefore + 1, '授权实例后台复测应真实调用上游探针')
+  const sourceAfterAuthorizedRetest = repositories.findAccountSummary(sourceAccount.id, ownerAccess)
+  assert.equal(sourceAfterAuthorizedRetest?.status, 'active', '授权实例恢复不应修改授权方原账户状态')
+
+  const quotaOwner = repositories.createSystemAccount({
+    username: 'cooldown_quota_auth_owner',
+    displayName: '冷却复测额度授权方',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const quotaGrantee = repositories.createSystemAccount({
+    username: 'cooldown_quota_auth_grantee',
+    displayName: '冷却复测额度被授权方',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const quotaOwnerAccess = { systemAccountId: quotaOwner.id, role: 'user' as const }
+  const quotaGranteeAccess = { systemAccountId: quotaGrantee.id, role: 'user' as const }
+  const quotaOwnerGroup = repositories.createGroup({
+    name: '冷却复测额度来源分组',
+    providerCode: 'gpt'
+  }, quotaOwnerAccess)
+  const quotaGranteeGroup = repositories.createGroup({
+    name: '冷却复测额度目标分组',
+    providerCode: 'gpt'
+  }, quotaGranteeAccess)
+  const quotaSourceAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '冷却复测额度来源账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cooldown-retest-quota-limited',
+      base_url: mockBaseUrl
+    },
+    status: 'active',
+    groupId: quotaOwnerGroup.id
+  }, quotaOwnerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: quotaSourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: quotaGrantee.id,
+    targetGroupId: quotaGranteeGroup.id,
+    remark: '冷却复测额度耗尽授权实例回归',
+    limits: { total: { enabled: true, limit: 1 } }
+  }, quotaOwnerAccess)
+  const quotaLimitedAuthorization = databaseModule.getBusinessDatabase()
+    .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
+    .get(quotaSourceAccount.id, quotaGrantee.id) as { id?: string } | undefined
+  assert(quotaLimitedAuthorization?.id, '额度授权应写入运行时授权记录')
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, total_cost_usd, updated_at)
+      VALUES (?, 'account_authorization', ?, 1, 1, ?)
+    `)
+    .run(quotaGrantee.id, quotaLimitedAuthorization.id, new Date().toISOString())
+  const quotaLimitedInstance = repositories.listAccounts(quotaGranteeAccess)
+    .find((item) => item.authorizationInstanceSourceAccountId === quotaSourceAccount.id)
+  assert(quotaLimitedInstance, '额度授权实例应创建本地账号实例')
+  const quotaLimitedTestAccount = repositories.findAccountForTest(quotaLimitedInstance.id, quotaGranteeAccess)
+  assert(quotaLimitedTestAccount, '额度授权实例应能读取测试对象')
+  repositories.markAccountTestTemporaryUnavailable(quotaLimitedTestAccount, '模拟额度耗尽授权实例临时不可调用', quotaGranteeAccess)
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(Date.now() - 10_000).toISOString(), quotaLimitedInstance.id)
+  const scanWindowOwnerAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '冷却复测扫描窗口普通账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cooldown-retest-scan-window',
+      base_url: mockBaseUrl
+    },
+    status: 'active',
+    groupId: group.id
+  }, access)
+  repositories.markAccountTemporaryUnavailable(scanWindowOwnerAccount.id, '模拟扫描窗口普通账户临时不可调用')
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(Date.now() - 1000).toISOString(), scanWindowOwnerAccount.id)
+  const scanWindowCandidates = repositories.listAccountsDueForCooldownRetest(1)
+  assert(!scanWindowCandidates.some((item) => item.id === quotaLimitedInstance.id), '授权额度耗尽的授权实例不应进入后台复测候选')
+  assert(scanWindowCandidates.some((item) => item.id === scanWindowOwnerAccount.id), '无效授权实例不应占满扫描窗口导致后续普通候选被挡住')
+
   console.log('cooldown retest recovery regression passed')
 } finally {
   await closeServer(mockOpenAIServer)
@@ -220,6 +398,7 @@ function createMockOpenAIServer(): http.Server {
       return
     }
     req.on('end', () => {
+      mockOpenAIResponseHitCount += 1
       const completedEvent = {
         type: 'response.completed',
         response: {
@@ -246,10 +425,14 @@ function createMockOpenAIServer(): http.Server {
   })
 }
 
-async function waitForAccountStatus(accountId: string, status: string): Promise<NonNullable<ReturnType<typeof repositories.findAccountSummary>>> {
+async function waitForAccountStatus(
+  accountId: string,
+  status: string,
+  accountAccess: AccessScope = access
+): Promise<NonNullable<ReturnType<typeof repositories.findAccountSummary>>> {
   const startedAt = Date.now()
   while (Date.now() - startedAt < 5000) {
-    const account = repositories.findAccountSummary(accountId, access)
+    const account = repositories.findAccountSummary(accountId, accountAccess)
     if (account?.status === status) {
       return account
     }

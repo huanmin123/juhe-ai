@@ -28,6 +28,14 @@ export interface ApiKeyAvailabilityScheduleDecision {
   allowed: boolean
 }
 
+export type ApiKeyAvailabilityScheduleStatus = 'active' | 'disabled'
+
+export interface ApiKeyAvailabilityScheduleDueEvent {
+  eventKey: string
+  status: ApiKeyAvailabilityScheduleStatus
+  action: 'start' | 'end'
+}
+
 export function normalizeApiKeyAvailabilitySchedule(input: unknown): ApiKeyAvailabilitySchedule | undefined {
   if (input === undefined || input === null) {
     return undefined
@@ -101,6 +109,41 @@ export function evaluateApiKeyAvailabilitySchedule(
   return {
     enabled: true,
     allowed: schedule.windows.some((window) => isMinuteInWindow(current, window))
+  }
+}
+
+export function apiKeyAvailabilityScheduleStatus(
+  schedule: ApiKeyAvailabilitySchedule | undefined,
+  now = new Date()
+): ApiKeyAvailabilityScheduleStatus | undefined {
+  if (!schedule?.enabled) return undefined
+  return evaluateApiKeyAvailabilitySchedule(schedule, now).allowed ? 'active' : 'disabled'
+}
+
+export function dueApiKeyAvailabilityScheduleEvent(
+  schedule: ApiKeyAvailabilitySchedule | undefined,
+  now = new Date()
+): ApiKeyAvailabilityScheduleDueEvent | undefined {
+  if (!schedule?.enabled) return undefined
+  const current = zonedDateTimeParts(now, schedule.timezone)
+  if (!isDateInScheduleRange(current.dateKey, schedule)) return undefined
+  const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
+  if (exception?.action === 'deny') return undefined
+  const windows = exception?.action === 'allow'
+    ? exception.windows.map((window, index) => ({
+      token: `exception:${current.dateKey}:${index}`,
+      window: { ...window, daysOfWeek: [current.dayOfWeek] }
+    }))
+    : schedule.windows.map((window, index) => ({ token: `window:${index}`, window }))
+  const events = windows.flatMap((item) => dueWindowEvents(current, item.window, item.token))
+  if (!events.length) return undefined
+  const starts = events.filter((event) => event.action === 'start')
+  const selected = starts[0] ?? events[0]
+  const action = selected.action
+  return {
+    action,
+    status: action === 'start' ? 'active' : 'disabled',
+    eventKey: `${current.dateKey}:${current.minuteOfDay}:${action}:${events.map((event) => event.key).sort().join('|')}`
   }
 }
 
@@ -275,6 +318,25 @@ function isMinuteInWindow(current: ZonedDateTimeParts, window: ApiKeyAvailabilit
   }
   return (days.has(current.dayOfWeek) && current.minuteOfDay >= start)
     || (days.has(previousDayOfWeek(current.dayOfWeek)) && current.minuteOfDay < end)
+}
+
+function dueWindowEvents(
+  current: ZonedDateTimeParts,
+  window: ApiKeyAvailabilityScheduleWindow,
+  token: string
+): Array<{ action: 'start' | 'end'; key: string }> {
+  const start = minuteOfDay(window.start)
+  const end = minuteOfDay(window.end)
+  const days = new Set(window.daysOfWeek)
+  const events: Array<{ action: 'start' | 'end'; key: string }> = []
+  if (current.minuteOfDay === start && days.has(current.dayOfWeek)) {
+    events.push({ action: 'start', key: `${token}:start:${window.start}` })
+  }
+  const endDay = start < end ? current.dayOfWeek : previousDayOfWeek(current.dayOfWeek)
+  if (current.minuteOfDay === end && days.has(endDay)) {
+    events.push({ action: 'end', key: `${token}:end:${window.end}` })
+  }
+  return events
 }
 
 function minuteOfDay(value: string): number {

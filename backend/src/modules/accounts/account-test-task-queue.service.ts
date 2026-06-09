@@ -151,14 +151,54 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
     }
 
     if (task.draftAccount) {
-      const account = accountSummaryFromDraftSnapshot(task.draftAccount)
-      if (!isOpenAIProtocolProfile(account)) {
-        failAccountTestTask(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
+      const draft = task.draftAccount
+      const draftAccount = accountSummaryFromDraftSnapshot(draft)
+      if (!isOpenAIProtocolProfile(draftAccount)) {
+        failAccountTestTask(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(draftAccount, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
         return true
       }
-      const result = await runAccountTestWithDiagnosticSlot(task.id, account, task.model, () => runOpenAIDraftAccountTest(account, task.draftAccount as AccountTestDraftSnapshot, {
+
+      const stateTargetAccountId = normalizedString(draft.stateTargetAccountId)
+      if (stateTargetAccountId) {
+        const account = findAccountForTest(stateTargetAccountId, access)
+        if (!account) {
+          failAccountTestTask(task.id, '账户不存在')
+          return true
+        }
+        if (account.accessType === 'authorized') {
+          failAccountTestTask(task.id, '授权账户测试不支持使用未保存表单配置', failedAccountTestResult(account, task.message ?? '授权账户测试不支持使用未保存表单配置', task.model))
+          return true
+        }
+        if (!isOpenAIProtocolProfile(account)) {
+          failAccountTestTask(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
+          return true
+        }
+        const unavailableMessage = accountTestUnavailableMessage(account)
+        if (unavailableMessage) {
+          failAccountTestTask(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
+          return true
+        }
+        const result = await runAccountTestWithDiagnosticSlot(task.id, account, task.model, () => runOpenAIAccountTestWithSideEffects(account, access, {
+          model: task.model,
+          clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
+          diagnostics: task.diagnostics,
+          signal: controller.signal,
+          draftAccount: draft
+        }))
+        if (!result) {
+          return true
+        }
+        if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
+          markAccountTestTaskCanceled(task.id, '已停止测试')
+          return true
+        }
+        completeAccountTestTask(task.id, result)
+        return true
+      }
+
+      const result = await runAccountTestWithDiagnosticSlot(task.id, draftAccount, task.model, () => runOpenAIDraftAccountTest(draftAccount, draft, {
         model: task.model,
-        clientCompatibility: task.clientCompatibility,
+        clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
         diagnostics: task.diagnostics,
         signal: controller.signal
       }))
@@ -270,16 +310,24 @@ async function runOpenAIAccountTestWithSideEffects(
     clientCompatibility?: AccountSummary['clientCompatibility']
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
+    draftAccount?: AccountTestDraftSnapshot
   }
 ): Promise<AccountTestResult> {
   let accountTestStatusChanges: ReturnType<typeof safeChange>[] | undefined
-  let result = await testOpenAIAccount(account, {
-    model: input.model,
-    clientCompatibility: input.clientCompatibility,
-    signal: input.signal,
-    diagnostics: input.diagnostics,
-    requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId)
-  })
+  let result = input.draftAccount
+    ? await runOpenAIDraftAccountTest(account, input.draftAccount, {
+      model: input.model,
+      clientCompatibility: input.clientCompatibility ?? input.draftAccount.clientCompatibility,
+      diagnostics: input.diagnostics,
+      signal: input.signal
+    })
+    : await testOpenAIAccount(account, {
+      model: input.model,
+      clientCompatibility: input.clientCompatibility,
+      signal: input.signal,
+      diagnostics: input.diagnostics,
+      requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId)
+    })
 
   if (input.signal.aborted) {
     return result
@@ -568,8 +616,12 @@ function shouldMarkAccountTestFailureAsTemporaryUnavailable(account: AccountSumm
   return true
 }
 
-function accountTestFailureCooldownReason(result: { statusCode?: number; errorCode?: string; message?: string }): string {
+function accountTestFailureCooldownReason(result: { traceId?: string; statusCode?: number; errorCode?: string; message?: string }): string {
   const parts = ['账户测试失败，已自动标记为临时不可调用']
+  const traceId = normalizedString(result.traceId)
+  if (traceId) {
+    parts.push(`traceId ${traceId}`)
+  }
   if (typeof result.statusCode === 'number') {
     parts.push(`HTTP ${Math.trunc(result.statusCode)}`)
   }

@@ -217,6 +217,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   )
 
   function handleModalCancel() {
+    modalOpen.value = false
     authResult.value = undefined
   }
 

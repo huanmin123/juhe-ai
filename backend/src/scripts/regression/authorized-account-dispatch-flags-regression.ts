@@ -63,6 +63,7 @@ try {
     providerCode: 'gpt',
     name: 'B 授权超级优先账户',
     type: 'api_key',
+    status: 'active',
     credentials: { api_key: 'sk-authorized-super', base_url: 'https://api.openai.com/v1' },
     superPriorityEnabled: true,
     priority: 10,
@@ -72,6 +73,7 @@ try {
     providerCode: 'gpt',
     name: 'A 授权普通账户',
     type: 'api_key',
+    status: 'active',
     credentials: { api_key: 'sk-authorized-normal', base_url: 'https://api.openai.com/v1' },
     priority: 0,
     groupId: ownerSourceGroup.id
@@ -80,6 +82,7 @@ try {
     providerCode: 'gpt',
     name: 'C 授权降级备用账户',
     type: 'api_key',
+    status: 'active',
     credentials: { api_key: 'sk-authorized-fallback', base_url: 'https://api.openai.com/v1' },
     fallbackEnabled: true,
     priority: 0,
@@ -89,6 +92,7 @@ try {
     providerCode: 'gpt',
     name: 'D 被授权人自有账户',
     type: 'api_key',
+    status: 'active',
     credentials: { api_key: 'sk-authorized-owned-target', base_url: 'https://api.openai.com/v1' },
     priority: 0,
     groupId: granteeOwnedGroup.id

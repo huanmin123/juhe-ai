@@ -75,6 +75,7 @@ export interface UsageRecordListOptions {
   pageSize?: number
   sortBy?: UsageRecordSortField
   sortOrder?: UsageRecordSortDirection
+  traceId?: string
   accountKeyword?: string
   clientIp?: string
   result?: 'success' | 'failed' | 'all'
@@ -390,6 +391,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
         id,
         shardKey: location.shardKey,
         systemAccountId,
+        traceId: input.traceId,
         apiKeyId: input.apiKeyId ?? null,
         accountId: input.accountId ?? null,
         groupId: input.groupId ?? null,

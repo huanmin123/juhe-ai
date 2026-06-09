@@ -14,6 +14,7 @@ export interface UsageRecordFilterResult {
 interface UsageRecordQueryColumns {
   id: string
   systemAccountId: string
+  traceId: string
   accountId: string
   success: string
   statusCode: string
@@ -30,6 +31,7 @@ interface UsageRecordQueryColumns {
 const usageRecordShardColumns: UsageRecordQueryColumns = {
   id: 'ur.id',
   systemAccountId: 'ur.system_account_id',
+  traceId: 'ur.trace_id',
   accountId: 'ur.account_id',
   success: 'ur.success',
   statusCode: 'ur.status_code',
@@ -47,6 +49,7 @@ const usageRecordEntryColumns: UsageRecordQueryColumns = {
   ...usageRecordShardColumns,
   id: 'ue.usage_id',
   systemAccountId: 'ue.system_account_id',
+  traceId: 'ue.trace_id',
   accountId: 'ue.account_id',
   success: 'ue.success',
   statusCode: 'ue.status_code',
@@ -111,6 +114,7 @@ function buildUsageRecordFiltersForColumns(access: AccessScope | undefined, opti
     clauses.push(scope.clause.replace(/^ AND /, ''))
     params.push(...scope.params)
   }
+  pushPrefixFilter(clauses, params, columns.traceId, options?.traceId)
   const accountKeyword = options?.accountKeyword?.trim()
   if (accountKeyword) {
     const matchedAccountIds = accountIdsForKeyword(accountKeyword, access)

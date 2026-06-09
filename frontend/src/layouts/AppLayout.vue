@@ -53,6 +53,7 @@
 import {
   ApartmentOutlined,
   ApiOutlined,
+  AppstoreOutlined,
   BellOutlined,
   GlobalOutlined,
   BarChartOutlined,
@@ -175,6 +176,7 @@ const ApiKeyMenuIcon = () =>
 
 const menuIconMap = {
   '/providers': GlobalOutlined,
+  '/my-models': AppstoreOutlined,
   '/my-accounts': UserSwitchOutlined,
   '/accounts': UserSwitchOutlined,
   '/my-groups': ApartmentOutlined,

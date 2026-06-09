@@ -72,6 +72,7 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
     sortBy,
     sortOrder,
+    traceId: optionalQueryText(query.traceId),
     accountKeyword: optionalQueryText(query.accountKeyword),
     clientIp: optionalQueryText(query.clientIp),
     result,

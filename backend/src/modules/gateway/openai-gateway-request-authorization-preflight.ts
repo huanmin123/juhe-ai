@@ -1,7 +1,6 @@
 import type { Request, Response } from 'express'
 
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata } from '../../storage/repositories.js'
-import { isGatewayApiKeyScheduleInactive } from '../../storage/gateway-api-key.repository.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
 import {
   AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE,
@@ -35,35 +34,6 @@ export function rejectUnavailableGatewayApiKey(input: {
       outcome: 'gateway_failed',
       errorPhase: 'authorization',
       errorCode: 'invalid_api_key',
-      errorMessage: responsePayload.error.message
-    }
-  })
-  return true
-}
-
-export function rejectInactiveGatewayApiKeySchedule(input: {
-  req: Request
-  res: Response
-  auditCapture: AuditCaptureContext
-  usageContext: GatewayFailureUsageContext
-  startedAt: number
-  apiKeyRecord?: GatewayApiKeyRow
-}): boolean {
-  if (!isGatewayApiKeyScheduleInactive(input.apiKeyRecord)) return false
-  const statusCode = 403
-  const responsePayload = gatewayErrorPayload('API Key 当前不在允许使用时段', 'forbidden', 'api_key_schedule_inactive')
-  sendGatewayFailureResponse({
-    req: input.req,
-    res: input.res,
-    auditCapture: input.auditCapture,
-    usageContext: input.usageContext,
-    startedAt: input.startedAt,
-    statusCode,
-    responsePayload,
-    audit: {
-      outcome: 'gateway_failed',
-      errorPhase: 'authorization',
-      errorCode: 'api_key_schedule_inactive',
       errorMessage: responsePayload.error.message
     }
   })

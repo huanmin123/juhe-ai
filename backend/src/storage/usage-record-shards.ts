@@ -42,6 +42,7 @@ export interface UsageRecordShardEntryInput {
   id: string
   shardKey: string
   systemAccountId: string
+  traceId: string
   apiKeyId?: string | null
   accountId?: string | null
   groupId?: string | null
@@ -418,13 +419,14 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
   const database = getDatasetDatabase()
   const statement = database.prepare(`
     INSERT INTO usage_record_shard_entries (
-      usage_id, shard_key, system_account_id, api_key_id, account_id, group_id, model, traffic_source,
+      usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source,
       success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(usage_id) DO UPDATE SET
       shard_key = excluded.shard_key,
       system_account_id = excluded.system_account_id,
+      trace_id = excluded.trace_id,
       api_key_id = excluded.api_key_id,
       account_id = excluded.account_id,
       group_id = excluded.group_id,
@@ -444,6 +446,7 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
       entry.id,
       entry.shardKey,
       entry.systemAccountId,
+      entry.traceId,
       entry.apiKeyId ?? null,
       entry.accountId ?? null,
       entry.groupId ?? null,
@@ -825,6 +828,8 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_api_key_created_sort ON usage_records(api_key_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_account_created_sort ON usage_records(account_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_trace_created_sort ON usage_records(trace_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_trace_created_sort ON usage_records(system_account_id, trace_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_model_created_sort ON usage_records(model, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_model_created_sort ON usage_records(system_account_id, model, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_traffic_source_created ON usage_records(traffic_source, created_at, id);

@@ -59,7 +59,6 @@ import { applyOpenAIGatewayImagePermissionPreflight } from './openai-gateway-req
 import {
   rejectGatewayApiKeyQuotaIfExceeded,
   rejectGatewayAuthorizationQuotaIfExceeded,
-  rejectInactiveGatewayApiKeySchedule,
   rejectMissingGatewayGroupAccess,
   rejectUnavailableGatewayApiKey
 } from './openai-gateway-request-authorization-preflight.js'
@@ -229,16 +228,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     usageContext: baseUsageContext,
     startedAt,
     apiKeyUnavailable
-  })) {
-    return undefined
-  }
-  if (rejectInactiveGatewayApiKeySchedule({
-    req,
-    res,
-    auditCapture,
-    usageContext: baseUsageContext,
-    startedAt,
-    apiKeyRecord
   })) {
     return undefined
   }

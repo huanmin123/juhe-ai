@@ -367,6 +367,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           usage_id TEXT PRIMARY KEY,
           shard_key TEXT NOT NULL,
           system_account_id TEXT NOT NULL,
+          trace_id TEXT NOT NULL,
           api_key_id TEXT,
           account_id TEXT,
           group_id TEXT,
@@ -556,6 +557,8 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_shard ON usage_record_shard_entries(shard_key, created_at);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_created_sort ON usage_record_shard_entries(created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_created_sort ON usage_record_shard_entries(system_account_id, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_trace_created_sort ON usage_record_shard_entries(trace_id, created_at, usage_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_trace_created_sort ON usage_record_shard_entries(system_account_id, trace_id, created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_api_key_created_sort ON usage_record_shard_entries(api_key_id, system_account_id, created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_group_created_sort ON usage_record_shard_entries(group_id, created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_group_created_sort ON usage_record_shard_entries(system_account_id, group_id, created_at, usage_id);

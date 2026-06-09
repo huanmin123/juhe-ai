@@ -11,6 +11,7 @@ import {
   listProviderModelCatalog,
   removeCustomProviderModel,
   saveCustomProviderModel,
+  compareProviderModelCatalogItems,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
 
@@ -263,7 +264,7 @@ function mergeProviderModelsForRoute(items: ProviderModelCatalogItem[]): Provide
       merged.set(key, item)
     }
   }
-  return [...merged.values()].sort((left, right) => left.model.localeCompare(right.model, 'en'))
+  return [...merged.values()].sort(compareProviderModelCatalogItems)
 }
 
 function routeModelPriority(item: ProviderModelCatalogItem): number {

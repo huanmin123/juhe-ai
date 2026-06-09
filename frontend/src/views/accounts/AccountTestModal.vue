@@ -130,6 +130,7 @@ import {
   formatAccountTestDuration,
   formatErrorPolicyAction,
   formatTestTerminalResult,
+  splitAccountDiagnosticMessage,
   statusText
 } from './accountFormatters'
 
@@ -240,13 +241,21 @@ const outputLines = computed<TestOutputLine[]>(() => {
 
   lines.push({ text: props.result.statusCode && props.result.statusCode >= 200 && props.result.statusCode < 300 ? '已连接到 API' : 'API 返回错误', tone: props.result.success ? 'success' : 'error' })
   lines.push({ text: `使用模型：${props.result.model || props.model}`, tone: 'success' })
+  const diagnosticParts = splitAccountDiagnosticMessage(props.result.message)
+  const traceId = props.result.traceId || diagnosticParts.traceId
+  if (traceId) {
+    lines.push({ text: `traceId：${traceId}`, tone: 'muted' })
+  }
+  if (diagnosticParts.requestId) {
+    lines.push({ text: `request id：${diagnosticParts.requestId}`, tone: 'muted' })
+  }
   lines.push({ text: `实际兼容：${accountClientCompatibilityText(props.result.testClientCompatibility ?? props.result.clientCompatibility ?? account.clientCompatibility)}`, tone: 'muted' })
   lines.push({ text: '响应：', tone: 'label' })
   const outputText = formatTestTerminalResult(props.result)
   if (outputText) {
     lines.push({ text: outputText, tone: props.result.success ? 'success' : 'error' })
   } else {
-    lines.push({ text: props.result.message, tone: props.result.success ? 'success' : 'error' })
+    lines.push({ text: diagnosticParts.message || props.result.message, tone: props.result.success ? 'success' : 'error' })
   }
   if (props.result.errorPolicyAction && props.result.errorPolicyAction !== 'none') {
     const reason = props.result.errorPolicyReason ? `，原因：${props.result.errorPolicyReason}` : ''

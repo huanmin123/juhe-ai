@@ -152,31 +152,50 @@ try {
   assert.equal(fakeChild.sentOperationCount, 6, '同一无效 API Key 短期重复认证失败应命中负缓存，避免重复请求 DB service')
 
   const scheduleActiveAt = Date.parse('2026-06-01T00:00:30.000Z')
+  syncApiKeyScheduleStatusAt(scheduleActiveAt)
   const scheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
-  assert.equal(scheduledFirst.apiKey?.availability_schedule_active, 1, '计划允许时段内应返回可用 API Key')
+  assert.equal(scheduledFirst.apiKey?.status, 'active', '计划允许时段内应由同步任务写入启用状态')
   assert.equal(scheduledFirst.accounts.length, 2, '计划允许时段内应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, 7, '首次读取计划 API Key 应请求 DB service')
   const scheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
-  assert.equal(scheduledSecond.apiKey?.availability_schedule_active, 1, '计划边界前应继续命中可用缓存')
+  assert.equal(scheduledSecond.apiKey?.status, 'active', '计划边界前应继续命中可用缓存')
   assert.equal(fakeChild.sentOperationCount, 7, '计划边界前重复读取应命中缓存')
+  database.prepare("UPDATE api_keys SET status = 'disabled' WHERE id = ?").run(apiKey.scheduledKeyId)
+  clearGatewayCachesForRegression()
+  syncApiKeyScheduleStatusAt(scheduleActiveAt + 40_000)
+  const scheduledAfterManualDisable = await withMockedNow(scheduleActiveAt + 40_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
+  assert.equal(scheduledAfterManualDisable.apiKey, undefined, '开始边界执行过后，窗口中间手动停用不应被计划再次启用')
+  assert.equal(fakeChild.sentOperationCount, 8, '窗口中间手动停用后读取应重新请求 DB service')
+  syncApiKeyScheduleStatusAt(Date.parse('2026-06-01T00:01:01.000Z'))
   const scheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
-  assert.equal(scheduledAfterBoundary.apiKey?.availability_schedule_active, 0, '计划边界后应重新计算为停用')
+  assert.equal(scheduledAfterBoundary.apiKey, undefined, '计划边界后同步任务写入停用状态，网关不应返回运行配置')
   assert.equal(scheduledAfterBoundary.accounts.length, 0, '时段外后不应返回候选账号')
-  assert.equal(fakeChild.sentOperationCount, 8, '即使缓存被高频命中，计划边界后也应重新请求 DB service')
+  assert.equal(fakeChild.sentOperationCount, 9, '计划边界后同步任务清缓存，下一次读取应重新请求 DB service')
+  database.prepare("UPDATE api_keys SET status = 'active' WHERE id = ?").run(apiKey.scheduledKeyId)
+  clearGatewayCachesForRegression()
+  syncApiKeyScheduleStatusAt(Date.parse('2026-06-01T00:01:30.000Z'))
+  const scheduledAfterManualEnable = await withMockedNow(Date.parse('2026-06-01T00:01:30.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
+  assert.equal(scheduledAfterManualEnable.apiKey?.status, 'active', '结束边界执行过后，手动启用不应被计划再次关闭')
+  assert.equal(scheduledAfterManualEnable.accounts.length, 2, '结束边界之后手动启用应按普通启用 Key 使用')
+  assert.equal(fakeChild.sentOperationCount, 10, '结束边界之后手动启用读取应重新请求 DB service')
   const groupAccountsAfterInactiveKeySchedule = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.listCachedOpenAIAccountsForGroupAsync(apiKey.accountGroupId, 'sys_admin'))
   assert.equal(groupAccountsAfterInactiveKeySchedule.length, 2, 'API Key 时段外不应污染同分组账户候选缓存')
 
   const disabledScheduledOperationCount = fakeChild.sentOperationCount
-  const disabledScheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledFirst.apiKey?.status, 'disabled', '手动停用但配置计划的 API Key 应保留原始状态')
-  assert.equal(disabledScheduledFirst.apiKey?.availability_schedule_active, 1, '计划窗口内应强制启用手动停用的 API Key')
-  assert.equal(disabledScheduledFirst.accounts.length, 2, '计划窗口内手动停用 API Key 仍应返回候选账号')
+  database.prepare("UPDATE api_keys SET status = 'disabled' WHERE id = ?").run(apiKey.disabledScheduledKeyId)
+  const disabledScheduleActiveAt = Date.parse('2026-06-01T00:02:30.000Z')
+  const disabledScheduleInactiveAt = Date.parse('2026-06-01T00:03:01.000Z')
+  syncApiKeyScheduleStatusAt(disabledScheduleActiveAt)
+  const disabledScheduledFirst = await withMockedNow(disabledScheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
+  assert.equal(disabledScheduledFirst.apiKey?.status, 'active', '计划窗口内应把原本停用的 API Key 实际改为启用')
+  assert.equal(disabledScheduledFirst.accounts.length, 2, '计划窗口内实际启用后应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '首次读取手动停用计划 API Key 应请求 DB service')
-  const disabledScheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledSecond.apiKey?.availability_schedule_active, 1, '手动停用计划 API Key 在计划边界前应继续命中可用缓存')
+  const disabledScheduledSecond = await withMockedNow(disabledScheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
+  assert.equal(disabledScheduledSecond.apiKey?.status, 'active', '手动停用计划 API Key 被同步启用后边界前应继续命中可用缓存')
   assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '手动停用计划 API Key 边界前重复读取应命中缓存')
-  const disabledScheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledAfterBoundary.apiKey?.availability_schedule_active, 0, '手动停用计划 API Key 时段外应强制关闭')
+  syncApiKeyScheduleStatusAt(disabledScheduleInactiveAt)
+  const disabledScheduledAfterBoundary = await withMockedNow(disabledScheduleInactiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
+  assert.equal(disabledScheduledAfterBoundary.apiKey, undefined, '手动停用计划 API Key 时段外应被同步任务实际关闭')
   assert.equal(disabledScheduledAfterBoundary.accounts.length, 0, '手动停用计划 API Key 时段外不应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 2, '手动停用计划 API Key 跨计划边界后应重新请求 DB service')
 
@@ -255,7 +274,7 @@ try {
   assert(concurrentRuntimeReads.every((runtime) => runtime.apiKey?.id === apiKey.id), '冷缓存并发读取应全部返回同一个 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, coldConcurrentOperationCount + 1, '同一 API Key 冷缓存并发读取应合并为一次 DB service 请求')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，手动停用计划 API Key 按计划强制启停，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划、API Key 过期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，API Key 强制启停计划由同步任务改写真实状态，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划、API Key 过期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -271,7 +290,9 @@ function seedGatewayRuntime(): {
   accountGroupId: string
   id: string
   key: string
+  scheduledKeyId: string
   scheduledKey: string
+  disabledScheduledKeyId: string
   disabledScheduledKey: string
   accountScheduledKey: string
   multiGroupAccountScheduledKey: string
@@ -340,7 +361,7 @@ function seedGatewayRuntime(): {
       timezone: 'UTC',
       mode: 'allow_windows',
       windows: [
-        { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '00:01' }
+        { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:02', end: '00:03' }
       ]
     }
   }, { systemAccountId: 'sys_admin', role: 'admin' })
@@ -459,7 +480,9 @@ function seedGatewayRuntime(): {
     accountGroupId: group.id,
     id: apiKey.id,
     key: apiKey.key,
+    scheduledKeyId: scheduledApiKey.id,
     scheduledKey: scheduledApiKey.key,
+    disabledScheduledKeyId: disabledScheduledApiKey.id,
     disabledScheduledKey: disabledScheduledApiKey.key,
     accountScheduledKey: accountScheduledApiKey.key,
     multiGroupAccountScheduledKey: multiGroupAccountScheduledApiKey.key,
@@ -553,6 +576,16 @@ async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceCh
     runtimeConfig.processRole = previousProcessRole
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = previousSend
   }
+}
+
+function syncApiKeyScheduleStatusAt(nowMs: number): void {
+  repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(nowMs))
+  clearGatewayCachesForRegression()
+}
+
+function clearGatewayCachesForRegression(): void {
+  repositories.clearGatewayApiKeyValidationCache()
+  gatewayCache.clearGatewayRuntimeCacheLocal()
 }
 
 async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T): Promise<T> {

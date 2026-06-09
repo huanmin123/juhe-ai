@@ -75,8 +75,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     path: '/my-models',
     component: () => import('@/views/providers/ProvidersView.vue'),
     meta: {
-      title: '我的模型',
-      description: '维护自己的个人模型、价格和映射目标候选，供账号模型选择使用。',
+      title: '模型目录',
+      description: '查看可用供应商模型目录，并维护自己的个人模型、价格和映射目标候选。',
       viewScope: 'self'
     }
   },

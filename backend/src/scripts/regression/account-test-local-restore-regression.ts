@@ -51,6 +51,7 @@ interface AccountTestResult {
   statusCode?: number
   accountStatusChanged?: boolean
   accountStatus?: string
+  traceId?: string
   message: string
 }
 
@@ -207,6 +208,18 @@ async function assertManualTestRestoresAccount(input: {
   assert.equal(result.statusCode, 200, `${input.accountName} 应返回上游 200`)
   assert.equal(result.accountStatusChanged, true, `${input.accountName} 测试结果应标记状态已恢复`)
   assert.equal(result.accountStatus, 'active', `${input.accountName} 测试结果状态应为正常`)
+  assert(result.traceId, `${input.accountName} 测试结果应返回本地 traceId`)
+  flushAllUsageRecordQueue()
+  const usageRecordsByTrace = repositories.listUsageRecords(adminAccess, {
+    traceId: result.traceId,
+    trafficSource: 'manual_account_test',
+    page: 1,
+    pageSize: 10
+  })
+  assert(
+    usageRecordsByTrace.items.some((item) => item.traceId === result.traceId && item.accountId === account.id && item.trafficSource === 'manual_account_test'),
+    `${input.accountName} 应能通过测试返回的 traceId 查到手动测试使用记录`
+  )
 
   const restored = repositories.findAccountSummary(account.id, adminAccess)
   assert.equal(restored?.status, 'active', `${input.accountName} 测试成功后应恢复正常`)

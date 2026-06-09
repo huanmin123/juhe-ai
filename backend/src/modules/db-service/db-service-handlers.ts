@@ -4,7 +4,6 @@ import {
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
   getAccountPrecheckMutationState,
-  isGatewayApiKeyScheduleInactive,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listPublicGlobalSettings,
@@ -331,14 +330,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       accounts: []
     }
   }
-  if (isGatewayApiKeyScheduleInactive(apiKey)) {
-    return {
-      apiKey,
-      settings,
-      accounts: []
-    }
-  }
-
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
   const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
   apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id

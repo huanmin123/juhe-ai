@@ -11,7 +11,8 @@ import {
   expireDueResourceAuthorizations,
   getSettings,
   listAccountsDueForCooldownRetest,
-  refreshAccountQualityFromUsage
+  refreshAccountQualityFromUsage,
+  syncApiKeyAvailabilityScheduleStatuses
 } from '../../storage/repositories.js'
 import {
   aggregateUsageStatsBatch,
@@ -86,6 +87,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'authorization-usage-range-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs + 50 * secondMs, task: () => runUsageRankSnapshotsRefresh('authorization-usage-range-windows-refresh', authorizationUsageRangeWindowStageNames) })
   scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
   scheduler.schedule({ name: 'api-key-record-cleanup-retry', intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
+  scheduler.schedule({ name: 'api-key-availability-schedule-status-sync', intervalMs: 10 * secondMs, initialDelayMs: secondMs, task: runApiKeyAvailabilityScheduleStatusSync })
   scheduler.schedule({ name: 'account-record-cleanup-retry', intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
@@ -193,6 +195,33 @@ async function runApiKeyRecordCleanupRetry(): Promise<void> {
     }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_api_key_record_cleanup_retry_failed' }), '已删除 API Key 关联数据清理重试失败')
+    throw error
+  }
+}
+
+async function runApiKeyAvailabilityScheduleStatusSync(): Promise<void> {
+  try {
+    const result = syncApiKeyAvailabilityScheduleStatuses()
+    if (result.changedIds.length > 0) {
+      clearGatewayRuntimeCache()
+      logger.info({
+        event: 'background_api_key_availability_schedule_status_sync_completed',
+        scanned: result.scanned,
+        activated: result.activated,
+        disabled: result.disabled,
+        changedCount: result.changedIds.length,
+        invalid: result.invalid
+      }, 'API Key 强制启停计划边界执行完成')
+    }
+    if (result.invalid > 0) {
+      logger.warn({
+        event: 'background_api_key_availability_schedule_status_sync_invalid',
+        invalid: result.invalid,
+        apiKeyIds: result.invalidIds.slice(0, 20)
+      }, 'API Key 强制启停计划存在无效配置，已跳过')
+    }
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_api_key_availability_schedule_status_sync_failed' }), 'API Key 强制启停计划边界执行失败')
     throw error
   }
 }

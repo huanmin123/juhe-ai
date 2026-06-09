@@ -289,6 +289,7 @@ function seedUsageRecord(id: string, createdAt: string): void {
     id,
     shardKey: location.shardKey,
     systemAccountId: 'sys_admin',
+    traceId: `trace_${id}`,
     trafficSource: 'gateway',
     success: true,
     createdAt

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 
 import {
+  dueApiKeyAvailabilityScheduleEvent,
+  apiKeyAvailabilityScheduleStatus,
   evaluateApiKeyAvailabilitySchedule,
   normalizeApiKeyAvailabilitySchedule
 } from '../../storage/api-key-availability-schedule.js'
@@ -20,9 +22,34 @@ assert.equal(
   '每天 22:00-23:55 内应允许调用'
 )
 assert.equal(
+  apiKeyAvailabilityScheduleStatus(dailySchedule, new Date('2026-05-31T14:30:00.000Z')),
+  'active',
+  '允许时段内应映射为 API Key 启用状态'
+)
+assert.equal(
+  dueApiKeyAvailabilityScheduleEvent(dailySchedule, new Date('2026-05-31T14:00:00.000Z'))?.status,
+  'active',
+  '开始边界分钟应触发一次启用事件'
+)
+assert.equal(
+  dueApiKeyAvailabilityScheduleEvent(dailySchedule, new Date('2026-05-31T14:30:00.000Z')),
+  undefined,
+  '窗口中间不应持续触发启用事件'
+)
+assert.equal(
   evaluateApiKeyAvailabilitySchedule(dailySchedule, new Date('2026-05-31T15:56:00.000Z')).allowed,
   false,
   '每天 23:55 后应进入时段外'
+)
+assert.equal(
+  apiKeyAvailabilityScheduleStatus(dailySchedule, new Date('2026-05-31T15:56:00.000Z')),
+  'disabled',
+  '允许时段外应映射为 API Key 停用状态'
+)
+assert.equal(
+  dueApiKeyAvailabilityScheduleEvent(dailySchedule, new Date('2026-05-31T15:55:00.000Z'))?.status,
+  'disabled',
+  '结束边界分钟应触发一次停用事件'
 )
 
 const crossDaySchedule = normalizeApiKeyAvailabilitySchedule({

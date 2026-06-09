@@ -404,6 +404,9 @@ try {
     const clientIpPrefix = repositories.listUsageRecords(access, { clientIp: '127.0.0.', page: 1, pageSize: 10 })
     assert.deepEqual(clientIpPrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '客户端 IP 筛选应按右侧前缀匹配')
 
+    const tracePrefix = repositories.listUsageRecords(access, { traceId: 'trace-usage-list-query-guard-prefix', page: 1, pageSize: 10 })
+    assert.deepEqual(tracePrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only'], 'traceId 筛选应按右侧前缀定位')
+
     const customIdDetail = repositories.getUsageRecordDetail('usage_list_query_guard_exact', access)
     assert.equal(customIdDetail?.id, 'usage_list_query_guard_exact', '非标准 usage id 应通过 shard 索引单条读取，不应依赖目录全量扫描')
   } finally {
@@ -422,9 +425,24 @@ try {
   for (const call of usageRecordListCalls) {
     assert(!/\bur\.model\s+LIKE\s+\?/i.test(call.sql), 'model 筛选不应在 usage_records 上使用 LIKE')
     assert(!/\bur\.client_ip\s+LIKE\s+\?/i.test(call.sql), '客户端 IP 筛选不应在 usage_records 上使用 LIKE')
+    assert(!/\b(?:ur|ue)\.trace_id\s+LIKE\s+\?/i.test(call.sql), 'traceId 筛选不应使用 LIKE 扫描')
     assert(!/\bur\.account_id\s+(?:=|LIKE)\s+\?/i.test(call.sql), '使用记录账号名称搜索不应直接按 account_id 精确或前缀匹配')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '使用记录列表不应向大表筛选传入前导通配符参数')
   }
+  assertDatasetQueryPlanUsesIndex(`
+    SELECT usage_id
+    FROM usage_record_shard_entries ue
+    WHERE ue.trace_id >= ? AND ue.trace_id < ?
+    ORDER BY ue.created_at DESC, ue.usage_id DESC
+    LIMIT ?
+  `, ['trace-usage-list-query-guard-', 'trace-usage-list-query-guard-\uffff', 10], 'idx_usage_record_shard_entries_trace_created_sort')
+  assertDatasetQueryPlanUsesIndex(`
+    SELECT usage_id
+    FROM usage_record_shard_entries ue
+    WHERE ue.system_account_id = ? AND ue.trace_id >= ? AND ue.trace_id < ?
+    ORDER BY ue.created_at DESC, ue.usage_id DESC
+    LIMIT ?
+  `, ['sys_admin', 'trace-usage-list-query-guard-', 'trace-usage-list-query-guard-\uffff', 10], 'idx_usage_record_shard_entries_system_trace_created_sort')
   assertQueryPlanUsesIndex(`
     SELECT id
     FROM usage_records ur
@@ -618,6 +636,15 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertDatasetQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
+  const details = databaseModule.getDatasetDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
+  assert(details.includes(indexName), `目录查询计划应使用 ${indexName}，实际计划：${details}`)
 }
 
 function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {

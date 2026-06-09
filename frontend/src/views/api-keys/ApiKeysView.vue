@@ -48,7 +48,7 @@
       </template>
       <template #filters>
         <label class="mobile-filter-field">
-          <span>手动状态</span>
+          <span>状态</span>
           <a-select v-model:value="statusFilter" :options="listStatusOptions" />
         </label>
         <label class="mobile-filter-field">
@@ -290,7 +290,7 @@
             </a-button>
           </div>
         </a-form-item>
-        <a-form-item label="手动状态">
+        <a-form-item label="状态">
           <a-select v-model:value="form.status" :options="statusOptions" />
         </a-form-item>
         <a-form-item class="api-key-schedule-form-item">
@@ -304,7 +304,7 @@
                 class="schedule-help"
                 type="info"
                 show-icon
-                message="计划开启后，窗口内强制启用 API Key，窗口外强制关闭 API Key。"
+                message="计划开启后，只在开始时间强制启用一次，在结束时间强制关闭一次；边界之后的手动启停不会被持续覆盖。"
               />
               <div class="schedule-window-list">
                 <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
@@ -582,7 +582,7 @@ const statusOptions = [
   { label: '停用', value: 'disabled' }
 ]
 const listStatusOptions = [
-  { label: '全部手动状态', value: 'all' },
+  { label: '全部状态', value: 'all' },
   ...statusOptions
 ]
 const bindingStatusOptions = [
@@ -695,20 +695,10 @@ function groupBindingLabelByStrategy(strategy: ApiKeyGroupRouteStrategy | undefi
 }
 
 function apiKeyStatusTagLabel(apiKey: ApiKeySummary): string {
-  if (apiKey.availabilitySchedule?.enabled) {
-    if (apiKey.availabilityScheduleActive === true) return '计划启用'
-    if (apiKey.availabilityScheduleActive === false) return '计划关闭'
-    return '计划接管'
-  }
   return apiKey.status === 'active' ? '启用' : '停用'
 }
 
 function apiKeyStatusTagColor(apiKey: ApiKeySummary): string {
-  if (apiKey.availabilitySchedule?.enabled) {
-    if (apiKey.availabilityScheduleActive === true) return 'green'
-    if (apiKey.availabilityScheduleActive === false) return 'orange'
-    return 'blue'
-  }
   return apiKey.status === 'active' ? 'green' : 'default'
 }
 
@@ -723,7 +713,7 @@ function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule, active?: b
     .slice(0, 2)
     .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
   const suffix = schedule.windows.length > 2 ? ` 等 ${schedule.windows.length} 段` : ''
-  const state = active === true ? '当前强制启用' : active === false ? '当前强制关闭' : '计划接管'
+  const state = active === true ? '启用窗口中' : active === false ? '关闭窗口中' : '等待边界'
   return `${state}：${windows.join(' / ')}${suffix}`
 }
 
@@ -793,20 +783,6 @@ function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {
   const actions: RowActionItem[] = [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: updating }
   ]
-  if (apiKey.availabilitySchedule?.enabled) {
-    return [
-      ...actions,
-      {
-        key: 'delete',
-        label: '删除',
-        icon: 'delete',
-        tone: 'danger',
-        disabled: updating,
-        confirmTitle: '确认删除这个 API Key？删除后会立即失效，关联历史记录和统计将由后台分批清理。',
-        confirmOkText: '删除'
-      }
-    ]
-  }
   const statusAction: RowActionItem = apiKey.status === 'active'
     ? {
         key: 'disable',
@@ -1325,50 +1301,50 @@ function defaultScheduleTimezone(): string {
 }
 
 function assertApiKeyAvailabilitySchedule(schedule: ApiKeyAvailabilitySchedule): void {
-  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], 'API Key 可用时段计划')
-  if (schedule.enabled !== true) throw new Error('API Key 可用时段计划启用状态异常，请清理后再编辑')
-  if (schedule.mode !== 'allow_windows') throw new Error('API Key 可用时段计划模式异常，请清理后再编辑')
-  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('API Key 可用时段计划时区异常，请清理后再编辑')
-  assertScheduleTimezone(schedule.timezone, 'API Key 可用时段计划时区')
-  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('API Key 可用时段计划时段异常，请清理后再编辑')
+  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], 'API Key 强制启停计划')
+  if (schedule.enabled !== true) throw new Error('API Key 强制启停计划启用状态异常，请清理后再编辑')
+  if (schedule.mode !== 'allow_windows') throw new Error('API Key 强制启停计划模式异常，请清理后再编辑')
+  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('API Key 强制启停计划时区异常，请清理后再编辑')
+  assertScheduleTimezone(schedule.timezone, 'API Key 强制启停计划时区')
+  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('API Key 强制启停计划时段异常，请清理后再编辑')
   for (const window of schedule.windows) {
-    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], 'API Key 可用时段计划时段')
-    assertScheduleDays(window.daysOfWeek, 'API Key 可用时段计划重复日期')
-    assertScheduleTime(window.start, 'API Key 可用时段计划开始时间')
-    assertScheduleTime(window.end, 'API Key 可用时段计划结束时间')
-    if (window.start === window.end) throw new Error('API Key 可用时段计划开始时间和结束时间不能相同')
+    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], 'API Key 强制启停计划时段')
+    assertScheduleDays(window.daysOfWeek, 'API Key 强制启停计划重复日期')
+    assertScheduleTime(window.start, 'API Key 强制启停计划开始时间')
+    assertScheduleTime(window.end, 'API Key 强制启停计划结束时间')
+    if (window.start === window.end) throw new Error('API Key 强制启停计划开始时间和结束时间不能相同')
   }
   if (schedule.dateRange) {
     assertScheduleDateRange(schedule.dateRange)
   }
   if (schedule.exceptions !== undefined) {
-    if (!Array.isArray(schedule.exceptions)) throw new Error('API Key 可用时段计划例外日期异常，请清理后再编辑')
+    if (!Array.isArray(schedule.exceptions)) throw new Error('API Key 强制启停计划例外日期异常，请清理后再编辑')
     for (const exception of schedule.exceptions) {
-      assertObjectKeys(exception, ['date', 'action', 'windows'], 'API Key 可用时段计划例外日期')
-      assertScheduleDate(exception.date, 'API Key 可用时段计划例外日期')
+      assertObjectKeys(exception, ['date', 'action', 'windows'], 'API Key 强制启停计划例外日期')
+      assertScheduleDate(exception.date, 'API Key 强制启停计划例外日期')
       if (exception.action === 'allow') {
-        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('API Key 可用时段计划允许例外时段异常，请清理后再编辑')
+        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('API Key 强制启停计划允许例外时段异常，请清理后再编辑')
         for (const window of exception.windows) {
-          assertObjectKeys(window, ['start', 'end'], 'API Key 可用时段计划例外时段')
-          assertScheduleTime(window.start, 'API Key 可用时段计划例外开始时间')
-          assertScheduleTime(window.end, 'API Key 可用时段计划例外结束时间')
-          if (window.start === window.end) throw new Error('API Key 可用时段计划例外开始时间和结束时间不能相同')
+          assertObjectKeys(window, ['start', 'end'], 'API Key 强制启停计划例外时段')
+          assertScheduleTime(window.start, 'API Key 强制启停计划例外开始时间')
+          assertScheduleTime(window.end, 'API Key 强制启停计划例外结束时间')
+          if (window.start === window.end) throw new Error('API Key 强制启停计划例外开始时间和结束时间不能相同')
         }
       } else if (exception.action === 'deny') {
-        if ('windows' in exception) throw new Error('API Key 可用时段计划拒绝例外不能带允许时段')
+        if ('windows' in exception) throw new Error('API Key 强制启停计划拒绝例外不能带允许时段')
       } else {
-        throw new Error('API Key 可用时段计划例外动作异常，请清理后再编辑')
+        throw new Error('API Key 强制启停计划例外动作异常，请清理后再编辑')
       }
     }
   }
 }
 
 function assertScheduleDateRange(dateRange: NonNullable<ApiKeyAvailabilitySchedule['dateRange']>): void {
-  assertObjectKeys(dateRange, ['startDate', 'endDate'], 'API Key 可用时段计划日期范围')
-  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, 'API Key 可用时段计划开始日期')
-  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, 'API Key 可用时段计划结束日期')
+  assertObjectKeys(dateRange, ['startDate', 'endDate'], 'API Key 强制启停计划日期范围')
+  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, 'API Key 强制启停计划开始日期')
+  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, 'API Key 强制启停计划结束日期')
   if (dateRange.startDate && dateRange.endDate && dateRange.startDate > dateRange.endDate) {
-    throw new Error('API Key 可用时段计划开始日期不能晚于结束日期')
+    throw new Error('API Key 强制启停计划开始日期不能晚于结束日期')
   }
 }
 

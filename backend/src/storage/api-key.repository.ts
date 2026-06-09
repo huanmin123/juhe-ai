@@ -298,13 +298,14 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   const nextGroupRouteStrategy = hasGroupRouteStrategyInput
     ? normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy)
     : current.groupRouteStrategy
+  const nextManualStatus = Object.prototype.hasOwnProperty.call(input, 'status')
+    ? normalizeApiKeyStatus(input.status, current.status)
+    : current.status
   const next: ApiKeySummary = {
     ...current,
     name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
     description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
-    status: Object.prototype.hasOwnProperty.call(input, 'status')
-      ? normalizeApiKeyStatus(input.status, current.status)
-      : current.status,
+    status: nextManualStatus,
     groupRouteStrategy: nextGroupRouteStrategy,
     groupBindings: nextBindings ? apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), nextBindings) : current.groupBindings,
     expiresAt: nextExpiresAt,

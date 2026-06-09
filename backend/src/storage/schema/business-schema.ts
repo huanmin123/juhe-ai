@@ -509,6 +509,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS api_key_schedule_status_events (
+      event_key TEXT PRIMARY KEY,
+      api_key_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      executed_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS system_settings (
       system_account_id TEXT NOT NULL,
       key TEXT NOT NULL,
@@ -642,6 +649,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_quota_snapshot
       ON api_keys(status, updated_at DESC, id)
       WHERE quota_limits_json IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_api_keys_availability_schedule_status_sync
+      ON api_keys(updated_at ASC, id ASC, status)
+      WHERE availability_schedule_json IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name COLLATE NOCASE, id);
@@ -652,6 +662,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_group ON api_key_group_bindings(group_id);
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_key ON api_key_group_bindings(system_account_id, api_key_id);
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_group_key ON api_key_group_bindings(system_account_id, group_id, api_key_id);
+    CREATE INDEX IF NOT EXISTS idx_api_key_schedule_status_events_api_key
+      ON api_key_schedule_status_events(api_key_id, executed_at DESC);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_resource ON resource_authorization_grants(resource_type, resource_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_grantee_user ON resource_authorization_grants(grantee_system_account_id, status);

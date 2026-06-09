@@ -64,6 +64,7 @@ export async function testOpenAIAccount(
   const requestBodyText = JSON.stringify(requestBody)
   const requestUrl = testRequest.path
   const modelsUrl = gatewayModelsPath
+  const traceId = createTraceId()
 
   try {
     const resolved = resolveAccountTestCandidate(account, {
@@ -74,7 +75,6 @@ export async function testOpenAIAccount(
     })
     const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal)
     const response = new MemoryGatewayResponse(startedAt)
-    const traceId = createTraceId()
     const context: RequestContext = {
       traceId,
       startedAt,
@@ -130,6 +130,7 @@ export async function testOpenAIAccount(
       protocolCode: account.protocolCode,
       protocolVersion: account.protocolVersion,
       type: account.type,
+      traceId,
       clientCompatibility: accountClientCompatibility,
       testClientCompatibility: clientCompatibility,
       success,
@@ -166,6 +167,7 @@ export async function testOpenAIAccount(
       protocolCode: account.protocolCode,
       protocolVersion: account.protocolVersion,
       type: account.type,
+      traceId,
       clientCompatibility: accountClientCompatibility,
       testClientCompatibility: clientCompatibility,
       success: false,
@@ -206,6 +208,7 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     protocolCode: result.protocolCode,
     protocolVersion: result.protocolVersion,
     type: result.type,
+    traceId: result.traceId,
     clientCompatibility: result.clientCompatibility,
     testClientCompatibility: result.testClientCompatibility,
     success: result.success,

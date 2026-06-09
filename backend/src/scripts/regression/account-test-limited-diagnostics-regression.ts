@@ -37,11 +37,13 @@ const account: AccountSummary = accountSummaryWithEffectiveAvailability({
 
 const fullResult = await testOpenAIAccount(account, { diagnostics: 'full' })
 assert.equal(fullResult.success, false)
+assert(fullResult.traceId, '完整诊断应返回本次账户测试 traceId，便于按日志追踪')
 assert.match(fullResult.message, /账户未绑定可用分组/, '完整诊断应保留内部失败原因，便于所有者或管理员排查')
 assert.equal(fullResult.responseText, fullResult.message, '完整诊断失败响应可携带原始失败文本')
 
 const limitedResult = await testOpenAIAccount(account, { diagnostics: 'limited' })
 assert.equal(limitedResult.success, false)
+assert(limitedResult.traceId, 'limited 诊断也应返回本次账户测试 traceId，便于授权用户反馈给所有者排查')
 assert.equal(limitedResult.statusCode, undefined, '本用例覆盖无 HTTP 状态码的异常路径')
 assert.equal(limitedResult.message, '账户测试未通过；请联系授权人或管理员查看完整诊断')
 assert.equal(limitedResult.responseText, limitedResult.message)

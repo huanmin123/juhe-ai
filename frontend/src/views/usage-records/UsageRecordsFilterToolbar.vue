@@ -61,6 +61,9 @@
         <a-form-item label="状态码">
           <a-input :value="statusCode" allow-clear placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
         </a-form-item>
+        <a-form-item label="traceId">
+          <a-input :value="traceId" allow-clear placeholder="traceId 前缀" @update:value="handleTraceIdUpdate" @press-enter="emit('search')" />
+        </a-form-item>
         <a-form-item label="模型">
           <ModelFilterSelect
             :value="model"
@@ -120,6 +123,10 @@
       <label class="mobile-filter-field">
         <span>状态码</span>
         <a-input :value="statusCode" allow-clear placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
+      </label>
+      <label class="mobile-filter-field">
+        <span>traceId</span>
+        <a-input :value="traceId" allow-clear placeholder="traceId 前缀" @update:value="handleTraceIdUpdate" @press-enter="emit('search')" />
       </label>
       <label class="mobile-filter-field">
         <span>模型</span>
@@ -204,6 +211,7 @@ defineProps<{
   systemAccountSelection?: PrincipalSelection
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
+  traceId: string
   trafficSource: TrafficSourceFilter
   trafficSourceOptions: Array<FilterOption<TrafficSourceFilter>>
 }>()
@@ -228,6 +236,7 @@ const emit = defineEmits<{
   (event: 'update:statusCode', value: string): void
   (event: 'update:systemAccountId', value: string): void
   (event: 'update:systemAccountSelection', value?: PrincipalSelection): void
+  (event: 'update:traceId', value: string): void
   (event: 'update:trafficSource', value: TrafficSourceFilter): void
 }>()
 
@@ -260,6 +269,18 @@ function handleClientIpUpdate(value: SelectValue) {
       ? value
       : ''
   emit('update:clientIp', nextValue)
+  if (!nextValue) {
+    emit('search')
+  }
+}
+
+function handleTraceIdUpdate(value: SelectValue) {
+  const nextValue = typeof value === 'number'
+    ? String(value)
+    : typeof value === 'string'
+      ? value
+      : ''
+  emit('update:traceId', nextValue)
   if (!nextValue) {
     emit('search')
   }

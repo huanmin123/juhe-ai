@@ -11,6 +11,7 @@
       v-model:status-code="statusCodeFilter"
       v-model:system-account-id="systemAccountFilter"
       v-model:system-account-selection="systemAccountFilterSelection"
+      v-model:trace-id="traceIdFilter"
       v-model:traffic-source="trafficSourceFilter"
       :active-filter-count="activeFilterCount"
       :advanced-filter-count="advancedFilterCount"
@@ -170,7 +171,7 @@ import { CopyOutlined, FileSearchOutlined, SearchOutlined } from '@ant-design/ic
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { api, type UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -185,6 +186,7 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
 import { rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import {
   localSelectStorageKey,
@@ -229,6 +231,7 @@ type UsageRecordsPageState = {
   statusCodeFilter: string
   systemAccountFilter: string
   systemAccountFilterSelection?: PrincipalSelection
+  traceIdFilter: string
   trafficSourceFilter: UsageRecordTrafficSource | 'all'
 }
 
@@ -245,10 +248,16 @@ const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
   statusCodeFilter: '',
   systemAccountFilter: allSystemAccountsValue,
   systemAccountFilterSelection: undefined,
+  traceIdFilter: '',
   trafficSourceFilter: 'all'
 })
 const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 8 })
-const initialPageState = pageStateCache.read()
+const route = useRoute()
+const initialRouteTraceId = routeTraceId()
+const cachedInitialPageState = pageStateCache.read()
+const initialPageState = initialRouteTraceId
+  ? { ...defaultUsageRecordsPageState(), traceIdFilter: initialRouteTraceId }
+  : cachedInitialPageState
 
 const accountNameFilter = ref(initialPageState.accountNameFilter)
 const clientIpFilter = ref(initialPageState.clientIpFilter ?? '')
@@ -259,6 +268,7 @@ const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFi
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
+const traceIdFilter = ref(initialPageState.traceIdFilter ?? '')
 const trafficSourceFilter = ref<UsageRecordTrafficSource | 'all'>(initialPageState.trafficSourceFilter)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const usageRecordsApi = useScopedUsageRecordsApi(isManagementView)
@@ -303,6 +313,7 @@ let groupOptionsKeyword = ''
 let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let modelOptionsLoaded = false
 let modelOptionsLoadingPromise: Promise<void> | undefined
+let skipNextRouteTraceRestore = false
 const groupOptionsCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
 const {
   items: records,
@@ -360,6 +371,7 @@ const activeFilterCount = computed(() => {
   if (resultFilter.value !== 'all') count += 1
   if (statusCodeFilter.value) count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
+  if (traceIdFilter.value.trim()) count += 1
   if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
@@ -372,6 +384,7 @@ const advancedFilterCount = computed(() => {
   if (clientIpFilter.value.trim()) count += 1
   if (modelFilter.value.trim()) count += 1
   if (statusCodeFilter.value) count += 1
+  if (traceIdFilter.value.trim()) count += 1
   if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
@@ -602,6 +615,7 @@ function normalizeOptionKeyword(value?: string): string | undefined {
 }
 
 function resetFilters(): void {
+  clearRouteTraceIdForManualState()
   const defaults = defaultUsageRecordsPageState()
   accountNameFilter.value = defaults.accountNameFilter
   clientIpFilter.value = defaults.clientIpFilter
@@ -612,6 +626,7 @@ function resetFilters(): void {
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
+  traceIdFilter.value = defaults.traceIdFilter
   trafficSourceFilter.value = defaults.trafficSourceFilter
   sortState.value = defaults.sortState
   resetSystemAccountOptionsSearch()
@@ -657,6 +672,7 @@ function updatePaginationFromTable(paginationInfo: unknown): void {
 }
 
 function applyFilters(): void {
+  clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
 }
@@ -666,6 +682,37 @@ function refreshRecords(): void {
   resetGroupOptionsSearch()
   resetPagination()
   void loadData({ forceOptions: true })
+}
+
+function applyRouteTraceId(traceId: string): void {
+  pageStateCache.flushPendingWrite()
+  traceIdFilter.value = traceId
+  resetPagination()
+  void loadData()
+}
+
+function restorePageStateAfterRouteTraceCleared(): void {
+  applyPageState(pageStateCache.read())
+  void loadData({ forceOptions: true })
+}
+
+function applyPageState(state: UsageRecordsPageState): void {
+  accountNameFilter.value = state.accountNameFilter
+  clientIpFilter.value = state.clientIpFilter
+  dateRangeFilter.value = parseDateRange(state.dateRangeFilter)
+  groupFilterSelection.value = state.groupFilter
+  modelFilter.value = state.modelFilter
+  resultFilter.value = state.resultFilter
+  statusCodeFilter.value = state.statusCodeFilter
+  systemAccountFilter.value = state.systemAccountFilter
+  systemAccountFilterSelection.value = state.systemAccountFilterSelection
+  traceIdFilter.value = state.traceIdFilter
+  trafficSourceFilter.value = state.trafficSourceFilter
+  sortState.value = state.sortState
+  pagination.current = state.pagination.current
+  pagination.pageSize = state.pagination.pageSize
+  resetSystemAccountOptionsSearch()
+  resetGroupOptionsSearch()
 }
 
 function handleGroupFilterChange(): void {
@@ -700,6 +747,7 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     result: resultFilter.value,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId,
+    traceId: traceIdFilter.value.trim() || undefined,
     trafficSource: trafficSourceFilter.value === 'all' ? undefined : trafficSourceFilter.value,
     sortBy: sortState.value.field,
     sortOrder
@@ -750,6 +798,7 @@ function snapshotPageState(): UsageRecordsPageState {
     statusCodeFilter: statusCodeFilter.value,
     systemAccountFilter: systemAccountFilter.value,
     systemAccountFilterSelection: systemAccountFilterSelection.value,
+    traceIdFilter: traceIdFilter.value,
     trafficSourceFilter: trafficSourceFilter.value
   }
 }
@@ -761,7 +810,43 @@ function parseDateRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
   return start && end ? normalizeDayjsDateRange([start, end]) : undefined
 }
 
-watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+function routeTraceId(): string | undefined {
+  return trimmedRouteQueryValue(route.query.traceId)
+}
+
+function clearRouteTraceIdForManualState(): void {
+  if (!routeTraceId()) return
+  skipNextRouteTraceRestore = true
+  void removeRouteTraceIdQuery(router, route).catch((error) => {
+    skipNextRouteTraceRestore = false
+    console.error(error)
+  })
+}
+
+watch(snapshotPageState, () => {
+  if (routeTraceId()) {
+    pageStateCache.cancelPendingWrite()
+    return
+  }
+  pageStateCache.scheduleWrite(snapshotPageState)
+}, { deep: true })
+watch(
+  () => route.query.traceId,
+  () => {
+    const traceId = routeTraceId()
+    if (!traceId) {
+      if (skipNextRouteTraceRestore) {
+        skipNextRouteTraceRestore = false
+        pageStateCache.scheduleWrite(snapshotPageState)
+        return
+      }
+      restorePageStateAfterRouteTraceCleared()
+      return
+    }
+    if (traceId === traceIdFilter.value.trim()) return
+    applyRouteTraceId(traceId)
+  }
+)
 watch(groupFilterDisabled, (disabled) => {
   if (!disabled) return
   groupFilterSelection.value = undefined

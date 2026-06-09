@@ -4,7 +4,7 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   clearAccountFailureStateResult,
-  findAccountForTest,
+  findAccountForCooldownRetest,
   findRecentOpenAIRequestShapeForAccount,
   recordCooldownAccountRetestFailure
 } from '../../storage/repositories.js'
@@ -54,7 +54,7 @@ async function runCooldownAccountRetestQueueItem(
   item: CooldownAccountRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
-  const account = findAccountForTest(item.accountId)
+  const account = cooldownRetestAccountForQueueItem(item)
   if (!account || !isAccountDueForCooldownRetest(account)) {
     logger.info({
       event: 'background_cooldown_account_retest_discarded',
@@ -151,6 +151,10 @@ async function runCooldownAccountRetestQueueItem(
     logger.debug(logFields, '冷却账户快速恢复通道复测未通过，已按短退避等待下次复测')
   }
   return true
+}
+
+function cooldownRetestAccountForQueueItem(item: CooldownAccountRetestQueueItem): AccountSummary | undefined {
+  return findAccountForCooldownRetest(item.accountId)
 }
 
 function isAccountDueForCooldownRetest(account: AccountSummary): boolean {

@@ -16,6 +16,8 @@ import {
   type ProviderModelApiProtocol,
   type ProviderModelPricing
 } from './model-pricing.service.js'
+import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 export type ModelCatalogVisibility = 'public' | 'mapping_target_only'
@@ -61,20 +63,22 @@ export interface SaveCustomProviderModelInput extends Omit<UpsertCustomProviderM
 }
 
 export function listProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
-  const builtIn = listProviderModelPricing(options.providerCode).map(toBuiltInCatalogItem)
-  const custom = listCustomProviderModelsForCatalog({
-    providerCode: options.providerCode,
+  const sourceProviderCodes = modelCatalogSourceProviderCodes(options.providerCode)
+  const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
+  const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode).map(toBuiltInCatalogItem))
+  const custom = sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
+    providerCode,
     systemAccountId: options.systemAccountId,
     includeMappingTargets: true,
     includeInactive: options.includeInactive
-  }).map(toCustomCatalogItem)
+  }).map(toCustomCatalogItem))
   const merged = mergeModelCatalogItems([...builtIn, ...custom])
 
   return merged
     .filter((item) => options.includeMappingTargets || item.visibility === 'public')
     .filter((item) => options.includeInactive || item.status === 'active')
     .filter((item) => options.includeUnpriced || hasResolvablePrice(item, merged))
-    .sort(compareCatalogItems)
+    .sort(compareProviderModelCatalogItems)
 }
 
 export function buildOpenAIModelsResponseFromCatalog(items: ProviderModelCatalogItem[]): OpenAIModelsListResponse {
@@ -280,8 +284,42 @@ function catalogPriority(item: ProviderModelCatalogItem): number {
   return 1
 }
 
-function compareCatalogItems(left: ProviderModelCatalogItem, right: ProviderModelCatalogItem): number {
-  return left.model.localeCompare(right.model, 'en')
+export function compareProviderModelCatalogItems(left: ProviderModelCatalogItem, right: ProviderModelCatalogItem): number {
+  const leftReleaseDate = sortableCatalogReleaseDate(left)
+  const rightReleaseDate = sortableCatalogReleaseDate(right)
+  if (leftReleaseDate && rightReleaseDate && leftReleaseDate !== rightReleaseDate) {
+    return rightReleaseDate.localeCompare(leftReleaseDate)
+  }
+  if (leftReleaseDate && !rightReleaseDate) return -1
+  if (!leftReleaseDate && rightReleaseDate) return 1
+
+  const modelOrder = left.model.localeCompare(right.model, 'en')
+  if (modelOrder !== 0) return modelOrder
+  return (left.id ?? '').localeCompare(right.id ?? '', 'en')
+}
+
+function modelCatalogSourceProviderCodes(providerCode: string): string[] {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (!normalizedProviderCode) return []
+  if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
+
+  const openAIProtocolProviderCodes = listOpenAIProtocolProviderCodes()
+    .map((code) => normalizeProviderToken(code))
+    .filter((code): code is string => Boolean(code))
+  const childCodes = openAIProtocolProviderCodes.filter((code) => code !== normalizedProviderCode)
+  return [...new Set([...childCodes, normalizedProviderCode])]
+}
+
+function modelCatalogBuiltInSourceProviderCodes(providerCode: string, sourceProviderCodes: string[]): string[] {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return sourceProviderCodes
+  return sourceProviderCodes.filter((code) => code !== normalizedProviderCode)
+}
+
+function sortableCatalogReleaseDate(item: ProviderModelCatalogItem): string | undefined {
+  return typeof item.releaseDate === 'string' && item.releaseDate.trim()
+    ? item.releaseDate.trim()
+    : undefined
 }
 
 function modelCreatedUnixSeconds(item: ProviderModelCatalogItem): number {

@@ -293,6 +293,7 @@ export interface AccountTestResult {
   protocolCode?: string
   protocolVersion?: string
   type: AccountType
+  traceId?: string
   success: boolean
   statusCode?: number
   errorCode?: string

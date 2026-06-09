@@ -270,6 +270,7 @@ export interface ApiKeyListParams extends ListParams {
 export interface UsageRecordListParams extends ListParams {
   page?: number
   pageSize?: number
+  traceId?: string
   accountKeyword?: string
   clientIp?: string
   result?: 'success' | 'failed' | 'all'

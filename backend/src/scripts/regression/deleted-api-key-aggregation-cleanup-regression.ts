@@ -241,6 +241,7 @@ function seedUsageRecord(id: string, apiKeyIdInput: string, createdAtInput: stri
     id,
     shardKey: location.shardKey,
     systemAccountId: 'sys_admin',
+    traceId: `trace_${id}`,
     apiKeyId: apiKeyIdInput,
     accountId: null,
     groupId: null,

@@ -1,9 +1,4 @@
 import { createAppCache } from '../shared/cache.js'
-import {
-  apiKeyScheduleCacheTtlMs,
-  evaluateApiKeyAvailabilitySchedule,
-  parseApiKeyAvailabilityScheduleJson
-} from './api-key-availability-schedule.js'
 import { maxApiKeyGroupBindings } from './api-key-group-binding-limits.js'
 import {
   normalizeApiKeyGroupBindingWeight,
@@ -22,7 +17,6 @@ export interface GatewayApiKeyRow {
   quota_limits_json: string | null
   group_route_strategy: ApiKeyGroupRouteStrategy
   availability_schedule_json?: string | null
-  availability_schedule_active?: number
   system_account_image_generation_enabled: number
   group_bindings?: GatewayApiKeyGroupBindingRow[]
 }
@@ -42,7 +36,6 @@ export interface GatewayApiKeyGroupBindingRow {
 type GatewayApiKeyCacheEntry = {
   row: GatewayApiKeyRow
   forceRevalidateAtMs: number
-  scheduleRevalidateAtMs?: number
 }
 
 const GATEWAY_API_KEY_CACHE_TTL_MS = 60_000
@@ -72,7 +65,6 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     cached
     && cached.forceRevalidateAtMs > now
     && !isGatewayApiKeyRowExpired(cached.row, now)
-    && isGatewayApiKeyCacheEntryScheduleFresh(cached, now)
   ) {
     return cached.row
   }
@@ -101,8 +93,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
-  applyGatewayApiKeyScheduleState(row, now)
-  if (isGatewayApiKeyManuallyDisabledWithoutSchedule(row)) {
+  if (row.status !== 'active') {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
@@ -115,10 +106,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
   setGatewayApiKeyCacheEntry(keyHash, {
     row,
-    forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS,
-    scheduleRevalidateAtMs: row.availability_schedule_json
-      ? now + apiKeyScheduleCacheTtlMs(now)
-      : undefined
+    forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
   }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
   return row
 }
@@ -149,8 +137,7 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
   if (isGatewayApiKeyRowExpired(row)) {
     return undefined
   }
-  applyGatewayApiKeyScheduleState(row)
-  if (isGatewayApiKeyManuallyDisabledWithoutSchedule(row)) {
+  if (row.status !== 'active') {
     return undefined
   }
   row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
@@ -189,28 +176,7 @@ function gatewayApiKeyCacheTtlMs(now: number, row: GatewayApiKeyRow): number {
       ttlMs = Math.min(ttlMs, keyExpiresAt - now)
     }
   }
-  if (row.availability_schedule_json) {
-    ttlMs = Math.min(ttlMs, apiKeyScheduleCacheTtlMs(now))
-  }
   return Math.max(1, ttlMs)
-}
-
-function isGatewayApiKeyCacheEntryScheduleFresh(entry: GatewayApiKeyCacheEntry, now: number): boolean {
-  return entry.scheduleRevalidateAtMs === undefined || entry.scheduleRevalidateAtMs > now
-}
-
-export function isGatewayApiKeyScheduleInactive(row: GatewayApiKeyRow | undefined): boolean {
-  return Boolean(row?.availability_schedule_json && row.availability_schedule_active === 0)
-}
-
-function isGatewayApiKeyManuallyDisabledWithoutSchedule(row: GatewayApiKeyRow): boolean {
-  return row.status !== 'active' && !row.availability_schedule_json
-}
-
-function applyGatewayApiKeyScheduleState(row: GatewayApiKeyRow, now = Date.now()): void {
-  const schedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
-  const decision = evaluateApiKeyAvailabilitySchedule(schedule, new Date(now))
-  row.availability_schedule_active = decision.allowed ? 1 : 0
 }
 
 function setGatewayApiKeyCacheEntry(keyHash: string, entry: GatewayApiKeyCacheEntry, options?: { ttlMs?: number }): void {

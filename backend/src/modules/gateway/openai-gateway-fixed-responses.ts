@@ -45,7 +45,7 @@ export function finalizeGatewayAuthFailureAudit(
   const authErrorCode = typeof locals.gatewayAuthFailureErrorCode === 'string'
     ? locals.gatewayAuthFailureErrorCode
     : 'invalid_request_error'
-  const authErrorPayload = gatewayErrorPayload(authErrorMessage, authErrorCode === 'api_key_schedule_inactive' ? 'forbidden' : 'invalid_request_error', authErrorCode)
+  const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error', authErrorCode)
   auditCapture.finalize({
     outcome: 'gateway_failed',
     success: false,

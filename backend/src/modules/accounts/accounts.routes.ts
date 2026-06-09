@@ -1062,13 +1062,18 @@ accountsRouter.post('/:id/test', async (req, res) => {
 
   try {
     const diagnostics = isAdminRole(requestAccess?.role) || account.accessType !== 'authorized' ? 'full' : 'limited'
-    const { prompt: _ignoredPrompt, ...testOptions } = parsed.data ?? {}
+    const testRequest = parsed.data ?? {}
+    const { prompt: _ignoredPrompt, account: accountSnapshot, ...testOptions } = testRequest
+    const draftAccount = accountSnapshot
+      ? savedAccountDraftTestSnapshot(account, accountSnapshot, requestAccess)
+      : undefined
     const task = createAccountTestTask({
       account,
       access: requestAccess,
       diagnostics,
       model: testOptions.model,
-      clientCompatibility: testOptions.clientCompatibility
+      clientCompatibility: testOptions.clientCompatibility ?? draftAccount?.clientCompatibility,
+      draftAccount
     })
     if (!dispatchAccountTestTasks([task.id])) {
       failAccountTestTask(task.id, '后台 worker 暂不可用，账号测试任务未能投递')
@@ -1201,6 +1206,116 @@ function draftAccountCredentials(account: AccountDraftTestAccountRequest, provid
   return {
     ...credentials,
     base_url: providerBaseUrl || 'https://api.openai.com/v1'
+  }
+}
+
+function savedAccountDraftTestSnapshot(
+  account: AccountSummary,
+  accountInput: AccountDraftTestAccountRequest,
+  requestAccess: RequestAccessScope
+): AccountTestDraftSnapshot {
+  if (account.accessType === 'authorized') {
+    throw new Error('授权账户测试不支持使用未保存表单配置')
+  }
+  if (accountInput.providerCode !== account.providerCode || accountInput.type !== account.type) {
+    throw new Error('账户测试草稿与当前账户不一致')
+  }
+  const preparedDraft = prepareAccountDraftTestSnapshot({
+    accountInput,
+    requestAccess,
+    draftAccountId: account.id
+  })
+  if (
+    account.providerProtocolProfileId
+    && preparedDraft.draftAccount.providerProtocolProfileId
+    && preparedDraft.draftAccount.providerProtocolProfileId !== account.providerProtocolProfileId
+  ) {
+    throw new Error('账户测试草稿与当前账户协议档案不一致')
+  }
+  return {
+    ...preparedDraft.draftAccount,
+    stateTargetAccountId: account.id
+  }
+}
+
+function prepareAccountDraftTestSnapshot(input: {
+  accountInput: AccountDraftTestAccountRequest
+  requestAccess: RequestAccessScope
+  draftAccountId?: string
+}): { account: AccountSummary; draftAccount: AccountTestDraftSnapshot } {
+  const accountInput = input.accountInput
+  const group = findGroupSummary(accountInput.groupId, input.requestAccess)
+  if (!group || group.providerCode !== accountInput.providerCode || group.permissions?.canManageAccounts === false) {
+    throw new Error('账户分组无效')
+  }
+  const provider = listProviders().find((item) => item.code === accountInput.providerCode)
+  const providerProfile = provider?.protocolProfiles.find((item) => item.id === (accountInput.providerProtocolProfileId ?? group.providerProtocolProfileId))
+    ?? provider?.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
+  if (!provider || !providerProfile || !providerProfile.accountTypes.includes(accountInput.type as AccountSummary['type'])) {
+    throw new Error(`供应商 ${accountInput.providerCode} 不支持账户类型 ${accountInput.type}`)
+  }
+  if (!provider.enabled) {
+    throw new Error(`供应商已停用：${accountInput.providerCode}`)
+  }
+  if (group.providerProtocolProfileId !== providerProfile.id || !isOpenAIProtocolProfile(providerProfile)) {
+    throw new Error('当前仅支持测试 OpenAI 协议账户')
+  }
+  const ownerSystemAccountId = group.ownerSystemAccountId
+    ?? group.systemAccountId
+    ?? input.requestAccess.systemAccountFilterId
+    ?? input.requestAccess.systemAccountId
+  if (!ownerSystemAccountId) {
+    throw new Error('账户分组缺少归属用户，无法测试')
+  }
+  const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl))
+  const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
+  const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    accountInput.providerCode,
+    accountInput.type,
+    accountInput.clientCompatibility,
+    'openai_standard',
+    providerProfile
+  )
+  const account = draftTestAccountSummary({
+    id: input.draftAccountId,
+    account: accountInput,
+    availabilitySchedule,
+    clientCompatibility,
+    credentials,
+    groupName: group.name,
+    ownerSystemAccountId,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
+  })
+  return {
+    account,
+    draftAccount: {
+      id: account.id,
+      ownerSystemAccountId,
+      groupId: accountInput.groupId,
+      groupName: group.name,
+      providerCode: accountInput.providerCode,
+      providerProtocolProfileId: providerProfile.id,
+      protocolCode: providerProfile.protocolCode,
+      protocolVersion: providerProfile.protocolVersion,
+      name: account.name,
+      type: accountInput.type,
+      credentials,
+      concurrencyLimit: account.concurrencyLimit,
+      priority: account.priority,
+      superPriorityEnabled: account.superPriorityEnabled,
+      fallbackEnabled: account.fallbackEnabled,
+      clientCompatibility,
+      supportedModels: account.supportedModels,
+      modelMappings: account.modelMappings,
+      proxyProfileId: account.proxyProfileId,
+      accountExpiresAt: account.accountExpiresAt,
+      availabilitySchedule,
+      availabilityScheduleJson,
+      notes: account.notes
+    }
   }
 }
 
@@ -1371,6 +1486,7 @@ function accountDraftRequestFromCreate(account: AccountCreateRequest): AccountDr
 }
 
 function draftTestAccountSummary(input: {
+  id?: string
   account: AccountDraftTestAccountRequest
   availabilitySchedule: ReturnType<typeof accountAvailabilityScheduleFromRequest>
   clientCompatibility: AccountSummary['clientCompatibility']
@@ -1383,7 +1499,7 @@ function draftTestAccountSummary(input: {
 }): AccountSummary {
   const usage = emptyAccountUsageSummary()
   return {
-    id: newId('acctdraft'),
+    id: input.id ?? newId('acctdraft'),
     systemAccountId: input.ownerSystemAccountId,
     ownerSystemAccountId: input.ownerSystemAccountId,
     providerCode: input.account.providerCode,

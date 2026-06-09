@@ -26,6 +26,7 @@ export interface AccountTestTaskRecord extends AccountTestTask {
 
 export interface AccountTestDraftSnapshot {
   id: string
+  stateTargetAccountId?: string
   ownerSystemAccountId: string
   groupId: string
   groupName?: string
@@ -468,6 +469,7 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
   }
   return {
     id,
+    stateTargetAccountId: normalizedOptionalText(record.stateTargetAccountId),
     ownerSystemAccountId,
     groupId,
     groupName: normalizedOptionalText(record.groupName),

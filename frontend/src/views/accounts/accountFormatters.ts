@@ -25,6 +25,12 @@ export interface AccountStatusTagInfo {
   label: string
 }
 
+export interface AccountDiagnosticMessageParts {
+  message: string
+  traceId?: string
+  requestId?: string
+}
+
 export function statusColor(status: AccountStatus) {
   if (status === 'active') return 'green'
   if (status === 'pending_test') return 'blue'
@@ -95,6 +101,114 @@ export function accountCooldownText(account: AccountSummary) {
   return `暂停至 ${formatDateTime(account.cooldownUntil)}`
 }
 
+function accountRetestNextText(account: AccountSummary): string {
+  if (!account.cooldownUntil) return ''
+  const timestamp = serverDateTimeTimestamp(account.cooldownUntil)
+  if (timestamp === undefined) return formatDateTime(account.cooldownUntil)
+  if (timestamp <= Date.now()) {
+    return `复测排队中（计划 ${formatDateTime(account.cooldownUntil)}）`
+  }
+  return formatDateTime(account.cooldownUntil)
+}
+
+function accountCooldownRetestText(account: AccountSummary): string {
+  const parts: string[] = []
+  if (account.cooldownRetestFailureCount) {
+    parts.push(`连续失败 ${formatNumber(account.cooldownRetestFailureCount)} 次`)
+  }
+  if (account.cooldownRetestLastAt) {
+    const status = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
+    parts.push(`最近 ${formatDateTime(account.cooldownRetestLastAt)}${status}`)
+  }
+  const nextText = accountRetestNextText(account)
+  if (nextText) {
+    parts.push(`下次：${nextText}`)
+  }
+  return parts.length ? `后台复测：${parts.join('，')}` : ''
+}
+
+export function splitAccountDiagnosticMessage(message?: string): AccountDiagnosticMessageParts {
+  let remaining = message?.trim() ?? ''
+  if (!remaining) return { message: '' }
+
+  const traceIdMatch = remaining.match(/(?:^|[；;\s,，])(?:traceId|trace id)(?:[：:]|\s+)([^\s；;，,)]+)/i)
+  const traceId = traceIdMatch?.[1]?.trim()
+  if (traceIdMatch) {
+    remaining = removeDiagnosticSegment(remaining, traceIdMatch.index ?? 0, traceIdMatch[0].length)
+  }
+
+  const parenthesizedRequestIdMatch = remaining.match(/\((?:upstream\s+)?(?:request\s*id|requestId)[：:]\s*([^)]+?)\)/i)
+  let requestId = parenthesizedRequestIdMatch?.[1]?.trim()
+  if (parenthesizedRequestIdMatch) {
+    remaining = removeDiagnosticSegment(remaining, parenthesizedRequestIdMatch.index ?? 0, parenthesizedRequestIdMatch[0].length)
+  }
+
+  if (!requestId) {
+    const requestIdMatch = remaining.match(/(?:^|[；;\s,，])(?:upstream\s+)?(?:request\s*id|requestId)[：:]\s*([^\s；;，,)]+)/i)
+    requestId = requestIdMatch?.[1]?.trim()
+    if (requestIdMatch) {
+      remaining = removeDiagnosticSegment(remaining, requestIdMatch.index ?? 0, requestIdMatch[0].length)
+    }
+  }
+
+  return {
+    message: cleanupDiagnosticMessage(remaining),
+    traceId,
+    requestId
+  }
+}
+
+function accountDiagnosticTooltipLines(
+  message: string | undefined,
+  options: { reasonLabel: string; idLabelPrefix?: string; statusCode?: number; concise?: boolean }
+): string[] {
+  const text = options.concise ? conciseAccountLastErrorText(message) : message?.trim()
+  if (!text) return []
+  const parts = splitAccountDiagnosticMessage(text)
+  let reason = parts.message
+  if (options.statusCode) {
+    reason = reason.replace(new RegExp(`^HTTP ${options.statusCode}[；;\\s]*`), '').trim()
+  }
+  const idLabelPrefix = options.idLabelPrefix ? `${options.idLabelPrefix} ` : ''
+  const lines: string[] = []
+  if (parts.traceId) {
+    lines.push(`${idLabelPrefix}traceId：${parts.traceId}`)
+  }
+  if (parts.requestId) {
+    lines.push(`${idLabelPrefix}request id：${parts.requestId}`)
+  }
+  if (reason) {
+    lines.push(`${options.reasonLabel}：${reason}`)
+  }
+  return lines
+}
+
+function conciseAccountLastErrorText(message?: string): string {
+  const value = message?.trim()
+  if (!value) return ''
+  const lastErrorMarker = '最后错误：'
+  const markerIndex = value.lastIndexOf(lastErrorMarker)
+  return markerIndex >= 0
+    ? value.slice(markerIndex + lastErrorMarker.length).trim()
+    : value
+      .replace(/^账户测试失败，已自动标记为临时不可调用；/, '')
+      .replace(/^账户测试失败；/, '')
+      .trim()
+}
+
+function removeDiagnosticSegment(value: string, index: number, length: number): string {
+  return cleanupDiagnosticMessage(`${value.slice(0, index)}${value.slice(index + length)}`)
+}
+
+function cleanupDiagnosticMessage(value: string): string {
+  return value
+    .replace(/\(\s*\)/g, '')
+    .replace(/\s*[；;]\s*/g, '；')
+    .replace(/；{2,}/g, '；')
+    .replace(/^[；;\s,，。]+|[；;\s,，。]+$/g, '')
+    .trim()
+}
+
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
   const effectiveAvailability = isScheduleInactiveAvailability(account) ? undefined : account.effectiveAvailability
@@ -139,20 +253,15 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
   }
   if (!isAuthorizedInstanceLocalStatusHandledAsContext(account)) {
-    const cooldownText = accountCooldownText(account)
+    const retestText = isTemporaryAccountStatus(account) ? accountCooldownRetestText(account) : ''
+    const cooldownText = retestText || accountCooldownText(account)
     if (cooldownText) {
       lines.push(cooldownText)
-      if (isTemporaryAccountStatus(account) && account.cooldownRetestFailureCount) {
-        lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
-      }
     } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
-      lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
+      lines.push(accountCooldownRetestText(account))
       lines.push(isAuthorizedAccount(account)
         ? '可手动测试，测试通过后恢复正常；也可在更多菜单恢复正常'
         : '可手动测试，测试通过后恢复正常；也可等待后台复测或在更多菜单恢复正常')
-      if (account.cooldownRetestFailureCount) {
-        lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
-      }
     } else if (account.status === 'disabled' && !accountExpired) {
       lines.push('停用账户可手动测试诊断，但不会被测试结果或后台任务自动恢复')
     } else if (account.status === 'pending_test') {
@@ -166,16 +275,10 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
         ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动测试或手动恢复异常'
         : '异常账户不会参与调度，可手动测试，测试通过后恢复正常')
     }
-    if (account.cooldownRetestLastAt) {
-      const suffix = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
-      lines.push(`最近后台复测：${formatDateTime(account.cooldownRetestLastAt)}${suffix}`)
-    }
     if (account.cooldownRetestObservationStartedAt && isTemporaryAccountStatus(account)) {
       lines.push(`自动恢复观察开始：${formatDateTime(account.cooldownRetestObservationStartedAt)}`)
     }
-    if (account.lastErrorMessage) {
-      lines.push(`原因：${account.lastErrorMessage}`)
-    }
+    lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, { reasonLabel: '原因' }))
   }
   return lines
 }
@@ -196,12 +299,8 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push('已关闭调度，不参与调度')
   }
   if (isTemporaryAccountStatus(account)) {
-    const cooldownText = accountCooldownText(account)
-    if (cooldownText) {
-      lines.push(cooldownText)
-    } else if (account.cooldownUntil) {
-      lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
-    }
+    const retestText = accountCooldownRetestText(account)
+    if (retestText) lines.push(retestText)
   } else if (account.effectiveAvailability?.status === 'instance_cooldown') {
     const cooldownText = accountCooldownText(account)
     if (cooldownText) {
@@ -210,42 +309,12 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
       lines.push('正在冷却，不参与调度')
     }
   }
-  const retestText = conciseCooldownRetestText(account)
-  if (retestText) {
-    lines.push(retestText)
-  }
-  const lastError = conciseAccountLastError(account.lastErrorMessage, account.cooldownRetestLastStatusCode)
-  if (lastError) {
-    lines.push(`最后错误：${lastError}`)
-  }
+  lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
+    reasonLabel: '最后错误',
+    statusCode: account.cooldownRetestLastStatusCode,
+    concise: true
+  }))
   return lines
-}
-
-function conciseCooldownRetestText(account: AccountSummary): string {
-  const parts: string[] = []
-  if (account.cooldownRetestFailureCount) {
-    parts.push(`连续失败 ${formatNumber(account.cooldownRetestFailureCount)} 次`)
-  }
-  if (account.cooldownRetestLastAt) {
-    const status = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
-    parts.push(`最近 ${formatDateTime(account.cooldownRetestLastAt)}${status}`)
-  }
-  return parts.length ? `后台复测：${parts.join('，')}` : ''
-}
-
-function conciseAccountLastError(message?: string, statusCode?: number): string {
-  const value = message?.trim()
-  if (!value) return ''
-  const lastErrorMarker = '最后错误：'
-  const markerIndex = value.lastIndexOf(lastErrorMarker)
-  const error = markerIndex >= 0
-    ? value.slice(markerIndex + lastErrorMarker.length).trim()
-    : value
-    .replace(/^账户测试失败，已自动标记为临时不可调用；/, '')
-    .replace(/^账户测试失败；/, '')
-    .trim()
-  if (!statusCode) return error
-  return error.replace(new RegExp(`^HTTP ${statusCode}[；;\\s]*`), '').trim()
 }
 
 function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolean {
@@ -268,21 +337,15 @@ function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): str
     lines.push(`本地异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
   }
   if (isTemporaryAccountStatus(account)) {
-    const cooldownText = accountCooldownText(account)
-    if (cooldownText) {
-      lines.push(cooldownText)
-    } else if (account.cooldownUntil) {
-      lines.push(`本地冷却已到期：${formatDateTime(account.cooldownUntil)}`)
-    }
-    const retestText = conciseCooldownRetestText(account)
-    if (retestText) {
-      lines.push(retestText)
-    }
+    const retestText = accountCooldownRetestText(account)
+    if (retestText) lines.push(`本地${retestText}`)
   }
-  const lastError = conciseAccountLastError(account.lastErrorMessage, account.cooldownRetestLastStatusCode)
-  if (lastError) {
-    lines.push(`本地最后错误：${lastError}`)
-  }
+  lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
+    reasonLabel: '本地最后错误',
+    idLabelPrefix: '本地',
+    statusCode: account.cooldownRetestLastStatusCode,
+    concise: true
+  }))
   return lines
 }
 
@@ -340,8 +403,12 @@ export function authorizationSourceAccountTooltipLines(account: AccountSummary):
   if (account.authorizationInstanceSourceAccountExpiresAt) {
     lines.push(`授权方原账户到期时间：${formatDateTime(account.authorizationInstanceSourceAccountExpiresAt)}`)
   }
-  if (account.authorizationInstanceSourceAccountLastErrorMessage) {
-    lines.push(`授权方原账户原因：${account.authorizationInstanceSourceAccountLastErrorMessage}`)
+  const sourceLastErrorLines = accountDiagnosticTooltipLines(account.authorizationInstanceSourceAccountLastErrorMessage, {
+    reasonLabel: '授权方原账户原因',
+    idLabelPrefix: '授权方原账户'
+  })
+  if (sourceLastErrorLines.length) {
+    lines.push(...sourceLastErrorLines)
   } else if (account.authorizationInstanceSourceAccountLastErrorCode) {
     lines.push(`授权方原账户异常类型：${accountErrorCodeText(account.authorizationInstanceSourceAccountLastErrorCode)}`)
   }

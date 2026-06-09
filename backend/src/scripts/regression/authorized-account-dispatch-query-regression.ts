@@ -92,6 +92,7 @@ try {
       providerCode: 'gpt',
       name: `授权调度查询账户 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
+      status: 'active',
       groupId: ownerGroup.id,
       credentials: { api_key: `sk-authorized-dispatch-query-${index}`, base_url: 'https://api.openai.com/v1' },
       proxyProfileId: index === 0 ? disabledProxy.id : sharedProxy.id
@@ -116,6 +117,7 @@ try {
     providerCode: 'gpt',
     name: '授权已失效且凭据损坏账户',
     type: 'api_key',
+    status: 'active',
     groupId: ownerGroup.id,
     credentials: { api_key: 'sk-authorized-dispatch-stale', base_url: 'https://api.openai.com/v1' },
     proxyProfileId: staleBadProxy.id
@@ -143,6 +145,7 @@ try {
     providerCode: 'gpt',
     name: '授权父账户停用且凭据损坏账户',
     type: 'api_key',
+    status: 'active',
     groupId: ownerGroup.id,
     credentials: { api_key: 'sk-authorized-dispatch-disabled-source', base_url: 'https://api.openai.com/v1' },
     proxyProfileId: disabledSourceBadProxy.id

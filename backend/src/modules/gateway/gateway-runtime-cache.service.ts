@@ -298,7 +298,7 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
       ttlMs: groupUsageAccessCacheTtlMs(runtime.groupAccess, nowMs)
     })
   }
-  if (runtime.groupAccess && !isRuntimeApiKeyScheduleInactive(runtime)) {
+  if (runtime.groupAccess) {
     const accounts = runtime.accounts.map(cloneStaticOpenAIAccountSecret)
     openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), accounts, {
       ttlMs: openAIAccountsCacheTtlMs(runtime.hasAccountAvailabilitySchedule === true, nowMs, accounts)
@@ -370,10 +370,6 @@ function isGatewayRuntimeCacheEntryFresh(entry: GatewayRuntimeCacheEntry, now = 
 
 function isGatewayRuntimeCacheEntryDynamic(entry: GatewayRuntimeCacheEntry): boolean {
   return isDynamicApiKeyGroupRouteStrategy(entry.runtime.apiKey?.group_route_strategy)
-}
-
-function isRuntimeApiKeyScheduleInactive(runtime: DbServiceGatewayRuntime): boolean {
-  return Boolean(runtime.apiKey?.availability_schedule_json && runtime.apiKey.availability_schedule_active === 0)
 }
 
 function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime, now = Date.now()): number {

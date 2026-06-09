@@ -4,8 +4,8 @@
 
 当前版本启用两个使用 OpenAI v1 协议的供应商，并通过 OpenAI-compatible 入口对外提供兼容网关：
 
-- `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传。
-- `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力。
+- `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传；模型目录聚合所有启用 OpenAI v1 供应商的模型。
+- `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力；模型目录只看 GPT 自身模型。
 
 这里的 `openai` 有两种层级语义：`protocolCode=openai` 表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；`providerCode=openai` 表示通用 OpenAI-compatible 供应商。两者同名但字段不同，不能混淆。AI 账户、分组、模型目录和价格目录归属在供应商层；后续如果增加 GLM、Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`。
 
@@ -45,8 +45,8 @@ type GptAccountType = 'api_key' | 'oauth'
 
 内置供应商定义：
 
-- `openai`：通用 OpenAI-compatible 供应商，作为同协议优化的父层，只提供 API Key 透传。
-- `gpt`：GPT 子供应商，`parent_code = openai`，继承通用 OpenAI-compatible 能力，并叠加 GPT OAuth / Codex 专属能力。
+- `openai`：通用 OpenAI-compatible 供应商，作为同协议优化的父层，只提供 API Key 透传，模型目录聚合所有启用 OpenAI v1 供应商模型。
+- `gpt`：GPT 子供应商，`parent_code = openai`，继承通用 OpenAI-compatible 能力，并叠加 GPT OAuth / Codex 专属能力，模型目录只看 GPT 自身模型。
 
 内置供应商协议档案：
 

@@ -1,9 +1,9 @@
 <template>
   <a-card class="page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadProviders" />
-    <ResponsiveDataList table-class="page-table provider-table" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :scroll-x="1320" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
+    <ResponsiveDataList table-class="page-table provider-table" :columns="providerColumns" :data-source="providers" row-key="code" :loading="loading" :scroll-x="providerScrollX" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
       <template #emptyText>
-        <a-empty class="page-empty-card" description="当前内置 OpenAI 兼容与 GPT 供应商，后续新供应商会在这里扩展。" />
+        <a-empty class="page-empty-card" :description="providerEmptyDescription" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">
@@ -42,7 +42,7 @@
             </div>
           </div>
           <div class="mobile-list-meta-grid">
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>账户类型</span>
               <strong>{{ record.accountTypes.join(' / ') }}</strong>
             </div>
@@ -54,11 +54,11 @@
               <span>说明</span>
               <strong>{{ record.description || '-' }}</strong>
             </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>默认 Base URL</span>
               <strong class="mono-cell">{{ record.baseUrl }}</strong>
             </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>默认测试模型</span>
               <strong class="mono-cell">{{ record.defaultTestModel }}</strong>
             </div>
@@ -398,7 +398,7 @@ const providerCapabilityLabels: Record<string, string> = {
 
 const providerCapabilityOrder = ['responses', 'chat'] as const
 
-const columns = [
+const managementProviderColumns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 160 },
   { title: '状态', key: 'status', width: 90 },
   { title: '账户类型', key: 'accountTypes', width: 180 },
@@ -409,9 +409,23 @@ const columns = [
   { title: '操作', key: 'actions', fixed: 'right' }
 ]
 
-const providerActions: RowActionItem[] = [
-  { key: 'models', label: '模型目录', icon: 'detail', tone: 'info' }
+const selfProviderColumns = [
+  { title: '模型目录', dataIndex: 'name', key: 'name', width: 180 },
+  { title: '状态', key: 'status', width: 90 },
+  { title: '接口能力', key: 'capabilities', width: 260 },
+  { title: '说明', dataIndex: 'description', key: 'description', width: 260 },
+  { title: '操作', key: 'actions', fixed: 'right' }
 ]
+
+const providerColumns = computed(() => isManagementView.value ? managementProviderColumns : selfProviderColumns)
+const providerScrollX = computed(() => isManagementView.value ? 1320 : 850)
+const providerEmptyDescription = computed(() => isManagementView.value
+  ? '当前内置 OpenAI 兼容与 GPT 供应商，后续新供应商会在这里扩展。'
+  : '当前没有可用模型目录。'
+)
+const providerActions = computed<RowActionItem[]>(() => [
+  { key: 'models', label: isManagementView.value ? '模型目录' : '查看模型', icon: 'detail', tone: 'info' }
+])
 
 const baseModelColumns = [
   { title: '模型', key: 'model', width: 260 },
@@ -820,7 +834,8 @@ function handleModelAction(key: string, record: ProviderModelPricing) {
 
 function canMutateModel(record: ProviderModelPricing): boolean {
   if (!record.id || record.scope === 'built_in') return false
-  if (record.scope === 'global') return authState.isAdmin.value
+  if (activeProvider.value && record.providerCode !== activeProvider.value.code) return false
+  if (record.scope === 'global') return canCreateGlobalModel.value
   return record.systemAccountId === authState.currentUser.value?.id
 }
 
