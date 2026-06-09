@@ -393,16 +393,16 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               { method: 'GET', path: '/__aipublic__/access/info', description: '读取公开接口接入边界和可用指标。' },
               { method: 'GET', path: '/__aipublic__/account/list', description: '分页读取指定系统用户下的账号脱敏摘要。' },
               { method: 'POST', path: '/__aipublic__/account/add', description: '新增账号到指定系统用户和分组。' },
-              { method: 'POST', path: '/__aipublic__/account/update', description: '修改指定系统用户和分组内的账号。' },
-              { method: 'POST', path: '/__aipublic__/account/del', description: '删除指定系统用户和分组内的账号。' },
+              { method: 'POST', path: '/__aipublic__/account/update', description: '按账号 ID 修改账号的指定字段。' },
+              { method: 'POST', path: '/__aipublic__/account/del', description: '按账号 ID 删除账号。' },
               { method: 'GET', path: '/__aipublic__/group/list', description: '分页读取指定系统用户下的分组脱敏摘要。' },
               { method: 'POST', path: '/__aipublic__/group/add', description: '新增指定系统用户下的分组。' },
-              { method: 'POST', path: '/__aipublic__/group/update', description: '修改指定系统用户下的分组。' },
-              { method: 'POST', path: '/__aipublic__/group/del', description: '删除指定系统用户下的分组。' },
+              { method: 'POST', path: '/__aipublic__/group/update', description: '按分组 ID 修改分组的指定字段。' },
+              { method: 'POST', path: '/__aipublic__/group/del', description: '按分组 ID 删除分组。' },
               { method: 'GET', path: '/__aipublic__/api-key/list', description: '分页读取指定系统用户下的 API Key 脱敏摘要。' },
               { method: 'POST', path: '/__aipublic__/api-key/add', description: '新增指定系统用户下的 API Key。' },
-              { method: 'POST', path: '/__aipublic__/api-key/update', description: '修改指定系统用户下的 API Key。' },
-              { method: 'POST', path: '/__aipublic__/api-key/del', description: '删除指定系统用户下的 API Key。' }
+              { method: 'POST', path: '/__aipublic__/api-key/update', description: '按 API Key ID 修改指定字段。' },
+              { method: 'POST', path: '/__aipublic__/api-key/del', description: '按 API Key ID 删除 API Key。' }
             ],
             boundary: {
               provides: [
@@ -574,7 +574,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'group-update',
         name: '分组修改',
-        summary: '修改指定系统用户下的分组名称、说明或启用状态。',
+        summary: '按分组新增或列表响应返回的 ID 修改分组指定字段。',
         status: 'mock',
         method: 'POST',
         path: '/__aipublic__/group/update',
@@ -583,7 +583,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         requestBody: {
           contentType: 'application/json',
           fields: [
-            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'targetUsername', type: 'string', required: false, description: '可选校验条件。提供时必须与分组归属目标用户一致。', example: 'huanmin' },
             { name: 'groupId', type: 'string', required: true, description: '分组 ID。', example: 'grp_xxx' },
             { name: 'name', type: 'string', required: false, description: '新的分组名称。', example: '福利-主池' },
             { name: 'providerCode', type: 'string', required: false, description: '新的供应商编码。', example: GPT_VENDOR_CODE },
@@ -592,13 +592,8 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'groupType', type: 'string', required: false, description: '分组类型：personal 或 high_concurrency。', example: 'personal' }
           ],
           example: {
-            targetUsername: 'huanmin',
             groupId: 'grp_xxx',
-            name: '福利-主池',
-            providerCode: GPT_VENDOR_CODE,
-            description: null,
-            enabled: true,
-            groupType: 'personal'
+            name: '福利-主池'
           }
         },
         responseExample: {
@@ -614,7 +609,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'group-delete',
         name: '分组删除',
-        summary: '删除指定系统用户下的分组。默认分组或仍被约束保护的分组会被拒绝删除。',
+        summary: '按分组新增或列表响应返回的 ID 删除分组。默认分组或仍被约束保护的分组会被拒绝删除。',
         status: 'mock',
         method: 'POST',
         path: '/__aipublic__/group/del',
@@ -623,11 +618,10 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         requestBody: {
           contentType: 'application/json',
           fields: [
-            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'targetUsername', type: 'string', required: false, description: '可选校验条件。提供时必须与分组归属目标用户一致。', example: 'huanmin' },
             { name: 'groupId', type: 'string', required: true, description: '分组新增或列表响应返回的分组 ID。', example: 'grp_xxx' }
           ],
           example: {
-            targetUsername: 'huanmin',
             groupId: 'grp_xxx'
           }
         },
@@ -712,7 +706,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         requestBody: {
           contentType: 'application/json',
           fields: [
-            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'targetUsername', type: 'string', required: false, description: '可选校验条件。提供时必须与 API Key 归属目标用户一致。', example: 'huanmin' },
             { name: 'apiKeyId', type: 'string', required: true, description: 'API Key ID。', example: 'key_xxx' },
             { name: 'name', type: 'string', required: false, description: '新的 API Key 名称。' },
             { name: 'description', type: 'string|null', required: false, description: '新的 API Key 说明；传 null 表示清空。' },
@@ -724,15 +718,8 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'availabilitySchedule', type: 'object|null', required: false, description: '强制启停计划；null 表示清空计划，未填写表示保留；计划启用后只在窗口开始分钟强制启用一次、窗口结束分钟强制停用一次。' }
           ],
           example: {
-            targetUsername: 'huanmin',
             apiKeyId: 'key_xxx',
-            description: null,
-            status: 'disabled',
-            groupBindings: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }],
-            groupRouteStrategy: 'round_robin',
-            expiresAt: null,
-            quotaLimits: null,
-            availabilitySchedule: null
+            status: 'disabled'
           }
         },
         responseExample: {
@@ -755,7 +742,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'api-key-delete',
         name: 'API Key 删除',
-        summary: '删除指定系统用户下的 API Key。',
+        summary: '按 API Key 新增或列表响应返回的 ID 删除 API Key。',
         status: 'mock',
         method: 'POST',
         path: '/__aipublic__/api-key/del',
@@ -764,11 +751,10 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         requestBody: {
           contentType: 'application/json',
           fields: [
-            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+            { name: 'targetUsername', type: 'string', required: false, description: '可选校验条件。提供时必须与 API Key 归属目标用户一致。', example: 'huanmin' },
             { name: 'apiKeyId', type: 'string', required: true, description: 'API Key 新增或列表响应返回的 API Key ID。', example: 'key_xxx' }
           ],
           example: {
-            targetUsername: 'huanmin',
             apiKeyId: 'key_xxx'
           }
         },
@@ -968,15 +954,16 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         requestBody: {
           contentType: 'application/json',
           fields: [
-            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
-            { name: 'targetDisplayName', type: 'string', required: false, description: '目标系统用户显示名称；修改时不会自动创建用户，仅用于 schema 与新增保持一致。', example: '欢民' },
-            { name: 'targetGroupName', type: 'string', required: true, description: '目标账号分组名称。', example: '福利' },
-            { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: GPT_VENDOR_CODE },
             { name: 'accountId', type: 'string', required: true, description: '账号新增或列表响应返回的账号 ID。', example: 'acc_xxx' },
-            { name: 'name', type: 'string', required: true, description: '账号名称。', example: '公益站-青芽主通道' },
-            { name: 'type', type: 'string', required: true, description: '账号类型；当前公开修改只支持 api_key。', example: 'api_key' },
-            { name: 'baseUrl', type: 'string', required: true, description: 'OpenAI 兼容 Base URL。', example: 'https://api.openai.com/v1' },
-            { name: 'apiKey', type: 'string', required: true, description: '上游 API Key；响应不会回显。', example: 'sk-...' },
+            { name: 'targetUsername', type: 'string', required: false, description: '可选校验条件。提供时必须与账号归属目标用户一致。', example: 'huanmin' },
+            { name: 'targetDisplayName', type: 'string', required: false, description: '兼容字段，修改时不会自动创建或改名目标用户。', example: '欢民' },
+            { name: 'targetGroupName', type: 'string', required: false, description: '可选校验条件。提供时账号必须在该目标分组内。', example: '福利' },
+            { name: 'providerCode', type: 'string', required: false, description: '可选校验条件。提供时必须与账号供应商一致。', example: GPT_VENDOR_CODE },
+            { name: 'providerProtocolProfileId', type: 'string', required: false, description: '可选校验条件。提供时必须与账号协议档案一致。', example: 'profile_gpt_openai_v1' },
+            { name: 'name', type: 'string', required: false, description: '账号名称；提供时覆盖原值。', example: '公益站-青芽主通道' },
+            { name: 'type', type: 'string', required: false, description: '可选校验字段；当前公开修改只支持 api_key。', example: 'api_key' },
+            { name: 'baseUrl', type: 'string', required: false, description: 'OpenAI 兼容 Base URL；提供时覆盖原值，未提供时保留原值。', example: 'https://api.openai.com/v1' },
+            { name: 'apiKey', type: 'string', required: false, description: '上游 API Key；提供时覆盖原值，响应不会回显。', example: 'sk-...' },
             { name: 'supportedModels', type: 'string[]', required: false, description: '该账号支持的模型列表；提供时按当前数组覆盖。', example: ['gpt-5.5', 'gpt-5.4'] },
             { name: 'openAIResponsesUpstreamMode', type: 'string', required: false, description: 'Responses 上游模式：passthrough 或 chat_completions_bridge；提供时按当前值覆盖。', example: 'passthrough' },
             { name: 'concurrencyLimit', type: 'number', required: false, description: '单账号并发限制，范围 1 到 100000。', example: 20 },
@@ -986,14 +973,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'notes', type: 'string', required: false, description: '账号备注，最多 1000 个字符。' }
           ],
           example: {
-            targetUsername: 'huanmin',
-            targetDisplayName: '欢民',
-            targetGroupName: '福利',
-            providerCode: GPT_VENDOR_CODE,
             accountId: 'acc_xxx',
-            name: '公益站-青芽主通道',
-            type: 'api_key',
-            baseUrl: 'https://api.openai.com/v1',
             apiKey: 'sk-...',
             supportedModels: ['gpt-5.5', 'gpt-5.4'],
             openAIResponsesUpstreamMode: 'passthrough',
@@ -1036,7 +1016,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'account-delete',
         name: '账号删除',
-        summary: '按账号新增或列表响应返回的本系统账号 ID 删除指定目标用户和分组内的账号；目标用户已停用时拒绝删除，找不到时幂等返回 not_found。',
+        summary: '按账号新增或列表响应返回的本系统账号 ID 删除账号；目标用户已停用时拒绝删除，找不到时幂等返回 not_found。',
         status: 'mock',
         method: 'POST',
         path: '/__aipublic__/account/del',
@@ -1046,38 +1026,42 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
           contentType: 'application/json',
           fields: [
             {
-              name: 'targetUsername',
-              type: 'string',
-              required: true,
-              description: '目标系统用户账号，例如 huanmin。',
-              example: 'huanmin'
-            },
-            {
-              name: 'targetGroupName',
-              type: 'string',
-              required: true,
-              description: '目标账号分组名称，例如 福利。',
-              example: '福利'
-            },
-            {
-              name: 'providerCode',
-              type: 'string',
-              required: true,
-              description: '供应商编码。',
-              example: GPT_VENDOR_CODE
-            },
-            {
               name: 'accountId',
               type: 'string',
               required: true,
               description: '账号新增或列表响应返回的账号 ID。',
               example: 'acc_xxx'
+            },
+            {
+              name: 'targetUsername',
+              type: 'string',
+              required: false,
+              description: '可选校验条件。提供时必须与账号归属目标用户一致。',
+              example: 'huanmin'
+            },
+            {
+              name: 'targetGroupName',
+              type: 'string',
+              required: false,
+              description: '可选校验条件。提供时账号必须在该目标分组内。',
+              example: '福利'
+            },
+            {
+              name: 'providerCode',
+              type: 'string',
+              required: false,
+              description: '可选校验条件。提供时必须与账号供应商一致。',
+              example: GPT_VENDOR_CODE
+            },
+            {
+              name: 'providerProtocolProfileId',
+              type: 'string',
+              required: false,
+              description: '可选校验条件。提供时必须与账号协议档案一致。',
+              example: 'profile_gpt_openai_v1'
             }
           ],
           example: {
-            targetUsername: 'huanmin',
-            targetGroupName: '福利',
-            providerCode: GPT_VENDOR_CODE,
             accountId: 'acc_xxx'
           }
         },

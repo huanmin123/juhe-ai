@@ -453,12 +453,12 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
       {
         method: 'POST',
         path: '/__aipublic__/account/update',
-        description: '修改指定系统用户和分组内的账号。'
+        description: '按账号 ID 修改账号的指定字段。'
       },
       {
         method: 'POST',
         path: '/__aipublic__/account/del',
-        description: '删除指定系统用户和分组内的账号。'
+        description: '按账号 ID 删除账号。'
       },
       {
         method: 'GET',
@@ -473,12 +473,12 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
       {
         method: 'POST',
         path: '/__aipublic__/group/update',
-        description: '修改指定系统用户下的分组。'
+        description: '按分组 ID 修改分组的指定字段。'
       },
       {
         method: 'POST',
         path: '/__aipublic__/group/del',
-        description: '删除指定系统用户下的分组。'
+        description: '按分组 ID 删除分组。'
       },
       {
         method: 'GET',
@@ -493,12 +493,12 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
       {
         method: 'POST',
         path: '/__aipublic__/api-key/update',
-        description: '修改指定系统用户下的 API Key。'
+        description: '按 API Key ID 修改指定字段。'
       },
       {
         method: 'POST',
         path: '/__aipublic__/api-key/del',
-        description: '删除指定系统用户下的 API Key。'
+        description: '按 API Key ID 删除 API Key。'
       }
     ],
     boundary: {
