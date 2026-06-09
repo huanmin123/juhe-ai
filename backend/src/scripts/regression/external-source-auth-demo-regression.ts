@@ -681,6 +681,21 @@ async function runChild(): Promise<void> {
     const activatedAccount = clearAccountFailureStateResult(addedAccount.id, targetAccess, { allowPendingTestRestore: true })
     assert.equal(activatedAccount.account?.status, 'active', '回归准备：待测试账号应通过测试成功入口恢复正常')
 
+    const accountPartialUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      accountId: accountAdd.body.data.account.id,
+      apiKey: 'sk-public-push-regression-partial-update',
+      status: 'disabled'
+    })
+    assert.equal(accountPartialUpdate.status, 200, `账号修改应支持只传 accountId 和变更字段：${JSON.stringify(accountPartialUpdate.body)}`)
+    assert.equal(accountPartialUpdate.body.data.action, 'updated')
+    assert.equal(accountPartialUpdate.body.data.account.id, accountAdd.body.data.account.id)
+    assert.equal(accountPartialUpdate.body.data.account.status, 'disabled')
+    const partialCredentials = readAccountCredentials(addedAccount.id)
+    assert.equal(partialCredentials.api_key, 'sk-public-push-regression-partial-update', '账号局部修改应覆盖上游 API Key')
+    assert.equal(partialCredentials.base_url, 'https://push.example/v2', '账号局部修改未提交 Base URL 时应保留旧值')
+
     const accountUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {

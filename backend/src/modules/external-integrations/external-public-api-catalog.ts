@@ -959,15 +959,16 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
         requestBody: {
           contentType: 'application/json',
           fields: [
-            { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
-            { name: 'targetDisplayName', type: 'string', required: false, description: '目标系统用户显示名称；修改时不会自动创建用户，仅用于 schema 与新增保持一致。', example: '欢民' },
-            { name: 'targetGroupName', type: 'string', required: true, description: '目标账号分组名称。', example: '福利' },
-            { name: 'providerCode', type: 'string', required: true, description: '供应商编码。', example: GPT_VENDOR_CODE },
             { name: 'accountId', type: 'string', required: true, description: '账号新增或列表响应返回的账号 ID。', example: 'acc_xxx' },
-            { name: 'name', type: 'string', required: true, description: '账号名称。', example: '公益站-青芽主通道' },
-            { name: 'type', type: 'string', required: true, description: '账号类型；当前公开修改只支持 api_key。', example: 'api_key' },
-            { name: 'baseUrl', type: 'string', required: true, description: 'OpenAI 兼容 Base URL。', example: 'https://api.openai.com/v1' },
-            { name: 'apiKey', type: 'string', required: true, description: '上游 API Key；响应不会回显。', example: 'sk-...' },
+            { name: 'targetUsername', type: 'string', required: false, description: '可选校验条件。提供时必须与账号归属目标用户一致。', example: 'huanmin' },
+            { name: 'targetDisplayName', type: 'string', required: false, description: '兼容字段，修改时不会自动创建或改名目标用户。', example: '欢民' },
+            { name: 'targetGroupName', type: 'string', required: false, description: '可选校验条件。提供时账号必须在该目标分组内。', example: '福利' },
+            { name: 'providerCode', type: 'string', required: false, description: '可选校验条件。提供时必须与账号供应商一致。', example: GPT_VENDOR_CODE },
+            { name: 'providerProtocolProfileId', type: 'string', required: false, description: '可选校验条件。提供时必须与账号协议档案一致。', example: 'profile_gpt_openai_v1' },
+            { name: 'name', type: 'string', required: false, description: '账号名称；提供时覆盖原值。', example: '公益站-青芽主通道' },
+            { name: 'type', type: 'string', required: false, description: '可选校验字段；当前公开修改只支持 api_key。', example: 'api_key' },
+            { name: 'baseUrl', type: 'string', required: false, description: 'OpenAI 兼容 Base URL；提供时覆盖原值，未提供时保留原值。', example: 'https://api.openai.com/v1' },
+            { name: 'apiKey', type: 'string', required: false, description: '上游 API Key；提供时覆盖原值，响应不会回显。', example: 'sk-...' },
             { name: 'supportedModels', type: 'string[]', required: false, description: '该账号支持的模型列表；提供时按当前数组覆盖。', example: ['gpt-5.5', 'gpt-5.4'] },
             { name: 'concurrencyLimit', type: 'number', required: false, description: '单账号并发限制，范围 1 到 100000。', example: 20 },
             { name: 'priority', type: 'number', required: false, description: '账号调度优先级，范围 0 到 100000。', example: 0 },
@@ -976,21 +977,9 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'notes', type: 'string', required: false, description: '账号备注，最多 1000 个字符。' }
           ],
           example: {
-            targetUsername: 'huanmin',
-            targetDisplayName: '欢民',
-            targetGroupName: '福利',
-            providerCode: GPT_VENDOR_CODE,
             accountId: 'acc_xxx',
-            name: '公益站-青芽主通道',
-            type: 'api_key',
-            baseUrl: 'https://api.openai.com/v1',
             apiKey: 'sk-...',
-            supportedModels: ['gpt-5.5', 'gpt-5.4'],
-            concurrencyLimit: 20,
-            priority: 0,
-            status: 'disabled',
-            availabilitySchedule: null,
-            notes: '公益站登记账号'
+            status: 'disabled'
           }
         },
         responseExample: {

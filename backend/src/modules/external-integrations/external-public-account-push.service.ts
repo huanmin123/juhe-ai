@@ -13,6 +13,7 @@ import {
   findAccountSummary,
   findApiKeySummary,
   findGroupSummary,
+  findSystemAccountById,
   findSystemAccountByUsername,
   listAccountsPage,
   listApiKeysPage,
@@ -44,8 +45,23 @@ export interface PublicAccountPushInput {
   notes?: string
 }
 
-export interface PublicAccountUpdateInput extends PublicAccountPushInput {
+export interface PublicAccountUpdateInput {
   accountId: string
+  targetUsername?: string
+  targetDisplayName?: string
+  targetGroupName?: string
+  providerCode?: string
+  providerProtocolProfileId?: string
+  name?: string
+  type?: 'api_key'
+  baseUrl?: string
+  apiKey?: string
+  supportedModels?: string[]
+  status?: 'active' | 'disabled'
+  concurrencyLimit?: number
+  priority?: number
+  availabilitySchedule?: Record<string, unknown> | null
+  notes?: string
 }
 
 export interface PublicAccountPushResponse {
@@ -278,17 +294,15 @@ type TargetAccess = {
   role: 'user'
 }
 
-type PublicAccountWriteMode = 'create' | 'update'
-
 export async function addPublicWelfareAccount(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
-  return writePublicWelfareAccount(input, 'create', await autoCreatedTargetPasswordHash())
+  return writePublicWelfareAccount(input, await autoCreatedTargetPasswordHash())
 }
 
 export function updatePublicWelfareAccount(input: PublicAccountUpdateInput): PublicAccountPushResponse {
-  return writePublicWelfareAccount(input, 'update')
+  return updatePublicWelfareAccountById(input)
 }
 
-function writePublicWelfareAccount(input: PublicAccountPushInput | PublicAccountUpdateInput, mode: PublicAccountWriteMode, targetPasswordHash?: string): PublicAccountPushResponse {
+function writePublicWelfareAccount(input: PublicAccountPushInput, targetPasswordHash?: string): PublicAccountPushResponse {
   const providerCode = requiredProviderCode(input.providerCode)
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
@@ -301,48 +315,27 @@ function writePublicWelfareAccount(input: PublicAccountPushInput | PublicAccount
   assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
 
   return runInDatabaseTransaction(() => {
-    const target = mode === 'update' ? findPublicTarget(input.targetUsername) : ensureTargetSystemAccount(input, targetPasswordHash)
-    if (!target) {
-      throw new Error(`目标用户不存在：${normalizedText(input.targetUsername) ?? ''}`)
-    }
+    const target = ensureTargetSystemAccount(input, targetPasswordHash)
     assertTargetActive(target.account)
 
     const access = { systemAccountId: target.account.id, role: 'user' as const }
-    const targetGroup = mode === 'update'
-      ? requireExistingTargetGroup({ access, providerCode, providerProtocolProfileId: providerProfile.id, groupName: input.targetGroupName })
-      : ensureTargetGroup({ access, providerCode, providerProtocolProfileId: providerProfile.id, groupName: input.targetGroupName })
-    const existing = mode === 'update'
-      ? findTargetAccountById({
-        access,
-        providerCode,
-        providerProtocolProfileId: providerProfile.id,
-        groupId: targetGroup.group.id,
-        accountId: (input as PublicAccountUpdateInput).accountId
-      })
-      : findTargetAccount({
-        access,
-        providerCode,
-        providerProtocolProfileId: providerProfile.id,
-        groupId: targetGroup.group.id,
-        name: input.name
-      })
-    if (mode === 'create' && existing) {
+    const targetGroup = ensureTargetGroup({ access, providerCode, providerProtocolProfileId: providerProfile.id, groupName: input.targetGroupName })
+    const existing = findTargetAccount({
+      access,
+      providerCode,
+      providerProtocolProfileId: providerProfile.id,
+      groupId: targetGroup.group.id,
+      name: input.name
+    })
+    if (existing) {
       throw new Error(`账号已存在：${existing.name}`)
     }
-    if (mode === 'update' && !existing) {
-      throw new Error('账号不存在')
-    }
-    const accountInput = existing
-      ? accountUpdateInputForPush(input)
-      : accountCreateInputForPush(input, providerCode, providerProfile.id, targetGroup.group.id)
-    const account = existing
-      ? updateAccount(existing.id, accountInput, access) ?? existing
-      : createAccount(accountInput, access)
+    const account = createAccount(accountCreateInputForPush(input, providerCode, providerProfile.id, targetGroup.group.id), access)
 
     return {
       source: 'stats',
       generatedAt: new Date().toISOString(),
-      action: existing ? 'updated' : 'created',
+      action: 'created',
       target: {
         username: target.account.username,
         displayName: target.account.displayName,
@@ -353,6 +346,61 @@ function writePublicWelfareAccount(input: PublicAccountPushInput | PublicAccount
         groupCreated: targetGroup.created
       },
       account: sanitizeAccount(account)
+    }
+  }, getBusinessDatabase())
+}
+
+function updatePublicWelfareAccountById(input: PublicAccountUpdateInput): PublicAccountPushResponse {
+  const accountId = normalizedText(input.accountId)
+  if (!accountId) {
+    throw new Error('账号修改必须提供 accountId')
+  }
+
+  return runInDatabaseTransaction(() => {
+    const accountOwner = findPublicAccountOwnerById(accountId)
+    if (!accountOwner) {
+      throw new Error('账号不存在')
+    }
+    const target = resolvePublicAccountUpdateTarget(input, accountOwner.systemAccountId)
+    if (!target) {
+      throw new Error('账号不存在')
+    }
+    assertTargetActive(target.account)
+
+    const access = targetAccess(target.account.id)
+    const existing = findAccountSummary(accountId, access)
+    if (!existing) {
+      throw new Error('账号不存在')
+    }
+    if (existing.type !== 'api_key') {
+      throw new Error('公开账号修改仅支持 API Key 账户')
+    }
+
+    const providerProfile = assertProviderEnabled(existing.providerCode, existing.providerProtocolProfileId)
+    if (hasPublicInput(input, 'type')) {
+      assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
+    }
+    const targetGroup = resolvePublicAccountUpdateGroupFilter(input, existing, access)
+    const payload = accountPartialUpdateInputForPush(input, existing)
+    const updated = updateAccount(existing.id, payload, access)
+    if (!updated) {
+      throw new Error('账号不存在')
+    }
+
+    return {
+      source: 'stats',
+      generatedAt: new Date().toISOString(),
+      action: 'updated',
+      target: {
+        username: target.account.username,
+        displayName: target.account.displayName,
+        systemAccountId: target.account.id,
+        created: false,
+        groupId: targetGroup?.id ?? updated.boundGroupId ?? '',
+        groupName: targetGroup?.name ?? updated.boundGroupName ?? '',
+        groupCreated: false
+      },
+      account: sanitizeAccount(updated)
     }
   }, getBusinessDatabase())
 }
@@ -619,11 +667,12 @@ export function listPublicApiKeys(input: PublicApiKeyListInput): PublicApiKeyLis
   })
 }
 
-export function mockPublicWelfareAccountPush(input: PublicAccountPushInput): PublicAccountPushResponse {
+export function mockPublicWelfareAccountPush(input: PublicAccountPushInput | PublicAccountUpdateInput): PublicAccountPushResponse {
   const generatedAt = new Date().toISOString()
   const username = normalizedText(input.targetUsername) || 'huanmin'
   const groupName = normalizedText(input.targetGroupName) || '福利'
-  const providerCode = requiredProviderCode(input.providerCode)
+  const providerCode = normalizedText(input.providerCode) || 'gpt'
+  const accountName = normalizedText(input.name) || '公益站测试账号'
   return {
     source: 'mock',
     generatedAt,
@@ -639,7 +688,7 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput): Pub
     },
     account: {
       id: 'mock_account_public_welfare',
-      name: input.name,
+      name: accountName,
       providerCode,
       type: 'api_key',
       status: input.status === 'disabled' ? 'disabled' : 'active',
@@ -1242,7 +1291,7 @@ function findExistingTargetGroup(input: {
 function findTargetAccountById(input: {
   access: TargetAccess
   providerCode: string
-  providerProtocolProfileId: string
+  providerProtocolProfileId?: string
   groupId: string
   accountId?: string
 }): AccountSummary | undefined {
@@ -1257,17 +1306,79 @@ function findTargetAccountById(input: {
     WHERE accounts.id = ?
       AND accounts.system_account_id = ?
       AND accounts.provider_code = ?
-      AND accounts.provider_protocol_profile_id = ?
+      AND (? IS NULL OR accounts.provider_protocol_profile_id = ?)
       AND group_accounts.group_id = ?
     LIMIT 1
   `).get(
     accountId,
     input.access.systemAccountId,
     input.providerCode,
-    input.providerProtocolProfileId,
+    input.providerProtocolProfileId ?? null,
+    input.providerProtocolProfileId ?? null,
     input.groupId
   ) as { id?: string } | undefined
   return row?.id ? findAccountSummary(row.id, input.access) : undefined
+}
+
+function findPublicAccountOwnerById(accountId: string): { id: string; systemAccountId: string } | undefined {
+  return getBusinessDatabase().prepare(`
+    SELECT id, system_account_id AS systemAccountId
+    FROM accounts
+    WHERE id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `).get(accountId) as { id: string; systemAccountId: string } | undefined
+}
+
+function resolvePublicAccountUpdateTarget(input: PublicAccountUpdateInput, ownerSystemAccountId: string): ResolvedTarget | undefined {
+  const username = normalizedText(input.targetUsername)
+  const account = username
+    ? findSystemAccountByUsername(username)
+    : findSystemAccountById(ownerSystemAccountId)
+  if (!account || account.id !== ownerSystemAccountId) {
+    return undefined
+  }
+  return {
+    account,
+    created: false
+  }
+}
+
+function resolvePublicAccountUpdateGroupFilter(input: PublicAccountUpdateInput, account: AccountSummary, access: TargetAccess): GroupSummary | undefined {
+  const providerCode = normalizedText(input.providerCode)
+  if (providerCode && providerCode !== account.providerCode) {
+    throw new Error('账号不存在')
+  }
+  const providerProtocolProfileId = normalizedText(input.providerProtocolProfileId)
+  if (providerProtocolProfileId && providerProtocolProfileId !== account.providerProtocolProfileId) {
+    throw new Error('账号不存在')
+  }
+
+  const groupName = normalizedText(input.targetGroupName)
+  if (!groupName) {
+    return account.boundGroupId ? findGroupSummary(account.boundGroupId, access) : undefined
+  }
+
+  const group = findExistingTargetGroup({
+    access,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    groupName
+  })
+  if (!group) {
+    throw new Error('账号不存在')
+  }
+  const accountInGroup = findTargetAccountById({
+    access,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId ?? '',
+    groupId: group.id,
+    accountId: account.id
+  })
+  if (!accountInGroup) {
+    throw new Error('账号不存在')
+  }
+  return group
 }
 
 function findTargetAccount(input: {
@@ -1325,10 +1436,6 @@ function accountCreateInputForPush(input: PublicAccountPushInput, providerCode: 
   }
 }
 
-function accountUpdateInputForPush(input: PublicAccountPushInput): Record<string, unknown> {
-  return accountWriteInputForPush(input)
-}
-
 function accountWriteInputForPush(input: PublicAccountPushInput): Record<string, unknown> {
   const name = normalizedText(input.name)
   const baseUrl = normalizedText(input.baseUrl)
@@ -1370,6 +1477,64 @@ function accountWriteInputForPush(input: PublicAccountPushInput): Record<string,
     payload.availabilitySchedule = input.availabilitySchedule
   }
   return payload
+}
+
+function accountPartialUpdateInputForPush(input: PublicAccountUpdateInput, current: AccountSummary): Record<string, unknown> {
+  const payload: Record<string, unknown> = {}
+  if (hasPublicInput(input, 'name')) {
+    const name = normalizedText(input.name)
+    if (!name) {
+      throw new Error('账户名称不能为空')
+    }
+    payload.name = name
+  }
+  if (hasPublicInput(input, 'apiKey') || hasPublicInput(input, 'baseUrl')) {
+    payload.credentials = accountCredentialsForPartialUpdate(input, current)
+  }
+  if (hasPublicInput(input, 'supportedModels')) {
+    payload.supportedModels = normalizedStringList(input.supportedModels) ?? []
+  }
+  if (hasPublicInput(input, 'status')) {
+    payload.status = input.status === 'disabled' ? 'disabled' : 'active'
+    payload.schedulable = input.status !== 'disabled'
+  }
+  if (hasPublicInput(input, 'concurrencyLimit')) {
+    payload.concurrencyLimit = boundedInteger(input.concurrencyLimit, 1, 100_000)
+  }
+  if (hasPublicInput(input, 'priority')) {
+    payload.priority = boundedInteger(input.priority, 0, 100_000) ?? 0
+  }
+  if (hasPublicInput(input, 'notes')) {
+    payload.notes = pushNotes(input)
+  }
+  if (hasPublicInput(input, 'availabilitySchedule')) {
+    payload.availabilitySchedule = input.availabilitySchedule
+  }
+  if (Object.keys(payload).length === 0) {
+    throw new Error('账号修改至少提供一个要修改的字段')
+  }
+  return payload
+}
+
+function accountCredentialsForPartialUpdate(input: PublicAccountUpdateInput, current: AccountSummary): Record<string, unknown> {
+  const currentCredentials = current.credentials as Record<string, unknown>
+  const apiKey = hasPublicInput(input, 'apiKey')
+    ? normalizedText(input.apiKey)
+    : normalizedText(currentCredentials.api_key)
+  const baseUrl = hasPublicInput(input, 'baseUrl')
+    ? normalizedText(input.baseUrl)
+    : normalizedText(currentCredentials.base_url)
+  if (!baseUrl) {
+    throw new Error('Base URL 不能为空')
+  }
+  if (!apiKey) {
+    throw new Error('API Key 不能为空')
+  }
+  return {
+    ...currentCredentials,
+    api_key: apiKey,
+    base_url: baseUrl
+  }
 }
 
 function assertSupportedPushAccountType(value: unknown, providerAccountTypes: readonly string[]): void {
@@ -1441,7 +1606,7 @@ function sanitizeApiKey(apiKey: ApiKeySummary & { key?: string }, options: { inc
   }
 }
 
-function pushNotes(input: PublicAccountPushInput): string | undefined {
+function pushNotes(input: Pick<PublicAccountPushInput, 'notes'>): string | undefined {
   return normalizedText(input.notes)
 }
 

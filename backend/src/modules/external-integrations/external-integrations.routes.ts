@@ -121,9 +121,38 @@ const accountPushSchema = z.object({
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   notes: z.string().trim().max(1000).optional()
 }).strict()
-const accountUpdateSchema = accountPushSchema.extend({
-  accountId: z.string().trim().min(1).max(120)
-}).strict()
+const accountUpdateMutableFields = [
+  'name',
+  'baseUrl',
+  'apiKey',
+  'supportedModels',
+  'status',
+  'concurrencyLimit',
+  'priority',
+  'availabilitySchedule',
+  'notes'
+] as const
+const accountUpdateSchema = z.object({
+  accountId: z.string().trim().min(1).max(120),
+  targetUsername: z.string().trim().min(2).max(80).optional(),
+  targetDisplayName: z.string().trim().min(1).max(80).optional(),
+  targetGroupName: z.string().trim().min(1).max(80).optional(),
+  providerCode: providerCodeSchema.optional(),
+  providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
+  name: z.string().trim().min(1).max(120).optional(),
+  type: publicAccountTypeSchema.optional(),
+  baseUrl: z.string().trim().min(1).max(500).optional(),
+  apiKey: z.string().trim().min(1).max(1000).optional(),
+  supportedModels: z.array(z.string().trim().min(1).max(120)).max(500).optional(),
+  status: z.enum(['active', 'disabled']).optional(),
+  concurrencyLimit: z.number().int().min(1).max(100000).optional(),
+  priority: z.number().int().min(0).max(100000).optional(),
+  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  notes: z.string().trim().max(1000).optional()
+}).strict().refine(
+  (value) => accountUpdateMutableFields.some((field) => Object.prototype.hasOwnProperty.call(value, field)),
+  { message: '账号修改至少提供一个要修改的字段' }
+)
 const accountDeleteSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetGroupName: z.string().trim().min(1).max(80),
