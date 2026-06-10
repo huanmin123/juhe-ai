@@ -47,6 +47,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 顶部“导出 JSON”按当前账户列表筛选条件导出，最多处理前 50 条匹配结果；勾选账户后，批量工具栏“导出 JSON”只导出当前勾选账户。
 - 导出只包含当前用户或管理员目标作用域内有权查看凭据和编辑的自有账户；授权账户实例不导出。
 - 如果账户绑定了可用代理，导出文件会同时写入 `proxies` 并通过账户 `proxyRef` 引用，便于再次导入时自动创建或复用代理。
+- 导出会保留账户标签为 `tags` 字符串数组；再次导入时会在目标系统账户维度自动创建缺失标签并绑定到账户。
 - 账户当前为 `pending_test` 时导出为 `status: "pending_test"`；账户当前为 `active` 且参与调度时导出为 `status: "active"`；其他运行态状态统一导出为 `status: "disabled"`。导入时 `active` 会按安全策略落成 `pending_test`，避免重新导入后直接参与调度。
 - 导出的 JSON 文件可以在“导入账户”弹窗中直接粘贴预览，再确认导入。
 
@@ -78,6 +79,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "groupName": "默认 OpenAI 兼容分组",
       "concurrencyLimit": 3,
       "priority": 50,
+      "tags": ["主力", "OpenAI 兼容"],
       "proxyRef": "proxy-hk-1",
       "openAIResponsesUpstreamMode": "passthrough",
       "credentials": {
@@ -95,6 +97,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "groupName": "默认 GPT 分组",
       "concurrencyLimit": 3,
       "priority": 50,
+      "tags": ["OAuth"],
       "credentials": {
         "refresh_token": "refresh-token-xxx",
         "access_token": "access-token-xxx",
@@ -138,8 +141,9 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `openAIResponsesUpstreamMode` | 否 | API Key 账户的 Responses 上游模式：`passthrough` 或 `chat_completions_bridge`；OAuth 不支持桥接。 |
 | `supportedModels` | 否 | 支持模型列表。 |
 | `modelMappings` | 否 | 模型映射列表，条目包含 `sourceModel`、`upstreamModel`、`enabled`。 |
+| `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
-| `availabilitySchedule` | 否 | 可用时段计划；启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`。 |
+| `availabilitySchedule` | 否 | 时间计划；启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`。 |
 | `credentials` | 是 | 凭据对象。 |
 | `notes` | 否 | 备注。 |
 
@@ -149,6 +153,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - `proxyRef` 和 `proxyProfileId` 不能同时填写。
 - `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略。
+- `tags` 用于账户快速分类，单个账户最多 24 个标签，单个标签最长 40 个字符；空白标签会被忽略，同一账户内大小写重复标签会去重。
 - 上游只支持 Chat Completions 时，API Key 账户可填 `openAIResponsesUpstreamMode: "chat_completions_bridge"`；不确定时省略或填 `passthrough`。
 - `modelMappings` 的 sourceModel 是下游请求模型，upstreamModel 是该账户实际转发模型。
 - `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。

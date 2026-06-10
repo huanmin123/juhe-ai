@@ -109,7 +109,7 @@ apiKeysRouter.post('/', mutationGuard({
             safeChange('status', '状态', undefined, apiKey.status),
             safeChange('groupRouteStrategy', '分组路由策略', undefined, apiKey.groupRouteStrategy),
             safeChange('groupBindings', '绑定分组路由', undefined, apiKey.groupBindings),
-            safeChange('availabilitySchedule', '强制启停计划', undefined, apiKey.availabilitySchedule),
+            safeChange('availabilitySchedule', '时间计划', undefined, apiKey.availabilitySchedule),
             safeChange('key', '密钥标识', undefined, `${apiKey.keyPrefix}...${apiKey.keySuffix}`)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -163,7 +163,7 @@ apiKeysRouter.patch('/:id', (req, res) => {
             groupBindings: '绑定分组路由',
             expiresAt: '过期时间',
             quotaLimits: '额度限制',
-            availabilitySchedule: '强制启停计划'
+            availabilitySchedule: '时间计划'
           }),
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }

@@ -49,6 +49,7 @@ const createFromCodeSchema = z.object({
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
+  tags: z.array(z.string().trim()).max(24).optional(),
   proxyProfileId: z.string().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
@@ -66,6 +67,7 @@ const createFromRefreshTokenSchema = z.object({
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
+  tags: z.array(z.string().trim()).max(24).optional(),
   proxyProfileId: z.string().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
@@ -148,6 +150,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         fallbackEnabled: parsed.data.fallbackEnabled,
         supportedModels: parsed.data.supportedModels,
         modelMappings: parsed.data.modelMappings,
+        tags: parsed.data.tags,
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
@@ -224,6 +227,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         fallbackEnabled: parsed.data.fallbackEnabled,
         supportedModels: parsed.data.supportedModels,
         modelMappings: parsed.data.modelMappings,
+        tags: parsed.data.tags,
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
@@ -510,10 +514,11 @@ function buildOAuthCreateLog(
       safeChange('credentials', 'OAuth 凭据', undefined, account.credentials),
       safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
       safeChange('modelMappings', '模型映射', undefined, account.modelMappings),
+      safeChange('tags', '标签', undefined, account.tags),
       safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
       safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
       safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
-      safeChange('availabilitySchedule', '可用时段计划', undefined, account.availabilitySchedule)
+      safeChange('availabilitySchedule', '时间计划', undefined, account.availabilitySchedule)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
   }

@@ -15,9 +15,10 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
   }
   baseColumns.push(
     sortableColumn({ title: '并发数', key: 'concurrency', width: 100, align: 'center' }, 'concurrency', sortOrder),
-    sortableColumn({ title: '状态', key: 'status', width: 220 }, 'status', sortOrder),
+    sortableColumn({ title: '状态', key: 'status', width: 120, align: 'center' }, 'status', sortOrder),
     sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
     { title: '用量(日)', key: 'usage', width: 180 },
+    { title: '标签', key: 'tags', width: 160 },
     { title: '代理', key: 'proxy', width: 180 },
     { title: '加入分组', key: 'group', width: 240, className: 'account-group-column' },
     sortableColumn({ title: '最近使用时间', key: 'lastUsedAt', width: 180 }, 'lastUsedAt', sortOrder),
@@ -93,7 +94,7 @@ export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): 
 }
 
 export function accountTableScrollX(isManagementView: boolean): number {
-  return (isManagementView ? 2590 : 2410) + accountSelectionColumnWidth
+  return (isManagementView ? 2650 : 2470) + accountSelectionColumnWidth
 }
 
 export function accountTableScrollY(): string {

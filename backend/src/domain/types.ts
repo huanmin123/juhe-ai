@@ -408,6 +408,14 @@ export interface AccountModelMapping {
   enabled: boolean
 }
 
+export interface AccountTagSummary {
+  id: string
+  name: string
+  accountCount?: number
+  createdAt?: string
+  updatedAt?: string
+}
+
 export interface GroupAccountStats {
   total: number
   available: number
@@ -447,6 +455,7 @@ export interface AccountSummary {
   openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
+  tags?: AccountTagSummary[]
   lastSuccessfulTestModel?: string
   qualityScore?: number
   qualityState?: string

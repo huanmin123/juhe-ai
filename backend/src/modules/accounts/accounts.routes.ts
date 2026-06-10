@@ -8,7 +8,7 @@ import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { accountAvailabilityScheduleFromRequest, accountAvailabilityScheduleJson } from '../../storage/account-availability-schedule.js'
 import { newId } from '../../storage/database.js'
-import { ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, normalizeAccountCredentialsForWrite, normalizeAccountModelMappingsForProvider, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { AccountTagInUseError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountTag, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountTags, listAccountsPage, listProviders, migrateAccountTraffic, normalizeAccountCredentialsForWrite, normalizeAccountModelMappingsForProvider, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAccountTags, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
@@ -41,6 +41,7 @@ const accountCreateSchema = z.object({
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
+  tags: z.array(z.string().trim()).max(24).optional(),
   status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
   activationTestTaskId: z.string().trim().min(1).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -62,6 +63,7 @@ const accountUpdateSchema = z.object({
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
+  tags: z.array(z.string().trim()).max(24).optional(),
   status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().min(0).optional(),
@@ -118,6 +120,10 @@ type AccountCreateRequest = z.infer<typeof accountCreateSchema>
 
 const accountGroupSchema = z.object({
   groupId: z.string().trim().min(1, '分组不能为空')
+}).strict()
+
+const accountTagsUpdateSchema = z.object({
+  tags: z.array(z.string().trim()).max(24)
 }).strict()
 
 const accountTrafficMigrationSchema = z.object({
@@ -213,6 +219,40 @@ accountsRouter.get('/options', (req, res, next) => {
     res.json(ok(options))
   } catch (error) {
     next(error)
+  }
+})
+
+accountsRouter.get('/tags', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  try {
+    res.json(ok(listAccountTags(getRequestAccessScope(scopeQuery.data.systemAccountId))))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '加载账户标签失败'))
+  }
+})
+
+accountsRouter.delete('/tags/:tagId', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  try {
+    if (!deleteAccountTag(req.params.tagId, getRequestAccessScope(scopeQuery.data.systemAccountId))) {
+      res.status(404).json({ message: '标签不存在' })
+      return
+    }
+    res.status(204).send()
+  } catch (error) {
+    if (error instanceof AccountTagInUseError) {
+      res.status(400).json(badRequest(error.message))
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '删除账户标签失败'))
   }
 })
 
@@ -673,10 +713,11 @@ accountsRouter.post('/', mutationGuard({
             safeChange('credentials', '凭据', undefined, parsed.data.credentials),
             safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
             safeChange('modelMappings', '模型映射', undefined, account.modelMappings),
+            safeChange('tags', '标签', undefined, account.tags),
             safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
             safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
             safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
-            safeChange('availabilitySchedule', '可用时段计划', undefined, account.availabilitySchedule),
+            safeChange('availabilitySchedule', '时间计划', undefined, account.availabilitySchedule),
             safeChange('notes', '备注', undefined, account.notes)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -900,6 +941,64 @@ accountsRouter.patch('/:id/authorized-dispatch', async (req, res) => {
   }
 })
 
+accountsRouter.patch('/:id/tags', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const parsed = accountTagsUpdateSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '账户标签参数无效'))
+    return
+  }
+  const before = findAccountSummary(req.params.id, requestAccess)
+  if (!before) {
+    res.status(404).json({ message: '账户不存在' })
+    return
+  }
+  try {
+    const account = runLoggedOperation(() => {
+      const tags = updateAccountTags(req.params.id, parsed.data.tags, requestAccess)
+      if (!tags) {
+        throw new Error('账户不存在')
+      }
+      const account = findAccountSummary(req.params.id, requestAccess)
+      if (!account) {
+        throw new Error('账户不存在')
+      }
+      const ownerSystemAccountId = authorizedLocalOperationOwner(account, requestAccess)
+        ?? resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: { ...account, tags },
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'accounts',
+          action: 'update_tags',
+          operationKey: 'accounts.update_tags',
+          resourceType: 'account',
+          resourceId: account.id,
+          resourceName: account.name,
+          summary: `更新账户标签：${account.name}`,
+          changes: [
+            safeChange('tags', '标签', before?.tags, tags)
+          ],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
+    res.json(ok(sanitizeAccountResponse(account)))
+  } catch (error) {
+    if (error instanceof Error && error.message === '账户不存在') {
+      res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新账户标签失败'))
+  }
+})
+
 accountsRouter.patch('/:id', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
@@ -995,10 +1094,11 @@ accountsRouter.patch('/:id', async (req, res) => {
               clientCompatibility: '客户端兼容',
               supportedModels: '支持模型',
               modelMappings: '模型映射',
+              tags: '标签',
               proxyProfileId: '代理',
               schedulable: '参与调度',
               accountExpiresAt: '过期时间',
-              availabilitySchedule: '可用时段计划',
+              availabilitySchedule: '时间计划',
               boundGroupId: '绑定分组',
               cooldownUntil: '冷却结束时间',
               lastErrorCode: '异常类型',

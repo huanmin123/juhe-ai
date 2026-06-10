@@ -618,7 +618,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountAdd.body.data.account.name, '公益站测试账号')
     assert.equal(accountAdd.body.data.account.status, 'pending_test', '公开账号新增即使传 active 也应先落成待测试')
     assert.equal(accountAdd.body.data.account.openAIResponsesUpstreamMode, 'chat_completions_bridge', '公开账号新增应回显 Responses 上游桥接模式')
-    assert.equal(accountAdd.body.data.account.availabilitySchedule?.enabled, true, '公开账号新增应写入并回显可用时段计划')
+    assert.equal(accountAdd.body.data.account.availabilitySchedule?.enabled, true, '公开账号新增应写入并回显时间计划')
     assert.equal(Object.prototype.hasOwnProperty.call(accountAdd.body.data.account, 'credentials'), false, '正式新增响应不能返回凭据')
 
     const targetAccount = findSystemAccountByUsername('huanmin')
@@ -632,7 +632,7 @@ async function runChild(): Promise<void> {
     assert(addedAccount, '账号新增应把账号绑定到福利分组')
     assert.equal(addedAccount.boundGroupId, welfareGroup.id)
     assert.equal(addedAccount.openAIResponsesUpstreamMode, 'chat_completions_bridge', '公开账号新增应持久化 Responses 上游桥接模式')
-    assert.equal(addedAccount.availabilitySchedule?.enabled, true, '公开账号新增应持久化可用时段计划')
+    assert.equal(addedAccount.availabilitySchedule?.enabled, true, '公开账号新增应持久化时间计划')
     const addLogs = listOperationLogs({
       module: 'external_integrations',
       action: 'account_add',
@@ -718,7 +718,7 @@ async function runChild(): Promise<void> {
     assert.equal(accountUpdate.body.data.account.id, accountAdd.body.data.account.id)
     assert.equal(accountUpdate.body.data.account.status, 'disabled')
     assert.equal(accountUpdate.body.data.account.openAIResponsesUpstreamMode, 'passthrough', '公开账号修改应支持覆盖 Responses 上游模式')
-    assert.equal(accountUpdate.body.data.account.availabilitySchedule?.enabled, true, '公开账号修改未提交计划时不应清空既有可用时段计划')
+    assert.equal(accountUpdate.body.data.account.availabilitySchedule?.enabled, true, '公开账号修改未提交计划时不应清空既有时间计划')
 
     const accountRename = await requestJson(baseUrl, '/__aipublic__/account/update', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -933,7 +933,7 @@ async function runChild(): Promise<void> {
     assert.equal(publicApiKeyAdd.status, 201)
     assert.equal(publicApiKeyAdd.body.data.action, 'created')
     assert.equal(typeof publicApiKeyAdd.body.data.apiKey.key, 'string', 'API Key 新增响应应只在创建时返回明文密钥')
-    assert.equal(publicApiKeyAdd.body.data.apiKey.availabilitySchedule?.enabled, true, '公开 API Key 新增应写入并回显可用时段计划')
+    assert.equal(publicApiKeyAdd.body.data.apiKey.availabilitySchedule?.enabled, true, '公开 API Key 新增应写入并回显时间计划')
     const publicApiKeyId = publicApiKeyAdd.body.data.apiKey.id as string
 
     const publicApiKeyList = await requestJson(baseUrl, `/__aipublic__/api-key/list?targetUsername=public_control_user&groupId=${encodeURIComponent(publicGroupId)}`, {

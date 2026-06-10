@@ -403,7 +403,7 @@ async function main(): Promise<void> {
     assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountStatus === 'active', '授权实例详情应返回来源账户状态')
     assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountSchedulable === true, '授权实例详情应返回来源账户调度开关')
     assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountExpiresAt === '2027-12-31T00:00:00.000Z', '授权实例详情应返回来源账户到期时间')
-    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountAvailabilitySchedule?.enabled === true, '授权实例详情应返回来源账户可用时段计划')
+    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountAvailabilitySchedule?.enabled === true, '授权实例详情应返回来源账户时间计划')
     const authorizedDetailCredentials = userAAuthorizedAccountDetail.credentials ?? {}
     const authorizedDetailSecretJson = JSON.stringify(authorizedDetailCredentials)
     for (const secretKey of ['api_key', 'access_token', 'refresh_token', 'id_token']) {

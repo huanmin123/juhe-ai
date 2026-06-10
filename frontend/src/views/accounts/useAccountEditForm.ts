@@ -8,6 +8,7 @@ import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import type {
   AccountSummary,
+  AccountTagSummary,
   AccountType,
   GroupOptionSummary,
   OpenAIAuthURLResult,
@@ -91,6 +92,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const providerModelOptions = ref<SelectOption[]>([])
   const mappingTargetModelOptions = ref<SelectOption[]>([])
   const providerModelsLoading = ref(false)
+  const accountTagOptions = ref<AccountTagSummary[]>([])
+  const accountTagOptionsLoading = ref(false)
+  const deletingAccountTagId = ref<string>()
   const providerModelOptionsCache = new Map<string, SelectOption[]>()
   const mappingTargetModelOptionsCache = new Map<string, SelectOption[]>()
   let formOpenRequestToken = 0
@@ -213,6 +217,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       providerCode: form.providerCode,
       systemAccountId: options.accountScopeParams.value?.systemAccountId
     })
+    void loadAccountTagOptions(options.accountScopeParams.value, true)
     void loadProviderModelOptions(form.providerCode)
     modalOpen.value = true
   }
@@ -253,6 +258,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       openAIResponsesUpstreamMode: type === 'oauth' ? 'passthrough' : form.openAIResponsesUpstreamMode,
       supportedModels: form.supportedModels,
       modelMappings: form.modelMappings,
+      tags: form.tags,
       concurrencyLimit: form.concurrencyLimit,
       priority: form.priority,
       accountExpiresAt: form.accountExpiresAt,
@@ -311,6 +317,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       refreshToken: asString(sourceAccount.credentials.refresh_token) ?? '',
       supportedModels: [...(sourceAccount.supportedModels ?? [])],
       modelMappings: cloneAccountModelMappings(sourceAccount.modelMappings),
+      tags: accountTagNames(sourceAccount.tags),
       availabilitySchedule,
       notes: sourceAccount.notes ?? ''
     })
@@ -325,6 +332,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       systemAccountId: editScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
     })
+    void loadAccountTagOptions(editScopeParams, true)
     void loadProviderModelOptions(sourceAccount.providerCode)
   }
 
@@ -350,6 +358,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       systemAccountId: cloneScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
     })
+    void loadAccountTagOptions(cloneScopeParams, true)
     void loadProviderModelOptions(sourceAccount.providerCode)
   }
 
@@ -526,6 +535,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
           await api.myAccounts.updateAuthorizedDispatch(account.id, { priority: nextPriority })
         }
       }
+      if (!sameTagNames(form.tags, account.tags)) {
+        const payload = { tags: normalizeFormTagNames(form.tags) }
+        if (options.isManagementView.value) {
+          await api.accounts.updateTags(account.id, payload, scopeParams)
+        } else {
+          await api.myAccounts.updateTags(account.id, payload)
+        }
+      }
       message.success('授权账户已更新')
       modalOpen.value = false
       await options.loadData()
@@ -575,6 +592,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   return {
     accountErrorPolicyRules,
     accountStreamInterceptRules,
+    accountTagOptions,
+    accountTagOptionsLoading,
     accountTypeChoices,
     authLoading,
     authResult,
@@ -587,6 +606,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     ensureDefaultGroupSelected,
     form,
     generateOAuthUrl,
+    deleteAccountTag,
+    deletingAccountTagId,
     groupOptions,
     handleModalCancel,
     hasAccountType,
@@ -701,6 +722,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       oauthMode: 'manual',
       supportedModels: [...(account.supportedModels ?? [])],
       modelMappings: cloneAccountModelMappings(account.modelMappings),
+      tags: accountTagNames(account.tags),
       availabilitySchedule,
       notes: account.notes ?? ''
     })
@@ -718,6 +740,74 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function cloneAccountModelMappings(value: AccountSummary['modelMappings']): AccountFormModel['modelMappings'] {
     return (value ?? []).map((item) => ({ ...item }))
+  }
+
+  function accountTagNames(value: AccountSummary['tags']): string[] {
+    return (value ?? []).map((tag) => tag.name).filter(Boolean)
+  }
+
+  async function loadAccountTagOptions(scopeParams: AccountScopeParams | undefined, force = false): Promise<void> {
+    if (accountTagOptionsLoading.value && !force) return
+    accountTagOptionsLoading.value = true
+    try {
+      accountTagOptions.value = options.isManagementView.value
+        ? await api.accounts.tags(scopeParams)
+        : await api.myAccounts.tags()
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '加载账户标签失败'))
+    } finally {
+      accountTagOptionsLoading.value = false
+    }
+  }
+
+  async function deleteAccountTag(tagId: string): Promise<void> {
+    const tag = accountTagOptions.value.find((item) => item.id === tagId)
+    if (!tag) return
+    if ((tag.accountCount ?? 0) > 0) {
+      message.warning('标签已绑定账户，不能删除')
+      return
+    }
+    deletingAccountTagId.value = tagId
+    try {
+      const scopeParams = accountTagOperationScopeParams()
+      if (options.isManagementView.value) {
+        await api.accounts.deleteTag(tagId, scopeParams)
+      } else {
+        await api.myAccounts.deleteTag(tagId)
+      }
+      form.tags = form.tags.filter((name) => name.trim().toLocaleLowerCase() !== tag.name.toLocaleLowerCase())
+      accountTagOptions.value = accountTagOptions.value.filter((item) => item.id !== tagId)
+      message.success('标签已删除')
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '删除标签失败'))
+      await loadAccountTagOptions(accountTagOperationScopeParams(), true)
+    } finally {
+      deletingAccountTagId.value = undefined
+    }
+  }
+
+  function sameTagNames(left: string[], right: AccountSummary['tags']): boolean {
+    return stableTagKey(normalizeFormTagNames(left)) === stableTagKey(accountTagNames(right))
+  }
+
+  function normalizeFormTagNames(value: string[]): string[] {
+    const output: string[] = []
+    const seen = new Set<string>()
+    for (const item of value ?? []) {
+      const name = item.replace(/\s+/g, ' ').trim()
+      if (!name) continue
+      const key = name.toLocaleLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      output.push(name)
+    }
+    return output
+  }
+
+  function stableTagKey(value: string[]): string {
+    return normalizeFormTagNames(value).map((item) => item.toLocaleLowerCase()).sort().join('\n')
   }
 
   function setFormGroup(group: GroupSelection | undefined): void {
@@ -740,6 +830,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!editingId.value) return options.accountScopeParams.value
     const account = editingAccountDetail.value ?? options.accounts.value.find((item) => item.id === editingId.value)
     return account ? accountOperationScopeParams(account, options.accountScopeParams.value) : options.accountScopeParams.value
+  }
+
+  function accountTagOperationScopeParams(): AccountScopeParams {
+    return editingId.value ? editingAccountScopeParams() : createScopeParams.value
   }
 
   function accountCreatePayloadWithActivationTest(payload: AccountSavePayload): AccountSavePayload & { status?: 'active'; activationTestTaskId?: string } {

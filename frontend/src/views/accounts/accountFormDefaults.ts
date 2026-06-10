@@ -38,6 +38,7 @@ export function defaultAccountForm(
     openAIResponsesUpstreamMode: 'passthrough',
     supportedModels: [],
     modelMappings: [],
+    tags: [],
     proxyProfileId: undefined,
     availabilitySchedule: createAccountAvailabilityScheduleForm(),
     notes: ''

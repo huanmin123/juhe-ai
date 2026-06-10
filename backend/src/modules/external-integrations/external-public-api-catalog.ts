@@ -652,10 +652,10 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'description', type: 'string|null', required: false, description: 'API Key 说明；传 null 表示清空说明。', example: '公益站后端访问' },
             { name: 'groupBindings', type: 'array', required: true, description: 'API Key 分组绑定数组，1 到 20 项；每项包含 groupId，可选 priority、weight 和 status。', example: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }] },
             { name: 'groupRouteStrategy', type: 'string', required: false, description: '分组路由策略：priority_failover、round_robin 或 weighted_round_robin，默认 priority_failover。', example: 'priority_failover' },
-            { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled，默认 active；同时提交强制启停计划时仍按该状态落库，后续只在计划边界覆盖。', example: 'active' },
+            { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled，默认 active；同时提交时间计划时仍按该状态落库，后续只在计划边界覆盖。', example: 'active' },
             { name: 'expiresAt', type: 'string', required: false, description: 'API Key 到期时间，ISO 8601 字符串；未填写表示不过期。', example: '2026-12-31T23:59:59.000Z' },
             { name: 'quotaLimits', type: 'object|null', required: false, description: '请求成本额度限制；支持 hourly、daily、weekly、monthly、total，传 null 表示清空。', example: { daily: { enabled: true, limit: 10 } } },
-            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '强制启停计划；null 表示清空计划，未填写表示不设置计划；计划启用后只在窗口开始分钟强制启用一次、窗口结束分钟强制停用一次。' }
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '时间计划；null 表示清空计划，未填写表示不设置计划；计划启用后只在窗口开始分钟启用一次、窗口结束分钟停用一次。' }
           ],
           example: {
             targetUsername: 'huanmin',
@@ -697,7 +697,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
       {
         id: 'api-key-update',
         name: 'API Key 修改',
-        summary: '修改指定 API Key 的名称、状态、分组绑定、额度或强制启停计划。',
+        summary: '修改指定 API Key 的名称、状态、分组绑定、额度或时间计划。',
         status: 'mock',
         method: 'POST',
         path: '/__aipublic__/api-key/update',
@@ -715,7 +715,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'groupRouteStrategy', type: 'string', required: false, description: '分组路由策略：priority_failover、round_robin 或 weighted_round_robin。', example: 'round_robin' },
             { name: 'expiresAt', type: 'string|null', required: false, description: '新的到期时间；传 null 表示清空到期时间。', example: null },
             { name: 'quotaLimits', type: 'object|null', required: false, description: '新的请求成本额度限制；传 null 表示清空。', example: null },
-            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '强制启停计划；null 表示清空计划，未填写表示保留；计划启用后只在窗口开始分钟强制启用一次、窗口结束分钟强制停用一次。' }
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '时间计划；null 表示清空计划，未填写表示保留；计划启用后只在窗口开始分钟启用一次、窗口结束分钟停用一次。' }
           ],
           example: {
             apiKeyId: 'key_xxx',
@@ -881,7 +881,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               name: 'availabilitySchedule',
               type: 'object|null',
               required: false,
-              description: '可用时段计划；null 表示清空计划，未填写表示不限制。'
+              description: '时间计划；null 表示清空计划，未填写表示不限制。'
             },
             {
               name: 'notes',
@@ -969,7 +969,7 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'concurrencyLimit', type: 'number', required: false, description: '单账号并发限制，范围 1 到 100000。', example: 20 },
             { name: 'priority', type: 'number', required: false, description: '账号调度优先级，范围 0 到 100000。', example: 0 },
             { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled；未填写时保留原状态，待测试账号不能通过修改接口激活。', example: 'disabled' },
-            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '可用时段计划；null 表示清空计划，未填写表示保留。' },
+            { name: 'availabilitySchedule', type: 'object|null', required: false, description: '时间计划；null 表示清空计划，未填写表示保留。' },
             { name: 'notes', type: 'string', required: false, description: '账号备注，最多 1000 个字符。' }
           ],
           example: {
@@ -1386,8 +1386,8 @@ function publicApiKeyFields(prefix: string): ExternalPublicApiField[] {
     apiDocField(`${prefix}.groupBindings[].status`, 'string', false, '绑定状态：active 或 disabled。', 'active'),
     apiDocField(`${prefix}.groupBindings[].groupEnabled`, 'boolean', false, '绑定分组当前是否启用。', true),
     apiDocField(`${prefix}.expiresAt`, 'string', false, 'API Key 到期时间，ISO 8601 字符串；未设置时缺省。', '2026-12-31T23:59:59.000Z'),
-    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, 'API Key 强制启停计划；未设置时缺省。'),
-    apiDocField(`${prefix}.availabilityScheduleActive`, 'boolean', false, 'API Key 强制启停计划当前是否命中允许时段；真实可用性仍以 status 为准，未设置计划时缺省。', true)
+    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, 'API Key 时间计划；未设置时缺省。'),
+    apiDocField(`${prefix}.availabilityScheduleActive`, 'boolean', false, 'API Key 时间计划当前是否命中允许时段；真实可用性仍以 status 为准，未设置计划时缺省。', true)
   ]
 }
 
@@ -1402,6 +1402,6 @@ function publicAccountFields(prefix: string): ExternalPublicApiField[] {
     apiDocField(`${prefix}.boundGroupId`, 'string', false, '账号绑定分组 ID。', 'grp_xxx'),
     apiDocField(`${prefix}.boundGroupName`, 'string', false, '账号绑定分组名称。', '福利'),
     apiDocField(`${prefix}.schedulable`, 'boolean', false, '账号当前是否可调度。', true),
-    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, '账号可用时段计划；未设置时缺省。')
+    apiDocField(`${prefix}.availabilitySchedule`, 'object', false, '账号时间计划；未设置时缺省。')
   ]
 }

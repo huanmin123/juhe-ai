@@ -11,7 +11,7 @@
   >
     <a-form layout="vertical" class="account-form">
       <a-alert v-if="cloning" class="form-alert" type="info" show-icon :message="cloneAlertMessage" />
-      <a-alert v-else-if="authorizedEditing" class="form-alert" type="info" show-icon message="授权账户的上游配置由授权方维护；你只能调整加入分组和分组内优先级。" />
+      <a-alert v-else-if="authorizedEditing" class="form-alert" type="info" show-icon message="授权账户的上游配置由授权方维护；你只能调整账户标签、加入分组和分组内优先级。" />
       <a-alert v-else-if="editing" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；有凭据权限的用户可查看和修改完整凭据。" />
       <a-alert v-else-if="targetSystemAccountLabel" class="form-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
 
@@ -33,7 +33,11 @@
         :form="form"
         :group-options="groupOptions"
         :group-options-loading="groupOptionsLoading"
+        :tag-options="tagOptions"
+        :tag-options-loading="tagOptionsLoading"
+        :deleting-tag-id="deletingTagId"
         :authorized-editing="authorizedEditing"
+        @delete-tag="$emit('delete-tag', $event)"
         @group-options-dropdown="$emit('group-options-dropdown', $event)"
         @group-options-search="$emit('group-options-search', $event)"
       />
@@ -150,7 +154,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountSummary, AccountType, OpenAIAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountSummary, AccountTagSummary, AccountType, OpenAIAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -197,6 +201,9 @@ const props = withDefaults(defineProps<{
   form: AccountFormModel
   groupOptions: SelectOption[]
   groupOptionsLoading: boolean
+  tagOptions: AccountTagSummary[]
+  tagOptionsLoading: boolean
+  deletingTagId?: string
   hasAccountType: boolean
   isApiKeyForm: boolean
   isManagementView: boolean
@@ -288,6 +295,7 @@ function formatCredentialDate(value: unknown): string | undefined {
 defineEmits<{
   (event: 'cancel'): void
   (event: 'copy-auth-url', value: string): void
+  (event: 'delete-tag', tagId: string): void
   (event: 'generate-auth-url'): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void

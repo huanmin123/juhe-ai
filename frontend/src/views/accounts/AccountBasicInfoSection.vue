@@ -27,6 +27,15 @@
           />
         </div>
       </a-form-item>
+      <a-form-item class="tag-form-item" label="账户标签">
+        <AccountTagSelect
+          v-model:value="form.tags"
+          :deleting-tag-id="deletingTagId"
+          :loading="tagOptionsLoading"
+          :options="tagOptions"
+          @delete="$emit('delete-tag', $event)"
+        />
+      </a-form-item>
     </div>
   </section>
 </template>
@@ -34,6 +43,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import GroupSelect from '@/components/GroupSelect.vue'
+import type { AccountTagSummary } from '@/types/domain'
+import AccountTagSelect from './AccountTagSelect.vue'
 import type { AccountFormModel } from './accountFormTypes'
 
 const props = defineProps<{
@@ -42,9 +53,13 @@ const props = defineProps<{
   form: AccountFormModel
   groupOptionsLoading: boolean
   groupOptions: Array<{ label: string; value: string }>
+  tagOptionsLoading: boolean
+  tagOptions: AccountTagSummary[]
+  deletingTagId?: string
 }>()
 
 const emit = defineEmits<{
+  (event: 'delete-tag', tagId: string): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void
 }>()
@@ -109,6 +124,10 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
   margin-top: 4px;
   color: #64748b;
   font-size: 12px;
+}
+
+.tag-form-item {
+  grid-column: 1 / -1;
 }
 
 @media (max-width: 992px) {

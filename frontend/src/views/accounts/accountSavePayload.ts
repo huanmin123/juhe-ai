@@ -25,6 +25,7 @@ export type AccountSavePayload = {
   openAIResponsesUpstreamMode: AccountFormModel['openAIResponsesUpstreamMode']
   supportedModels: string[]
   modelMappings: AccountFormModel['modelMappings']
+  tags: string[]
   proxyProfileId?: string | null
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
@@ -42,6 +43,7 @@ export type AccountOAuthCreateCommonPayload = {
   priority: number
   supportedModels: string[]
   modelMappings: AccountFormModel['modelMappings']
+  tags: string[]
   proxyProfileId?: string
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
@@ -68,6 +70,8 @@ export function validateAccountSaveForm(input: {
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
+  const tagValidation = validateAccountTags(form.tags)
+  if (tagValidation) return tagValidation
   const scheduleValidation = validateAccountAvailabilityScheduleForm(form.availabilitySchedule)
   if (scheduleValidation) return scheduleValidation
   const accountErrorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
@@ -97,6 +101,7 @@ export function buildAccountSavePayload(input: {
     openAIResponsesUpstreamMode: input.form.type === 'oauth' ? 'passthrough' : input.form.openAIResponsesUpstreamMode,
     supportedModels: [...(input.form.supportedModels ?? [])],
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
+    tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
@@ -115,6 +120,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     openAIResponsesUpstreamMode: payload.openAIResponsesUpstreamMode,
     supportedModels: payload.supportedModels,
     modelMappings: payload.modelMappings,
+    tags: payload.tags,
     proxyProfileId: payload.proxyProfileId,
     accountExpiresAt: payload.accountExpiresAt,
     availabilitySchedule: payload.availabilitySchedule,
@@ -139,6 +145,7 @@ export function buildOAuthCreateCommonPayload(input: {
     priority: input.form.priority,
     supportedModels: [...(input.form.supportedModels ?? [])],
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
+    tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
@@ -172,6 +179,27 @@ function accountCredentials(input: {
     streamInterceptRules: input.streamInterceptRules,
     form: input.form
   })
+}
+
+function normalizeAccountTags(value: AccountFormModel['tags']): string[] {
+  const output: string[] = []
+  const seen = new Set<string>()
+  for (const item of value ?? []) {
+    const name = item.replace(/\s+/g, ' ').trim()
+    if (!name) continue
+    const key = name.toLocaleLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    output.push(name)
+  }
+  return output
+}
+
+function validateAccountTags(value: AccountFormModel['tags']): string | undefined {
+  const normalized = normalizeAccountTags(value)
+  if (normalized.length > 24) return '单个账户最多配置 24 个标签'
+  if (normalized.some((item) => item.length > 40)) return '账户标签不能超过 40 个字符'
+  return undefined
 }
 
 function normalizeAccountModelMappings(value: AccountFormModel['modelMappings']): AccountFormModel['modelMappings'] {

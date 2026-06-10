@@ -174,7 +174,7 @@
               <strong>{{ formatDateTime(record.expiresAt) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>强制启停计划</span>
+              <span>时间计划</span>
               <strong>{{ apiKeyScheduleSummary(record.availabilitySchedule, record.availabilityScheduleActive) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
@@ -295,41 +295,13 @@
         </a-form-item>
         <a-form-item class="api-key-schedule-form-item">
           <div class="api-key-schedule-field">
-            <div class="schedule-toggle-row">
-              <span class="schedule-toggle-label">强制启停计划</span>
-              <a-switch v-model:checked="form.availabilitySchedule.enabled" />
-            </div>
-            <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
-              <a-alert
-                class="schedule-help"
-                type="info"
-                show-icon
-                message="计划开启后，只在开始时间强制启用一次，在结束时间强制关闭一次；边界之后的手动启停不会被持续覆盖。"
-              />
-              <div class="schedule-window-list">
-                <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
-                  <a-select
-                    v-model:value="window.daysOfWeek"
-                    mode="multiple"
-                    class="schedule-days-select"
-                    max-tag-count="responsive"
-                    :options="weekdayOptions"
-                    placeholder="重复日期"
-                  />
-                  <a-time-picker v-model:value="window.start" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="开始" />
-                  <a-time-picker v-model:value="window.end" format="HH:mm" value-format="HH:mm" class="schedule-time-picker" placeholder="结束" />
-                  <a-tooltip title="移除">
-                    <a-button type="text" size="small" danger :disabled="form.availabilitySchedule.windows.length <= 1" @click="removeScheduleWindow(index)">
-                      <template #icon><delete-outlined /></template>
-                    </a-button>
-                  </a-tooltip>
-                </div>
-                <a-button type="dashed" block @click="addScheduleWindow">
-                  <template #icon><plus-outlined /></template>
-                  添加时段
-                </a-button>
-              </div>
-            </div>
+            <TimeScheduleSection
+              :form="form"
+              :bordered="false"
+              label="时间计划"
+              row-key-prefix="api_key_schedule_window"
+              help-message="时间计划开启后，只在开始时间启用一次，在结束时间关闭一次；边界之后的手动启停不会被持续覆盖。"
+            />
           </div>
         </a-form-item>
         <a-form-item label="过期时间">
@@ -395,8 +367,17 @@ import {
 import type { AccountUsageSummary, ApiKeyAvailabilitySchedule, ApiKeyGroupBindingSummary, ApiKeyGroupRouteStrategy, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
+import TimeScheduleSection from '@/views/shared/TimeScheduleSection.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
+import {
+  buildTimeSchedulePayload,
+  createTimeScheduleForm,
+  timeScheduleSummary,
+  timeScheduleTagColor,
+  validateTimeScheduleForm,
+  type TimeScheduleForm
+} from '@/views/shared/timeSchedule'
 
 const modalOpen = ref(false)
 const createdKeyOpen = ref(false)
@@ -428,20 +409,7 @@ interface ApiKeyGroupBindingFormRow {
   weight: number
   status: ApiKeyGroupBindingFormStatus
 }
-interface ApiKeyScheduleWindowFormRow {
-  key: string
-  daysOfWeek: number[]
-  start?: string
-  end?: string
-}
-interface ApiKeyAvailabilityScheduleForm {
-  enabled: boolean
-  timezone: string
-  windows: ApiKeyScheduleWindowFormRow[]
-  dateRange?: ApiKeyAvailabilitySchedule['dateRange']
-  exceptions?: ApiKeyAvailabilitySchedule['exceptions']
-}
-type ApiKeyAvailabilitySchedulePayload = ApiKeyAvailabilitySchedule
+type ApiKeyAvailabilityScheduleForm = TimeScheduleForm<ApiKeyAvailabilitySchedule>
 type ApiKeyScopeParams = { systemAccountId: string } | undefined
 interface ApiKeyGroupOptionsScope {
   systemAccountId?: string
@@ -472,7 +440,8 @@ const apiKeyOptionsLoaded = ref(false)
 const apiKeyOptionsScopeKey = ref('')
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
-let scheduleWindowFormKeySeed = 0
+const apiKeyScheduleLabel = 'API Key 时间计划'
+const apiKeyScheduleWindowKeyPrefix = 'api_key_schedule_window'
 const form = reactive({
   name: '',
   groupRouteStrategy: 'priority_failover' as ApiKeyGroupRouteStrategy,
@@ -481,7 +450,7 @@ const form = reactive({
   expiresAt: undefined as Dayjs | undefined,
   description: '',
   quotaLimits: createQuotaLimitForm(),
-  availabilitySchedule: createAvailabilityScheduleForm()
+  availabilitySchedule: createApiKeyTimeScheduleForm()
 })
 let groupBindingFormKeySeed = 0
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -557,7 +526,7 @@ const rawColumns = computed(() => {
   baseColumns.push(
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '运行状态', key: 'status', width: 120 },
-    { title: '强制启停计划', key: 'availabilitySchedule', width: 260 },
+    { title: '时间计划', key: 'availabilitySchedule', width: 260 },
     { title: '累计用量', key: 'usage', width: 180 },
     { title: '美元额度', key: 'quotaLimits', width: 220 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
@@ -593,15 +562,6 @@ const groupRouteStrategyOptions = [
   { label: '主备优先', value: 'priority_failover' },
   { label: '轮询分配', value: 'round_robin' },
   { label: '权重分配', value: 'weighted_round_robin' }
-]
-const weekdayOptions = [
-  { label: '周一', value: 1 },
-  { label: '周二', value: 2 },
-  { label: '周三', value: 3 },
-  { label: '周四', value: 4 },
-  { label: '周五', value: 5 },
-  { label: '周六', value: 6 },
-  { label: '周日', value: 7 }
 ]
 
 const filteredApiKeys = computed(() => apiKeys.value)
@@ -703,42 +663,19 @@ function apiKeyStatusTagColor(apiKey: ApiKeySummary): string {
 }
 
 function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule, active?: boolean): string {
-  if (!schedule?.enabled || !schedule.windows.length) return '未设置'
-  try {
-    assertApiKeyAvailabilitySchedule(schedule)
-  } catch {
-    return '计划数据异常'
-  }
-  const windows = schedule.windows
-    .slice(0, 2)
-    .map((window) => `${daysOfWeekText(window.daysOfWeek)} ${scheduleWindowText(window.start, window.end)}`)
-  const suffix = schedule.windows.length > 2 ? ` 等 ${schedule.windows.length} 段` : ''
-  const state = active === true ? '计划窗口内' : '等待窗口开启'
-  return `${state}：${windows.join(' / ')}${suffix}`
+  return timeScheduleSummary(schedule, {
+    active,
+    label: apiKeyScheduleLabel,
+    showActiveState: true
+  })
 }
 
 function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
-  if (!apiKey.availabilitySchedule?.enabled) return 'default'
-  try {
-    assertApiKeyAvailabilitySchedule(apiKey.availabilitySchedule)
-    if (apiKey.availabilityScheduleActive === true) return 'green'
-    return 'blue'
-  } catch {
-    return 'red'
-  }
-}
-
-function scheduleWindowText(start: string, end: string): string {
-  return start > end ? `${start}-次日 ${end}` : `${start}-${end}`
-}
-
-function daysOfWeekText(days: number[]): string {
-  const normalized = [...new Set(days)].sort((left, right) => left - right).join(',')
-  if (normalized === '1,2,3,4,5,6,7') return '每天'
-  if (normalized === '1,2,3,4,5') return '工作日'
-  if (normalized === '6,7') return '周末'
-  const labels = new Map(weekdayOptions.map((item) => [item.value, item.label]))
-  return [...new Set(days)].sort((left, right) => left - right).map((day) => labels.get(day) ?? `周${day}`).join('、')
+  return timeScheduleTagColor(apiKey.availabilitySchedule, {
+    active: apiKey.availabilityScheduleActive,
+    label: apiKeyScheduleLabel,
+    showActiveState: true
+  })
 }
 
 function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>) {
@@ -1161,7 +1098,7 @@ async function openCreate() {
     expiresAt: undefined,
     description: '',
     quotaLimits: createQuotaLimitForm(),
-    availabilitySchedule: createAvailabilityScheduleForm()
+    availabilitySchedule: createApiKeyTimeScheduleForm()
   })
   modalOpen.value = true
 }
@@ -1183,7 +1120,7 @@ async function openEdit(apiKey: ApiKeySummary) {
     })
     quotaLimits = createQuotaLimitForm(apiKey.quotaLimits)
     expiresAt = parseStrictDatePickerValue(apiKey.expiresAt, 'API Key 过期时间')
-    availabilitySchedule = createAvailabilityScheduleForm(apiKey.availabilitySchedule)
+    availabilitySchedule = createApiKeyTimeScheduleForm(apiKey.availabilitySchedule)
   } catch (error) {
     message.error(extractApiErrorMessage(error, 'API Key 数据结构异常，请清理后再编辑'))
     return
@@ -1267,122 +1204,11 @@ function createExistingGroupBindingFormRow(binding: ApiKeyGroupBindingSummary): 
   }
 }
 
-function createAvailabilityScheduleForm(schedule?: ApiKeyAvailabilitySchedule): ApiKeyAvailabilityScheduleForm {
-  if (!schedule) {
-    return {
-      enabled: false,
-      timezone: defaultScheduleTimezone(),
-      windows: [createScheduleWindowFormRow()]
-    }
-  }
-  assertApiKeyAvailabilitySchedule(schedule)
-  return {
-    enabled: true,
-    timezone: schedule.timezone,
-    windows: schedule.windows.map((window) => createScheduleWindowFormRow(window.daysOfWeek, window.start, window.end)),
-    dateRange: cloneScheduleDateRange(schedule.dateRange),
-    exceptions: cloneScheduleExceptions(schedule.exceptions)
-  }
-}
-
-function createScheduleWindowFormRow(daysOfWeek = [1, 2, 3, 4, 5, 6, 7], start = '22:00', end = '23:55'): ApiKeyScheduleWindowFormRow {
-  return {
-    key: `schedule_window_${Date.now()}_${scheduleWindowFormKeySeed += 1}`,
-    daysOfWeek: [...daysOfWeek],
-    start,
-    end
-  }
-}
-
-function defaultScheduleTimezone(): string {
-  if (typeof Intl === 'undefined') return 'Asia/Shanghai'
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
-}
-
-function assertApiKeyAvailabilitySchedule(schedule: ApiKeyAvailabilitySchedule): void {
-  assertObjectKeys(schedule, ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'], 'API Key 强制启停计划')
-  if (schedule.enabled !== true) throw new Error('API Key 强制启停计划启用状态异常，请清理后再编辑')
-  if (schedule.mode !== 'allow_windows') throw new Error('API Key 强制启停计划模式异常，请清理后再编辑')
-  if (typeof schedule.timezone !== 'string' || !schedule.timezone.trim()) throw new Error('API Key 强制启停计划时区异常，请清理后再编辑')
-  assertScheduleTimezone(schedule.timezone, 'API Key 强制启停计划时区')
-  if (!Array.isArray(schedule.windows) || schedule.windows.length === 0) throw new Error('API Key 强制启停计划时段异常，请清理后再编辑')
-  for (const window of schedule.windows) {
-    assertObjectKeys(window, ['daysOfWeek', 'start', 'end'], 'API Key 强制启停计划时段')
-    assertScheduleDays(window.daysOfWeek, 'API Key 强制启停计划重复日期')
-    assertScheduleTime(window.start, 'API Key 强制启停计划开始时间')
-    assertScheduleTime(window.end, 'API Key 强制启停计划结束时间')
-    if (window.start === window.end) throw new Error('API Key 强制启停计划开始时间和结束时间不能相同')
-  }
-  if (schedule.dateRange) {
-    assertScheduleDateRange(schedule.dateRange)
-  }
-  if (schedule.exceptions !== undefined) {
-    if (!Array.isArray(schedule.exceptions)) throw new Error('API Key 强制启停计划例外日期异常，请清理后再编辑')
-    for (const exception of schedule.exceptions) {
-      assertObjectKeys(exception, ['date', 'action', 'windows'], 'API Key 强制启停计划例外日期')
-      assertScheduleDate(exception.date, 'API Key 强制启停计划例外日期')
-      if (exception.action === 'allow') {
-        if (!Array.isArray(exception.windows) || exception.windows.length === 0) throw new Error('API Key 强制启停计划允许例外时段异常，请清理后再编辑')
-        for (const window of exception.windows) {
-          assertObjectKeys(window, ['start', 'end'], 'API Key 强制启停计划例外时段')
-          assertScheduleTime(window.start, 'API Key 强制启停计划例外开始时间')
-          assertScheduleTime(window.end, 'API Key 强制启停计划例外结束时间')
-          if (window.start === window.end) throw new Error('API Key 强制启停计划例外开始时间和结束时间不能相同')
-        }
-      } else if (exception.action === 'deny') {
-        if ('windows' in exception) throw new Error('API Key 强制启停计划拒绝例外不能带允许时段')
-      } else {
-        throw new Error('API Key 强制启停计划例外动作异常，请清理后再编辑')
-      }
-    }
-  }
-}
-
-function assertScheduleDateRange(dateRange: NonNullable<ApiKeyAvailabilitySchedule['dateRange']>): void {
-  assertObjectKeys(dateRange, ['startDate', 'endDate'], 'API Key 强制启停计划日期范围')
-  if (dateRange.startDate !== undefined) assertScheduleDate(dateRange.startDate, 'API Key 强制启停计划开始日期')
-  if (dateRange.endDate !== undefined) assertScheduleDate(dateRange.endDate, 'API Key 强制启停计划结束日期')
-  if (dateRange.startDate && dateRange.endDate && dateRange.startDate > dateRange.endDate) {
-    throw new Error('API Key 强制启停计划开始日期不能晚于结束日期')
-  }
-}
-
-function assertScheduleDays(days: unknown, label: string): void {
-  if (!Array.isArray(days) || hasInvalidScheduleDays(days as number[])) throw new Error(`${label}异常，请清理后再编辑`)
-}
-
-function assertScheduleTime(value: unknown, label: string): void {
-  if (typeof value !== 'string' || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(value)) throw new Error(`${label}异常，请清理后再编辑`)
-}
-
-function assertScheduleDate(value: unknown, label: string): void {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`${label}异常，请清理后再编辑`)
-  const parsed = new Date(`${value}T00:00:00.000Z`)
-  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) throw new Error(`${label}无效，请清理后再编辑`)
-}
-
-function assertScheduleTimezone(value: string, label: string): void {
-  try {
-    new Intl.DateTimeFormat('en-CA', { timeZone: value }).format(new Date(0))
-  } catch {
-    throw new Error(`${label}无效，请清理后再编辑`)
-  }
-}
-
-function assertObjectKeys(value: unknown, allowedKeys: string[], label: string): void {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}必须是对象`)
-  const allowed = new Set(allowedKeys)
-  const unknownKeys = Object.keys(value).filter((key) => !allowed.has(key))
-  if (unknownKeys.length) throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
-}
-
-function addScheduleWindow(): void {
-  form.availabilitySchedule.windows.push(createScheduleWindowFormRow())
-}
-
-function removeScheduleWindow(index: number): void {
-  if (form.availabilitySchedule.windows.length <= 1) return
-  form.availabilitySchedule.windows.splice(index, 1)
+function createApiKeyTimeScheduleForm(schedule?: ApiKeyAvailabilitySchedule): ApiKeyAvailabilityScheduleForm {
+  return createTimeScheduleForm<ApiKeyAvailabilitySchedule>(schedule, {
+    label: apiKeyScheduleLabel,
+    keyPrefix: apiKeyScheduleWindowKeyPrefix
+  })
 }
 
 function addGroupBinding() {
@@ -1639,40 +1465,13 @@ function quotaLimitsPayload(): ApiKeyQuotaLimits {
   return buildQuotaLimitsPayload(form.quotaLimits)
 }
 
-function availabilitySchedulePayload(): ApiKeyAvailabilitySchedulePayload | null | false {
-  if (!form.availabilitySchedule.enabled) {
-    return null
-  }
-  const windows = form.availabilitySchedule.windows.map((window) => ({
-    daysOfWeek: normalizedScheduleDays(window.daysOfWeek),
-    start: window.start,
-    end: window.end
-  }))
-  const invalidIndex = windows.findIndex((window) => hasInvalidScheduleDays(window.daysOfWeek) || !window.start || !window.end || window.start === window.end)
-  if (invalidIndex >= 0) {
-    message.warning(`请完整填写第 ${invalidIndex + 1} 个可用时段`)
+function availabilitySchedulePayload(): ApiKeyAvailabilitySchedule | null | false {
+  const scheduleValidation = validateTimeScheduleForm(form.availabilitySchedule)
+  if (scheduleValidation) {
+    message.warning(scheduleValidation)
     return false
   }
-  return {
-    enabled: true,
-    timezone: form.availabilitySchedule.timezone,
-    mode: 'allow_windows',
-    windows: windows.map((window) => ({
-      daysOfWeek: window.daysOfWeek,
-      start: window.start as string,
-      end: window.end as string
-    })),
-    ...(form.availabilitySchedule.dateRange ? { dateRange: cloneScheduleDateRange(form.availabilitySchedule.dateRange) } : {}),
-    ...(form.availabilitySchedule.exceptions?.length ? { exceptions: cloneScheduleExceptions(form.availabilitySchedule.exceptions) } : {})
-  }
-}
-
-function normalizedScheduleDays(days: number[]): number[] {
-  return [...new Set(days.map((day) => typeof day === 'number' ? day : Number.NaN))].sort((left, right) => left - right)
-}
-
-function hasInvalidScheduleDays(days: number[]): boolean {
-  return !days.length || days.some((day) => !Number.isInteger(day) || day < 1 || day > 7)
+  return buildTimeSchedulePayload<ApiKeyAvailabilitySchedule>(form.availabilitySchedule)
 }
 
 async function copyText(value: string) {
@@ -1698,31 +1497,6 @@ function inferGatewayBaseUrl() {
 function normalizeGatewayBaseUrl(value: string) {
   const trimmed = value.trim().replace(/\/+$/, '')
   return trimmed || inferGatewayBaseUrl()
-}
-
-function cloneScheduleDateRange(dateRange: ApiKeyAvailabilitySchedule['dateRange']): ApiKeyAvailabilitySchedule['dateRange'] {
-  return dateRange
-    ? {
-        ...(dateRange.startDate !== undefined ? { startDate: dateRange.startDate } : {}),
-        ...(dateRange.endDate !== undefined ? { endDate: dateRange.endDate } : {})
-      }
-    : undefined
-}
-
-function cloneScheduleExceptions(exceptions: ApiKeyAvailabilitySchedule['exceptions']): ApiKeyAvailabilitySchedule['exceptions'] {
-  return exceptions?.map((exception) => {
-    if (exception.action === 'allow') {
-      return {
-        date: exception.date,
-        action: 'allow',
-        windows: exception.windows.map((window) => ({ start: window.start, end: window.end }))
-      }
-    }
-    return {
-      date: exception.date,
-      action: 'deny'
-    }
-  })
 }
 
 async function removeApiKey(apiKey: ApiKeySummary) {
@@ -1938,41 +1712,9 @@ onMounted(loadData)
   gap: 2px;
 }
 
-.api-key-schedule-field,
-.schedule-config,
-.schedule-window-list {
+.api-key-schedule-field {
   display: grid;
   gap: 10px;
-}
-
-.schedule-toggle-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-}
-
-.schedule-toggle-label {
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.schedule-help {
-  font-size: 12px;
-}
-
-.schedule-window-row {
-  display: grid;
-  grid-template-columns: minmax(160px, 1fr) 112px 112px 32px;
-  gap: 8px;
-  align-items: start;
-}
-
-.schedule-days-select,
-.schedule-time-picker {
-  min-width: 0;
 }
 
 .schedule-tag {
@@ -2035,18 +1777,6 @@ onMounted(loadData)
     justify-content: flex-start;
   }
 
-  .schedule-window-row {
-    grid-template-columns: minmax(0, 1fr) minmax(96px, 1fr);
-  }
-
-  .schedule-days-select {
-    grid-column: 1 / -1;
-  }
-
-  .schedule-window-row > .ant-btn {
-    grid-column: 2;
-    justify-self: start;
-  }
 }
 
 </style>

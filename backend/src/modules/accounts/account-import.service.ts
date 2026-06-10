@@ -116,6 +116,7 @@ interface NormalizedImportAccount {
   openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
+  tags?: string[]
   accountExpiresAt?: string
   availabilitySchedule?: AccountAvailabilitySchedule
   notes?: string
@@ -202,6 +203,7 @@ const importAccountKeys = new Set([
   'openAIResponsesUpstreamMode',
   'supportedModels',
   'modelMappings',
+  'tags',
   'accountExpiresAt',
   'availabilitySchedule',
   'notes'
@@ -252,6 +254,7 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
       if (account.source.openAIResponsesUpstreamMode !== undefined) accountInput.openAIResponsesUpstreamMode = account.source.openAIResponsesUpstreamMode
       if (account.source.supportedModels !== undefined) accountInput.supportedModels = account.source.supportedModels
       if (account.source.modelMappings !== undefined) accountInput.modelMappings = account.source.modelMappings
+      if (account.source.tags !== undefined) accountInput.tags = account.source.tags
       if (account.source.accountExpiresAt !== undefined) accountInput.accountExpiresAt = account.source.accountExpiresAt
       if (account.source.availabilitySchedule !== undefined) accountInput.availabilitySchedule = account.source.availabilitySchedule
       if (account.source.notes !== undefined) accountInput.notes = account.source.notes
@@ -528,6 +531,7 @@ function planAccount(
   source.openAIResponsesUpstreamMode = optionalOpenAIResponsesUpstreamModeField(value, 'openAIResponsesUpstreamMode', '账户 openAIResponsesUpstreamMode', source.type, item.messages)
   source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
   source.modelMappings = optionalModelMappingsField(value, 'modelMappings', '账户 modelMappings', item.messages)
+  source.tags = optionalAccountTagsField(value, 'tags', '账户 tags', item.messages)
   source.accountExpiresAt = optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)
   const availabilityScheduleInput = importAvailabilityScheduleInput(value)
   source.availabilitySchedule = availabilityScheduleInput.present
@@ -1075,6 +1079,38 @@ function optionalStringArrayField(record: Record<string, unknown>, key: string, 
       return undefined
     }
     items.push(item.trim())
+  }
+  return items
+}
+
+function optionalAccountTagsField(record: Record<string, unknown>, key: string, label: string, messages: string[]): string[] | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (!Array.isArray(value)) {
+    messages.push(`${label}必须是字符串数组`)
+    return undefined
+  }
+  const items: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      messages.push(`${label}必须是字符串数组`)
+      return undefined
+    }
+    const tagName = item.replace(/\s+/g, ' ').trim()
+    if (!tagName) continue
+    if (tagName.length > 40) {
+      messages.push(`${label}单个标签不能超过 40 个字符`)
+      return undefined
+    }
+    const tagKey = tagName.toLocaleLowerCase()
+    if (seen.has(tagKey)) continue
+    seen.add(tagKey)
+    items.push(tagName)
+  }
+  if (items.length > 24) {
+    messages.push(`${label}单个账户最多配置 24 个标签`)
+    return undefined
   }
   return items
 }

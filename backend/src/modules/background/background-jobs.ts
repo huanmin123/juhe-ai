@@ -211,17 +211,17 @@ async function runApiKeyAvailabilityScheduleStatusSync(): Promise<void> {
         disabled: result.disabled,
         changedCount: result.changedIds.length,
         invalid: result.invalid
-      }, 'API Key 强制启停计划边界执行完成')
+      }, 'API Key 时间计划边界执行完成')
     }
     if (result.invalid > 0) {
       logger.warn({
         event: 'background_api_key_availability_schedule_status_sync_invalid',
         invalid: result.invalid,
         apiKeyIds: result.invalidIds.slice(0, 20)
-      }, 'API Key 强制启停计划存在无效配置，已跳过')
+      }, 'API Key 时间计划存在无效配置，已跳过')
     }
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_api_key_availability_schedule_status_sync_failed' }), 'API Key 强制启停计划边界执行失败')
+    logger.error(errorLogFields(error, { event: 'background_api_key_availability_schedule_status_sync_failed' }), 'API Key 时间计划边界执行失败')
     throw error
   }
 }

@@ -138,6 +138,9 @@
       :form="form"
       :group-options="groupOptions"
       :group-options-loading="groupOptionsLoading"
+      :tag-options="accountTagOptions"
+      :tag-options-loading="accountTagOptionsLoading"
+      :deleting-tag-id="deletingAccountTagId"
       :has-account-type="hasAccountType"
       :is-api-key-form="isApiKeyForm"
       :is-management-view="isManagementView"
@@ -157,6 +160,7 @@
       :target-system-account-label="targetSystemAccountLabel"
       @cancel="handleModalCancel"
       @copy-auth-url="copyText"
+      @delete-tag="deleteAccountTag"
       @generate-auth-url="generateOAuthUrl"
       @group-options-dropdown="handleGroupOptionsDropdown"
       @group-options-search="handleGroupOptionsSearch"
@@ -388,6 +392,8 @@ const {
 const {
   accountErrorPolicyRules,
   accountStreamInterceptRules,
+  accountTagOptions,
+  accountTagOptionsLoading,
   accountTypeChoices,
   authLoading,
   authResult,
@@ -400,6 +406,8 @@ const {
   ensureDefaultGroupSelected,
   form,
   generateOAuthUrl,
+  deleteAccountTag,
+  deletingAccountTagId,
   groupOptions,
   handleModalCancel,
   hasAccountType,

@@ -299,6 +299,26 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
 
+    CREATE TABLE IF NOT EXISTS account_tags (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS account_tag_bindings (
+      account_id TEXT NOT NULL,
+      tag_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, tag_id),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (tag_id) REFERENCES account_tags(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS account_test_tasks (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
@@ -603,6 +623,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tags_owner_name_unique_lower ON account_tags(system_account_id, lower(name));
+    CREATE INDEX IF NOT EXISTS idx_account_tags_owner_name_lookup ON account_tags(system_account_id, name COLLATE NOCASE, id);
+    CREATE INDEX IF NOT EXISTS idx_account_tag_bindings_owner_tag ON account_tag_bindings(system_account_id, tag_id, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_tag_bindings_tag ON account_tag_bindings(tag_id, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_request_updated ON account_test_tasks(request_system_account_id, updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_status_queued ON account_test_tasks(status, queued_at ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_finished_cleanup ON account_test_tasks(finished_at ASC, id ASC) WHERE finished_at IS NOT NULL;

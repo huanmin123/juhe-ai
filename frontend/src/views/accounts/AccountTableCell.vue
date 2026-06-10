@@ -34,6 +34,7 @@
     <a-tag :color="concurrencyAvailable ? 'blue' : 'default'">{{ concurrencyText }}</a-tag>
   </a-tooltip>
   <AccountUsageCell v-else-if="columnKey === 'usage'" :account="account" />
+  <AccountTagsCell v-else-if="columnKey === 'tags'" :account="account" />
   <span v-else-if="columnKey === 'priority'">{{ account.priority }}</span>
   <template v-else-if="columnKey === 'lastUsedAt'">
     {{ formatDateTime(accountLastUsedAt(account)) }}
@@ -73,6 +74,7 @@ import { computed } from 'vue'
 import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountRowActions from './AccountRowActions.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
+import AccountTagsCell from './AccountTagsCell.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import {

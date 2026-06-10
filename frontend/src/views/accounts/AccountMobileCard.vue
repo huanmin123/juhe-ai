@@ -54,6 +54,13 @@
         <span>用量(日)</span>
         <AccountUsageCell :account="account" />
       </div>
+      <div class="account-mobile-meta-item account-mobile-meta-wide">
+        <span>标签</span>
+        <div v-if="account.tags?.length" class="account-mobile-account-tags">
+          <a-tag v-for="tag in account.tags" :key="tag.id || tag.name" color="blue">{{ tag.name }}</a-tag>
+        </div>
+        <strong v-else>-</strong>
+      </div>
       <div class="account-mobile-meta-item">
         <span>最近使用</span>
         <strong>{{ formatDateTime(accountLastUsedAt(account)) }}</strong>
@@ -292,6 +299,20 @@ function handleActionClick(key: string) {
 
 .account-mobile-tags :deep(.ant-tag) {
   margin-inline-end: 0;
+}
+
+.account-mobile-account-tags {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.account-mobile-account-tags :deep(.ant-tag) {
+  max-width: 100%;
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .account-mobile-meta-grid {

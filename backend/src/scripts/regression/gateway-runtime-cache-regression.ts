@@ -211,7 +211,7 @@ try {
   const accountScheduleOperationCount = fakeChild.sentOperationCount
   const accountScheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountScheduledKey))
   assert.equal(accountScheduledFirst.apiKey?.availability_schedule_json, null, '账户计划用例不应依赖 API Key 自身计划')
-  assert.equal(accountScheduledFirst.hasAccountAvailabilitySchedule, true, '运行配置应标记分组内存在账户可用时段计划')
+  assert.equal(accountScheduledFirst.hasAccountAvailabilitySchedule, true, '运行配置应标记分组内存在账户时间计划')
   assert.equal(accountScheduledFirst.accounts.length, 1, '账户计划允许时段内应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, accountScheduleOperationCount + 1, '首次读取账户计划 API Key 应请求 DB service')
   const accountScheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountScheduledKey))
@@ -274,7 +274,7 @@ try {
   assert(concurrentRuntimeReads.every((runtime) => runtime.apiKey?.id === apiKey.id), '冷缓存并发读取应全部返回同一个 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, coldConcurrentOperationCount + 1, '同一 API Key 冷缓存并发读取应合并为一次 DB service 请求')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，API Key 强制启停计划由同步任务改写真实状态，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划、API Key 过期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，API Key 时间计划由同步任务改写真实状态，无账户计划分组不被分钟边界误伤，并在 API Key、单分组/多分组账户计划、API Key 过期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

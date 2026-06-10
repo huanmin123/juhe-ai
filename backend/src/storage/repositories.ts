@@ -16,6 +16,7 @@ import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, in
 import { accountCredentialFingerprint } from './account-identity.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { cleanupDeletedAccountDetachedStats, cleanupDeletedAccountRelatedRecordData as cleanupDeletedAccountRelatedRecordDataTarget, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
+import { deleteAccountTagBindingsForAccounts, loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags } from './account-tags.repository.js'
 import { normalizeAccountModelMappingsInput, replaceAccountModelMappings } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
 import {
@@ -245,6 +246,13 @@ export {
   type DeletedAccountRecordCleanupTarget,
   type PendingDeletedAccountRecordCleanupSummary
 } from './account-record-cleanup.js'
+export {
+  AccountTagInUseError,
+  deleteAccountTag,
+  listAccountTags,
+  updateAccountTags,
+  type AccountTagSummary
+} from './account-tags.repository.js'
 export {
   cleanupDeletedApiKeyRelatedRecordData,
   cleanupDeletedApiKeyRelatedRecordDataAsync,
@@ -1671,6 +1679,7 @@ function accountSummariesFromRows(
   const timezone = usageStatsTimezone()
   const accountIds = rows.map((row) => row.id)
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
+  const tagsByAccount = loadAccountTagsByAccountIds(accountIds)
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const usageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes)
   const todayUsageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone))
@@ -1760,6 +1769,7 @@ function accountSummariesFromRows(
       openAIResponsesUpstreamMode,
       supportedModels: [...(row.supported_models ?? [])],
       modelMappings: [...(row.model_mappings ?? [])],
+      tags: tagsByAccount.get(row.id) ?? [],
       lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
@@ -2353,6 +2363,7 @@ const accountCreateInputKeys = new Set([
   'credentials',
   'supportedModels',
   'modelMappings',
+  'tags',
   'status',
   'concurrencyLimit',
   'priority',
@@ -2373,6 +2384,7 @@ const accountUpdateInputKeys = new Set([
   'credentials',
   'supportedModels',
   'modelMappings',
+  'tags',
   'status',
   'concurrencyLimit',
   'priority',
@@ -2414,6 +2426,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode, systemAccountId) ?? []
   const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId) ?? []
+  const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : initialStatus
@@ -2461,6 +2474,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     openAIResponsesUpstreamMode,
     supportedModels,
     modelMappings,
+    tags: tagNames.map((name) => ({ id: '', name })),
     lastSuccessfulTestModel: undefined,
     proxyProfileId,
     schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
@@ -2489,6 +2503,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const database = getBusinessDatabase()
   assertAccountNameAvailable(systemAccountId, account.name)
   const transactionStarted = beginDatabaseTransaction(database)
+  let savedTags = account.tags ?? []
   try {
     database
       .prepare(`
@@ -2554,6 +2569,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
       )
     replaceAccountSupportedModels(account.id, providerCode, supportedModels)
     replaceAccountModelMappings(account.id, providerCode, modelMappings)
+    savedTags = replaceAccountTags(account.id, systemAccountId, tagNames, now, database)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -2567,7 +2583,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   invalidateGroupAccountIdsCache(groupId)
   invalidateGatewayRuntimeAfterBusinessWrite('account_created')
 
-  return account
+  return { ...account, tags: savedTags }
 }
 
 export function updateAccount(id: string, input: Record<string, unknown>, access?: AccessScope): AccountSummary | undefined {
@@ -2608,6 +2624,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const nextModelMappings = hasModelMappingsInput
     ? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId) ?? []
     : current.modelMappings ?? []
+  const hasTagsInput = hasOwnInput(input, 'tags')
+  const nextTagNames = hasTagsInput
+    ? normalizeAccountTagNamesInput(input.tags) ?? []
+    : (current.tags ?? []).map((tag) => tag.name)
   const hasAvailabilityScheduleInput = isAccountAvailabilityScheduleInputPresent(input)
   const nextAvailabilitySchedule = hasAvailabilityScheduleInput
     ? accountAvailabilityScheduleFromRequest(input)
@@ -2724,6 +2744,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     openAIResponsesUpstreamMode: nextOpenAIResponsesUpstreamMode,
     supportedModels: nextSupportedModels,
     modelMappings: nextModelMappings,
+    tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId: hasOwnInput(input, 'proxyProfileId')
       ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
       : current.proxyProfileId,
@@ -2751,6 +2772,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const updatedAt = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   let renamedAuthorizationInstanceIds: string[] = []
+  let savedTags = next.tags ?? []
   try {
     const result = database
       .prepare(`
@@ -2801,6 +2823,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     if (Number(result.changes ?? 0) > 0 && hasModelMappingsInput) {
       replaceAccountModelMappings(id, next.providerCode, nextModelMappings)
     }
+    if (Number(result.changes ?? 0) > 0 && hasTagsInput) {
+      savedTags = replaceAccountTags(id, systemAccountId, nextTagNames, updatedAt, database)
+    }
     if (Number(result.changes ?? 0) > 0 && (hasPriorityInput || hasSuperPriorityInput || hasFallbackInput)) {
       database.prepare(`
         UPDATE group_accounts
@@ -2837,7 +2862,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     throw error
   }
 
-  return next
+  return { ...next, tags: savedTags }
 }
 
 export function deleteAccount(id: string, access?: AccessScope): boolean {
@@ -2988,6 +3013,7 @@ function logicallyDeleteAccounts(database: DatabaseSync, accountIds: string[], a
       }
     }
   }
+  deleteAccountTagBindingsForAccounts(deletedIds, database)
   return deletedIds
 }
 
@@ -3486,6 +3512,7 @@ function physicallyDeleteExpiredDeletedAccountBusinessRows(
       result.groupBindings += statementChanges(database.prepare(`DELETE FROM group_accounts WHERE account_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk))
       database.prepare(`DELETE FROM account_supported_models WHERE account_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
       database.prepare(`DELETE FROM account_model_mappings WHERE account_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
+      database.prepare(`DELETE FROM account_tag_bindings WHERE account_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
     }
     for (const chunk of chunkValues(authorizationIds, 900)) {
       result.groupBindings += statementChanges(database.prepare(`DELETE FROM group_accounts WHERE account_authorization_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk))

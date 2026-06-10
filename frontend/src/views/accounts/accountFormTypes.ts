@@ -25,6 +25,7 @@ export interface AccountFormModel {
   openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels: string[]
   modelMappings: AccountModelMapping[]
+  tags: string[]
   proxyProfileId?: string
   availabilitySchedule: AccountAvailabilityScheduleForm
   notes: string

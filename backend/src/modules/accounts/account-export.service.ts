@@ -43,6 +43,7 @@ export interface AccountExportAccount {
   openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
+  tags?: string[]
   accountExpiresAt?: string
   availabilitySchedule?: AccountAvailabilitySchedule
   credentials: Record<string, unknown>
@@ -171,6 +172,7 @@ function exportAccount(account: AccountSummary, proxyRefsById: Map<string, strin
   }
   if (account.supportedModels?.length) output.supportedModels = [...account.supportedModels]
   if (account.modelMappings?.length) output.modelMappings = account.modelMappings.map((item) => ({ ...item }))
+  if (account.tags?.length) output.tags = account.tags.map((tag) => tag.name).filter(Boolean)
   if (account.accountExpiresAt) output.accountExpiresAt = account.accountExpiresAt
   if (account.availabilitySchedule) output.availabilitySchedule = account.availabilitySchedule
   if (account.notes) output.notes = account.notes

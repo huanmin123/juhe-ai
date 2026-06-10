@@ -171,6 +171,14 @@ export interface AccountModelMapping {
   enabled: boolean
 }
 
+export interface AccountTagSummary {
+  id: string
+  name: string
+  accountCount?: number
+  createdAt?: string
+  updatedAt?: string
+}
+
 export interface AccountSummary {
   id: string
   systemAccountId?: string
@@ -196,6 +204,7 @@ export interface AccountSummary {
   openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
+  tags?: AccountTagSummary[]
   lastSuccessfulTestModel?: string
   qualityScore?: number
   qualityState?: string
@@ -425,6 +434,7 @@ export interface AccountExportAccount {
   openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
+  tags?: string[]
   accountExpiresAt?: string
   availabilitySchedule?: AccountAvailabilitySchedule
   credentials: AccountCredentials

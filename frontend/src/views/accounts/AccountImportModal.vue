@@ -315,7 +315,7 @@ const accountImportProtocolMarkdown = [
   '| `supportedModels` | 否 | string[] | 支持模型列表；不确定时省略。 |',
   '| `modelMappings` | 否 | object[] | 模型映射列表，条目包含 `sourceModel`、`upstreamModel`、`enabled`。 |',
   '| `accountExpiresAt` | 否 | string | ISO 时间字符串。 |',
-  '| `availabilitySchedule` | 否 | object | 可用时段计划；不确定时省略。 |',
+  '| `availabilitySchedule` | 否 | object | 时间计划；不确定时省略。 |',
   '| `credentials` | 是 | object | 按账户类型填写凭据。 |',
   '| `notes` | 否 | string | 备注；无法确定的信息写这里。 |',
   '',

@@ -74,9 +74,9 @@ try {
   }
 
   const preview = accountImport.previewAccountImport(importData, {}, access)
-  assert.equal(preview.canImport, true, '显式可用时段计划的账户导入预览应可导入')
+  assert.equal(preview.canImport, true, '显式时间计划的账户导入预览应可导入')
   const result = accountImport.executeAccountImport(importData, {}, access)
-  assert.equal(result.imported, true, '显式可用时段计划的账户导入应成功')
+  assert.equal(result.imported, true, '显式时间计划的账户导入应成功')
 
   const scheduled = repositories.listAccounts(access, { keyword: '导入计划账户', providerCode: 'gpt' })
     .find((item) => item.name === '导入计划账户')
@@ -110,8 +110,8 @@ try {
       }
     ]
   }, {}, access)
-  assert.equal(invalidPreview.canImport, false, '非法可用时段计划应阻止账户导入')
-  assert.match(invalidPreview.accounts[0]?.messages.join('\n') ?? '', /账户可用时段计划重复日期无效/, '非法计划应返回账户计划语义错误')
+  assert.equal(invalidPreview.canImport, false, '非法时间计划应阻止账户导入')
+  assert.match(invalidPreview.accounts[0]?.messages.join('\n') ?? '', /账户时间计划重复日期无效/, '非法计划应返回账户计划语义错误')
 
   const unknownCredentialPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,
@@ -295,7 +295,7 @@ try {
   )
   assert(!frontendImportTemplateSource.includes('metadata:'), '前端账户导入模板不应包含后端协议拒绝的 metadata 根字段')
 
-  console.log('账户导入可用时段计划回归通过：显式账户计划、非法计划、字段白名单、凭据契约和小批量边界校验符合预期')
+  console.log('账户导入时间计划回归通过：显式账户计划、非法计划、字段白名单、凭据契约和小批量边界校验符合预期')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

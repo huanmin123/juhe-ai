@@ -33,7 +33,7 @@ function normalizeAccountAvailabilitySchedule(input: unknown): AccountAvailabili
     return normalizeApiKeyAvailabilitySchedule(input)
   } catch (error) {
     if (error instanceof Error) {
-      throw new Error(error.message.replace(/^API Key 可用时段计划/, '账户可用时段计划'))
+      throw new Error(error.message.replace(/^API Key 时间计划/, '账户时间计划'))
     }
     throw error
   }
