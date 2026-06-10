@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { appendAuditHotSearchEntries, appendAuditHotSearchEntriesAsync } from './audit-log-hot-search-files.js'
 import {
   applyAuditPayloadBlobPersistencePlan,
   auditPayloadBodyDetail,
@@ -362,6 +363,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   `)
 
   const createdStorageKeys: string[] = []
+  const insertedHotSearchLogs: AuditLogInput[] = []
   const existingLogIds = loadExistingAuditLogIds(database, inputs)
   const seenLogIds = new Set<string>()
   const payloadBlobStatements = prepareAuditPayloadBlobStatements(database)
@@ -429,6 +431,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       if (Number(insertLogResult.changes ?? 0) === 0) {
         continue
       }
+      insertedHotSearchLogs.push({ ...input, id, createdAt })
 
       for (const attempt of preparedAttempts) {
         insertAttempt.run(
@@ -477,6 +480,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
     }
 
     commitDatabaseTransaction(database, transactionStarted)
+    appendAuditHotSearchEntries(insertedHotSearchLogs)
   } catch (error) {
     try {
       rollbackDatabaseTransaction(database, transactionStarted)
@@ -591,6 +595,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
   `)
 
   const createdStorageKeys: string[] = []
+  const insertedHotSearchLogs: AuditLogInput[] = []
   const errorGroupStatements = prepareAuditErrorGroupStatements(database)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -638,6 +643,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
       if (Number(insertLogResult.changes ?? 0) === 0) {
         continue
       }
+      insertedHotSearchLogs.push({ ...input, id, createdAt })
 
       for (const attempt of preparedAttempts) {
         insertAttempt.run(
@@ -686,6 +692,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
     }
 
     commitDatabaseTransaction(database, transactionStarted)
+    await appendAuditHotSearchEntriesAsync(insertedHotSearchLogs)
   } catch (error) {
     try {
       rollbackDatabaseTransaction(database, transactionStarted)
@@ -739,6 +746,31 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
     page,
     pageSize
   }
+}
+
+export function listAuditLogsByIds(ids: string[]): AuditLogSummary[] {
+  const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+  if (uniqueIds.length === 0) return []
+  const database = getDatasetDatabase()
+  const rows: AuditLogRow[] = []
+  for (const chunk of chunkValues(uniqueIds, 900)) {
+    rows.push(...database
+      .prepare(`
+        SELECT al.*
+        FROM audit_logs al
+        WHERE al.id IN (${sqlPlaceholders(chunk.length)})
+      `)
+      .all(...chunk) as AuditLogRow[])
+  }
+  const order = new Map(uniqueIds.map((id, index) => [id, index]))
+  rows.sort((left, right) => {
+    const leftOrder = order.get(String(left.id ?? '')) ?? Number.MAX_SAFE_INTEGER
+    const rightOrder = order.get(String(right.id ?? '')) ?? Number.MAX_SAFE_INTEGER
+    return leftOrder - rightOrder
+  })
+  const rowsWithNames = hydrateAuditRows(rows)
+  const systemAccountNames = loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
+  return rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames))
 }
 
 export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): AuditErrorGroupListResult {
@@ -860,15 +892,18 @@ export async function cleanupAuditLogsBeforeAsync(cutoffCreatedAt: string, limit
 }
 
 export function cleanupAuditLogsByRetention(input: {
+  successHotCutoffCreatedAt: string
   successCutoffCreatedAt: string
   failureCutoffCreatedAt: string
   errorGroupCutoffUpdatedAt: string
+  successSampleBucketThreshold?: number
   limit?: number
 }): number {
   const limit = input.limit ?? 1000
+  const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
   const deletedLogs = deleteAuditLogsByWhere(
-    "((audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))",
-    [input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
+    "((audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ? AND sample_reason NOT IN ('full_capture_success', 'targeted_full_capture_success')) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))",
+    [input.successHotCutoffCreatedAt, successSampleBucketThreshold, input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
     limit
   )
   const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
@@ -877,20 +912,28 @@ export function cleanupAuditLogsByRetention(input: {
 }
 
 export async function cleanupAuditLogsByRetentionAsync(input: {
+  successHotCutoffCreatedAt: string
   successCutoffCreatedAt: string
   failureCutoffCreatedAt: string
   errorGroupCutoffUpdatedAt: string
+  successSampleBucketThreshold?: number
   limit?: number
 }): Promise<number> {
   const limit = input.limit ?? 1000
+  const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
   const deletedLogs = deleteAuditLogsByWhere(
-    "((audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))",
-    [input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
+    "((audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ? AND sample_reason NOT IN ('full_capture_success', 'targeted_full_capture_success')) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))",
+    [input.successHotCutoffCreatedAt, successSampleBucketThreshold, input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
     limit
   )
   const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
   const deletedBlobs = await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
   return deletedLogs + deletedGroups + deletedBlobs
+}
+
+function normalizeSuccessSampleBucketThreshold(value: number | undefined): number {
+  if (!Number.isFinite(value)) return 1000
+  return Math.min(Math.max(Math.trunc(value ?? 1000), 0), 10000)
 }
 
 function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue[], limit: number): number {

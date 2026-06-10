@@ -146,6 +146,7 @@ export interface AuditLogRuntime {
     activeCaptureMaxBytes: number
     fullBodyCaptureEnabled: boolean
     fullBodyCapture: AuditFullBodyCaptureConfig
+    successHotRetentionHours: number
     successRetentionDays: number
     failureRetentionDays: number
     errorGroupRetentionDays: number
@@ -158,6 +159,18 @@ export interface AuditLogListResult {
   hasMore: boolean
   page: number
   pageSize: number
+}
+
+export interface AuditLogHotSearchResult extends AuditLogListResult {
+  available: boolean
+  elapsedMs: number
+  keywords: string[]
+  startAt: string
+  endAt: string
+  limit: number
+  truncated: boolean
+  scannedFileCount: number
+  message?: string
 }
 
 export interface AuditErrorGroupSummary {

@@ -4,7 +4,6 @@ import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
 export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
-export type OpenAIResponsesUpstreamMode = 'passthrough' | 'chat_completions_bridge'
 
 export interface AccountCredentials {
   api_key?: string
@@ -201,7 +200,6 @@ export interface AccountSummary {
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
-  openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
@@ -431,7 +429,6 @@ export interface AccountExportAccount {
   priority?: number
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
-  openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   tags?: string[]

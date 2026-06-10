@@ -7,7 +7,7 @@ import {
   parseStrictDatePickerValue,
   serverDateTimeTimestamp
 } from '@/shared/formatters'
-import type { AccountClientCompatibility, AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary, OpenAIResponsesUpstreamMode } from '@/types/domain'
+import type { AccountClientCompatibility, AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary } from '@/types/domain'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 
 export interface OAuthUsageBar {
@@ -589,11 +589,6 @@ export function accountTypeText(type: AccountType) {
 export function accountClientCompatibilityText(value?: AccountClientCompatibility): string {
   if (value === 'codex_responses') return 'Codex Responses'
   return 'OpenAI 标准'
-}
-
-export function openAIResponsesUpstreamModeText(value?: OpenAIResponsesUpstreamMode): string {
-  if (value === 'chat_completions_bridge') return '转 Chat Completions'
-  return '直通 Responses'
 }
 
 export function accountTypeTitle(providerName: string, type: AccountType) {

@@ -93,8 +93,7 @@
     "test:authorization-quota-batch": "pnpm --filter juhe-ai-backend test:authorization-quota-batch",
     "test:data-retention-cleanup-catalog-window": "pnpm --filter juhe-ai-backend test:data-retention-cleanup-catalog-window",
     "test:non-business-data-hard-cleanup": "pnpm --filter juhe-ai-backend test:non-business-data-hard-cleanup",
-    "test:upstream-base-url-ssrf-policy": "pnpm --filter juhe-ai-backend test:upstream-base-url-ssrf-policy",
-    "test:openai-responses-chat-bridge": "pnpm --filter juhe-ai-backend test:openai-responses-chat-bridge"
+    "test:upstream-base-url-ssrf-policy": "pnpm --filter juhe-ai-backend test:upstream-base-url-ssrf-policy"
   },
   "engines": {
     "node": ">=22.13.0 <23 || >=24.11.0 <25",

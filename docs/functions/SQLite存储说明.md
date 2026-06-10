@@ -67,24 +67,6 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 
 运行时代码不通过 `ATTACH` 跨库查询，也不读取当前 schema 之外的表结构。业务库是恢复的硬边界，必须保留；统计数据集目录库、usage shard 和统计结果库都可以丢弃、清空或重建。需要拆分、清理或取证本地保留数据时，只能使用停机后的显式离线脚本；不关心既有统计和排障明细时，可以直接新建空数据集目录库、usage shard 目录和统计结果库。
 
-## Responses bridge 短期上下文账本
-
-2026-06-09 方向调整：Responses 转 Chat Completions 的本地 `previous_response_id` 账本和摘要 compact 方案已放弃，不进入实现。下述表结构和缓存策略仅作为复杂度评估留档；当前不新增这些表，不新增 bridge context payload 文件目录，也不把 Chat bridge 做成服务端会话状态托管。
-
-Responses 转 Chat Completions bridge 为了支持本地 `previous_response_id` 续链，需要保存短期可回放上下文。该数据不是长期业务事实，也不是统计结果；它包含用户输入、assistant 输出、function call 和 tool output，体积会随请求增长，因此 SQLite 只保存会话索引、顺序关系和本地文件引用，完整 payload 放本地文件，到期删除。
-
-落地表按 [Responses 转 Chat Completions 账户适配方案](Responses转ChatCompletions账户适配方案.md) 设计：
-
-- `responses_chat_bridge_sessions`：会话级索引，保存调用作用域、最新 response、活跃时间、过期时间、payload 总字节、可重放字节、Chat body 预估字节、摘要次数和已摘要到的 sequence 等轻量诊断字段。
-- `responses_chat_bridge_response_index`：`response_id` 到 session / sequence 的主键索引，过期后保留轻量墓碑，用于把旧 `previous_response_id` 返回为明确错误。
-- `responses_chat_bridge_turn_payloads`：当前活跃窗口内每个普通 turn 或 `summary_snapshot` 的完整 payload 文件引用，保存 `storage_key`、hash、原始大小、落盘大小、可重放大小、Chat body 预估大小、摘要来源范围、摘要模型 / 账号、压缩方式、状态和过期时间；完整内容默认放在 `backend/data/responses-bridge/payloads/`。
-
-热路径不能每轮同步打 SQLite。网关进程维护 Responses bridge 热会话缓存，先用 `response_id -> session_id` 和 hot session 命中连续请求；缓存 miss 时才通过 `response_id` 主键和 `session_id + sequence` 有界窗口读取这些表。命中热缓存或冷加载元数据后，先用累计大小、turn 大小、当前请求估算大小和系统设置 `gatewayTextRawBodyLimitMegabytes` 判断是否允许续链或需要内置摘要 compact；只有通过后才按 `storage_key` 有界读取当前有效 replay payload。达到摘要高水位时，只读取可压缩前缀窗口并用当前 bridge 账号 / 模型生成 `summary_snapshot`；摘要后仍超过上限时请求链路返回 `responses_bridge_context_too_large`，不删除文件，由后台 cleanup job 后续按元数据批量清理完整 payload 文件和 payload 引用，并把 session / response index 标记为 `context_too_large`。不能扫描同一 API Key、同一系统账户、全部会话或 payload 目录来拼上下文或寻找可压缩内容。
-
-新 turn 写入必须先原子提交文件，再更新热缓存和 dirty session 队列；SQLite 引用、response index 和 session 累计字段由短间隔 / 空闲窗口批量 flush 到 DB service，不能在请求链路逐轮同步写 SQLite。dirty session 不能被静默淘汰；内存压力、队列满或 DB 长时间不可用时，要先尝试 flush，失败后返回明确本地错误并保留后台清理线索，payload 文件清理由后台 job 统一处理。流式响应在输出 `response.completed` / `response.incomplete` 之前至少要完成 payload 文件写入和热缓存更新，持久化失败时不能伪造可续链成功。
-
-默认保留策略是 24 小时活跃 TTL。成功续链刷新 `last_active_at` 和 `expires_at`；超过 TTL 或后台 job 判定上下文超限后，按 SQLite 中的 `storage_key` 删除完整 payload 文件和 payload 引用，保留 24 小时轻量墓碑；墓碑再过期后物理删除。清理任务走后台 worker 小批次推进，按 `status + expires_at` 和大小元数据索引删除，不执行 `COUNT(*)`、全表排序、目录全量扫描或大事务。
-
 ## 统计数据集与结果库拆分方案
 
 当前实现已经落地统计数据集域和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，数据集与统计职责按当前模型拆为：
@@ -126,13 +108,12 @@ Responses 转 Chat Completions bridge 为了支持本地 `previous_response_id` 
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 公开接口日志使用 `public_api_logs` 保存 `/__aipublic__` 外部来源系统调用元数据、状态码、耗时、客户端 IP、trace ID、有限请求 / 响应快照和错误摘要；请求 / 响应快照按原文保存并在超限时截断，最大保留 7 天，由后台数据保留任务分批清理。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志；防重复提交缓存属于进程内易失状态，过期维护固定小批量轮转，容量淘汰不全量展开排序。
-- 原始审计日志使用独立表保存完全成功请求的 10% 稳定样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 background worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
+- 原始审计日志使用独立表保存最近 1 小时完全成功请求热窗口、超过热窗口后的 10% 稳定成功样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 background worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
 - 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集目录库表 `runtime_logs`，后台 worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配，完整日志正文搜索交给 `grep 模式`。
 - 系统团队、团队成员和统一资源授权使用独立表记录；账户授权会为被授权用户创建独立授权实例账户，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `protocols` 保存协议族和版本，当前为 `openai/v1`；`protocol_endpoint_families` 保存协议下的端点族，当前包含 `chat_completions` 和 `responses`；`providers` 保存供应商身份和父子关系，当前为通用 `openai` 供应商和 `gpt.parent_code = openai` 子供应商；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、默认测试模型、账户类型和能力，当前默认档案为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`；`provider_protocol_profile_families` 保存档案启用的端点族能力。
 - `accounts.provider_protocol_profile_id`、`groups.provider_protocol_profile_id` 和 `account_test_tasks.provider_protocol_profile_id` 保存供应商协议档案；`protocol_code` / `protocol_version` 从档案冗余写入，用于运行时策略、审计和排障。账户只能加入同 `provider_protocol_profile_id` 的分组；分组名称唯一、默认分组唯一和 API Key 号池绑定兼容性都按协议档案维度判断，不能只按 `provider_code` 判断。
 - 账户级错误处理策略保存在 `accounts.credentials.error_handling_rules`，用于描述该账户上游非 `2xx` 错误命中后的账号副作用。规则保存启用状态、名称、优先级、状态码 / 错误码 / 错误类型 / 关键字匹配条件、动作和限流恢复策略。请求头、请求体和上下文改写不进入该字段，仍由网关 adapter 内部处理。
-- `accounts.openai_responses_upstream_mode` 保存 OpenAI v1 API Key 账户的 Responses 上游模式，默认 `passthrough`；`chat_completions_bridge` 表示下游 `/responses` 命中该账号后转到上游 `/chat/completions` 并把 Chat 回包重建为 Responses 响应。该字段不是敏感凭据，不放入 `credentials`；OAuth 账户固定按 `passthrough` 处理，授权实例运行时读取来源账户字段。
 - `stream_intercept_policies` 保存管理端流式拦截策略。`scope_type = protocol` 时 `provider_code` 为空，表示当前 `protocol_code` 下的协议层规则；`scope_type = provider` 时必须写入同一协议下已启用的 `provider_code`，表示 GPT、DeepSeek 或其他 OpenAI v1 兼容供应商的局部规则。运行时只在 API Key 校验和分组选定后按当前 `protocol_code + provider_code` 读取候选策略；账户追加规则仍写在账户凭据 `stream_intercept_rules`，不额外保存协议或供应商字段。
 - `accounts.system_account_id` 和 `groups.system_account_id` 表示当前资源行所属系统账户；授权实例账户的 `accounts.system_account_id` 是被授权用户，`authorization_instance_source_account_id` 记录来源账户，`authorization_instance_authorization_id` 指向用户级授权，`authorization_instance_owner_system_account_id` 记录原资源归属人。`group_accounts.system_account_id` 表示本地分组绑定所属的使用方系统账户；授权账户绑定到被授权用户分组时写入授权实例账户 ID 和稳定的 `account_authorization_id`。授权实例自己的 `accounts.status / schedulable / cooldown_until / last_error_* / stream_failure_*` 是被授权侧本地运行态；当前分组内排序、超级优先和降级备用以 `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled` 为准；真实上游资源事实从来源账户补齐，包括凭据、`base_url`、账号类型、支持模型、代理、并发、可用时段和账户追加流式规则。归属人原账户停用、异常、限流 / 临时不可调用、冷却、关闭调度、套餐到期或测试失败不会覆盖或回写授权实例本地运行态，但会参与授权实例 `effectiveAvailability` 实际可用性计算并阻断调度、账户测试和迁移目标选择；来源账户资源配置变化会同步影响授权实例运行时。来源账户被逻辑删除时，来源账户及其授权实例都会立即隐藏且不可调度，对应授权关系转为已回收；授权实例账户不能通过账户删除接口删除，被授权人不想继续使用个人直授权时通过授权归还入口把个人授权标记为 `returned` 并隐藏该实例。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
@@ -236,7 +217,7 @@ Responses 转 Chat Completions bridge 为了支持本地 `previous_response_id` 
 - `operation_log_viewers`：保存普通用户可见性和可见原因，资源删除、授权回收或授权归还后仍按当时关系追溯。
 - `operation_log_summary_search_terms`：保存操作日志中文摘要生成的规范化倒排词项，`summaryKeyword` 查询通过 `term + created_at` 索引定位，避免在请求路径扫描 `operation_logs` 主表；资源、操作人、模块、动作和 trace ID 使用独立结构化筛选。
 - `public_api_logs`：保存公开接口调用排障记录；列表按 `created_at + id` 固定窗口读取，按 `trace_id`、`source_ref_id`、`path`、`status_code`、`success`、`client_ip` 和时间范围筛选，详情读取按原文和容量上限保存的 `request_data_json` 和 `response_data_json`。
-- `audit_logs`：保存进入原始审计的客户端请求事件元数据，用于后台页面检索；完全成功请求默认只采样 10%。
+- `audit_logs`：保存进入原始审计的客户端请求事件元数据，用于后台页面检索；完全成功请求最近 1 小时全量热保留，超过热窗口后只保留 10% 稳定样本。
 - `audit_log_attempts`：保存审计请求下每次上游尝试、命中账号、代理、状态码和错误摘要。
 - `audit_payload_refs`：保存审计事件到 headers/body blob 的引用、part 类型、顺序、hash、大小和保留状态。
 - `audit_payload_blobs`：保存客户端请求、上游请求、上游响应和最终网关响应 blob 元数据；可压缩且不超过单次读取窗口的正文会 gzip，超大正文保持 plain 以支持直接 offset 读取；blob 文件落在本地数据目录。
@@ -444,11 +425,10 @@ Responses 转 Chat Completions bridge 为了支持本地 `previous_response_id` 
 | `runtime_log_file_cursors` | 当前日志文件增量读取游标 | 固定最近 3 天未更新游标 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 当前存在的日志文件会被追尾任务持续刷新；缺失或长期未更新的过期文件游标会自动删除 |
 | `model_check_runs`、`model_check_items` | 模型检测历史和诊断明细 | 默认 30 天，最多 365 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只保留有界脱敏摘要，过期检测运行和检测项一起删除 |
 | `operation_logs`、`operation_log_targets`、`operation_log_viewers`、`operation_log_summary_search_terms` | 业务操作追溯日志 | 默认 365 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只按时间清理，不因资源删除级联删除历史日志；摘要词项随操作日志级联删除 |
-| `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 完全成功请求未命中 10% 采样时不写入原始审计 |
+| `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求热窗口默认 1 小时，成功长期样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 完全成功请求先全量热保留，超过热窗口后删除未命中 10% 长期采样的成功记录 |
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
 | `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只做展示和排障聚合，不替代事件记录 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；表监控的非业务数据硬清理是管理员显式操作，不走这个安全保留口径 |
-| `responses_chat_bridge_sessions`、`responses_chat_bridge_response_index`、`responses_chat_bridge_turn_payloads` | Responses bridge 短期上下文账本 | 活跃 TTL 默认 24 小时，完整 payload 文件过期即清理，墓碑默认再保留 24 小时 | 落地后必须接入 `data-retention-cleanup` 或独立 bridge context cleanup | 只服务 `chat_completions_bridge` 的本地 `previous_response_id` 续链；请求路径只按主键和有界窗口读取索引，再按 `storage_key` 读取文件，不扫描历史会话或 payload 目录 |
 | `account_quality_minute_stats` | 账号质量分钟桶 | 默认 24 小时 | 是，`data-retention-cleanup` 每天在 worker 内清理；账号质量刷新任务也会兜底清理 | 只保存真实网关请求短窗口质量样本，不回扫 `usage_records` |
 | `usage_stats_minute`、`usage_model_minute`、`usage_error_minute`、`usage_latency_minute` | 分钟级统计缓存 | 默认 48 小时 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 供短窗口、账号质量和后续精细统计使用，不作为页面大范围查询事实源 |
 | `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly`、`usage_latency_hourly` | 小时级统计缓存 | 默认 60 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 覆盖 AI 性能最近 31 天小时趋势，并供 worker 刷新概览、排行、额度和 AI 性能窗口快照；API 摘要不在请求时聚合这些小时桶 |
@@ -955,11 +935,11 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 原始审计日志与保全策略：
 
 - 固定启用原始审计日志，不提供系统设置开关。
-- 完全成功请求默认只按稳定桶采样 `10%` 进入原始审计；未命中采样时不写 `audit_logs`。
+- 完全成功请求默认先全量进入最近 1 小时热保留窗口；超过热窗口后只保留稳定桶命中的 `10%` 成功样本，未命中长期采样的成功审计由后台清理删除。
 - 每次请求事实由 `usage_records` 保底，原始审计不替代使用记录。
 - 失败、异常、重试后成功、客户端中断和流式中断默认进入原始审计，并按策略保全可捕获正文。
 - 默认正文保全按成功样本 `512KB`、问题链路 `2MB` 分档；超限后写 `summary_only` 摘要，不把摘要伪装成完整原文。
-- 临时全量捕获可通过审计日志页面弹窗短时运行期配置；`JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=true` / `1` 只决定启动默认的全局 body 捕获状态。页面配置可定向指定 AI 账户，并可让命中范围内的普通成功请求进入原始审计；命中后不做 body 摘要化或流式正文省略，凭据类 headers 和 queryString 同样按原文保留。
+- 临时全量捕获可通过审计日志页面弹窗短时运行期配置；`JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=true` / `1` 只决定启动默认的全局 body 捕获状态。页面配置可定向指定 AI 账户，并可让命中范围内的普通成功请求跳过 1 小时后的 10% 后置采样继续长期保留；命中后不做 body 摘要化或流式正文省略，凭据类 headers 和 queryString 同样按原文保留。
 - 正文 blob 压缩后按原始 hash 精确去重，并通过 payload 引用关联到事件。
 - 重复错误按短时间窗口聚合展示，但每次 occurrence 仍由 `audit_logs` 事件追溯。
 - 问题列表 / 审计事件列表不新增 payload 字节列；`raw_payload_bytes` 和 `compressed_payload_bytes` 只用于后端报表、容量分析和内部接口字段。

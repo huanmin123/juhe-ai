@@ -8,6 +8,7 @@ import {
   getAuditLogPayload,
   listAuditErrorGroupEvents,
   listAuditErrorGroups,
+  listAuditLogsByIds,
   type AuditErrorGroupListOptions,
   listAuditLogs,
   type AuditLogListOptions,
@@ -15,6 +16,7 @@ import {
   type AuditTrafficSource
 } from '../../storage/repositories.js'
 import { readAuditLogSettings, type AuditFullBodyCaptureConfigInput } from './audit-log-settings.js'
+import { grepAuditHotSearchFiles } from '../../storage/audit-log-hot-search-files.js'
 import { requestServerRuntimeSnapshot, updateServerAuditFullBodyCaptureConfig } from '../db-service/db-service-ipc.js'
 
 export const auditLogsRouter = Router()
@@ -27,6 +29,31 @@ auditLogsRouter.use((req, res, next) => {
 
 auditLogsRouter.get('/', (req, res) => {
   res.json(ok(listAuditLogs(parseAuditLogListOptions(req.query))))
+})
+
+auditLogsRouter.get('/search-hot', async (req, res, next) => {
+  try {
+    const grepResult = await grepAuditHotSearchFiles(parseAuditHotSearchOptions(req.query))
+    const items = listAuditLogsByIds(grepResult.auditLogIds)
+    res.json(ok({
+      items,
+      total: grepResult.truncated ? Math.max(items.length + 1, grepResult.auditLogIds.length) : items.length,
+      hasMore: grepResult.truncated,
+      page: 1,
+      pageSize: grepResult.limit,
+      available: grepResult.available,
+      elapsedMs: grepResult.elapsedMs,
+      keywords: grepResult.keywords,
+      startAt: grepResult.startAt,
+      endAt: grepResult.endAt,
+      limit: grepResult.limit,
+      truncated: grepResult.truncated,
+      scannedFileCount: grepResult.scannedFileCount,
+      message: grepResult.message
+    }))
+  } catch (error) {
+    next(error)
+  }
 })
 
 auditLogsRouter.get('/runtime', async (_req, res) => {
@@ -170,6 +197,22 @@ function parseAuditErrorGroupListOptions(query: Record<string, unknown>): AuditE
     groupId: optionalQueryText(query.groupId),
     accountId: optionalQueryText(query.accountId)
   }
+}
+
+function parseAuditHotSearchOptions(query: Record<string, unknown>): { keywords: string[]; limit?: number; startAt?: string; endAt?: string } {
+  return {
+    keywords: stringArrayQueryValues(query.keywords),
+    limit: finiteNumberQueryValue(query.limit),
+    startAt: optionalQueryText(query.startAt),
+    endAt: optionalQueryText(query.endAt)
+  }
+}
+
+function stringArrayQueryValues(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string')
+  }
+  return typeof value === 'string' ? [value] : []
 }
 
 function isHttpStatusCode(value: unknown): value is number {

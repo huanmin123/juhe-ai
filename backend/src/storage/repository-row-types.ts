@@ -2,7 +2,6 @@ import type {
   AccountStatus,
   AccountType,
   AccountClientCompatibility,
-  OpenAIResponsesUpstreamMode,
   AuthorizationStatus,
   GroupType,
   ProviderCode,
@@ -39,7 +38,6 @@ export interface AccountRow {
   super_priority_enabled: number
   fallback_enabled: number
   client_compatibility: AccountClientCompatibility
-  openai_responses_upstream_mode: OpenAIResponsesUpstreamMode
   supported_models?: string[]
   model_mappings?: AccountModelMapping[]
   schedulable: number
@@ -209,7 +207,6 @@ export type AccountListRow = AccountRow & {
   source_proxy_profile_id?: string | null
   source_concurrency_limit?: number | null
   source_client_compatibility?: AccountClientCompatibility | null
-  source_openai_responses_upstream_mode?: OpenAIResponsesUpstreamMode | null
   quality_score?: number | null
   quality_state?: string | null
   quality_ewma_first_token_ms?: number | null

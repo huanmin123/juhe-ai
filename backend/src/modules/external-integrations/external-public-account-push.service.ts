@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import type { AccountStatus, AccountSummary, ApiKeySummary, GroupSummary, OpenAIResponsesUpstreamMode, ProviderDefinition, ProviderProtocolProfileDefinition, SystemAccountSummary } from '../../domain/types.js'
+import type { AccountStatus, AccountSummary, ApiKeySummary, GroupSummary, ProviderDefinition, ProviderProtocolProfileDefinition, SystemAccountSummary } from '../../domain/types.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
 import {
   createAccount,
@@ -38,7 +38,6 @@ export interface PublicAccountPushInput {
   baseUrl: string
   apiKey: string
   supportedModels?: string[]
-  openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
   status?: 'active' | 'disabled'
   concurrencyLimit?: number
   priority?: number
@@ -58,7 +57,6 @@ export interface PublicAccountUpdateInput {
   baseUrl?: string
   apiKey?: string
   supportedModels?: string[]
-  openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
   status?: 'active' | 'disabled'
   concurrencyLimit?: number
   priority?: number
@@ -89,7 +87,6 @@ export interface PublicAccountPushResponse {
     type: string
     status: AccountStatus
     supportedModels?: string[]
-    openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
     boundGroupId?: string
     boundGroupName?: string
     schedulable: boolean
@@ -698,7 +695,6 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput | Pub
       type: 'api_key',
       status: input.status === 'disabled' ? 'disabled' : 'active',
       supportedModels: normalizedStringList(input.supportedModels),
-      openAIResponsesUpstreamMode: normalizePublicResponsesUpstreamMode(input.openAIResponsesUpstreamMode),
       boundGroupId: 'mock_group_welfare',
       boundGroupName: groupName,
       schedulable: input.status !== 'disabled'
@@ -731,7 +727,6 @@ export function mockPublicWelfareAccountList(input: PublicAccountListInput): Pub
         type: 'api_key',
         status: 'active',
         supportedModels: ['gpt-5.5'],
-        openAIResponsesUpstreamMode: 'passthrough',
         boundGroupId: normalizedText(input.groupId) || 'mock_group_welfare',
         boundGroupName: groupName,
         schedulable: true,
@@ -1488,9 +1483,6 @@ function accountWriteInputForPush(input: PublicAccountPushInput): Record<string,
   if (hasPublicInput(input, 'supportedModels')) {
     payload.supportedModels = normalizedStringList(input.supportedModels) ?? []
   }
-  if (hasPublicInput(input, 'openAIResponsesUpstreamMode')) {
-    payload.openAIResponsesUpstreamMode = normalizePublicResponsesUpstreamMode(input.openAIResponsesUpstreamMode)
-  }
   if (hasPublicInput(input, 'status')) {
     payload.status = input.status === 'disabled' ? 'disabled' : 'active'
     payload.schedulable = input.status !== 'disabled'
@@ -1524,9 +1516,6 @@ function accountPartialUpdateInputForPush(input: PublicAccountUpdateInput, curre
   }
   if (hasPublicInput(input, 'supportedModels')) {
     payload.supportedModels = normalizedStringList(input.supportedModels) ?? []
-  }
-  if (hasPublicInput(input, 'openAIResponsesUpstreamMode')) {
-    payload.openAIResponsesUpstreamMode = normalizePublicResponsesUpstreamMode(input.openAIResponsesUpstreamMode)
   }
   if (hasPublicInput(input, 'status')) {
     payload.status = input.status === 'disabled' ? 'disabled' : 'active'
@@ -1603,7 +1592,6 @@ function sanitizeAccount(account: AccountSummary): PublicAccountPushResponse['ac
     type: account.type,
     status: account.status,
     supportedModels: account.supportedModels,
-    openAIResponsesUpstreamMode: account.openAIResponsesUpstreamMode,
     boundGroupId: account.boundGroupId,
     boundGroupName: account.boundGroupName,
     schedulable: account.schedulable,
@@ -1643,13 +1631,6 @@ function sanitizeApiKey(apiKey: ApiKeySummary & { key?: string }, options: { inc
 
 function pushNotes(input: Pick<PublicAccountPushInput, 'notes'>): string | undefined {
   return normalizedText(input.notes)
-}
-
-function normalizePublicResponsesUpstreamMode(value: unknown): OpenAIResponsesUpstreamMode {
-  const input = normalizedText(value)
-  if (!input || input === 'passthrough') return 'passthrough'
-  if (input === 'chat_completions_bridge') return 'chat_completions_bridge'
-  throw new Error('Responses 上游模式无效')
 }
 
 function normalizedText(value: unknown): string | undefined {

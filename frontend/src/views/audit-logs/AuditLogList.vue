@@ -17,7 +17,7 @@
     @mobile-refresh="$emit('mobile-refresh')"
   >
     <template #emptyText>
-      <a-empty class="page-empty-card" description="暂无审计日志。失败请求会全量记录，成功请求默认按 10% 采样。" />
+      <a-empty class="page-empty-card" description="暂无审计日志。失败请求会全量记录，成功请求最近 1 小时全量保留，之后按 10% 采样保留。" />
     </template>
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'traceId'">

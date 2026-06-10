@@ -3,7 +3,6 @@ import axios from 'axios'
 import type {
   AccountSummary,
   AccountClientCompatibility,
-  OpenAIResponsesUpstreamMode,
   AccountExportResult,
   AccountImportOptions,
   AccountImportResult,
@@ -23,6 +22,7 @@ import type {
   AnnouncementSummary,
   PublishedAnnouncementSummary,
   AuditLogDetail,
+  AuditLogHotSearchResult,
   AuditLogListResult,
   AuditLogPayloadDetail,
   AuditLogRuntime,
@@ -248,7 +248,6 @@ export interface AccountDraftTestAccountPayload {
   concurrencyLimit: number
   priority: number
   clientCompatibility: AccountClientCompatibility
-  openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels: string[]
   modelMappings: Array<{ sourceModel: string; upstreamModel: string; enabled: boolean }>
   proxyProfileId?: string | null
@@ -299,6 +298,13 @@ export interface AuditLogListParams extends ListParams {
   accountId?: string
   errorGroupId?: string
   trafficSource?: AuditTrafficSource
+}
+
+export interface AuditLogHotSearchParams {
+  keywords?: string
+  limit?: number
+  startAt?: string
+  endAt?: string
 }
 
 export interface AuditLogPayloadParams {
@@ -887,6 +893,7 @@ export const api = {
   },
   auditLogs: {
     list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
+    searchHot: (params?: AuditLogHotSearchParams) => unwrap<AuditLogHotSearchResult>(http.get('/audit-logs/search-hot', { params, ...noTimeout })),
     runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
     updateFullBodyCapture: (payload: AuditFullBodyCaptureUpdatePayload) => unwrap<{ fullBodyCaptureEnabled: boolean; fullBodyCapture: AuditFullBodyCaptureConfig; settings: AuditLogRuntime['settings'] }>(
       http.patch('/audit-logs/runtime/full-body-capture', payload, noTimeout)

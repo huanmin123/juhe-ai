@@ -246,7 +246,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       fallback_enabled INTEGER NOT NULL DEFAULT 0,
       client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
-      openai_responses_upstream_mode TEXT NOT NULL DEFAULT 'passthrough',
       schedulable INTEGER NOT NULL DEFAULT 1,
       availability_schedule_json TEXT,
       notes TEXT,

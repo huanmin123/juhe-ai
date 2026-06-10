@@ -81,7 +81,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "priority": 50,
       "tags": ["主力", "OpenAI 兼容"],
       "proxyRef": "proxy-hk-1",
-      "openAIResponsesUpstreamMode": "passthrough",
       "credentials": {
         "api_key": "sk-xxx",
         "base_url": "https://api.openai.com/v1"
@@ -138,7 +137,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `priority` | 否 | 调度优先级。 |
 | `superPriorityEnabled` | 否 | 超级优先开关。 |
 | `fallbackEnabled` | 否 | 降级备用开关。 |
-| `openAIResponsesUpstreamMode` | 否 | API Key 账户的 Responses 上游模式：`passthrough` 或 `chat_completions_bridge`；OAuth 不支持桥接。 |
 | `supportedModels` | 否 | 支持模型列表。 |
 | `modelMappings` | 否 | 模型映射列表，条目包含 `sourceModel`、`upstreamModel`、`enabled`。 |
 | `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
@@ -154,7 +152,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略。
 - `tags` 用于账户快速分类，单个账户最多 24 个标签，单个标签最长 40 个字符；空白标签会被忽略，同一账户内大小写重复标签会去重。
-- 上游只支持 Chat Completions 时，API Key 账户可填 `openAIResponsesUpstreamMode: "chat_completions_bridge"`；不确定时省略或填 `passthrough`。
 - `modelMappings` 的 sourceModel 是下游请求模型，upstreamModel 是该账户实际转发模型。
 - `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。
 - `pending_test` 表示账户需要在本系统手动测试通过后才参与调度；这是新建和导入账户的推荐默认状态。
@@ -213,6 +210,5 @@ OAuth 账户：
 - 账户缺少 `groupId` / `groupName`，或分组供应商和账户供应商不一致。
 - API Key 账户缺少 `credentials.api_key`。
 - OAuth 账户同时缺少 `credentials.refresh_token` 和 `credentials.access_token`。
-- OAuth 账户设置 `openAIResponsesUpstreamMode: "chat_completions_bridge"`。
 - `proxyRef` 指向的代理不存在、未在 `proxies` 中声明，或普通用户尝试创建新代理。
 - 未知字段写入了错误层级，例如把外部系统字段直接放进 `credentials`。

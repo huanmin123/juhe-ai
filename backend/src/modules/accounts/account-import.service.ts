@@ -1,4 +1,4 @@
-import { isAdminRole, type AccountAvailabilitySchedule, type AccountModelMapping, type AccountType, type OpenAIResponsesUpstreamMode, type ProviderDefinition } from '../../domain/types.js'
+import { isAdminRole, type AccountAvailabilitySchedule, type AccountModelMapping, type AccountType, type ProviderDefinition } from '../../domain/types.js'
 import { currentSystemAccountId, manageableSystemAccountId, type AccessScope } from '../../storage/access-scope.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
 import {
@@ -113,7 +113,6 @@ interface NormalizedImportAccount {
   priority?: number
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
-  openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   tags?: string[]
@@ -200,7 +199,6 @@ const importAccountKeys = new Set([
   'priority',
   'superPriorityEnabled',
   'fallbackEnabled',
-  'openAIResponsesUpstreamMode',
   'supportedModels',
   'modelMappings',
   'tags',
@@ -251,7 +249,6 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
       if (account.source.priority !== undefined) accountInput.priority = account.source.priority
       if (account.source.superPriorityEnabled !== undefined) accountInput.superPriorityEnabled = account.source.superPriorityEnabled
       if (account.source.fallbackEnabled !== undefined) accountInput.fallbackEnabled = account.source.fallbackEnabled
-      if (account.source.openAIResponsesUpstreamMode !== undefined) accountInput.openAIResponsesUpstreamMode = account.source.openAIResponsesUpstreamMode
       if (account.source.supportedModels !== undefined) accountInput.supportedModels = account.source.supportedModels
       if (account.source.modelMappings !== undefined) accountInput.modelMappings = account.source.modelMappings
       if (account.source.tags !== undefined) accountInput.tags = account.source.tags
@@ -528,7 +525,6 @@ function planAccount(
   source.priority = optionalNonNegativeIntegerField(value, 'priority', '账户 priority', item.messages)
   source.superPriorityEnabled = optionalBooleanField(value, 'superPriorityEnabled', '账户 superPriorityEnabled', item.messages)
   source.fallbackEnabled = optionalBooleanField(value, 'fallbackEnabled', '账户 fallbackEnabled', item.messages)
-  source.openAIResponsesUpstreamMode = optionalOpenAIResponsesUpstreamModeField(value, 'openAIResponsesUpstreamMode', '账户 openAIResponsesUpstreamMode', source.type, item.messages)
   source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
   source.modelMappings = optionalModelMappingsField(value, 'modelMappings', '账户 modelMappings', item.messages)
   source.tags = optionalAccountTagsField(value, 'tags', '账户 tags', item.messages)
@@ -1012,27 +1008,6 @@ function optionalBooleanField(record: Record<string, unknown>, key: string, labe
     return undefined
   }
   return value
-}
-
-function optionalOpenAIResponsesUpstreamModeField(
-  record: Record<string, unknown>,
-  key: string,
-  label: string,
-  accountType: AccountType,
-  messages: string[]
-): OpenAIResponsesUpstreamMode | undefined {
-  const value = optionalTextField(record, key, label, messages)
-  if (value === undefined) return undefined
-  if (value === 'passthrough') return 'passthrough'
-  if (value === 'chat_completions_bridge') {
-    if (accountType === 'oauth') {
-      messages.push('OAuth 账户不支持 Responses 上游桥接模式')
-      return undefined
-    }
-    return 'chat_completions_bridge'
-  }
-  messages.push('账户 openAIResponsesUpstreamMode 仅支持 passthrough 或 chat_completions_bridge')
-  return undefined
 }
 
 function optionalIntegerField(record: Record<string, unknown>, key: string, label: string, messages: string[]): number | undefined {

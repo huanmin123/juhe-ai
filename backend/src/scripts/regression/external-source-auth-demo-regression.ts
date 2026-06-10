@@ -597,7 +597,6 @@ async function runChild(): Promise<void> {
       baseUrl: 'https://push.example/v1',
       apiKey: 'sk-public-push-regression-001',
       supportedModels: ['gpt-5.5'],
-      openAIResponsesUpstreamMode: 'chat_completions_bridge',
       status: 'active',
       availabilitySchedule: {
         enabled: true,
@@ -617,7 +616,6 @@ async function runChild(): Promise<void> {
     assert.equal(accountAdd.body.data.target.groupCreated, true)
     assert.equal(accountAdd.body.data.account.name, '公益站测试账号')
     assert.equal(accountAdd.body.data.account.status, 'pending_test', '公开账号新增即使传 active 也应先落成待测试')
-    assert.equal(accountAdd.body.data.account.openAIResponsesUpstreamMode, 'chat_completions_bridge', '公开账号新增应回显 Responses 上游桥接模式')
     assert.equal(accountAdd.body.data.account.availabilitySchedule?.enabled, true, '公开账号新增应写入并回显时间计划')
     assert.equal(Object.prototype.hasOwnProperty.call(accountAdd.body.data.account, 'credentials'), false, '正式新增响应不能返回凭据')
 
@@ -631,7 +629,6 @@ async function runChild(): Promise<void> {
       .find((item) => item.name === '公益站测试账号')
     assert(addedAccount, '账号新增应把账号绑定到福利分组')
     assert.equal(addedAccount.boundGroupId, welfareGroup.id)
-    assert.equal(addedAccount.openAIResponsesUpstreamMode, 'chat_completions_bridge', '公开账号新增应持久化 Responses 上游桥接模式')
     assert.equal(addedAccount.availabilitySchedule?.enabled, true, '公开账号新增应持久化时间计划')
     const addLogs = listOperationLogs({
       module: 'external_integrations',
@@ -655,7 +652,6 @@ async function runChild(): Promise<void> {
     assert(listedAccount, '公开账号列表应能按目标用户和分组返回刚新增的账号')
     assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'externalId'), false, '公开账号列表不应回显外部来源系统业务 ID')
     assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'credentials'), false, '公开账号列表不能返回上游凭据')
-    assert.equal(listedAccount.openAIResponsesUpstreamMode, 'chat_completions_bridge', '公开账号列表应回显 Responses 上游桥接模式')
 
     const accountKeyUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
       Authorization: `Bearer ${accountWriteToken}`
@@ -678,7 +674,6 @@ async function runChild(): Promise<void> {
     const rotatedAccount = listAccounts(targetAccess, { keyword: '公益站测试账号', providerCode: 'gpt', groupId: welfareGroup.id })
       .find((item) => item.id === addedAccount.id)
     assert.deepEqual(rotatedAccount?.supportedModels, ['gpt-5.5'], '公开账号修改未提交 supportedModels 时应保留原模型限制')
-    assert.equal(rotatedAccount?.openAIResponsesUpstreamMode, 'chat_completions_bridge', '公开账号修改未提交 Responses 上游模式时应保留原配置')
 
     const activatedAccount = clearAccountFailureStateResult(addedAccount.id, targetAccess, { allowPendingTestRestore: true })
     assert.equal(activatedAccount.account?.status, 'active', '回归准备：待测试账号应通过测试成功入口恢复正常')
@@ -710,14 +705,12 @@ async function runChild(): Promise<void> {
       baseUrl: 'https://push.example/v2',
       apiKey: 'sk-public-push-regression-rotated',
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
-      openAIResponsesUpstreamMode: 'passthrough',
       status: 'disabled'
     })
     assert.equal(accountUpdate.status, 200)
     assert.equal(accountUpdate.body.data.action, 'updated')
     assert.equal(accountUpdate.body.data.account.id, accountAdd.body.data.account.id)
     assert.equal(accountUpdate.body.data.account.status, 'disabled')
-    assert.equal(accountUpdate.body.data.account.openAIResponsesUpstreamMode, 'passthrough', '公开账号修改应支持覆盖 Responses 上游模式')
     assert.equal(accountUpdate.body.data.account.availabilitySchedule?.enabled, true, '公开账号修改未提交计划时不应清空既有时间计划')
 
     const accountRename = await requestJson(baseUrl, '/__aipublic__/account/update', {

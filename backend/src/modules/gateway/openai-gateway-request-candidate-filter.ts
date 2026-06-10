@@ -145,8 +145,5 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
 }
 
 function requestCapabilityMismatchMessage(reason: string): string {
-  if (reason === 'responses_compact_not_supported_by_chat_bridge') {
-    return '当前账户使用 Chat Completions 上游，不支持 Responses compact'
-  }
   return '当前分组无账户支持请求路径或客户端协议'
 }

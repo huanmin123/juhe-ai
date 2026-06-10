@@ -43,7 +43,6 @@ import { type UpstreamAttempt } from './openai-gateway-usage.js'
 import { recordFailedUpstreamAttempt, type GatewayUsageContext } from './openai-gateway-usage-records.js'
 import { type GatewayUpstreamResponse } from './openai-gateway-upstream.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
-import { OpenAIResponsesChatBridgeError } from './openai-responses-chat-bridge.js'
 import type { OpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
 import { createGatewayCompatibilityRecoveryState } from './openai-gateway-compatibility-policy.js'
 
@@ -207,7 +206,7 @@ export async function fetchFirstAvailableUpstream(
           headers = requestParts.headers
           body = requestParts.body
         } catch (error) {
-          if (signal?.aborted || error instanceof OpenAIOAuthCodexAdapterError || error instanceof OpenAIResponsesChatBridgeError) {
+          if (signal?.aborted || error instanceof OpenAIOAuthCodexAdapterError) {
             throw error
           }
           const requestErrorResult = await handleUpstreamRequestError({

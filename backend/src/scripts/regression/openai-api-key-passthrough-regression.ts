@@ -9,7 +9,6 @@ import {
   isOpenAIModelsRequest
 } from '../../modules/gateway/openai-gateway-route-helpers.js'
 import { buildUpstreamHeaders, buildUpstreamRequestBody, buildUpstreamRequestParts, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
-import { filterGatewayAccountsByRequestCapability } from '../../modules/gateway/openai-gateway-account-capability-filter.js'
 import {
   createGatewayRequestBodyState,
   clearGatewayRequestBodyInFlightForTest,
@@ -57,7 +56,6 @@ const apiKeyAccount: OpenAIAccountSecret = {
   superPriorityEnabled: false,
   fallbackEnabled: false,
   clientCompatibility: 'openai_standard',
-  openAIResponsesUpstreamMode: 'passthrough',
   baseUrl: 'https://api.openai.com/v1',
   streamFailureCount: 0,
   credentials: {}
@@ -378,34 +376,12 @@ function testOpenAIClientPathNormalization(): void {
 function testResponsesCompactRouteCapability(): void {
   const passthroughAccount: OpenAIAccountSecret = {
     ...apiKeyAccount,
-    baseUrl: 'https://api.openai.com',
-    openAIResponsesUpstreamMode: 'passthrough' as const
-  }
-  const bridgeAccount: OpenAIAccountSecret = {
-    ...apiKeyAccount,
-    baseUrl: 'https://example.com/openai',
-    openAIResponsesUpstreamMode: 'chat_completions_bridge' as const
+    baseUrl: 'https://api.openai.com'
   }
 
   assert.deepEqual(
     buildUpstreamUrlsForAccount(passthroughAccount, createRequest({ model: 'gpt-5.4', input: [] }, {}, undefined, '/v1/responses/compact')),
     ['https://api.openai.com/v1/responses/compact']
-  )
-  assert.deepEqual(
-    buildUpstreamUrlsForAccount(bridgeAccount, createRequest({ model: 'gpt-5.4', input: [] }, {}, undefined, '/v1/responses/compact')),
-    []
-  )
-  assert.deepEqual(
-    buildUpstreamUrlsForAccount(bridgeAccount, createRequest({ model: 'gpt-5.4', input: 'hello' }, {}, undefined, '/v1/responses')),
-    ['https://example.com/openai/v1/chat/completions']
-  )
-  assert.deepEqual(
-    filterGatewayAccountsByRequestCapability(createRequest({ model: 'gpt-5.4', input: [] }, {}, undefined, '/v1/responses/compact'), [bridgeAccount]),
-    {
-      accounts: [],
-      skippedCount: 1,
-      reason: 'responses_compact_not_supported_by_chat_bridge'
-    }
   )
 }
 

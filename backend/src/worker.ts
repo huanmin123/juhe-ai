@@ -165,6 +165,7 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       droppedFailureCount: auditRuntime.droppedFailureCount,
       droppedOverflowCount: auditRuntime.droppedOverflowCount,
       droppedOversizeCount: auditRuntime.droppedOversizeCount,
+      successHotRetentionHours: auditRuntime.successHotRetentionHours,
       successRetentionDays: auditRuntime.successRetentionDays,
       failureRetentionDays: auditRuntime.failureRetentionDays,
       errorGroupRetentionDays: auditRuntime.errorGroupRetentionDays
@@ -188,6 +189,7 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
     droppedOversizeCount: typeof input.droppedOversizeCount === 'number' ? input.droppedOversizeCount : undefined,
     retainedOverflowWarningCount: typeof input.retainedOverflowWarningCount === 'number' ? input.retainedOverflowWarningCount : undefined,
     flushFailureCount: typeof input.flushFailureCount === 'number' ? input.flushFailureCount : undefined,
+    successHotRetentionHours: typeof input.successHotRetentionHours === 'number' ? input.successHotRetentionHours : undefined,
     successRetentionDays: typeof input.successRetentionDays === 'number' ? input.successRetentionDays : undefined,
     failureRetentionDays: typeof input.failureRetentionDays === 'number' ? input.failureRetentionDays : undefined,
     errorGroupRetentionDays: typeof input.errorGroupRetentionDays === 'number' ? input.errorGroupRetentionDays : undefined

@@ -484,7 +484,6 @@ function passiveAccount(id: string, accountAuthorizationId?: string, accountAuth
     accountAuthorizationId,
     accountAuthorizationQuotaLimited,
     supportedModels: [],
-    openAIResponsesUpstreamMode: 'passthrough',
     concurrencyLimit: 10,
     priority: 0,
     superPriorityEnabled: false,

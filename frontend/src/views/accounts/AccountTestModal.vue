@@ -81,7 +81,6 @@
               <div class="batch-test-result-meta">
                 <span>{{ accountTypeText(item.account.type) }}</span>
                 <span>{{ providerLabel(item.account) }}</span>
-                <span v-if="item.account.type !== 'oauth'">Responses 上游：{{ openAIResponsesUpstreamModeText(item.account.openAIResponsesUpstreamMode) }}</span>
                 <span>模型：{{ batchItemModelText(item) }}</span>
                 <span v-if="batchItemDurationText(item)">耗时：{{ batchItemDurationText(item) }}</span>
                 <span v-if="item.result?.statusCode">HTTP {{ item.result.statusCode }}</span>
@@ -131,7 +130,6 @@ import {
   formatAccountTestDuration,
   formatErrorPolicyAction,
   formatTestTerminalResult,
-  openAIResponsesUpstreamModeText,
   splitAccountDiagnosticMessage,
   statusText
 } from './accountFormatters'
@@ -227,8 +225,7 @@ const outputLines = computed<TestOutputLine[]>(() => {
     { text: `开始测试账号：${account.name}`, tone: 'info' },
     { text: `供应商：${providerLabel(account)}`, tone: 'muted' },
     { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
-    { text: `测试兼容：${selectedCompatibilityText(account)}`, tone: 'muted' },
-    { text: `Responses 上游：${responsesUpstreamModeText(account)}`, tone: 'muted' }
+    { text: `测试兼容：${selectedCompatibilityText(account)}`, tone: 'muted' }
   ]
 
   if (props.running) {
@@ -308,18 +305,13 @@ function selectedCompatibilityText(account: AccountSummary): string {
   return accountClientCompatibilityText(props.clientCompatibility)
 }
 
-function responsesUpstreamModeText(account: AccountSummary): string {
-  return account.type === 'oauth' ? 'OAuth 固定 Codex' : openAIResponsesUpstreamModeText(account.openAIResponsesUpstreamMode)
-}
-
 function batchOutputLines(): TestOutputLine[] {
   const total = props.batchItems.length
   if (!total) return []
   const lines: TestOutputLine[] = [
     { text: `批量测试账号：${total} 个`, tone: 'info' },
     { text: `优先测试模型：${props.model}`, tone: 'muted' },
-    { text: `测试兼容：${batchSelectedCompatibilityText.value}`, tone: 'muted' },
-    { text: `Responses 上游：按各账户配置`, tone: 'muted' }
+    { text: `测试兼容：${batchSelectedCompatibilityText.value}`, tone: 'muted' }
   ]
   if (props.running || batchRunningCount.value) {
     const runningNames = props.batchItems

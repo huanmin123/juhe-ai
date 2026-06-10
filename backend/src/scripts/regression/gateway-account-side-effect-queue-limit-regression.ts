@@ -104,7 +104,6 @@ function buildAccountErrorHandlingOperation(
       superPriorityEnabled: false,
       fallbackEnabled: true,
       clientCompatibility: 'openai_standard',
-      openAIResponsesUpstreamMode: 'passthrough',
       baseUrl: 'https://api.openai.com/v1',
       apiKey: 'sk-regression',
       streamFailureCount: 0,

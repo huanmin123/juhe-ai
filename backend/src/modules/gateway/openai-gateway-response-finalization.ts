@@ -73,12 +73,6 @@ import {
   recordCompletedUpstreamAttempt,
   type GatewayUsageContext
 } from './openai-gateway-usage-records.js'
-import {
-  createChatCompletionSseToResponsesTransformer,
-  OpenAIResponsesChatBridgeError,
-  isOpenAIResponsesChatBridgeRequest,
-  transformChatCompletionResponseToResponsesBuffer
-} from './openai-responses-chat-bridge.js'
 
 export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true }
@@ -200,9 +194,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     return { alreadyFinalized: true }
   }
 
-  const responsesChatBridgeStreamTransformer = isOpenAIResponsesChatBridgeRequest(req, account)
-    ? createChatCompletionSseToResponsesTransformer({ model: requestModel(req) })
-    : undefined
   let streamResult: Awaited<ReturnType<typeof pipeUpstreamStream>>
   try {
     streamResult = await pipeUpstreamStream(
@@ -221,8 +212,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           account,
           managementPolicies: input.streamInterceptPolicies
         }),
-        transformUpstreamChunk: responsesChatBridgeStreamTransformer?.push,
-        flushTransformedUpstreamChunks: responsesChatBridgeStreamTransformer?.flush,
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
       }
     )
@@ -495,28 +484,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
       markFirstOutput?.()
       res.end()
-    } else if (upstreamResponse.ok && isOpenAIResponsesChatBridgeRequest(req, account)) {
-      const readResult = await readUpstreamBodyLimited(upstreamResponse.body, {
-        maxBytes: nonStreamResponseCaptureBytes,
-        startedAt,
-        signal,
-        onFirstByte: () => {
-          firstTokenMs = Date.now() - startedAt
-          markFirstOutput?.()
-        }
-      })
-      if (readResult.truncated) {
-        throw new OpenAIResponsesChatBridgeError('上游 Chat Completions 非流式响应超过网关转换上限', 502, 'responses_chat_bridge_upstream_body_too_large', 'upstream_response_error')
-      }
-      const transformedBody = transformChatCompletionResponseToResponsesBuffer(readResult.body)
-      responseBody = transformedBody
-      responseBodyText = transformedBody.toString('utf8')
-      responseUsageText = responseBodyText
-      firstTokenMs = readResult.firstByteMs ?? firstTokenMs ?? Date.now() - startedAt
-      prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-      res.setHeader('content-type', 'application/json; charset=utf-8')
-      markFirstOutput?.()
-      res.send(transformedBody)
     } else if (upstreamResponse.ok) {
       const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
         startedAt,
@@ -589,57 +556,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         errorPhase: 'client',
         errorMessage: downstreamConnectionClosedMessage
       })
-    } else if (error instanceof OpenAIResponsesChatBridgeError && !res.headersSent && !res.writableEnded && !res.destroyed) {
-      const responsePayload = gatewayErrorPayload(error.message, error.type, error.code)
-      sendGatewayErrorResponse(res, error.statusCode, responsePayload)
-      responseBodyText = JSON.stringify(responsePayload)
-      responseUsageText = responseBodyText
-      errorPayload = responsePayload.error
-      firstTokenMs = firstTokenMs ?? Date.now() - startedAt
-      auditCapture.completeAttempt(auditAttemptId, {
-        statusCode: upstreamResponse.status,
-        responseHeaders: upstreamResponse.headers,
-        responseBody: responseBody ?? responseBodyText,
-        success: false,
-        errorPhase: 'gateway_response',
-        errorCode: error.code,
-        errorMessage: error.message
-      })
-      recordCompletedUpstreamAttempt(req, {
-        ...usageContext,
-        account,
-        statusCode: error.statusCode,
-        success: false,
-        stream: isEffectiveOpenAIStreamRequest(req, account),
-        firstTokenMs,
-        startedAt,
-        usage: emptyUsage(),
-        errorCode: error.code,
-        errorMessage: error.message,
-        requestSnapshot: usageContext.requestSnapshot,
-        responseSnapshot: buildUsageResponseSnapshot({
-          upstreamUrl,
-          statusCode: error.statusCode,
-          headers: stringResponseHeadersToObject(res),
-          bodyText: responseBodyText,
-          errorMessage: error.message,
-          generatedBy: 'gateway'
-        })
-      })
-      auditCapture.finalize({
-        outcome: 'gateway_failed',
-        success: false,
-        statusCode: error.statusCode,
-        responseHeaders: responseHeadersToObject(res),
-        responseBody: responseBodyText,
-        responsePartType: 'gateway_error',
-        errorPhase: 'gateway_response',
-        errorCode: error.code,
-        errorMessage: error.message,
-        accountId: account.id,
-        firstTokenMs
-      })
-      return { alreadyFinalized: true }
     } else if (error instanceof NonStreamUpstreamBodyPipeError && (res.headersSent || res.writableEnded || res.destroyed)) {
       responseBody = error.partialResult.capturedBody
       responseBodyText = error.partialResult.diagnosticBodyText ?? error.partialResult.usageTailText

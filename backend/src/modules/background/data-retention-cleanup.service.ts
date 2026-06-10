@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { cleanupAuditHotSearchFilesBefore } from '../../storage/audit-log-hot-search-files.js'
 import { cleanupAuditLogsByRetentionAsync } from '../../storage/audit-logs.repository.js'
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import { cleanupPublicApiLogsBefore } from '../../storage/public-api-logs.repository.js'
@@ -38,6 +39,7 @@ export interface DataRetentionCleanupResult {
   operationLogs: number
   publicApiLogs: number
   auditLogs: number
+  auditHotSearchFiles: number
   runtimeLogs: number
   runtimeLogFileCursors: number
   modelCheckRuns: number
@@ -103,10 +105,12 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', 100, 1000)
     const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', 1, 2)
     const now = Date.now()
+    const auditSettings = readAuditLogSettings()
     const retention = {
-      auditLogSuccessDays: readAuditLogSettings().successRetentionDays,
-      auditLogFailureDays: readAuditLogSettings().failureRetentionDays,
-      auditErrorGroupDays: readAuditLogSettings().errorGroupRetentionDays,
+      auditLogSuccessHotHours: auditSettings.successHotRetentionHours,
+      auditLogSuccessDays: auditSettings.successRetentionDays,
+      auditLogFailureDays: auditSettings.failureRetentionDays,
+      auditErrorGroupDays: auditSettings.errorGroupRetentionDays,
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
       runtimeLogDays: runtimeLogIndexRetentionDays,
       modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
@@ -130,11 +134,15 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     result.publicApiLogs = await cleanupInBatches(() => cleanupPublicApiLogsBefore(cutoffIso(now, publicApiLogRetentionDays), batchSize), batchSize, maxBatches)
     await yieldToEventLoop()
     result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
+      successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),
       successCutoffCreatedAt: cutoffIso(now, retention.auditLogSuccessDays),
       failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
       errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
+      successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000),
       limit: batchSize
     }), batchSize, maxBatches)
+    await yieldToEventLoop()
+    result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
     await yieldToEventLoop()
     result.runtimeLogs = await cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
     await yieldToEventLoop()
@@ -289,6 +297,10 @@ function cutoffIso(now: number, retentionDays: number): string {
   return new Date(now - retentionDays * dayMs).toISOString()
 }
 
+function cutoffHoursIso(now: number, retentionHours: number): string {
+  return new Date(now - retentionHours * 60 * 60 * 1000).toISOString()
+}
+
 function cutoffDateKey(now: number, retentionDays: number, timezone: string): string {
   return dateKey(new Date(now - retentionDays * dayMs), timezone)
 }
@@ -327,6 +339,7 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     operationLogs: 0,
     publicApiLogs: 0,
     auditLogs: 0,
+    auditHotSearchFiles: 0,
     runtimeLogs: 0,
     runtimeLogFileCursors: 0,
     modelCheckRuns: 0,

@@ -130,7 +130,6 @@ try {
         type: 'api_key',
         status: 'active',
         groupId: group.id,
-        openAIResponsesUpstreamMode: 'chat_completions_bridge',
         credentials: { api_key: 'sk-import-active-to-pending', base_url: 'https://api.openai.com/v1' }
       }
     ]
@@ -141,11 +140,9 @@ try {
   const imported = repositories.findAccountSummary(importedId, access)
   assert.equal(imported?.status, 'pending_test', '导入 active 账户应落库为待测试')
   assert.equal(imported?.schedulable, false, '导入后待测试账户不得参与调度')
-  assert.equal(imported?.openAIResponsesUpstreamMode, 'chat_completions_bridge', '导入应保存 Responses 上游桥接模式')
 
   const exportResult = accountExport.exportAccountsAsImportDocument({ accountIds: [importedId] }, access)
   assert.equal(exportResult.document.accounts[0]?.status, 'pending_test', '导出应保留待测试状态')
-  assert.equal(exportResult.document.accounts[0]?.openAIResponsesUpstreamMode, 'chat_completions_bridge', '导出应保留 Responses 上游桥接模式')
 
   mockOpenAIServer = createMockOpenAIServer()
   mockOpenAIServer.listen(0, '127.0.0.1')
@@ -412,7 +409,6 @@ function draftActivationSnapshot(payload: RouteAccountCreatePayload, ownerSystem
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
-    openAIResponsesUpstreamMode: 'passthrough',
     supportedModels: [],
     modelMappings: repositories.normalizeAccountModelMappingsForProvider([], payload.providerCode, ownerSystemAccountId) ?? []
   }
@@ -435,7 +431,6 @@ function draftAccountSummary(draft: AccountTestDraftSnapshot): AccountSummary {
     superPriorityEnabled: draft.superPriorityEnabled,
     fallbackEnabled: draft.fallbackEnabled,
     clientCompatibility: draft.clientCompatibility,
-    openAIResponsesUpstreamMode: draft.openAIResponsesUpstreamMode,
     supportedModels: draft.supportedModels,
     modelMappings: draft.modelMappings,
     schedulable: true,

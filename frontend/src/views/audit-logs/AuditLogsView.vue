@@ -1,18 +1,18 @@
 <template>
   <a-card class="page-card responsive-page-card">
     <ResponsiveListToolbar
-      v-model:keyword="traceIdFilter"
-      search-placeholder="搜索 traceId"
-      filter-title="审计筛选"
-      :active-filter-count="activeFilterCount"
-      :advanced-filter-count="advancedFilterCount"
-      :refresh-loading="loading"
-      @refresh="refreshRecords"
-      @reset="resetFilters"
-      @search="applyFilters"
+      v-model:keyword="toolbarKeyword"
+      :search-placeholder="toolbarSearchPlaceholder"
+      :filter-title="toolbarFilterTitle"
+      :active-filter-count="toolbarActiveFilterCount"
+      :advanced-filter-count="toolbarAdvancedFilterCount"
+      :refresh-loading="currentLoading"
+      @refresh="refreshCurrentMode"
+      @reset="resetCurrentMode"
+      @search="applyCurrentMode"
     >
       <template #advanced-filters>
-        <a-form layout="vertical" class="advanced-filter-form">
+        <a-form v-if="viewMode === 'list'" layout="vertical" class="advanced-filter-form">
           <a-form-item label="结果">
             <a-select v-model:value="outcomeFilter" :options="outcomeOptions" @change="applyFilters" />
           </a-form-item>
@@ -78,9 +78,10 @@
           @reset="resetColumnSettings"
           @update:settings="updateColumnSettings"
         />
+        <a-segmented v-model:value="viewMode" class="audit-mode-segmented" :options="viewModeOptions" @change="handleViewModeChange" />
       </template>
       <template #filters>
-        <a-form layout="vertical">
+        <a-form v-if="viewMode === 'list'" layout="vertical">
           <a-form-item label="结果">
             <a-select v-model:value="outcomeFilter" :options="outcomeOptions" />
           </a-form-item>
@@ -132,17 +133,25 @@
       :description="auditRuntimeAlertDescription"
     />
 
+    <a-alert
+      v-if="viewMode === 'search' && hotSearchResult?.message"
+      :type="hotSearchResult.available === false || hotSearchResult.truncated ? 'warning' : 'info'"
+      show-icon
+      :message="hotSearchResult.message"
+      class="audit-search-alert"
+    />
+
     <AuditLogList
       :columns="managedColumns"
-      :records="records"
-      :loading="loading"
-      :pagination="tablePagination"
-      :mobile-has-more="mobileHasMore"
-      :loading-more="mobileLoadingMore"
-      @change="handleTableChange"
+      :records="currentRecords"
+      :loading="currentLoading"
+      :pagination="currentTablePagination"
+      :mobile-has-more="currentMobileHasMore"
+      :loading-more="currentMobileLoadingMore"
+      @change="handleCurrentTableChange"
       @detail="openDetail"
-      @mobile-load-more="loadMoreMobileRecords"
-      @mobile-refresh="refreshMobileRecords"
+      @mobile-load-more="loadMoreCurrentMobileRecords"
+      @mobile-refresh="refreshCurrentMobileRecords"
     />
 
     <a-modal
@@ -179,7 +188,7 @@
         </a-form-item>
         <a-form-item label="普通成功请求">
           <a-switch v-model:checked="fullBodyCaptureForm.includeSuccess" checked-children="捕获 200" un-checked-children="按采样" />
-          <div class="form-help">开启后命中范围内的普通成功请求也会写入原始审计，不再只按 10% 成功采样。</div>
+          <div class="form-help">开启后命中范围内的普通成功请求会跳过 1 小时后的 10% 后置采样，继续长期保留。</div>
         </a-form-item>
         <a-form-item label="有效期" required>
           <a-input-number v-model:value="fullBodyCaptureForm.durationMinutes" :min="1" :max="1440" :precision="0" addon-after="分钟" />
@@ -391,6 +400,7 @@ import type {
   AccountOptionSummary,
   AuditFullBodyCaptureScope,
   AuditLogDetail,
+  AuditLogHotSearchResult,
   AuditLogPayloadDetail,
   AuditLogRuntime,
   AuditLogSummary,
@@ -442,10 +452,14 @@ import {
 } from './auditLogTableColumns'
 
 type AuditPayloadRow = AuditLogDetail['payloads'][number] | AuditLogPayloadDetail
+type AuditLogViewMode = 'list' | 'search'
 
 const detailLoading = ref(false)
 const payloadLoadingId = ref('')
 const runtime = ref<AuditLogRuntime>()
+const hotSearchResult = ref<AuditLogHotSearchResult>()
+const hotSearchRecords = ref<AuditLogSummary[]>([])
+const hotSearchLoading = ref(false)
 const fullBodyCaptureUpdating = ref(false)
 const fullBodyCaptureModalOpen = ref(false)
 const fullBodyCaptureAccountSelection = ref<AccountSelection | undefined>()
@@ -485,6 +499,7 @@ let accountOptionsRequestSeq = 0
 let accountOptionsLoadingKey: string | undefined
 let accountOptionsLoadingPromise: Promise<void> | undefined
 let auditRuntimeRequestSeq = 0
+let hotSearchRequestSeq = 0
 
 function handleAccountOptionsSearch(value: string): void {
   accountOptionsKeyword.value = value
@@ -517,6 +532,7 @@ const pageSize = 100
 type AuditLogsPageState = {
   accountIdFilter: string
   accountSelection?: AccountSelection
+  hotSearchKeywordFilter: string
   outcomeFilter: AuditOutcome | 'all'
   pagination: { current: number; pageSize: number }
   pathFilter: string
@@ -525,10 +541,12 @@ type AuditLogsPageState = {
   systemAccountSelection?: PrincipalSelection
   traceIdFilter: string
   trafficSourceFilter: AuditTrafficSource | 'all'
+  viewMode: AuditLogViewMode
 }
 const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   accountIdFilter: '',
   accountSelection: undefined,
+  hotSearchKeywordFilter: '',
   outcomeFilter: 'all',
   pagination: { current: 1, pageSize },
   pathFilter: '',
@@ -536,9 +554,10 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   systemAccountFilter: allSystemAccountsValue,
   systemAccountSelection: undefined,
   traceIdFilter: '',
-  trafficSourceFilter: 'all'
+  trafficSourceFilter: 'all',
+  viewMode: 'list'
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 7 })
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 8 })
 const initialPageState = pageStateCache.read()
 const route = useRoute()
 const router = useRouter()
@@ -548,6 +567,7 @@ const effectiveInitialPageState: AuditLogsPageState = initialTraceId
   : initialPageState
 
 const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
+const hotSearchKeywordFilter = ref(effectiveInitialPageState.hotSearchKeywordFilter)
 const accountIdFilter = ref(effectiveInitialPageState.accountIdFilter)
 const accountSelection = ref<AccountSelection | undefined>(effectiveInitialPageState.accountSelection)
 const outcomeFilter = ref<AuditOutcome | 'all'>(effectiveInitialPageState.outcomeFilter)
@@ -556,6 +576,7 @@ const statusCodeFilter = ref(effectiveInitialPageState.statusCodeFilter)
 const systemAccountFilter = ref(effectiveInitialPageState.systemAccountFilter)
 const systemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.systemAccountSelection)
 const trafficSourceFilter = ref<AuditTrafficSource | 'all'>(effectiveInitialPageState.trafficSourceFilter)
+const viewMode = ref<AuditLogViewMode>(effectiveInitialPageState.viewMode === 'search' ? 'search' : 'list')
 const {
   items: records,
   loading,
@@ -590,6 +611,10 @@ const {
 })
 
 const outcomeOptions = auditOutcomeOptions
+const viewModeOptions = [
+  { label: '审计列表', value: 'list' },
+  { label: '最近内容搜索', value: 'search' }
+]
 const trafficSourceOptions = [
   { label: '全部来源', value: 'all' },
   { label: '网关请求', value: 'gateway' },
@@ -618,6 +643,22 @@ const activeFilterCount = computed(() => {
   if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
+const hotSearchActiveFilterCount = computed(() => hotSearchKeywordFilter.value.trim() ? 1 : 0)
+const toolbarKeyword = computed({
+  get: () => viewMode.value === 'search' ? hotSearchKeywordFilter.value : traceIdFilter.value,
+  set: (value: string) => {
+    if (viewMode.value === 'search') {
+      hotSearchKeywordFilter.value = value
+    } else {
+      traceIdFilter.value = value
+    }
+  }
+})
+const toolbarSearchPlaceholder = computed(() => viewMode.value === 'search'
+  ? '搜索最近1小时审计原始内容，空格分隔表示同时命中'
+  : '搜索 traceId')
+const toolbarFilterTitle = computed(() => viewMode.value === 'search' ? '最近内容搜索' : '审计筛选')
+const toolbarActiveFilterCount = computed(() => viewMode.value === 'search' ? hotSearchActiveFilterCount.value : activeFilterCount.value)
 const advancedFilterCount = computed(() => {
   let count = 0
   if (outcomeFilter.value !== 'all') count += 1
@@ -628,6 +669,25 @@ const advancedFilterCount = computed(() => {
   if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
+const toolbarAdvancedFilterCount = computed(() => viewMode.value === 'search' ? 0 : advancedFilterCount.value)
+const currentRecords = computed(() => viewMode.value === 'search' ? hotSearchRecords.value : records.value)
+const currentLoading = computed(() => viewMode.value === 'search' ? hotSearchLoading.value : loading.value)
+const currentMobileHasMore = computed(() => viewMode.value === 'search' ? false : mobileHasMore.value)
+const currentMobileLoadingMore = computed(() => viewMode.value === 'search' ? false : mobileLoadingMore.value)
+const hotSearchTablePagination = computed(() => {
+  const hasMore = hotSearchResult.value?.hasMore === true
+  const count = hotSearchRecords.value.length
+  return {
+    current: 1,
+    pageSize: pagination.pageSize,
+    total: hasMore ? count + 1 : count,
+    showSizeChanger: false,
+    showTotal: () => hasMore
+      ? `已显示前 ${count} 条匹配审计，还有更多`
+      : `共 ${count} 条匹配审计`
+  }
+})
+const currentTablePagination = computed(() => viewMode.value === 'search' ? hotSearchTablePagination.value : tablePagination.value)
 const auditRuntimeAlertVisible = computed(() => Boolean(runtime.value && (
   !runtime.value.runtimeAvailable
   || !runtime.value.workerSnapshotAvailable
@@ -815,14 +875,102 @@ function cancelAuditRuntimeRequest(): void {
 }
 
 watch(records, rememberAuditRecordGroupLabels, { immediate: true })
+watch(hotSearchRecords, rememberAuditRecordGroupLabels, { immediate: true })
 watch(detail, (nextDetail) => {
   rememberGroupLabel(nextDetail?.groupId, nextDetail?.groupName)
 })
+
+function applyCurrentMode(): void {
+  if (viewMode.value === 'search') {
+    clearRouteTraceIdForManualState()
+    void searchHotAuditLogs()
+    return
+  }
+  applyFilters()
+}
+
+function refreshCurrentMode(): void {
+  if (viewMode.value === 'search') {
+    void searchHotAuditLogs()
+    void refreshAuditRuntimeQuietly()
+    return
+  }
+  refreshRecords()
+}
+
+function resetCurrentMode(): void {
+  if (viewMode.value === 'search') {
+    clearRouteTraceIdForManualState()
+    hotSearchKeywordFilter.value = ''
+    hotSearchRecords.value = []
+    hotSearchResult.value = undefined
+    return
+  }
+  resetFilters()
+}
+
+function handleViewModeChange(): void {
+  if (viewMode.value === 'search') {
+    clearRouteTraceIdForManualState()
+    if (hotSearchKeywordFilter.value.trim() && !hotSearchResult.value) {
+      void searchHotAuditLogs()
+    }
+    return
+  }
+  void refreshAuditRuntimeQuietly()
+}
+
+function handleCurrentTableChange(paginationInfo: unknown): void {
+  if (viewMode.value === 'search') return
+  handleTableChange(paginationInfo)
+}
+
+function loadMoreCurrentMobileRecords(): void {
+  if (viewMode.value === 'search') return
+  loadMoreMobileRecords()
+}
+
+function refreshCurrentMobileRecords(): void {
+  if (viewMode.value === 'search') {
+    void searchHotAuditLogs()
+    return
+  }
+  refreshMobileRecords()
+}
 
 function applyFilters(): void {
   clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
+}
+
+async function searchHotAuditLogs(): Promise<void> {
+  const keyword = hotSearchKeywordFilter.value.trim()
+  const requestId = ++hotSearchRequestSeq
+  if (!keyword) {
+    hotSearchRecords.value = []
+    hotSearchResult.value = undefined
+    return
+  }
+  hotSearchLoading.value = true
+  try {
+    const result = await api.auditLogs.searchHot({
+      keywords: keyword,
+      limit: pagination.pageSize
+    })
+    if (requestId !== hotSearchRequestSeq) return
+    hotSearchResult.value = result
+    hotSearchRecords.value = result.items
+    void refreshAuditRuntimeQuietly()
+  } catch (error) {
+    if (requestId !== hotSearchRequestSeq) return
+    console.error(error)
+    message.error('搜索最近审计内容失败')
+  } finally {
+    if (requestId === hotSearchRequestSeq) {
+      hotSearchLoading.value = false
+    }
+  }
 }
 
 function openFullBodyCaptureModal(): void {
@@ -907,6 +1055,7 @@ async function updateFullBodyCapture(
 
 function applyPageState(state: AuditLogsPageState): void {
   traceIdFilter.value = state.traceIdFilter
+  hotSearchKeywordFilter.value = state.hotSearchKeywordFilter
   accountIdFilter.value = state.accountIdFilter
   accountSelection.value = state.accountSelection
   outcomeFilter.value = state.outcomeFilter
@@ -915,6 +1064,7 @@ function applyPageState(state: AuditLogsPageState): void {
   systemAccountFilter.value = state.systemAccountFilter
   systemAccountSelection.value = state.systemAccountSelection
   trafficSourceFilter.value = state.trafficSourceFilter
+  viewMode.value = state.viewMode === 'search' ? 'search' : 'list'
   pagination.current = state.pagination.current
   pagination.pageSize = state.pagination.pageSize
   resetSystemAccountOptionsSearch()
@@ -930,7 +1080,11 @@ function applyRouteTraceId(traceId: string): void {
 
 function restorePageStateAfterRouteTraceCleared(): void {
   applyPageState(pageStateCache.read())
-  void loadData({ forceOptions: true })
+  if (viewMode.value === 'search') {
+    void searchHotAuditLogs()
+  } else {
+    void loadData({ forceOptions: true })
+  }
 }
 
 function refreshRecords(): void {
@@ -1187,6 +1341,7 @@ function snapshotPageState(): AuditLogsPageState {
   return {
     accountIdFilter: accountIdFilter.value,
     accountSelection: accountSelection.value,
+    hotSearchKeywordFilter: hotSearchKeywordFilter.value,
     outcomeFilter: outcomeFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     pathFilter: pathFilter.value,
@@ -1194,7 +1349,8 @@ function snapshotPageState(): AuditLogsPageState {
     systemAccountFilter: systemAccountFilter.value,
     systemAccountSelection: systemAccountSelection.value,
     traceIdFilter: traceIdFilter.value,
-    trafficSourceFilter: trafficSourceFilter.value
+    trafficSourceFilter: trafficSourceFilter.value,
+    viewMode: viewMode.value
   }
 }
 
@@ -1225,14 +1381,25 @@ watch(
   }
 )
 
-onMounted(loadData)
+function loadInitialModeData(): void {
+  if (viewMode.value === 'search') {
+    void searchHotAuditLogs()
+    void refreshAuditRuntimeQuietly()
+    return
+  }
+  void loadData()
+}
+
+onMounted(loadInitialModeData)
 onBeforeUnmount(() => {
   clearAccountOptionsSearchTimer()
   cancelAuditRuntimeRequest()
+  hotSearchRequestSeq += 1
 })
 onDeactivated(() => {
   clearAccountOptionsSearchTimer()
   cancelAuditRuntimeRequest()
+  hotSearchRequestSeq += 1
   closeTransientDetails()
 })
 </script>
@@ -1265,6 +1432,14 @@ onDeactivated(() => {
 
 .full-capture-form :deep(.ant-input-number) {
   width: 180px;
+}
+
+.audit-mode-segmented {
+  white-space: nowrap;
+}
+
+.audit-search-alert {
+  margin-bottom: 12px;
 }
 
 .form-help {

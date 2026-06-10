@@ -1,5 +1,5 @@
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, OpenAIResponsesUpstreamMode, ProviderCode, ResourceAuthorizationSourceType } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ProviderCode, ResourceAuthorizationSourceType } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
@@ -45,7 +45,6 @@ export interface OpenAIAccountSecret {
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
-  openAIResponsesUpstreamMode: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   lastSuccessfulTestModel?: string
@@ -163,7 +162,7 @@ export function findOpenAIAccountForGroup(
 
   const row = getBusinessDatabase()
     .prepare(`
-      SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility, accounts.openai_responses_upstream_mode,
+      SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.availability_schedule_json, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
@@ -182,7 +181,6 @@ export function findOpenAIAccountForGroup(
         source_accounts.proxy_profile_id AS resource_proxy_profile_id,
         source_accounts.concurrency_limit AS resource_concurrency_limit,
         source_accounts.client_compatibility AS resource_client_compatibility,
-        source_accounts.openai_responses_upstream_mode AS resource_openai_responses_upstream_mode,
         NULL AS quality_score,
         NULL AS quality_state,
         NULL AS quality_ewma_first_token_ms
@@ -473,7 +471,7 @@ function listOpenAIGroupAccountSelectionRows(
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
         group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
-        accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility, accounts.openai_responses_upstream_mode,
+        accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.availability_schedule_json, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
@@ -492,7 +490,6 @@ function listOpenAIGroupAccountSelectionRows(
         source_accounts.proxy_profile_id AS resource_proxy_profile_id,
         source_accounts.concurrency_limit AS resource_concurrency_limit,
         source_accounts.client_compatibility AS resource_client_compatibility,
-        source_accounts.openai_responses_upstream_mode AS resource_openai_responses_upstream_mode,
         NULL AS quality_score,
         NULL AS quality_state,
         NULL AS quality_ewma_first_token_ms
@@ -597,7 +594,6 @@ interface OpenAIAccountRow {
   super_priority_enabled: number
   fallback_enabled: number
   client_compatibility: AccountClientCompatibility
-  openai_responses_upstream_mode: OpenAIResponsesUpstreamMode
   credentials_encrypted: string
   proxy_profile_id: string | null
   cooldown_until: string | null
@@ -626,7 +622,6 @@ interface OpenAIAccountRow {
   resource_proxy_profile_id?: string | null
   resource_concurrency_limit?: number | null
   resource_client_compatibility?: AccountClientCompatibility | null
-  resource_openai_responses_upstream_mode?: OpenAIResponsesUpstreamMode | null
   quality_score?: number | null
   quality_state?: string | null
   quality_ewma_first_token_ms?: number | null
@@ -676,15 +671,6 @@ function openAIAccountResourceClientCompatibility(row: OpenAIAccountRow): Accoun
     'openai_standard',
     { protocolCode: openAIAccountResourceProtocolCode(row), protocolVersion: openAIAccountResourceProtocolVersion(row) }
   )
-}
-
-function openAIAccountResourceResponsesUpstreamMode(row: OpenAIAccountRow): OpenAIResponsesUpstreamMode {
-  const resourceType = openAIAccountResourceType(row)
-  if (resourceType === 'oauth') {
-    return 'passthrough'
-  }
-  const value = row.resource_openai_responses_upstream_mode ?? row.openai_responses_upstream_mode
-  return value === 'chat_completions_bridge' ? 'chat_completions_bridge' : 'passthrough'
 }
 
 function openAIAccountSecretFromRow(
@@ -758,7 +744,6 @@ function openAIAccountSecretFromRow(
     superPriorityEnabled: runtimeStatus === 'active' && dispatchSuperPriorityEnabled,
     fallbackEnabled: runtimeStatus === 'active' && dispatchFallbackEnabled,
     clientCompatibility: openAIAccountResourceClientCompatibility(row),
-    openAIResponsesUpstreamMode: openAIAccountResourceResponsesUpstreamMode(row),
     supportedModels: [...(options.supportedModelsByAccountId?.get(resourceAccountId) ?? [])],
     modelMappings: [...(options.modelMappingsByAccountId?.get(resourceAccountId) ?? [])],
     lastSuccessfulTestModel: row.last_successful_test_model?.trim() || undefined,

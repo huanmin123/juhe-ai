@@ -116,6 +116,7 @@ export class AuditCaptureContext {
   private readonly trafficSource: OpenAIGatewayTrafficSource
   private readonly sampleBucket: number
   private readonly successCaptureSelected: boolean
+  private readonly successHotRetentionEnabled: boolean
   private readonly metadataOnly: boolean
   private readonly enabled: boolean
   private readonly successSampleRate: number
@@ -148,6 +149,7 @@ export class AuditCaptureContext {
     this.trafficSource = normalizeOpenAIGatewayTrafficSource(input.trafficSource)
     this.sampleBucket = sampleBucketForTraceId(this.traceId)
     this.successCaptureSelected = this.sampleBucket < Math.round(this.successSampleRate * 10000)
+    this.successHotRetentionEnabled = settings.successHotRetentionHours > 0
     this.metadataOnly = input.captureMode === 'metadata_only'
     if (!this.enabled) {
       return
@@ -183,7 +185,12 @@ export class AuditCaptureContext {
   }
 
   shouldCaptureSuccessPayloads(): boolean {
-    return this.enabled && !this.metadataOnly && (this.successCaptureSelected || this.shouldForceCaptureSuccess() || this.hadFailedAttempt)
+    return this.enabled && !this.metadataOnly && (
+      this.successHotRetentionEnabled
+      || this.successCaptureSelected
+      || this.shouldForceCaptureSuccess()
+      || this.hadFailedAttempt
+    )
   }
 
   private shouldForceCaptureSuccess(): boolean {
@@ -367,12 +374,17 @@ export class AuditCaptureContext {
     const success = input.success && outcome !== 'client_aborted'
     this.markFullBodyCaptureAccount(input.accountId)
     const forceCaptureSuccess = this.shouldForceCaptureSuccess()
-    const shouldCapture = this.metadataOnly || outcome !== 'success' || this.successCaptureSelected || forceCaptureSuccess
+    const shouldCapture = this.metadataOnly || outcome !== 'success' || this.successHotRetentionEnabled || this.successCaptureSelected || forceCaptureSuccess
     if (!shouldCapture) {
       return
     }
 
-    const shouldCapturePayloadBodies = !this.metadataOnly && (outcome !== 'success' || this.successCaptureSelected || forceCaptureSuccess)
+    const shouldCapturePayloadBodies = !this.metadataOnly && (
+      outcome !== 'success'
+      || this.successHotRetentionEnabled
+      || this.successCaptureSelected
+      || forceCaptureSuccess
+    )
     if (outcome !== 'success' || forceCaptureSuccess) {
       this.addClientRequestPayload()
     }
@@ -490,7 +502,10 @@ export class AuditCaptureContext {
         ? 'targeted_full_capture_success'
         : 'full_capture_success'
     }
-    return `success_sample_${this.successSampleRate}`
+    if (this.successCaptureSelected) {
+      return `success_sample_${this.successSampleRate}`
+    }
+    return 'success_hot_full_retention'
   }
 }
 

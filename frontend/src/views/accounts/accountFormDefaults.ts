@@ -35,7 +35,6 @@ export function defaultAccountForm(
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     clientCompatibility: resolvedProviderCode === GPT_VENDOR_CODE && resolvedType === 'oauth' ? 'codex_responses' : 'openai_standard',
-    openAIResponsesUpstreamMode: 'passthrough',
     supportedModels: [],
     modelMappings: [],
     tags: [],

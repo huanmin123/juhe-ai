@@ -2,12 +2,6 @@ import type { Request } from 'express'
 
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import {
-  buildOpenAIResponsesChatBridgeUpstreamPathAndQuery,
-  isOpenAIResponsesChatBridgeAccount,
-  isOpenAIResponsesCompactRequest,
-  isOpenAIResponsesChatBridgeRequest
-} from './openai-responses-chat-bridge.js'
-import {
   buildOpenAIModelsResponseFromCatalog,
   type OpenAIModelsListResponse,
   type ProviderModelCatalogItem
@@ -27,12 +21,6 @@ export function buildUpstreamUrls(baseUrl: string, pathAndQuery: string): string
 export function buildUpstreamUrlsForAccount(account: UpstreamAccount, req: Request): string[] {
   if (account.type === 'oauth') {
     return buildOpenAICodexUpstreamUrls(req)
-  }
-  if (isOpenAIResponsesChatBridgeAccount(account) && isOpenAIResponsesCompactRequest(req)) {
-    return []
-  }
-  if (isOpenAIResponsesChatBridgeRequest(req, account)) {
-    return buildUpstreamUrls(account.baseUrl, buildOpenAIResponsesChatBridgeUpstreamPathAndQuery(req))
   }
   return buildUpstreamUrls(account.baseUrl, req.originalUrl)
 }

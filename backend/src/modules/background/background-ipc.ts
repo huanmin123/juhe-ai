@@ -23,6 +23,7 @@ export interface BackgroundWorkerQueueRuntime {
   droppedOversizeCount?: number
   retainedOverflowWarningCount?: number
   flushFailureCount?: number
+  successHotRetentionHours?: number
   successRetentionDays?: number
   failureRetentionDays?: number
   errorGroupRetentionDays?: number

@@ -850,13 +850,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               description: '该账号支持的模型列表，必须属于供应商模型目录。'
             },
             {
-              name: 'openAIResponsesUpstreamMode',
-              type: 'string',
-              required: false,
-              description: 'Responses 上游模式：passthrough 或 chat_completions_bridge；用于上游不支持 /responses 的 API Key 账户。',
-              example: 'passthrough'
-            },
-            {
               name: 'concurrencyLimit',
               type: 'number',
               required: false,
@@ -900,7 +893,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             baseUrl: 'https://api.openai.com/v1',
             apiKey: 'sk-...',
             supportedModels: ['gpt-5.5', 'gpt-5.4'],
-            openAIResponsesUpstreamMode: 'passthrough',
             concurrencyLimit: 20,
             priority: 0,
             status: 'active',
@@ -933,7 +925,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               type: 'api_key',
               status: 'pending_test',
               supportedModels: ['gpt-5.5', 'gpt-5.4'],
-              openAIResponsesUpstreamMode: 'passthrough',
               boundGroupId: 'grp_xxx',
               boundGroupName: '福利',
               schedulable: false,
@@ -965,7 +956,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             { name: 'baseUrl', type: 'string', required: false, description: 'OpenAI 兼容 Base URL；提供时覆盖原值，未提供时保留原值。', example: 'https://api.openai.com/v1' },
             { name: 'apiKey', type: 'string', required: false, description: '上游 API Key；提供时覆盖原值，响应不会回显。', example: 'sk-...' },
             { name: 'supportedModels', type: 'string[]', required: false, description: '该账号支持的模型列表；提供时按当前数组覆盖。', example: ['gpt-5.5', 'gpt-5.4'] },
-            { name: 'openAIResponsesUpstreamMode', type: 'string', required: false, description: 'Responses 上游模式：passthrough 或 chat_completions_bridge；提供时按当前值覆盖。', example: 'passthrough' },
             { name: 'concurrencyLimit', type: 'number', required: false, description: '单账号并发限制，范围 1 到 100000。', example: 20 },
             { name: 'priority', type: 'number', required: false, description: '账号调度优先级，范围 0 到 100000。', example: 0 },
             { name: 'status', type: 'string', required: false, description: '账号状态：active 或 disabled；未填写时保留原状态，待测试账号不能通过修改接口激活。', example: 'disabled' },
@@ -976,7 +966,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
             accountId: 'acc_xxx',
             apiKey: 'sk-...',
             supportedModels: ['gpt-5.5', 'gpt-5.4'],
-            openAIResponsesUpstreamMode: 'passthrough',
             concurrencyLimit: 20,
             priority: 0,
             status: 'disabled',
@@ -1005,7 +994,6 @@ export function getExternalPublicApiCatalog(): ExternalPublicApiCatalog {
               type: 'api_key',
               status: 'disabled',
               supportedModels: ['gpt-5.5', 'gpt-5.4'],
-              openAIResponsesUpstreamMode: 'passthrough',
               boundGroupId: 'grp_xxx',
               boundGroupName: '福利',
               schedulable: false

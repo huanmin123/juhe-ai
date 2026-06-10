@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountModelMapping, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, OpenAIResponsesUpstreamMode, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountModelMapping, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
@@ -386,6 +386,7 @@ export {
   getAuditLogPayload,
   listAuditErrorGroupEvents,
   listAuditErrorGroups,
+  listAuditLogsByIds,
   listAuditLogs,
   type AuditErrorGroupListOptions,
   type AuditErrorGroupListResult,
@@ -718,13 +719,6 @@ function accountResourceClientCompatibility(row: AccountListRow): AccountClientC
   )
 }
 
-function accountResourceOpenAIResponsesUpstreamMode(row: AccountListRow): OpenAIResponsesUpstreamMode {
-  return normalizeOpenAIResponsesUpstreamMode(
-    row.access_type === 'authorized' ? row.source_openai_responses_upstream_mode : row.openai_responses_upstream_mode,
-    accountResourceType(row)
-  )
-}
-
 function accountRuntimeCredentialsFromRow(row: AccountListRow): Record<string, unknown> {
   if (row.access_type === 'authorized') {
     return row.source_credentials_encrypted ? decryptJson<Record<string, unknown>>(row.source_credentials_encrypted) : {}
@@ -960,19 +954,6 @@ function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean
 
 function normalizeFallbackInput(value: unknown, fallback: boolean): boolean {
   return normalizeBooleanDispatchInput(value, fallback, '降级备用')
-}
-
-function normalizeOpenAIResponsesUpstreamMode(value: unknown, accountType?: unknown): OpenAIResponsesUpstreamMode {
-  if (accountType === 'oauth') {
-    return 'passthrough'
-  }
-  if (value === undefined || value === null || value === '' || value === 'passthrough') {
-    return 'passthrough'
-  }
-  if (value === 'chat_completions_bridge') {
-    return 'chat_completions_bridge'
-  }
-  throw new Error('Responses 上游模式无效')
 }
 
 function authorizationRuntimeBlockingStatus(status?: AuthorizationStatus | null, expiresAt?: string | null): AccountStatus | undefined {
@@ -1736,7 +1717,6 @@ function accountSummariesFromRows(
     const dispatchSuperPriorityEnabled = isAuthorizedView ? row.bound_group_local_super_priority_enabled === 1 : row.super_priority_enabled === 1
     const dispatchFallbackEnabled = isAuthorizedView ? row.bound_group_local_fallback_enabled === 1 : row.fallback_enabled === 1
     const clientCompatibility = accountResourceClientCompatibility(row)
-    const openAIResponsesUpstreamMode = accountResourceOpenAIResponsesUpstreamMode(row)
     const availabilitySchedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
     const currentNowMs = Date.parse(currentNow)
     const currentNowDate = Number.isFinite(currentNowMs) ? new Date(currentNowMs) : new Date()
@@ -1766,7 +1746,6 @@ function accountSummariesFromRows(
       superPriorityEnabled: dispatchSuperPriorityEnabled,
       fallbackEnabled: dispatchFallbackEnabled,
       clientCompatibility,
-      openAIResponsesUpstreamMode,
       supportedModels: [...(row.supported_models ?? [])],
       modelMappings: [...(row.model_mappings ?? [])],
       tags: tagsByAccount.get(row.id) ?? [],
@@ -2183,7 +2162,6 @@ function cooldownRetestAccountSummaries(rows: AccountListRow[]): AccountSummary[
       superPriorityEnabled: row.super_priority_enabled === 1,
       fallbackEnabled: row.fallback_enabled === 1,
       clientCompatibility: accountResourceClientCompatibility(row),
-      openAIResponsesUpstreamMode: accountResourceOpenAIResponsesUpstreamMode(row),
       supportedModels: row.supported_models ?? [],
       modelMappings: row.model_mappings ?? [],
       lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
@@ -2323,7 +2301,6 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
       'openai_standard',
       { protocolCode: row.protocol_code, protocolVersion: row.protocol_version }
     ),
-    openAIResponsesUpstreamMode: 'passthrough',
     supportedModels: [],
     lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
     proxyProfileId: row.proxy_profile_id ?? undefined,
@@ -2368,10 +2345,9 @@ const accountCreateInputKeys = new Set([
   'concurrencyLimit',
   'priority',
   'superPriorityEnabled',
-    'fallbackEnabled',
-    'clientCompatibility',
-    'openAIResponsesUpstreamMode',
-    'proxyProfileId',
+  'fallbackEnabled',
+  'clientCompatibility',
+  'proxyProfileId',
   'schedulable',
   'groupId',
   'accountExpiresAt',
@@ -2389,10 +2365,9 @@ const accountUpdateInputKeys = new Set([
   'concurrencyLimit',
   'priority',
   'superPriorityEnabled',
-    'fallbackEnabled',
-    'clientCompatibility',
-    'openAIResponsesUpstreamMode',
-    'proxyProfileId',
+  'fallbackEnabled',
+  'clientCompatibility',
+  'proxyProfileId',
   'schedulable',
   'accountExpiresAt',
   'availabilitySchedule',
@@ -2444,7 +2419,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled, false)
   const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
   const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility, 'openai_standard', providerProfile)
-  const openAIResponsesUpstreamMode = normalizeOpenAIResponsesUpstreamMode(input.openAIResponsesUpstreamMode, accountType)
   if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
     throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
   }
@@ -2471,7 +2445,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     superPriorityEnabled: createSuperPriorityEnabled,
     fallbackEnabled: createFallbackEnabled,
     clientCompatibility,
-    openAIResponsesUpstreamMode,
     supportedModels,
     modelMappings,
     tags: tagNames.map((name) => ({ id: '', name })),
@@ -2510,9 +2483,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
-          priority, super_priority_enabled, fallback_enabled, client_compatibility, openai_responses_upstream_mode, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -2535,7 +2508,6 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.superPriorityEnabled ? 1 : 0,
         account.fallbackEnabled ? 1 : 0,
         account.clientCompatibility,
-        account.openAIResponsesUpstreamMode,
         account.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(account.availabilitySchedule),
         account.notes ?? null,
@@ -2723,10 +2695,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     current.clientCompatibility,
     current
   )
-  const nextOpenAIResponsesUpstreamMode = normalizeOpenAIResponsesUpstreamMode(
-    hasOwnInput(input, 'openAIResponsesUpstreamMode') ? input.openAIResponsesUpstreamMode : current.openAIResponsesUpstreamMode,
-    current.type
-  )
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
   const updateNowMs = Date.now()
@@ -2741,7 +2709,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     superPriorityEnabled: nextSuperPriorityEnabled,
     fallbackEnabled: nextFallbackEnabled,
     clientCompatibility: nextClientCompatibility,
-    openAIResponsesUpstreamMode: nextOpenAIResponsesUpstreamMode,
     supportedModels: nextSupportedModels,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
@@ -2780,7 +2747,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, openai_responses_upstream_mode = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
@@ -2799,7 +2766,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.superPriorityEnabled ? 1 : 0,
         next.fallbackEnabled ? 1 : 0,
         next.clientCompatibility,
-        next.openAIResponsesUpstreamMode,
         next.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(next.availabilitySchedule),
         next.accountExpiresAt ?? null,

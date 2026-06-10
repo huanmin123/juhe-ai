@@ -22,6 +22,7 @@ export interface AuditLogSettings {
   activeCaptureMaxBytes: number
   fullBodyCaptureEnabled: boolean
   fullBodyCapture: AuditFullBodyCaptureConfig
+  successHotRetentionHours: number
   successRetentionDays: number
   failureRetentionDays: number
   errorGroupRetentionDays: number
@@ -44,6 +45,7 @@ export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
     scope: 'global',
     includeSuccess: false
   }),
+  successHotRetentionHours: 1,
   successRetentionDays: 7,
   failureRetentionDays: 30,
   errorGroupRetentionDays: 30

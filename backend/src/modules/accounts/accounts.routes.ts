@@ -49,7 +49,6 @@ const accountCreateSchema = z.object({
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
-  openAIResponsesUpstreamMode: z.enum(['passthrough', 'chat_completions_bridge']).optional(),
   proxyProfileId: z.string().optional(),
   schedulable: z.boolean().optional(),
   groupId: z.string().nullable().optional(),
@@ -70,7 +69,6 @@ const accountUpdateSchema = z.object({
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
-  openAIResponsesUpstreamMode: z.enum(['passthrough', 'chat_completions_bridge']).optional(),
   proxyProfileId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
   groupId: z.string().trim().min(1, '账户分组不能为空').optional(),
@@ -93,7 +91,6 @@ const accountDraftTestAccountSchema = z.object({
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
-  openAIResponsesUpstreamMode: z.enum(['passthrough', 'chat_completions_bridge']).optional(),
   proxyProfileId: z.string().nullable().optional(),
   groupId: z.string().trim().min(1),
   accountExpiresAt: z.string().nullable().optional(),
@@ -1380,13 +1377,11 @@ function prepareAccountDraftTestSnapshot(input: {
     'openai_standard',
     providerProfile
   )
-  const openAIResponsesUpstreamMode = normalizeDraftOpenAIResponsesUpstreamMode(accountInput.openAIResponsesUpstreamMode, accountInput.type)
   const account = draftTestAccountSummary({
     id: input.draftAccountId,
     account: accountInput,
     availabilitySchedule,
     clientCompatibility,
-    openAIResponsesUpstreamMode,
     credentials,
     groupName: group.name,
     ownerSystemAccountId,
@@ -1413,7 +1408,6 @@ function prepareAccountDraftTestSnapshot(input: {
       superPriorityEnabled: account.superPriorityEnabled,
       fallbackEnabled: account.fallbackEnabled,
       clientCompatibility,
-      openAIResponsesUpstreamMode,
       supportedModels: account.supportedModels,
       modelMappings: account.modelMappings,
       proxyProfileId: account.proxyProfileId,
@@ -1520,7 +1514,6 @@ function accountCreateActivationFingerprintSnapshot(input: {
     'openai_standard',
     { protocolCode: input.protocolCode, protocolVersion: input.protocolVersion }
   )
-  const openAIResponsesUpstreamMode = normalizeDraftOpenAIResponsesUpstreamMode(account.openAIResponsesUpstreamMode, account.type)
   return {
     ownerSystemAccountId: input.ownerSystemAccountId,
     groupId: account.groupId,
@@ -1536,7 +1529,6 @@ function accountCreateActivationFingerprintSnapshot(input: {
     superPriorityEnabled: account.superPriorityEnabled ?? false,
     fallbackEnabled: account.fallbackEnabled ?? false,
     clientCompatibility,
-    openAIResponsesUpstreamMode,
     supportedModels: normalizedTextList(account.supportedModels),
     modelMappings: normalizeDraftAccountModelMappings(account.modelMappings, account.providerCode, input.ownerSystemAccountId),
     proxyProfileId: optionalText(account.proxyProfileId),
@@ -1562,7 +1554,6 @@ function draftActivationFingerprintSnapshot(draft: AccountTestDraftSnapshot): Re
     superPriorityEnabled: draft.superPriorityEnabled,
     fallbackEnabled: draft.fallbackEnabled,
     clientCompatibility: draft.clientCompatibility,
-    openAIResponsesUpstreamMode: draft.openAIResponsesUpstreamMode,
     supportedModels: normalizedTextList(draft.supportedModels),
     modelMappings: draft.modelMappings ?? [],
     proxyProfileId: optionalText(draft.proxyProfileId),
@@ -1586,7 +1577,6 @@ function accountDraftRequestFromCreate(account: AccountCreateRequest): AccountDr
     superPriorityEnabled: account.superPriorityEnabled,
     fallbackEnabled: account.fallbackEnabled,
     clientCompatibility: account.clientCompatibility,
-    openAIResponsesUpstreamMode: account.openAIResponsesUpstreamMode,
     proxyProfileId: account.proxyProfileId,
     groupId: typeof account.groupId === 'string' ? account.groupId : '',
     accountExpiresAt: account.accountExpiresAt,
@@ -1600,7 +1590,6 @@ function draftTestAccountSummary(input: {
   account: AccountDraftTestAccountRequest
   availabilitySchedule: ReturnType<typeof accountAvailabilityScheduleFromRequest>
   clientCompatibility: AccountSummary['clientCompatibility']
-  openAIResponsesUpstreamMode: AccountSummary['openAIResponsesUpstreamMode']
   credentials: Record<string, unknown>
   groupName?: string
   ownerSystemAccountId: string
@@ -1628,7 +1617,6 @@ function draftTestAccountSummary(input: {
     superPriorityEnabled: input.account.superPriorityEnabled ?? false,
     fallbackEnabled: input.account.fallbackEnabled ?? false,
     clientCompatibility: input.clientCompatibility,
-    openAIResponsesUpstreamMode: input.openAIResponsesUpstreamMode,
     supportedModels: normalizedTextList(input.account.supportedModels),
     modelMappings: normalizeDraftAccountModelMappings(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId),
     proxyProfileId: optionalText(input.account.proxyProfileId),
@@ -1658,22 +1646,6 @@ function draftTestAccountSummary(input: {
       color: 'blue'
     }
   }
-}
-
-function normalizeDraftOpenAIResponsesUpstreamMode(
-  value: unknown,
-  accountType: AccountSummary['type']
-): AccountSummary['openAIResponsesUpstreamMode'] {
-  if (accountType === 'oauth') {
-    return 'passthrough'
-  }
-  if (value === undefined || value === null || value === '' || value === 'passthrough') {
-    return 'passthrough'
-  }
-  if (value === 'chat_completions_bridge') {
-    return 'chat_completions_bridge'
-  }
-  throw new Error('Responses 上游模式无效')
 }
 
 function emptyAccountUsageSummary(): AccountSummary['usage'] {

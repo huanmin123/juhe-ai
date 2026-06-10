@@ -1,4 +1,4 @@
-import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType, OpenAIResponsesUpstreamMode } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getProxyTestConfig, listAccounts, type ProxyProfileTestConfig } from '../../storage/repositories.js'
 import {
@@ -40,7 +40,6 @@ export interface AccountExportAccount {
   priority?: number
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
-  openAIResponsesUpstreamMode?: OpenAIResponsesUpstreamMode
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   tags?: string[]
@@ -166,9 +165,6 @@ function exportAccount(account: AccountSummary, proxyRefsById: Map<string, strin
   if (status === 'active') {
     if (account.superPriorityEnabled) output.superPriorityEnabled = true
     if (account.fallbackEnabled) output.fallbackEnabled = true
-  }
-  if (account.type !== 'oauth' && account.openAIResponsesUpstreamMode !== 'passthrough') {
-    output.openAIResponsesUpstreamMode = account.openAIResponsesUpstreamMode
   }
   if (account.supportedModels?.length) output.supportedModels = [...account.supportedModels]
   if (account.modelMappings?.length) output.modelMappings = account.modelMappings.map((item) => ({ ...item }))

@@ -59,7 +59,9 @@ try {
   const sampledTraceId = traceIdForBucket((bucket) => bucket < 1000)
   finalizeSuccessfulRequest(unsampledTraceId)
   auditQueue.flushAllAuditLogQueue()
-  assert.equal(repositories.listAuditLogs({ traceId: unsampledTraceId }).total, 0, '未命中 10% 稳定采样的成功请求不应写入 audit_logs')
+  const unsampledEvents = repositories.listAuditLogs({ traceId: unsampledTraceId })
+  assert.equal(unsampledEvents.total, 1, '未命中 10% 稳定采样的成功请求应按热保留写入 audit_logs')
+  assert.equal(unsampledEvents.items[0]?.sampleReason, 'success_hot_full_retention', '未采样成功请求应标记为成功热保留')
 
   finalizeSuccessfulRequest(sampledTraceId)
   auditQueue.flushAllAuditLogQueue()
@@ -78,7 +80,7 @@ try {
   assert.equal(sensitiveHeaderSerializedDetail.includes('token=%5Bredacted%5D'), false, '审计 attempt upstreamUrl 不应写入脱敏占位')
   const sensitiveHeaderPayloads = await Promise.all(sensitiveHeaderDetail.payloads.map((payload) => repositories.getAuditLogPayload(sensitiveHeaderAuditId, payload.id)))
   const sensitiveHeaderSerialized = JSON.stringify(sensitiveHeaderPayloads)
-  assertAllAbsent(sensitiveHeaderSerialized, [
+  assertAllPresent(sensitiveHeaderSerialized, [
     'Bearer client-secret-token',
     'Bearer upstream-secret-token',
     'session-secret-cookie',
@@ -88,8 +90,8 @@ try {
     'audit-google-key-secret',
     'upstream-google-key-secret',
     'sk-account-secret'
-  ], '审计 payload header 不应保留敏感原文')
-  assert(sensitiveHeaderSerialized.includes('[redacted]'), '审计 payload header 应写入脱敏占位')
+  ], '审计 payload header 应保留敏感原文')
+  assert.equal(sensitiveHeaderSerialized.includes('[redacted]'), false, '审计 payload header 不应写入脱敏占位')
 
   const proxyCredentialTraceId = 'trace-proxy-credential-redaction'
   finalizeProxyCredentialAudit(proxyCredentialTraceId)
@@ -156,12 +158,12 @@ try {
   })
   usageRecordQueue.flushAllUsageRecordQueue()
   const sensitiveUsageRecord = repositories.getUsageRecordDetail(sensitiveUsageRecordId)
-  assert(sensitiveUsageRecord, '使用记录敏感信息脱敏样本应能按分片 ID 读取')
+  assert(sensitiveUsageRecord, '使用记录敏感信息原文样本应能按分片 ID 读取')
   const sensitiveUsageSerialized = JSON.stringify({
     requestSnapshot: sensitiveUsageRecord?.requestSnapshot,
     responseSnapshot: sensitiveUsageRecord?.responseSnapshot
   })
-  assertAllAbsent(sensitiveUsageSerialized, [
+  assertAllPresent(sensitiveUsageSerialized, [
     'usage-client-token',
     'usage-api-key-secret',
     'usage-openai-api-key-secret',
@@ -173,9 +175,9 @@ try {
     'usage-last-upstream-google-key',
     'usage-query-token',
     'usage-upstream-query-key'
-  ], '使用记录 header snapshot 不应保留敏感原文')
+  ], '使用记录 header snapshot 应保留敏感原文')
   assert(sensitiveUsageSerialized.includes('safe=ok'), '使用记录请求 snapshot 应保留安全查询参数')
-  assert(sensitiveUsageSerialized.includes('[redacted]'), '使用记录 header snapshot 应写入脱敏占位')
+  assert.equal(sensitiveUsageSerialized.includes('[redacted]'), false, '使用记录 header snapshot 不应写入脱敏占位')
 
   const overflowTraceId = 'trace-overflow-retained'
   finalizeOverflowFailedRequest(overflowTraceId)
@@ -316,7 +318,20 @@ try {
     const nonTargetSuccessTraceId = traceIdForBucket((bucket) => bucket >= 1000, 'trace-targeted-success-non-target')
     finalizeSuccessfulAccountRequestWithBody(nonTargetSuccessTraceId, largeSuccessRequestBody, 'account_other_full_capture')
     auditQueue.flushAllAuditLogQueue()
-    assert.equal(repositories.listAuditLogs({ traceId: nonTargetSuccessTraceId }).total, 0, '定向临时全量捕获不应放大非目标账户的未采样 200 成功请求')
+    const nonTargetSuccessEvents = repositories.listAuditLogs({ traceId: nonTargetSuccessTraceId })
+    assert.equal(nonTargetSuccessEvents.total, 1, '非目标账户的未采样 200 成功请求应按热保留写入审计')
+    assert.equal(nonTargetSuccessEvents.items[0]?.sampleReason, 'success_hot_full_retention', '非目标账户未采样成功请求不应标记为定向捕获')
+
+    const hotTrimmed = await repositories.cleanupAuditLogsByRetentionAsync({
+      successHotCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
+      successCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
+      failureCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
+      errorGroupCutoffUpdatedAt: '2000-01-01T00:00:00.000Z',
+      limit: 100
+    })
+    assert(hotTrimmed >= 1, '热窗口后置清理应删除未命中长期采样的普通成功请求')
+    assert.equal(repositories.listAuditLogs({ traceId: nonTargetSuccessTraceId }).total, 0, '非目标未采样成功请求超过热窗口后应被删除')
+    assert.equal(repositories.listAuditLogs({ traceId: targetedSuccessTraceId }).total, 1, '定向临时全量捕获成功请求应跳过后置采样清理')
   } finally {
     runtimeConfig.audit.fullBodyCapture = previousTargetedCapture
     runtimeConfig.audit.fullBodyCaptureEnabled = previousTargetedCaptureEnabled
@@ -477,6 +492,7 @@ try {
   const retainedErrorGroupId = groups.items[0].id
   datasetDatabase.prepare('UPDATE audit_error_groups SET updated_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', retainedErrorGroupId)
   await repositories.cleanupAuditLogsByRetentionAsync({
+    successHotCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
     successCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
     failureCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
     errorGroupCutoffUpdatedAt: '2001-01-01T00:00:00.000Z',
@@ -494,6 +510,7 @@ try {
   assert.equal(payloadDetail?.bodyText, repeatedBody, 'payload 读取接口应透明解压并返回正文')
 
   const deleted = await repositories.cleanupAuditLogsByRetentionAsync({
+    successHotCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
     successCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
     failureCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
     errorGroupCutoffUpdatedAt: '2999-01-01T00:00:00.000Z',
@@ -845,6 +862,12 @@ function stableJsonStringify(value: unknown): string {
 function assertAllAbsent(text: string, markers: string[], message: string): void {
   for (const marker of markers) {
     assert(!text.includes(marker), `${message}：${marker}`)
+  }
+}
+
+function assertAllPresent(text: string, markers: string[], message: string): void {
+  for (const marker of markers) {
+    assert(text.includes(marker), `${message}：${marker}`)
   }
 }
 

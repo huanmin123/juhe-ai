@@ -22,7 +22,6 @@ export type AccountSavePayload = {
   concurrencyLimit: number
   priority: number
   clientCompatibility: AccountFormModel['clientCompatibility']
-  openAIResponsesUpstreamMode: AccountFormModel['openAIResponsesUpstreamMode']
   supportedModels: string[]
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
@@ -98,7 +97,6 @@ export function buildAccountSavePayload(input: {
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
     clientCompatibility: input.form.clientCompatibility,
-    openAIResponsesUpstreamMode: input.form.type === 'oauth' ? 'passthrough' : input.form.openAIResponsesUpstreamMode,
     supportedModels: [...(input.form.supportedModels ?? [])],
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
@@ -117,7 +115,6 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
     clientCompatibility: payload.clientCompatibility,
-    openAIResponsesUpstreamMode: payload.openAIResponsesUpstreamMode,
     supportedModels: payload.supportedModels,
     modelMappings: payload.modelMappings,
     tags: payload.tags,

@@ -498,7 +498,6 @@ function createRuntimeAccount(id: string): OpenAIAccountSecret {
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
-    openAIResponsesUpstreamMode: 'passthrough',
     supportedModels: ['gpt-5.5'],
     currentConcurrency: 0,
     baseUrl: 'https://api.openai.com/v1',

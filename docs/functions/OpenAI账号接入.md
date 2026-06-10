@@ -21,8 +21,6 @@
 | GPT API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传，例如 `/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions`。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 请求体默认 raw passthrough；可选 `codex_responses` 兼容模式只改写 `/responses` 请求；本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
 | GPT OAuth | ChatGPT / Codex backend 的 `openai_oauth_codex` adapter | 只为 `POST /responses`、`POST /v1/responses`、`POST /responses/compact` 和 `POST /v1/responses/compact` 构造 Codex 上游请求；`GET /models` / `/v1/models` 由本地模型目录返回。 | 账户兼容模式固定为 `codex_responses`，不提供用户侧切换；不等价于公开 OpenAI API Key；不承诺 `/chat/completions` 到 Responses 的重型协议翻译，也不承诺公开 Responses API 全字段原样进入 Codex backend。OAuth-only 分组请求不支持的路径时不会落到公开 OpenAI API。 |
 
-API Key 账户支持账户维度的 Responses 上游模式，用于把下游 `POST /responses` / `POST /v1/responses` 在命中具体账户后降级转发到上游 `POST /chat/completions`，再把 Chat 回包重建为 Responses 响应。该能力只面向 OpenAI v1 API Key 账户，默认关闭，OAuth 账户不参与；方案、边界和待核对项见 [Responses 转 Chat Completions 账户适配方案](Responses转ChatCompletions账户适配方案.md)。
-
 混合分组中如果同时存在 API Key 账号和 OAuth 账号，某条路径是否可用取决于调度命中的账号类型：OAuth 账号不支持的路径会跳过该账号，仍可由同分组内可用的 API Key 账号承接；如果当前 API Key 还绑定了后续号池，且当前分组没有任何账号类型能承接该路径，网关应继续尝试下一号池；如果所有号池都没有可用账号，则返回“没有可用的上游账户”一类网关错误，而不是自动协议翻译。多号池混合规则见 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
 
 单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，服务端不换账号也不重新请求上游续写；持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时按客户端策略处理可见输出前失败：只有命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时，才写出 Codex 可重试的 `response.failed/upstream_retryable_error`，并在同一 turn 第 4 次失败链路上避让已失败账号；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
@@ -228,7 +226,6 @@ type GptAccountType = 'api_key' | 'oauth'
 OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过本地 API Key、分组授权、账号状态、冷却、到期时间、并发、账户错误处理策略和上游可用性判断。
 
 - 会话标识来源包括请求头或请求体里的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
-- Responses 转 Chat Completions bridge 当前不维护本地续链；请求携带非空 `previous_response_id` 时返回本地不支持错误，不进入会话亲和。
 - 亲和键按 `system_account_id + api_key_id + session` 隔离，避免不同本地 API Key 或系统账户共享同一个上游会话绑定；`group_id` 不参与亲和键。
 - 手动迁移流量时，会话亲和迁移按源账号、系统账户和可选 API Key 反向索引定位候选绑定，不扫描全部亲和缓存；同一 API Key 下不同分组仍共享同一亲和绑定。
 - OAuth Codex adapter 写入上游的 `session_id`、`conversation_id` 和 `prompt_cache_key` 也按同一层本地边界隔离，不把上游账号 ID、账号类型或分组 ID 写进隔离 key；同一个本地 API Key 路由下因失败、冷却或并发切换上游账号时，尽量保留客户端会话和 prompt cache 连续性。
