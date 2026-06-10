@@ -614,6 +614,10 @@ function coalesceRecordMaintenanceJobIntoPendingQueue(job: RecordMaintenanceJob)
   )))
   const nextMessage: BackgroundWorkerMessage = { ...current, items: nextItems }
   const nextBytes = estimateWorkerMessageBytes(nextMessage)
+  const nextQueueBytes = regularWorkerMessageQueueBytes - currentBytes + nextBytes
+  if (nextBytes > regularWorkerMessageMaxBytes || nextQueueBytes > regularWorkerMessageQueueMaxBytes) {
+    return false
+  }
   regularWorkerMessageQueue.set(queueIndex, nextMessage)
   regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - currentBytes + nextBytes)
   const runtime = pendingQueueRuntime.recordMaintenance

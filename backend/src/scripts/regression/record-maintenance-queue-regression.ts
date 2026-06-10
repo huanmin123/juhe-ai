@@ -235,6 +235,32 @@ try {
     ipcRecordMaintenanceBefore + 1,
     'server 到 worker 的账号用量快照 IPC pending 队列应按同账号同类型合并'
   )
+  const ipcRejectedBefore = backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount ?? 0
+  const ipcDroppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
+  const oversizedCoalescedResult = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult({
+    ...buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_ipc_oversize', 'acct_codex_snapshot_ipc', 53),
+    snapshot: {
+      codex_usage_updated_at: '2000-01-01T00:00:02.000Z',
+      oversized: 'x'.repeat(9 * 1024 * 1024)
+    }
+  })
+  assert.equal(oversizedCoalescedResult.queued, false, 'server 到 worker 的账号用量快照 IPC 合并后超限时应拒绝新任务')
+  assert.equal(oversizedCoalescedResult.droppedReason, 'worker_dispatch_failed', 'IPC 合并后超限应按投递失败返回')
+  assert.equal(
+    backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength,
+    ipcRecordMaintenanceBefore + 1,
+    'IPC 合并后超限不应替换已有小快照，也不应突破队列长度'
+  )
+  assert.equal(
+    backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount,
+    ipcRejectedBefore + 1,
+    'IPC 合并后超限应记录 server IPC 拒绝次数'
+  )
+  assert.equal(
+    recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount,
+    ipcDroppedBefore + 1,
+    'IPC 合并后超限应进入数据维护 dropped 指标'
+  )
 
   runtimeConfig.processRole = 'db-service'
   const droppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
