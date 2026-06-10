@@ -44,6 +44,11 @@ import {
   recordGatewayUpstreamBucketFailure
 } from './openai-gateway-proxy-health.service.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
+import {
+  decideGatewayCompatibilityRecovery,
+  recordGatewayCompatibilityRecoveryDecision,
+  type GatewayCompatibilityRecoveryState
+} from './openai-gateway-compatibility-policy.js'
 
 export type AccountFailureInput = {
   success: false
@@ -72,6 +77,8 @@ interface HandleFailedUpstreamResponseInput {
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
   retrySameAccount?: boolean
+  requestBody?: Buffer | string
+  compatibilityRecoveryState?: GatewayCompatibilityRecoveryState
 }
 
 interface HandleUpstreamRequestErrorInput {
@@ -95,9 +102,13 @@ interface HandleUpstreamRequestErrorInput {
   retrySameAccount?: boolean
 }
 
+type HandleFailedUpstreamResponseResult =
+  | { action: 'retry' | 'skip_account'; lastAttempt: UpstreamAttempt }
+  | { action: 'retry_with_body_variant'; lastAttempt: UpstreamAttempt; body: Buffer }
+
 export async function handleFailedUpstreamResponse(
   input: HandleFailedUpstreamResponseInput
-): Promise<{ action: 'retry' | 'skip_account'; lastAttempt: UpstreamAttempt }> {
+): Promise<HandleFailedUpstreamResponseResult> {
   const {
     req,
     usageContext,
@@ -189,6 +200,26 @@ export async function handleFailedUpstreamResponse(
   let parsedError: Record<string, unknown> = {}
   if (!responseBodyRead.truncated) {
     parsedError = parseErrorPayload(responseBodyText, response.headers)
+  }
+  if (!responseBodyRead.truncated && input.compatibilityRecoveryState) {
+    const compatibilityRecovery = await decideGatewayCompatibilityRecovery({
+      req,
+      account,
+      upstreamUrl,
+      body: input.requestBody,
+      responseBodyText,
+      parsedError,
+      recoveryState: input.compatibilityRecoveryState,
+      signal
+    })
+    recordGatewayCompatibilityRecoveryDecision(auditCapture, compatibilityRecovery)
+    if (compatibilityRecovery.action === 'retry_with_body_variant') {
+      return {
+        action: 'retry_with_body_variant',
+        lastAttempt,
+        body: compatibilityRecovery.body
+      }
+    }
   }
   const policyDecision = responseBodyRead.truncated
     ? undefined

@@ -210,11 +210,29 @@ async function assertHiddenAuthorizationInstanceTagsNotMutated(baseUrl: string):
     remark: '账户标签隐藏授权实例回归'
   }, ownerAccess)
   const authorizedAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
+  const localTags = repositories.updateAccountTags(authorizedAccount.id, ['授权本地标签'], granteeAccess)
+  const localTag = localTags?.find((tag) => tag.name === '授权本地标签')
+  assert(localTag, '被授权用户应可给授权实例配置自己的本地标签')
+  assert.equal(
+    repositories.listAccountTags(granteeAccess).find((tag) => tag.id === localTag.id)?.accountCount,
+    1,
+    '授权实例可见时本地标签应计入绑定账户数'
+  )
   repositories.returnAccountAuthorizationInstanceForGrantee(authorizedAccount.id, granteeAccess)
   assert.equal(
     repositories.listAccounts(granteeAccess).some((account) => account.id === authorizedAccount.id),
     false,
     '归还后的授权实例不应继续可见'
+  )
+  assert.equal(
+    repositories.listAccountTags(granteeAccess).find((tag) => tag.id === localTag.id)?.accountCount,
+    0,
+    '归还后的授权实例不应继续占用本地标签删除约束'
+  )
+  assert.equal(
+    repositories.deleteAccountTag(localTag.id, granteeAccess),
+    true,
+    '只绑定了已归还授权实例的标签应允许删除'
   )
 
   const status = await patchStatus(baseUrl, `/__aisys__/api/my-accounts/${authorizedAccount.id}/tags`, sessionCookie(grantee.id), {

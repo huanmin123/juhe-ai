@@ -45,6 +45,7 @@ import { type GatewayUpstreamResponse } from './openai-gateway-upstream.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import { OpenAIResponsesChatBridgeError } from './openai-responses-chat-bridge.js'
 import type { OpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
+import { createGatewayCompatibilityRecoveryState } from './openai-gateway-compatibility-policy.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -100,6 +101,7 @@ export async function fetchFirstAvailableUpstream(
   const failedProxyDispatchKeys = new Map<string, string>()
   const failedAccountIds = new Set<string>()
   let dispatchAccounts = orderAccountsForRequestLane(accounts, requestLane, groupSchedulingPolicy)
+  const compatibilityRecoveryState = createGatewayCompatibilityRecoveryState()
 
   while (dispatchAccounts.length > 0) {
     let attemptedAccountCount = 0
@@ -232,7 +234,8 @@ export async function fetchFirstAvailableUpstream(
           continue
         }
         for (const upstreamUrl of upstreamUrls) {
-          for (let attemptIndex = 0; attemptIndex < maxAttemptCount; attemptIndex += 1) {
+          let activeBodyVariant = false
+          for (let attemptIndex = 0, attemptLimit = maxAttemptCount; attemptIndex < attemptLimit; attemptIndex += 1) {
             const attemptStartedAt = Date.now()
             auditAttemptIndex += 1
             const auditAttemptId = auditCapture.startAttempt({
@@ -291,10 +294,18 @@ export async function fetchFirstAvailableUpstream(
                 lastAttempt,
                 clientIpAccountAvoidanceTracker,
                 accountStateMutationEnabled,
-                retrySameAccount: shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
+                retrySameAccount: !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy),
+                requestBody: body,
+                compatibilityRecoveryState
               })
               lastAttempt = failedResponseResult.lastAttempt
               failedAccountIds.add(account.id)
+              if (failedResponseResult.action === 'retry_with_body_variant') {
+                body = failedResponseResult.body
+                activeBodyVariant = true
+                attemptLimit += 1
+                continue
+              }
               if (failedResponseResult.action === 'retry') {
                 await waitForSameAccountRetry(account, upstreamUrl, attemptIndex, sameAccountRetryPolicy, auditCapture, signal)
                 continue
@@ -320,7 +331,7 @@ export async function fetchFirstAvailableUpstream(
                 error,
                 clientIpAccountAvoidanceTracker,
                 accountStateMutationEnabled,
-                retrySameAccount: shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
+                retrySameAccount: !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
               })
               lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
               failedAccountIds.add(account.id)

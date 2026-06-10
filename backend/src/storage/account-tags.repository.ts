@@ -31,7 +31,14 @@ export function listAccountTags(access?: AccessScope): AccountTagSummary[] {
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT account_tags.id, account_tags.system_account_id, account_tags.name,
-        COUNT(active_accounts.id) AS account_count,
+        COUNT(CASE
+          WHEN active_accounts.id IS NOT NULL
+            AND (
+              active_accounts.authorization_instance_authorization_id IS NULL
+              OR visible_authorizations.id IS NOT NULL
+            )
+          THEN active_accounts.id
+        END) AS account_count,
         account_tags.created_at, account_tags.updated_at
       FROM account_tags
       LEFT JOIN account_tag_bindings
@@ -39,6 +46,10 @@ export function listAccountTags(access?: AccessScope): AccountTagSummary[] {
       LEFT JOIN accounts active_accounts
         ON active_accounts.id = account_tag_bindings.account_id
         AND active_accounts.deleted_at IS NULL
+      LEFT JOIN resource_authorizations visible_authorizations
+        ON visible_authorizations.id = active_accounts.authorization_instance_authorization_id
+        AND visible_authorizations.grantee_system_account_id = active_accounts.system_account_id
+        AND visible_authorizations.status IN ('active', 'paused', 'expired')
       WHERE account_tags.system_account_id = ?
       GROUP BY account_tags.id
       ORDER BY account_tags.name COLLATE NOCASE ASC, account_tags.id ASC
@@ -63,7 +74,15 @@ export function deleteAccountTag(tagId: string, access?: AccessScope): boolean {
       INNER JOIN accounts
         ON accounts.id = account_tag_bindings.account_id
         AND accounts.deleted_at IS NULL
+      LEFT JOIN resource_authorizations visible_authorizations
+        ON visible_authorizations.id = accounts.authorization_instance_authorization_id
+        AND visible_authorizations.grantee_system_account_id = accounts.system_account_id
+        AND visible_authorizations.status IN ('active', 'paused', 'expired')
       WHERE account_tag_bindings.tag_id = ?
+        AND (
+          accounts.authorization_instance_authorization_id IS NULL
+          OR visible_authorizations.id IS NOT NULL
+        )
       LIMIT 1
     `)
     .get(id) as unknown as { 1?: number } | undefined
