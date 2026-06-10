@@ -88,6 +88,7 @@ async function main(): Promise<void> {
     const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
 
     const cleanupSuccess = seedTwoAccountGateway(upstreamBaseUrl, 'cleanup-success')
+    const cleanupObjectInput = seedTwoAccountGateway(upstreamBaseUrl, 'cleanup-object-input')
     const functionOutput = seedTwoAccountGateway(upstreamBaseUrl, 'function-output')
     const fallback = seedTwoAccountGateway(upstreamBaseUrl, 'fallback-after-cleanup-failed')
     const noEncrypted = seedTwoAccountGateway(upstreamBaseUrl, 'no-encrypted-default-retry')
@@ -97,13 +98,14 @@ async function main(): Promise<void> {
     const baseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
     await assertEncryptedReasoningCleanupSucceedsOnSameAccount(baseUrl, cleanupSuccess, upstreamState)
+    await assertEncryptedReasoningObjectInputDropsEmptyReasoning(baseUrl, cleanupObjectInput, upstreamState)
     await assertFunctionCallOutputKeepsPreviousResponseId(baseUrl, functionOutput, upstreamState)
     await assertCleanupFailureFallsBackWithOriginalBody(baseUrl, fallback, upstreamState)
     await assertNoEncryptedReasoningUsesDefaultRetry(baseUrl, noEncrypted, upstreamState)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    assertAccountsStillActive([cleanupSuccess, functionOutput, fallback, noEncrypted])
+    assertAccountsStillActive([cleanupSuccess, cleanupObjectInput, functionOutput, fallback, noEncrypted])
 
     console.log('网关兼容策略请求恢复回归通过：mock AI 覆盖 encrypted reasoning 大请求清洗重试、function_call_output 边界、清洗失败后 fallback 和无可恢复体默认重试')
   } finally {
@@ -144,6 +146,24 @@ async function assertEncryptedReasoningCleanupSucceedsOnSameAccount(
   assert.equal(hasEncryptedReasoning(requests[1]?.body), false, '清洗重试应删除 encrypted reasoning')
   assert.equal(hasPreviousResponseId(requests[1]?.body), false, '非 function_call_output 场景应删除 previous_response_id')
   assert.equal(requests.some((request) => request.upstreamKey === seeded.fallbackUpstreamKey), false, '清洗成功时不应切到备用账号')
+}
+
+async function assertEncryptedReasoningObjectInputDropsEmptyReasoning(
+  baseUrl: string,
+  seeded: SeededGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const before = upstreamState.requests.length
+  const responseText = await requestResponsesStream(baseUrl, seeded.apiKey, buildEncryptedReasoningRequest('cleanup-object-input', {
+    objectInput: true
+  }))
+  assert(responseText.includes('response.completed'), `对象形态 input 清洗重试后应返回成功 SSE：${responseText}`)
+
+  const requests = upstreamState.requests.slice(before)
+  assert.equal(requests.length, 2, '对象形态 input 首轮失败后应只进行一次清洗重试')
+  assert.equal(hasEncryptedReasoning(requests[0]?.body), true, '对象形态 input 首轮应保留 encrypted reasoning')
+  assert.equal(hasEncryptedReasoning(requests[1]?.body), false, '对象形态 input 清洗重试应删除 encrypted reasoning')
+  assert.deepEqual(inputItems(requests[1]?.body), [], '对象形态空 reasoning 清洗后应丢弃整个 reasoning item')
 }
 
 async function assertFunctionCallOutputKeepsPreviousResponseId(
@@ -300,7 +320,7 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         return
       }
 
-      if (scenario === 'cleanup-success' || scenario === 'function-output') {
+      if (scenario === 'cleanup-success' || scenario === 'cleanup-object-input' || scenario === 'function-output') {
         if (hasEncryptedReasoning(body)) {
           sendEncryptedReasoningError(res, scenario === 'cleanup-success' ? 'thinking_signature_invalid' : 'invalid_encrypted_content')
           return
@@ -351,6 +371,7 @@ function buildEncryptedReasoningRequest(
   options: {
     functionCallOutput?: boolean
     largeBody?: boolean
+    objectInput?: boolean
   } = {}
 ): Record<string, unknown> {
   const input: Array<Record<string, unknown>> = [
@@ -373,12 +394,15 @@ function buildEncryptedReasoningRequest(
       content: [{ type: 'input_text', text: 'hello compatibility recovery' }]
     })
   }
+  const requestInput: Record<string, unknown> | Array<Record<string, unknown>> = options.objectInput
+    ? input[0]
+    : input
   return {
     model: 'gpt-5.4',
     stream: true,
     store: false,
     previous_response_id: `resp_${scenario}`,
-    input,
+    input: requestInput,
     include: ['reasoning.encrypted_content'],
     metadata: {
       scenario,

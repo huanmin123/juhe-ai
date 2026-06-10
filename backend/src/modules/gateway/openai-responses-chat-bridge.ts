@@ -136,6 +136,9 @@ function transformResponsesRequestToChatCompletions(
   if (!model) {
     throw new OpenAIResponsesChatBridgeError('Responses 转 Chat Completions 要求请求体包含 model')
   }
+  if (typeof body.previous_response_id === 'string' && body.previous_response_id.trim()) {
+    throw new OpenAIResponsesChatBridgeError('Responses 转 Chat Completions 桥接不支持 previous_response_id，本地上下文续链未启用', 400, 'responses_chat_bridge_previous_response_id_unsupported')
+  }
   const messages = responsesMessagesToChatMessages(body)
   if (messages.length === 0) {
     throw new OpenAIResponsesChatBridgeError('Responses 转 Chat Completions 要求 input 至少包含一条可转换消息')

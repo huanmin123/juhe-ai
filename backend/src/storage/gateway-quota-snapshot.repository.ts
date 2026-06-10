@@ -6,8 +6,8 @@ import type {
   GatewayQuotaSnapshot
 } from '../modules/gateway/gateway-quota-snapshot-cache.service.js'
 import {
-  maxGatewayQuotaSnapshotAuthorizationEntries,
-  maxGatewayQuotaSnapshotCostEntries
+  gatewayQuotaSnapshotAuthorizationPageSize,
+  gatewayQuotaSnapshotCostPageSize
 } from '../modules/gateway/gateway-quota-snapshot-cache.service.js'
 import type { RequestQuotaLimits } from '../domain/types.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
@@ -122,22 +122,31 @@ export function buildGatewayQuotaSnapshot(now = new Date()): GatewayQuotaSnapsho
 }
 
 function loadApiKeyQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<ApiKeyQuotaSnapshotRow> {
-  const rows = database.prepare(`
+  const statement = database.prepare(`
     SELECT id, system_account_id, quota_limits_json
     FROM api_keys
     WHERE status = 'active'
       AND quota_limits_json IS NOT NULL
     ORDER BY updated_at DESC, id ASC
     LIMIT ?
-  `).all(maxGatewayQuotaSnapshotCostEntries + 1) as unknown as ApiKeyQuotaSnapshotRow[]
+    OFFSET ?
+  `)
+  const rows: ApiKeyQuotaSnapshotRow[] = []
+  let offset = 0
+  while (true) {
+    const page = statement.all(gatewayQuotaSnapshotCostPageSize, offset) as unknown as ApiKeyQuotaSnapshotRow[]
+    rows.push(...page)
+    if (page.length < gatewayQuotaSnapshotCostPageSize) break
+    offset += page.length
+  }
   return {
-    rows: rows.slice(0, maxGatewayQuotaSnapshotCostEntries),
-    complete: rows.length <= maxGatewayQuotaSnapshotCostEntries
+    rows,
+    complete: true
   }
 }
 
 function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<AuthorizationQuotaSnapshotRow> {
-  const rows = database.prepare(`
+  const statement = database.prepare(`
     SELECT ra.id, ra.resource_owner_system_account_id, ra.grantee_system_account_id, ra.resource_type, ra.resource_id,
       instance_accounts.id AS instance_account_id,
       ra.effective_source_team_id, ra.limits_json
@@ -167,15 +176,24 @@ function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): BoundedQuot
       )
     ORDER BY ra.updated_at DESC, ra.id ASC
     LIMIT ?
-  `).all(maxGatewayQuotaSnapshotAuthorizationEntries + 1) as unknown as AuthorizationQuotaSnapshotRow[]
+    OFFSET ?
+  `)
+  const rows: AuthorizationQuotaSnapshotRow[] = []
+  let offset = 0
+  while (true) {
+    const page = statement.all(gatewayQuotaSnapshotAuthorizationPageSize, offset) as unknown as AuthorizationQuotaSnapshotRow[]
+    rows.push(...page)
+    if (page.length < gatewayQuotaSnapshotAuthorizationPageSize) break
+    offset += page.length
+  }
   return {
-    rows: rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries),
-    complete: rows.length <= maxGatewayQuotaSnapshotAuthorizationEntries
+    rows,
+    complete: true
   }
 }
 
 function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<TeamAuthorizationQuotaSnapshotRow> {
-  const rows = database.prepare(`
+  const statement = database.prepare(`
     SELECT
       ra.id AS authorization_id,
       grant_rows.resource_owner_system_account_id,
@@ -202,10 +220,19 @@ function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): Bounded
       AND grant_rows.limits_json IS NOT NULL
     ORDER BY ra.updated_at DESC, ra.id ASC
     LIMIT ?
-  `).all(maxGatewayQuotaSnapshotAuthorizationEntries + 1) as unknown as TeamAuthorizationQuotaSnapshotRow[]
+    OFFSET ?
+  `)
+  const rows: TeamAuthorizationQuotaSnapshotRow[] = []
+  let offset = 0
+  while (true) {
+    const page = statement.all(gatewayQuotaSnapshotAuthorizationPageSize, offset) as unknown as TeamAuthorizationQuotaSnapshotRow[]
+    rows.push(...page)
+    if (page.length < gatewayQuotaSnapshotAuthorizationPageSize) break
+    offset += page.length
+  }
   return {
-    rows: rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries),
-    complete: rows.length <= maxGatewayQuotaSnapshotAuthorizationEntries
+    rows,
+    complete: true
   }
 }
 

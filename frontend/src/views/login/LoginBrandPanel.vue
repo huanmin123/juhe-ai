@@ -33,7 +33,7 @@
         <div class="signal-panel">
           <div class="signal-header">
             <span />
-            <strong>Gateway Active</strong>
+            <strong>网关运行中</strong>
           </div>
           <div v-for="item in signalRows" :key="item.label" class="signal-row">
             <span>{{ item.label }}</span>

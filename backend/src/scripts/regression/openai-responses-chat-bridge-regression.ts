@@ -237,6 +237,24 @@ try {
     assert.equal(afterUnsupported?.status, 'active', '本地不支持桥接请求不应写账号失败状态')
     assert.equal(afterUnsupported?.lastErrorMessage, undefined, '本地不支持桥接请求不应写账号最近错误')
 
+    const previousResponseHitsBefore = upstreamRequests.length
+    const previousResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'continue bridge',
+        previous_response_id: 'resp_local_context'
+      })
+    })
+    const previousResponseText = await previousResponse.text()
+    assert.equal(previousResponse.status, 400, `bridge 不支持 previous_response_id 时应本地拒绝，实际 HTTP ${previousResponse.status}: ${previousResponseText}`)
+    assert.match(previousResponseText, /不支持 previous_response_id/)
+    assert.equal(upstreamRequests.length, previousResponseHitsBefore, 'previous_response_id 本地拒绝不应命中上游')
+
     console.log('Responses 转 Chat Completions 账户桥接回归通过')
   } finally {
     await closeServer(appServer)

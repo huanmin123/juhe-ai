@@ -37,6 +37,27 @@ function Write-Utf8NoBom {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Copy-ReleaseBackendPackageJson {
+  param(
+    [Parameter(Mandatory = $true)][string]$Source,
+    [Parameter(Mandatory = $true)][string]$Destination
+  )
+
+  if (-not (Test-Path -LiteralPath $Source)) {
+    throw "Required path not found: $Source"
+  }
+
+  $packageJson = Get-Content -Raw -LiteralPath $Source | ConvertFrom-Json
+  $packageJson.scripts = [ordered]@{
+    'check:runtime' = 'node dist/scripts/preflight/check-node-sqlite.js'
+    'start' = 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'
+  }
+  if ($packageJson.PSObject.Properties.Name -contains 'devDependencies') {
+    $packageJson.PSObject.Properties.Remove('devDependencies')
+  }
+  Write-Utf8NoBom -Path $Destination -Content (($packageJson | ConvertTo-Json -Depth 20) + "`n")
+}
+
 Set-Location $repoRoot
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -81,7 +102,7 @@ New-Item -ItemType Directory -Force (Join-Path $packageRoot 'docs') | Out-Null
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')
 Copy-RequiredItem (Join-Path $repoRoot 'pnpm-lock.yaml') (Join-Path $packageRoot 'pnpm-lock.yaml')
 Copy-RequiredItem (Join-Path $repoRoot 'pnpm-workspace.yaml') (Join-Path $packageRoot 'pnpm-workspace.yaml')
-Copy-RequiredItem (Join-Path $repoRoot 'backend/package.json') (Join-Path $packageRoot 'backend/package.json')
+Copy-ReleaseBackendPackageJson (Join-Path $repoRoot 'backend/package.json') (Join-Path $packageRoot 'backend/package.json')
 Copy-RequiredItem (Join-Path $repoRoot 'backend/.env.example') (Join-Path $packageRoot 'backend/.env.example')
 Copy-RequiredItem (Join-Path $repoRoot 'backend/dist') (Join-Path $packageRoot 'backend/dist')
 Copy-RequiredItem (Join-Path $repoRoot 'frontend/package.json') (Join-Path $packageRoot 'frontend/package.json')

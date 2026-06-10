@@ -27,8 +27,8 @@ export interface GatewayQuotaSnapshot {
   authorizationEntriesComplete?: boolean
 }
 
-export const maxGatewayQuotaSnapshotCostEntries = 5000
-export const maxGatewayQuotaSnapshotAuthorizationEntries = 5000
+export const gatewayQuotaSnapshotCostPageSize = 5000
+export const gatewayQuotaSnapshotAuthorizationPageSize = 5000
 
 let snapshotGeneratedAt: string | undefined
 let costSnapshotComplete = false
@@ -40,16 +40,16 @@ const authorizationSnapshot = new Map<string, GatewayQuotaDecision>()
 
 export function replaceGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): void {
   snapshotGeneratedAt = snapshot.generatedAt
-  costSnapshotComplete = snapshot.costEntriesComplete ?? snapshot.costEntries.length < maxGatewayQuotaSnapshotCostEntries
-  authorizationSnapshotComplete = snapshot.authorizationEntriesComplete ?? snapshot.authorizationEntries.length < maxGatewayQuotaSnapshotAuthorizationEntries
+  costSnapshotComplete = snapshot.costEntriesComplete ?? true
+  authorizationSnapshotComplete = snapshot.authorizationEntriesComplete ?? true
   authorizationSnapshotInvalidated = false
   authorizationSnapshotVersion += 1
   costSnapshot.clear()
   authorizationSnapshot.clear()
-  for (const entry of snapshot.costEntries.slice(0, maxGatewayQuotaSnapshotCostEntries)) {
+  for (const entry of snapshot.costEntries) {
     costSnapshot.set(costSnapshotKey(entry), cloneRequestQuotaCosts(entry.costs))
   }
-  for (const entry of snapshot.authorizationEntries.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries)) {
+  for (const entry of snapshot.authorizationEntries) {
     authorizationSnapshot.set(authorizationSnapshotKey(entry.scopeType, entry.authorizationId), { ...entry.decision })
   }
 }

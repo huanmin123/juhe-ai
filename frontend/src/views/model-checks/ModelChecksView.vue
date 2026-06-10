@@ -495,15 +495,17 @@ const accountSelectPlaceholder = computed(() => '输入账户名称搜索')
 const comparisonSelectPlaceholder = computed(() => '可信对比账户（可选）')
 const historyAccountSelectPlaceholder = computed(() => '全部账户')
 const modelCheckHistoryEmptyText = computed(() => '暂无模型检测历史')
-const detailDescriptionColumns = computed(() => (window.innerWidth < 900 ? 1 : 2))
+const viewportWidth = ref(window.innerWidth)
+const detailDescriptionColumns = computed(() => (viewportWidth.value < 900 ? 1 : 2))
 const terminalStatusText = computed(() => submitting.value ? '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
 const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalLines.value.length ? 'green' : 'default')
-const terminalNow = computed(() => formatClockTime(new Date()))
+const terminalNow = ref(formatClockTime(new Date()))
 let targetOptionsRequestId = 0
 let comparisonOptionsRequestId = 0
 let historyTargetOptionsRequestId = 0
 let terminalLineId = 0
 let modelCheckAbortReason: 'manual' | 'deactivated' | 'unmount' | undefined
+let terminalClockTimer: number | undefined
 
 type TerminalLineLevel = 'info' | 'success' | 'warning' | 'error' | 'muted'
 type TerminalLine = {
@@ -1059,7 +1061,19 @@ function formatClockTime(value: Date) {
     .join(':')
 }
 
+function updateViewportWidth() {
+  viewportWidth.value = window.innerWidth
+}
+
+function updateTerminalNow() {
+  terminalNow.value = formatClockTime(new Date())
+}
+
 onMounted(async () => {
+  updateViewportWidth()
+  updateTerminalNow()
+  window.addEventListener('resize', updateViewportWidth)
+  terminalClockTimer = window.setInterval(updateTerminalNow, 1000)
   await Promise.all([loadOptions(), loadRuns()])
 })
 
@@ -1068,6 +1082,11 @@ onDeactivated(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateViewportWidth)
+  if (terminalClockTimer !== undefined) {
+    window.clearInterval(terminalClockTimer)
+    terminalClockTimer = undefined
+  }
   stopCurrentModelCheck(false, 'unmount')
 })
 </script>

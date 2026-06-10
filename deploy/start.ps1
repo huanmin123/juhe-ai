@@ -33,6 +33,68 @@ function Read-DotEnvValue {
   return $Fallback
 }
 
+function Set-DotEnvValue {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$Value
+  )
+
+  $lines = if (Test-Path -LiteralPath $Path) { @(Get-Content -LiteralPath $Path) } else { @() }
+  $pattern = '^\s*' + [regex]::Escape($Name) + '='
+  $updated = $false
+  for ($index = 0; $index -lt $lines.Count; $index += 1) {
+    if ($lines[$index] -match $pattern) {
+      $lines[$index] = "$Name=$Value"
+      $updated = $true
+    }
+  }
+  if (-not $updated) {
+    $lines += "$Name=$Value"
+  }
+  Set-Content -LiteralPath $Path -Value $lines -Encoding utf8
+}
+
+function New-JuheSecret {
+  $bytes = [byte[]]::new(32)
+  [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+  return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Ensure-DeploymentDefaults {
+  $envPath = 'backend/.env'
+  $fileSecret = Read-DotEnvValue -Path $envPath -Name 'JUHE_AI_SECRET' -Fallback ''
+  if (-not $env:JUHE_AI_SECRET -and -not $fileSecret) {
+    $generatedSecret = New-JuheSecret
+    Set-DotEnvValue -Path $envPath -Name 'JUHE_AI_SECRET' -Value $generatedSecret
+    $env:JUHE_AI_SECRET = $generatedSecret
+    Write-Host 'Generated JUHE_AI_SECRET and saved it to backend/.env. Keep this value when migrating existing data.'
+  }
+
+  $fileOrigins = Read-DotEnvValue -Path $envPath -Name 'JUHE_AI_ALLOWED_ORIGINS' -Fallback ''
+  if (-not $env:JUHE_AI_ALLOWED_ORIGINS -and -not $fileOrigins) {
+    $publicOrigin = Read-DotEnvValue -Path $envPath -Name 'JUHE_AI_PUBLIC_ORIGIN' -Fallback ''
+    if (-not $publicOrigin -and $env:JUHE_AI_PUBLIC_ORIGIN) {
+      $publicOrigin = $env:JUHE_AI_PUBLIC_ORIGIN
+    }
+    $publicPort = if ($env:JUHE_AI_PUBLIC_PORT) {
+      $env:JUHE_AI_PUBLIC_PORT
+    } elseif ($env:JUHE_AI_PORT) {
+      $env:JUHE_AI_PORT
+    } else {
+      Read-DotEnvValue -Path $envPath -Name 'JUHE_AI_PORT' -Fallback '3000'
+    }
+    $defaultOrigins = if ($publicOrigin) {
+      $publicOrigin
+    } else {
+      "http://localhost:${publicPort},http://127.0.0.1:${publicPort}"
+    }
+    Set-DotEnvValue -Path $envPath -Name 'JUHE_AI_ALLOWED_ORIGINS' -Value $defaultOrigins
+    $env:JUHE_AI_ALLOWED_ORIGINS = $defaultOrigins
+    Write-Host "Set JUHE_AI_ALLOWED_ORIGINS to $defaultOrigins. Adjust backend/.env if using a public domain or reverse proxy."
+  }
+}
+
 function Test-RipgrepDependency {
   Push-Location 'backend'
   try {
@@ -78,6 +140,8 @@ if (-not (Test-Path -LiteralPath 'backend/.env')) {
   }
   Write-Host 'Please review backend/.env before production use, especially JUHE_AI_SECRET.'
 }
+
+Ensure-DeploymentDefaults
 
 New-Item -ItemType Directory -Force 'backend/data' | Out-Null
 

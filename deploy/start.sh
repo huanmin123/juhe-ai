@@ -32,6 +32,79 @@ ripgrep_dependency_ready() {
   (cd backend && node --input-type=module -e "import('@vscode/ripgrep').then(({ rgPath }) => import('node:fs').then(({ existsSync }) => process.exit(existsSync(rgPath) ? 0 : 1))).catch(() => process.exit(1))" >/dev/null 2>&1)
 }
 
+read_dotenv_value() {
+  name="$1"
+  fallback="${2:-}"
+  if [ ! -f backend/.env ]; then
+    printf '%s' "$fallback"
+    return
+  fi
+  value="$(grep -E "^[[:space:]]*${name}=" backend/.env | tail -n 1 | cut -d= -f2- || true)"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$fallback"
+  fi
+}
+
+set_dotenv_value() {
+  name="$1"
+  value="$2"
+  tmp_file="$(mktemp)"
+  awk -v key="$name" -v next_value="$value" '
+    BEGIN { updated = 0 }
+    $0 ~ "^[[:space:]]*" key "=" {
+      print key "=" next_value
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print key "=" next_value
+      }
+    }
+  ' backend/.env > "$tmp_file"
+  mv "$tmp_file" backend/.env
+}
+
+generate_secret() {
+  node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+}
+
+ensure_deployment_defaults() {
+  file_secret="$(read_dotenv_value JUHE_AI_SECRET '')"
+  if [ -z "${JUHE_AI_SECRET:-}" ] && [ -z "$file_secret" ]; then
+    generated_secret="$(generate_secret)"
+    set_dotenv_value JUHE_AI_SECRET "$generated_secret"
+    export JUHE_AI_SECRET="$generated_secret"
+    echo "Generated JUHE_AI_SECRET and saved it to backend/.env. Keep this value when migrating existing data."
+  elif [ -z "${JUHE_AI_SECRET:-}" ] && [ -n "$file_secret" ]; then
+    export JUHE_AI_SECRET="$file_secret"
+  fi
+
+  file_origins="$(read_dotenv_value JUHE_AI_ALLOWED_ORIGINS '')"
+  if [ -z "${JUHE_AI_ALLOWED_ORIGINS:-}" ] && [ -z "$file_origins" ]; then
+    public_origin="$(read_dotenv_value JUHE_AI_PUBLIC_ORIGIN '')"
+    public_origin="${JUHE_AI_PUBLIC_ORIGIN:-$public_origin}"
+    public_port="${JUHE_AI_PUBLIC_PORT:-${JUHE_AI_PORT:-$(read_dotenv_value JUHE_AI_PORT 3000)}}"
+    if [ -n "$public_origin" ]; then
+      default_origins="$public_origin"
+    else
+      default_origins="http://localhost:${public_port},http://127.0.0.1:${public_port}"
+    fi
+    set_dotenv_value JUHE_AI_ALLOWED_ORIGINS "$default_origins"
+    export JUHE_AI_ALLOWED_ORIGINS="$default_origins"
+    echo "Set JUHE_AI_ALLOWED_ORIGINS to $default_origins. Adjust backend/.env if using a public domain or reverse proxy."
+  elif [ -z "${JUHE_AI_ALLOWED_ORIGINS:-}" ] && [ -n "$file_origins" ]; then
+    export JUHE_AI_ALLOWED_ORIGINS="$file_origins"
+  fi
+}
+
 if [ ! -f backend/.env ]; then
   if [ -f backend/.env.example.local ]; then
     cp backend/.env.example.local backend/.env
@@ -42,6 +115,8 @@ if [ ! -f backend/.env ]; then
   fi
   echo "Please review backend/.env before production use, especially JUHE_AI_SECRET."
 fi
+
+ensure_deployment_defaults
 
 mkdir -p backend/data
 if [ ! -d node_modules ] || [ ! -d backend/node_modules ] || ! ripgrep_dependency_ready; then

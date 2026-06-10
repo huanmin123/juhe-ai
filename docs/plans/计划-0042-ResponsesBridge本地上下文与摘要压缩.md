@@ -14,7 +14,9 @@
 
 2026-06-09 方向调整：该计划关闭，不进入实现。原因是为了让 Responses -> Chat Completions 支持完整长会话，需要本地 `previous_response_id` 账本、payload 文件、SQLite 元数据、热缓存、dirty flush、后台清理、摘要 compact、错误恢复和审计 / 使用记录联动，复杂度和成本超过轻量中转边界。后续不再推进 Chat bridge 的完整 Responses 仿真；需要长会话、compact 或稳定上下文的场景优先使用原生 Responses 上游。
 
-## 需求目标
+## 原需求目标（已关闭，不进入实现）
+
+以下内容是该关闭计划的原始目标，用于解释为什么最终放弃，不代表当前实现承诺。
 
 在 `chat_completions_bridge` 模式下补齐本地 `previous_response_id` 续链和内置摘要 compact，使 Responses 客户端可以在 Chat-only 上游上完成长会话：
 
@@ -24,9 +26,9 @@
 - `/responses/compact`、`compaction_trigger` 和高水位自动压缩触发本地摘要 compact。
 - 摘要调用使用当前 bridge 会话同一账号和同一模型，本期不做专用摘要模型、不开放用户配置和自定义摘要 prompt。
 
-## 范围边界
+## 原范围边界（已关闭）
 
-### 本次包含
+### 原计划包含（未执行）
 
 - [ ] 新增 bridge context session / response index / turn payload 元数据表。
 - [ ] 新增本地 payload 文件存储，支持普通 turn 和 `summary_snapshot`。
@@ -37,7 +39,7 @@
 - [ ] 摘要调用接入现有账号并发、错误处理、使用记录和审计 metadata。
 - [ ] 后台 cleanup job 按 TTL、状态和 `storage_key` 小批次清理 payload 文件与墓碑。
 
-### 本次不包含
+### 原计划不包含
 
 - 专用摘要模型配置、摘要模型池或跨账号摘要。
 - 用户自定义摘要 prompt、任意 body patch 或脚本化压缩。
@@ -53,7 +55,7 @@
 - 架构总览：`docs/architecture/架构总览.md`
 - 第一版 bridge 计划：`docs/plans/计划-0039-Responses转ChatCompletions账户适配.md`
 
-## 执行拆解
+## 原执行拆解（未执行）
 
 | 步骤 | 任务 | 验收标准 |
 | --- | --- | --- |
@@ -65,7 +67,9 @@
 | 6 | 后台清理 | TTL、超限和 compacted payload 文件按 `storage_key` 小批次清理 |
 | 7 | 回归验证 | 转换、续链、摘要、流式失败、类型检查和大文件边界通过 |
 
-## 决策记录
+## 原决策记录（已废止）
+
+以下决策随本计划关闭而废止，不再作为当前开发依据。
 
 | 日期 | 决策 | 原因 | 影响 |
 | --- | --- | --- | --- |
@@ -74,7 +78,7 @@
 | 2026-06-09 | 摘要写成 `summary_snapshot`，不改写旧 payload | 方便审计、恢复和后台清理 | 请求路径不删除大文件，cleanup job 后续处理 |
 | 2026-06-09 | 摘要内容不写入 system / developer instructions | 避免把用户历史提升为高优先级指令 | replay 时作为普通历史摘要 message |
 
-## 验证计划
+## 原验证计划（未执行）
 
 | 类型 | 测试项 | 预期 |
 | --- | --- | --- |

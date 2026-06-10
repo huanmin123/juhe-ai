@@ -19,14 +19,16 @@
 - 默认端口 `3000` 没有冲突；冲突时修改 `backend/.env` 的 `JUHE_AI_PORT`。
 - 当前目录有写入权限和足够磁盘空间。
 
-## 必须配置
+## 配置
 
-正式启动前复制并编辑 `backend/.env`：
+发布包带有 `backend/.env.example`。可以在正式启动前复制并编辑 `backend/.env`：
 
 ```powershell
 Copy-Item .\backend\.env.example .\backend\.env -ErrorAction SilentlyContinue
 notepad .\backend\.env
 ```
+
+如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动从 example 创建 `backend/.env`，生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。
 
 最低配置：
 
@@ -40,12 +42,13 @@ JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
-JUHE_AI_SECRET=换成一串足够长且固定保存的随机密钥
+JUHE_AI_SECRET=可留空由启动脚本首次生成，或换成自己保存的强随机密钥
+JUHE_AI_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 JUHE_AI_OAUTH_PROXY_URL=
 JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=false
 ```
 
-新部署必须修改 `JUHE_AI_SECRET`。迁移旧数据必须沿用旧 `JUHE_AI_SECRET`，否则敏感字段无法解密。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、运行日志索引、模型检测和 usage shard catalog 在数据集目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。三个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。
+新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；迁移旧数据必须沿用旧 `JUHE_AI_SECRET`，否则敏感字段无法解密。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、运行日志索引、模型检测和 usage shard catalog 在数据集目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。三个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。
 
 ## 启动与验证
 

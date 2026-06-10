@@ -161,9 +161,9 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - 不在请求链路扫描审计 payload、使用记录或历史请求来找可压缩上下文。
 - compact 输出如果需要用于审计或排障摘要，必须有字节上限，超过上限只记录截断摘要。
 - Codex V2 `compaction_trigger` 仍按普通 Responses 流处理，不因为 compact 语义增加整流缓存。
-- Chat bridge 自动摘要只能基于热缓存或 SQLite 元数据判断是否需要触发；真正摘要时才按 `storage_key` 有界读取待压缩前缀 payload。
-- 单次用户请求最多触发一次服务端摘要；摘要后仍超限时直接返回错误，不继续摘要第二轮。
-- 摘要调用必须复用现有上游请求超时、并发占用、账号失败归属、审计采样和使用记录链路，不能走旁路 HTTP 客户端。
+- Chat bridge 不触发自动摘要，不读取本地历史 payload，也不维护 summary snapshot。
+- `previous_response_id` 命中 Chat bridge 时返回本地不支持错误，不静默忽略，也不按普通请求伪造续链。
+- 后续如果重新评估本地摘要能力，必须另开计划并先补有界 payload 读取、成本归属和失败终态设计。
 - 所有 compact 相关列表、审计详情或排障接口都按现有 offset / limit / 窗口读取边界处理。
 - 大请求体解析继续遵守当前 `/v1` raw body hard limit、文本 lane 上限和 worker 解析阈值。
 
@@ -175,7 +175,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 | 上游不支持 `context_management` | 按上游失败处理，不标记本地 bug |
 | `/responses/compact` 命中 Chat bridge 账户 | 本地 `400` 或跳过 bridge 账户，不写账号失败 |
 | `compaction_trigger` 命中 Chat bridge 账户 | 本地 `400` 或跳过 bridge 账户，不伪造 Chat summarization |
-| 客户端摘要压缩后仍携带旧 `previous_response_id` | 没有显式 compact 信号时按普通 bridge 续链处理，不猜测替换旧历史 |
+| 客户端摘要压缩后仍携带旧 `previous_response_id` | Chat bridge 当前不支持本地续链，非空 `previous_response_id` 返回本地 `400 responses_chat_bridge_previous_response_id_unsupported`，不请求上游 |
 | compact 请求自身超上下文 | 返回 compact 失败，不继续重试 |
 | `/responses` 请求出现 `context_length_exceeded` | 不触发自动 compact；按现有上游错误或流式失败处理 |
 
@@ -213,7 +213,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 - “上下文压缩”不是“HTTP 压缩”。
 - `truncation:auto` 可能丢弃旧上下文。
-- Chat bridge 的摘要 compact 是本地降级能力，不是上游原生 Responses compact。
+- Chat bridge 不支持摘要 compact；需要 compact 的客户端应使用原生 Responses passthrough / OAuth Codex adapter，或自行摘要后开启新会话。
 
 ## 验证计划
 
@@ -226,7 +226,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - `codex_responses` 兼容模式：`compaction_trigger` 作为 Responses input item 透传，不被工具归一化或消息转换误删。
 - `chat_completions_bridge`：`/responses/compact` 返回本地 `400` 或跳过 bridge 账户，不请求上游。
 - `chat_completions_bridge`：包含 `compaction_trigger` 的请求不转成 Chat summarization。
-- `chat_completions_bridge`：客户端压缩摘要不携带 `previous_response_id` 时创建新本地会话；携带旧 ID 时按普通续链计算大小，不隐式替换历史。
+- `chat_completions_bridge`：客户端携带 `previous_response_id` 时返回本地 `400`，不请求上游、不写账号失败。
 - OAuth Codex adapter：默认仍按现有字段边界，不被 API Key 调整影响。
 - 流式拦截：`context_length_exceeded` 仍按现有客户端策略处理，不触发 compact。
 - 性能：大请求体在不需要改写时仍 raw passthrough，不新增主线程完整解析。

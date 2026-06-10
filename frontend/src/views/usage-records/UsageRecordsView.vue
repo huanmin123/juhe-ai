@@ -182,6 +182,7 @@ import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAcco
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedGroupsApi, useScopedUsageRecordsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
 import { rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
@@ -345,7 +346,7 @@ const {
   },
   onError: (error) => {
     console.error(error)
-    message.error('加载使用记录失败')
+    message.error(extractApiErrorMessage(error, '加载使用记录失败'))
   }
 })
 
@@ -406,7 +407,7 @@ const rawColumns = computed(() => {
     { title: '状态', key: 'success', width: 90 },
     { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 110 },
     { title: '请求来源', key: 'trafficSource', width: 110 },
-    { title: 'Tokens', key: 'tokens', width: 150 },
+    { title: 'Token 用量', key: 'tokens', width: 150 },
     { title: '成本', key: 'cost', width: 110, sorter: true, sortOrder: columnSortOrder('costUsd') },
     { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100, sorter: true, sortOrder: columnSortOrder('firstTokenMs') },
     { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100, sorter: true, sortOrder: columnSortOrder('durationMs') },
@@ -487,7 +488,7 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
     } catch (error) {
       if (requestId !== groupOptionsRequestId) return
       console.error(error)
-      message.error('加载分组选项失败')
+      message.error(extractApiErrorMessage(error, '加载分组选项失败'))
     } finally {
       if (groupOptionsLoadingKey === requestKey) {
         groupOptionsLoadingKey = undefined

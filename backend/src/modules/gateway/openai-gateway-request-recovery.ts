@@ -196,11 +196,12 @@ function removeEncryptedReasoningFromInput(input: unknown): {
 
   const nextInput = { ...input }
   delete nextInput.encrypted_content
+  const removedReasoningItemCount = shouldDropEmptyReasoningItem(nextInput) ? 1 : 0
   return {
-    input: nextInput,
+    input: removedReasoningItemCount ? [] : nextInput,
     inputChanged: true,
     removedEncryptedReasoningItemCount: 1,
-    removedReasoningItemCount: 0
+    removedReasoningItemCount
   }
 }
 

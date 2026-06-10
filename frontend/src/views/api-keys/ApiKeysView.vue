@@ -511,7 +511,7 @@ const {
   },
   onError: (error) => {
     console.error(error)
-    message.error('加载 API Key 失败')
+    message.error(extractApiErrorMessage(error, '加载 API Key 失败'))
   }
 })
 
@@ -810,7 +810,7 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false, sc
     } catch (error) {
       if (requestId !== groupOptionsRequestId) return
       console.error(error)
-      message.error('加载分组选项失败')
+      message.error(extractApiErrorMessage(error, '加载分组选项失败'))
     } finally {
       if (groupOptionsLoadingKey === requestKey) {
         groupOptionsLoadingKey = undefined

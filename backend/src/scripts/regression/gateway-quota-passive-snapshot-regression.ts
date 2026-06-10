@@ -15,10 +15,10 @@ import {
 } from '../../modules/gateway/authorization-quota.service.js'
 import {
   clearGatewayQuotaSnapshot,
+  gatewayQuotaSnapshotAuthorizationPageSize,
+  gatewayQuotaSnapshotCostPageSize,
   gatewayQuotaSnapshotRuntime,
   invalidateGatewayAuthorizationQuotaSnapshot,
-  maxGatewayQuotaSnapshotAuthorizationEntries,
-  maxGatewayQuotaSnapshotCostEntries,
   replaceGatewayQuotaSnapshot
 } from '../../modules/gateway/gateway-quota-snapshot-cache.service.js'
 import * as dbServiceIpc from '../../modules/db-service/db-service-ipc.js'
@@ -283,25 +283,25 @@ try {
   clearGatewayQuotaSnapshot()
   replaceGatewayQuotaSnapshot({
     generatedAt: new Date().toISOString(),
-    costEntries: Array.from({ length: maxGatewayQuotaSnapshotCostEntries + 1 }, (_, index) => ({
+    costEntries: Array.from({ length: gatewayQuotaSnapshotCostPageSize + 1 }, (_, index) => ({
       systemAccountId: 'sys_snapshot_cap',
       scopeType: 'api_key',
       scopeId: `key_snapshot_cap_${index}`,
       costs: { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 }
     })),
-    authorizationEntries: Array.from({ length: maxGatewayQuotaSnapshotAuthorizationEntries + 1 }, (_, index) => ({
+    authorizationEntries: Array.from({ length: gatewayQuotaSnapshotAuthorizationPageSize + 1 }, (_, index) => ({
       scopeType: 'account_authorization' as const,
       authorizationId: `authorization_snapshot_cap_${index}`,
       decision: { allowed: true }
     }))
   })
   const cappedRuntime = gatewayQuotaSnapshotRuntime()
-  assert.equal(cappedRuntime.costEntryCount, maxGatewayQuotaSnapshotCostEntries, 'server 接收额度快照时必须截断 API Key 成本窗口')
-  assert.equal(cappedRuntime.authorizationEntryCount, maxGatewayQuotaSnapshotAuthorizationEntries, 'server 接收额度快照时必须截断授权决策窗口')
-  assert.equal(cappedRuntime.costEntriesComplete, false, 'server 接收超上限 API Key 成本窗口时应标记快照不完整')
-  assert.equal(cappedRuntime.authorizationEntriesComplete, false, 'server 接收超上限授权决策窗口时应标记快照不完整')
+  assert.equal(cappedRuntime.costEntryCount, gatewayQuotaSnapshotCostPageSize + 1, 'server 接收额度快照时不应再截断 API Key 成本窗口')
+  assert.equal(cappedRuntime.authorizationEntryCount, gatewayQuotaSnapshotAuthorizationPageSize + 1, 'server 接收额度快照时不应再截断授权决策窗口')
+  assert.equal(cappedRuntime.costEntriesComplete, true, 'server 接收完整 API Key 成本窗口时应默认标记快照完整')
+  assert.equal(cappedRuntime.authorizationEntriesComplete, true, 'server 接收完整授权决策窗口时应默认标记快照完整')
 
-  console.log('网关额度被动快照回归通过：server 请求链路不主动查询 DB service，直接读取 worker 推送的有界额度快照，并禁止误调同步 SQLite 配额读取')
+  console.log('网关额度被动快照回归通过：server 请求链路不主动查询 DB service，worker 分页构建完整额度快照，并禁止误调同步 SQLite 配额读取')
 } finally {
   clearGatewayQuotaSnapshot()
   try {
@@ -318,10 +318,12 @@ function assertGatewayQuotaSnapshotSourcesBounded(): void {
   const authorizationRowsBody = sourceFunctionBlock(repositorySource, 'function loadAuthorizationQuotaSnapshotRows')
   const teamRowsBody = sourceFunctionBlock(repositorySource, 'function loadTeamAuthorizationQuotaSnapshotRows')
   assert(apiKeyRowsBody.includes('LIMIT ?'), 'API Key 额度快照构建不能无上限读取 api_keys')
+  assert(apiKeyRowsBody.includes('OFFSET ?'), 'API Key 额度快照构建必须分页读取 api_keys')
   assert(authorizationRowsBody.includes('LIMIT ?'), '授权额度快照构建不能无上限读取 resource_authorizations')
+  assert(authorizationRowsBody.includes('OFFSET ?'), '授权额度快照构建必须分页读取 resource_authorizations')
   assert(teamRowsBody.includes('LIMIT ?'), '团队授权额度快照构建不能无上限读取 team grant')
-  assert(cacheSource.includes('slice(0, maxGatewayQuotaSnapshotCostEntries)'), 'server 接收 API Key 额度快照必须二次截断')
-  assert(cacheSource.includes('slice(0, maxGatewayQuotaSnapshotAuthorizationEntries)'), 'server 接收授权额度快照必须二次截断')
+  assert(teamRowsBody.includes('OFFSET ?'), '团队授权额度快照构建必须分页读取 team grant')
+  assert(!cacheSource.includes('.slice(0,'), 'server 接收完整额度快照时不应二次截断导致误 429')
 }
 
 function assertAuthorizationQuotaInvalidationSourcesConnected(): void {

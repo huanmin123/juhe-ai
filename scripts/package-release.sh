@@ -88,6 +88,31 @@ copy_required_item() {
   cp -R "$source_path" "$destination_path"
 }
 
+copy_release_backend_package_json() {
+  local source_path="$1"
+  local destination_path="$2"
+
+  if [ ! -f "$source_path" ]; then
+    echo "Required path not found: $source_path" >&2
+    exit 1
+  fi
+
+  node - "$source_path" "$destination_path" <<'NODE'
+const fs = require('node:fs')
+
+const [sourcePath, destinationPath] = process.argv.slice(2)
+const packageJson = JSON.parse(fs.readFileSync(sourcePath, 'utf8'))
+
+packageJson.scripts = {
+  'check:runtime': 'node dist/scripts/preflight/check-node-sqlite.js',
+  start: 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'
+}
+delete packageJson.devDependencies
+
+fs.writeFileSync(destinationPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
+NODE
+}
+
 create_zip_archive() {
   if command -v zip >/dev/null 2>&1; then
     (cd "$RELEASE_ROOT" && zip -qry "$ZIP_ARCHIVE_PATH" "$PACKAGE_NAME")
@@ -145,7 +170,7 @@ mkdir -p "$PACKAGE_ROOT/backend" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs"
 copy_required_item "$REPO_ROOT/package.json" "$PACKAGE_ROOT/package.json"
 copy_required_item "$REPO_ROOT/pnpm-lock.yaml" "$PACKAGE_ROOT/pnpm-lock.yaml"
 copy_required_item "$REPO_ROOT/pnpm-workspace.yaml" "$PACKAGE_ROOT/pnpm-workspace.yaml"
-copy_required_item "$REPO_ROOT/backend/package.json" "$PACKAGE_ROOT/backend/package.json"
+copy_release_backend_package_json "$REPO_ROOT/backend/package.json" "$PACKAGE_ROOT/backend/package.json"
 copy_required_item "$REPO_ROOT/backend/.env.example" "$PACKAGE_ROOT/backend/.env.example"
 copy_required_item "$REPO_ROOT/backend/dist" "$PACKAGE_ROOT/backend/dist"
 copy_required_item "$REPO_ROOT/frontend/package.json" "$PACKAGE_ROOT/frontend/package.json"

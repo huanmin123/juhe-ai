@@ -112,6 +112,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
 import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
@@ -361,7 +362,7 @@ async function loadPerformance() {
   } catch (error) {
     if (requestSeq !== performanceRequestSeq) return
     console.error(error)
-    message.error('AI性能监控数据加载失败')
+    message.error(extractApiErrorMessage(error, 'AI 性能监控数据加载失败'))
   } finally {
     if (requestSeq === performanceRequestSeq) {
       loading.value = false
@@ -410,7 +411,7 @@ async function loadAccounts() {
       loadedAccountOptionsKey = request.key
     } catch (error) {
       console.error(error)
-      message.error('AI账户列表加载失败')
+      message.error(extractApiErrorMessage(error, 'AI 账户列表加载失败'))
     } finally {
       if (loadingAccountOptionsKey === request.key) {
         loadingAccountOptionsPromise = undefined
