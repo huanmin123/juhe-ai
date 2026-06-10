@@ -917,7 +917,7 @@ function handleViewModeChange(): void {
     }
     return
   }
-  void refreshAuditRuntimeQuietly()
+  void loadData({ forceOptions: true })
 }
 
 function handleCurrentTableChange(paginationInfo: unknown): void {

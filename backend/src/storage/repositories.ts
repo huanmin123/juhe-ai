@@ -374,6 +374,7 @@ export type {
   ApiKeyListResult
 } from './api-key.repository.js'
 export {
+  cleanupAuditSuccessHotRetentionAsync,
   cleanupAuditLogsByRetention,
   cleanupAuditLogsByRetentionAsync,
   cleanupAuditLogsBefore,
@@ -401,6 +402,7 @@ export {
   type AuditLogPayloadInput,
   type AuditLogPayloadSummary,
   type AuditLogSummary,
+  type AuditLogSuccessHotRetentionCleanupResult,
   type AuditOutcome,
   type AuditPayloadBlobStorageStatus,
   type AuditPayloadPartType,

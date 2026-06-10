@@ -425,7 +425,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 | `runtime_log_file_cursors` | 当前日志文件增量读取游标 | 固定最近 3 天未更新游标 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 当前存在的日志文件会被追尾任务持续刷新；缺失或长期未更新的过期文件游标会自动删除 |
 | `model_check_runs`、`model_check_items` | 模型检测历史和诊断明细 | 默认 30 天，最多 365 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只保留有界脱敏摘要，过期检测运行和检测项一起删除 |
 | `operation_logs`、`operation_log_targets`、`operation_log_viewers`、`operation_log_summary_search_terms` | 业务操作追溯日志 | 默认 365 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只按时间清理，不因资源删除级联删除历史日志；摘要词项随操作日志级联删除 |
-| `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求热窗口默认 1 小时，成功长期样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 完全成功请求先全量热保留，超过热窗口后删除未命中 10% 长期采样的成功记录 |
+| `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求热窗口默认 1 小时，成功长期样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 每天清理长期过期数据 | 完全成功请求先全量热保留，超过热窗口后删除未命中 10% 长期采样的成功记录 |
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
 | `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只做展示和排障聚合，不替代事件记录 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；表监控的非业务数据硬清理是管理员显式操作，不走这个安全保留口径 |
@@ -459,7 +459,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 
 统一清理规则：
 
-- 表数据保留期统一由 `data-retention-cleanup` 每天在独立 background worker 进程内执行；表监控页面额外提供 `usage_records` 按截止时间手动清理入口，用于容量异常时提前释放可复用页。
+- 表数据长期保留期统一由 `data-retention-cleanup` 每天在独立 background worker 进程内执行；原始审计普通成功请求的 1 小时热窗口后置采样裁剪由 `audit-hot-retention-cleanup` 每分钟分批执行，避免排障窗口结束后未采样成功日志继续堆积到下一天；表监控页面额外提供 `usage_records` 按截止时间手动清理入口，用于容量异常时提前释放可复用页。
 - 清理任务按小批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 1000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 2` 批；运行时会把异常偏大的配置钳制到这个上限，避免长时间占用 SQLite 写锁或拉高 worker 事件循环延迟。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。
 - 手动清理 `usage_records` 同样按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合游标和必要回填游标保护。提交前先按 `created_at < cutoffAt` 与统计安全游标交集做有限预检查；没有可安全清理记录、统计游标尚未建立或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
 - 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。

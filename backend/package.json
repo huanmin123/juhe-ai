@@ -64,6 +64,7 @@
     "test:system-account-options-lightweight": "tsx src/scripts/regression/system-account-options-lightweight-regression.ts",
     "test:session-affinity": "tsx src/scripts/regression/session-affinity-regression.ts",
     "test:audit-log-retention": "tsx src/scripts/regression/audit-log-retention-regression.ts",
+    "test:audit-log-hot-search": "tsx src/scripts/regression/audit-log-hot-search-regression.ts",
     "test:audit-log-settings-contract": "tsx src/scripts/regression/audit-log-settings-contract-regression.ts",
     "test:audit-log-async-flush": "tsx src/scripts/regression/audit-log-async-flush-regression.ts",
     "test:audit-log-dispatch-estimate-boundary": "tsx src/scripts/regression/audit-log-dispatch-estimate-boundary-regression.ts",

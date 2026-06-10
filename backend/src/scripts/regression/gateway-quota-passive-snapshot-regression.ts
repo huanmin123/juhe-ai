@@ -301,7 +301,7 @@ try {
   assert.equal(cappedRuntime.costEntriesComplete, true, 'server 接收完整 API Key 成本窗口时应默认标记快照完整')
   assert.equal(cappedRuntime.authorizationEntriesComplete, true, 'server 接收完整授权决策窗口时应默认标记快照完整')
 
-  console.log('网关额度被动快照回归通过：server 请求链路不主动查询 DB service，worker 分页构建完整额度快照，并禁止误调同步 SQLite 配额读取')
+  console.log('网关额度被动快照回归通过：server 请求链路不主动查询 DB service，worker 有界构建额度快照，并禁止误调同步 SQLite 配额读取')
 } finally {
   clearGatewayQuotaSnapshot()
   try {
@@ -318,11 +318,17 @@ function assertGatewayQuotaSnapshotSourcesBounded(): void {
   const authorizationRowsBody = sourceFunctionBlock(repositorySource, 'function loadAuthorizationQuotaSnapshotRows')
   const teamRowsBody = sourceFunctionBlock(repositorySource, 'function loadTeamAuthorizationQuotaSnapshotRows')
   assert(apiKeyRowsBody.includes('LIMIT ?'), 'API Key 额度快照构建不能无上限读取 api_keys')
-  assert(apiKeyRowsBody.includes('OFFSET ?'), 'API Key 额度快照构建必须分页读取 api_keys')
+  assert(apiKeyRowsBody.includes('maxGatewayQuotaSnapshotCostEntries + 1'), 'API Key 额度快照构建必须用哨兵行判断是否截断')
+  assert(apiKeyRowsBody.includes('rows.slice(0, maxGatewayQuotaSnapshotCostEntries)'), 'API Key 额度快照发送前必须限制 IPC payload 大小')
+  assert(!apiKeyRowsBody.includes('OFFSET ?'), 'API Key 额度快照构建禁止通过 OFFSET 循环读取全表')
   assert(authorizationRowsBody.includes('LIMIT ?'), '授权额度快照构建不能无上限读取 resource_authorizations')
-  assert(authorizationRowsBody.includes('OFFSET ?'), '授权额度快照构建必须分页读取 resource_authorizations')
+  assert(authorizationRowsBody.includes('maxGatewayQuotaSnapshotAuthorizationEntries + 1'), '授权额度快照构建必须用哨兵行判断是否截断')
+  assert(authorizationRowsBody.includes('rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries)'), '授权额度快照发送前必须限制 IPC payload 大小')
+  assert(!authorizationRowsBody.includes('OFFSET ?'), '授权额度快照构建禁止通过 OFFSET 循环读取全表')
   assert(teamRowsBody.includes('LIMIT ?'), '团队授权额度快照构建不能无上限读取 team grant')
-  assert(teamRowsBody.includes('OFFSET ?'), '团队授权额度快照构建必须分页读取 team grant')
+  assert(teamRowsBody.includes('maxGatewayQuotaSnapshotAuthorizationEntries + 1'), '团队授权额度快照构建必须用哨兵行判断是否截断')
+  assert(teamRowsBody.includes('rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries)'), '团队授权额度快照发送前必须限制 IPC payload 大小')
+  assert(!teamRowsBody.includes('OFFSET ?'), '团队授权额度快照构建禁止通过 OFFSET 循环读取全表')
   assert(!cacheSource.includes('.slice(0,'), 'server 接收完整额度快照时不应二次截断导致误 429')
 }
 

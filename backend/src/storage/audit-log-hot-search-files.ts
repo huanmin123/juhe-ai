@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { access, appendFile, opendir, stat, unlink } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
-import { backendRoot } from '../config/runtime.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import type { AuditLogInput } from './audit-logs.repository.js'
 
@@ -57,7 +57,6 @@ interface RgSearchResult {
   stopReason?: RgStopReason
 }
 
-const auditHotSearchRoot = resolve(backendRoot, 'data', 'audit', 'search-hot')
 const hotSearchFilePrefix = 'audit-hot-'
 const hotSearchFileSuffix = '.ndjson'
 const hotSearchBucketMs = 60 * 60 * 1000
@@ -83,7 +82,7 @@ export function appendAuditHotSearchEntries(inputs: AuditLogInput[]): void {
   try {
     const batches = buildHotSearchFileBatches(inputs)
     if (batches.size === 0) return
-    mkdirSync(auditHotSearchRoot, { recursive: true })
+    mkdirSync(auditHotSearchRoot(), { recursive: true })
     for (const [filePath, lines] of batches) {
       appendFileSync(filePath, lines.join(''), 'utf8')
     }
@@ -100,7 +99,7 @@ export async function appendAuditHotSearchEntriesAsync(inputs: AuditLogInput[]):
   try {
     const batches = buildHotSearchFileBatches(inputs)
     if (batches.size === 0) return
-    mkdirSync(auditHotSearchRoot, { recursive: true })
+    mkdirSync(auditHotSearchRoot(), { recursive: true })
     await Promise.all([...batches.entries()].map(([filePath, lines]) => appendFile(filePath, lines.join(''), 'utf8')))
   } catch (error) {
     logger.warn(errorLogFields(error, {
@@ -190,14 +189,14 @@ export async function cleanupAuditHotSearchFilesBefore(cutoffCreatedAt: string):
   if (!Number.isFinite(cutoffMs)) return 0
   let deleted = 0
   try {
-    const directory = await opendir(auditHotSearchRoot)
+    const directory = await opendir(auditHotSearchRoot())
     for await (const entry of directory) {
       if (!entry.isFile()) continue
       const bucketStartMs = hotSearchBucketStartMsFromFileName(entry.name)
       if (bucketStartMs === undefined) continue
       if (bucketStartMs + hotSearchBucketMs > cutoffMs) continue
       try {
-        await unlink(join(auditHotSearchRoot, entry.name))
+        await unlink(join(auditHotSearchRoot(), entry.name))
         deleted += 1
       } catch {
       }
@@ -307,7 +306,11 @@ function chunkText(text: string, size: number): string[] {
 
 function hotSearchFilePath(timestamp: string): string {
   const bucket = hotSearchBucketStartMs(Date.parse(timestamp))
-  return join(auditHotSearchRoot, `${hotSearchFilePrefix}${new Date(bucket).toISOString().slice(0, 13).replace(/[-:T]/g, '')}${hotSearchFileSuffix}`)
+  return join(auditHotSearchRoot(), `${hotSearchFilePrefix}${new Date(bucket).toISOString().slice(0, 13).replace(/[-:T]/g, '')}${hotSearchFileSuffix}`)
+}
+
+function auditHotSearchRoot(): string {
+  return resolve(dirname(runtimeConfig.datasetDatabasePath), 'audit', 'search-hot')
 }
 
 function hotSearchBucketStartMs(timeMs: number): number {
@@ -383,7 +386,7 @@ async function listHotSearchFiles(startMs: number, endMs: number): Promise<HotSe
   const files: HotSearchFile[] = []
   let scanned = 0
   try {
-    const directory = await opendir(auditHotSearchRoot)
+    const directory = await opendir(auditHotSearchRoot())
     for await (const entry of directory) {
       scanned += 1
       if (scanned > maxSearchFileScanEntries) break
@@ -395,7 +398,7 @@ async function listHotSearchFiles(startMs: number, endMs: number): Promise<HotSe
       if (bucketStartMs === undefined) continue
       const bucketEndMs = bucketStartMs + hotSearchBucketMs
       if (bucketEndMs < startMs || bucketStartMs > endMs) continue
-      const path = join(auditHotSearchRoot, entry.name)
+      const path = join(auditHotSearchRoot(), entry.name)
       try {
         const stats = await stat(path)
         if (stats.isFile() && stats.size > 0) {

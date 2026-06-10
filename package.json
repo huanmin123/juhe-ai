@@ -23,6 +23,7 @@
     "test:proxy-negative": "pnpm --filter juhe-ai-backend test:proxy-negative",
     "test:large-response": "pnpm --filter juhe-ai-backend test:large-response",
     "test:audit-payload-large-window": "pnpm --filter juhe-ai-backend test:audit-payload-large-window",
+    "test:audit-log-hot-search": "pnpm --filter juhe-ai-backend test:audit-log-hot-search",
     "test:audit-log-batch-existing-lookup": "pnpm --filter juhe-ai-backend test:audit-log-batch-existing-lookup",
     "test:stream-first-output-timeout": "pnpm --filter juhe-ai-backend test:stream-first-output-timeout",
     "test:stream-intercept-policy": "pnpm --filter juhe-ai-backend test:stream-intercept-policy",

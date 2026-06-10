@@ -29,6 +29,8 @@ export interface GatewayQuotaSnapshot {
 
 export const gatewayQuotaSnapshotCostPageSize = 5000
 export const gatewayQuotaSnapshotAuthorizationPageSize = 5000
+export const maxGatewayQuotaSnapshotCostEntries = gatewayQuotaSnapshotCostPageSize
+export const maxGatewayQuotaSnapshotAuthorizationEntries = gatewayQuotaSnapshotAuthorizationPageSize
 
 let snapshotGeneratedAt: string | undefined
 let costSnapshotComplete = false

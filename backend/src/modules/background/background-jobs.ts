@@ -39,6 +39,7 @@ import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-que
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
+import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-cleanup.service.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { requestServerProcessEventLoopSamples, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
 import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
@@ -97,6 +98,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
   scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: runCooldownAccountRetest })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
+  scheduler.schedule({ name: 'audit-hot-retention-cleanup', intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
   scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, initialDelayMs: 13 * minuteMs, task: runDataRetentionCleanup })
   scheduler.schedule({ name: 'expired-deleted-account-cleanup', intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
 }
@@ -456,6 +458,10 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
 
 async function runDataRetentionCleanup(): Promise<void> {
   await cleanupExpiredRetainedData()
+}
+
+async function runAuditHotRetentionCleanup(): Promise<void> {
+  await cleanupExpiredAuditHotRetentionData()
 }
 
 async function runExpiredDeletedAccountCleanup(): Promise<void> {

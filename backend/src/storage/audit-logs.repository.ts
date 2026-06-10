@@ -214,6 +214,11 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   bodyTruncated: boolean
 }
 
+export interface AuditLogSuccessHotRetentionCleanupResult {
+  auditLogs: number
+  auditPayloadBlobs: number
+}
+
 export interface AuditLogListOptions {
   page?: number
   pageSize?: number
@@ -891,6 +896,25 @@ export async function cleanupAuditLogsBeforeAsync(cutoffCreatedAt: string, limit
   return deleted
 }
 
+export async function cleanupAuditSuccessHotRetentionAsync(input: {
+  successHotCutoffCreatedAt: string
+  successSampleBucketThreshold?: number
+  limit?: number
+}): Promise<AuditLogSuccessHotRetentionCleanupResult> {
+  const limit = input.limit ?? 1000
+  const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
+  const deletedLogs = deleteAuditLogsByWhere(
+    successHotRetentionDeleteWhereClause,
+    [input.successHotCutoffCreatedAt, successSampleBucketThreshold],
+    limit
+  )
+  const deletedBlobs = await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
+  return {
+    auditLogs: deletedLogs,
+    auditPayloadBlobs: deletedBlobs
+  }
+}
+
 export function cleanupAuditLogsByRetention(input: {
   successHotCutoffCreatedAt: string
   successCutoffCreatedAt: string
@@ -902,7 +926,7 @@ export function cleanupAuditLogsByRetention(input: {
   const limit = input.limit ?? 1000
   const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
   const deletedLogs = deleteAuditLogsByWhere(
-    "((audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ? AND sample_reason NOT IN ('full_capture_success', 'targeted_full_capture_success')) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))",
+    `((${successHotRetentionDeleteWhereClause}) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))`,
     [input.successHotCutoffCreatedAt, successSampleBucketThreshold, input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
     limit
   )
@@ -922,7 +946,7 @@ export async function cleanupAuditLogsByRetentionAsync(input: {
   const limit = input.limit ?? 1000
   const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
   const deletedLogs = deleteAuditLogsByWhere(
-    "((audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ? AND sample_reason NOT IN ('full_capture_success', 'targeted_full_capture_success')) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))",
+    `((${successHotRetentionDeleteWhereClause}) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))`,
     [input.successHotCutoffCreatedAt, successSampleBucketThreshold, input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
     limit
   )
@@ -930,6 +954,8 @@ export async function cleanupAuditLogsByRetentionAsync(input: {
   const deletedBlobs = await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
   return deletedLogs + deletedGroups + deletedBlobs
 }
+
+const successHotRetentionDeleteWhereClause = "audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ? AND sample_reason NOT IN ('full_capture_success', 'targeted_full_capture_success')"
 
 function normalizeSuccessSampleBucketThreshold(value: number | undefined): number {
   if (!Number.isFinite(value)) return 1000
