@@ -87,7 +87,7 @@ export function buildTableColumnManagerItems(
     })
     .filter((item): item is TableColumnManagerItem => Boolean(item))
 
-  return ensureMinimumVisibleColumns(items, options.minVisible ?? 1)
+  return normalizeTableColumnFixedOrder(ensureMinimumVisibleColumns(items, options.minVisible ?? 1))
 }
 
 export function normalizeTableColumnSettings(
@@ -120,6 +120,24 @@ export function tableColumnSettingFromItem(item: TableColumnSetting): TableColum
     visible: item.visible,
     fixed: item.fixed
   }
+}
+
+export function normalizeTableColumnFixedOrder<T extends TableColumnSetting>(items: T[]): T[] {
+  const leftItems: T[] = []
+  const normalItems: T[] = []
+  const rightItems: T[] = []
+
+  for (const item of items) {
+    if (item.fixed === 'left') {
+      leftItems.push(item)
+    } else if (item.fixed === 'right') {
+      rightItems.push(item)
+    } else {
+      normalItems.push(item)
+    }
+  }
+
+  return [...leftItems, ...normalItems, ...rightItems]
 }
 
 export function tableColumnKey(column: Record<string, any>): string {

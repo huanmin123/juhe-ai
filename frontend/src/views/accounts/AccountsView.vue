@@ -14,6 +14,9 @@
       :status-options="statusOptions"
       :system-accounts="systemAccounts"
       :system-accounts-loading="systemAccountOptionsLoading"
+      :tag-filter-disabled="tagFilterDisabled"
+      :tag-options="filterAccountTagOptions"
+      :tag-options-loading="filterAccountTagOptionsLoading"
       @create="openCreate"
       @export="exportAccounts"
       @group-dropdown="handleFilterGroupOptionsDropdown"
@@ -25,6 +28,7 @@
       @system-account-change="handleSystemAccountFilterChange"
       @system-account-dropdown="handleSystemAccountOptionsDropdown"
       @system-account-search="handleSystemAccountOptionsSearch"
+      @tag-dropdown="handleFilterAccountTagDropdown"
       @update:group-id="filters.groupId = $event"
       @update:group-selection="filters.group = $event"
       @update:keyword="filters.keyword = $event"
@@ -32,6 +36,7 @@
       @update:status="filters.status = $event"
       @update:system-account-id="filters.systemAccountId = $event"
       @update:system-account-selection="filters.systemAccount = $event"
+      @update:tag-ids="filters.tagIds = $event"
       @update:type="handleAccountTypeFilterChange"
     >
       <template #actions>
@@ -211,7 +216,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId, rememberGroupLabel } from '@/shared/groupLabelCache'
-import type { AccountExportResult, AccountSummary } from '@/types/domain'
+import type { AccountExportResult, AccountSummary, AccountTagSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountFilterToolbar from './AccountFilterToolbar.vue'
@@ -263,6 +268,10 @@ const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./Accoun
 const selectedAccountIds = ref<string[]>([])
 const importModalOpen = ref(false)
 const exportLoading = ref(false)
+const filterAccountTagOptions = ref<AccountTagSummary[]>([])
+const filterAccountTagOptionsLoading = ref(false)
+const filterAccountTagOptionsScopeKey = ref('')
+let filterAccountTagOptionsRequestToken = 0
 const ACCOUNT_EXPORT_MAX_ACCOUNTS = 50
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
@@ -324,6 +333,7 @@ const {
     selectedIds: [filters.groupId]
   })
 })
+const tagFilterDisabled = computed(() => isManagementView.value && !accountScopeParams.value?.systemAccountId)
 
 function handleAccountListLoaded(selectableAccountIds: Set<string>) {
   selectedAccountIds.value = selectedAccountIds.value.filter((id) => selectableAccountIds.has(id))
@@ -639,6 +649,50 @@ function handleAccountTypeFilterChange(value: string): void {
   applyFilters()
 }
 
+function currentFilterAccountTagScopeKey(): string | undefined {
+  if (!isManagementView.value) return 'self'
+  const systemAccountId = accountScopeParams.value?.systemAccountId
+  return systemAccountId ? `management:${systemAccountId}` : undefined
+}
+
+async function loadFilterAccountTagOptions(force = false): Promise<void> {
+  const scopeKey = currentFilterAccountTagScopeKey()
+  if (!scopeKey) {
+    resetFilterAccountTagOptions()
+    return
+  }
+  if (!force && filterAccountTagOptionsScopeKey.value === scopeKey) return
+  const requestToken = ++filterAccountTagOptionsRequestToken
+  const scopeParams = accountScopeParams.value
+  filterAccountTagOptionsLoading.value = true
+  try {
+    const nextOptions = isManagementView.value
+      ? await api.accounts.tags(scopeParams)
+      : await api.myAccounts.tags()
+    if (requestToken !== filterAccountTagOptionsRequestToken || currentFilterAccountTagScopeKey() !== scopeKey) return
+    filterAccountTagOptions.value = nextOptions
+    filterAccountTagOptionsScopeKey.value = scopeKey
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载账户标签失败'))
+  } finally {
+    if (requestToken === filterAccountTagOptionsRequestToken) {
+      filterAccountTagOptionsLoading.value = false
+    }
+  }
+}
+
+function resetFilterAccountTagOptions(): void {
+  filterAccountTagOptionsRequestToken += 1
+  filterAccountTagOptions.value = []
+  filterAccountTagOptionsScopeKey.value = ''
+  filterAccountTagOptionsLoading.value = false
+}
+
+function handleFilterAccountTagDropdown(open: boolean): void {
+  if (open) void loadFilterAccountTagOptions(true)
+}
+
 async function copyText(value: string) {
   await copyTextToClipboard(value)
 }
@@ -717,6 +771,7 @@ function resetFilters() {
   selectedAccountIds.value = []
   resetGroupOptionsSearch()
   resetFilterGroupOptionsSearch()
+  resetFilterAccountTagOptions()
   resetAccountListFilters()
 }
 
@@ -724,11 +779,13 @@ function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
   filters.groupId = ''
   filters.group = undefined
+  filters.tagIds = []
   if (filters.systemAccountId === allSystemAccountsValue) {
     filters.systemAccount = undefined
   }
   resetGroupOptionsSearch()
   resetFilterGroupOptionsSearch()
+  resetFilterAccountTagOptions()
   handleAccountListSystemAccountFilterChange()
 }
 
@@ -805,6 +862,7 @@ function currentAccountExportFilters(): AccountExportFilters {
     providerCode: filters.providerCode && filters.providerCode !== 'all' ? filters.providerCode : undefined,
     type: filters.type && filters.type !== 'all' ? filters.type : undefined,
     groupId: filters.groupId || undefined,
+    tagIds: filters.tagIds.length ? filters.tagIds : undefined,
     status: filters.status.length ? filters.status : undefined
   }
 }
@@ -903,6 +961,9 @@ async function removeAccount(id: string) {
 onMounted(() => {
   void loadData()
   void loadAccountAuxiliaryOptions(accountScopeParams.value?.systemAccountId).catch((error) => {
+    console.error(error)
+  })
+  void loadFilterAccountTagOptions().catch((error) => {
     console.error(error)
   })
 })

@@ -30,13 +30,13 @@ interface UseAccountListDataOptions {
 }
 
 const defaultAccountsPageState = (): AccountsPageState => ({
-  filters: { keyword: '', providerCode: 'all', type: 'all', groupId: '', group: undefined, status: [], systemAccountId: allSystemAccountsValue, systemAccount: undefined },
+  filters: { keyword: '', providerCode: 'all', type: 'all', groupId: '', group: undefined, tagIds: [], status: [], systemAccountId: allSystemAccountsValue, systemAccount: undefined },
   pagination: { current: 1, pageSize: ACCOUNT_PAGE_SIZE },
   sorts: [{ field: 'priority', order: 'asc' }]
 })
 
 export function useAccountListData(options: UseAccountListDataOptions) {
-  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 7 })
+  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 8 })
   const initialPageState = pageStateCache.read()
   rememberGroupSelection(initialPageState.filters.group)
   rememberPrincipalSelection(initialPageState.filters.systemAccount)
@@ -168,6 +168,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     filters.type = 'all'
     filters.groupId = ''
     filters.group = undefined
+    filters.tagIds = []
     filters.status = []
     resetAccountPagination()
   }
@@ -178,7 +179,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
   function snapshotPageState(): AccountsPageState {
     return {
-      filters: { ...filters, status: [...filters.status] },
+      filters: { ...filters, tagIds: [...filters.tagIds], status: [...filters.status] },
       pagination: { current: accountPagination.current, pageSize: accountPagination.pageSize },
       sorts: accountSorts.value
     }
@@ -230,6 +231,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       providerCode: filters.providerCode && filters.providerCode !== 'all' ? filters.providerCode : undefined,
       type: filters.type && filters.type !== 'all' ? filters.type : undefined,
       groupId: filters.groupId || undefined,
+      tagIds: filters.tagIds,
       status: filters.status
     }
   }

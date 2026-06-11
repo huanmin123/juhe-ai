@@ -38,6 +38,7 @@ export interface AccountFilters {
   type: string
   groupId: string
   group?: GroupSelection
+  tagIds: string[]
   status: AccountStatus[]
   systemAccountId: string
   systemAccount?: PrincipalSelection

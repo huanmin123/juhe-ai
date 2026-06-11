@@ -61,6 +61,20 @@
             @update:value="handleGroupUpdate"
           />
         </a-form-item>
+        <a-form-item label="标签">
+          <a-select
+            :value="filters.tagIds"
+            allow-clear
+            :disabled="tagFilterDisabled"
+            :loading="tagOptionsLoading"
+            :max-tag-count="2"
+            mode="multiple"
+            :options="tagSelectOptions"
+            :placeholder="tagFilterPlaceholder"
+            @change="handleTagChange"
+            @dropdown-visible-change="emit('tag-dropdown', $event)"
+          />
+        </a-form-item>
         <a-form-item label="账户状态">
           <a-select
             :value="filters.status"
@@ -140,6 +154,21 @@
           @change="handleStatusChange"
         />
       </label>
+      <label class="mobile-filter-field">
+        <span>标签</span>
+        <a-select
+          :value="filters.tagIds"
+          allow-clear
+          :disabled="tagFilterDisabled"
+          :loading="tagOptionsLoading"
+          :max-tag-count="2"
+          mode="multiple"
+          :options="tagSelectOptions"
+          :placeholder="tagFilterPlaceholder"
+          @change="handleTagChange"
+          @dropdown-visible-change="emit('tag-dropdown', $event)"
+        />
+      </label>
       <label v-if="isManagementView" class="mobile-filter-field">
         <span>系统账户</span>
         <SystemPrincipalSelect
@@ -170,7 +199,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountStatus, GroupOptionSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountStatus, AccountTagSummary, GroupOptionSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText } from './accountFormatters'
 import type { AccountFilters } from './accountFormTypes'
@@ -196,6 +225,9 @@ const props = defineProps<{
   statusOptions: Array<FilterOption<AccountStatus>>
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
+  tagFilterDisabled?: boolean
+  tagOptions: AccountTagSummary[]
+  tagOptionsLoading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -210,6 +242,7 @@ const emit = defineEmits<{
   (event: 'system-account-change'): void
   (event: 'system-account-dropdown', open: boolean): void
   (event: 'system-account-search', value: string): void
+  (event: 'tag-dropdown', open: boolean): void
   (event: 'update:groupId', value: string): void
   (event: 'update:groupSelection', value?: GroupSelection): void
   (event: 'update:keyword', value: string): void
@@ -217,6 +250,7 @@ const emit = defineEmits<{
   (event: 'update:status', value: AccountStatus[]): void
   (event: 'update:systemAccountId', value: string): void
   (event: 'update:systemAccountSelection', value?: PrincipalSelection): void
+  (event: 'update:tagIds', value: string[]): void
   (event: 'update:type', value: string): void
 }>()
 
@@ -229,6 +263,11 @@ const providerOptions = computed(() => [
   { label: '全部供应商', value: 'all' },
   ...resolvedProviders.value.map((provider) => ({ label: provider.name, value: provider.code }))
 ])
+const tagSelectOptions = computed(() => props.tagOptions.map((tag) => ({
+  label: tag.name,
+  value: tag.id
+})))
+const tagFilterPlaceholder = computed(() => props.tagFilterDisabled ? '请先选择系统账户' : '全部标签')
 const accountTypeOptions = computed(() => {
   const providerCode = props.filters.providerCode || 'all'
   const selectedProvider = providerCode !== 'all'
@@ -255,6 +294,7 @@ const advancedFilterCount = computed(() => [
   Boolean(props.filters.type && props.filters.type !== 'all'),
   props.filters.status.length > 0,
   Boolean(props.filters.groupId),
+  props.filters.tagIds.length > 0,
   props.isManagementView && props.filters.systemAccountId !== allSystemAccountsValue
 ].filter(Boolean).length)
 
@@ -281,6 +321,11 @@ function handleSystemAccountUpdate(value: SelectValue) {
 
 function handleStatusChange(value: SelectValue) {
   emit('update:status', Array.isArray(value) ? value.filter(isAccountStatus) : [])
+  emit('search')
+}
+
+function handleTagChange(value: SelectValue) {
+  emit('update:tagIds', Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()) : [])
   emit('search')
 }
 

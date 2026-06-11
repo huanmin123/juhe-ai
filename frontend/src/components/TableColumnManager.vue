@@ -24,7 +24,7 @@
       </div>
       <div class="table-column-manager-list">
         <div
-          v-for="(item, index) in draftItems"
+          v-for="item in draftItems"
           :key="item.key"
           class="table-column-manager-item"
           :class="{
@@ -56,14 +56,14 @@
           />
           <span class="table-column-manager-order">
             <a-tooltip title="上移">
-              <a-button size="small" type="text" :disabled="index === 0" @click="moveItemByOffset(item.key, -1)">
+              <a-button size="small" type="text" :disabled="!canMoveItemByOffset(item.key, -1)" @click="moveItemByOffset(item.key, -1)">
                 <template #icon>
                   <ArrowUpOutlined />
                 </template>
               </a-button>
             </a-tooltip>
             <a-tooltip title="下移">
-              <a-button size="small" type="text" :disabled="index === draftItems.length - 1" @click="moveItemByOffset(item.key, 1)">
+              <a-button size="small" type="text" :disabled="!canMoveItemByOffset(item.key, 1)" @click="moveItemByOffset(item.key, 1)">
                 <template #icon>
                   <ArrowDownOutlined />
                 </template>
@@ -92,6 +92,7 @@ import { computed, ref } from 'vue'
 
 import {
   buildTableColumnManagerItems,
+  normalizeTableColumnFixedOrder,
   tableColumnSettingFromItem,
   type TableColumnFixed,
   type TableColumnManagerItem,
@@ -147,7 +148,7 @@ function handleReset(): void {
 }
 
 function saveSettings(): void {
-  emit('update:settings', draftItems.value.map(tableColumnSettingFromItem))
+  emit('update:settings', normalizeDraftItemOrder(draftItems.value).map(tableColumnSettingFromItem))
   closeModal()
 }
 
@@ -170,19 +171,26 @@ function updateItemVisibility(key: string, visible: boolean): void {
 
 function updateItemFixed(key: string, value: unknown): void {
   const fixed = normalizeFixedValue(value)
-  draftItems.value = draftItems.value.map((item) => (
+  draftItems.value = normalizeDraftItemOrder(draftItems.value.map((item) => (
     item.key === key ? { ...item, fixed } : item
-  ))
+  )))
+}
+
+function canMoveItemByOffset(key: string, offset: number): boolean {
+  const fromIndex = draftItems.value.findIndex((item) => item.key === key)
+  const toIndex = fromIndex + offset
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= draftItems.value.length) return false
+  return draftItems.value[fromIndex].fixed === draftItems.value[toIndex].fixed
 }
 
 function moveItemByOffset(key: string, offset: number): void {
   const fromIndex = draftItems.value.findIndex((item) => item.key === key)
   const toIndex = fromIndex + offset
-  if (fromIndex < 0 || toIndex < 0 || toIndex >= draftItems.value.length) return
+  if (!canMoveItemByOffset(key, offset)) return
   const nextItems = [...draftItems.value]
   const [item] = nextItems.splice(fromIndex, 1)
   nextItems.splice(toIndex, 0, item)
-  draftItems.value = nextItems
+  draftItems.value = normalizeDraftItemOrder(nextItems)
 }
 
 function handleDragStart(event: DragEvent, key: string): void {
@@ -194,7 +202,7 @@ function handleDragStart(event: DragEvent, key: string): void {
 }
 
 function handleDragOver(key: string): void {
-  if (draggedKey.value && draggedKey.value !== key) {
+  if (draggedKey.value && canDropItemOnTarget(draggedKey.value, key)) {
     dragOverKey.value = key
   }
 }
@@ -216,6 +224,7 @@ function handleDrop(event: DragEvent, targetKey: string): void {
 }
 
 function moveItemToDropPosition(sourceKey: string, targetKey: string, afterTarget: boolean): void {
+  if (!canDropItemOnTarget(sourceKey, targetKey)) return
   const sourceIndex = draftItems.value.findIndex((item) => item.key === sourceKey)
   const targetIndex = draftItems.value.findIndex((item) => item.key === targetKey)
   if (sourceIndex < 0 || targetIndex < 0) return
@@ -223,7 +232,14 @@ function moveItemToDropPosition(sourceKey: string, targetKey: string, afterTarge
   const [sourceItem] = nextItems.splice(sourceIndex, 1)
   const nextTargetIndex = nextItems.findIndex((item) => item.key === targetKey)
   nextItems.splice(nextTargetIndex + (afterTarget ? 1 : 0), 0, sourceItem)
-  draftItems.value = nextItems
+  draftItems.value = normalizeDraftItemOrder(nextItems)
+}
+
+function canDropItemOnTarget(sourceKey: string, targetKey: string): boolean {
+  if (sourceKey === targetKey) return false
+  const sourceItem = draftItems.value.find((item) => item.key === sourceKey)
+  const targetItem = draftItems.value.find((item) => item.key === targetKey)
+  return Boolean(sourceItem && targetItem && sourceItem.fixed === targetItem.fixed)
 }
 
 function isDropAfterTarget(event: DragEvent): boolean {
@@ -241,6 +257,10 @@ function clearDragState(): void {
 function normalizeFixedValue(value: unknown): TableColumnFixed {
   if (value === 'left' || value === 'right') return value
   return 'none'
+}
+
+function normalizeDraftItemOrder(items: TableColumnManagerItem[]): TableColumnManagerItem[] {
+  return normalizeTableColumnFixedOrder(items)
 }
 </script>
 

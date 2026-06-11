@@ -16,8 +16,9 @@ export function filterAccounts(input: {
     const typeMatched = !input.filters.type || input.filters.type === 'all' || account.type === input.filters.type
     const statusMatched = input.filters.status.length === 0 || input.filters.status.includes(account.status)
     const groupMatched = !input.filters.groupId || account.boundGroupId === input.filters.groupId
+    const tagMatched = input.filters.tagIds.length === 0 || (account.tags ?? []).some((tag) => input.filters.tagIds.includes(tag.id))
     const systemAccountMatched = matchesSystemAccountFilter(account, input.filters.systemAccountId, input.isManagementView)
-    return keywordMatched && providerMatched && typeMatched && statusMatched && groupMatched && systemAccountMatched
+    return keywordMatched && providerMatched && typeMatched && statusMatched && groupMatched && tagMatched && systemAccountMatched
   })
 }
 
@@ -27,6 +28,7 @@ export function countActiveAccountFilters(filters: AccountFilters, isManagementV
     Boolean(filters.type && filters.type !== 'all'),
     filters.status.length > 0,
     Boolean(filters.groupId),
+    filters.tagIds.length > 0,
     isManagementView && filters.systemAccountId !== allSystemAccountsValue
   ].filter(Boolean).length
 }

@@ -19,6 +19,7 @@ export interface AccountListOptions {
   providerCode?: string
   providerProtocolProfileId?: string
   groupId?: string
+  tagIds?: string[]
   type?: string
   status?: string
   schedulable?: AccountListSchedulableFilter
@@ -37,6 +38,7 @@ export interface NormalizedAccountListOptions {
   providerCode?: string
   providerProtocolProfileId?: string
   groupId?: string
+  tagIds: string[]
   type?: string
   status?: string
   schedulable: AccountListSchedulableFilter
@@ -116,6 +118,7 @@ export function normalizeAccountListOptions(options?: AccountListOptions, normal
     providerCode: normalizeTextFilter(options?.providerCode),
     providerProtocolProfileId: normalizeTextFilter(options?.providerProtocolProfileId),
     groupId: normalizeTextFilter(options?.groupId),
+    tagIds: normalizeTextList(options?.tagIds),
     type: normalizeTextFilter(options?.type),
     status: normalizeTextFilter(options?.status),
     schedulable: isSchedulableFilter(options?.schedulable) ? options.schedulable : 'all'

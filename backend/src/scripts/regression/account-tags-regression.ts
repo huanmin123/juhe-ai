@@ -69,12 +69,31 @@ try {
     groupId: group.id,
     tags: ['主力', 'API', ' 主力 ']
   }, access)
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '标签未命中账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-account-tags-unmatched', base_url: 'https://api.openai.com/v1' },
+    groupId: group.id
+  }, access)
 
   assert.deepEqual(sortedTagNames(account.tags), sortedText(['API', '主力']), '创建账户应去重并保存多个标签')
   const tagOptions = repositories.listAccountTags(access)
   const mainTag = tagOptions.find((tag) => tag.name === '主力')
+  const apiTag = tagOptions.find((tag) => tag.name === 'API')
   assert(mainTag, '标签下拉应返回已创建标签')
+  assert(apiTag, '标签下拉应返回 API 标签')
   assert.equal(mainTag.accountCount, 1, '已绑定标签应返回绑定账户数')
+  assert.deepEqual(
+    repositories.listAccountsPage(access, { tagIds: [mainTag.id], page: 1, pageSize: 10 }).items.map((item) => item.name),
+    ['标签回归账户'],
+    '账户列表应支持按标签筛选'
+  )
+  assert.deepEqual(
+    repositories.listAccountsPage(access, { tagIds: [mainTag.id, apiTag.id], page: 1, pageSize: 10 }).items.map((item) => item.name),
+    ['标签回归账户'],
+    '账户列表多标签筛选应命中任一标签'
+  )
   assert.throws(
     () => repositories.deleteAccountTag(mainTag.id, access),
     /标签已绑定账户，不能删除/,
@@ -85,6 +104,11 @@ try {
   assert.deepEqual(sortedTagNames(updatedTags), sortedText(['API', '备用']), '独立标签更新应替换账户标签')
   const mainTagAfterUnbind = repositories.listAccountTags(access).find((tag) => tag.name === '主力')
   assert.equal(mainTagAfterUnbind?.accountCount, 0, '解除绑定后原标签账户数应归零')
+  assert.equal(
+    repositories.listAccountsPage(access, { tagIds: [mainTag.id], page: 1, pageSize: 10 }).items.length,
+    0,
+    '解除绑定后按原标签筛选不应继续返回账户'
+  )
   assert.equal(repositories.deleteAccountTag(mainTag.id, access), true, '未绑定账户的标签应允许删除')
 
   const exported = accountExport.exportAccountsAsImportDocument({ accountIds: [account.id] }, access)

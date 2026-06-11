@@ -210,6 +210,7 @@ export interface AccountListParams extends ListParams {
   keyword?: string
   providerCode?: string
   groupId?: string
+  tagIds?: string[]
   type?: string
   status?: string | string[]
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
@@ -227,6 +228,7 @@ export interface AccountOptionParams extends ListParams {
   keyword?: string
   providerCode?: string
   groupId?: string
+  tagIds?: string[]
   type?: string
   status?: string | string[]
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
@@ -1011,6 +1013,8 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
   if (params.keyword) output.keyword = params.keyword
   if (params.providerCode && params.providerCode !== 'all') output.providerCode = params.providerCode
   if (params.groupId) output.groupId = params.groupId
+  const tagIds = joinedListParam(params.tagIds)
+  if (tagIds) output.tagIds = tagIds
   if (params.type && params.type !== 'all') output.type = params.type
   const status = joinedListParam(params.status)
   if (status) output.status = status
@@ -1031,6 +1035,8 @@ function accountOptionsParams(params?: AccountOptionParams, includeSystemAccount
   if (params.keyword) output.keyword = params.keyword
   if (params.providerCode && params.providerCode !== 'all') output.providerCode = params.providerCode
   if (params.groupId) output.groupId = params.groupId
+  const tagIds = joinedListParam(params.tagIds)
+  if (tagIds) output.tagIds = tagIds
   if (params.type && params.type !== 'all') output.type = params.type
   const status = joinedListParam(params.status)
   if (status) output.status = status

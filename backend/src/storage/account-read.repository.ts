@@ -665,6 +665,16 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
     clauses.push('group_bindings.group_id = ?')
     params.push(groupId)
   }
+  if (options.tagIds.length) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM account_tag_bindings tag_filter
+      WHERE tag_filter.account_id = account_rows.id
+        AND tag_filter.system_account_id = account_rows.system_account_id
+        AND tag_filter.tag_id IN (${options.tagIds.map(() => '?').join(', ')})
+    )`)
+    params.push(...options.tagIds)
+  }
   if (options.type && options.type !== 'all') {
     clauses.push('account_rows.type = ?')
     params.push(options.type)

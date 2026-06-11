@@ -169,6 +169,10 @@ const accountExportFilterSchema = z.object({
   keyword: z.string().trim().max(200).optional(),
   providerCode: z.string().trim().max(80).optional(),
   groupId: z.string().trim().max(120).optional(),
+  tagIds: z.union([
+    z.string().trim(),
+    z.array(z.string().trim()).max(100)
+  ]).optional(),
   type: z.string().trim().max(80).optional(),
   status: z.union([
     z.string().trim(),
@@ -428,6 +432,7 @@ function parseAccountOptionsQuery(query: Record<string, unknown>): AccountOption
     keyword: optionalQueryText(query.keyword),
     providerCode: optionalQueryText(query.providerCode),
     groupId: optionalQueryText(query.groupId),
+    tagIds: queryTextList(query.tagIds, 100),
     type: optionalQueryText(query.type),
     status: statusQueryValue(query.status),
     schedulable: schedulableQueryValue(query.schedulable)
@@ -452,6 +457,7 @@ function parseAccountListOptions(query: Record<string, unknown>): AccountListOpt
     keyword: optionalQueryText(query.keyword),
     providerCode: optionalQueryText(query.providerCode),
     groupId: optionalQueryText(query.groupId),
+    tagIds: queryTextList(query.tagIds, 100),
     type: optionalQueryText(query.type),
     status: statusQueryValue(query.status),
     schedulable: schedulableQueryValue(query.schedulable)
@@ -513,6 +519,7 @@ function accountExportListOptions(filters: z.infer<typeof accountExportFilterSch
     keyword: accountExportTextFilter(filters.keyword),
     providerCode: accountExportAllFilter(filters.providerCode),
     groupId: accountExportTextFilter(filters.groupId),
+    tagIds: queryTextList(filters.tagIds, 100),
     type: accountExportAllFilter(filters.type),
     status: statusQueryValue(filters.status),
     schedulable: schedulableQueryValue(filters.schedulable)

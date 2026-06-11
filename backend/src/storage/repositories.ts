@@ -1576,6 +1576,16 @@ function buildAccountOptionFilters(
     )`)
     params.push(...groupBindingSystemAccountParams, groupId)
   }
+  if (options.tagIds.length) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM account_tag_bindings option_tag_bindings
+      WHERE option_tag_bindings.account_id = accounts.id
+        AND option_tag_bindings.system_account_id = accounts.system_account_id
+        AND option_tag_bindings.tag_id IN (${sqlPlaceholders(options.tagIds.length)})
+    )`)
+    params.push(...options.tagIds)
+  }
   if (options.type && options.type !== 'all') {
     clauses.push('accounts.type = ?')
     params.push(options.type)
