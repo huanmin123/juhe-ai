@@ -107,7 +107,6 @@ packageJson.scripts = {
   'check:runtime': 'node dist/scripts/preflight/check-node-sqlite.js',
   start: 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'
 }
-delete packageJson.devDependencies
 
 fs.writeFileSync(destinationPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
 NODE

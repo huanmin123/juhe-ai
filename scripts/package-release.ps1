@@ -52,9 +52,6 @@ function Copy-ReleaseBackendPackageJson {
     'check:runtime' = 'node dist/scripts/preflight/check-node-sqlite.js'
     'start' = 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'
   }
-  if ($packageJson.PSObject.Properties.Name -contains 'devDependencies') {
-    $packageJson.PSObject.Properties.Remove('devDependencies')
-  }
   Write-Utf8NoBom -Path $Destination -Content (($packageJson | ConvertTo-Json -Depth 20) + "`n")
 }
 
