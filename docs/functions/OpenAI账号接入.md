@@ -115,6 +115,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
+- `base_url` 保存时按 OpenAI-compatible 上游根地址严格校验：必须是完整绝对地址，公网生产地址只允许 `https`，本地 mock / 回归测试才可通过私网上游放行配置使用 `http`；禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。可填写服务根地址或 `/v1` 版本根地址，例如 `https://api.openai.com`、`https://api.openai.com/v1`、`https://example.com/openai`、`https://example.com/openai/v1`；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
 - 时间计划不改写账户 `status`；时段外只退出网关账号候选，进入允许时段后自动重新参与调度。时区跟随系统默认值，用户表单不提供时区配置。

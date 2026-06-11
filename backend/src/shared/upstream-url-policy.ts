@@ -3,6 +3,15 @@ import type { RequestOptions } from 'node:http'
 import { isIP } from 'node:net'
 
 import { runtimeConfig, type RuntimeConfig } from '../config/runtime.js'
+import {
+  openAICompatibleBaseUrlPolicy,
+  upstreamRequestUrlPolicy,
+  openAICompatibleBaseUrlValidator,
+  upstreamRequestUrlValidator,
+  UpstreamBaseUrlValidator,
+  type UpstreamBaseUrlValidationPolicy,
+  UpstreamBaseUrlValidationError
+} from './upstream-base-url-validator.js'
 
 type UpstreamUrlSecurityConfig = RuntimeConfig['upstreamUrlSecurity']
 type UpstreamLookup = NonNullable<RequestOptions['lookup']>
@@ -58,8 +67,12 @@ const blockedIpv6Ranges = [
   prefixLength: Number(prefixLength)
 }))
 
-export function assertSafeUpstreamBaseUrl(value: string, config: UpstreamUrlSecurityConfig = runtimeConfig.upstreamUrlSecurity): void {
-  const url = parseUpstreamUrl(value)
+export function assertSafeUpstreamBaseUrl(
+  value: string,
+  config: UpstreamUrlSecurityConfig = runtimeConfig.upstreamUrlSecurity,
+  policy: UpstreamBaseUrlValidationPolicy = openAICompatibleBaseUrlPolicy
+): void {
+  const url = parseUpstreamUrl(value, config, policy)
   assertSafeUpstreamUrl(url, config)
 }
 
@@ -67,7 +80,7 @@ export async function prepareSafeUpstreamRequestUrl(
   value: string,
   config: UpstreamUrlSecurityConfig = runtimeConfig.upstreamUrlSecurity
 ): Promise<{ url: URL; lookup?: UpstreamLookup }> {
-  const url = parseUpstreamUrl(value)
+  const url = parseUpstreamUrl(value, config, upstreamRequestUrlPolicy)
   assertSafeUpstreamUrl(url, config)
   const hostname = normalizeHostToken(url.hostname)
   const allowlistedHost = isAllowedPrivateHostToken(hostname, config)
@@ -83,23 +96,36 @@ export async function prepareSafeUpstreamRequestUrl(
   return { url, lookup: fixedLookup(addresses) }
 }
 
-function parseUpstreamUrl(value: string): URL {
+function parseUpstreamUrl(
+  value: string,
+  config: UpstreamUrlSecurityConfig,
+  policy: UpstreamBaseUrlValidationPolicy
+): URL {
+  try {
+    return validatorForPolicy(policy).parse(value, {
+      isPrivateHostAllowed: canUseHttpUpstreamUrlForConfiguredPrivateHost(value, config)
+    })
+  } catch (error) {
+    throw new UnsafeUpstreamUrlError(error instanceof UpstreamBaseUrlValidationError ? error.message : '上游 Base URL 格式无效')
+  }
+}
+
+function validatorForPolicy(policy: UpstreamBaseUrlValidationPolicy): UpstreamBaseUrlValidator {
+  if (policy === openAICompatibleBaseUrlPolicy) return openAICompatibleBaseUrlValidator
+  if (policy === upstreamRequestUrlPolicy) return upstreamRequestUrlValidator
+  return new UpstreamBaseUrlValidator(policy)
+}
+
+function canUseHttpUpstreamUrlForConfiguredPrivateHost(value: string, config: UpstreamUrlSecurityConfig): boolean {
   let url: URL
   try {
     url = new URL(value)
   } catch {
-    throw new UnsafeUpstreamUrlError('上游 Base URL 格式无效')
+    return false
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new UnsafeUpstreamUrlError('上游 Base URL 只允许 http 或 https 协议')
-  }
-  if (!url.hostname) {
-    throw new UnsafeUpstreamUrlError('上游 Base URL 必须包含主机名')
-  }
-  if (url.username || url.password) {
-    throw new UnsafeUpstreamUrlError('上游 Base URL 不能包含用户名或密码')
-  }
-  return url
+  if (url.protocol !== 'http:') return false
+  const hostname = normalizeHostToken(url.hostname)
+  return isAllowedPrivateHostToken(hostname, config) || isLocalhostName(hostname) || isPrivateOrReservedIp(hostname)
 }
 
 function assertSafeUpstreamUrl(url: URL, config: UpstreamUrlSecurityConfig): void {

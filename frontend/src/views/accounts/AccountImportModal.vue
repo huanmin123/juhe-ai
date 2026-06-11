@@ -354,7 +354,7 @@ const accountImportProtocolMarkdown = [
   '',
   '- `api_key` 账户必须有 `credentials.api_key`。',
   '- `oauth` 账户必须有 `credentials.refresh_token` 或 `credentials.access_token`。',
-  '- `credentials.base_url` 必须显式填写，通常为 `https://api.openai.com/v1`。',
+  '- `credentials.base_url` 必须显式填写服务根地址或 `/v1` 版本根地址，通常为 `https://api.openai.com/v1`；不要填写 `/responses` 等具体接口路径。',
   '- 字段名保持 snake_case，不要改成 camelCase。',
   '- 不要编造缺失 token，不确定的信息写入 `notes`。',
   '',

@@ -5,6 +5,7 @@ import {
   selectLabelForValue,
   type SelectOption
 } from './selectLabelCache'
+import { providerDisplayName } from './providerDisplay'
 
 export type { SelectOption } from './selectLabelCache'
 
@@ -61,20 +62,28 @@ export function displayGroupName(name: string | undefined, id: string | undefine
   return id ? fallback : '-'
 }
 
-export function groupSelectOptionLabel(group: GroupOptionSummary): string {
-  if (group.accessType !== 'authorized') return group.name
-  return `${group.name}（来自 ${group.ownerSystemAccountName || '其他用户'} 授权）`
+export function groupSelectOptionLabel(group: GroupOptionSummary, options: { showProvider?: boolean } = {}): string {
+  const providerSuffix = options.showProvider ? ` (${groupProviderLabel(group.providerCode)})` : ''
+  const authorizationSuffix = group.accessType === 'authorized' ? `（来自 ${group.ownerSystemAccountName || '其他用户'} 授权）` : ''
+  return `${group.name}${providerSuffix}${authorizationSuffix}`
 }
 
 export function mergeSelectedGroupOptions(
   options: SelectOption[],
   selectedIds: Array<string | undefined>,
-  selectedGroups: Array<GroupSelection | undefined> = []
+  selectedGroups: Array<GroupSelection | undefined> = [],
+  cacheKey = groupCacheKey
 ): SelectOption[] {
   return mergeSelectedSelectOptions(
-    groupCacheKey,
+    cacheKey,
     options,
     selectedIds,
     selectedGroups.map((group) => group ? { label: group.name, value: group.id } : undefined)
   )
+}
+
+function groupProviderLabel(providerCode: string | undefined): string {
+  const providerName = providerDisplayName(providerCode)
+  if (providerName !== '未知供应商') return providerName
+  return providerCode?.trim() || providerName
 }

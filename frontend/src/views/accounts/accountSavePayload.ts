@@ -11,6 +11,7 @@ import {
   validateAccountAvailabilityScheduleForm,
   type AccountAvailabilitySchedulePayload
 } from './accountAvailabilitySchedule'
+import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
 import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
 
 export type AccountSavePayload = {
@@ -65,6 +66,10 @@ export function validateAccountSaveForm(input: {
   if (!form.groupId) return '请选择加入分组'
   if (!editingId && form.type === 'api_key' && !form.apiKey.trim()) return '请填写 API Key'
   if (form.type === 'api_key' && !form.baseUrl.trim()) return '请填写 Base URL'
+  if (form.type === 'api_key') {
+    const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)
+    if (baseUrlValidation) return baseUrlValidation
+  }
   if (!editingId && form.type === 'oauth' && form.providerCode !== GPT_VENDOR_CODE) return '当前只支持创建 GPT OAuth 账户'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'

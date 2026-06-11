@@ -15,7 +15,7 @@
         :placeholder="editing ? '留空保留原 API Key' : '粘贴完整 API Key'"
       />
     </a-form-item>
-    <a-form-item label="Base URL" required>
+    <a-form-item label="Base URL" required extra="填写服务根地址或 /v1 版本根地址，例如 https://api.openai.com/v1；不要填写 /responses 等具体接口路径。">
       <a-input
         v-model:value="form.baseUrl"
         autocomplete="off"

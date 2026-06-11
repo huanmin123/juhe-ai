@@ -26,6 +26,7 @@
           :filter-option="false"
           :groups="groups"
           :loading="groupOptionsLoading"
+          show-provider-label
           placeholder="绑定分组"
           @change="handleGroupFilterChange"
           @dropdown-visible-change="handleGroupOptionsDropdown"
@@ -61,6 +62,7 @@
             :filter-option="false"
             :groups="groups"
             :loading="groupOptionsLoading"
+            show-provider-label
             placeholder="绑定分组"
             @change="handleGroupFilterChange"
             @dropdown-visible-change="handleGroupOptionsDropdown"
@@ -248,6 +250,7 @@
                 :filter-option="false"
                 :groups="groupOptionsForBinding(index)"
                 :loading="groupOptionsLoading"
+                show-provider-label
                 :placeholder="formGroupSelectDisabled ? '请先选择系统账户' : '输入分组名称搜索'"
                 :selected-ids="formGroupBindingIds"
                 :selected-groups="formGroupBindingSelections"

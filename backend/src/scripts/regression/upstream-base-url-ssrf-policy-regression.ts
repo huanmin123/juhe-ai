@@ -27,7 +27,35 @@ const unsafeBaseUrls = [
   'http://[2001:db8::1]/v1'
 ]
 
+const invalidShapeBaseUrls = [
+  ['https:///api.openai.com/v1', /协议后只能保留两个斜杠/],
+  ['https:////api.openai.com/v1', /协议后只能保留两个斜杠/],
+  ['https:\\\\api.openai.com\\v1', /反斜杠|完整绝对地址/],
+  ['ftp://api.openai.com/v1', /只允许/],
+  ['http://api.openai.com/v1', /生产地址只允许 https/],
+  ['https://user:pass@api.openai.com/v1', /用户名或密码/],
+  ['https://api.openai.com//v1', /连续斜杠/],
+  ['https://api.openai.com/v1?x=1', /查询参数/],
+  ['https://api.openai.com/v1#hash', /片段标识/],
+  ['https://api.openai.com/v1/%2f', /编码后的斜杠/],
+  ['https://api.openai.com/v1/%5c', /编码后的斜杠/],
+  ['https://api.openai.com/v1/.', /\. 或 \.\./],
+  ['https://api.openai.com/v1/%2e', /\. 或 \.\./],
+  ['https://api.openai.com/v1/responses', /\/v1 后的具体接口路径/],
+  ['https://api.openai.com/v1/chat/completions', /\/v1 后的具体接口路径/],
+  ['https://api.openai.com/responses', /不能填写具体接口路径/],
+  ['https://example.com/openai/responses', /不能填写具体接口路径/]
+] as const
+
 try {
+  for (const [baseUrl, expectedMessage] of invalidShapeBaseUrls) {
+    assert.throws(
+      () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-url-shape-policy', base_url: baseUrl }),
+      expectedMessage,
+      `严格路径策略应拒绝无效上游 Base URL：${baseUrl}`
+    )
+  }
+
   for (const baseUrl of unsafeBaseUrls) {
     assert.throws(
       () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: baseUrl }),
@@ -39,6 +67,18 @@ try {
   assert.doesNotThrow(
     () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'https://api.openai.com/v1' }),
     '官方 HTTPS 上游地址应允许保存'
+  )
+  assert.doesNotThrow(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-url-shape-policy', base_url: 'https://api.openai.com' }),
+    'OpenAI 兼容账号应允许保存服务根地址'
+  )
+  assert.doesNotThrow(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-url-shape-policy', base_url: 'https://example.com/openai/v1' }),
+    'OpenAI 兼容账号应允许保存带自定义前缀的 /v1 地址'
+  )
+  assert.doesNotThrow(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-url-shape-policy', base_url: 'https://example.com/openai' }),
+    'OpenAI 兼容账号应允许保存带自定义前缀的服务根地址'
   )
   assert.doesNotThrow(
     () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'https://[2606:4700:4700::1111]/v1' }),
