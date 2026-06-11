@@ -230,7 +230,6 @@
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑 API Key' : '新建 API Key'" width="640px" :confirm-loading="apiKeySaving" :ok-button-props="{ type: 'primary', disabled: apiKeySaving }" @ok="saveApiKey">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
-      <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建成功后请立即复制保存；后续可在列表按权限复制完整密钥。" type="info" show-icon />
       <a-form layout="vertical" class="modal-form">
         <a-form-item label="名称" required>
           <a-input v-model:value="form.name" />
@@ -748,7 +747,7 @@ function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {
       icon: 'delete',
       tone: 'danger',
       disabled: updating,
-      confirmTitle: '确认删除这个 API Key？删除后会立即失效，关联历史记录和统计将由后台分批清理。',
+      confirmTitle: `确认删除 API Key ${apiKey.name}？`,
       confirmOkText: '删除'
     }
   ]

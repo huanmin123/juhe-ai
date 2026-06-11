@@ -54,12 +54,36 @@
       :deletable-count="selectedDeletableAccountCount"
       :selected-count="selectedAccounts.length"
       @clear="clearSelection"
-      @delete="batchDeleteSelected"
+      @delete="openBatchDeleteConfirm"
       @disable="batchSetStatus('disabled')"
       @enable="batchSetStatus('active')"
       @restore="batchRestoreSelected"
       @test="batchTestSelected"
     />
+
+    <a-modal
+      v-model:open="batchDeleteConfirmOpen"
+      title="确认批量删除账户"
+      ok-text="删除"
+      cancel-text="取消"
+      :confirm-loading="batchDeleteConfirmLoading"
+      :ok-button-props="{ danger: true, disabled: !batchDeleteTargets.length }"
+      @cancel="closeBatchDeleteConfirm"
+      @ok="confirmBatchDelete"
+    >
+      <div class="batch-delete-confirm">
+        <p class="batch-delete-summary">将删除以下 {{ batchDeleteTargets.length }} 个账户：</p>
+        <div class="batch-delete-list">
+          <div v-for="account in batchDeleteTargets" :key="account.id" class="batch-delete-item">
+            <span class="batch-delete-name">{{ accountDisplayName(account) }}</span>
+            <span class="batch-delete-meta">
+              <span>{{ providerName(account.providerCode) }}</span>
+              <span v-if="isManagementView && account.systemAccountName">系统账户：{{ account.systemAccountName }}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </a-modal>
 
     <AccountImportModal
       v-if="importModalOpen"
@@ -230,6 +254,9 @@ import {
   statusOptions
 } from './accountOptions'
 import {
+  accountDisplayName
+} from './accountFormatters'
+import {
   accountSelectionColumnWidth,
   accountTableScrollX,
   accountTableScrollY,
@@ -380,6 +407,9 @@ const accountById = computed(() => accountByIdMap(accounts.value))
 const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIdSet.value.has(account.id)))
 const selectedDeletableAccountCount = computed(() => selectedAccounts.value.filter(canBatchDeleteAccount).length)
+const batchDeleteConfirmOpen = ref(false)
+const batchDeleteConfirmLoading = ref(false)
+const batchDeleteTargets = ref<AccountSummary[]>([])
 const groupOptionProviderCode = ref('')
 const groupOptionSystemAccountId = ref('')
 const selectedGroupIds = ref<Array<string | undefined>>([])
@@ -791,6 +821,39 @@ function handleSystemAccountFilterChange() {
 
 function clearSelection() {
   selectedAccountIds.value = []
+  closeBatchDeleteConfirm()
+}
+
+function openBatchDeleteConfirm() {
+  const targets = selectedAccounts.value.filter(canBatchDeleteAccount)
+  if (!targets.length) {
+    message.warning('所选账户里没有可删除的自有账户')
+    return
+  }
+  if (targets.length !== selectedAccounts.value.length) {
+    message.warning('已跳过授权账户或无权删除的账户')
+  }
+  batchDeleteTargets.value = [...targets]
+  batchDeleteConfirmOpen.value = true
+}
+
+function closeBatchDeleteConfirm() {
+  if (batchDeleteConfirmLoading.value) return
+  batchDeleteConfirmOpen.value = false
+  batchDeleteTargets.value = []
+}
+
+async function confirmBatchDelete() {
+  const targets = [...batchDeleteTargets.value]
+  if (!targets.length) return
+  batchDeleteConfirmLoading.value = true
+  try {
+    await batchDeleteSelected(targets)
+    batchDeleteConfirmOpen.value = false
+    batchDeleteTargets.value = []
+  } finally {
+    batchDeleteConfirmLoading.value = false
+  }
 }
 
 function openImportModal() {
@@ -1048,6 +1111,55 @@ onMounted(() => {
   border-radius: 12px;
 }
 
+.batch-delete-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.batch-delete-summary {
+  margin: 0;
+  color: #0f172a;
+}
+
+.batch-delete-list {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.batch-delete-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.batch-delete-item:last-child {
+  border-bottom: 0;
+}
+
+.batch-delete-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-delete-meta {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 @media (max-width: 992px) {
   .form-grid {
     grid-template-columns: 1fr;
@@ -1057,6 +1169,16 @@ onMounted(() => {
 @media (max-width: 900px) {
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .batch-delete-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .batch-delete-meta {
+    flex-wrap: wrap;
+    white-space: normal;
   }
 }
 </style>

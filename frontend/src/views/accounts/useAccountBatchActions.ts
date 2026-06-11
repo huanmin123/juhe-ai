@@ -108,13 +108,13 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     )
   }
 
-  async function batchDeleteSelected() {
-    const selected = options.selectedAccounts.value.filter(canBatchDeleteAccount)
+  async function batchDeleteSelected(sourceAccounts = options.selectedAccounts.value) {
+    const selected = sourceAccounts.filter(canBatchDeleteAccount)
     if (!selected.length) {
       message.warning('所选账户里没有可删除的自有账户')
       return
     }
-    if (selected.length !== options.selectedAccounts.value.length) {
+    if (selected.length !== sourceAccounts.length) {
       message.warning('已跳过授权账户或无权删除的账户')
     }
     const hide = message.loading(`正在批量删除账户（${selected.length} 个）...`, 0)

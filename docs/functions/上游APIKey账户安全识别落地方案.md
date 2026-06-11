@@ -42,6 +42,17 @@
 | [Llama Prompt Guard 2](https://meta-llama.github.io/PurpleLlama/LlamaFirewall/docs/documentation/scanners/prompt-guard-2) | Prompt Guard 2 用于低延迟识别 jailbreak / prompt injection。 | 后续可作为可选分类器，不作为第一版硬依赖。 |
 | [LLM Guard](https://github.com/protectai/llm-guard)、[NeMo Guardrails](https://github.com/NVIDIA-NeMo/Guardrails)、[Promptfoo](https://github.com/promptfoo/promptfoo)、[garak](https://github.com/NVIDIA/garak)、[PyRIT](https://github.com/Azure/PyRIT) | 开源生态普遍采用输入 / 输出扫描、可编程规则和红队测试。 | 第一版使用规则做候选提取，再由安全识别模型裁决；红队工具用于验证。 |
 
+## 复核后的改进结论
+
+基于上述资料，当前方案保留“AI 账户级开关 + 用户选择安全识别模型 + 阻断处置策略”，但需要补强六个边界：
+
+1. 安全识别模型不是简单“低模型”。页面可以推荐低成本模型，但必须要求用户选择一个可信、稳定、可结构化输出的识别模型；模型 ID 和安全配置要固定，模型升级后需要重新跑安全回归。低价但不稳定的模型不适合作为最终裁决来源。
+2. 静态规则只做候选提取，不能直接替代语义裁决。高危兜底只在安全识别模型不可用且命中 `critical` 风险时使用。
+3. 安全裁决必须带证据包：用户授权摘要、非用户注入信号、候选危险动作、目标路径和工具名。识别模型需要判断“哪里得到用户授权”，不能只输出一个风险分数。
+4. 流式模式要做风险敏感缓冲。工具调用参数、shell 代码块和疑似危险命令在完整组装并裁决前不能直接写给客户端；普通文本可以按现有流式路径继续转发。
+5. 默认处置应是短期避让，不是 `temporary_unavailable`。内容有毒不代表账号故障，默认只在网关运行态短时间避开当前账户，让客户端重试后切其他账户。
+6. `error` 和 `disable_account` 是人工偏强策略。它们应该返回不可重试错误让客户端停止，并在列表悬浮提示中展示安全原因，避免用户误以为是网络失败或上游限流。
+
 ## 非目标
 
 - 不做本地杀毒软件，不扫描用户电脑文件，不阻止客户端本机绕过网关直接执行命令。
@@ -49,7 +60,7 @@
 - 不自动判断 AI 账户来源是否安全，也不因为某个 `base_url`、域名或代理特征自动开启安全识别。
 - 不给 OAuth 官网账号增加安全识别开关。
 - 不在账户里开放任意脚本、任意 header/body patch、任意正则执行或用户自定义代码。
-- 不把安全命中写成限流；安全命中后的账号状态副作用只能由账户安全识别里的“阻断处置策略”决定。
+- 不把安全命中写成限流；安全命中默认只做短期避让，只有显式选择异常或停用策略时才写账号持久状态。
 - 不在网关热路径扫描历史使用记录、审计 payload、日志文件或统计桶。
 
 ## 威胁模型
@@ -79,9 +90,9 @@ OAuth 官网账号虽然也可能被用户上下文诱导生成危险建议，�
 | 授权实例账户命中 API Key 来源账户 | 读取来源账户的安全识别配置，被授权人不能覆盖 |
 | OAuth AI 账户 | 固定不启用，不读策略 |
 | 同一分组混合 OAuth 与 API Key 账户 | 命中 API Key 账户且开启时检查；命中 OAuth 账户时不检查 |
-| API Key 账户安全识别命中阻断 | 按当前账户配置的阻断处置策略执行：默认临时不可用，也可配置为异常或停用账户 |
+| API Key 账户安全识别命中阻断 | 按当前账户配置的阻断处置策略执行：默认短期避让，也可配置为异常或停用账户 |
 
-安全命中是“当前账户本轮输出疑似偏离用户授权范围”的风险，不是上游非 `2xx` 错误。因此命中后不走账户错误处理策略，也不写限流；账号状态是否改变只看本账户的安全识别阻断处置策略。
+安全命中是“当前账户本轮输出疑似偏离用户授权范围”的风险，不是上游非 `2xx` 错误，也不是账号健康错误。因此命中后不走账户错误处理策略，也不写限流；默认只写网关短期避让运行态，只有用户显式选择异常或停用时才改变账号持久状态。
 
 ## 策略模式
 
@@ -131,6 +142,8 @@ AI 本轮最新输出 + 工具调用参数 + 准备执行的脚本 / 命令 / �
 - 安全识别账户可以是 OAuth 官网账号，也可以是用户信任的其他 API Key 账号；OAuth 账号作为识别模型调用来源时，不代表 OAuth 账号本身需要启用安全识别开关。
 - 安全识别请求标记为内部安全裁决流量，不递归触发安全识别，不参与被保护账号的失败处理。
 - 安全识别模型只接收有界摘要、风险候选和必要上下文，不发送完整审计 payload、完整历史日志或完整大文件。
+- 安全识别模型必须支持稳定结构化输出；后端只接受合法 JSON 裁决，解析失败按“模型不可用”处理。
+- 页面不使用“低模型”作为正式概念，建议文案为“安全识别模型”；低成本模型只是推荐方向，不是质量要求。
 
 模型调用策略：
 
@@ -150,6 +163,11 @@ AI 本轮最新输出 + 工具调用参数 + 准备执行的脚本 / 命令 / �
   "scope": "inside_requested_scope",
   "reasonCode": "user_requested_action",
   "confidence": 0.92,
+  "evidence": {
+    "authorizedByUserMessage": "清理当前项目的构建产物",
+    "candidateAction": "删除当前项目 dist 目录",
+    "targetScope": "current_project"
+  },
   "summary": "用户明确要求清理当前项目的构建产物，命令限定在项目目录内。"
 }
 ```
@@ -174,23 +192,34 @@ AI 本轮最新输出 + 工具调用参数 + 准备执行的脚本 / 命令 / �
 
 - `observe` 模式下只记录 `review_failed`，不阻断。
 - `block_high_risk` 和 `strict_agent` 模式下，静态规则命中 `critical` 的候选危险动作时按阻断处理；其他风险只记录 `review_failed` 并放行。
-- 安全识别模型调用失败本身不能写账号异常，也不能触发账号复测；只有静态 `critical` 兜底进入阻断时，才按当前账户的阻断处置策略更新账号状态。
+- 安全识别模型调用失败本身不能写账号异常，也不能触发账号复测；只有静态 `critical` 兜底进入阻断时，才按当前账户的阻断处置策略处理。
 
 ## 阻断处置策略
 
-API Key 类型 AI 账户开启安全识别后，必须配置命中阻断时如何处理当前账户。默认值为 `temporary_unavailable`。
+API Key 类型 AI 账户开启安全识别后，必须配置命中阻断时如何处理当前账户。默认值为 `short_avoidance`。
 
 | 策略值 | 页面文案 | 账号副作用 | 客户端语义 | 适用场景 |
 | --- | --- | --- | --- | --- |
-| `temporary_unavailable` | 临时不可用 | 将当前账户写为 `temporary_unavailable`，记录安全原因和临时不可用截止时间 | 返回可重试安全失败，让客户端重试后切到其他可用账户 | 默认策略，适合怀疑当前上游这次输出被污染但不想永久处理账号 |
+| `short_avoidance` | 短期避让 | 不改 `accounts.status`，只写网关进程内短 TTL 安全避让运行态和审计原因 | 返回可重试安全失败，让客户端重试后切到其他可用账户 | 默认策略，适合内容有毒但不判定账号故障 |
 | `error` | 标记异常 | 将当前账户写为 `error`，`last_error_code = api_key_account_safety_blocked`，`last_error_message` 保存原因 | 返回不可重试安全错误，让客户端停止本次任务 | 适合认为该上游账号已不可信，需要人工排查后恢复 |
 | `disable_account` | 停用账户 | 将当前账户写为 `disabled`、`schedulable = 0`，记录停用原因 | 返回不可重试安全错误，让客户端停止本次任务 | 适合确认来源不安全，需要立即从账号池移除 |
 
 默认策略细节：
 
-- `temporary_unavailable` 是默认值。命中后当前账户退出候选，客户端重试时会按既有调度尝试同分组或后续分组其他账户。
-- 临时不可用应写入账号状态和可读原因；原因需要在账户列表状态悬浮提示中展示。
-- 临时不可用不是异常，也不是停用；后续可以按既有临时不可用恢复机制、TTL 到期、手动测试或人工恢复回到正常。
+- `short_avoidance` 是默认值。命中后当前账户在短 TTL 内退出候选，客户端重试时会按既有调度尝试同分组或后续分组其他账户。
+- 短期避让不写 `accounts.status`、`cooldown_until`、`last_error_code` 或 `last_error_message`，账户列表仍显示原账号状态。
+- 短期避让原因只进入使用记录、原始审计 metadata 和网关运行态诊断；后续如果需要在账户列表展示，应作为运行态提示，不覆盖账号主状态。
+- 短期避让 TTL 到期自动恢复，服务重启后丢失；不需要后台健康复测，也不能由后台健康复测提前恢复。
+
+短期避让运行态建议复用现有“本地账号短期屏蔽 / 流式拦截命中避让”的思路：
+
+| 字段 | 建议 |
+| --- | --- |
+| 作用域 | `account_id + system_account_id + api_key_id + group_id`，授权实例按实例账户 ID |
+| 默认 TTL | `60` 到 `180` 秒，后续可系统内置，不在第一版页面暴露 |
+| 存储 | Web/网关进程内易失运行态，不写 SQLite |
+| 恢复 | TTL 到期自动恢复；服务重启后丢失 |
+| 诊断 | 审计 metadata 和运行态诊断记录 `safety_avoidance_until`、风险类型和 traceId |
 
 异常策略细节：
 
@@ -214,7 +243,7 @@ API Key 类型 AI 账户开启安全识别后，必须配置命中阻断时如�
 
 - 只处理当前命中的 API Key 类型 AI 账户；授权实例命中时写当前授权实例账户行，不回写来源账户，除非命中的是来源账户自己的自用调用。
 - 不扩大到同分组其他账户、OAuth 官网账号或供应商全局。
-- `temporary_unavailable`、`error`、`disable_account` 都必须写操作日志，便于追溯为什么状态变化。
+- `short_avoidance` 不写操作日志，因为它不是持久业务状态变更；`error` 和 `disable_account` 必须写操作日志，便于追溯为什么状态变化。
 
 ## 存储设计
 
@@ -224,7 +253,7 @@ API Key 类型 AI 账户开启安全识别后，必须配置命中阻断时如�
 | --- | --- | --- | --- |
 | `api_key_account_safety_enabled` | integer / boolean | `0` | 仅 `type = api_key` 时允许为 `1` |
 | `api_key_account_safety_mode` | text | `observe` | `observe`、`block_high_risk`、`strict_agent` |
-| `api_key_account_safety_block_action` | text | `temporary_unavailable` | `temporary_unavailable`、`error`、`disable_account` |
+| `api_key_account_safety_block_action` | text | `short_avoidance` | `short_avoidance`、`error`、`disable_account` |
 | `api_key_account_safety_config_json` | text | `{}` | 规则包、阈值、开关等扩展配置 |
 | `api_key_account_safety_reviewer_account_id` | text / null | `null` | 安全识别账户 ID，仅开启安全识别时必填 |
 | `api_key_account_safety_reviewer_model` | text / null | `null` | 安全识别模型，仅开启安全识别时必填 |
@@ -354,7 +383,7 @@ flowchart TD
 
 - 按当前账户安全识别配置里的阻断处置策略处理当前账户。
 - 当前请求终止，不在同一个响应里服务端透明切换账号继续输出。
-- `temporary_unavailable` 策略下，让支持重试的客户端收到可重试失败信号；客户端重试后，网关按既有账号不可用过滤尝试同分组或后续分组的其他可用账户。
+- `short_avoidance` 策略下，让支持重试的客户端收到可重试失败信号；客户端重试后，网关按安全短期避让运行态过滤当前账户，尝试同分组或后续分组的其他可用账户。
 - `error` 和 `disable_account` 策略下，返回不可重试安全错误，让客户端停止本次任务。
 - 只处理当前命中的账户或授权实例账户，不扩大到 OAuth 官网账号、同组全部账号或供应商全局。
 
@@ -381,7 +410,7 @@ flowchart TD
 
 | 阻断处置策略 | 错误语义 |
 | --- | --- |
-| `temporary_unavailable` | 可重试安全失败；支持重试的客户端可以重新发起请求，网关应避开当前临时不可用账户 |
+| `short_avoidance` | 可重试安全失败；支持重试的客户端可以重新发起请求，网关应在短 TTL 内避开当前账户 |
 | `error` | 不可重试安全失败；客户端应停止本次任务并展示错误 |
 | `disable_account` | 不可重试安全失败；客户端应停止本次任务并展示错误 |
 
@@ -394,7 +423,7 @@ flowchart TD
 - `safety_risk_level`：`low`、`medium`、`high`、`critical`
 - `safety_risk_types`：风险类型数组摘要
 - `safety_policy_mode`
-- `safety_block_action`：`temporary_unavailable`、`error`、`disable_account`
+- `safety_block_action`：`short_avoidance`、`error`、`disable_account`
 - `safety_account_type = api_key`
 - `safety_decision`：`allow`、`observe`、`block`
 - `safety_reviewer_account_id`
@@ -428,7 +457,7 @@ API Key 类型账号展示：
 - 安全识别账户：选择一个可信 AI 账户，用于运行安全裁决。
 - 安全识别模型：从安全识别账户可用模型中选择，建议默认低成本模型。
 - 模式：`仅观察`、`拦截高风险`、`Agent 严格模式`
-- 阻断处置：`临时不可用`、`标记异常`、`停用账户`，默认 `临时不可用`。
+- 阻断处置：`短期避让`、`标记异常`、`停用账户`，默认 `短期避让`。
 - 简短说明：用于识别提示注入、静默执行、危险工具调用和本地执行风险。
 - 命中记录入口：跳转使用记录或原始审计日志，以 traceId 排查。
 
@@ -440,7 +469,7 @@ OAuth 账号：
 列表展示：
 
 - API Key 账号可展示安全识别状态标签：`未启用`、`仅观察`、`高风险拦截`、`严格模式`。
-- 账户状态为 `临时不可用`、`异常` 或 `停用` 且 `last_error_code = api_key_account_safety_blocked` 时，状态悬浮提示展示安全识别原因、风险类型、裁决摘要和 traceId。
+- 账户状态为 `异常` 或 `停用` 且 `last_error_code = api_key_account_safety_blocked` 时，状态悬浮提示展示安全识别原因、风险类型、裁决摘要和 traceId；短期避让只作为运行态提示，不覆盖账号主状态。
 - OAuth 账号不展示安全识别标签，避免用户误解为缺失配置。
 
 授权账号：
@@ -456,7 +485,7 @@ OAuth 账号：
 {
   "apiKeyAccountSafetyEnabled": true,
   "apiKeyAccountSafetyMode": "block_high_risk",
-  "apiKeyAccountSafetyBlockAction": "temporary_unavailable",
+  "apiKeyAccountSafetyBlockAction": "short_avoidance",
   "apiKeyAccountSafetyReviewerAccountId": "acc_reviewer_xxx",
   "apiKeyAccountSafetyReviewerModel": "safety-reviewer-model",
   "apiKeyAccountSafetyConfig": {
@@ -474,7 +503,7 @@ OAuth 账号：
     "configurable": true,
     "enabled": true,
     "mode": "block_high_risk",
-    "blockAction": "temporary_unavailable",
+    "blockAction": "short_avoidance",
     "reviewerAccountId": "acc_reviewer_xxx",
     "reviewerAccountName": "官方识别账号",
     "reviewerModel": "safety-reviewer-model",
@@ -504,7 +533,7 @@ OAuth 账号详情返回：
     "configurable": false,
     "enabled": true,
     "mode": "block_high_risk",
-    "blockAction": "temporary_unavailable",
+    "blockAction": "short_avoidance",
     "reviewerAccountId": "acc_reviewer_xxx",
     "reviewerModel": "safety-reviewer-model",
     "inheritedFromSourceAccount": true,
@@ -519,8 +548,9 @@ OAuth 账号详情返回：
 - `reviewerAccountId` 必须属于当前用户可用且可调度的 AI 账户。
 - `reviewerAccountId` 不能等于当前被保护账户；授权实例场景不能等于来源账户或当前实例账户。
 - `reviewerModel` 必须来自安全识别账户可用模型目录或用户可见模型选项。
-- `blockAction` 只能是 `temporary_unavailable`、`error` 或 `disable_account`，默认 `temporary_unavailable`。
+- `blockAction` 只能是 `short_avoidance`、`error` 或 `disable_account`，默认 `short_avoidance`。
 - 安全识别账户自身如果也是 API Key 类型且开启了安全识别，安全裁决请求仍必须标记为内部流量，不能递归触发安全识别。
+- 后端应保存安全识别模型 ID 的原值，不自动替换成供应商最新模型；用户切换模型后建议重新运行安全回归样本。
 
 ## 性能边界
 
@@ -528,6 +558,7 @@ OAuth 账号详情返回：
 - 大 JSON 如需深度识别，只能走受控解析路径，并设置最大字段数、最大字符串长度、最大递归深度和超时。
 - 流式识别按 SSE event 增量处理，不拼接完整响应全文。
 - 工具调用参数可以按单个 tool call 有界缓冲；超过上限时按 `overflow` 记录并进入保守处置。
+- shell 代码块、PowerShell / cmd 片段和疑似危险命令在完整组装并完成安全裁决前不直接写给客户端；严格模式下可扩大到所有工具参数和代码块。
 - 规则列表在账户 runtime snapshot 中携带或短 TTL 缓存；网关流式循环内不能查库。
 - 命中摘要必须截断，不能把完整危险脚本额外写入普通运行日志。
 - 试运行模式也必须遵守同样性能边界，不能因为只观察就保存更多正文。
@@ -545,7 +576,7 @@ OAuth 账号详情返回：
 | 本地网关 API Key | 不持有策略，仍负责调用方身份、额度和分组路由 |
 | 账户错误处理策略 | 无关系；安全阻断不是上游非 `2xx` 错误 |
 | 流式拦截策略 | 流式拦截处理 `200 + SSE` 协议污染；安全识别处理本地执行风险，两者可以共存但命中 metadata 要区分 |
-| 网关错误处理 | 安全阻断不进入账户错误处理策略；`temporary_unavailable` 策略可复用客户端可重试失败信号和账号不可用过滤思路 |
+| 网关错误处理 | 安全阻断不进入账户错误处理策略；`short_avoidance` 策略可复用客户端可重试失败信号和本地账号短期屏蔽思路 |
 | 原始审计日志 | 保存安全命中 metadata 和原始链路，仍按既有保全策略控制正文 |
 | 使用记录 | 记录安全阻断事实和轻量风险摘要 |
 | 统计 | 第一版不新增同步统计；后续走 worker 预聚合 |
@@ -556,23 +587,27 @@ OAuth 账号详情返回：
 
 - API Key 类型账号能保存、读取和展示安全识别配置。
 - 开启安全识别时必须选择安全识别账户和安全识别模型。
-- 开启安全识别时可选择阻断处置策略，默认是 `temporary_unavailable`。
+- 开启安全识别时可选择阻断处置策略，默认是 `short_avoidance`。
 - 安全识别账户不能是当前被保护账户，安全裁决请求不能递归触发安全识别。
+- 安全识别模型必须返回合法结构化 JSON；非法 JSON 按模型不可用处理。
+- 安全识别模型 ID 固定保存，不因供应商模型目录更新自动替换。
 - OAuth 账号创建和编辑不能提交开启安全识别。
 - 授权实例账号不能覆盖来源账号安全识别配置。
 - 用户明确要求当前项目内执行脚本时，AI 输出的对应项目内命令应允许或仅观察。
 - 用户没有要求当前项目外操作时，AI 输出用户目录、系统目录、注册表、服务、启动项、凭据读取或公网外传应阻断。
 - 工具结果或文档中出现恶意指令，但用户没有授权对应操作时，应识别为非用户授权来源。
 - 命中 OAuth 账号时不执行该识别。
-- `temporary_unavailable` 策略命中后终止当前请求，把当前账户写为临时不可用；客户端重试后应避开该账户并尝试其他可用账户。
+- `short_avoidance` 策略命中后终止当前请求，不改变账号状态，只写短期避让运行态；客户端重试后应避开该账户并尝试其他可用账户。
 - `error` 策略命中后把当前账户写为异常，返回不可重试错误，客户端停止本次任务。
 - `disable_account` 策略命中后把当前账户写为停用并保存原因，返回不可重试错误，客户端停止本次任务。
-- 账户列表对安全识别导致的临时不可用、异常或停用展示悬浮原因。
+- 账户列表对安全识别导致的异常或停用展示悬浮原因；短期避让可在运行态诊断中展示原因。
+- 安全识别导致的短期避让不能写成临时不可用，也不参与普通上游健康复测。
 - 非流式响应中的危险 `tool_calls` 被阻断。
 - SSE 流式工具参数在完整参数组装后再判定，阻断后不继续输出危险参数。
+- shell 代码块和疑似危险命令在完成安全裁决前不能提前写给客户端。
 - 已写出下游 SSE body 后阻断时不静默拼接第二条上游流。
 - 安全命中写入使用记录和原始审计 metadata。
-- 安全阻断状态副作用只按阻断处置策略执行，不触发账户错误处理策略或后台复测。
+- 安全阻断的持久状态副作用只在 `error` 或 `disable_account` 策略下执行；`short_avoidance` 只写运行态，不触发账户错误处理策略或后台复测。
 - 大 body、超长 SSE event、超长工具参数都遵守容量上限和 `overflow` 标记。
 
 可选红队验证：
@@ -587,7 +622,7 @@ OAuth 账号详情返回：
 
 - 新增 API Key 类型账号安全识别字段。
 - 前端要求开启时选择安全识别账户和安全识别模型。
-- 前端提供阻断处置策略，默认选择“临时不可用”。
+- 前端提供阻断处置策略，默认选择“短期避让”。
 - 前端只在 API Key 账号表单展示配置。
 - 后端拒绝 OAuth 账号提交该配置。
 - 网关实现静态候选提取和安全识别模型 `observe` 模式，只记录命中，不阻断。
@@ -598,7 +633,7 @@ OAuth 账号详情返回：
 - 开启 `block_high_risk`。
 - 覆盖破坏性文件操作、注册表 / 服务 / 启动项、下载执行、凭据读取和外传。
 - 支持非流式响应和流式工具调用参数阻断。
-- 安全阻断终止当前请求，并按账户配置写临时不可用、异常或停用；默认临时不可用，让客户端重试后切其他账户。
+- 安全阻断终止当前请求，并按账户配置执行短期避让、异常或停用；默认短期避让，让客户端重试后切其他账户。
 
 ### 第三阶段：Agent 严格模式
 
@@ -618,6 +653,6 @@ OAuth 账号详情返回：
 - 选择默认关闭：避免误伤正常代码生成和运维脚本。
 - 选择“静态候选 + 识别模型裁决”：静态分析不够准，模型负责判断 AI 输出是否和用户授权相关。
 - 选择先观察：先收集真实误杀，再进入阻断。
-- 选择默认临时不可用：当前响应不能静默拼接其他账号输出，但客户端重试后可以通过既有调度避开当前账户。
+- 选择默认短期避让：内容有毒不代表账号故障，当前响应不能静默拼接其他账号输出，但客户端重试后可以通过既有调度避开当前账户。
 - 保留异常和停用策略：用户确认来源不可信时，可以让客户端停止并把账号持久移出正常调度。
-- 选择记录原因：临时不可用、异常和停用都必须保存安全识别原因，列表悬浮可解释为什么变更。
+- 选择记录原因：短期避让进入审计和运行态诊断；异常和停用必须保存安全识别原因，列表悬浮可解释为什么变更。

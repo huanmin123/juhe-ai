@@ -760,7 +760,7 @@ function deleteGroupAction(group: GroupSummary): RowActionItem {
     label: '删除',
     icon: 'delete',
     tone: 'danger',
-    confirmTitle: `确认删除分组「${group.name}」？删除后会从 API Key 路由中移除该分组；如果它是主号池且存在可用备用号池，将自动切到备用号池。`,
+    confirmTitle: `确认删除分组 ${group.name}？`,
     confirmOkText: '删除'
   }
 }

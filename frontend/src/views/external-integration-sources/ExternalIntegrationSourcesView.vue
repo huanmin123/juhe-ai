@@ -956,7 +956,7 @@ function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
     ...(generateTokenAction ? [generateTokenAction] : []),
     statusAction,
-    { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: `确认删除来源授权“${record.name}”？`, confirmOkText: '删除' }
+    { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: `确认删除来源授权 ${record.name}？`, confirmOkText: '删除' }
   ]
 }
 

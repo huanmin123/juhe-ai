@@ -10,15 +10,7 @@
       <a-button @click="$emit('restore')">批量恢复</a-button>
       <a-button @click="$emit('enable')">批量启用</a-button>
       <a-button danger @click="$emit('disable')">批量停用</a-button>
-      <a-popconfirm
-        :title="`确认删除已选择的 ${deletableCount} 个可删除账户？`"
-        ok-text="删除"
-        cancel-text="取消"
-        :disabled="deletableCount <= 0"
-        @confirm="$emit('delete')"
-      >
-        <a-button danger :disabled="deletableCount <= 0">批量删除</a-button>
-      </a-popconfirm>
+      <a-button danger :disabled="deletableCount <= 0" @click="$emit('delete')">批量删除</a-button>
     </div>
   </div>
 </template>

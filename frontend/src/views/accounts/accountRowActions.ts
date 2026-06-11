@@ -1,7 +1,7 @@
 import type { RowActionItem } from '@/components/rowActions'
 import type { AccountSummary } from '@/types/domain'
 import type { AccountMenuItem } from './accountActionTypes'
-import { isAuthorizedAccount } from './accountFormatters'
+import { accountDisplayName, isAuthorizedAccount } from './accountFormatters'
 import { accountMenuItemsWithClone, canReturnAuthorizedAccount } from './accountRules'
 
 export type AccountRowActionOptions = {
@@ -43,7 +43,7 @@ export function buildAccountRowActions(options: AccountRowActionOptions): RowAct
       label: '删除',
       icon: 'delete',
       tone: 'danger',
-      confirmTitle: '确认删除这个账户？',
+      confirmTitle: `确认删除账户 ${accountDisplayName(account)}？`,
       confirmOkText: '删除'
     })
   }

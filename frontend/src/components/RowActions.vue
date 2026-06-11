@@ -3,12 +3,15 @@
     <template v-for="action in visibleActions" :key="action.key">
       <a-popconfirm
         v-if="action.confirmTitle"
-        :title="action.confirmTitle"
+        overlay-class-name="row-action-popconfirm"
         :ok-text="action.confirmOkText || '确认'"
         cancel-text="取消"
         :disabled="action.disabled"
         @confirm="emitAction(action)"
       >
+        <template #title>
+          <span class="row-action-confirm-title">{{ action.confirmTitle }}</span>
+        </template>
         <a-tooltip :title="iconOnly ? action.label : undefined">
           <a-button
             class="row-action-button"
@@ -295,6 +298,29 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 .row-actions-button :deep(.ant-dropdown-trigger),
 .row-actions-button :deep(.ant-popconfirm-open) {
   width: 100%;
+}
+
+:global(.row-action-popconfirm .ant-popover-inner) {
+  min-width: 260px;
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+:global(.row-action-popconfirm .ant-popconfirm-message) {
+  align-items: flex-start;
+}
+
+:global(.row-action-popconfirm .ant-popconfirm-message-title) {
+  min-width: 0;
+  max-width: 300px;
+  line-height: 22px;
+  text-align: left;
+}
+
+:global(.row-action-confirm-title) {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .row-action-tone-default {

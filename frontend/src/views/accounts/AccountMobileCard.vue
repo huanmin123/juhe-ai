@@ -165,7 +165,7 @@ const actions = computed<RowActionItem[]>(() => {
       label: '删除',
       icon: 'delete',
       tone: 'danger',
-      confirmTitle: '确认删除这个账户？',
+      confirmTitle: `确认删除账户 ${accountDisplayName(props.account)}？`,
       confirmOkText: '删除'
     })
   }
