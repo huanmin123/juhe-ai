@@ -27,6 +27,7 @@
     "test:audit-log-batch-existing-lookup": "pnpm --filter juhe-ai-backend test:audit-log-batch-existing-lookup",
     "test:stream-first-output-timeout": "pnpm --filter juhe-ai-backend test:stream-first-output-timeout",
     "test:response-inspection-policy": "pnpm --filter juhe-ai-backend test:response-inspection-policy",
+    "test:response-inspection-gateway-e2e": "pnpm --filter juhe-ai-backend test:response-inspection-gateway-e2e",
     "test:codex-client-strategy": "pnpm --filter juhe-ai-backend test:codex-client-strategy",
     "test:external-source-auth": "pnpm --filter juhe-ai-backend test:external-source-auth",
     "test:public-api-logs": "pnpm --filter juhe-ai-backend test:public-api-logs",

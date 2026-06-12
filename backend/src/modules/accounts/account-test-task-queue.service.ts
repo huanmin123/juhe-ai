@@ -293,6 +293,20 @@ async function runAccountTestWithDiagnosticSlot(
   }
 }
 
+function accountTestTaskProgressReporter(taskId: string): (progress: AccountDiagnosticAttemptProgress) => void {
+  return (progress) => {
+    updateAccountTestTaskMessage(taskId, accountDiagnosticAttemptMessage(progress))
+  }
+}
+
+function accountDiagnosticAttemptMessage(progress: AccountDiagnosticAttemptProgress): string {
+  return `真实请求测试中：第 ${progress.attemptNumber}/${progress.totalAttempts} 次，本次最多等待 ${formatDiagnosticTimeout(progress.timeoutMs)}，总上限 ${formatDiagnosticTimeout(progress.maxTotalTimeoutMs)}`
+}
+
+function formatDiagnosticTimeout(timeoutMs: number): string {
+  return `${Math.max(1, Math.ceil(timeoutMs / 1000))}s`
+}
+
 async function runOpenAIDraftAccountTest(
   account: AccountSummary,
   draft: AccountTestDraftSnapshot,

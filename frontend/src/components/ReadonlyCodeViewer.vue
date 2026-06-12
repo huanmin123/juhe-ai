@@ -1,5 +1,5 @@
 <template>
-  <div class="readonly-code-viewer" :class="{ 'readonly-code-viewer-loading': formatting, 'readonly-code-viewer-search-open': searchOpen }">
+  <div class="readonly-code-viewer" :class="{ 'readonly-code-viewer-loading': formatting }">
     <div v-if="showToolbar" class="readonly-code-viewer-toolbar">
       <div class="readonly-code-viewer-meta">
         <strong v-if="title" class="readonly-code-viewer-title">{{ title }}</strong>
@@ -20,38 +20,6 @@
         </a-tooltip>
       </a-space>
     </div>
-    <div
-      v-if="searchOpen"
-      class="readonly-code-viewer-search"
-      :class="{ 'readonly-code-viewer-search-attached': showToolbar || attachedToolbar }"
-    >
-      <a-input
-        ref="searchInput"
-        v-model:value="searchKeyword"
-        allow-clear
-        size="small"
-        placeholder="搜索当前内容"
-        @press-enter="jumpToNextMatchFromInput"
-      >
-        <template #prefix><search-outlined /></template>
-      </a-input>
-      <a-tooltip title="上一个匹配">
-        <a-button size="small" :disabled="!canSearch" @click="jumpToPreviousMatch">
-          <template #icon><arrow-up-outlined /></template>
-        </a-button>
-      </a-tooltip>
-      <a-tooltip title="下一个匹配">
-        <a-button size="small" :disabled="!canSearch" @click="jumpToNextMatch">
-          <template #icon><arrow-down-outlined /></template>
-        </a-button>
-      </a-tooltip>
-      <span class="readonly-code-viewer-search-status">{{ searchStatusText }}</span>
-      <a-tooltip title="关闭搜索">
-        <a-button size="small" @click="closeSearch">
-          <template #icon><close-outlined /></template>
-        </a-button>
-      </a-tooltip>
-    </div>
     <a-spin :spinning="formatting">
       <div ref="editorRoot" class="readonly-code-viewer-editor" />
     </a-spin>
@@ -59,11 +27,11 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowDownOutlined, ArrowUpOutlined, CloseOutlined, CopyOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { json } from '@codemirror/lang-json'
 import { bracketMatching, defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { EditorState } from '@codemirror/state'
-import { SearchQuery, findNext, findPrevious, getSearchQuery, highlightSelectionMatches, search, setSearchQuery } from '@codemirror/search'
+import { highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search'
 import { EditorView, highlightActiveLine, highlightSpecialChars, keymap, lineNumbers } from '@codemirror/view'
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
@@ -90,13 +58,9 @@ const props = withDefaults(defineProps<{
 })
 
 const editorRoot = ref<HTMLElement>()
-const searchInput = ref<{ focus: () => void }>()
 const displayText = ref('')
 const formatError = ref('')
 const formatting = ref(false)
-const searchKeyword = ref('')
-const searchOpen = ref(false)
-const searchNoMatch = ref(false)
 
 let editorView: EditorView | undefined
 let formatTaskId = 0
@@ -111,12 +75,6 @@ const isJson = computed(() => hasText.value
   : isJsonLike('', props.emptyText))
 const languageLabel = computed(() => isJson.value ? 'JSON' : 'Text')
 const formattedSizeText = computed(() => formatBytes(new Blob([displayText.value]).size))
-const canSearch = computed(() => Boolean(displayText.value && searchKeyword.value.trim()))
-const searchStatusText = computed(() => {
-  if (!searchKeyword.value.trim()) return '输入关键词后按 Enter'
-  if (searchNoMatch.value) return '没有匹配'
-  return '按 Enter 查找下一个'
-})
 
 watch(
   () => [props.text, props.contentType, props.emptyText] as const,
@@ -132,11 +90,6 @@ watch(
     void nextTick(updateEditor)
   }
 )
-
-watch(searchKeyword, () => {
-  searchNoMatch.value = false
-  syncSearchQueryToEditor()
-})
 
 onMounted(() => {
   componentDisposed = false
@@ -209,11 +162,9 @@ function updateEditor(): void {
       parent: editorRoot.value,
       state
     })
-    syncSearchQueryToEditor()
     return
   }
   editorView.setState(state)
-  syncSearchQueryToEditor()
 }
 
 function destroyEditor(): void {
@@ -228,6 +179,7 @@ function createEditorState(doc: string, shouldUseJson: boolean): EditorState {
     doc,
     extensions: [
       lineNumbers(),
+      EditorState.phrases.of(codeMirrorChinesePhrases),
       highlightSpecialChars(),
       highlightActiveLine(),
       bracketMatching(),
@@ -237,29 +189,7 @@ function createEditorState(doc: string, shouldUseJson: boolean): EditorState {
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
       EditorView.lineWrapping,
-      keymap.of([
-        {
-          key: 'Mod-f',
-          run: () => {
-            void openSearch()
-            return true
-          }
-        },
-        {
-          key: 'F3',
-          run: () => {
-            jumpToNextMatch()
-            return true
-          }
-        },
-        {
-          key: 'Shift-F3',
-          run: () => {
-            jumpToPreviousMatch()
-            return true
-          }
-        }
-      ]),
+      keymap.of(searchKeymap),
       EditorView.theme({
         '&': {
           height: editorHeight,
@@ -294,76 +224,35 @@ function createEditorState(doc: string, shouldUseJson: boolean): EditorState {
 }
 
 async function openSearch(): Promise<void> {
-  searchOpen.value = true
-  await nextTick()
-  searchInput.value?.focus()
-  syncSearchQueryToEditor()
-}
-
-function closeSearch(): void {
-  searchOpen.value = false
-  searchNoMatch.value = false
-  searchKeyword.value = ''
-  syncSearchQueryToEditor()
-  editorView?.focus()
-}
-
-function syncSearchQueryToEditor(): void {
   if (!editorView) return
-  const query = createSearchQuery()
-  const currentQuery = getSearchQuery(editorView.state)
-  if (currentQuery.eq(query)) return
-  editorView.dispatch({ effects: setSearchQuery.of(query) })
-}
-
-function createSearchQuery(): SearchQuery {
-  return new SearchQuery({
-    search: searchKeyword.value.trim(),
-    caseSensitive: false,
-    literal: true,
-    regexp: false,
-    wholeWord: false
-  })
-}
-
-function jumpToNextMatch(): void {
-  jumpToMatch('next', true)
-}
-
-function jumpToNextMatchFromInput(): void {
-  jumpToMatch('next', false)
-}
-
-function jumpToPreviousMatch(): void {
-  jumpToMatch('previous', true)
-}
-
-function jumpToMatch(direction: 'next' | 'previous', focusEditor: boolean): void {
-  if (!editorView || !canSearch.value) {
-    void openSearch()
-    return
-  }
-  syncSearchQueryToEditor()
-  const matched = direction === 'next'
-    ? findNext(editorView)
-    : findPrevious(editorView)
-  if (!matched) {
-    searchNoMatch.value = true
-    return
-  }
-  searchNoMatch.value = false
-  if (focusEditor) {
-    editorView.focus()
-  } else {
-    void nextTick(() => searchInput.value?.focus())
-  }
+  openSearchPanel(editorView)
 }
 
 async function copyDisplayText(): Promise<void> {
   await copyTextToClipboard(displayText.value, '内容已复制')
 }
 
-defineExpose({ closeSearch, copyDisplayText, openSearch })
+defineExpose({ copyDisplayText, openSearch })
+
+const codeMirrorChinesePhrases: Record<string, string> = {
+  'Find': '搜索',
+  'Replace': '替换',
+  'next': '下一个',
+  'previous': '上一个',
+  'all': '全部',
+  'match case': '区分大小写',
+  'regexp': '正则',
+  'by word': '整词',
+  'replace': '替换',
+  'replace all': '全部替换',
+  'close': '关闭',
+  'current match': '当前匹配',
+  'on line': '第',
+  'Go to line': '跳转到行',
+  'go': '跳转',
+  'replaced match on line $': '已替换第 $ 行的匹配',
+  'replaced $ matches': '已替换 $ 个匹配'
+}
 
 function isJsonLike(contentType: string | undefined, text: string | undefined): boolean {
   const normalizedContentType = (contentType || '').toLowerCase()
@@ -416,36 +305,66 @@ function formatBytes(value: number): string {
   color: #d97706;
 }
 
-.readonly-code-viewer-search {
-  display: grid;
-  grid-template-columns: minmax(160px, 280px) auto auto minmax(96px, auto) auto;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  border: 1px solid #e2e8f0;
-  border-bottom: 0;
-  border-radius: 8px 8px 0 0;
-  background: #f8fafc;
-}
-
-.readonly-code-viewer-search-attached {
-  border-radius: 0;
-}
-
-.readonly-code-viewer-search-status {
-  overflow: hidden;
-  color: #64748b;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .readonly-code-viewer-editor {
   overflow: hidden;
 }
 
-.readonly-code-viewer-search-open .readonly-code-viewer-editor :deep(.cm-editor) {
-  border-radius: 0 0 8px 8px;
+.readonly-code-viewer-editor :deep(.cm-panel.cm-search) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 34px 8px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+}
+
+.readonly-code-viewer-editor :deep(.cm-panel.cm-search input.cm-textfield) {
+  width: min(260px, 100%);
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+  color: #0f172a;
+}
+
+.readonly-code-viewer-editor :deep(.cm-panel.cm-search input.cm-textfield:focus) {
+  border-color: #1677ff;
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(5 145 255 / 10%);
+}
+
+.readonly-code-viewer-editor :deep(.cm-panel.cm-search .cm-button) {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+}
+
+.readonly-code-viewer-editor :deep(.cm-panel.cm-search .cm-button:hover) {
+  border-color: #1677ff;
+  color: #1677ff;
+}
+
+.readonly-code-viewer-editor :deep(.cm-panel.cm-search label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: #64748b;
+}
+
+.readonly-code-viewer-editor :deep(.cm-panel.cm-search [name='close']) {
+  top: 8px;
+  right: 10px;
+  color: #64748b;
+  cursor: pointer;
 }
 
 .readonly-code-viewer-loading .readonly-code-viewer-editor {
@@ -453,12 +372,8 @@ function formatBytes(value: number): string {
 }
 
 @media (max-width: 640px) {
-  .readonly-code-viewer-search {
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
-  }
-
-  .readonly-code-viewer-search-status {
-    display: none;
+  .readonly-code-viewer-editor :deep(.cm-panel.cm-search input.cm-textfield) {
+    flex: 1 1 180px;
   }
 }
 </style>

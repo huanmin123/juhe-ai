@@ -136,6 +136,7 @@
       v-model:model="testForm.model"
       :account="testingAccount"
       :accounts="batchTestingAccounts"
+      :active-task="activeSingleTestTask"
       :batch-items="batchTestItems"
       :mode="testMode"
       :model-options="testModelOptions"
@@ -487,6 +488,7 @@ const {
   successfulDraftActivationTest
 })
 const {
+  activeSingleTestTask,
   batchTestItems,
   batchTestingAccounts,
   closeTestModal,

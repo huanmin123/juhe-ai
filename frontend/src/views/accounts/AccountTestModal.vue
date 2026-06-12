@@ -122,7 +122,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { AccountSummary, AccountTestResult } from '@/types/domain'
+import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
 import type { AccountBatchTestItem, AccountTestClientCompatibility, AccountTestMode } from './accountTestFlow'
 import {
   accountClientCompatibilityText,
@@ -144,6 +144,7 @@ interface TestOutputLine {
 const props = defineProps<{
   account?: AccountSummary
   accounts: AccountSummary[]
+  activeTask?: AccountTestTask
   batchItems: AccountBatchTestItem[]
   clientCompatibility: AccountTestClientCompatibility
   mode: AccountTestMode
@@ -214,6 +215,8 @@ const clientCompatibilityOptions: Array<{ label: string; value: AccountTestClien
   { label: 'OpenAI 标准', value: 'openai_standard' },
   { label: 'Codex Responses', value: 'codex_responses' }
 ]
+const diagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000]
+const diagnosticMaxWaitMs = diagnosticAttemptTimeoutsMs.reduce((sum, value) => sum + value, 0)
 const proxyTagText = computed(() => props.account?.proxyProfileId ? '有代理' : '无代理')
 const proxyTagColor = computed(() => {
   if (props.account?.proxyProfileUnavailable) return 'red'
@@ -231,8 +234,7 @@ const outputLines = computed<TestOutputLine[]>(() => {
   ]
 
   if (props.running) {
-    lines.push({ text: '正在连接 OpenAI API...', tone: 'warning' })
-    lines.push({ text: `使用模型：${props.model}`, tone: 'success' })
+    lines.push(...singleRunningOutputLines(account))
     return lines
   }
 
@@ -307,6 +309,32 @@ function selectedCompatibilityText(account: AccountSummary): string {
   return accountClientCompatibilityText(props.clientCompatibility)
 }
 
+function singleRunningOutputLines(account: AccountSummary): TestOutputLine[] {
+  const task = props.activeTask
+  const elapsedMs = taskElapsedMs(task)
+  const lines: TestOutputLine[] = [
+    { text: '正在走账户配置的真实请求流程...', tone: 'warning' },
+    { text: `使用模型：${props.model}`, tone: 'success' },
+    { text: `等待策略：10s + 20s + 30s，最大 ${formatAccountTestDuration(diagnosticMaxWaitMs)}`, tone: 'muted' }
+  ]
+  if (task?.id) {
+    lines.push({ text: `后台任务：${task.id}（${taskStatusText(task.status)}）`, tone: 'muted' })
+  } else {
+    lines.push({ text: '后台任务：提交中', tone: 'muted' })
+  }
+  if (task?.message) {
+    lines.push({ text: task.message, tone: task.status === 'queued' ? 'muted' : 'info' })
+  }
+  if (elapsedMs !== undefined) {
+    lines.push({ text: `已等待：${formatAccountTestDuration(elapsedMs)}`, tone: elapsedMs > diagnosticMaxWaitMs ? 'warning' : 'muted' })
+    lines.push({ text: `当前窗口估计：${diagnosticAttemptWindowText(elapsedMs)}`, tone: 'info' })
+  }
+  if (account.type === 'oauth') {
+    lines.push({ text: 'OAuth Token 刷新也包含在当前等待窗口内', tone: 'muted' })
+  }
+  return lines
+}
+
 function batchOutputLines(): TestOutputLine[] {
   const total = props.batchItems.length
   if (!total) return []
@@ -323,6 +351,12 @@ function batchOutputLines(): TestOutputLine[] {
       .join('、')
     lines.push({ text: `正在执行：已完成 ${batchCompletedCount.value} / ${total}`, tone: 'warning' })
     if (runningNames) lines.push({ text: `当前账户：${runningNames}`, tone: 'success' })
+    const runningItems = props.batchItems.filter((item) => item.status === 'running').slice(0, 3)
+    for (const item of runningItems) {
+      const elapsedMs = item.startedAt ? Date.now() - item.startedAt : undefined
+      const elapsedText = elapsedMs !== undefined ? `，已等待 ${formatAccountTestDuration(elapsedMs)}` : ''
+      lines.push({ text: `${item.account.name}: ${batchItemMessage(item)}${elapsedText}`, tone: 'info' })
+    }
     return lines
   }
   if (!batchCompletedCount.value) {
@@ -354,6 +388,38 @@ function batchItemStatusText(item: AccountBatchTestItem): string {
   if (item.status === 'running') return '测试中'
   if (item.status === 'stopped') return '已停止'
   return '等待'
+}
+
+function taskStatusText(status: AccountTestTask['status']): string {
+  if (status === 'queued') return '排队中'
+  if (status === 'running') return '测试中'
+  if (status === 'success') return '已通过'
+  if (status === 'failed') return '失败'
+  return '已停止'
+}
+
+function taskElapsedMs(task?: AccountTestTask): number | undefined {
+  const startedAt = parseTaskTime(task?.startedAt) ?? parseTaskTime(task?.queuedAt) ?? parseTaskTime(task?.createdAt)
+  if (startedAt === undefined) return undefined
+  return Math.max(0, Date.now() - startedAt)
+}
+
+function parseTaskTime(value?: string): number | undefined {
+  if (!value) return undefined
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? timestamp : undefined
+}
+
+function diagnosticAttemptWindowText(elapsedMs: number): string {
+  let cursor = 0
+  for (let index = 0; index < diagnosticAttemptTimeoutsMs.length; index += 1) {
+    const timeoutMs = diagnosticAttemptTimeoutsMs[index] ?? diagnosticAttemptTimeoutsMs[diagnosticAttemptTimeoutsMs.length - 1]
+    cursor += timeoutMs
+    if (elapsedMs <= cursor) {
+      return `第 ${index + 1}/${diagnosticAttemptTimeoutsMs.length} 次，单次最多 ${formatAccountTestDuration(timeoutMs)}`
+    }
+  }
+  return '已超过 60s，等待后台写入最终结果或停止'
 }
 
 function batchItemModelText(item: AccountBatchTestItem): string {

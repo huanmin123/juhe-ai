@@ -58,6 +58,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testingAccount = ref<AccountSummary>()
   const batchTestingAccounts = ref<AccountSummary[]>([])
   const batchTestItems = ref<AccountBatchTestItem[]>([])
+  const activeSingleTestTask = ref<AccountTestTask>()
   const testResult = ref<AccountTestResult>()
   const providerModels = ref<ProviderModelPricing[]>([])
   const providerModelsProviderCode = ref('')
@@ -129,6 +130,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testingAccount.value = account
     batchTestingAccounts.value = []
     batchTestItems.value = []
+    activeSingleTestTask.value = undefined
     draftTestingAccountPayload.value = undefined
     draftTestMode.value = undefined
     testResult.value = undefined
@@ -147,6 +149,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testingAccount.value = account
     batchTestingAccounts.value = []
     batchTestItems.value = []
+    activeSingleTestTask.value = undefined
     draftTestingAccountPayload.value = draftPayload
     draftTestMode.value = 'create'
     successfulDraftActivationTest.value = undefined
@@ -166,6 +169,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testingAccount.value = account
     batchTestingAccounts.value = []
     batchTestItems.value = []
+    activeSingleTestTask.value = undefined
     draftTestingAccountPayload.value = draftPayload
     draftTestMode.value = 'saved'
     testResult.value = undefined
@@ -196,6 +200,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testingAccount.value = undefined
     batchTestingAccounts.value = [...testableAccounts]
     batchTestItems.value = testableAccounts.map((account) => ({ account, status: 'pending' }))
+    activeSingleTestTask.value = undefined
     draftTestingAccountPayload.value = undefined
     draftTestMode.value = undefined
     testResult.value = undefined
@@ -217,13 +222,16 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     try {
       const payload = buildAccountSpecificTestPayload(account)
       const task = await submitAccountTest(account, payload)
+      activeSingleTestTask.value = task
       activeAccountTestTasks.set(task.id, account)
       if (controller.signal.aborted) {
         await cancelCreatedAccountTestTask(task.id, account)
         activeAccountTestTasks.delete(task.id)
         throw new DOMException('测试已停止', 'AbortError')
       }
-      const result = await waitForAccountTestResult(task, account, controller.signal)
+      const result = await waitForAccountTestResult(task, account, controller.signal, (latestTask) => {
+        activeSingleTestTask.value = latestTask
+      })
       testResult.value = result
       if (result.success) {
         if (activationDraftPayload) {
@@ -591,6 +599,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   return {
+    activeSingleTestTask,
     batchTestItems,
     batchTestingAccounts,
     closeTestModal,

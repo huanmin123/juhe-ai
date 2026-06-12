@@ -13,6 +13,7 @@ const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storag
 const workerSource = readFileSync(resolve(backendSrc, 'worker.ts'), 'utf8')
 const backgroundIpcSource = readFileSync(resolve(backendSrc, 'modules/background/background-ipc.ts'), 'utf8')
 const frontendAccountTestModalSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/useAccountTestModal.ts'), 'utf8')
+const frontendAccountTestModalComponentSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/AccountTestModal.vue'), 'utf8')
 
 assert.equal(
   accountsRoutesSource.includes('testOpenAIAccount('),
@@ -74,6 +75,11 @@ assert(
   '草稿账号测试应把 OAuth 刷新和候选账号生成纳入单次诊断 attempt 超时'
 )
 assert(
+  accountTestTaskQueueSource.includes('accountTestTaskProgressReporter(task.id)')
+    && accountTestTaskQueueSource.includes('updateAccountTestTaskMessage(taskId, accountDiagnosticAttemptMessage(progress))'),
+  '后台账号测试任务应在每次 10/20/30s 真实请求 attempt 开始时更新进度消息'
+)
+assert(
   accountTestTaskQueueSource.includes('const manualAccountTestConcurrency = 3'),
   '手动账号测试后台队列应有明确并发上限'
 )
@@ -117,6 +123,17 @@ assert.equal(
 assert(
   frontendAccountTestModalSource.includes('cancelCreatedAccountTestTask(task.id, account)'),
   '前端应在停止信号已触发但刚拿到 taskId 时立即取消后台测试任务'
+)
+assert(
+  frontendAccountTestModalSource.includes('activeSingleTestTask')
+    && frontendAccountTestModalSource.includes('waitForAccountTestResult(task, account, controller.signal,'),
+  '前端单账号测试应轮询活动任务并把任务状态传给测试终端'
+)
+assert(
+  frontendAccountTestModalComponentSource.includes('activeTask?: AccountTestTask')
+    && frontendAccountTestModalComponentSource.includes('当前窗口估计')
+    && frontendAccountTestModalComponentSource.includes('10s + 20s + 30s'),
+  '前端测试终端应展示后台任务状态、等待策略和当前等待窗口'
 )
 
 console.log('账号测试任务边界回归通过：手动测试由后台 worker 队列执行，前端通过任务接口查询结果')
