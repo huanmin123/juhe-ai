@@ -48,7 +48,13 @@ export interface DispatchPreparationFallbackResult {
 }
 
 export type DispatchPreparationResult =
-  | { outcome: 'ready'; accounts: UpstreamAccount[]; releaseClientIpConcurrency: () => void }
+  | {
+    outcome: 'ready'
+    accounts: UpstreamAccount[]
+    releaseClientIpConcurrency: () => void
+    codexTurnAccountAvoidanceApplied?: boolean
+    codexTurnAvoidedAccountIds?: string[]
+  }
   | { outcome: 'fallback'; context?: OpenAIGatewayDispatchContext }
   | { outcome: 'completed' }
 
@@ -211,11 +217,19 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
-  return await prepareQuotaAndCapacityReadyAccounts({
+  const readyPreparation = await prepareQuotaAndCapacityReadyAccounts({
     ...input,
     accounts: codexTurnAvoidance.accounts,
     dispatchOrderingOptions
   })
+  if (readyPreparation.outcome !== 'ready') {
+    return readyPreparation
+  }
+  return {
+    ...readyPreparation,
+    codexTurnAccountAvoidanceApplied: codexTurnAvoidance.thresholdReached,
+    codexTurnAvoidedAccountIds: codexTurnAvoidance.avoidedAccountIds
+  }
 }
 
 async function prepareQuotaAndCapacityReadyAccounts(input: {

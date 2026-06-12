@@ -36,7 +36,8 @@ import {
 import {
   gatewayStreamClientRetryErrorCode,
   gatewayErrorPayload,
-  sendGatewayErrorResponse
+  sendGatewayErrorResponse,
+  writeGatewayStreamFailureEvent
 } from './openai-gateway-responses.js'
 import { type UpstreamAccount } from './openai-gateway-route-helpers.js'
 import {
@@ -79,9 +80,12 @@ export type UpstreamResponseHandlingResult =
   | {
     alreadyFinalized: false
     retryUpstream: true
-    streamIntercept: StreamInterceptDecision
+    retryReason: 'stream_intercept' | 'codex_pre_commit_stream_failure'
+    streamIntercept?: StreamInterceptDecision
+    excludeCurrentAccount: boolean
     message: string
     errorCode?: string
+    uncommittedResponseBody?: Buffer
   }
   | {
     alreadyFinalized: false
@@ -111,6 +115,7 @@ interface HandleUpstreamResponseInput {
   markFirstOutput?: () => void
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
+  codexTurnAccountAvoidanceApplied?: boolean
 }
 
 interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
@@ -149,7 +154,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     sessionAffinityKey,
     clientStrategy,
     markFirstOutput,
-    accountStateMutationEnabled
+    accountStateMutationEnabled,
+    codexTurnAccountAvoidanceApplied
   } = input
 
   if (!upstreamResponse.body) {
@@ -205,6 +211,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       signal,
       {
         clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
+        retryBeforeDownstreamWriteUntilOutput: clientStrategy?.allowCodexStreamClientRetry === true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
         preserveImageStreamBodyCapture: auditCapture.shouldPreserveFullPayloadBodies(),
@@ -331,17 +338,42 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       return {
         alreadyFinalized: false,
         retryUpstream: true,
+        retryReason: 'stream_intercept',
         streamIntercept: streamResult.streamIntercept,
+        excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(streamResult.streamIntercept),
         message: streamResult.message,
-        errorCode: streamResult.streamIntercept.upstreamErrorCode ?? streamResult.errorCode
+        errorCode: streamResult.streamIntercept.upstreamErrorCode ?? streamResult.errorCode,
+        uncommittedResponseBody: streamResult.uncommittedResponseBody
       }
     }
+    if (shouldRetryCodexPreCommitStreamFailureOnServer(streamResult, clientStrategy, res, codexTurnAccountAvoidanceApplied === true)) {
+      auditCapture.addGatewayMetadata({
+        label: 'codex_pre_commit_stream_server_retry',
+        metadata: {
+          errorCode: streamResult.errorCode,
+          message: streamResult.message,
+          downstreamBytesWritten: streamResult.downstreamBytesWritten,
+          outputReceived: streamResult.outputReceived,
+          accountId: account.id
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'codex_pre_commit_stream_failure',
+        excludeCurrentAccount: true,
+        message: streamResult.message,
+        errorCode: streamResult.errorCode,
+        uncommittedResponseBody: streamResult.uncommittedResponseBody
+      }
+    }
+    const clientFailureResponseBody = writePreCommitStreamFailureToClient(res, upstreamResponse, streamResult)
     auditCapture.finalize({
       outcome: 'stream_failed',
       success: false,
       statusCode: upstreamResponse.status,
       responseHeaders: responseHeadersToObject(res),
-      responseBody: streamResult.auditResponseBody,
+      responseBody: clientFailureResponseBody ?? streamResult.auditResponseBody,
       responsePartType: 'gateway_response',
       errorPhase: 'stream',
       errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
@@ -360,6 +392,34 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     bodyOmission: streamResult.bodyOmission,
     errorPayload: {}
   }
+}
+
+function writePreCommitStreamFailureToClient(
+  res: Response,
+  upstreamResponse: GatewayUpstreamResponse,
+  streamResult: GatewayStreamPipeResult
+): Buffer | undefined {
+  if (
+    streamResult.downstreamBytesWritten !== 0
+    || res.writableEnded
+    || res.destroyed
+    || streamResult.errorCode === undefined
+  ) {
+    return undefined
+  }
+  if (!res.headersSent) {
+    prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
+  }
+  const failureEvent = writeGatewayStreamFailureEvent(res, streamResult.message, streamResult.errorCode)
+  const chunks = [
+    streamResult.uncommittedResponseBody,
+    failureEvent
+  ].filter((chunk): chunk is Buffer => Boolean(chunk?.length))
+  for (const chunk of chunks) {
+    res.write(chunk)
+  }
+  endResponse(res)
+  return chunks.length > 0 ? Buffer.concat(chunks) : undefined
 }
 
 async function applyStreamInterceptPolicyRuntimeSideEffects(
@@ -418,6 +478,33 @@ function shouldRetryStreamInterceptOnServer(
     && !res.headersSent
     && !res.writableEnded
     && !res.destroyed
+}
+
+function shouldRetryCodexPreCommitStreamFailureOnServer(
+  streamResult: GatewayStreamPipeResult,
+  clientStrategy: OpenAIGatewayClientStrategyContext | undefined,
+  res: Response,
+  codexTurnAccountAvoidanceApplied: boolean
+): boolean {
+  return !streamResult.completed
+    && streamResult.downstreamBytesWritten === 0
+    && !streamResult.outputReceived
+    && codexTurnAccountAvoidanceApplied
+    && clientStrategy?.allowCodexTurnAccountAvoidance === true
+    && (
+      streamResult.errorCode === gatewayStreamClientRetryErrorCode
+      || streamResult.streamIntercept?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
+    )
+    && !res.headersSent
+    && !res.writableEnded
+    && !res.destroyed
+}
+
+function shouldExcludeCurrentAccountForStreamServerRetry(decision: StreamInterceptDecision): boolean {
+  return decision.accountSwitch === 'request_next_account'
+    || decision.accountSwitch === 'avoid_account_ttl'
+    || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
+    || decision.accountState === 'runtime_avoidance'
 }
 
 function shouldRememberCodexTurnStreamFailure(

@@ -13,9 +13,10 @@ import {
 import {
   gatewayErrorPayload,
   sendGatewayErrorResponse,
-  shouldHandleOpenAIUpstreamResponseAsStream
+  shouldHandleOpenAIUpstreamResponseAsStream,
+  writeGatewayStreamFailureEvent
 } from './openai-gateway-responses.js'
-import { createAuditCapture } from './audit-capture.service.js'
+import { createAuditCapture, responseHeadersToObject } from './audit-capture.service.js'
 import {
   type UpstreamAccount
 } from './openai-gateway-route-helpers.js'
@@ -25,6 +26,10 @@ import {
 import {
   persistOpenAICodexHeadersIfNeeded
 } from './openai-gateway-account-effects.js'
+import {
+  probeCodexSwitchCandidateAccount,
+  type CodexSwitchProbeResult
+} from './openai-gateway-codex-switch-probe.js'
 import {
   finalizeHandledUpstreamResponse,
   handleNonStreamUpstreamResponse,
@@ -217,9 +222,11 @@ export async function handleOpenAIGatewayRequest(
         sessionAffinityKey,
         clientStrategy,
         clientIpAccountAvoidanceTracker,
-        streamInterceptPolicies
+        streamInterceptPolicies,
+        codexTurnAccountAvoidanceApplied,
+        codexTurnAvoidedAccountIds
       } = currentPreflight
-      const dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
+      let dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
       if (dispatchAccounts.length === 0) {
         for (const accountId of streamServerRetryExcludedAccountIds) {
           exhaustedAccountIds.add(accountId)
@@ -232,6 +239,54 @@ export async function handleOpenAIGatewayRequest(
           continue
         }
         throw new UpstreamAttemptError('没有可用的上游账户')
+      }
+      if (codexTurnAccountAvoidanceApplied) {
+        const probeSelection = await selectCodexProbeVerifiedDispatchAccount({
+          accounts: dispatchAccounts,
+          avoidedAccountIds: new Set(codexTurnAvoidedAccountIds ?? []),
+          req,
+          settings: activeGatewaySettings,
+          systemAccountId: gatewayUsageContext.systemAccountId,
+          groupId: gatewayUsageContext.groupId,
+          auditCapture,
+          signal: abortController.signal
+        })
+        for (const probe of probeSelection.probes) {
+          if (!probe.success) {
+            streamServerRetryExcludedAccountIds.add(probe.accountId)
+          }
+        }
+        auditCapture.addGatewayMetadata({
+          label: 'codex_switch_probe',
+          metadata: {
+            selectedAccountId: probeSelection.account?.id,
+            selectedAccountName: probeSelection.account?.name,
+            probeCount: probeSelection.probes.length,
+            probes: probeSelection.probes.map(codexSwitchProbeAuditMetadata)
+          }
+        })
+        if (!probeSelection.account) {
+          for (const accountId of streamServerRetryExcludedAccountIds) {
+            exhaustedAccountIds.add(accountId)
+          }
+          const fallbackSwitch = await switchToFallbackGroup('codex_switch_probe_failed', streamInterceptPolicies, { allowCandidateWrap: true })
+          if (fallbackSwitch === 'completed') {
+            return
+          }
+          if (fallbackSwitch === 'switched') {
+            continue
+          }
+          sendCodexSwitchProbeFailedResponse({
+            req,
+            res,
+            auditCapture,
+            usageContext: gatewayUsageContext,
+            startedAt,
+            probes: probeSelection.probes
+          })
+          return
+        }
+        dispatchAccounts = [probeSelection.account]
       }
       let upstreamResult: Awaited<ReturnType<typeof fetchFirstAvailableUpstream>>
       try {
@@ -255,6 +310,12 @@ export async function handleOpenAIGatewayRequest(
           }
           for (const accountId of error.failedAccountIds) {
             exhaustedAccountIds.add(accountId)
+            if (codexTurnAccountAvoidanceApplied) {
+              streamServerRetryExcludedAccountIds.add(accountId)
+            }
+          }
+          if (codexTurnAccountAvoidanceApplied) {
+            continue
           }
           const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', streamInterceptPolicies, { allowCandidateWrap: true })
           if (fallbackSwitch === 'completed') {
@@ -296,7 +357,8 @@ export async function handleOpenAIGatewayRequest(
             streamInterceptPolicies,
             markFirstOutput,
             clientIpAccountAvoidanceTracker,
-            accountStateMutationEnabled: options.disableAccountStateMutation !== true
+            accountStateMutationEnabled: options.disableAccountStateMutation !== true,
+            codexTurnAccountAvoidanceApplied
           })
         } else {
           try {
@@ -353,23 +415,32 @@ export async function handleOpenAIGatewayRequest(
         }
         if (handledResponse.retryUpstream) {
           streamServerRetryCount += 1
-          if (shouldExcludeCurrentAccountForStreamRetry(handledResponse.streamIntercept)) {
+          if (
+            handledResponse.excludeCurrentAccount
+            || (handledResponse.streamIntercept && shouldExcludeCurrentAccountForStreamRetry(handledResponse.streamIntercept))
+          ) {
             streamServerRetryExcludedAccountIds.add(account.id)
           }
+          const effectiveMaxStreamServerRetryCount = handledResponse.excludeCurrentAccount
+            ? Math.max(1, accounts.length)
+            : maxStreamServerRetryCount
           auditCapture.addGatewayMetadata({
-            label: 'stream_intercept_server_retry_dispatch',
+            label: 'stream_server_retry_dispatch',
             metadata: {
+              retryReason: handledResponse.retryReason,
               retryCount: streamServerRetryCount,
-              maxRetryCount: maxStreamServerRetryCount,
+              maxRetryCount: effectiveMaxStreamServerRetryCount,
               accountId: account.id,
               excludedAccountIds: [...streamServerRetryExcludedAccountIds],
-              policyId: handledResponse.streamIntercept.policyId,
-              policyName: handledResponse.streamIntercept.policyName,
-              accountSwitch: handledResponse.streamIntercept.accountSwitch
+              excludeCurrentAccount: handledResponse.excludeCurrentAccount,
+              policyId: handledResponse.streamIntercept?.policyId,
+              policyName: handledResponse.streamIntercept?.policyName,
+              accountSwitch: handledResponse.streamIntercept?.accountSwitch,
+              errorCode: handledResponse.errorCode
             }
           })
           if (
-            streamServerRetryCount > maxStreamServerRetryCount
+            streamServerRetryCount > effectiveMaxStreamServerRetryCount
             || streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length === 0
           ) {
             for (const accountId of streamServerRetryExcludedAccountIds) {
@@ -388,8 +459,12 @@ export async function handleOpenAIGatewayRequest(
               auditCapture,
               usageContext: gatewayUsageContext,
               startedAt,
+              retryReason: handledResponse.retryReason,
               decision: handledResponse.streamIntercept,
-              message: handledResponse.message
+              message: handledResponse.message,
+              errorCode: handledResponse.errorCode,
+              uncommittedResponseBody: handledResponse.uncommittedResponseBody,
+              accountId: account.id
             })
             return
           }
@@ -488,6 +563,48 @@ function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccoun
   return accounts.filter((account) => !excludedAccountIds.has(account.id))
 }
 
+async function selectCodexProbeVerifiedDispatchAccount(input: {
+  accounts: UpstreamAccount[]
+  avoidedAccountIds: Set<string>
+  req: Request
+  settings: GatewaySettings
+  systemAccountId: string
+  groupId: string
+  auditCapture: ReturnType<typeof createAuditCapture>
+  signal?: AbortSignal
+}): Promise<{ account?: UpstreamAccount; probes: CodexSwitchProbeResult[] }> {
+  const probes: CodexSwitchProbeResult[] = []
+  const candidates = input.accounts.filter((account) => !input.avoidedAccountIds.has(account.id))
+  for (const account of candidates) {
+    const probe = await probeCodexSwitchCandidateAccount(account, {
+      req: input.req,
+      systemAccountId: input.systemAccountId,
+      groupId: input.groupId,
+      settings: input.settings,
+      signal: input.signal
+    })
+    probes.push(probe)
+    if (probe.success) {
+      return { account, probes }
+    }
+  }
+  return { probes }
+}
+
+function codexSwitchProbeAuditMetadata(probe: CodexSwitchProbeResult): Record<string, unknown> {
+  return {
+    accountId: probe.accountId,
+    accountName: probe.accountName,
+    success: probe.success,
+    statusCode: probe.statusCode,
+    durationMs: probe.durationMs,
+    errorCode: probe.errorCode,
+    traceId: probe.traceId,
+    model: probe.model,
+    message: truncateProbeMessage(probe.message)
+  }
+}
+
 function shouldExcludeCurrentAccountForStreamRetry(decision: StreamInterceptDecision): boolean {
   return decision.accountSwitch === 'request_next_account'
     || decision.accountSwitch === 'avoid_account_ttl'
@@ -501,20 +618,40 @@ function sendStreamServerRetryExhaustedResponse(input: {
   auditCapture: ReturnType<typeof createAuditCapture>
   usageContext: GatewayFailureUsageContext
   startedAt: number
-  decision: StreamInterceptDecision
+  retryReason: 'stream_intercept' | 'codex_pre_commit_stream_failure'
+  decision?: StreamInterceptDecision
   message: string
+  errorCode?: string
+  uncommittedResponseBody?: Buffer
+  accountId?: string
 }): void {
-  const message = input.message || '流式响应命中拦截策略，服务端重试未找到可用账号'
-  const responsePayload = gatewayErrorPayload(message, 'service_unavailable', 'stream_intercept_retry_exhausted')
+  const message = input.message || '服务端流式重试未找到可用账号'
+  if (input.retryReason === 'codex_pre_commit_stream_failure') {
+    sendCodexPreCommitStreamRetryExhaustedResponse({
+      req: input.req,
+      res: input.res,
+      auditCapture: input.auditCapture,
+      usageContext: input.usageContext,
+      startedAt: input.startedAt,
+      retryReason: 'codex_pre_commit_stream_failure',
+      message,
+      errorCode: input.errorCode,
+      uncommittedResponseBody: input.uncommittedResponseBody,
+      accountId: input.accountId
+    })
+    return
+  }
+  const responsePayload = gatewayErrorPayload(message, 'service_unavailable', 'stream_server_retry_exhausted')
   input.auditCapture.addGatewayMetadata({
-    label: 'stream_intercept_server_retry_exhausted',
+    label: 'stream_server_retry_exhausted',
     metadata: {
-      policyId: input.decision.policyId,
-      policyName: input.decision.policyName,
-      accountSwitch: input.decision.accountSwitch,
-      retryEnabled: input.decision.retryEnabled,
-      matchedField: input.decision.matchedField,
-      matchedValue: input.decision.matchedValue
+      retryReason: input.retryReason,
+      policyId: input.decision?.policyId,
+      policyName: input.decision?.policyName,
+      accountSwitch: input.decision?.accountSwitch,
+      retryEnabled: input.decision?.retryEnabled,
+      matchedField: input.decision?.matchedField,
+      matchedValue: input.decision?.matchedValue
     }
   })
   sendGatewayFailureResponse({
@@ -528,12 +665,122 @@ function sendStreamServerRetryExhaustedResponse(input: {
     audit: {
       outcome: 'upstream_failed',
       errorPhase: 'dispatch',
-      errorCode: 'stream_intercept_retry_exhausted',
+      errorCode: 'stream_server_retry_exhausted',
       errorMessage: message
     },
     recordUsage: false,
     usageErrorMessage: message
   })
+}
+
+function sendCodexPreCommitStreamRetryExhaustedResponse(input: {
+  req: Request
+  res: Response
+  auditCapture: ReturnType<typeof createAuditCapture>
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  retryReason: 'codex_pre_commit_stream_failure'
+  message: string
+  errorCode?: string
+  uncommittedResponseBody?: Buffer
+  accountId?: string
+}): void {
+  const failureEvent = writeGatewayStreamFailureEvent(input.res, input.message, input.errorCode)
+  const responseBody = input.uncommittedResponseBody
+    ? Buffer.concat([input.uncommittedResponseBody, failureEvent ?? Buffer.alloc(0)])
+    : failureEvent
+  input.auditCapture.addGatewayMetadata({
+    label: 'stream_server_retry_exhausted',
+    metadata: {
+      retryReason: input.retryReason,
+      errorCode: input.errorCode,
+      responseMode: 'codex_retryable_sse'
+    }
+  })
+  if (!input.res.headersSent) {
+    input.res.status(200)
+    input.res.setHeader('content-type', 'text/event-stream; charset=utf-8')
+    input.res.setHeader('cache-control', 'no-cache, no-transform')
+    input.res.setHeader('x-accel-buffering', 'no')
+  }
+  if (!input.res.writableEnded && !input.res.destroyed && input.uncommittedResponseBody?.length) {
+    input.res.write(input.uncommittedResponseBody)
+  }
+  if (!input.res.writableEnded && !input.res.destroyed && failureEvent) {
+    input.res.write(failureEvent)
+  }
+  if (!input.res.writableEnded && !input.res.destroyed) {
+    input.res.end()
+  }
+  input.auditCapture.finalize({
+    outcome: 'stream_failed',
+    success: false,
+    statusCode: 200,
+    responseHeaders: responseHeadersToObject(input.res),
+    responseBody,
+    responsePartType: 'gateway_response',
+    errorPhase: 'stream',
+    errorCode: input.errorCode,
+    errorMessage: input.message,
+    accountId: input.accountId
+  })
+}
+
+function sendCodexSwitchProbeFailedResponse(input: {
+  req: Request
+  res: Response
+  auditCapture: ReturnType<typeof createAuditCapture>
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  probes: CodexSwitchProbeResult[]
+}): void {
+  const message = codexSwitchProbeFailedMessage(input.probes)
+  const failureEvent = writeGatewayStreamFailureEvent(input.res, message, 'codex_switch_probe_failed')
+  input.auditCapture.addGatewayMetadata({
+    label: 'codex_switch_probe_failed',
+    metadata: {
+      probeCount: input.probes.length,
+      probes: input.probes.map(codexSwitchProbeAuditMetadata)
+    }
+  })
+  if (!input.res.headersSent) {
+    input.res.status(200)
+    input.res.setHeader('content-type', 'text/event-stream; charset=utf-8')
+    input.res.setHeader('cache-control', 'no-cache, no-transform')
+    input.res.setHeader('x-accel-buffering', 'no')
+  }
+  if (!input.res.writableEnded && !input.res.destroyed && failureEvent) {
+    input.res.write(failureEvent)
+  }
+  if (!input.res.writableEnded && !input.res.destroyed) {
+    input.res.end()
+  }
+  input.auditCapture.finalize({
+    outcome: 'stream_failed',
+    success: false,
+    statusCode: 200,
+    responseHeaders: responseHeadersToObject(input.res),
+    responseBody: failureEvent,
+    responsePartType: 'gateway_response',
+    errorPhase: 'stream',
+    errorCode: 'codex_switch_probe_failed',
+    errorMessage: message
+  })
+}
+
+function codexSwitchProbeFailedMessage(probes: CodexSwitchProbeResult[]): string {
+  if (probes.length === 0) {
+    return 'Codex 切号失败：没有可探测的备用账号'
+  }
+  const summaries = probes
+    .slice(0, 5)
+    .map((probe) => `${probe.accountName || probe.accountId}: ${probe.errorCode ?? probe.statusCode ?? 'probe_failed'} ${probe.message}`)
+  const suffix = probes.length > 5 ? `；另有 ${probes.length - 5} 个账号探针失败` : ''
+  return `Codex 切号失败：所有备用账号探针均未通过。${summaries.join('；')}${suffix}`
+}
+
+function truncateProbeMessage(message: string): string {
+  return message.length > 300 ? `${message.slice(0, 300)}...` : message
 }
 
 function recordKnownClientIpRequestError(

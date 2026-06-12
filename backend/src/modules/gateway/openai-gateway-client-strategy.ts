@@ -112,8 +112,7 @@ function buildCodexTurnContext(
     systemAccountId: identity.systemAccountId,
     apiKeyId: identity.apiKeyId ?? 'internal',
     endpoint: identity.endpoint,
-    codexTurnId: metadata.turnId,
-    rawBodyHash
+    codexTurnId: metadata.turnId
   }
   return {
     turnId: metadata.turnId,

@@ -104,6 +104,8 @@ export interface OpenAIGatewayDispatchContext {
   groupSchedulingPolicy?: GroupSchedulingPolicy
   streamInterceptPolicies: StreamInterceptPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
+  codexTurnAccountAvoidanceApplied?: boolean
+  codexTurnAvoidedAccountIds?: string[]
   releaseClientIpConcurrency: () => void
 }
 
@@ -477,6 +479,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
     streamInterceptPolicies: runtimeStreamInterceptPolicies ?? [],
     apiKeyRecord,
+    codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
+    codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
 }

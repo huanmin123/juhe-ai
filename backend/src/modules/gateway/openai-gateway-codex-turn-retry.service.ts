@@ -5,6 +5,7 @@ import type { OpenAIGatewayClientStrategyContext } from './openai-gateway-client
 export interface CodexTurnAccountAvoidanceResult {
   accounts: UpstreamAccount[]
   applied: boolean
+  thresholdReached: boolean
   failureCount: number
   avoidedAccountIds: string[]
   bypassedAllAvoided: boolean
@@ -33,7 +34,7 @@ interface CodexTurnRetryState {
 }
 
 const codexTurnRetryTtlMs = 30 * 60_000
-const codexTurnAccountAvoidanceFailureThreshold = 3
+const codexTurnAccountAvoidanceFailureThreshold = 2
 
 const codexTurnRetryCache = createAppCache<string, CodexTurnRetryState>({
   name: 'gateway:codex-turn-retry',
@@ -51,6 +52,7 @@ export function orderOpenAIAccountsByCodexTurnAvoidance(
     return {
       accounts,
       applied: false,
+      thresholdReached: false,
       failureCount: state?.failureCount ?? 0,
       avoidedAccountIds: [],
       bypassedAllAvoided: false
@@ -64,6 +66,7 @@ export function orderOpenAIAccountsByCodexTurnAvoidance(
     return {
       accounts,
       applied: false,
+      thresholdReached: true,
       failureCount: state.failureCount,
       avoidedAccountIds: accounts.filter((account) => failedAccountIds.has(account.id)).map((account) => account.id),
       bypassedAllAvoided: freshAccounts.length === 0 && accounts.length > 0
@@ -73,6 +76,7 @@ export function orderOpenAIAccountsByCodexTurnAvoidance(
   return {
     accounts: [...freshAccounts, ...failedAccounts],
     applied: true,
+    thresholdReached: true,
     failureCount: state.failureCount,
     avoidedAccountIds: failedAccounts.map((account) => account.id),
     bypassedAllAvoided: false

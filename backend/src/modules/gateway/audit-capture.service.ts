@@ -514,7 +514,7 @@ function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | 
 }
 
 function shouldOmitExistingPayloadBody(partType: AuditPayloadPartType): boolean {
-  return partType === 'upstream_response' || partType === 'gateway_response' || partType === 'gateway_error'
+  return partType !== 'gateway_metadata'
 }
 
 export function createAuditCapture(input: AuditCaptureContextInput): AuditCaptureContext {

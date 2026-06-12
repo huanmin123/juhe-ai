@@ -268,3 +268,7 @@ pnpm test:smoke
 - GitHub：[https://github.com/huanmin123/juhe-ai](https://github.com/huanmin123/juhe-ai)
 - Gitee：[https://gitee.com/huanminabc/juhe-ai](https://gitee.com/huanminabc/juhe-ai)
 
+
+## 友链
+- https://vsllm.com
+- https://linux.do

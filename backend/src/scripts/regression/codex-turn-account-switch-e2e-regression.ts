@@ -61,8 +61,19 @@ interface SeededGateway {
   freshUpstreamKey: string
 }
 
+interface SeededThreeAccountGateway extends SeededGateway {
+  latentFailedAccountId: string
+  latentFailedUpstreamKey: string
+}
+
+interface SeededProbeFailureGateway extends Omit<SeededGateway, 'freshAccountId' | 'freshUpstreamKey'> {
+  probeFailedAccountId: string
+  probeFailedUpstreamKey: string
+}
+
 interface MockUpstreamState {
-  hitsByUpstreamKey: Record<string, number>
+  responseHitsByUpstreamKey: Record<string, number>
+  testProbeHitsByUpstreamKey: Record<string, number>
   requests: Array<{
     upstreamKey: string
     scenario: string
@@ -77,7 +88,8 @@ async function main(): Promise<void> {
   let gatewayServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
   const upstreamState: MockUpstreamState = {
-    hitsByUpstreamKey: {},
+    responseHitsByUpstreamKey: {},
+    testProbeHitsByUpstreamKey: {},
     requests: []
   }
 
@@ -95,6 +107,8 @@ async function main(): Promise<void> {
     const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
 
     const codexSwitch = seedTwoAccountGateway(upstreamBaseUrl, 'codex-switch')
+    const latentCodexSwitch = seedThreeAccountGateway(upstreamBaseUrl, 'codex-latent-switch')
+    const probeFailCodexSwitch = seedProbeFailureGateway(upstreamBaseUrl, 'codex-probe-fail')
     const nonCodex = seedTwoAccountGateway(upstreamBaseUrl, 'non-codex')
     const contextWindow = seedTwoAccountGateway(upstreamBaseUrl, 'context-window')
     const cyberPolicy = seedTwoAccountGateway(upstreamBaseUrl, 'cyber-policy')
@@ -104,18 +118,24 @@ async function main(): Promise<void> {
     await listen(gatewayServer)
     const baseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
-    await assertCodexFourthRequestSwitchesAccount(baseUrl, codexSwitch, upstreamState)
+    await assertCodexThirdRequestSwitchesAccountWithProbe(baseUrl, codexSwitch, upstreamState)
+    await assertCodexThirdRequestProbesAndSkipsLatentBadAccounts(baseUrl, latentCodexSwitch, upstreamState)
+    await assertCodexThirdRequestReturnsProbeFailureWhenAllCandidatesFail(baseUrl, probeFailCodexSwitch, upstreamState)
     await assertGenericClientStreamInterceptDoesNotSwitchAccount(baseUrl, nonCodex, upstreamState)
-    await assertCodexContextWindowSwitchesAccount(baseUrl, contextWindow, upstreamState)
-    await assertCodexCyberPolicySwitchesAccount(baseUrl, cyberPolicy, upstreamState)
+    await assertCodexContextWindowSingleRequestSwitchesAccountOnServer(baseUrl, contextWindow, upstreamState)
+    await assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(baseUrl, cyberPolicy, upstreamState)
     await assertClientAbortClearsSessionAffinity(baseUrl, clientAbortAffinity, upstreamState)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assertUsageRecords(codexSwitch)
-    assertAccountsStillActive([codexSwitch, nonCodex, contextWindow, cyberPolicy, clientAbortAffinity])
+    assertAccountsStillActive([codexSwitch, latentCodexSwitch, nonCodex, contextWindow, cyberPolicy, clientAbortAffinity, {
+      ...probeFailCodexSwitch,
+      freshAccountId: probeFailCodexSwitch.probeFailedAccountId,
+      freshUpstreamKey: probeFailCodexSwitch.probeFailedUpstreamKey
+    }])
 
-    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、3 次失败后第 4 次避让、普通客户端统一流式拦截但不触发 Codex turn 切号、context_length_exceeded 和 cyber_policy 均可重试并切号，client_aborted 会释放会话亲和，符合预期')
+    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、Codex 同一 turn 两次失败后第 3 次探针切号并跳过假正常死号、普通客户端统一流式拦截但不触发 Codex turn 切号、context_length_exceeded 和 cyber_policy 均可重试并切号，client_aborted 会释放会话亲和，符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -131,35 +151,118 @@ async function main(): Promise<void> {
   }
 }
 
-async function assertCodexFourthRequestSwitchesAccount(
+async function assertCodexThirdRequestSwitchesAccountWithProbe(
   baseUrl: string,
   seeded: SeededGateway,
   upstreamState: MockUpstreamState
 ): Promise<void> {
   const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  const beforeFreshProbeHits = testProbeHitCount(upstreamState, seeded.freshUpstreamKey)
 
-  for (let index = 1; index <= 3; index += 1) {
-    const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
-      scenario: 'codex-retry-switch',
-      turnId: 'turn-codex-switch',
-      codex: true
-    })
-    assert(streamText.includes('upstream_retryable_error'), `第 ${index} 次 Codex 失败应触发可重试错误：${streamText}`)
-  }
-
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, '前 3 次应都命中首选失败账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, '第 4 次前不应提前命中备用账号')
-
-  const fourthText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  const firstText = await requestResponsesStream(baseUrl, seeded.apiKey, {
     scenario: 'codex-retry-switch',
     turnId: 'turn-codex-switch',
-    codex: true
+    codex: true,
+    retryTag: 'attempt-1'
   })
-  assert(fourthText.includes('response.completed'), `第 4 次应切到备用账号并完成：${fourthText}`)
-  assert(!fourthText.includes('response.failed'), `第 4 次不应继续失败：${fourthText}`)
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, '第 4 次不应继续请求已失败账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, '第 4 次应命中备用账号')
+  assert(firstText.includes('upstream_retryable_error'), `Codex 首次失败应返回客户端可重试错误：${firstText}`)
+
+  const secondText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-retry-switch',
+    turnId: 'turn-codex-switch',
+    codex: true,
+    retryTag: 'attempt-2'
+  })
+  assert(secondText.includes('upstream_retryable_error'), `Codex 第二次失败仍应返回客户端可重试错误：${secondText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 2, 'Codex 前两次应继续命中原失败账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, 'Codex 前两次不应把完整上下文打到备用账号')
+  assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 0, 'Codex 前两次不应提前探针备用账号')
+
+  const thirdText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-retry-switch',
+    turnId: 'turn-codex-switch',
+    codex: true,
+    retryTag: 'attempt-3'
+  })
+  assert(thirdText.includes('response.completed'), `Codex 第三次应探针后切到备用账号并完成：${thirdText}`)
+  assert(!thirdText.includes('response.failed'), `Codex 第三次不应把中间失败交给客户端：${thirdText}`)
+  assert(!thirdText.includes('upstream_retryable_error'), `Codex 第三次不应继续消耗客户端重试次数：${thirdText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 2, 'Codex 第三次不应继续请求已失败账号')
+  assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 1, 'Codex 第三次应先用真实账号测试探针备用账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'Codex 第三次应命中探针通过的备用账号')
+}
+
+async function assertCodexThirdRequestProbesAndSkipsLatentBadAccounts(
+  baseUrl: string,
+  seeded: SeededThreeAccountGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeLatentFailedHits = hitCount(upstreamState, seeded.latentFailedUpstreamKey)
+  const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  const beforeLatentProbeHits = testProbeHitCount(upstreamState, seeded.latentFailedUpstreamKey)
+  const beforeFreshProbeHits = testProbeHitCount(upstreamState, seeded.freshUpstreamKey)
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const retryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+      scenario: 'codex-missing-terminal-switch',
+      turnId: 'turn-codex-latent-switch',
+      codex: true,
+      retryTag: `attempt-${attempt}`
+    })
+    assert(retryText.includes('upstream_retryable_error'), `Codex 假正常场景第 ${attempt} 次应先返回客户端可重试错误：${retryText}`)
+  }
+
+  const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-missing-terminal-switch',
+    turnId: 'turn-codex-latent-switch',
+    codex: true,
+    retryTag: 'attempt-3'
+  })
+  assert(streamText.includes('response.completed'), `Codex 第三次应探针跳过假正常死号并完成：${streamText}`)
+  assert(!streamText.includes('response.failed'), `Codex 第三次不应把假正常死号失败交给客户端：${streamText}`)
+  assert(!streamText.includes('upstream_retryable_error'), `Codex 第三次不应因假正常死号继续消耗客户端重试次数：${streamText}`)
+
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 2, 'Codex 前两次应命中首选死号')
+  assert.equal(testProbeHitCount(upstreamState, seeded.latentFailedUpstreamKey) - beforeLatentProbeHits, 1, 'Codex 第三次应先用真实账号测试探针假正常死号')
+  assert.equal(hitCount(upstreamState, seeded.latentFailedUpstreamKey) - beforeLatentFailedHits, 0, '假正常死号探针失败后不应收到完整上下文请求')
+  assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 1, 'Codex 第三次应继续用真实账号测试探针真可用账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'Codex 第三次应最终命中真可用账号')
+}
+
+async function assertCodexThirdRequestReturnsProbeFailureWhenAllCandidatesFail(
+  baseUrl: string,
+  seeded: SeededProbeFailureGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeProbeFailedHits = hitCount(upstreamState, seeded.probeFailedUpstreamKey)
+  const beforeProbeHits = testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey)
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const retryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+      scenario: 'codex-missing-terminal-switch',
+      turnId: 'turn-codex-probe-fail',
+      codex: true,
+      retryTag: `attempt-${attempt}`
+    })
+    assert(retryText.includes('upstream_retryable_error'), `Codex 全部探针失败场景第 ${attempt} 次应先返回客户端可重试错误：${retryText}`)
+  }
+
+  const thirdText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-missing-terminal-switch',
+    turnId: 'turn-codex-probe-fail',
+    codex: true,
+    retryTag: 'attempt-3'
+  })
+  assert(thirdText.includes('codex_switch_probe_failed'), `Codex 第三次全部备用号真实测试失败时应明确返回切号失败：${thirdText}`)
+  assert(thirdText.includes('insufficient_quota') || thirdText.includes('mock latent account real test failed'), `切号失败应带上真实账号测试失败原因：${thirdText}`)
+  assert(!thirdText.includes('response.completed'), `全部备用号探针失败不应伪成功：${thirdText}`)
+
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 2, '全部探针失败前两次应命中首选死号')
+  assert.equal(testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeHits, 1, '第三次应真实测试唯一备用号')
+  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 0, '真实测试失败的备用号不应收到完整上下文请求')
 }
 
 async function assertGenericClientStreamInterceptDoesNotSwitchAccount(
@@ -184,69 +287,78 @@ async function assertGenericClientStreamInterceptDoesNotSwitchAccount(
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, '普通客户端不应命中 Codex 备用账号')
 }
 
-async function assertCodexContextWindowSwitchesAccount(
+async function assertCodexContextWindowSingleRequestSwitchesAccountOnServer(
   baseUrl: string,
   seeded: SeededGateway,
   upstreamState: MockUpstreamState
 ): Promise<void> {
   const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  const beforeFreshProbeHits = testProbeHitCount(upstreamState, seeded.freshUpstreamKey)
 
-  for (let index = 1; index <= 3; index += 1) {
-    const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const retryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
       scenario: 'context-window-error',
       turnId: 'turn-context-window',
-      codex: true
+      codex: true,
+      retryTag: `attempt-${attempt}`
     })
-    assert(streamText.includes('upstream_retryable_error'), `第 ${index} 次 context_length_exceeded 应改写为可重试错误：${streamText}`)
-    assert(!streamText.includes('context_length_exceeded'), `第 ${index} 次 context_length_exceeded 不应透出原始错误码：${streamText}`)
+    assert(retryText.includes('upstream_retryable_error'), `context_length_exceeded 第 ${attempt} 次应返回客户端可重试错误：${retryText}`)
+    assert(!retryText.includes('context_length_exceeded'), `context_length_exceeded 第 ${attempt} 次不应透出原始错误码：${retryText}`)
   }
 
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, 'context_length_exceeded 前 3 次应都命中首选失败账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, 'context_length_exceeded 第 4 次前不应提前命中备用账号')
-
-  const fourthText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  const thirdText = await requestResponsesStream(baseUrl, seeded.apiKey, {
     scenario: 'context-window-error',
     turnId: 'turn-context-window',
-    codex: true
+    codex: true,
+    retryTag: 'attempt-3'
   })
-  assert(fourthText.includes('response.completed'), `context_length_exceeded 第 4 次应切到备用账号并完成：${fourthText}`)
-  assert(!fourthText.includes('response.failed'), `context_length_exceeded 第 4 次不应继续失败：${fourthText}`)
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, 'context_length_exceeded 第 4 次不应继续请求已失败账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'context_length_exceeded 第 4 次应命中备用账号')
+  assert(thirdText.includes('response.completed'), `context_length_exceeded 第三次应探针后切到备用账号并完成：${thirdText}`)
+  assert(!thirdText.includes('response.failed'), `context_length_exceeded 第三次不应把中间失败交给客户端：${thirdText}`)
+  assert(!thirdText.includes('upstream_retryable_error'), `context_length_exceeded 第三次不应继续消耗客户端重试次数：${thirdText}`)
+  assert(!thirdText.includes('context_length_exceeded'), `context_length_exceeded 第三次不应透出原始错误码：${thirdText}`)
+
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 2, 'context_length_exceeded 前两次应命中首选失败账号')
+  assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 1, 'context_length_exceeded 第三次应先用真实账号测试探针备用账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'context_length_exceeded 第三次应命中备用账号')
 }
 
-async function assertCodexCyberPolicySwitchesAccount(
+async function assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(
   baseUrl: string,
   seeded: SeededGateway,
   upstreamState: MockUpstreamState
 ): Promise<void> {
   const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  const beforeFreshProbeHits = testProbeHitCount(upstreamState, seeded.freshUpstreamKey)
 
-  for (let index = 1; index <= 3; index += 1) {
-    const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const retryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
       scenario: 'cyber-policy-after-output-error',
       turnId: 'turn-cyber-policy',
-      codex: true
+      codex: true,
+      retryTag: `attempt-${attempt}`
     })
-    assert(streamText.includes('upstream_retryable_error'), `第 ${index} 次 cyber_policy 失败应改写为可重试错误：${streamText}`)
-    assert(!streamText.includes('partial output'), `第 ${index} 次同批次 cyber_policy 失败不应泄露尚未写入下游的输出：${streamText}`)
-    assert(!streamText.includes('cyber_policy'), `第 ${index} 次 cyber_policy 失败不应透出原始错误码：${streamText}`)
+    assert(retryText.includes('upstream_retryable_error'), `cyber_policy 第 ${attempt} 次应返回客户端可重试错误：${retryText}`)
+    assert(!retryText.includes('partial output'), `cyber_policy 第 ${attempt} 次不应泄露尚未确认的同批次输出：${retryText}`)
+    assert(!retryText.includes('cyber_policy'), `cyber_policy 第 ${attempt} 次不应透出原始错误码：${retryText}`)
   }
 
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, 'cyber_policy 前 3 次应都命中首选失败账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, 'cyber_policy 第 4 次前不应提前命中备用账号')
-
-  const fourthText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  const thirdText = await requestResponsesStream(baseUrl, seeded.apiKey, {
     scenario: 'cyber-policy-after-output-error',
     turnId: 'turn-cyber-policy',
-    codex: true
+    codex: true,
+    retryTag: 'attempt-3'
   })
-  assert(fourthText.includes('response.completed'), `cyber_policy 第 4 次应切到备用账号并完成：${fourthText}`)
-  assert(!fourthText.includes('response.failed'), `cyber_policy 第 4 次不应继续失败：${fourthText}`)
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, 'cyber_policy 第 4 次不应继续请求已失败账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'cyber_policy 第 4 次应命中备用账号')
+  assert(thirdText.includes('response.completed'), `cyber_policy 第三次应探针后切到备用账号并完成：${thirdText}`)
+  assert(!thirdText.includes('response.failed'), `cyber_policy 第三次不应把中间失败交给客户端：${thirdText}`)
+  assert(!thirdText.includes('upstream_retryable_error'), `cyber_policy 第三次不应继续消耗客户端重试次数：${thirdText}`)
+  assert(!thirdText.includes('partial output'), `cyber_policy 第三次不应泄露尚未确认的同批次输出：${thirdText}`)
+  assert(!thirdText.includes('cyber_policy'), `cyber_policy 第三次不应透出原始错误码：${thirdText}`)
+
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 2, 'cyber_policy 前两次应命中首选失败账号')
+  assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 1, 'cyber_policy 第三次应先用真实账号测试探针备用账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'cyber_policy 第三次应命中备用账号')
 }
 
 async function assertClientAbortClearsSessionAffinity(
@@ -395,6 +507,132 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
   }
 }
 
+function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): SeededThreeAccountGateway {
+  sequence += 1
+  const access = seedGatewayAccess()
+  const group = repositories.createGroup({
+    name: `Codex 切号 e2e 分组三账号-${label}`,
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
+  const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
+  const latentFailedUpstreamKey = `sk-codex-switch-${sequence}-latent-failed`
+  const freshUpstreamKey = `sk-codex-switch-${sequence}-fresh`
+  const failedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: `A-Codex 切号 e2e 死号-${label}`,
+    type: 'api_key',
+    credentials: {
+      api_key: failedUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  const latentFailedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: `B-Codex 切号 e2e 假正常死号-${label}`,
+    type: 'api_key',
+    credentials: {
+      api_key: latentFailedUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 5
+  }, access)
+  const freshAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: `C-Codex 切号 e2e 真可用账号-${label}`,
+    type: 'api_key',
+    credentials: {
+      api_key: freshUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 10
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: `Codex 切号 e2e Key-三账号-${label}`,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '临时 API Key 未返回明文密钥')
+  gatewayCache.clearGatewayRuntimeCache()
+  return {
+    apiKey: apiKey.key,
+    groupId: group.id,
+    systemAccountId: access.systemAccountId,
+    failedAccountId: failedAccount.id,
+    latentFailedAccountId: latentFailedAccount.id,
+    freshAccountId: freshAccount.id,
+    apiKeyId: apiKey.id,
+    failedUpstreamKey,
+    latentFailedUpstreamKey,
+    freshUpstreamKey
+  }
+}
+
+function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): SeededProbeFailureGateway {
+  sequence += 1
+  const access = seedGatewayAccess()
+  const group = repositories.createGroup({
+    name: `Codex 切号 e2e 全部探针失败分组-${label}`,
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
+  const failedUpstreamKey = `sk-codex-switch-${sequence}-failed`
+  const probeFailedUpstreamKey = `sk-codex-switch-${sequence}-latent-failed`
+  const failedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: `A-Codex 切号 e2e 死号-${label}`,
+    type: 'api_key',
+    credentials: {
+      api_key: failedUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  const probeFailedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: `B-Codex 切号 e2e 探针失败账号-${label}`,
+    type: 'api_key',
+    credentials: {
+      api_key: probeFailedUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 10
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: `Codex 切号 e2e Key-全部探针失败-${label}`,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '临时 API Key 未返回明文密钥')
+  gatewayCache.clearGatewayRuntimeCache()
+  return {
+    apiKey: apiKey.key,
+    groupId: group.id,
+    systemAccountId: access.systemAccountId,
+    failedAccountId: failedAccount.id,
+    probeFailedAccountId: probeFailedAccount.id,
+    apiKeyId: apiKey.id,
+    failedUpstreamKey,
+    probeFailedUpstreamKey
+  }
+}
+
 function createGatewayServer(): http.Server {
   const app = express()
   app.use(requestContextMiddleware)
@@ -409,15 +647,32 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
     req.on('data', (chunk: Buffer) => bodyChunks.push(Buffer.from(chunk)))
     req.on('end', () => {
       const upstreamKey = bearerToken(req.headers.authorization)
-      state.hitsByUpstreamKey[upstreamKey] = hitCount(state, upstreamKey) + 1
+      const body = parseJsonObject(Buffer.concat(bodyChunks).toString('utf8'))
 
       if (url.pathname !== '/v1/responses') {
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ object: 'list', data: [] }))
+        res.writeHead(404, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: { code: 'mock_unexpected_path', message: `unexpected path ${url.pathname}` } }))
         return
       }
 
-      const body = parseJsonObject(Buffer.concat(bodyChunks).toString('utf8'))
+      if (isAccountTestProbeBody(body)) {
+        state.testProbeHitsByUpstreamKey[upstreamKey] = testProbeHitCount(state, upstreamKey) + 1
+        state.requests.push({ upstreamKey, scenario: 'account-test-probe' })
+        if (upstreamKey.endsWith('-latent-failed')) {
+          res.writeHead(402, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: { code: 'insufficient_quota', message: 'mock latent account real test failed' } }))
+          return
+        }
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive'
+        })
+        sendCompletedStream(res)
+        return
+      }
+      state.responseHitsByUpstreamKey[upstreamKey] = hitCount(state, upstreamKey) + 1
+
       const scenario = typeof body.input === 'string' ? body.input : 'unknown'
       const turnMetadata = typeof req.headers['x-codex-turn-metadata'] === 'string'
         ? req.headers['x-codex-turn-metadata']
@@ -457,6 +712,10 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         sendCompletedStream(res)
         return
       }
+      if (scenario === 'codex-missing-terminal-switch') {
+        sendMissingTerminalStream(res)
+        return
+      }
       if (scenario === 'context-window-error') {
         sendFailedStream(res, 'context_length_exceeded', 'Your input exceeds the context window of this model.')
         return
@@ -484,6 +743,7 @@ async function requestResponsesStream(
     turnId: string
     codex: boolean
     sessionId?: string
+    retryTag?: string
   }
 ): Promise<string> {
   const headers: Record<string, string> = {
@@ -507,6 +767,7 @@ async function requestResponsesStream(
     body: JSON.stringify({
       model: 'gpt-5.3-codex',
       input: input.scenario,
+      metadata: input.retryTag ? { retry_tag: input.retryTag } : undefined,
       stream: true
     })
   })
@@ -638,6 +899,12 @@ function sendOpenStreamWithoutTerminal(res: http.ServerResponse): void {
   res.once('close', () => clearInterval(interval))
 }
 
+function sendMissingTerminalStream(res: http.ServerResponse): void {
+  res.write('event: response.created\n')
+  res.write('data: {"type":"response.created","response":{"id":"resp_missing_terminal","status":"in_progress"}}\n\n')
+  res.end()
+}
+
 function sendFailedStream(res: http.ServerResponse, code: string, message: string): void {
   res.write('event: response.failed\n')
   res.write(`data: ${JSON.stringify({
@@ -656,7 +923,7 @@ function assertUsageRecords(seeded: SeededGateway): void {
   const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 100 }).items
   const failedRecords = records.filter((record) => record.accountId === seeded.failedAccountId && record.success === false)
   const successRecords = records.filter((record) => record.accountId === seeded.freshAccountId && record.success === true)
-  assert(failedRecords.length >= 3, `应记录首选账号 3 次失败，实际 ${failedRecords.length}`)
+  assert(failedRecords.length >= 1, `应记录首选账号失败，实际 ${failedRecords.length}`)
   assert(successRecords.length >= 1, `应记录备用账号成功，实际 ${successRecords.length}`)
   assert(failedRecords.some((record) => record.errorCode === 'internal_server_error'), '失败记录应保留上游原始错误码')
 }
@@ -677,7 +944,11 @@ function assertAccountsStillActive(gateways: SeededGateway[]): void {
 }
 
 function hitCount(state: MockUpstreamState, upstreamKey: string): number {
-  return state.hitsByUpstreamKey[upstreamKey] ?? 0
+  return state.responseHitsByUpstreamKey[upstreamKey] ?? 0
+}
+
+function testProbeHitCount(state: MockUpstreamState, upstreamKey: string): number {
+  return state.testProbeHitsByUpstreamKey[upstreamKey] ?? 0
 }
 
 function bearerToken(value: string | string[] | undefined): string {
@@ -695,6 +966,27 @@ function parseJsonObject(value: string): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+function isAccountTestProbeBody(body: Record<string, unknown>): boolean {
+  return body.instructions === 'You are ChatGPT, a helpful assistant.'
+    && (jsonValueContainsString(body.input, '只输出 OK') || jsonValueContainsString(body.messages, '只输出 OK'))
+}
+
+function jsonValueContainsString(value: unknown, needle: string): boolean {
+  if (value === needle) {
+    return true
+  }
+  if (typeof value === 'string') {
+    return value.includes(needle)
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => jsonValueContainsString(item, needle))
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.values(value).some((item) => jsonValueContainsString(item, needle))
+  }
+  return false
 }
 
 function seedGatewayAccess(): { systemAccountId: string; role: 'user' } {

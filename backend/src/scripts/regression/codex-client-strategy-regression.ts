@@ -27,15 +27,16 @@ function main(): void {
   testSessionOnlyDoesNotBecomeCodex()
   testInvalidTurnMetadataDoesNotBecomeCodex()
   testNonCodexMetadataShapesDoNotFallback()
-  testRawBodyHashIsPartOfTurnStateKey()
+  testRawBodyHashDoesNotSplitTurnStateKey()
   testLargeRawBodyHashUsesBoundedSample()
   testMissingRawBodyHashDoesNotStringifyFullBody()
   testCodexTurnStateKeyIgnoresGroupAndKeepsApiKeyBoundary()
-  testFourthCodexRetryAvoidsFailedAccounts()
+  testSecondCodexRetryAvoidsFailedAccounts()
+  testChangedBodyRetryAvoidsFailedAccount()
   testAllFailedAccountsBypassAvoidance()
   testMissingTurnStateDoesNotAvoidAccounts()
   testNonResponsesStreamDoesNotUseCodexProfile()
-  console.log('Codex 客户端策略回归通过：精确 turn_id 识别、无 fallback、非法/非 Codex metadata 不升级、body hash 隔离、第 4 次 turn 级切号、状态丢失不避让和非 Responses 隔离符合预期')
+  console.log('Codex 客户端策略回归通过：精确 turn_id 识别、无 fallback、非法/非 Codex metadata 不升级、body hash 不切分 turn 状态、同一 turn 失败两次后才切号、状态丢失不避让和非 Responses 隔离符合预期')
 }
 
 function testLargeRawBodyHashUsesBoundedSample(): void {
@@ -144,7 +145,7 @@ function testNonCodexMetadataShapesDoNotFallback(): void {
   }
 }
 
-function testRawBodyHashIsPartOfTurnStateKey(): void {
+function testRawBodyHashDoesNotSplitTurnStateKey(): void {
   const reqA = createRequest('/v1/responses', {
     model: 'gpt-5.3-codex',
     input: 'first payload',
@@ -165,7 +166,7 @@ function testRawBodyHashIsPartOfTurnStateKey(): void {
 
   assert(strategyA.codexTurn?.stateKey, '请求 A 应解析出 Codex turn key')
   assert(strategyB.codexTurn?.stateKey, '请求 B 应解析出 Codex turn key')
-  assert.notEqual(strategyA.codexTurn.stateKey, strategyB.codexTurn.stateKey)
+  assert.equal(strategyA.codexTurn.stateKey, strategyB.codexTurn.stateKey, '同一 Codex turn 不应因为重试 body 变化切开失败状态')
   assert.notEqual(strategyA.codexTurn.rawBodyHash, strategyB.codexTurn.rawBodyHash)
 }
 
@@ -199,7 +200,7 @@ function testCodexTurnStateKeyIgnoresGroupAndKeepsApiKeyBoundary(): void {
   assert.notEqual(strategyGroupA.codexTurn.stateKey, strategyApiKeyB.codexTurn.stateKey, '不同 API Key 仍应隔离 Codex turn 状态')
 }
 
-function testFourthCodexRetryAvoidsFailedAccounts(): void {
+function testSecondCodexRetryAvoidsFailedAccounts(): void {
   clearCodexTurnRetryStateForTest()
   const strategy = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', {
     model: 'gpt-5.3-codex',
@@ -211,19 +212,65 @@ function testFourthCodexRetryAvoidsFailedAccounts(): void {
   assert(strategy.codexTurn?.stateKey, 'Codex strategy should include turn state key')
 
   rememberCodexTurnStreamFailure(strategy, 'acct_a', { errorCode: 'upstream_retryable_error' })
-  rememberCodexTurnStreamFailure(strategy, 'acct_a', { errorCode: 'upstream_retryable_error' })
-  rememberCodexTurnStreamFailure(strategy, 'acct_a', { errorCode: 'upstream_retryable_error' })
 
   const state = getCodexTurnRetryStateForTest(strategy.codexTurn.stateKey)
-  assert.equal(state?.failureCount, 3)
+  assert.equal(state?.failureCount, 1)
   assert.deepEqual(state?.failedAccountIds, ['acct_a'])
 
   const accounts = [account('acct_a'), account('acct_b'), account('acct_c')]
+  const firstFailureAvoidance = orderOpenAIAccountsByCodexTurnAvoidance(accounts, strategy)
+  assert.equal(firstFailureAvoidance.applied, false)
+  assert.equal(firstFailureAvoidance.failureCount, 1)
+  assert.deepEqual(firstFailureAvoidance.accounts.map((item) => item.id), ['acct_a', 'acct_b', 'acct_c'])
+
+  rememberCodexTurnStreamFailure(strategy, 'acct_a', { errorCode: 'upstream_retryable_error' })
   const avoidance = orderOpenAIAccountsByCodexTurnAvoidance(accounts, strategy)
   assert.equal(avoidance.applied, true)
-  assert.equal(avoidance.failureCount, 3)
+  assert.equal(avoidance.failureCount, 2)
   assert.deepEqual(avoidance.avoidedAccountIds, ['acct_a'])
   assert.deepEqual(avoidance.accounts.map((item) => item.id), ['acct_b', 'acct_c', 'acct_a'])
+}
+
+function testChangedBodyRetryAvoidsFailedAccount(): void {
+  clearCodexTurnRetryStateForTest()
+  const headers = {
+    'x-codex-turn-metadata': JSON.stringify({
+      turn_id: 'turn_changed_body_retry',
+      session_id: 'session_changed_body_retry',
+      thread_id: 'thread_changed_body_retry'
+    })
+  }
+  const firstStrategy = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', {
+    model: 'gpt-5.3-codex',
+    input: 'codex first request body',
+    stream: true
+  }, headers), identity)
+  const retryStrategy = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', {
+    model: 'gpt-5.3-codex',
+    input: 'codex rebuilt retry body',
+    stream: true
+  }, headers), identity)
+
+  assert(firstStrategy.codexTurn?.stateKey, '首次请求应解析出 Codex turn key')
+  assert(retryStrategy.codexTurn?.stateKey, '重试请求应解析出 Codex turn key')
+  assert.equal(firstStrategy.codexTurn.stateKey, retryStrategy.codexTurn.stateKey, '同一 turn 的重试 body 变化不应切开状态')
+  assert.notEqual(firstStrategy.codexTurn.rawBodyHash, retryStrategy.codexTurn.rawBodyHash, '测试应覆盖 body hash 变化')
+
+  rememberCodexTurnStreamFailure(firstStrategy, 'acct_a', { errorCode: 'upstream_retryable_error' })
+
+  const state = getCodexTurnRetryStateForTest(retryStrategy.codexTurn.stateKey)
+  assert.equal(state?.failureCount, 1)
+  assert.deepEqual(state?.failedAccountIds, ['acct_a'])
+
+  const firstFailureAvoidance = orderOpenAIAccountsByCodexTurnAvoidance([account('acct_a'), account('acct_b')], retryStrategy)
+  assert.equal(firstFailureAvoidance.applied, false)
+  assert.deepEqual(firstFailureAvoidance.accounts.map((item) => item.id), ['acct_a', 'acct_b'])
+
+  rememberCodexTurnStreamFailure(retryStrategy, 'acct_a', { errorCode: 'upstream_retryable_error' })
+  const avoidance = orderOpenAIAccountsByCodexTurnAvoidance([account('acct_a'), account('acct_b')], retryStrategy)
+  assert.equal(avoidance.applied, true)
+  assert.equal(avoidance.failureCount, 2)
+  assert.deepEqual(avoidance.accounts.map((item) => item.id), ['acct_b', 'acct_a'])
 }
 
 function testAllFailedAccountsBypassAvoidance(): void {
