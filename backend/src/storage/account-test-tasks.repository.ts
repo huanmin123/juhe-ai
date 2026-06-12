@@ -225,6 +225,21 @@ export function markAccountTestTaskRunning(id: string): AccountTestTaskRecord | 
   return getAccountTestTaskRecord(id)
 }
 
+export function updateAccountTestTaskMessage(id: string, message: string): AccountTestTaskRecord | undefined {
+  const normalizedMessage = normalizedOptionalText(message)
+  if (!normalizedMessage) return getAccountTestTaskRecord(id)
+  const now = nowIso()
+  getBusinessDatabase().prepare(`
+    UPDATE account_test_tasks
+    SET status_message = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND status = 'running'
+      AND cancel_requested = 0
+  `).run(normalizedMessage, now, id)
+  return getAccountTestTaskRecord(id)
+}
+
 export function completeAccountTestTask(id: string, result: AccountTestResult): AccountTestTaskRecord | undefined {
   const now = nowIso()
   const status: AccountTestTaskStatus = result.success ? 'success' : 'failed'

@@ -44,7 +44,7 @@ import {
 } from './openai-gateway-usage-records.js'
 import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 import type { GroupSchedulingPolicy } from '../../domain/types.js'
-import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
+import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
 import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import {
   canAttemptApiKeyGroupFallback,
@@ -73,7 +73,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   identity?: OpenAIGatewayRequestIdentity
   apiKeyRecord?: GatewayApiKeyRow
   candidateAccounts?: UpstreamAccount[]
-  streamInterceptPolicies?: StreamInterceptPolicySummary[]
+  responseInspectionPolicies?: ResponseInspectionPolicySummary[]
   disableSessionAffinity?: boolean
   trafficSource?: OpenAIGatewayTrafficSource
   settingsOverride?: Partial<GatewaySettings>
@@ -102,7 +102,7 @@ export interface OpenAIGatewayDispatchContext {
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
-  streamInterceptPolicies: StreamInterceptPolicySummary[]
+  responseInspectionPolicies: ResponseInspectionPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
   codexTurnAccountAvoidanceApplied?: boolean
   codexTurnAvoidedAccountIds?: string[]
@@ -118,7 +118,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
   let runtimeAccounts: UpstreamAccount[] | undefined
   let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
-  let runtimeStreamInterceptPolicies: StreamInterceptPolicySummary[] | undefined = options.streamInterceptPolicies
+  let runtimeResponseInspectionPolicies: ResponseInspectionPolicySummary[] | undefined = options.responseInspectionPolicies
 
   const identity = options.identity ?? await (async () => {
     const runtime = await resolveGatewayRuntimeAsync(req, res)
@@ -131,8 +131,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     runtimeGroupAccess = runtime.groupAccess
     runtimeAccounts = runtime.accounts
     runtimeAccountDispatchDiagnostics = runtime.accountDispatchDiagnostics
-    runtimeStreamInterceptPolicies = runtime.streamInterceptPolicies
-    options.streamInterceptPolicies = runtime.streamInterceptPolicies
+    runtimeResponseInspectionPolicies = runtime.responseInspectionPolicies
+    options.responseInspectionPolicies = runtime.responseInspectionPolicies
     return {
       systemAccountId: runtime.apiKey.system_account_id,
       apiKeyId: runtime.apiKey.id,
@@ -477,7 +477,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientIpAccountAvoidanceTracker,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
-    streamInterceptPolicies: runtimeStreamInterceptPolicies ?? [],
+    responseInspectionPolicies: runtimeResponseInspectionPolicies ?? [],
     apiKeyRecord,
     codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
@@ -503,7 +503,7 @@ interface ApiKeyGroupFallbackDispatchInput {
   groupId: string
   trafficSource: OpenAIGatewayTrafficSource
   requestLane: OpenAIGatewayRequestLane
-  streamInterceptPolicies?: StreamInterceptPolicySummary[]
+  responseInspectionPolicies?: ResponseInspectionPolicySummary[]
   excludedAccountIds?: Iterable<string>
   allowCandidateWrap?: boolean
 }
@@ -544,7 +544,7 @@ export async function prepareApiKeyGroupFallbackDispatchContext(
       },
       apiKeyRecord: input.apiKeyRecord,
       candidateAccounts: candidate.accounts,
-      streamInterceptPolicies: input.streamInterceptPolicies ?? input.options.streamInterceptPolicies,
+      responseInspectionPolicies: input.responseInspectionPolicies ?? input.options.responseInspectionPolicies,
       trafficSource: input.trafficSource,
       requestLane: input.requestLane
     },

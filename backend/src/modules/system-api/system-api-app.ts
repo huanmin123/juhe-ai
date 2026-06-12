@@ -22,7 +22,7 @@ import { publicApiLogsRouter } from '../public-api-logs/public-api-logs.routes.j
 import { runtimeLogsRouter } from '../runtime-logs/runtime-logs.routes.js'
 import { settingsRouter } from '../settings/settings.routes.js'
 import { statsRouter } from '../stats/stats.routes.js'
-import { streamInterceptPoliciesRouter } from '../stream-intercept-policies/stream-intercept-policies.routes.js'
+import { responseInspectionPoliciesRouter } from '../response-inspection-policies/response-inspection-policies.routes.js'
 import { systemAccountsRouter } from '../system-accounts/system-accounts.routes.js'
 import { myTeamsRouter, systemTeamsRouter } from '../system-teams/system-teams.routes.js'
 import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
@@ -80,7 +80,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
   app.use(`${systemApiPrefix}/providers`, providersRouter)
-  app.use(`${systemApiPrefix}/stream-intercept-policies`, requireAdmin, streamInterceptPoliciesRouter)
+  app.use(`${systemApiPrefix}/response-inspection-policies`, requireAdmin, responseInspectionPoliciesRouter)
   app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)
   app.use(`${systemApiPrefix}/groups`, requireAdmin, groupsRouter)
   app.use(`${systemApiPrefix}/api-keys`, requireAdmin, apiKeysRouter)

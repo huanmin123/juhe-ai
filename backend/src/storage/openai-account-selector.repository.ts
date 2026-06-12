@@ -294,7 +294,6 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
   const output: Record<string, unknown> = {}
   copyRuntimeCredentialText(credentials, output, 'account_id')
   copyRuntimeCredentialValue(credentials, output, 'error_handling_rules')
-  copyRuntimeCredentialValue(credentials, output, 'stream_intercept_rules')
   return output
 }
 

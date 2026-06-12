@@ -11,6 +11,11 @@ import {
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
+import {
+  accountDiagnosticRetryMaxTotalTimeoutMs,
+  accountDiagnosticRetryTimeoutMs,
+  diagnosticAccountTestGatewaySettingsOverride
+} from '../accounts/account-diagnostic-retry-policy.js'
 
 type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
 type StreamFailureOperation = Extract<DbServiceOperation, { type: 'record_account_stream_failure' }>
@@ -155,10 +160,8 @@ const failureStormWindowMs = 10_000
 const failureStormThresholdCount = 5
 const failureStormDistinctIpThreshold = 2
 const precheckMinIntervalMs = 60_000
-const precheckMaxAttempts = 2
-const precheckAttemptTimeoutMs = 45_000
-const precheckRetryDelayMs = 5_000
-const precheckSuppressionGuardMs = precheckMaxAttempts * precheckAttemptTimeoutMs + precheckRetryDelayMs + 15_000
+const precheckMaxAttempts = accountDiagnosticRetryTimeoutMs.length
+const precheckSuppressionGuardMs = accountDiagnosticRetryMaxTotalTimeoutMs + 15_000
 const precheckConcurrencyDrainPollMs = 1_000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 const maxSideEffectQueueLength = 5000
@@ -214,7 +217,7 @@ export function suppressGatewayAccountLocally(
 export function suppressGatewayAccountLocallyForSeconds(
   account: SuppressibleGatewayAccount | string,
   seconds: number | undefined,
-  reason = '流式拦截策略运行态避让'
+  reason = '响应检查策略运行态避让'
 ): void {
   const value = typeof seconds === 'number' && Number.isFinite(seconds) ? Math.max(1, Math.trunc(seconds)) : 60
   suppressLocalAccount(gatewayAccountRuntimeKey(account), Math.min(value * 1000, localSuppressionMaxMs), reason, 'local_suppressed', {
@@ -1201,7 +1204,8 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         distinctApiKeyCount: latestState.distinctApiKeyCount,
         precheckAttemptCount: latestState.attemptCount
       })
-      const result = await runSingleGatewayAccountPrecheck(latestState)
+      const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
+      const result = await runSingleGatewayAccountPrecheck(latestState, timeoutMs)
       if (result.success || result.accountFailureEligible === false) {
         clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
         logger.info({
@@ -1216,9 +1220,6 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         return
       }
       latestState.reason = accountPrecheckFailureReason(result)
-      if (attempt + 1 < precheckMaxAttempts) {
-        await delay(precheckRetryDelayMs)
-      }
     }
 
     const finalState = precheckStates.get(runtimeKey)
@@ -1265,7 +1266,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
   }
 }
 
-async function runSingleGatewayAccountPrecheck(state: PrecheckState): Promise<{
+async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: number): Promise<{
   success: boolean
   statusCode?: number
   errorCode?: string
@@ -1274,7 +1275,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState): Promise<{
   accountFailureEligible?: boolean
 }> {
   const { preferredSystemAccountTestModel, testOpenAIAccount } = await import('../accounts/account-test.service.js')
-  const signal = AbortSignal.timeout(precheckAttemptTimeoutMs)
+  const signal = AbortSignal.timeout(timeoutMs)
   const account = accountSummaryFromUpstreamAccount(state.account, state)
   return await testOpenAIAccount(account, {
     model: preferredSystemAccountTestModel(account),
@@ -1283,11 +1284,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState): Promise<{
     trafficSource: 'cooldown_retest',
     signal,
     disableAccountStateMutation: true,
-    gatewaySettingsOverride: {
-      ...state.settings,
-      temporaryUnschedulableRetryAttempts: 0,
-      temporaryUnschedulableRetryIntervalSeconds: 0
-    }
+    gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(state.settings, timeoutMs)
   })
 }
 

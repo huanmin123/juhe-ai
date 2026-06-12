@@ -84,8 +84,8 @@ import type {
   RuntimeLogSummary,
   RuntimeLogSearchResult,
   ResourceAuthorizationListResult,
-  StreamInterceptPolicyListResult,
-  StreamInterceptPolicySummary,
+  ResponseInspectionPolicyListResult,
+  ResponseInspectionPolicySummary,
   SystemTeamMemberSummary,
   SystemTeamListResult,
   SystemTeamPrincipalSummary,
@@ -421,7 +421,7 @@ export interface ExternalIntegrationSourceListParams {
   status?: ExternalIntegrationSourceStatus | 'all'
 }
 
-export type StreamInterceptPolicyPayload = Omit<StreamInterceptPolicySummary, 'id' | 'defaultRule' | 'editable' | 'protocolCode' | 'createdAt' | 'updatedAt'>
+export type ResponseInspectionPolicyPayload = Omit<ResponseInspectionPolicySummary, 'id' | 'defaultRule' | 'editable' | 'protocolCode' | 'createdAt' | 'updatedAt'>
 
 export interface ModelCheckScopeParams {
   systemAccountId?: string
@@ -723,11 +723,11 @@ export const api = {
     updateModel: (code: string, id: string, payload: Partial<ProviderModelUpsertPayload>) => unwrap<ProviderModelPricing>(http.patch(`/providers/${code}/models/${id}`, payload)),
     deleteModel: (code: string, id: string) => unwrap<{ deleted: boolean }>(http.delete(`/providers/${code}/models/${id}`))
   },
-  streamInterceptPolicies: {
-    list: () => unwrap<StreamInterceptPolicyListResult>(http.get('/stream-intercept-policies')),
-    create: (payload: StreamInterceptPolicyPayload) => unwrap<StreamInterceptPolicySummary>(http.post('/stream-intercept-policies', payload)),
-    update: (id: string, payload: StreamInterceptPolicyPayload) => unwrap<StreamInterceptPolicySummary>(http.patch(`/stream-intercept-policies/${id}`, payload)),
-    delete: (id: string) => http.delete(`/stream-intercept-policies/${id}`)
+  responseInspectionPolicies: {
+    list: () => unwrap<ResponseInspectionPolicyListResult>(http.get('/response-inspection-policies')),
+    create: (payload: ResponseInspectionPolicyPayload) => unwrap<ResponseInspectionPolicySummary>(http.post('/response-inspection-policies', payload)),
+    update: (id: string, payload: ResponseInspectionPolicyPayload) => unwrap<ResponseInspectionPolicySummary>(http.patch(`/response-inspection-policies/${id}`, payload)),
+    delete: (id: string) => http.delete(`/response-inspection-policies/${id}`)
   },
   accounts: {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),

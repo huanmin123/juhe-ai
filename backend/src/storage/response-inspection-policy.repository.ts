@@ -1,0 +1,521 @@
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
+import { getBusinessDatabase, newId, nowIso } from './database.js'
+import { isOpenAIProtocolProviderCode } from './provider.repository.js'
+
+export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
+export type ResponseInspectionPolicySource = 'system_default' | 'management' | 'account'
+export type ResponseInspectionPolicyAction =
+  | 'observe'
+  | 'drop_event'
+  | 'retry_no_avoidance'
+  | 'retry_next_account'
+  | 'avoid_account_ttl'
+  | 'avoid_upstream_bucket_ttl'
+
+export type ResponseInspectionPolicyExecutionMode = 'intercept' | 'dry_run'
+export type ResponseInspectionPolicyDataHandling = 'pass' | 'discard_event' | 'discard_response' | 'replace_with_failure'
+export type ResponseInspectionPolicyAccountSwitch = 'none' | 'request_next_account' | 'avoid_account_ttl' | 'avoid_upstream_bucket_ttl'
+export type ResponseInspectionPolicyAccountState = 'none' | 'runtime_avoidance'
+
+export interface ResponseInspectionPolicyMatch {
+  outputTextIncludes?: string[]
+  outputTextExcludes?: string[]
+  errorCodes?: string[]
+  errorTypes?: string[]
+  errorMessageIncludes?: string[]
+  finishReasons?: string[]
+  jsonPathsExists?: string[]
+  rawTextIncludes?: string[]
+}
+
+export interface ResponseInspectionPolicySummary {
+  id: string
+  defaultRule: boolean
+  editable: boolean
+  name: string
+  enabled: boolean
+  priority: number
+  scopeType: ResponseInspectionPolicyScopeType
+  protocolCode: string
+  providerCode?: string
+  match: ResponseInspectionPolicyMatch
+  action: ResponseInspectionPolicyAction
+  notes?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface ResponseInspectionPolicyInput {
+  name?: string
+  enabled?: boolean
+  priority?: number
+  scopeType: ResponseInspectionPolicyScopeType
+  protocolCode: string
+  providerCode?: string | null
+  match?: ResponseInspectionPolicyMatch
+  action?: ResponseInspectionPolicyAction
+  notes?: string | null
+}
+
+interface ResponseInspectionPolicyRow {
+  id: string
+  name: string
+  enabled: number
+  priority: number
+  scope_type: string
+  protocol_code: string
+  provider_code: string | null
+  match_json: string
+  action: string
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ResponseInspectionPolicyListResult {
+  defaultRules: ResponseInspectionPolicySummary[]
+  policies: ResponseInspectionPolicySummary[]
+}
+
+export const maxManagementResponseInspectionPolicies = 100
+
+const policyActions = new Set<ResponseInspectionPolicyAction>([
+  'observe',
+  'drop_event',
+  'retry_no_avoidance',
+  'retry_next_account',
+  'avoid_account_ttl',
+  'avoid_upstream_bucket_ttl'
+])
+
+const inputKeys = new Set([
+  'name',
+  'enabled',
+  'priority',
+  'scopeType',
+  'protocolCode',
+  'providerCode',
+  'match',
+  'action',
+  'notes'
+])
+
+const matchKeys = [
+  'outputTextIncludes',
+  'outputTextExcludes',
+  'errorCodes',
+  'errorTypes',
+  'errorMessageIncludes',
+  'finishReasons',
+  'jsonPathsExists',
+  'rawTextIncludes'
+] as const
+
+const systemDefaultRules: ResponseInspectionPolicySummary[] = [
+  {
+    id: 'default_openai_error_object',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI error 对象',
+    enabled: true,
+    priority: 1,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      jsonPathsExists: ['error']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'OpenAI v1 JSON / SSE data.error 默认检查规则；是否允许客户端专用重试由运行时客户端能力门控。'
+  },
+  {
+    id: 'default_openai_response_error',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI response.error',
+    enabled: true,
+    priority: 2,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      jsonPathsExists: ['response.error']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'OpenAI v1 Responses response.error 默认检查规则。'
+  },
+  {
+    id: 'default_openai_failed_status',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI failed 状态',
+    enabled: true,
+    priority: 3,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      finishReasons: ['failed']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'OpenAI v1 Responses failed 状态默认检查规则。'
+  },
+  {
+    id: 'default_gpt_cyber_policy',
+    defaultRule: true,
+    editable: false,
+    name: 'GPT cyber_policy',
+    enabled: true,
+    priority: 4,
+    scopeType: 'provider',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: GPT_VENDOR_CODE,
+    match: {
+      errorCodes: ['cyber_policy']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'GPT / Codex 上游 cyber_policy 局部规则；不能扩散为所有 OpenAI-compatible 供应商语义。'
+  }
+]
+
+export function listResponseInspectionPolicyDefaultRules(): ResponseInspectionPolicySummary[] {
+  return systemDefaultRules.map(clonePolicy)
+}
+
+export function listResponseInspectionPolicies(): ResponseInspectionPolicyListResult {
+  return {
+    defaultRules: listResponseInspectionPolicyDefaultRules(),
+    policies: listResponseInspectionPolicyRows().map(policyFromRow)
+  }
+}
+
+export function listActiveResponseInspectionPoliciesForGateway(input: {
+  protocolCode: string
+  providerCode?: string
+}): ResponseInspectionPolicySummary[] {
+  const protocolCode = normalizeProtocolCode(input.protocolCode)
+  const providerCode = normalizeOptionalText(input.providerCode, '供应商编码')
+  const scopeFilter = providerCode
+    ? `AND (
+        (scope_type = 'protocol' AND provider_code IS NULL)
+        OR (scope_type = 'provider' AND provider_code = ?)
+      )`
+    : `AND scope_type = 'protocol'
+      AND provider_code IS NULL`
+  const params = providerCode
+    ? [protocolCode, providerCode, maxManagementResponseInspectionPolicies]
+    : [protocolCode, maxManagementResponseInspectionPolicies]
+  const rows = getBusinessDatabase()
+    .prepare(`
+      SELECT *
+      FROM response_inspection_policies
+      WHERE enabled = 1
+        AND protocol_code = ?
+        ${scopeFilter}
+      ORDER BY CASE scope_type WHEN 'provider' THEN 0 ELSE 1 END ASC, priority ASC, updated_at DESC, id ASC
+      LIMIT ?
+    `)
+    .all(...params) as unknown as ResponseInspectionPolicyRow[]
+  return [
+    ...listResponseInspectionPolicyDefaultRules().filter((policy) => policyMatchesGatewayScope(policy, protocolCode, providerCode)),
+    ...rows.map(policyFromRow)
+  ]
+}
+
+export function createResponseInspectionPolicy(input: ResponseInspectionPolicyInput): ResponseInspectionPolicySummary {
+  assertKnownInputKeys(input, inputKeys, '响应检查策略')
+  assertManagementPolicyCapacity()
+  const now = nowIso()
+  const policy = normalizePolicyInput(input, {
+    id: newId('rip'),
+    createdAt: now,
+    updatedAt: now
+  })
+  getBusinessDatabase()
+    .prepare(`
+      INSERT INTO response_inspection_policies (
+        id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json,
+        action, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      policy.id,
+      policy.name,
+      policy.enabled ? 1 : 0,
+      policy.priority,
+      policy.scopeType,
+      policy.protocolCode,
+      policy.providerCode ?? null,
+      JSON.stringify(policy.match),
+      policy.action,
+      policy.notes ?? null,
+      policy.createdAt ?? now,
+      policy.updatedAt ?? now
+    )
+  notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_created')
+  return policy
+}
+
+export function updateResponseInspectionPolicy(id: string, input: ResponseInspectionPolicyInput): ResponseInspectionPolicySummary | undefined {
+  assertKnownInputKeys(input, inputKeys, '响应检查策略')
+  const current = findResponseInspectionPolicyRow(id)
+  if (!current) return undefined
+  const policy = normalizePolicyInput(input, {
+    id,
+    createdAt: current.created_at,
+    updatedAt: nowIso(),
+    fallback: policyFromRow(current)
+  })
+  getBusinessDatabase()
+    .prepare(`
+      UPDATE response_inspection_policies
+      SET name = ?, enabled = ?, priority = ?, scope_type = ?, protocol_code = ?,
+          provider_code = ?, match_json = ?, action = ?, notes = ?, updated_at = ?
+      WHERE id = ?
+    `)
+    .run(
+      policy.name,
+      policy.enabled ? 1 : 0,
+      policy.priority,
+      policy.scopeType,
+      policy.protocolCode,
+      policy.providerCode ?? null,
+      JSON.stringify(policy.match),
+      policy.action,
+      policy.notes ?? null,
+      policy.updatedAt ?? nowIso(),
+      id
+    )
+  notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_updated')
+  return policy
+}
+
+export function deleteResponseInspectionPolicy(id: string): boolean {
+  const result = getBusinessDatabase().prepare('DELETE FROM response_inspection_policies WHERE id = ?').run(id)
+  const deleted = result.changes > 0
+  if (deleted) {
+    notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_deleted')
+  }
+  return deleted
+}
+
+export function responseInspectionPolicyActionRuntime(action: ResponseInspectionPolicyAction): {
+  executionMode: ResponseInspectionPolicyExecutionMode
+  dataHandling: ResponseInspectionPolicyDataHandling
+  retryEnabled: boolean
+  accountSwitch: ResponseInspectionPolicyAccountSwitch
+  accountState: ResponseInspectionPolicyAccountState
+} {
+  switch (action) {
+    case 'observe':
+      return { executionMode: 'dry_run', dataHandling: 'pass', retryEnabled: false, accountSwitch: 'none', accountState: 'none' }
+    case 'drop_event':
+      return { executionMode: 'intercept', dataHandling: 'discard_event', retryEnabled: false, accountSwitch: 'none', accountState: 'none' }
+    case 'retry_no_avoidance':
+      return { executionMode: 'intercept', dataHandling: 'replace_with_failure', retryEnabled: true, accountSwitch: 'none', accountState: 'none' }
+    case 'retry_next_account':
+      return { executionMode: 'intercept', dataHandling: 'replace_with_failure', retryEnabled: true, accountSwitch: 'request_next_account', accountState: 'none' }
+    case 'avoid_account_ttl':
+      return { executionMode: 'intercept', dataHandling: 'replace_with_failure', retryEnabled: true, accountSwitch: 'avoid_account_ttl', accountState: 'runtime_avoidance' }
+    case 'avoid_upstream_bucket_ttl':
+      return { executionMode: 'intercept', dataHandling: 'replace_with_failure', retryEnabled: true, accountSwitch: 'avoid_upstream_bucket_ttl', accountState: 'none' }
+  }
+}
+
+function listResponseInspectionPolicyRows(): ResponseInspectionPolicyRow[] {
+  return getBusinessDatabase()
+    .prepare(`
+      SELECT *
+      FROM response_inspection_policies
+      ORDER BY priority ASC, updated_at DESC, id ASC
+      LIMIT ?
+    `)
+    .all(maxManagementResponseInspectionPolicies) as unknown as ResponseInspectionPolicyRow[]
+}
+
+function findResponseInspectionPolicyRow(id: string): ResponseInspectionPolicyRow | undefined {
+  return getBusinessDatabase()
+    .prepare('SELECT * FROM response_inspection_policies WHERE id = ?')
+    .get(id) as unknown as ResponseInspectionPolicyRow | undefined
+}
+
+function assertManagementPolicyCapacity(): void {
+  const rows = getBusinessDatabase()
+    .prepare('SELECT id FROM response_inspection_policies LIMIT ?')
+    .all(maxManagementResponseInspectionPolicies + 1)
+  if (rows.length >= maxManagementResponseInspectionPolicies) {
+    throw new Error(`响应检查策略最多允许 ${maxManagementResponseInspectionPolicies} 条`)
+  }
+}
+
+function normalizePolicyInput(
+  input: ResponseInspectionPolicyInput,
+  options: {
+    id: string
+    createdAt: string
+    updatedAt: string
+    fallback?: ResponseInspectionPolicySummary
+  }
+): ResponseInspectionPolicySummary {
+  const scopeType = normalizeScopeType(input.scopeType ?? options.fallback?.scopeType)
+  const protocolCode = normalizeProtocolCode(input.protocolCode ?? options.fallback?.protocolCode)
+  const providerCode = scopeType === 'provider'
+    ? normalizeProviderCode(input.providerCode ?? options.fallback?.providerCode)
+    : undefined
+  if (scopeType === 'provider' && (providerCode === undefined || !isOpenAIProtocolProviderCode(providerCode))) {
+    throw new Error('响应检查策略供应商必须使用 OpenAI v1 协议档案')
+  }
+  if (scopeType === 'protocol' && input.providerCode) {
+    throw new Error('协议层响应检查策略不能绑定供应商')
+  }
+  return {
+    id: options.id,
+    defaultRule: false,
+    editable: true,
+    name: requiredText(input.name ?? options.fallback?.name, '规则名称', 100),
+    enabled: input.enabled ?? options.fallback?.enabled ?? true,
+    priority: positiveInt(input.priority ?? options.fallback?.priority ?? 100, '优先级', 9999),
+    scopeType,
+    protocolCode,
+    providerCode,
+    match: normalizeMatch(input.match ?? options.fallback?.match ?? {}),
+    action: normalizeAction(input.action ?? options.fallback?.action),
+    notes: optionalText(input.notes ?? options.fallback?.notes, '备注', 1000),
+    createdAt: options.createdAt,
+    updatedAt: options.updatedAt
+  }
+}
+
+function policyFromRow(row: ResponseInspectionPolicyRow): ResponseInspectionPolicySummary {
+  return {
+    id: row.id,
+    defaultRule: false,
+    editable: true,
+    name: row.name,
+    enabled: row.enabled === 1,
+    priority: row.priority,
+    scopeType: normalizeScopeType(row.scope_type),
+    protocolCode: row.protocol_code,
+    providerCode: row.provider_code ?? undefined,
+    match: normalizeMatch(parseJsonObject(row.match_json)),
+    action: normalizeAction(row.action),
+    notes: row.notes ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function policyMatchesGatewayScope(
+  policy: ResponseInspectionPolicySummary,
+  protocolCode: string,
+  providerCode: string | undefined
+): boolean {
+  if (!policy.enabled || policy.protocolCode !== protocolCode) return false
+  if (policy.scopeType === 'protocol') return policy.providerCode === undefined
+  return providerCode !== undefined && policy.providerCode === providerCode
+}
+
+function normalizeMatch(value: unknown): ResponseInspectionPolicyMatch {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  const record = value as Record<string, unknown>
+  assertKnownInputKeys(record, new Set(matchKeys), '响应检查策略匹配条件')
+  const match: ResponseInspectionPolicyMatch = {}
+  for (const key of matchKeys) {
+    const normalized = normalizeStringList(record[key], `响应检查策略${key}`)
+    if (normalized.length > 0) {
+      match[key] = normalized
+    }
+  }
+  const hasMatcher = matchKeys.some((key) => (match[key]?.length ?? 0) > 0)
+  if (!hasMatcher) {
+    throw new Error('响应检查策略至少需要一个匹配条件')
+  }
+  return match
+}
+
+function normalizeAction(value: unknown): ResponseInspectionPolicyAction {
+  if (policyActions.has(value as ResponseInspectionPolicyAction)) {
+    return value as ResponseInspectionPolicyAction
+  }
+  throw new Error('响应检查策略动作无效')
+}
+
+function normalizeScopeType(value: unknown): ResponseInspectionPolicyScopeType {
+  if (value === 'protocol' || value === 'provider') return value
+  throw new Error('响应检查策略作用层级无效')
+}
+
+function normalizeProtocolCode(value: unknown): string {
+  const text = requiredText(value, '协议编码', 80)
+  if (text !== OPENAI_PROTOCOL_CODE) {
+    throw new Error('当前响应检查策略只支持 OpenAI v1 协议')
+  }
+  return text
+}
+
+function normalizeProviderCode(value: unknown): string {
+  return requiredText(value, '供应商编码', 80)
+}
+
+function normalizeOptionalText(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredText(value, label, 80)
+}
+
+function requiredText(value: unknown, label: string, max: number): string {
+  if (typeof value !== 'string') throw new Error(`${label}无效`)
+  const text = value.trim()
+  if (!text) throw new Error(`${label}不能为空`)
+  if (text.length > max) throw new Error(`${label}不能超过 ${max} 个字符`)
+  return text
+}
+
+function optionalText(value: unknown, label: string, max: number): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredText(value, label, max)
+}
+
+function positiveInt(value: unknown, label: string, max: number): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
+    throw new Error(`${label}必须是 1-${max} 的整数`)
+  }
+  return value
+}
+
+function normalizeStringList(value: unknown, label: string): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error(`${label}必须是字符串数组`)
+  if (value.length > 50) throw new Error(`${label}不能超过 50 项`)
+  const output: string[] = []
+  for (const item of value) {
+    const text = requiredText(item, label, 200)
+    if (!output.includes(text)) {
+      output.push(text)
+    }
+  }
+  return output
+}
+
+function parseJsonObject(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text) as unknown
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function assertKnownInputKeys(value: object, allowedKeys: ReadonlySet<string>, label: string): void {
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(`${label}包含未知字段：${key}`)
+    }
+  }
+}
+
+function clonePolicy(policy: ResponseInspectionPolicySummary): ResponseInspectionPolicySummary {
+  return {
+    ...policy,
+    match: { ...policy.match }
+  }
+}

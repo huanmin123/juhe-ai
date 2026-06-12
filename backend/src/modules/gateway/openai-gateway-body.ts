@@ -18,6 +18,12 @@ export interface NonStreamPipeResult {
   transferredBytes: number
 }
 
+export interface InspectableNonStreamPipeResult extends NonStreamPipeResult {
+  fullyBuffered: boolean
+  completeBody?: Buffer
+  completeBodyText?: string
+}
+
 export interface LimitedBodyReadResult {
   body: Buffer
   bodyText: string
@@ -137,6 +143,133 @@ export async function pipeNonStreamUpstreamResponse(
   }
   endResponse(res)
   return buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
+}
+
+export async function pipeNonStreamUpstreamResponseForInspection(
+  upstreamBody: AsyncIterable<Uint8Array>,
+  res: Response,
+  input: {
+    startedAt: number
+    inspectBytes: number
+    captureBytes?: number
+    usageTailBytes?: number
+    captureBody?: boolean
+    signal?: AbortSignal
+    onFirstByte?: () => void
+    firstByteTimeoutMs?: number
+    prepareDownstream?: () => void
+  }
+): Promise<InspectableNonStreamPipeResult> {
+  const iterator = upstreamBody[Symbol.asyncIterator]()
+  const inspectBytes = Math.max(0, input.inspectBytes)
+  const capture = new LimitedBufferCapture(input.captureBody === false ? -1 : input.captureBytes ?? nonStreamResponseCaptureBytes)
+  const usageTailCapture = new RollingBufferCapture(input.usageTailBytes ?? nonStreamUsageTailCaptureBytes)
+  const inspectionChunks: Buffer[] = []
+  let inspectionBytes = 0
+  let transferredBytes = 0
+  let firstByteMs: number | undefined
+  let downstreamPrepared = false
+  let downstreamWriting = false
+  let clientClosed = false
+  const closeIterator = () => {
+    clientClosed = true
+    void closeAsyncIterator(iterator)
+  }
+  const prepareDownstreamForWrite = () => {
+    if (downstreamPrepared) return
+    downstreamPrepared = true
+    input.prepareDownstream?.()
+  }
+  const writeBufferedInspectionChunks = async () => {
+    if (inspectionChunks.length === 0) return
+    prepareDownstreamForWrite()
+    for (const chunk of inspectionChunks.splice(0)) {
+      await writeResponseChunk(res, chunk)
+    }
+  }
+  res.once('close', closeIterator)
+
+  try {
+    while (true) {
+      if (clientClosed || res.destroyed) {
+        throw new UpstreamRequestAbortedError('请求已取消', true)
+      }
+
+      const result = firstByteMs === undefined && input.firstByteTimeoutMs !== undefined
+        ? await readStreamChunkWithTimeout(
+          iterator,
+          Math.max(0.001, input.firstByteTimeoutMs / 1000),
+          () => new Error(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`),
+          input.signal
+        )
+        : await readStreamChunkWithAbort(iterator, input.signal)
+      if (result.done) {
+        break
+      }
+
+      const buffer = Buffer.from(result.value)
+      if (firstByteMs === undefined) {
+        firstByteMs = Date.now() - input.startedAt
+        input.onFirstByte?.()
+      }
+      transferredBytes += buffer.length
+      capture.push(buffer)
+      usageTailCapture.push(buffer)
+
+      if (!downstreamWriting && inspectionBytes + buffer.length <= inspectBytes) {
+        inspectionChunks.push(buffer)
+        inspectionBytes += buffer.length
+        continue
+      }
+
+      if (!downstreamWriting) {
+        downstreamWriting = true
+        await writeBufferedInspectionChunks()
+      }
+      prepareDownstreamForWrite()
+      await writeResponseChunk(res, buffer)
+    }
+  } catch (error) {
+    await closeAsyncIterator(iterator)
+    if (transferredBytes > 0 || downstreamWriting || res.headersSent) {
+      if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
+        endResponse(res)
+      } else {
+        const partialResult = buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
+        destroyResponseForUpstreamBodyError(res)
+        throw new NonStreamUpstreamBodyPipeError(
+          error instanceof Error ? error.message : '上游非流式响应正文中断',
+          partialResult,
+          error
+        )
+      }
+    }
+    throw error
+  } finally {
+    res.off('close', closeIterator)
+  }
+
+  if (downstreamWriting) {
+    if (!downstreamPrepared) {
+      prepareDownstreamForWrite()
+    }
+    endResponse(res)
+    return {
+      ...buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes),
+      fullyBuffered: false
+    }
+  }
+
+  const completeBody = inspectionChunks.length > 0
+    ? Buffer.concat(inspectionChunks, inspectionBytes)
+    : Buffer.alloc(0)
+  const pipeResult = buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
+  return {
+    ...pipeResult,
+    fullyBuffered: true,
+    completeBody,
+    completeBodyText: completeBody.toString('utf8')
+  }
 }
 
 export async function readUpstreamBodyLimited(

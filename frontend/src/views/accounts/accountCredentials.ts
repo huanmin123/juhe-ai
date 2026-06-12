@@ -3,10 +3,6 @@ import {
   writeAccountErrorPolicyToCredentials
 } from './accountErrorPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
-import {
-  writeAccountStreamInterceptRulesToCredentials
-} from './accountStreamInterceptPolicyPayload'
-import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import { compactAccountCredentials } from './accountFormDefaults'
 
@@ -23,14 +19,12 @@ const oauthCredentialMetadataKeys = [
 export function buildAccountCredentials(input: {
   currentCredentials?: Record<string, unknown>
   errorPolicyRules: AccountErrorPolicyRuleForm[]
-  streamInterceptRules: AccountStreamInterceptRuleForm[]
   form: AccountFormModel
 }): Record<string, unknown> {
   const credentials: Record<string, unknown> = input.form.type === 'api_key'
     ? buildApiKeyCredentials(input.form)
     : buildOAuthCredentials(input.form, input.currentCredentials ?? {})
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
-  writeAccountStreamInterceptRulesToCredentials(credentials, input.streamInterceptRules)
   return credentials
 }
 

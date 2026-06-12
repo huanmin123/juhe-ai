@@ -214,7 +214,6 @@ export interface AccountCredentials {
   account_id?: string
   chatgpt_user_id?: string
   plan_type?: string
-  stream_intercept_rules?: unknown[]
   [key: string]: unknown
 }
 

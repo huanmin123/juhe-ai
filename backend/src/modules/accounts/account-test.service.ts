@@ -5,7 +5,7 @@ import type { Request, Response } from 'express'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
-import { logger } from '../../shared/logger.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
   findProviderDefaultTestModel,
@@ -21,6 +21,14 @@ import type { GatewaySettings } from '../gateway/account-error-policy.service.js
 import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-effects.service.js'
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
+import {
+  type AccountDiagnosticAttemptProgressHandler,
+  accountDiagnosticAttemptProgress,
+  accountDiagnosticRetryTimeoutMs,
+  diagnosticAccountTestGatewaySettingsOverride,
+  diagnosticAttemptSignal,
+  isDiagnosticTimeoutSignal
+} from './account-diagnostic-retry-policy.js'
 
 const defaultTestPrompt = '只输出 OK'
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
@@ -29,9 +37,76 @@ const gatewayChatCompletionsPath = '/v1/chat/completions'
 const gatewayModelsPath = '/v1/models'
 export const accountTestResponsePreviewBytes = 256 * 1024
 
+type AccountTestInput = {
+  model?: string
+  prompt?: string
+  signal?: AbortSignal
+  groupId?: string
+  systemAccountId?: string
+  requestShape?: RecentOpenAIRequestShape
+  diagnostics?: 'full' | 'limited'
+  trafficSource?: OpenAIGatewayTrafficSource
+  gatewaySettingsOverride?: Partial<GatewaySettings>
+  disableAccountStateMutation?: boolean
+  clientCompatibility?: AccountClientCompatibility
+  candidateAccount?: OpenAIAccountSecret
+  onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
+}
+
+export async function testOpenAIAccountWithDiagnosticRetries(
+  account: AccountSummary,
+  input: AccountTestInput = {}
+): Promise<AccountTestResult> {
+  const startedAt = Date.now()
+  let lastResult: AccountTestResult | undefined
+  for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
+    const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
+    notifyDiagnosticAttemptProgress(input.onDiagnosticAttemptProgress, attemptIndex, timeoutMs, startedAt)
+    const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
+    const result = await testOpenAIAccount(account, {
+      ...input,
+      signal: attemptSignal,
+      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(input.gatewaySettingsOverride, timeoutMs)
+    })
+    lastResult = result
+    if (result.success || result.accountFailureEligible === false || input.signal?.aborted) {
+      return accountTestResultWithTotalDuration(result, startedAt)
+    }
+    if (attemptIndex + 1 < accountDiagnosticRetryTimeoutMs.length) {
+      logger.info({
+        event: 'account_diagnostic_test_retry_scheduled',
+        accountId: account.id,
+        accountName: account.name,
+        attemptNumber: attemptIndex + 1,
+        nextAttemptNumber: attemptIndex + 2,
+        attemptTimeoutMs: timeoutMs,
+        nextAttemptTimeoutMs: accountDiagnosticRetryTimeoutMs[attemptIndex + 1],
+        durationMs: result.durationMs,
+        totalElapsedMs: Date.now() - startedAt,
+        traceId: result.traceId
+      }, '账户诊断请求未通过，将继续使用真实网关链路重试')
+    }
+  }
+  return accountTestResultWithTotalDuration(lastResult ?? await testOpenAIAccount(account, input), startedAt)
+}
+
+function notifyDiagnosticAttemptProgress(
+  handler: AccountDiagnosticAttemptProgressHandler | undefined,
+  attemptIndex: number,
+  timeoutMs: number,
+  startedAt: number
+): void {
+  if (!handler) return
+  try {
+    handler(accountDiagnosticAttemptProgress(attemptIndex, timeoutMs, startedAt))
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event: 'account_diagnostic_attempt_progress_callback_failed' }), '账户诊断进度回调执行失败')
+  }
+}
+
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; systemAccountId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; trafficSource?: OpenAIGatewayTrafficSource; gatewaySettingsOverride?: Partial<GatewaySettings>; disableAccountStateMutation?: boolean; clientCompatibility?: AccountClientCompatibility; candidateAccount?: OpenAIAccountSecret } = {}
+  input: AccountTestInput = {}
 ): Promise<AccountTestResult> {
   const explicitModel = stringValue(input.model)
   const model = explicitModel || defaultAccountTestModel(account)
@@ -157,8 +232,9 @@ export async function testOpenAIAccount(
       accountFailureEligible: !success
     }), limitedDiagnostics)
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'OpenAI Responses 测试失败'
-    const accountFailureEligible = accountTestFailureEligible(error)
+    const normalizedError = input.signal?.aborted ? accountTestAbortError(input.signal) : error
+    const message = normalizedError instanceof Error ? normalizedError.message : 'OpenAI Responses 测试失败'
+    const accountFailureEligible = accountTestFailureEligible(normalizedError)
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
       accountName: account.name,
@@ -227,6 +303,13 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
   }
 }
 
+function accountTestResultWithTotalDuration(result: AccountTestResult, startedAt: number): AccountTestResult {
+  return {
+    ...result,
+    durationMs: Date.now() - startedAt
+  }
+}
+
 function limitedAccountTestMessage(result: AccountTestResult): string {
   if (result.success) return result.message
   if (typeof result.statusCode === 'number') {
@@ -247,8 +330,7 @@ function accountTestAbortError(signal: AbortSignal): AccountTestAbortError {
 }
 
 function isAccountTestTimeoutSignal(signal: AbortSignal): boolean {
-  const reason = signal.reason
-  return Boolean(reason && typeof reason === 'object' && 'name' in reason && reason.name === 'TimeoutError')
+  return isDiagnosticTimeoutSignal(signal)
 }
 
 function accountTestFailureEligible(error: unknown): boolean {

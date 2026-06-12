@@ -15,7 +15,7 @@ import { availabilityScheduleCacheTtlMs } from '../../storage/availability-sched
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
-import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
+import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
 import { listProviderModelCatalog, type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 
 const gatewayRuntimeTtlMs = 60_000
@@ -346,7 +346,7 @@ function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceG
     settings: { ...runtime.settings },
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
     accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret),
-    streamInterceptPolicies: runtime.streamInterceptPolicies ? runtime.streamInterceptPolicies.map(cloneStreamInterceptPolicy) : undefined
+    responseInspectionPolicies: runtime.responseInspectionPolicies ? runtime.responseInspectionPolicies.map(cloneResponseInspectionPolicy) : undefined
   }
 }
 
@@ -357,7 +357,7 @@ function cloneGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime): DbSer
   }
 }
 
-function cloneStreamInterceptPolicy(policy: StreamInterceptPolicySummary): StreamInterceptPolicySummary {
+function cloneResponseInspectionPolicy(policy: ResponseInspectionPolicySummary): ResponseInspectionPolicySummary {
   return {
     ...policy,
     match: { ...policy.match }

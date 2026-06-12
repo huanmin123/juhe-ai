@@ -8,7 +8,7 @@ import {
   findRecentOpenAIRequestShapeForAccount,
   recordCooldownAccountRetestFailure
 } from '../../storage/repositories.js'
-import { preferredSystemAccountTestModel, testOpenAIAccount } from '../accounts/account-test.service.js'
+import { preferredSystemAccountTestModel, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 
 interface CooldownAccountRetestQueueItem {
   accountId: string
@@ -69,7 +69,7 @@ async function runCooldownAccountRetestQueueItem(
   }
 
   const groupId = account.boundGroupId
-  const result = await testOpenAIAccount(account, {
+  const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     model: preferredSystemAccountTestModel(account),
     diagnostics: 'full',
     groupId,

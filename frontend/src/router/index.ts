@@ -422,11 +422,11 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/stream-intercept-policies',
-    component: () => import('@/views/stream-intercept-policies/StreamInterceptPoliciesView.vue'),
+    path: '/response-inspection-policies',
+    component: () => import('@/views/response-inspection-policies/ResponseInspectionPoliciesView.vue'),
     meta: {
-      title: '流式拦截策略',
-      description: '管理 200 + SSE 内部事件、广告污染和协议内失败的拦截策略。',
+      title: '响应检查策略',
+      description: '管理 OpenAI v1 Chat / Responses 的 JSON 与 SSE 响应语义检查策略。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

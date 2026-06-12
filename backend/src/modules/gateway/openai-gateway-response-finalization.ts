@@ -26,16 +26,18 @@ import {
   NonStreamUpstreamBodyPipeError,
   endResponse,
   pipeNonStreamUpstreamResponse,
+  pipeNonStreamUpstreamResponseForInspection,
   nonStreamResponseCaptureBytes,
   readUpstreamBodyLimited
 } from './openai-gateway-body.js'
-import { streamInterceptAuditMetadata } from './openai-gateway-audit-metadata.js'
+import { responseInspectionAuditMetadata } from './openai-gateway-audit-metadata.js'
 import {
   forgetOpenAIAccountForSession
 } from './openai-gateway-session-affinity.service.js'
 import {
   gatewayStreamClientRetryErrorCode,
   gatewayErrorPayload,
+  isOpenAIJsonResponseContentType,
   sendGatewayErrorResponse,
   writeGatewayStreamFailureEvent
 } from './openai-gateway-responses.js'
@@ -44,7 +46,16 @@ import {
   pipeUpstreamStream,
   type StreamBodyOmissionSummary
 } from './openai-gateway-stream.js'
-import { isCodexRetryableAfterOutputStreamFailureCode, type StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
+import {
+  inspectResponseSemanticFrames,
+  isCodexRetryableAfterOutputResponseFailureCode,
+  resolveRuntimeResponseInspectionPolicies,
+  type ResponseInspectionDecision
+} from './openai-gateway-response-inspection.js'
+import {
+  extractOpenAIJsonSemanticFrames,
+  openAIResponseEndpointFamilyFromRequest
+} from './openai-gateway-response-semantics.js'
 import {
   copyResponseHeaders,
   isEffectiveOpenAIStreamRequest,
@@ -67,21 +78,25 @@ import {
   recordGatewayUpstreamBucketSuccess,
   suppressGatewayUpstreamBucketLocallyForSeconds
 } from './openai-gateway-proxy-health.service.js'
-import { resolveRuntimeStreamInterceptPolicies } from './openai-gateway-stream-policy.js'
-import type { StreamInterceptPolicySummary } from '../../storage/stream-intercept-policy.repository.js'
+import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
 import {
   recordClientAbortedUpstreamAttempt,
   recordCompletedUpstreamAttempt,
   type GatewayUsageContext
 } from './openai-gateway-usage-records.js'
 
+export type StreamServerRetryReason =
+  | 'response_inspection'
+  | 'pre_commit_stream_failure'
+  | 'codex_pre_commit_stream_failure'
+
 export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true }
   | {
     alreadyFinalized: false
     retryUpstream: true
-    retryReason: 'stream_intercept' | 'codex_pre_commit_stream_failure'
-    streamIntercept?: StreamInterceptDecision
+    retryReason: StreamServerRetryReason
+    responseInspection?: ResponseInspectionDecision
     excludeCurrentAccount: boolean
     message: string
     errorCode?: string
@@ -111,7 +126,7 @@ interface HandleUpstreamResponseInput {
   signal: AbortSignal
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
-  streamInterceptPolicies?: StreamInterceptPolicySummary[]
+  responseInspectionPolicies?: ResponseInspectionPolicySummary[]
   markFirstOutput?: () => void
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
@@ -121,6 +136,8 @@ interface HandleUpstreamResponseInput {
 interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
   result: Exclude<UpstreamResponseHandlingResult, { alreadyFinalized: true } | { retryUpstream: true }>
 }
+
+const nonStreamResponseInspectionMaxBytes = 1024 * 1024
 
 export function prepareUpstreamResponseForDownstream(
   res: Response,
@@ -154,8 +171,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     sessionAffinityKey,
     clientStrategy,
     markFirstOutput,
-    accountStateMutationEnabled,
-    codexTurnAccountAvoidanceApplied
+    accountStateMutationEnabled
   } = input
 
   if (!upstreamResponse.body) {
@@ -211,14 +227,15 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       signal,
       {
         clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
-        retryBeforeDownstreamWriteUntilOutput: clientStrategy?.allowCodexStreamClientRetry === true,
+        retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
         preserveImageStreamBodyCapture: auditCapture.shouldPreserveFullPayloadBodies(),
-        streamInterceptPolicies: resolveRuntimeStreamInterceptPolicies({
+        responseInspectionPolicies: resolveRuntimeResponseInspectionPolicies({
           account,
-          managementPolicies: input.streamInterceptPolicies
+          managementPolicies: input.responseInspectionPolicies
         }),
+        endpointFamily: openAIResponseEndpointFamilyFromRequest(req),
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
       }
     )
@@ -266,12 +283,12 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       estimatedOutputTokens: streamUsageFallback.estimatedOutputTokens
     }, '上游流式响应缺少 usage，网关已按可见输出估算 token 成本')
   }
-  await applyStreamInterceptObservationHandling(streamResult, account, settings, auditCapture, accountStateMutationEnabled !== false)
-  if (streamResult.streamIntercept) {
-    await applyStreamInterceptPolicyRuntimeSideEffects(streamResult.streamIntercept, account, settings, accountStateMutationEnabled !== false)
+  await applyResponseInspectionObservationHandling(streamResult, account, settings, auditCapture, accountStateMutationEnabled !== false)
+  if (streamResult.responseInspection) {
+    await applyResponseInspectionPolicyRuntimeSideEffects(streamResult.responseInspection, account, settings, accountStateMutationEnabled !== false)
     auditCapture.addGatewayMetadata({
-      label: 'stream_intercept',
-      metadata: streamInterceptAuditMetadata(streamResult.streamIntercept)
+      label: 'response_inspection',
+      metadata: responseInspectionAuditMetadata(streamResult.responseInspection)
     })
   }
   if (streamResult.bodyOmission) {
@@ -279,23 +296,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       label: 'stream_body_omission',
       metadata: { ...streamResult.bodyOmission }
     })
-  }
-  if (shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)) {
-    const codexTurnFailure = rememberCodexTurnStreamFailure(clientStrategy, account.id, {
-      errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
-      message: streamResult.message
-    })
-    if (codexTurnFailure) {
-      auditCapture.addGatewayMetadata({
-        label: 'codex_turn_stream_failure',
-        metadata: {
-          stateKey: codexTurnFailure.stateKey,
-          failureCount: codexTurnFailure.failureCount,
-          failedAccountIds: codexTurnFailure.failedAccountIds,
-          accountId: account.id
-        }
-      })
-    }
   }
   auditCapture.completeAttempt(auditAttemptId, {
     statusCode: upstreamResponse.status,
@@ -318,7 +318,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       firstTokenMs: streamResult.firstTokenMs,
       startedAt,
       usage: streamUsageFallback.usage,
-      errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
+      errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
       requestSnapshot,
       responseSnapshot: buildUsageResponseSnapshot({
         upstreamUrl,
@@ -330,23 +330,23 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }),
       errorMessage: streamResult.message
     })
-    if (shouldRetryStreamInterceptOnServer(streamResult, res)) {
+    if (shouldRetryResponseInspectionOnServer(streamResult, res)) {
       auditCapture.addGatewayMetadata({
-        label: 'stream_intercept_server_retry',
-        metadata: streamInterceptAuditMetadata(streamResult.streamIntercept)
+        label: 'response_inspection_server_retry',
+        metadata: responseInspectionAuditMetadata(streamResult.responseInspection)
       })
       return {
         alreadyFinalized: false,
         retryUpstream: true,
-        retryReason: 'stream_intercept',
-        streamIntercept: streamResult.streamIntercept,
-        excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(streamResult.streamIntercept),
+        retryReason: 'response_inspection',
+        responseInspection: streamResult.responseInspection,
+        excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(streamResult.responseInspection),
         message: streamResult.message,
-        errorCode: streamResult.streamIntercept.upstreamErrorCode ?? streamResult.errorCode,
+        errorCode: streamResult.responseInspection.upstreamErrorCode ?? streamResult.errorCode,
         uncommittedResponseBody: streamResult.uncommittedResponseBody
       }
     }
-    if (shouldRetryCodexPreCommitStreamFailureOnServer(streamResult, clientStrategy, res, codexTurnAccountAvoidanceApplied === true)) {
+    if (shouldRetryCodexPreCommitStreamFailureOnServer(streamResult, clientStrategy, res)) {
       auditCapture.addGatewayMetadata({
         label: 'codex_pre_commit_stream_server_retry',
         metadata: {
@@ -367,6 +367,47 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         uncommittedResponseBody: streamResult.uncommittedResponseBody
       }
     }
+    if (shouldRetryPreCommitStreamFailureOnServer(streamResult, res)) {
+      const clientFacingErrorCode = preCommitStreamServerRetryErrorCode(streamResult, clientStrategy)
+      auditCapture.addGatewayMetadata({
+        label: 'pre_commit_stream_server_retry',
+        metadata: {
+          errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
+          clientFacingErrorCode,
+          message: streamResult.message,
+          downstreamBytesWritten: streamResult.downstreamBytesWritten,
+          outputReceived: streamResult.outputReceived,
+          accountId: account.id
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'pre_commit_stream_failure',
+        responseInspection: streamResult.responseInspection,
+        excludeCurrentAccount: true,
+        message: streamResult.message,
+        errorCode: clientFacingErrorCode,
+        uncommittedResponseBody: streamResult.uncommittedResponseBody
+      }
+    }
+    if (shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)) {
+      const codexTurnFailure = rememberCodexTurnStreamFailure(clientStrategy, account.id, {
+        errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
+        message: streamResult.message
+      })
+      if (codexTurnFailure) {
+        auditCapture.addGatewayMetadata({
+          label: 'codex_turn_stream_failure',
+          metadata: {
+            stateKey: codexTurnFailure.stateKey,
+            failureCount: codexTurnFailure.failureCount,
+            failedAccountIds: codexTurnFailure.failedAccountIds,
+            accountId: account.id
+          }
+        })
+      }
+    }
     const clientFailureResponseBody = writePreCommitStreamFailureToClient(res, upstreamResponse, streamResult)
     auditCapture.finalize({
       outcome: 'stream_failed',
@@ -376,7 +417,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       responseBody: clientFailureResponseBody ?? streamResult.auditResponseBody,
       responsePartType: 'gateway_response',
       errorPhase: 'stream',
-      errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
+      errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
       errorMessage: streamResult.message,
       accountId: account.id,
       firstTokenMs: streamResult.firstTokenMs
@@ -422,18 +463,18 @@ function writePreCommitStreamFailureToClient(
   return chunks.length > 0 ? Buffer.concat(chunks) : undefined
 }
 
-async function applyStreamInterceptPolicyRuntimeSideEffects(
-  decision: NonNullable<GatewayStreamPipeResult['streamIntercept']>,
+async function applyResponseInspectionPolicyRuntimeSideEffects(
+  decision: ResponseInspectionDecision,
   account: UpstreamAccount,
   settings: GatewaySettings,
   accountStateMutationEnabled: boolean
 ): Promise<void> {
-  if (!accountStateMutationEnabled || decision.reason !== 'configured_stream_policy' || decision.action === 'dry_run') {
+  if (!accountStateMutationEnabled || decision.reason !== 'configured_response_policy' || decision.action === 'dry_run') {
     return
   }
-  const reason = `流式拦截策略命中：${decision.policyName ?? decision.policyId ?? decision.matchedValue ?? '未命名策略'}`
+  const reason = `响应检查策略命中：${decision.policyName ?? decision.policyId ?? decision.matchedValue ?? '未命名策略'}`
   if (decision.accountState === 'runtime_avoidance' || decision.accountSwitch === 'avoid_account_ttl') {
-    await markGatewayAccountTemporaryUnavailableWithCacheInvalidation(account, reason, 'stream_intercept_policy')
+    await markGatewayAccountTemporaryUnavailableWithCacheInvalidation(account, reason, 'response_inspection_policy')
   }
   if (decision.accountSwitch === 'avoid_upstream_bucket_ttl') {
     const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
@@ -443,36 +484,61 @@ async function applyStreamInterceptPolicyRuntimeSideEffects(
 
 type GatewayStreamPipeResult = Awaited<ReturnType<typeof pipeUpstreamStream>>
 
-async function applyStreamInterceptObservationHandling(
+async function applyResponseInspectionObservationHandling(
   streamResult: GatewayStreamPipeResult,
   account: UpstreamAccount,
   settings: GatewaySettings,
   auditCapture: AuditCaptureContext,
   accountStateMutationEnabled: boolean
 ): Promise<void> {
-  const observations = streamResult.streamInterceptObservations ?? []
+  await applyResponseInspectionObservationDecisions(
+    streamResult.responseInspectionObservations,
+    streamResult.responseInspectionObservationOmittedCount,
+    account,
+    settings,
+    auditCapture,
+    accountStateMutationEnabled
+  )
+}
+
+async function applyResponseInspectionObservationDecisions(
+  observations: ResponseInspectionDecision[] | undefined,
+  omittedCount: number | undefined,
+  account: UpstreamAccount,
+  settings: GatewaySettings,
+  auditCapture: AuditCaptureContext,
+  accountStateMutationEnabled: boolean
+): Promise<void> {
+  observations = observations ?? []
   if (observations.length === 0) {
     return
   }
   for (const observation of observations) {
-    await applyStreamInterceptPolicyRuntimeSideEffects(observation, account, settings, accountStateMutationEnabled)
+    await applyResponseInspectionPolicyRuntimeSideEffects(observation, account, settings, accountStateMutationEnabled)
   }
   auditCapture.addGatewayMetadata({
-    label: 'stream_intercept_observations',
+    label: 'response_inspection_observations',
     metadata: {
       count: observations.length,
-      omittedCount: streamResult.streamInterceptObservationOmittedCount,
-      observations: observations.map(streamInterceptAuditMetadata)
+      omittedCount,
+      observations: observations.map(responseInspectionAuditMetadata)
     }
   })
 }
 
-function shouldRetryStreamInterceptOnServer(
+function shouldRetryResponseInspectionOnServer(
   streamResult: GatewayStreamPipeResult,
   res: Response
-): streamResult is GatewayStreamPipeResult & { streamIntercept: StreamInterceptDecision } {
-  const decision = streamResult.streamIntercept
-  return decision?.reason === 'configured_stream_policy'
+): streamResult is GatewayStreamPipeResult & { responseInspection: ResponseInspectionDecision } {
+  const decision = streamResult.responseInspection
+  return shouldRetryResponseInspectionDecisionOnServer(decision, res)
+}
+
+function shouldRetryResponseInspectionDecisionOnServer(
+  decision: ResponseInspectionDecision | undefined,
+  res: Response
+): decision is ResponseInspectionDecision {
+  return decision?.reason === 'configured_response_policy'
     && decision.retryEnabled === true
     && decision.policySource !== 'system_default'
     && !res.headersSent
@@ -483,24 +549,45 @@ function shouldRetryStreamInterceptOnServer(
 function shouldRetryCodexPreCommitStreamFailureOnServer(
   streamResult: GatewayStreamPipeResult,
   clientStrategy: OpenAIGatewayClientStrategyContext | undefined,
-  res: Response,
-  codexTurnAccountAvoidanceApplied: boolean
+  res: Response
 ): boolean {
+  const retryableAfterOutput = isCodexRetryableAfterOutputResponseFailureCode(streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode)
   return !streamResult.completed
     && streamResult.downstreamBytesWritten === 0
-    && !streamResult.outputReceived
-    && codexTurnAccountAvoidanceApplied
+    && (!streamResult.outputReceived || retryableAfterOutput)
     && clientStrategy?.allowCodexTurnAccountAvoidance === true
     && (
       streamResult.errorCode === gatewayStreamClientRetryErrorCode
-      || streamResult.streamIntercept?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
+      || streamResult.responseInspection?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
     )
     && !res.headersSent
     && !res.writableEnded
     && !res.destroyed
 }
 
-function shouldExcludeCurrentAccountForStreamServerRetry(decision: StreamInterceptDecision): boolean {
+function shouldRetryPreCommitStreamFailureOnServer(
+  streamResult: GatewayStreamPipeResult,
+  res: Response
+): boolean {
+  return !streamResult.completed
+    && streamResult.downstreamBytesWritten === 0
+    && !streamResult.outputReceived
+    && streamResult.errorCode !== undefined
+    && !res.headersSent
+    && !res.writableEnded
+    && !res.destroyed
+}
+
+function preCommitStreamServerRetryErrorCode(
+  streamResult: GatewayStreamPipeResult,
+  clientStrategy: OpenAIGatewayClientStrategyContext | undefined
+): string | undefined {
+  return clientStrategy?.allowCodexStreamClientRetry === true
+    ? gatewayStreamClientRetryErrorCode
+    : streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode
+}
+
+function shouldExcludeCurrentAccountForStreamServerRetry(decision: ResponseInspectionDecision): boolean {
   return decision.accountSwitch === 'request_next_account'
     || decision.accountSwitch === 'avoid_account_ttl'
     || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
@@ -511,13 +598,13 @@ function shouldRememberCodexTurnStreamFailure(
   streamResult: GatewayStreamPipeResult,
   clientStrategy: OpenAIGatewayClientStrategyContext | undefined
 ): clientStrategy is OpenAIGatewayClientStrategyContext {
-  const retryableAfterOutput = isCodexRetryableAfterOutputStreamFailureCode(streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode)
+  const retryableAfterOutput = isCodexRetryableAfterOutputResponseFailureCode(streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode)
   return !streamResult.completed
     && (!streamResult.outputReceived || retryableAfterOutput)
     && clientStrategy?.allowCodexTurnAccountAvoidance === true
     && (
       streamResult.errorCode === gatewayStreamClientRetryErrorCode
-      || streamResult.streamIntercept?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
+      || streamResult.responseInspection?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
     )
 }
 
@@ -572,29 +659,103 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       markFirstOutput?.()
       res.end()
     } else if (upstreamResponse.ok) {
-      const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
-        startedAt,
-        captureBody: auditCapture.shouldCaptureSuccessPayloads(),
-        signal,
-        firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
-        prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
-        onFirstByte: () => {
-          firstTokenMs = Date.now() - startedAt
-          markFirstOutput?.()
+      const contentType = upstreamResponse.headers.get('content-type') ?? ''
+      const inspectJsonResponse = isOpenAIJsonResponseContentType(contentType)
+      if (inspectJsonResponse) {
+        const pipeResult = await pipeNonStreamUpstreamResponseForInspection(upstreamResponse.body, res, {
+          startedAt,
+          inspectBytes: nonStreamResponseInspectionMaxBytes,
+          captureBody: auditCapture.shouldCaptureSuccessPayloads(),
+          signal,
+          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
+          onFirstByte: () => {
+            firstTokenMs = Date.now() - startedAt
+            markFirstOutput?.()
+          }
+        })
+        responseBody = pipeResult.capturedBody
+        responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
+        responseUsageText = pipeResult.usageTailText
+        firstTokenMs = pipeResult.firstByteMs
+        if (pipeResult.fullyBuffered) {
+          const completeBody = pipeResult.completeBody ?? Buffer.alloc(0)
+          const completeBodyText = pipeResult.completeBodyText ?? completeBody.toString('utf8')
+          const jsonInspectionResult = await inspectBufferedOpenAIJsonResponse({
+            req,
+            res,
+            account,
+            upstreamResponse,
+            upstreamUrl,
+            auditAttemptId,
+            auditCapture,
+            settings,
+            usageContext,
+            startedAt,
+            responseBody: completeBody,
+            responseBodyText: completeBodyText,
+            firstTokenMs,
+            responseInspectionPolicies: input.responseInspectionPolicies,
+            accountStateMutationEnabled: accountStateMutationEnabled !== false,
+            sessionAffinityKey
+          })
+          if (jsonInspectionResult) {
+            return jsonInspectionResult
+          }
+          if (firstTokenMs === undefined) {
+            firstTokenMs = Date.now() - startedAt
+          }
+          prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
+          res.send(completeBody)
+          if (!responseBody && auditCapture.shouldCaptureSuccessPayloads()) {
+            responseBody = completeBody
+            responseBodyText = completeBodyText
+          }
+          responseUsageText = completeBodyText
+        } else {
+          logger.warn({
+            event: 'gateway_non_stream_response_inspection_omitted',
+            accountId: account.id,
+            statusCode: upstreamResponse.status,
+            transferredBytes: pipeResult.transferredBytes,
+            inspectBytes: nonStreamResponseInspectionMaxBytes,
+            endpoint: usageContext.endpoint
+          }, '网关非流式 JSON 响应超过检查窗口，已边转发并跳过完整语义检查')
         }
-      })
-      responseBody = pipeResult.capturedBody
-      responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
-      responseUsageText = pipeResult.usageTailText
-      firstTokenMs = pipeResult.firstByteMs
-      if (pipeResult.captureTruncated) {
-        logger.warn({
-          event: 'gateway_non_stream_response_capture_truncated',
-          accountId: account.id,
-          statusCode: upstreamResponse.status,
-          transferredBytes: pipeResult.transferredBytes,
-          endpoint: usageContext.endpoint
-        }, '网关非流式响应过大，已边转发并跳过完整响应捕获')
+        if (pipeResult.captureTruncated) {
+          logger.warn({
+            event: 'gateway_non_stream_response_capture_truncated',
+            accountId: account.id,
+            statusCode: upstreamResponse.status,
+            transferredBytes: pipeResult.transferredBytes,
+            endpoint: usageContext.endpoint
+          }, '网关非流式响应过大，已边转发并跳过完整响应捕获')
+        }
+      } else {
+        const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
+          startedAt,
+          captureBody: auditCapture.shouldCaptureSuccessPayloads(),
+          signal,
+          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
+          onFirstByte: () => {
+            firstTokenMs = Date.now() - startedAt
+            markFirstOutput?.()
+          }
+        })
+        responseBody = pipeResult.capturedBody
+        responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
+        responseUsageText = pipeResult.usageTailText
+        firstTokenMs = pipeResult.firstByteMs
+        if (pipeResult.captureTruncated) {
+          logger.warn({
+            event: 'gateway_non_stream_response_capture_truncated',
+            accountId: account.id,
+            statusCode: upstreamResponse.status,
+            transferredBytes: pipeResult.transferredBytes,
+            endpoint: usageContext.endpoint
+          }, '网关非流式响应过大，已边转发并跳过完整响应捕获')
+        }
       }
     } else {
       const readResult = await readUpstreamBodyLimited(upstreamResponse.body, {
@@ -767,6 +928,130 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     errorPayload
   }
+}
+
+async function inspectBufferedOpenAIJsonResponse(input: {
+  req: Request
+  res: Response
+  account: UpstreamAccount
+  upstreamResponse: GatewayUpstreamResponse
+  upstreamUrl: string
+  auditAttemptId: string
+  auditCapture: AuditCaptureContext
+  settings: GatewaySettings
+  usageContext: GatewayUsageContext
+  startedAt: number
+  responseBody: Buffer
+  responseBodyText: string
+  firstTokenMs?: number
+  responseInspectionPolicies?: ResponseInspectionPolicySummary[]
+  accountStateMutationEnabled: boolean
+  sessionAffinityKey?: string
+}): Promise<UpstreamResponseHandlingResult | undefined> {
+  let parsedJson: unknown
+  try {
+    parsedJson = input.responseBody.length > 0
+      ? JSON.parse(input.responseBodyText) as unknown
+      : undefined
+  } catch {
+    return undefined
+  }
+  const endpointFamily = openAIResponseEndpointFamilyFromRequest(input.req)
+  const frames = extractOpenAIJsonSemanticFrames(parsedJson, endpointFamily)
+  if (frames.length === 0) return undefined
+
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: input.account,
+    managementPolicies: input.responseInspectionPolicies
+  })
+  const inspection = inspectResponseSemanticFrames({
+    frames,
+    policies,
+    downstreamWritten: false,
+    transport: 'json'
+  })
+  await applyResponseInspectionObservationDecisions(
+    inspection.observations,
+    undefined,
+    input.account,
+    input.settings,
+    input.auditCapture,
+    input.accountStateMutationEnabled
+  )
+  if (!inspection.decision) return undefined
+
+  const decision = inspection.decision
+  await applyResponseInspectionPolicyRuntimeSideEffects(decision, input.account, input.settings, input.accountStateMutationEnabled)
+  input.auditCapture.addGatewayMetadata({
+    label: 'response_inspection',
+    metadata: responseInspectionAuditMetadata(decision)
+  })
+  const usage = parseOpenAIUsageFromJsonBuffer(input.responseBody)
+  const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `JSON 响应命中检查策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
+  const errorCode = decision.rewriteErrorCode ?? decision.upstreamErrorCode ?? 'response_inspection_matched'
+  forgetOpenAIAccountForSession(input.sessionAffinityKey, input.account.id)
+  input.auditCapture.completeAttempt(input.auditAttemptId, {
+    statusCode: input.upstreamResponse.status,
+    responseHeaders: input.upstreamResponse.headers,
+    responseBody: input.responseBody,
+    success: false,
+    errorPhase: 'response_inspection',
+    errorCode,
+    errorMessage: message
+  })
+  recordCompletedUpstreamAttempt(input.req, {
+    ...input.usageContext,
+    account: input.account,
+    statusCode: input.upstreamResponse.status,
+    success: false,
+    stream: isEffectiveOpenAIStreamRequest(input.req, input.account),
+    firstTokenMs: input.firstTokenMs,
+    startedAt: input.startedAt,
+    usage,
+    errorCode,
+    requestSnapshot: input.usageContext.requestSnapshot,
+    responseSnapshot: buildUsageResponseSnapshot({
+      upstreamUrl: input.upstreamUrl,
+      statusCode: input.upstreamResponse.status,
+      headers: input.upstreamResponse.headers,
+      bodyText: input.responseBodyText,
+      errorMessage: message
+    }),
+    errorMessage: message
+  })
+
+  if (shouldRetryResponseInspectionDecisionOnServer(decision, input.res)) {
+    input.auditCapture.addGatewayMetadata({
+      label: 'response_inspection_server_retry',
+      metadata: responseInspectionAuditMetadata(decision)
+    })
+    return {
+      alreadyFinalized: false,
+      retryUpstream: true,
+      retryReason: 'response_inspection',
+      responseInspection: decision,
+      excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(decision),
+      message,
+      errorCode
+    }
+  }
+
+  const responsePayload = gatewayErrorPayload(message, 'response_inspection_failed', errorCode)
+  sendGatewayErrorResponse(input.res, 503, responsePayload)
+  input.auditCapture.finalize({
+    outcome: 'upstream_failed',
+    success: false,
+    statusCode: 503,
+    responseHeaders: responseHeadersToObject(input.res),
+    responseBody: JSON.stringify(responsePayload),
+    responsePartType: 'gateway_error',
+    errorPhase: 'response_inspection',
+    errorCode,
+    errorMessage: message,
+    accountId: input.account.id,
+    firstTokenMs: input.firstTokenMs
+  })
+  return { alreadyFinalized: true }
 }
 
 export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): void {

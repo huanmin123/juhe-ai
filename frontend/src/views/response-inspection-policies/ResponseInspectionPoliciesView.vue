@@ -1,5 +1,5 @@
 <template>
-  <a-card class="page-card responsive-page-card stream-policy-page">
+  <a-card class="page-card responsive-page-card response-policy-page">
     <ResponsiveListToolbar
       v-model:keyword="keyword"
       search-placeholder="搜索策略名称或匹配条件"
@@ -19,7 +19,7 @@
     </ResponsiveListToolbar>
 
     <ResponsiveDataList
-      table-class="page-table stream-policy-table"
+      table-class="page-table response-policy-table"
       :columns="columns"
       :data-source="filteredPolicies"
       row-key="id"
@@ -31,7 +31,7 @@
       @mobile-refresh="loadPageData"
     >
       <template #emptyText>
-        <a-empty class="page-empty-card" description="暂无流式拦截策略" />
+        <a-empty class="page-empty-card" description="暂无响应检查策略" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
@@ -55,11 +55,11 @@
         <template v-else-if="column.key === 'status'">
           <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
         </template>
-        <template v-else-if="column.key === 'eventTypes'">
-          <div class="field-cell">{{ listText(record.match.eventTypes) }}</div>
+        <template v-else-if="column.key === 'outputTextIncludes'">
+          <div class="field-cell">{{ listText(record.match.outputTextIncludes) }}</div>
         </template>
-        <template v-else-if="column.key === 'dataTypes'">
-          <div class="field-cell">{{ listText(record.match.dataTypes) }}</div>
+        <template v-else-if="column.key === 'finishReasons'">
+          <div class="field-cell">{{ listText(record.match.finishReasons) }}</div>
         </template>
         <template v-else-if="column.key === 'errorCodes'">
           <div class="field-cell">{{ listText(record.match.errorCodes) }}</div>
@@ -67,11 +67,14 @@
         <template v-else-if="column.key === 'errorTypes'">
           <div class="field-cell">{{ listText(record.match.errorTypes) }}</div>
         </template>
-        <template v-else-if="column.key === 'textIncludes'">
-          <div class="field-cell text-field-cell">{{ listText(record.match.textIncludes) }}</div>
+        <template v-else-if="column.key === 'errorMessageIncludes'">
+          <div class="field-cell text-field-cell">{{ listText(record.match.errorMessageIncludes) }}</div>
         </template>
-        <template v-else-if="column.key === 'textExcludes'">
-          <div class="field-cell text-field-cell">{{ listText(record.match.textExcludes) }}</div>
+        <template v-else-if="column.key === 'outputTextExcludes'">
+          <div class="field-cell text-field-cell">{{ listText(record.match.outputTextExcludes) }}</div>
+        </template>
+        <template v-else-if="column.key === 'rawTextIncludes'">
+          <div class="field-cell text-field-cell">{{ listText(record.match.rawTextIncludes) }}</div>
         </template>
         <template v-else-if="column.key === 'jsonPathsExists'">
           <div class="field-cell">{{ listText(record.match.jsonPathsExists) }}</div>
@@ -90,7 +93,7 @@
         </template>
       </template>
       <template #card="{ record }">
-        <article class="mobile-list-card stream-policy-mobile-card">
+        <article class="mobile-list-card response-policy-mobile-card">
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">{{ record.name }}</div>
             <div class="mobile-list-card-tags">
@@ -128,12 +131,12 @@
               <strong>{{ actionText(record.action) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>SSE event 类型</span>
-              <strong>{{ listText(record.match.eventTypes) }}</strong>
+              <span>输出文本包含</span>
+              <strong>{{ listText(record.match.outputTextIncludes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>data.type</span>
-              <strong>{{ listText(record.match.dataTypes) }}</strong>
+              <span>完成原因 / 状态</span>
+              <strong>{{ listText(record.match.finishReasons) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>error.code</span>
@@ -144,12 +147,16 @@
               <strong>{{ listText(record.match.errorTypes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>SSE data文本包含</span>
-              <strong>{{ listText(record.match.textIncludes) }}</strong>
+              <span>错误消息包含</span>
+              <strong>{{ listText(record.match.errorMessageIncludes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>SSE data文本不包含</span>
-              <strong>{{ listText(record.match.textExcludes) }}</strong>
+              <span>输出文本排除</span>
+              <strong>{{ listText(record.match.outputTextExcludes) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>原始事件文本包含</span>
+              <strong>{{ listText(record.match.rawTextIncludes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>JSON字段路径存在</span>
@@ -213,11 +220,11 @@
         <section class="form-section">
           <div class="form-section-title">匹配条件</div>
           <div class="form-grid two">
-            <a-form-item label="SSE event 类型">
-              <a-input v-model:value="form.eventTypes" :disabled="modalReadonly" placeholder="response.failed, error" />
+            <a-form-item label="输出文本包含">
+              <a-textarea v-model:value="form.outputTextIncludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="广告关键词、异常提示，支持 JSON 与 SSE" />
             </a-form-item>
-            <a-form-item label="data.type">
-              <a-input v-model:value="form.dataTypes" :disabled="modalReadonly" placeholder="response.output_text.delta" />
+            <a-form-item label="输出文本排除">
+              <a-textarea v-model:value="form.outputTextExcludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="命中输出文本包含后，包含这些关键词时不拦截" />
             </a-form-item>
             <a-form-item label="error.code">
               <a-input v-model:value="form.errorCodes" :disabled="modalReadonly" placeholder="cyber_policy" />
@@ -225,11 +232,14 @@
             <a-form-item label="error.type">
               <a-input v-model:value="form.errorTypes" :disabled="modalReadonly" placeholder="server_error" />
             </a-form-item>
-            <a-form-item label="SSE data文本包含">
-              <a-textarea v-model:value="form.textIncludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="匹配当前单个 SSE 事件 data 文本，多个关键词用逗号、分号或换行分隔" />
+            <a-form-item label="错误消息包含">
+              <a-textarea v-model:value="form.errorMessageIncludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="upstream policy blocked, rate limit" />
             </a-form-item>
-            <a-form-item label="SSE data文本不包含">
-              <a-textarea v-model:value="form.textExcludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="当前事件 data 文本包含这些关键词时不命中，用于减少误杀" />
+            <a-form-item label="完成原因 / 状态">
+              <a-input v-model:value="form.finishReasons" :disabled="modalReadonly" placeholder="failed, content_filter, length" />
+            </a-form-item>
+            <a-form-item label="原始事件文本包含">
+              <a-textarea v-model:value="form.rawTextIncludes" :disabled="modalReadonly" :rows="1" auto-size placeholder="只匹配 SSE 原始事件文本，用于兜底排障" />
             </a-form-item>
             <a-form-item label="JSON字段路径存在">
               <a-input v-model:value="form.jsonPathsExists" :disabled="modalReadonly" placeholder="response.error, error" />
@@ -242,7 +252,7 @@
           <a-form-item label="处置模板">
             <div class="action-option-grid">
               <button
-                v-for="template in streamInterceptActionTemplates"
+                v-for="template in responseInspectionActionTemplates"
                 :key="template.action"
                 class="action-option"
                 :class="{ active: form.action === template.action }"
@@ -266,17 +276,17 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="guideOpen" title="流式拦截策略配置指南" width="900px" :footer="null">
+    <a-modal v-model:open="guideOpen" title="响应检查策略配置指南" width="900px" :footer="null">
       <div class="policy-guide">
         <p class="guide-note guide-intro">
-          策略作用于运行时识别为 AI 对话的 SSE 流；协议层用于 OpenAI v1 全局语义，供应商层用于 GPT 或其他 OpenAI v1 兼容供应商的局部优化，运行时按下游是否已写出内容和客户端能力决定具体重试方式。
+          策略作用于 OpenAI v1 Chat / Responses 的 JSON 与 SSE 响应语义；协议层用于 OpenAI v1 全局规则，供应商层用于 GPT 或其他 OpenAI v1 兼容供应商的局部规则。其他供应商协议必须先接入自己的语义适配器。
         </p>
 
         <section class="guide-section">
           <h4>去哪里查依据</h4>
           <a-table
             :columns="guideSourceColumns"
-            :data-source="streamInterceptPolicyGuideSources"
+            :data-source="responseInspectionPolicyGuideSources"
             :pagination="false"
             row-key="key"
             size="small"
@@ -287,7 +297,7 @@
           <h4>字段怎么填</h4>
           <a-table
             :columns="guideFieldColumns"
-            :data-source="streamInterceptPolicyGuideFields"
+            :data-source="responseInspectionPolicyGuideFields"
             :pagination="false"
             row-key="key"
             size="small"
@@ -299,7 +309,7 @@
           <h4>处置怎么选</h4>
           <a-table
             :columns="guideActionColumns"
-            :data-source="streamInterceptPolicyGuideActions"
+            :data-source="responseInspectionPolicyGuideActions"
             :pagination="false"
             row-key="key"
             size="small"
@@ -307,8 +317,8 @@
         </section>
 
         <section class="guide-section">
-          <h4>常见 SSE 事件结构</h4>
-          <pre class="guide-code">{{ streamInterceptPolicyGuideExample }}</pre>
+          <h4>常见响应结构</h4>
+          <pre class="guide-code">{{ responseInspectionPolicyGuideExample }}</pre>
         </section>
       </div>
     </a-modal>
@@ -320,7 +330,7 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref } from 'vue'
 
-import { api, type StreamInterceptPolicyPayload } from '@/api/client'
+import { api, type ResponseInspectionPolicyPayload } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
@@ -330,36 +340,37 @@ import { providerDisplayName } from '@/shared/providerDisplay'
 import { isOpenAIProtocolProfile, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import type {
   ProviderDefinition,
-  StreamInterceptPolicyAction,
-  StreamInterceptPolicyScopeType,
-  StreamInterceptPolicySummary
+  ResponseInspectionPolicyAction,
+  ResponseInspectionPolicyScopeType,
+  ResponseInspectionPolicySummary
 } from '@/types/domain'
 import {
-  streamInterceptPolicyGuideActions,
-  streamInterceptPolicyGuideExample,
-  streamInterceptPolicyGuideFields,
-  streamInterceptPolicyGuideSources
-} from './streamInterceptPolicyGuide'
+  responseInspectionPolicyGuideActions,
+  responseInspectionPolicyGuideExample,
+  responseInspectionPolicyGuideFields,
+  responseInspectionPolicyGuideSources
+} from './responseInspectionPolicyGuide'
 import {
-  streamInterceptActionLabel,
-  streamInterceptActionTemplates,
-  type StreamInterceptActionTemplate
-} from './streamInterceptActionTemplates'
+  responseInspectionActionLabel,
+  responseInspectionActionTemplates,
+  type ResponseInspectionActionTemplate
+} from './responseInspectionActionTemplates'
 
-interface StreamPolicyForm {
+interface ResponsePolicyForm {
   name: string
   enabled: boolean
   priority: number
-  scopeType: StreamInterceptPolicyScopeType
+  scopeType: ResponseInspectionPolicyScopeType
   providerCode: string
-  eventTypes: string
-  dataTypes: string
+  outputTextIncludes: string
+  finishReasons: string
   errorCodes: string
   errorTypes: string
-  textIncludes: string
-  textExcludes: string
+  errorMessageIncludes: string
+  rawTextIncludes: string
+  outputTextExcludes: string
   jsonPathsExists: string
-  action: StreamInterceptPolicyAction
+  action: ResponseInspectionPolicyAction
   notes: string
 }
 
@@ -369,13 +380,13 @@ const loading = ref(false)
 const saving = ref(false)
 const keyword = ref('')
 const providers = ref<ProviderDefinition[]>([])
-const defaultRules = ref<StreamInterceptPolicySummary[]>([])
-const policies = ref<StreamInterceptPolicySummary[]>([])
+const defaultRules = ref<ResponseInspectionPolicySummary[]>([])
+const policies = ref<ResponseInspectionPolicySummary[]>([])
 const modalOpen = ref(false)
 const modalReadonly = ref(false)
 const guideOpen = ref(false)
 const editingId = ref<string>()
-const form = reactive<StreamPolicyForm>(defaultForm())
+const form = reactive<ResponsePolicyForm>(defaultForm())
 
 const columns = [
   { title: '策略名称', key: 'name', width: 240, fixed: 'left' },
@@ -385,13 +396,14 @@ const columns = [
   { title: '供应商', key: 'provider', width: 150 },
   { title: '优先级', key: 'priority', width: 90 },
   { title: '状态', key: 'status', width: 90 },
-  { title: 'SSE event 类型', key: 'eventTypes', width: 190 },
-  { title: 'data.type', key: 'dataTypes', width: 190 },
+  { title: '输出文本包含', key: 'outputTextIncludes', width: 220 },
+  { title: '输出文本排除', key: 'outputTextExcludes', width: 220 },
   { title: 'error.code', key: 'errorCodes', width: 160 },
   { title: 'error.type', key: 'errorTypes', width: 160 },
-  { title: 'SSE data文本包含', key: 'textIncludes', width: 220 },
-  { title: 'SSE data文本不包含', key: 'textExcludes', width: 220 },
+  { title: '错误消息包含', key: 'errorMessageIncludes', width: 220 },
+  { title: '完成原因 / 状态', key: 'finishReasons', width: 190 },
   { title: 'JSON字段路径存在', key: 'jsonPathsExists', width: 190 },
+  { title: '原始事件文本包含', key: 'rawTextIncludes', width: 220 },
   { title: '处置模板', key: 'action', width: 220 },
   { title: '备注', key: 'notes', width: 220 },
   { title: '更新时间', key: 'updatedAt', width: 180 },
@@ -438,22 +450,23 @@ const filteredPolicies = computed(() => {
 
 const modalTitle = computed(() => {
   if (modalReadonly.value) return '查看默认策略'
-  return editingId.value ? '编辑流式拦截策略' : '新建流式拦截策略'
+  return editingId.value ? '编辑响应检查策略' : '新建响应检查策略'
 })
 
-function defaultForm(): StreamPolicyForm {
-  const next: StreamPolicyForm = {
+function defaultForm(): ResponsePolicyForm {
+  const next: ResponsePolicyForm = {
     name: '',
     enabled: true,
     priority: 1,
     scopeType: 'provider',
     providerCode: '',
-    eventTypes: '',
-    dataTypes: '',
+    outputTextIncludes: '',
+    finishReasons: '',
     errorCodes: '',
     errorTypes: '',
-    textIncludes: '',
-    textExcludes: '',
+    errorMessageIncludes: '',
+    rawTextIncludes: '',
+    outputTextExcludes: '',
     jsonPathsExists: '',
     action: 'avoid_account_ttl',
     notes: ''
@@ -464,12 +477,12 @@ function defaultForm(): StreamPolicyForm {
 async function loadPolicies(): Promise<void> {
   loading.value = true
   try {
-    const result = await api.streamInterceptPolicies.list()
+    const result = await api.responseInspectionPolicies.list()
     defaultRules.value = result.defaultRules
     policies.value = result.policies
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '加载流式拦截策略失败'))
+    message.error(extractApiErrorMessage(error, '加载响应检查策略失败'))
   } finally {
     loading.value = false
   }
@@ -479,7 +492,7 @@ async function loadPageData(): Promise<void> {
   loading.value = true
   try {
     const [policyResult, providerResult] = await Promise.all([
-      api.streamInterceptPolicies.list(),
+      api.responseInspectionPolicies.list(),
       api.providers.options()
     ])
     defaultRules.value = policyResult.defaultRules
@@ -487,7 +500,7 @@ async function loadPageData(): Promise<void> {
     providers.value = providerResult
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '加载流式拦截策略失败'))
+    message.error(extractApiErrorMessage(error, '加载响应检查策略失败'))
   } finally {
     loading.value = false
   }
@@ -503,14 +516,14 @@ function openCreate(): void {
   modalOpen.value = true
 }
 
-function openView(policy: StreamInterceptPolicySummary): void {
+function openView(policy: ResponseInspectionPolicySummary): void {
   if (!fillForm(policy)) return
   editingId.value = undefined
   modalReadonly.value = true
   modalOpen.value = true
 }
 
-function openEdit(policy: StreamInterceptPolicySummary): void {
+function openEdit(policy: ResponseInspectionPolicySummary): void {
   if (!policy.editable) {
     openView(policy)
     return
@@ -536,36 +549,36 @@ async function savePolicy(): Promise<void> {
   try {
     const payload = buildPayload()
     if (editingId.value) {
-      await api.streamInterceptPolicies.update(editingId.value, payload)
-      message.success('流式拦截策略已更新')
+      await api.responseInspectionPolicies.update(editingId.value, payload)
+      message.success('响应检查策略已更新')
     } else {
-      await api.streamInterceptPolicies.create(payload)
-      message.success('流式拦截策略已创建')
+      await api.responseInspectionPolicies.create(payload)
+      message.success('响应检查策略已创建')
     }
     modalOpen.value = false
     await loadPolicies()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '保存流式拦截策略失败'))
+    message.error(extractApiErrorMessage(error, '保存响应检查策略失败'))
   } finally {
     saving.value = false
   }
 }
 
-async function removePolicy(policy: StreamInterceptPolicySummary): Promise<void> {
+async function removePolicy(policy: ResponseInspectionPolicySummary): Promise<void> {
   if (!policy.editable) return
   try {
-    await api.streamInterceptPolicies.delete(policy.id)
+    await api.responseInspectionPolicies.delete(policy.id)
     policies.value = policies.value.filter((item) => item.id !== policy.id)
-    message.success('流式拦截策略已删除')
+    message.success('响应检查策略已删除')
     void loadPolicies()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '删除流式拦截策略失败'))
+    message.error(extractApiErrorMessage(error, '删除响应检查策略失败'))
   }
 }
 
-function handlePolicyAction(key: string, policy: StreamInterceptPolicySummary): void {
+function handlePolicyAction(key: string, policy: ResponseInspectionPolicySummary): void {
   if (key === 'view') {
     openView(policy)
     return
@@ -579,7 +592,7 @@ function handlePolicyAction(key: string, policy: StreamInterceptPolicySummary): 
   }
 }
 
-function actionsFor(policy: StreamInterceptPolicySummary): RowActionItem[] {
+function actionsFor(policy: ResponseInspectionPolicySummary): RowActionItem[] {
   if (!policy.editable) {
     return [
       { key: 'view', label: '查看', icon: 'view', tone: 'info' }
@@ -587,23 +600,24 @@ function actionsFor(policy: StreamInterceptPolicySummary): RowActionItem[] {
   }
   return [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
-    { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: '确认删除这个流式拦截策略？', confirmOkText: '删除' }
+    { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: '确认删除这个响应检查策略？', confirmOkText: '删除' }
   ]
 }
 
-function fillForm(policy: StreamInterceptPolicySummary): boolean {
+function fillForm(policy: ResponseInspectionPolicySummary): boolean {
   Object.assign(form, {
     name: policy.name,
     enabled: policy.enabled,
     priority: policy.priority,
     scopeType: policy.scopeType,
     providerCode: policy.providerCode ?? '',
-    eventTypes: formatList(policy.match.eventTypes),
-    dataTypes: formatList(policy.match.dataTypes),
+    outputTextIncludes: formatList(policy.match.outputTextIncludes),
+    finishReasons: formatList(policy.match.finishReasons),
     errorCodes: formatList(policy.match.errorCodes),
     errorTypes: formatList(policy.match.errorTypes),
-    textIncludes: formatList(policy.match.textIncludes),
-    textExcludes: formatList(policy.match.textExcludes),
+    errorMessageIncludes: formatList(policy.match.errorMessageIncludes),
+    rawTextIncludes: formatList(policy.match.rawTextIncludes),
+    outputTextExcludes: formatList(policy.match.outputTextExcludes),
     jsonPathsExists: formatList(policy.match.jsonPathsExists),
     action: policy.action,
     notes: policy.notes ?? ''
@@ -611,20 +625,21 @@ function fillForm(policy: StreamInterceptPolicySummary): boolean {
   return true
 }
 
-function buildPayload(): StreamInterceptPolicyPayload {
-  const payload: StreamInterceptPolicyPayload = {
+function buildPayload(): ResponseInspectionPolicyPayload {
+  const payload: ResponseInspectionPolicyPayload = {
     name: form.name.trim(),
     enabled: form.enabled,
     priority: requiredPositiveInt(form.priority, '优先级', 9999),
     scopeType: form.scopeType,
     providerCode: form.scopeType === 'provider' ? form.providerCode.trim() : undefined,
     match: compactObject({
-      eventTypes: splitList(form.eventTypes),
-      dataTypes: splitList(form.dataTypes),
+      outputTextIncludes: splitList(form.outputTextIncludes),
+      finishReasons: splitList(form.finishReasons),
       errorCodes: splitList(form.errorCodes),
       errorTypes: splitList(form.errorTypes),
-      textIncludes: splitList(form.textIncludes),
-      textExcludes: splitList(form.textExcludes),
+      errorMessageIncludes: splitList(form.errorMessageIncludes),
+      rawTextIncludes: splitList(form.rawTextIncludes),
+      outputTextExcludes: splitList(form.outputTextExcludes),
       jsonPathsExists: splitList(form.jsonPathsExists)
     }),
     action: form.action,
@@ -643,7 +658,7 @@ function validateForm(): string | undefined {
   return undefined
 }
 
-function selectAction(action: StreamInterceptPolicyAction): void {
+function selectAction(action: ResponseInspectionPolicyAction): void {
   if (modalReadonly.value) return
   form.action = action
 }
@@ -678,11 +693,12 @@ function nextPriority(): number {
 
 function hasAnyMatcher(): boolean {
   return [
-    form.eventTypes,
-    form.dataTypes,
+    form.outputTextIncludes,
+    form.finishReasons,
     form.errorCodes,
     form.errorTypes,
-    form.textIncludes,
+    form.errorMessageIncludes,
+    form.rawTextIncludes,
     form.jsonPathsExists
   ].some((value) => (splitList(value) ?? []).length > 0)
 }
@@ -723,13 +739,14 @@ function requiredPositiveInt(value: unknown, label: string, max = Number.POSITIV
 
 function validateMatchLists(): string | undefined {
   const fields: Array<[unknown, string]> = [
-    [form.eventTypes, '事件类型'],
-    [form.dataTypes, '数据类型'],
+    [form.outputTextIncludes, '输出文本包含'],
+    [form.outputTextExcludes, '输出文本排除'],
     [form.errorCodes, '错误码'],
     [form.errorTypes, '错误类型'],
-    [form.textIncludes, '包含文本'],
-    [form.textExcludes, '排除文本'],
-    [form.jsonPathsExists, 'JSON 路径']
+    [form.errorMessageIncludes, '错误消息包含'],
+    [form.finishReasons, '完成原因 / 状态'],
+    [form.jsonPathsExists, 'JSON 路径'],
+    [form.rawTextIncludes, '原始事件文本']
   ]
   for (const [value, label] of fields) {
     const items = splitList(value) ?? []
@@ -739,7 +756,7 @@ function validateMatchLists(): string | undefined {
   return undefined
 }
 
-function searchableText(policy: StreamInterceptPolicySummary): string {
+function searchableText(policy: ResponseInspectionPolicySummary): string {
   return [
     policy.name,
     scopeText(policy),
@@ -749,16 +766,16 @@ function searchableText(policy: StreamInterceptPolicySummary): string {
     policy.defaultRule ? '默认' : '自定义',
     String(policy.priority),
     policy.enabled ? '启用' : '停用',
-    streamInterceptActionLabel(policy.action),
+    responseInspectionActionLabel(policy.action),
     policy.notes
   ].filter(Boolean).join(' ').toLowerCase()
 }
 
-function actionText(action: StreamInterceptPolicyAction): string {
-  return streamInterceptActionLabel(action)
+function actionText(action: ResponseInspectionPolicyAction): string {
+  return responseInspectionActionLabel(action)
 }
 
-function scopeText(policy: Pick<StreamInterceptPolicySummary, 'scopeType'>): string {
+function scopeText(policy: Pick<ResponseInspectionPolicySummary, 'scopeType'>): string {
   return policy.scopeType === 'provider' ? '供应商层' : '协议层'
 }
 
@@ -772,7 +789,7 @@ function providerText(providerCode?: string): string {
   return providerNameByCode.value.get(providerCode) ?? providerDisplayName(providerCode, openAIProviders.value)
 }
 
-function actionTagText(template: StreamInterceptActionTemplate): string {
+function actionTagText(template: ResponseInspectionActionTemplate): string {
   if (template.action === 'observe') return '观察'
   if (template.action === 'drop_event') return '不重试'
   if (template.runtimeAvoidance) return '短期避让'
@@ -783,21 +800,23 @@ function defaultProviderCode(): string {
   return preferredDefaultProviderCode(openAIProviders.value)
 }
 
-function actionTagColor(template: StreamInterceptActionTemplate): string {
+function actionTagColor(template: ResponseInspectionActionTemplate): string {
   if (template.action === 'observe') return 'gold'
   if (template.action === 'drop_event') return 'default'
   if (template.runtimeAvoidance) return 'orange'
   return 'green'
 }
 
-function matchSummary(policy: StreamInterceptPolicySummary): string {
+function matchSummary(policy: ResponseInspectionPolicySummary): string {
   const match = policy.match
   const parts = [
-    scopedList('event', match.eventTypes),
-    scopedList('data.type', match.dataTypes),
+    scopedList('输出包含', match.outputTextIncludes),
+    scopedList('输出排除', match.outputTextExcludes),
     scopedList('code', match.errorCodes),
     scopedList('type', match.errorTypes),
-    scopedList('data文本', match.textIncludes),
+    scopedList('错误消息', match.errorMessageIncludes),
+    scopedList('完成原因', match.finishReasons),
+    scopedList('原始文本', match.rawTextIncludes),
     scopedList('JSON路径', match.jsonPathsExists)
   ].filter(Boolean)
   return parts.length ? parts.join('；') : '-'
@@ -816,11 +835,11 @@ onMounted(loadPageData)
 </script>
 
 <style scoped>
-.stream-policy-page {
+.response-policy-page {
   min-height: 0;
 }
 
-.stream-policy-table :deep(.ant-table-cell) {
+.response-policy-table :deep(.ant-table-cell) {
   white-space: nowrap;
 }
 
@@ -956,7 +975,7 @@ onMounted(loadPageData)
   line-height: 18px;
 }
 
-.stream-policy-mobile-card :deep(.mobile-list-meta-item strong) {
+.response-policy-mobile-card :deep(.mobile-list-meta-item strong) {
   font-weight: 400;
 }
 

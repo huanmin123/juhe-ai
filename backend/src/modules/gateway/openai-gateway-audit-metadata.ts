@@ -1,16 +1,20 @@
-import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
+import type { ResponseInspectionDecision } from './openai-gateway-response-inspection.js'
 
-export function streamInterceptAuditMetadata(decision: StreamInterceptDecision): Record<string, unknown> {
+export function responseInspectionAuditMetadata(decision: ResponseInspectionDecision): Record<string, unknown> {
   return {
-    streamPolicyMatched: true,
-    streamIntercepted: decision.action !== 'dry_run',
+    responsePolicyMatched: true,
+    responseInspectionIntercepted: decision.action !== 'dry_run',
     fallbackReason: decision.reason,
-    interceptAction: decision.action,
+    inspectionAction: decision.action,
+    transport: decision.transport,
+    endpointFamily: decision.endpointFamily,
+    frameType: decision.frameType,
     triggerPhase: decision.triggerPhase,
-    runtimePhase: decision.runtimePhase,
     upstreamEventType: decision.upstreamEventType,
     upstreamErrorCode: decision.upstreamErrorCode,
+    upstreamErrorType: decision.upstreamErrorType,
     upstreamErrorMessage: decision.upstreamErrorMessage,
+    finishReason: decision.finishReason,
     rewriteErrorCode: decision.rewriteErrorCode,
     rewriteMessage: decision.rewriteMessage,
     downstreamWritten: decision.downstreamWritten,

@@ -26,14 +26,23 @@ import {
   listRunnableAccountTestTaskIds,
   markAccountTestTaskCanceled,
   markAccountTestTaskRunning,
-  requeueInterruptedAccountTestTasks
+  requeueInterruptedAccountTestTasks,
+  updateAccountTestTaskMessage
 } from '../../storage/account-test-tasks.repository.js'
 import { sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { diagnosticTaskBusyMessage, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import { testOpenAIAccount } from './account-test.service.js'
+import { testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
+import {
+  type AccountDiagnosticAttemptProgress,
+  accountDiagnosticAttemptProgress,
+  accountDiagnosticRetryTimeoutMs,
+  diagnosticAccountTestGatewaySettingsOverride,
+  diagnosticAttemptSignal,
+  isDiagnosticTimeoutSignal
+} from './account-diagnostic-retry-policy.js'
 
 interface AccountTestQueueItem {
   taskId: string
@@ -143,6 +152,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   }
   const controller = new AbortController()
   runningAccountTestControllers.set(task.id, controller)
+  const onDiagnosticAttemptProgress = accountTestTaskProgressReporter(task.id)
 
   try {
     if (isAccountTestTaskCancelRequested(task.id)) {
@@ -183,7 +193,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
           clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
           diagnostics: task.diagnostics,
           signal: controller.signal,
-          draftAccount: draft
+          draftAccount: draft,
+          onDiagnosticAttemptProgress
         }))
         if (!result) {
           return true
@@ -200,7 +211,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
         model: task.model,
         clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
         diagnostics: task.diagnostics,
-        signal: controller.signal
+        signal: controller.signal,
+        onDiagnosticAttemptProgress
       }))
       if (!result) {
         return true
@@ -232,7 +244,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       model: task.model,
       clientCompatibility: task.clientCompatibility,
       diagnostics: task.diagnostics,
-      signal: controller.signal
+      signal: controller.signal,
+      onDiagnosticAttemptProgress
     }))
     if (!result) {
       return true
@@ -288,18 +301,72 @@ async function runOpenAIDraftAccountTest(
     clientCompatibility?: AccountSummary['clientCompatibility']
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
+    onDiagnosticAttemptProgress?: (progress: AccountDiagnosticAttemptProgress) => void
   }
 ): Promise<AccountTestResult> {
-  const candidateAccount = await openAIDraftAccountSecret(draft, input.signal)
-  return testOpenAIAccount(account, {
-    model: input.model,
-    groupId: draft.groupId,
-    systemAccountId: draft.ownerSystemAccountId,
-    clientCompatibility: input.clientCompatibility,
-    diagnostics: input.diagnostics,
-    signal: input.signal,
-    candidateAccount
-  })
+  return testOpenAIDraftAccountWithDiagnosticRetries(account, draft, input)
+}
+
+async function testOpenAIDraftAccountWithDiagnosticRetries(
+  account: AccountSummary,
+  draft: AccountTestDraftSnapshot,
+  input: {
+    model?: string
+    clientCompatibility?: AccountSummary['clientCompatibility']
+    diagnostics: 'full' | 'limited'
+    signal: AbortSignal
+    onDiagnosticAttemptProgress?: (progress: AccountDiagnosticAttemptProgress) => void
+  }
+): Promise<AccountTestResult> {
+  const startedAt = Date.now()
+  let candidateAccount: OpenAIAccountSecret | undefined
+  let lastResult: AccountTestResult | undefined
+  for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
+    const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
+    input.onDiagnosticAttemptProgress?.(accountDiagnosticAttemptProgress(attemptIndex, timeoutMs, startedAt))
+    const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
+    const attemptStartedAt = Date.now()
+    let result: AccountTestResult
+    try {
+      candidateAccount = candidateAccount ?? await openAIDraftAccountSecret(draft, attemptSignal)
+      result = await testOpenAIAccount(account, {
+        model: input.model,
+        groupId: draft.groupId,
+        systemAccountId: draft.ownerSystemAccountId,
+        clientCompatibility: input.clientCompatibility,
+        diagnostics: input.diagnostics,
+        signal: attemptSignal,
+        candidateAccount,
+        gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs)
+      })
+    } catch (error) {
+      result = failedAccountTestResult(account, draftAccountTestErrorMessage(error, attemptSignal), input.model, {
+        accountFailureEligible: draftAccountTestFailureEligible(error, attemptSignal),
+        durationMs: Date.now() - attemptStartedAt
+      })
+    }
+    lastResult = result
+    if (result.success || result.accountFailureEligible === false || input.signal.aborted) {
+      return accountTestResultWithTotalDuration(result, startedAt)
+    }
+    if (attemptIndex + 1 < accountDiagnosticRetryTimeoutMs.length) {
+      logger.info({
+        event: 'account_draft_diagnostic_test_retry_scheduled',
+        accountId: account.id,
+        accountName: account.name,
+        attemptNumber: attemptIndex + 1,
+        nextAttemptNumber: attemptIndex + 2,
+        attemptTimeoutMs: timeoutMs,
+        nextAttemptTimeoutMs: accountDiagnosticRetryTimeoutMs[attemptIndex + 1],
+        durationMs: result.durationMs,
+        totalElapsedMs: Date.now() - startedAt,
+        traceId: result.traceId
+      }, '账户草稿诊断请求未通过，将继续使用真实网关链路重试')
+    }
+  }
+  return accountTestResultWithTotalDuration(lastResult ?? failedAccountTestResult(account, '账户测试失败', input.model, {
+    accountFailureEligible: true
+  }), startedAt)
 }
 
 async function runOpenAIAccountTestWithSideEffects(
@@ -311,6 +378,7 @@ async function runOpenAIAccountTestWithSideEffects(
     diagnostics: 'full' | 'limited'
     signal: AbortSignal
     draftAccount?: AccountTestDraftSnapshot
+    onDiagnosticAttemptProgress?: (progress: AccountDiagnosticAttemptProgress) => void
   }
 ): Promise<AccountTestResult> {
   let accountTestStatusChanges: ReturnType<typeof safeChange>[] | undefined
@@ -319,14 +387,16 @@ async function runOpenAIAccountTestWithSideEffects(
       model: input.model,
       clientCompatibility: input.clientCompatibility ?? input.draftAccount.clientCompatibility,
       diagnostics: input.diagnostics,
-      signal: input.signal
+      signal: input.signal,
+      onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress
     })
-    : await testOpenAIAccount(account, {
+    : await testOpenAIAccountWithDiagnosticRetries(account, {
       model: input.model,
       clientCompatibility: input.clientCompatibility,
       signal: input.signal,
       diagnostics: input.diagnostics,
-      requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId)
+      requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId),
+      onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress
     })
 
   if (input.signal.aborted) {
@@ -393,7 +463,7 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
   if (draft.type === 'oauth' && shouldRefreshOpenAIOAuthCredentials(credentials)) {
     const refreshToken = stringCredential(credentials.refresh_token)
     if (!refreshToken) {
-      throw new Error('OAuth 草稿缺少 Refresh Token，无法刷新 Access Token')
+      throw new DraftAccountConfigurationError('OAuth 草稿缺少 Refresh Token，无法刷新 Access Token')
     }
     const refreshedCredentials = buildOpenAIOAuthCredentials(await refreshOpenAIOAuthToken({
       refreshToken,
@@ -403,15 +473,14 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     }), { refreshToken })
     credentials = {
       ...credentials,
-      ...refreshedCredentials,
-      stream_intercept_rules: credentials.stream_intercept_rules
+      ...refreshedCredentials
     }
   }
   const apiKey = draft.type === 'oauth'
     ? stringCredential(credentials.access_token)
     : stringCredential(credentials.api_key)
   if (!apiKey) {
-    throw new Error(draft.type === 'oauth' ? 'OAuth 草稿缺少 Access Token' : '账户草稿缺少 API Key')
+    throw new DraftAccountConfigurationError(draft.type === 'oauth' ? 'OAuth 草稿缺少 Access Token' : '账户草稿缺少 API Key')
   }
   const baseUrl = stringCredential(credentials.base_url) || 'https://api.openai.com/v1'
   return {
@@ -634,6 +703,30 @@ function accountTestFailureCooldownReason(result: { traceId?: string; statusCode
   return parts.join('；')
 }
 
+function accountTestResultWithTotalDuration(result: AccountTestResult, startedAt: number): AccountTestResult {
+  return {
+    ...result,
+    durationMs: Date.now() - startedAt
+  }
+}
+
+function draftAccountTestErrorMessage(error: unknown, signal: AbortSignal): string {
+  if (signal.aborted) {
+    return isDiagnosticTimeoutSignal(signal) ? '账户测试超时' : '账户测试已取消'
+  }
+  return error instanceof Error ? error.message : 'OpenAI Responses 测试失败'
+}
+
+function draftAccountTestFailureEligible(error: unknown, signal: AbortSignal): boolean {
+  if (signal.aborted) {
+    return isDiagnosticTimeoutSignal(signal)
+  }
+  return !(error instanceof DraftAccountConfigurationError)
+}
+
+class DraftAccountConfigurationError extends Error {
+}
+
 function authorizedLocalOperationOwner(account: AccountSummary, access?: AccessScope): string | undefined {
   return account.accessType === 'authorized' ? effectiveRequestSystemAccountId(access) : undefined
 }
@@ -642,7 +735,12 @@ function effectiveRequestSystemAccountId(access?: AccessScope): string | undefin
   return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }
 
-function failedAccountTestResult(account: AccountSummary, message: string, model?: string): AccountTestResult {
+function failedAccountTestResult(
+  account: AccountSummary,
+  message: string,
+  model?: string,
+  options: { accountFailureEligible?: boolean; durationMs?: number } = {}
+): AccountTestResult {
   return {
     accountId: account.id,
     accountName: account.name,
@@ -654,8 +752,9 @@ function failedAccountTestResult(account: AccountSummary, message: string, model
     success: false,
     message,
     model,
+    durationMs: options.durationMs,
     accountStatus: account.status,
-    accountFailureEligible: false
+    accountFailureEligible: options.accountFailureEligible ?? false
   }
 }
 

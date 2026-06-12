@@ -127,11 +127,6 @@
               v-model:rules="errorPolicyRules"
               :readonly="authorizedEditing"
             />
-
-            <AccountStreamInterceptPolicyCard
-              v-model:rules="streamInterceptRules"
-              :readonly="authorizedEditing"
-            />
           </div>
         </a-collapse-panel>
       </a-collapse>
@@ -162,11 +157,9 @@ import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
-import AccountStreamInterceptPolicyCard from './AccountStreamInterceptPolicyCard.vue'
 import { statusText } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
-import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
 
 interface AccountTypeChoice {
@@ -183,7 +176,6 @@ interface SelectOption<T = string> {
 
 const open = defineModel<boolean>('open', { required: true })
 const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
-const streamInterceptRules = defineModel<AccountStreamInterceptRuleForm[]>('streamInterceptRules', { required: true })
 const advancedActiveKeys = ref<string[]>([])
 
 const props = withDefaults(defineProps<{
@@ -267,7 +259,6 @@ const advancedConfiguredCount = computed(() => {
     Boolean(form.accountExpiresAt),
     form.availabilitySchedule.enabled,
     errorPolicyRules.value.length > 0,
-    streamInterceptRules.value.length > 0,
     Boolean(form.notes.trim())
   ]
   return checks.filter(Boolean).length
@@ -391,8 +382,7 @@ defineEmits<{
   border-bottom: 0;
 }
 
-.advanced-section-stack :deep(.error-policy-collapse),
-.advanced-section-stack :deep(.stream-policy-collapse) {
+.advanced-section-stack :deep(.error-policy-collapse) {
   overflow: hidden;
   padding: 0;
   border: 1px solid #e2e8f0;
@@ -400,28 +390,21 @@ defineEmits<{
   background: #fff;
 }
 
-.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-header),
-.advanced-section-stack :deep(.stream-policy-collapse .ant-collapse-header) {
+.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-header) {
   padding: 12px 14px !important;
 }
 
-.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content),
-.advanced-section-stack :deep(.stream-policy-collapse .ant-collapse-content) {
+.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content) {
   border-top-color: #eef2f7;
 }
 
-.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content-box),
-.advanced-section-stack :deep(.stream-policy-collapse .ant-collapse-content-box) {
+.advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content-box) {
   padding: 12px 14px 14px !important;
 }
 
 .advanced-section-stack :deep(.policy-title-row h4) {
   font-size: 14px;
   font-weight: 600;
-}
-
-.advanced-section-stack :deep(.stream-policy-collapse) {
-  border-bottom: 0;
 }
 
 .account-modal-footer {

@@ -1,14 +1,14 @@
-export const streamInterceptPolicyGuideSources = [
+export const responseInspectionPolicyGuideSources = [
   {
     key: 'runtime-logs',
     name: '运行日志',
-    where: '系统运维 / 运行日志，按 traceId、stream_intercept 或策略名称搜索',
+    where: '系统运维 / 运行日志，按 traceId、response_inspection 或策略名称搜索',
     note: '适合确认策略是否命中、写出状态、处置动作和重试结果。'
   },
   {
     key: 'audit-logs',
     name: '审计日志',
-    where: '系统运维 / 审计日志，查看失败请求、流式中断和上游错误摘要',
+    where: '系统运维 / 审计日志，查看失败请求、响应检查和上游错误摘要',
     note: '适合定位上游返回的 error.code、error.type、状态码和响应结构。'
   },
   {
@@ -19,70 +19,77 @@ export const streamInterceptPolicyGuideSources = [
   }
 ]
 
-export const streamInterceptPolicyGuideFields = [
+export const responseInspectionPolicyGuideFields = [
   {
-    key: 'eventTypes',
-    field: 'SSE event 类型',
-    source: 'SSE 每个事件的 event 行，例如 event: response.failed',
-    example: 'response.failed, error',
-    note: '优先使用，稳定且误杀少。'
+    key: 'outputTextIncludes',
+    field: '输出文本包含',
+    source: 'Chat message.content、Responses output_text 或对应 SSE 增量文本',
+    example: '公益服务器, subscribe',
+    note: '适合识别广告污染、异常提示或固定污染文案。'
   },
   {
-    key: 'dataTypes',
-    field: 'data.type',
-    source: 'SSE data JSON 内的 type 字段',
-    example: 'response.output_text.delta',
-    note: '适合按上游事件类型识别。'
+    key: 'finishReasons',
+    field: '完成原因 / 状态',
+    source: 'Chat choices[].finish_reason、Responses status 或失败事件状态',
+    example: 'failed, content_filter, length',
+    note: '适合识别协议内失败、内容过滤或异常结束。'
   },
   {
     key: 'errorCodes',
     field: 'error.code',
-    source: 'SSE data JSON 内 error.code',
+    source: 'Chat / Responses JSON 或 SSE 事件中的 error.code',
     example: 'cyber_policy',
     note: '适合拦截明确错误码或中转自定义错误码。'
   },
   {
     key: 'errorTypes',
     field: 'error.type',
-    source: 'SSE data JSON 内 error.type',
+    source: 'Chat / Responses JSON 或 SSE 事件中的 error.type',
     example: 'server_error',
     note: '错误码不稳定时作为辅助条件。'
   },
   {
-    key: 'textIncludes',
-    field: 'SSE data文本包含',
-    source: '当前单个 SSE 事件里 data: 后面的文本',
-    example: '广告, subscribe',
-    note: '只匹配当前事件，不拼接整条响应；建议处理广告污染或固定文案，图像和超大事件会跳过文本扫描。'
+    key: 'errorMessageIncludes',
+    field: '错误消息包含',
+    source: 'Chat / Responses JSON 或 SSE 事件中的 error.message',
+    example: 'upstream policy blocked',
+    note: '适合错误码缺失但错误文案稳定的上游。'
   },
   {
-    key: 'textExcludes',
-    field: 'SSE data文本不包含',
-    source: '当前单个 SSE 事件里 data: 后面的文本',
+    key: 'rawTextIncludes',
+    field: '原始事件文本包含',
+    source: '当前单个 SSE 事件原文或受限窗口内的原始 JSON 文本',
+    example: 'event: response.failed',
+    note: '只作为兜底排障条件；优先使用语义字段。'
+  },
+  {
+    key: 'outputTextExcludes',
+    field: '输出文本排除',
+    source: '已解析出的输出文本',
     example: '正常业务提示',
-    note: '作为排除条件使用；当前事件 data 文本包含这些关键词时，本规则不命中。'
+    note: '作为排除条件使用；输出文本包含这些关键词时，本规则不命中。'
   },
   {
     key: 'jsonPathsExists',
     field: 'JSON字段路径存在',
-    source: 'SSE data JSON 内的字段路径',
+    source: 'Chat / Responses JSON 或 SSE data JSON 内的字段路径',
     example: 'response.error, error',
     note: '只判断路径是否存在，不匹配字段值；适合判断某类错误结构是否出现。'
   }
 ]
 
-export const streamInterceptPolicyGuideActions = [
+export const responseInspectionPolicyGuideActions = [
   {
     key: 'observe',
     action: '先观察命中',
-    when: '新规则、SSE data文本包含、或不确定误杀范围时',
+    when: '新规则、原始文本条件、或不确定误杀范围时',
     note: '只写日志，不拦截、不重试，适合先观察几轮真实流量。'
   },
   {
     key: 'drop_event',
     action: '只丢弃命中事件',
-    when: '命中内容是独立广告事件或无害污染事件时',
-    note: '只丢掉这一条命中的 SSE 事件，后面的流继续转发；不会重试。'
+    when: '命中内容是独立 SSE 广告事件或无害污染事件时',
+    note: '只对 SSE 生效：丢掉这一条命中事件，后面的流继续转发；JSON 响应命中时不会使用该处置。'
   },
   {
     key: 'retry_no_avoidance',
@@ -110,7 +117,20 @@ export const streamInterceptPolicyGuideActions = [
   }
 ]
 
-export const streamInterceptPolicyGuideExample = `event: response.failed
+export const responseInspectionPolicyGuideExample = `Chat JSON:
+{
+  "choices": [
+    {
+      "message": {
+        "content": "公益服务器压力很大，休息十分钟换key开放"
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}
+
+Responses SSE:
+event: response.failed
 data: {
   "type": "response.failed",
   "response": {

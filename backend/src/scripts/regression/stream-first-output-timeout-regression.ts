@@ -75,6 +75,29 @@ function genericStreamHeaders(apiKey: string): Record<string, string> {
   }
 }
 
+const preCommitFuzzServerRetryScenarios = [
+  {
+    scenario: 'server-retry-fuzz-created-eof-then-success',
+    backupResponseId: 'resp_fuzz_created_backup',
+    hiddenPrimaryNeedle: 'resp_fuzz_created_primary'
+  },
+  {
+    scenario: 'server-retry-fuzz-in-progress-eof-then-success',
+    backupResponseId: 'resp_fuzz_in_progress_backup',
+    hiddenPrimaryNeedle: 'resp_fuzz_in_progress_primary'
+  },
+  {
+    scenario: 'server-retry-fuzz-error-event-then-success',
+    backupResponseId: 'resp_fuzz_error_event_backup',
+    hiddenPrimaryNeedle: 'fuzz primary error event'
+  },
+  {
+    scenario: 'server-retry-fuzz-failed-event-then-success',
+    backupResponseId: 'resp_fuzz_failed_event_backup',
+    hiddenPrimaryNeedle: 'fuzz primary failed event'
+  }
+] as const
+
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
@@ -115,6 +138,10 @@ async function main(): Promise<void> {
     const outputItemThenFailureCredential = createScenarioCredential(upstreamBaseUrl, 'output item 后失败')
     const topLevelCodeMessageCredential = createScenarioCredential(upstreamBaseUrl, '顶层 code message 非失败')
     const jsonResponseForStreamCredential = createScenarioCredential(upstreamBaseUrl, 'stream 请求返回 JSON')
+    const noFirstChunkServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '首段等待服务端切号')
+    const missingTerminalServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '缺终止服务端切号')
+    const failedEventServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '失败事件服务端切号')
+    const preCommitFuzzServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '预提交失败 fuzz 服务端切号')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -147,6 +174,22 @@ async function main(): Promise<void> {
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '首段前失败未产生可见输出，不应本地屏蔽账号')
     assert.equal(Number(noFirstChunkFailureState?.stream_failure_count ?? 0), 0, '首段前失败未产生可见输出，不应累计账号流失败计数')
 
+    settingsRepository.updateSettings({
+      streamCircuitBreakerEnabled: true,
+      streamRequestTimeoutSeconds: 10,
+      streamIdleTimeoutSeconds: 10,
+      temporaryUnschedulableRetryAttempts: 0
+    })
+    gatewayCache.clearGatewayRuntimeCache()
+    const noFirstChunkServerRetryResult = await requestStreamScenario(baseUrl, noFirstChunkServerRetryCredential.apiKey.key, 'server-retry-no-first-chunk-then-success')
+    assert(noFirstChunkServerRetryResult.durationMs >= 9000 && noFirstChunkServerRetryResult.durationMs < 15000, `首段等待服务端切号应按 10s 左右超时后救回，耗时 ${noFirstChunkServerRetryResult.durationMs}ms`)
+    assert(noFirstChunkServerRetryResult.streamText.includes('resp_no_first_chunk_backup'), `首段等待后应切备用账号完成：${noFirstChunkServerRetryResult.streamText}`)
+    assert(noFirstChunkServerRetryResult.streamText.includes('response.completed'), `首段等待服务端切号后应完成：${noFirstChunkServerRetryResult.streamText}`)
+    assert(!noFirstChunkServerRetryResult.streamText.includes('response.failed'), `首段等待服务端切号成功时客户端不应看到中间失败：${noFirstChunkServerRetryResult.streamText}`)
+    assert(!noFirstChunkServerRetryResult.streamText.includes('upstream_retryable_error'), `首段等待服务端切号成功时不应消耗 Codex 客户端重试：${noFirstChunkServerRetryResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertFailedUsageRecordExists(noFirstChunkServerRetryCredential.primaryAccount.id)
+    assertSuccessfulUsageRecord(noFirstChunkServerRetryCredential.backupAccount.id, { inputTokens: 2, outputTokens: 1 })
     const firstChunkThenIdleResult = await requestFirstChunkThenIdleTimeout(baseUrl, firstChunkIdleCredential.apiKey.key)
     assert(firstChunkThenIdleResult.streamText.includes('response.created'), `客户端未收到首段上游事件：${firstChunkThenIdleResult.streamText}`)
     assert(firstChunkThenIdleResult.streamText.includes('response.failed'), `客户端未收到首段后空闲失败事件：${firstChunkThenIdleResult.streamText}`)
@@ -237,6 +280,15 @@ async function main(): Promise<void> {
     assert.equal(missingTerminalAccount?.status, 'active', '缺少终止事件但仅有 response.created 时不应把账号置为临时不可调用')
     assert.equal(missingTerminalAccount?.streamFailureCount, 0, '缺少终止事件但未产生可见输出时不应累计账号流失败计数')
 
+    const missingTerminalServerRetryResult = await requestStreamScenario(baseUrl, missingTerminalServerRetryCredential.apiKey.key, 'server-retry-missing-terminal-then-success')
+    assert(missingTerminalServerRetryResult.streamText.includes('resp_server_retry_backup'), `缺少终止事件后应切备用账号完成：${missingTerminalServerRetryResult.streamText}`)
+    assert(missingTerminalServerRetryResult.streamText.includes('response.completed'), `缺少终止事件服务端切号后应完成：${missingTerminalServerRetryResult.streamText}`)
+    assert(!missingTerminalServerRetryResult.streamText.includes('resp_server_retry_primary'), `客户端不应看到首个失败账号的预提交事件：${missingTerminalServerRetryResult.streamText}`)
+    assert(!missingTerminalServerRetryResult.streamText.includes('response.failed'), `服务端切号成功时客户端不应看到中间失败：${missingTerminalServerRetryResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertFailedUsageRecordExists(missingTerminalServerRetryCredential.primaryAccount.id)
+    assertSuccessfulUsageRecord(missingTerminalServerRetryCredential.backupAccount.id, { inputTokens: 2, outputTokens: 1 })
+
     const heartbeatThenCompletedResult = await requestHeartbeatThenCompleted(baseUrl, heartbeatCredential.apiKey.key)
     assert(heartbeatThenCompletedResult.streamText.includes('response.created'), `客户端未收到首段上游事件：${heartbeatThenCompletedResult.streamText}`)
     assert(heartbeatThenCompletedResult.streamText.includes('response.completed'), `客户端未收到完成事件：${heartbeatThenCompletedResult.streamText}`)
@@ -258,12 +310,23 @@ async function main(): Promise<void> {
     assert.equal(overloadedBeforeOutputAccount?.status, 'active', '未输出前容量错误不应把账号置为临时不可调用')
     assert.equal(overloadedBeforeOutputAccount?.streamFailureCount, 0, '未输出前容量错误不应累计账号流失败计数')
     auditLogQueue.flushAllAuditLogQueue()
-    await assertStreamInterceptAuditMetadata(overloadedBeforeOutputCredential.account.id, {
+    await assertResponseInspectionAuditMetadata(overloadedBeforeOutputCredential.account.id, {
       upstreamErrorCode: 'server_is_overloaded',
-      rewriteErrorCode: 'upstream_retryable_error',
-      fallbackReason: 'before_downstream_write_stream_failure',
+      rewriteErrorCode: 'server_is_overloaded',
+      fallbackReason: 'before_downstream_write_response_failure',
       downstreamWritten: false
     })
+
+    const failedEventServerRetryResult = await requestStreamScenario(baseUrl, failedEventServerRetryCredential.apiKey.key, 'server-retry-response-failed-then-success')
+    assert(failedEventServerRetryResult.streamText.includes('resp_failed_retry_backup'), `流内失败后应切备用账号完成：${failedEventServerRetryResult.streamText}`)
+    assert(failedEventServerRetryResult.streamText.includes('response.completed'), `流内失败服务端切号后应完成：${failedEventServerRetryResult.streamText}`)
+    assert(!failedEventServerRetryResult.streamText.includes('server_is_overloaded'), `服务端切号成功时不应把原始流内失败下发客户端：${failedEventServerRetryResult.streamText}`)
+    assert(!failedEventServerRetryResult.streamText.includes('response.failed'), `流内失败服务端切号成功时客户端不应看到失败事件：${failedEventServerRetryResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertFailedUsageRecordErrorCode(failedEventServerRetryCredential.primaryAccount.id, 'server_is_overloaded')
+    assertSuccessfulUsageRecord(failedEventServerRetryCredential.backupAccount.id, { inputTokens: 3, outputTokens: 1 })
+
+    await assertPreCommitFuzzServerRetryScenarios(baseUrl, preCommitFuzzServerRetryCredential)
 
     const slowDownResult = await requestStreamFailureBeforeOutput(baseUrl, slowDownCredential.apiKey.key, 'slow-down-before-output')
     assert(!slowDownResult.streamText.includes('slow_down'), `未输出前 slow_down 不应把原始错误发给客户端：${slowDownResult.streamText}`)
@@ -283,10 +346,10 @@ async function main(): Promise<void> {
     assert.equal(genericErrorEventAccount?.status, 'active', '未知 error 事件未输出前不应把账号置为临时不可调用')
     assert.equal(genericErrorEventAccount?.streamFailureCount, 0, '未知 error 事件未输出前不应累计账号流失败计数')
     auditLogQueue.flushAllAuditLogQueue()
-    await assertStreamInterceptAuditMetadata(genericErrorEventCredential.account.id, {
+    await assertResponseInspectionAuditMetadata(genericErrorEventCredential.account.id, {
       upstreamErrorCode: 'internal_server_error',
-      rewriteErrorCode: 'upstream_retryable_error',
-      fallbackReason: 'before_downstream_write_stream_failure',
+      rewriteErrorCode: 'internal_server_error',
+      fallbackReason: 'before_downstream_write_response_failure',
       downstreamWritten: false
     })
 
@@ -299,10 +362,10 @@ async function main(): Promise<void> {
     assert.equal(cyberPolicyAccount?.status, 'active', '未输出前 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAccount?.streamFailureCount, 0, '未输出前 cyber_policy 不应累计账号流失败计数')
     auditLogQueue.flushAllAuditLogQueue()
-    await assertStreamInterceptAuditMetadata(cyberPolicyCredential.account.id, {
+    await assertResponseInspectionAuditMetadata(cyberPolicyCredential.account.id, {
       upstreamErrorCode: 'cyber_policy',
       rewriteErrorCode: 'upstream_retryable_error',
-      fallbackReason: 'before_downstream_write_stream_failure',
+      fallbackReason: 'before_downstream_write_response_failure',
       downstreamWritten: false
     })
 
@@ -316,10 +379,10 @@ async function main(): Promise<void> {
     assert.equal(cyberPolicyAfterOutputAccount?.status, 'active', '输出后 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAfterOutputAccount?.streamFailureCount, 0, '输出后 cyber_policy 改写后不应累计账号流失败计数')
     auditLogQueue.flushAllAuditLogQueue()
-    await assertStreamInterceptAuditMetadata(cyberPolicyAfterOutputCredential.account.id, {
+    await assertResponseInspectionAuditMetadata(cyberPolicyAfterOutputCredential.account.id, {
       upstreamErrorCode: 'cyber_policy',
       rewriteErrorCode: 'upstream_retryable_error',
-      fallbackReason: 'before_downstream_write_stream_failure',
+      fallbackReason: 'before_downstream_write_response_failure',
       downstreamWritten: false
     })
 
@@ -328,7 +391,7 @@ async function main(): Promise<void> {
     assert(contextWindowResult.streamText.includes('upstream_retryable_error'), `未输出前 context_length_exceeded 应改写为可重试错误：${contextWindowResult.streamText}`)
 
     const nonCodexErrorEventResult = await requestGenericStreamFailureBeforeOutput(baseUrl, nonCodexErrorEventCredential.apiKey.key, 'generic-error-event-before-output')
-    assert(nonCodexErrorEventResult.streamText.includes('stream_intercepted'), `普通客户端未输出前失败应按供应商默认规则替换为普通失败事件：${nonCodexErrorEventResult.streamText}`)
+    assert(nonCodexErrorEventResult.streamText.includes('response.failed'), `普通客户端未输出前失败应返回普通失败事件：${nonCodexErrorEventResult.streamText}`)
     assert(!nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `普通客户端未输出前失败不应伪造客户端专用可重试错误：${nonCodexErrorEventResult.streamText}`)
 
     const overloadedNoBoundaryResult = await requestStreamFailureBeforeOutput(baseUrl, overloadedNoBoundaryCredential.apiKey.key, 'server-overloaded-before-output-no-boundary')
@@ -365,7 +428,7 @@ async function main(): Promise<void> {
     assert(jsonResponseForStreamResult.text.includes('json response ok'), `stream:true 的明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
     assert(!jsonResponseForStreamResult.text.includes('response.failed'), `stream:true 的明确 JSON 响应不应被 SSE 解析器追加失败事件：${jsonResponseForStreamResult.text}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、普通客户端不伪造专用可重试码、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -409,6 +472,51 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
   return { account, apiKey }
 }
 
+function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: string): {
+  primaryAccount: ReturnType<typeof repositories.createAccount>
+  backupAccount: ReturnType<typeof repositories.createAccount>
+  apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
+} {
+  const access = scenarioCredentialAccess()
+  const group = repositories.createGroup({ name: `流式超时回归双账号分组-${label}`, providerCode: 'gpt', enabled: true }, access)
+  scenarioCredentialIndex += 1
+  const primaryKey = `sk-stream-timeout-regression-${scenarioCredentialIndex}-primary`
+  const backupKey = `sk-stream-timeout-regression-${scenarioCredentialIndex}-backup`
+  const primaryAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: `流式超时回归主账户-${label}`,
+    type: 'api_key',
+    credentials: {
+      api_key: primaryKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  const backupAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: `流式超时回归备用账户-${label}`,
+    type: 'api_key',
+    credentials: {
+      api_key: backupKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 10
+  }, access)
+  const apiKey = apiKeyRepository.createApiKeyRecord({
+    name: `流式超时回归双账号 Key-${label}`,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '临时 API Key 未返回明文密钥')
+  return { primaryAccount, backupAccount, apiKey }
+}
+
 function scenarioCredentialAccess(): { systemAccountId: string; role: 'user' } {
   if (!scenarioCredentialOwnerAccess) {
     const owner = repositories.createSystemAccount({
@@ -441,6 +549,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         scenario = typeof body.input === 'string' ? body.input : scenario
       } catch {
       }
+      const upstreamAuthorization = String(req.headers.authorization ?? '')
 
       if (scenario === 'json-response-for-stream-request') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -459,6 +568,59 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         connection: 'keep-alive'
       })
       res.flushHeaders()
+      if (scenario === 'server-retry-no-first-chunk-then-success') {
+        if (upstreamAuthorization.includes('-primary')) {
+          return
+        }
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created","response":{"id":"resp_no_first_chunk_backup","status":"in_progress"}}\n\n')
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_no_first_chunk_backup","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n\n')
+        res.end()
+        return
+      }
+      if (scenario === 'server-retry-missing-terminal-then-success') {
+        if (upstreamAuthorization.includes('-primary')) {
+          res.write('event: response.created\n')
+          res.write('data: {"type":"response.created","response":{"id":"resp_server_retry_primary","status":"in_progress"}}\n\n')
+          res.end()
+          return
+        }
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created","response":{"id":"resp_server_retry_backup","status":"in_progress"}}\n\n')
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_server_retry_backup","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n\n')
+        res.end()
+        return
+      }
+      if (scenario === 'server-retry-response-failed-then-success') {
+        if (upstreamAuthorization.includes('-primary')) {
+          res.write('event: response.failed\n')
+          res.write('data: {"type":"response.failed","response":{"id":"resp_failed_retry_primary","status":"failed","error":{"code":"server_is_overloaded","message":"primary overloaded"}}}\n\n')
+          res.end()
+          return
+        }
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created","response":{"id":"resp_failed_retry_backup","status":"in_progress"}}\n\n')
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_failed_retry_backup","status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}\n\n')
+        res.end()
+        return
+      }
+      if (scenario.startsWith('server-retry-fuzz-')) {
+        if (upstreamAuthorization.includes('-primary')) {
+          sendFuzzPrimaryFailure(res, scenario)
+          return
+        }
+        sendFuzzBackupSuccess(res, scenario)
+        return
+      }
       if (scenario === 'no-first-chunk') {
         return
       }
@@ -657,6 +819,65 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
       }
     })
   })
+}
+
+async function assertPreCommitFuzzServerRetryScenarios(
+  baseUrl: string,
+  credential: ReturnType<typeof createTwoAccountScenarioCredential>
+): Promise<void> {
+  for (const item of preCommitFuzzServerRetryScenarios) {
+    const result = await requestStreamScenario(baseUrl, credential.apiKey.key, item.scenario)
+    assert(result.streamText.includes(item.backupResponseId), `预提交 fuzz 失败应切备用账号完成：${item.scenario} ${result.streamText}`)
+    assert(result.streamText.includes('response.completed'), `预提交 fuzz 服务端切号后应完成：${item.scenario} ${result.streamText}`)
+    assert(!result.streamText.includes(item.hiddenPrimaryNeedle), `预提交 fuzz 服务端切号成功时不应下发主账号失败内容：${item.scenario} ${result.streamText}`)
+    assert(!result.streamText.includes('response.failed'), `预提交 fuzz 服务端切号成功时客户端不应看到中间失败：${item.scenario} ${result.streamText}`)
+    assert(!result.streamText.includes('upstream_retryable_error'), `预提交 fuzz 服务端切号成功时不应消耗 Codex 客户端重试：${item.scenario} ${result.streamText}`)
+  }
+  usageRecordQueue.flushAllUsageRecordQueue()
+  assertUsageRecordCountAtLeast(credential.primaryAccount.id, false, preCommitFuzzServerRetryScenarios.length)
+  assertUsageRecordCountAtLeast(credential.backupAccount.id, true, preCommitFuzzServerRetryScenarios.length)
+}
+
+function sendFuzzPrimaryFailure(res: http.ServerResponse, scenario: string): void {
+  if (scenario === 'server-retry-fuzz-created-eof-then-success') {
+    res.write('event: response.created\n')
+    res.write('data: {"type":"response.created","response":{"id":"resp_fuzz_created_primary","status":"in_progress"}}\n\n')
+    res.end()
+    return
+  }
+  if (scenario === 'server-retry-fuzz-in-progress-eof-then-success') {
+    res.write('event: response.created\n')
+    res.write('data: {"type":"response.created","response":{"id":"resp_fuzz_in_progress_primary","status":"in_progress"}}\n\n')
+    res.write('event: response.in_progress\n')
+    res.write('data: {"type":"response.in_progress","response":{"id":"resp_fuzz_in_progress_primary","status":"in_progress"}}\n\n')
+    res.end()
+    return
+  }
+  if (scenario === 'server-retry-fuzz-error-event-then-success') {
+    res.write('event: error\n')
+    res.write('data: {"type":"error","error":{"code":"internal_server_error","message":"fuzz primary error event"}}\n\n')
+    res.end()
+    return
+  }
+  if (scenario === 'server-retry-fuzz-failed-event-then-success') {
+    res.write('event: response.failed\n')
+    res.write('data: {"type":"response.failed","response":{"id":"resp_fuzz_failed_primary","status":"failed","error":{"code":"internal_server_error","message":"fuzz primary failed event"}}}\n\n')
+    res.end()
+    return
+  }
+  res.end()
+}
+
+function sendFuzzBackupSuccess(res: http.ServerResponse, scenario: string): void {
+  const match = preCommitFuzzServerRetryScenarios.find((item) => item.scenario === scenario)
+  const responseId = match?.backupResponseId ?? 'resp_fuzz_backup'
+  res.write('event: response.created\n')
+  res.write(`data: {"type":"response.created","response":{"id":"${responseId}","status":"in_progress"}}\n\n`)
+  res.write('event: response.output_text.delta\n')
+  res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
+  res.write('event: response.completed\n')
+  res.write(`data: {"type":"response.completed","response":{"id":"${responseId}","status":"completed","usage":{"input_tokens":4,"output_tokens":1}}}\n\n`)
+  res.end()
 }
 
 async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
@@ -1009,6 +1230,23 @@ function assertFailedUsageRecordErrorCode(accountId: string, errorCode: string):
   assert.equal(record.errorCode, errorCode, `失败使用记录错误码不正确：${record.errorCode}`)
 }
 
+function assertFailedUsageRecordExists(accountId: string): void {
+  const records = repositories.listUsageRecords(undefined, { result: 'failed', page: 1, pageSize: 50 })
+  const record = records.items.find((item) => item.accountId === accountId && item.success === false)
+  assert(record, `未找到账号 ${accountId} 的失败使用记录`)
+}
+
+function assertUsageRecordCountAtLeast(accountId: string, success: boolean, expectedCount: number): void {
+  const records = repositories
+    .listUsageRecords(undefined, { page: 1, pageSize: 500 })
+    .items
+    .filter((item) => item.accountId === accountId && item.success === success)
+  assert(
+    records.length >= expectedCount,
+    `账号 ${accountId} ${success ? '成功' : '失败'}使用记录数量不足：期望至少 ${expectedCount}，实际 ${records.length}`
+  )
+}
+
 function assertSuccessfulUsageRecord(
   accountId: string,
   expectedUsage?: {
@@ -1114,7 +1352,7 @@ function sampleBucketForTraceId(traceId: string): number {
   return digest.readUInt32BE(0) % 10000
 }
 
-async function assertStreamInterceptAuditMetadata(
+async function assertResponseInspectionAuditMetadata(
   accountId: string,
   expected: {
     upstreamErrorCode: string
@@ -1133,15 +1371,15 @@ async function assertStreamInterceptAuditMetadata(
       const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id)
       if (!payloadDetail?.bodyText) continue
       const body = JSON.parse(payloadDetail.bodyText) as { metadata?: Record<string, unknown> }
-      if (body.metadata?.streamIntercepted === true) {
+      if (body.metadata?.responsePolicyMatched === true) {
         metadata = body.metadata
         break
       }
     }
     if (metadata) break
   }
-  assert(metadata, `未找到账号 ${accountId} 的流式拦截审计日志`)
-  assert.equal(metadata.streamIntercepted, true, '审计元信息应标记 streamIntercepted')
+  assert(metadata, `未找到账号 ${accountId} 的响应检查审计日志`)
+  assert.equal(metadata.responseInspectionIntercepted, true, '审计元信息应标记 responseInspectionIntercepted')
   assert.equal(metadata.fallbackReason, expected.fallbackReason, '审计元信息兜底原因不正确')
   assert.equal(metadata.upstreamErrorCode, expected.upstreamErrorCode, '审计元信息上游错误码不正确')
   assert.equal(metadata.rewriteErrorCode, expected.rewriteErrorCode, '审计元信息改写错误码不正确')

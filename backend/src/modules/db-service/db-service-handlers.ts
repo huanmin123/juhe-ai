@@ -31,7 +31,7 @@ import {
   findActiveClientIpPolicyByHash,
   recordClientIpPolicyHits
 } from '../../storage/client-ip-stats.repository.js'
-import { listActiveStreamInterceptPoliciesForGateway } from '../../storage/stream-intercept-policy.repository.js'
+import { listActiveResponseInspectionPoliciesForGateway } from '../../storage/response-inspection-policy.repository.js'
 import {
   clearGatewayRuntimeCacheLocal,
   readCachedGatewaySettings,
@@ -209,8 +209,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return { cleared: true }
     case 'find_active_client_ip_policy':
       return findActiveClientIpPolicyByHash(operation.ipHash)
-    case 'list_active_stream_intercept_policies':
-      return listActiveStreamInterceptPoliciesForGateway({
+    case 'list_active_response_inspection_policies':
+      return listActiveResponseInspectionPoliciesForGateway({
         protocolCode: operation.protocolCode,
         providerCode: operation.providerCode
       })
@@ -352,7 +352,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
-    const streamInterceptPolicies = listActiveStreamInterceptPoliciesForGateway({
+    const responseInspectionPolicies = listActiveResponseInspectionPoliciesForGateway({
       protocolCode: groupAccess.protocolCode,
       providerCode: groupAccess.providerCode
     })
@@ -367,7 +367,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       accounts,
       hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
       accountDispatchDiagnostics: groupAccountsResult.diagnostics,
-      streamInterceptPolicies
+      responseInspectionPolicies
     }
   }
 
@@ -376,7 +376,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     settings,
     accounts: [],
     hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
-    streamInterceptPolicies: []
+    responseInspectionPolicies: []
   }
 }
 

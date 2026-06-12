@@ -22,7 +22,6 @@ import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
-import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from './account-stream-intercept-policy-validation.js'
 import { dispatchAccountTestCancel, dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 
 export const accountsRouter = Router()
@@ -633,11 +632,6 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(errorPolicyValidationMessage))
     return
   }
-  const streamPolicyValidationMessage = accountStreamInterceptValidationMessage(validateAccountStreamInterceptRules(parsed.data.credentials?.stream_intercept_rules))
-  if (streamPolicyValidationMessage) {
-    res.status(400).json(badRequest(streamPolicyValidationMessage))
-    return
-  }
 
   const providerCode = parsed.data.providerCode
   const provider = listProviders().find((item) => item.code === providerCode)
@@ -1042,11 +1036,6 @@ accountsRouter.patch('/:id', async (req, res) => {
   const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(body.credentials))
   if (errorPolicyValidationMessage) {
     res.status(400).json(badRequest(errorPolicyValidationMessage))
-    return
-  }
-  const streamPolicyValidationMessage = accountStreamInterceptValidationMessage(validateAccountStreamInterceptRules(credentialsRecordValue(body.credentials)?.stream_intercept_rules))
-  if (streamPolicyValidationMessage) {
-    res.status(400).json(badRequest(streamPolicyValidationMessage))
     return
   }
   const requestedCredentials = credentialsRecordValue(body.credentials)

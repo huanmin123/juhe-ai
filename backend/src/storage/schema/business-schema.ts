@@ -174,7 +174,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS stream_intercept_policies (
+    CREATE TABLE IF NOT EXISTS response_inspection_policies (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -576,7 +576,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_system_sessions_expires_at ON system_sessions(expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));
-    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_enabled_priority ON stream_intercept_policies(enabled, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_enabled_priority ON response_inspection_policies(enabled, priority, updated_at DESC, id);
     CREATE INDEX IF NOT EXISTS idx_external_integration_sources_updated ON external_integration_sources(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_external_integration_sources_status_updated ON external_integration_sources(status, updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_external_integration_sources_name_lookup ON external_integration_sources(name COLLATE NOCASE, id);
@@ -717,7 +717,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
-  ensureStreamInterceptPolicyIndexes(database)
+  ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureApiKeyGroupBindingUniqueIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
@@ -730,11 +730,11 @@ function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {
   `)
 }
 
-function ensureStreamInterceptPolicyIndexes(database: DatabaseSync): void {
+function ensureResponseInspectionPolicyIndexes(database: DatabaseSync): void {
   database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_enabled_priority ON stream_intercept_policies(enabled, priority, updated_at DESC, id);
-    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_protocol_priority ON stream_intercept_policies(protocol_code, priority, updated_at DESC, id);
-    CREATE INDEX IF NOT EXISTS idx_stream_intercept_policies_scope_priority ON stream_intercept_policies(protocol_code, scope_type, provider_code, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_enabled_priority ON response_inspection_policies(enabled, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_protocol_priority ON response_inspection_policies(protocol_code, priority, updated_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_scope_priority ON response_inspection_policies(protocol_code, scope_type, provider_code, priority, updated_at DESC, id);
   `)
 }
 

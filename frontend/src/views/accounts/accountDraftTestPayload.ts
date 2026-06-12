@@ -3,7 +3,6 @@ import { groupLabelForId } from '@/shared/groupLabelCache'
 import type { AccountSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
-import type { AccountStreamInterceptRuleForm } from './accountStreamInterceptPolicyTypes'
 import { buildAccountSavePayload, validateAccountSaveForm } from './accountSavePayload'
 
 interface AccountDraftTestPayloadInput {
@@ -12,7 +11,6 @@ interface AccountDraftTestPayloadInput {
   editingId?: string
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   form: AccountFormModel
-  streamInterceptRules: AccountStreamInterceptRuleForm[]
 }
 
 interface AccountDraftTestSummaryInput {

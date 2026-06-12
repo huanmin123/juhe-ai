@@ -11,6 +11,7 @@ import {
   isEffectiveOpenAIStreamRequest
 } from './openai-gateway-upstream.js'
 import {
+  gatewayStreamClientRetryErrorCode,
   gatewayErrorPayload,
   sendGatewayErrorResponse,
   shouldHandleOpenAIUpstreamResponseAsStream,
@@ -33,8 +34,10 @@ import {
 import {
   finalizeHandledUpstreamResponse,
   handleNonStreamUpstreamResponse,
-  handleStreamUpstreamResponse
+  handleStreamUpstreamResponse,
+  type StreamServerRetryReason
 } from './openai-gateway-response-finalization.js'
+import { rememberCodexTurnStreamFailure } from './openai-gateway-codex-turn-retry.service.js'
 import { sendGatewayFailureResponse } from './openai-gateway-failure-response.js'
 import { handleUpstreamRequestError } from './openai-gateway-failure-dispatch.js'
 import { handleGatewayRequestKnownErrorResponse } from './openai-gateway-request-error-response.js'
@@ -48,7 +51,7 @@ import {
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
 } from './openai-gateway-upstream-dispatch.js'
-import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
+import type { ResponseInspectionDecision } from './openai-gateway-response-inspection.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import { recordClientIpErrorCircuitSample } from './openai-gateway-client-ip-error-circuit.service.js'
@@ -163,7 +166,7 @@ export async function handleOpenAIGatewayRequest(
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
   const switchToFallbackGroup = async (
     reason: string,
-    streamInterceptPolicies?: OpenAIGatewayDispatchContext['streamInterceptPolicies'],
+    responseInspectionPolicies?: OpenAIGatewayDispatchContext['responseInspectionPolicies'],
     input: { allowCandidateWrap?: boolean } = {}
   ): Promise<'none' | 'switched' | 'completed'> => {
     const gatewayUsageContext = currentPreflight.usageContext
@@ -175,7 +178,7 @@ export async function handleOpenAIGatewayRequest(
         ...options,
         trafficSource,
         requestLane: currentPreflight.requestLane,
-        streamInterceptPolicies
+        responseInspectionPolicies
       },
       startedAt,
       traceId,
@@ -190,7 +193,7 @@ export async function handleOpenAIGatewayRequest(
       groupId: gatewayUsageContext.groupId,
       trafficSource: gatewayUsageContext.trafficSource,
       requestLane: currentPreflight.requestLane,
-      streamInterceptPolicies,
+      responseInspectionPolicies,
       excludedAccountIds: exhaustedAccountIds,
       allowCandidateWrap: input.allowCandidateWrap
     })
@@ -222,7 +225,7 @@ export async function handleOpenAIGatewayRequest(
         sessionAffinityKey,
         clientStrategy,
         clientIpAccountAvoidanceTracker,
-        streamInterceptPolicies,
+        responseInspectionPolicies,
         codexTurnAccountAvoidanceApplied,
         codexTurnAvoidedAccountIds
       } = currentPreflight
@@ -231,7 +234,7 @@ export async function handleOpenAIGatewayRequest(
         for (const accountId of streamServerRetryExcludedAccountIds) {
           exhaustedAccountIds.add(accountId)
         }
-        const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', streamInterceptPolicies, { allowCandidateWrap: true })
+        const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', responseInspectionPolicies, { allowCandidateWrap: true })
         if (fallbackSwitch === 'completed') {
           return
         }
@@ -269,7 +272,7 @@ export async function handleOpenAIGatewayRequest(
           for (const accountId of streamServerRetryExcludedAccountIds) {
             exhaustedAccountIds.add(accountId)
           }
-          const fallbackSwitch = await switchToFallbackGroup('codex_switch_probe_failed', streamInterceptPolicies, { allowCandidateWrap: true })
+          const fallbackSwitch = await switchToFallbackGroup('codex_switch_probe_failed', responseInspectionPolicies, { allowCandidateWrap: true })
           if (fallbackSwitch === 'completed') {
             return
           }
@@ -317,7 +320,7 @@ export async function handleOpenAIGatewayRequest(
           if (codexTurnAccountAvoidanceApplied) {
             continue
           }
-          const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', streamInterceptPolicies, { allowCandidateWrap: true })
+          const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', responseInspectionPolicies, { allowCandidateWrap: true })
           if (fallbackSwitch === 'completed') {
             return
           }
@@ -354,7 +357,7 @@ export async function handleOpenAIGatewayRequest(
             signal: abortController.signal,
             sessionAffinityKey,
             clientStrategy,
-            streamInterceptPolicies,
+            responseInspectionPolicies,
             markFirstOutput,
             clientIpAccountAvoidanceTracker,
             accountStateMutationEnabled: options.disableAccountStateMutation !== true,
@@ -375,6 +378,7 @@ export async function handleOpenAIGatewayRequest(
               startedAt,
               signal: abortController.signal,
               sessionAffinityKey,
+              responseInspectionPolicies,
               markFirstOutput,
               clientIpAccountAvoidanceTracker,
               accountStateMutationEnabled: options.disableAccountStateMutation !== true
@@ -417,7 +421,7 @@ export async function handleOpenAIGatewayRequest(
           streamServerRetryCount += 1
           if (
             handledResponse.excludeCurrentAccount
-            || (handledResponse.streamIntercept && shouldExcludeCurrentAccountForStreamRetry(handledResponse.streamIntercept))
+            || (handledResponse.responseInspection && shouldExcludeCurrentAccountForStreamRetry(handledResponse.responseInspection))
           ) {
             streamServerRetryExcludedAccountIds.add(account.id)
           }
@@ -433,9 +437,9 @@ export async function handleOpenAIGatewayRequest(
               accountId: account.id,
               excludedAccountIds: [...streamServerRetryExcludedAccountIds],
               excludeCurrentAccount: handledResponse.excludeCurrentAccount,
-              policyId: handledResponse.streamIntercept?.policyId,
-              policyName: handledResponse.streamIntercept?.policyName,
-              accountSwitch: handledResponse.streamIntercept?.accountSwitch,
+              policyId: handledResponse.responseInspection?.policyId,
+              policyName: handledResponse.responseInspection?.policyName,
+              accountSwitch: handledResponse.responseInspection?.accountSwitch,
               errorCode: handledResponse.errorCode
             }
           })
@@ -446,7 +450,8 @@ export async function handleOpenAIGatewayRequest(
             for (const accountId of streamServerRetryExcludedAccountIds) {
               exhaustedAccountIds.add(accountId)
             }
-            const fallbackSwitch = await switchToFallbackGroup('stream_intercept_server_retry_exhausted', streamInterceptPolicies, { allowCandidateWrap: true })
+            const fallbackReason = streamServerRetryFallbackReason(handledResponse.retryReason)
+            const fallbackSwitch = await switchToFallbackGroup(fallbackReason, responseInspectionPolicies, { allowCandidateWrap: true })
             if (fallbackSwitch !== 'none') {
               if (fallbackSwitch === 'completed') {
                 return
@@ -460,11 +465,12 @@ export async function handleOpenAIGatewayRequest(
               usageContext: gatewayUsageContext,
               startedAt,
               retryReason: handledResponse.retryReason,
-              decision: handledResponse.streamIntercept,
+              decision: handledResponse.responseInspection,
               message: handledResponse.message,
               errorCode: handledResponse.errorCode,
               uncommittedResponseBody: handledResponse.uncommittedResponseBody,
-              accountId: account.id
+              accountId: account.id,
+              clientStrategy
             })
             return
           }
@@ -556,6 +562,12 @@ function streamServerRetryLimit(accounts: UpstreamAccount[]): number {
   return Math.max(1, Math.min(3, accounts.length))
 }
 
+function streamServerRetryFallbackReason(retryReason: StreamServerRetryReason): string {
+  return retryReason === 'response_inspection'
+    ? 'response_inspection_server_retry_exhausted'
+    : 'stream_server_retry_exhausted'
+}
+
 function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccountIds: Set<string>): UpstreamAccount[] {
   if (excludedAccountIds.size === 0) {
     return accounts
@@ -605,7 +617,7 @@ function codexSwitchProbeAuditMetadata(probe: CodexSwitchProbeResult): Record<st
   }
 }
 
-function shouldExcludeCurrentAccountForStreamRetry(decision: StreamInterceptDecision): boolean {
+function shouldExcludeCurrentAccountForStreamRetry(decision: ResponseInspectionDecision): boolean {
   return decision.accountSwitch === 'request_next_account'
     || decision.accountSwitch === 'avoid_account_ttl'
     || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
@@ -618,26 +630,28 @@ function sendStreamServerRetryExhaustedResponse(input: {
   auditCapture: ReturnType<typeof createAuditCapture>
   usageContext: GatewayFailureUsageContext
   startedAt: number
-  retryReason: 'stream_intercept' | 'codex_pre_commit_stream_failure'
-  decision?: StreamInterceptDecision
+  retryReason: StreamServerRetryReason
+  decision?: ResponseInspectionDecision
   message: string
   errorCode?: string
   uncommittedResponseBody?: Buffer
   accountId?: string
+  clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
 }): void {
   const message = input.message || '服务端流式重试未找到可用账号'
-  if (input.retryReason === 'codex_pre_commit_stream_failure') {
-    sendCodexPreCommitStreamRetryExhaustedResponse({
+  if (input.retryReason === 'pre_commit_stream_failure' || input.retryReason === 'codex_pre_commit_stream_failure') {
+    sendPreCommitStreamRetryExhaustedResponse({
       req: input.req,
       res: input.res,
       auditCapture: input.auditCapture,
       usageContext: input.usageContext,
       startedAt: input.startedAt,
-      retryReason: 'codex_pre_commit_stream_failure',
+      retryReason: input.retryReason,
       message,
       errorCode: input.errorCode,
       uncommittedResponseBody: input.uncommittedResponseBody,
-      accountId: input.accountId
+      accountId: input.accountId,
+      clientStrategy: input.clientStrategy
     })
     return
   }
@@ -673,17 +687,18 @@ function sendStreamServerRetryExhaustedResponse(input: {
   })
 }
 
-function sendCodexPreCommitStreamRetryExhaustedResponse(input: {
+function sendPreCommitStreamRetryExhaustedResponse(input: {
   req: Request
   res: Response
   auditCapture: ReturnType<typeof createAuditCapture>
   usageContext: GatewayFailureUsageContext
   startedAt: number
-  retryReason: 'codex_pre_commit_stream_failure'
+  retryReason: 'pre_commit_stream_failure' | 'codex_pre_commit_stream_failure'
   message: string
   errorCode?: string
   uncommittedResponseBody?: Buffer
   accountId?: string
+  clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
 }): void {
   const failureEvent = writeGatewayStreamFailureEvent(input.res, input.message, input.errorCode)
   const responseBody = input.uncommittedResponseBody
@@ -694,9 +709,10 @@ function sendCodexPreCommitStreamRetryExhaustedResponse(input: {
     metadata: {
       retryReason: input.retryReason,
       errorCode: input.errorCode,
-      responseMode: 'codex_retryable_sse'
+      responseMode: input.errorCode === gatewayStreamClientRetryErrorCode ? 'codex_retryable_sse' : 'openai_stream_failure_sse'
     }
   })
+  rememberCodexTurnFailureWhenClientRetryIsVisible(input)
   if (!input.res.headersSent) {
     input.res.status(200)
     input.res.setHeader('content-type', 'text/event-stream; charset=utf-8')
@@ -723,6 +739,38 @@ function sendCodexPreCommitStreamRetryExhaustedResponse(input: {
     errorCode: input.errorCode,
     errorMessage: input.message,
     accountId: input.accountId
+  })
+}
+
+function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
+  auditCapture: ReturnType<typeof createAuditCapture>
+  clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
+  accountId?: string
+  errorCode?: string
+  message: string
+}): void {
+  if (
+    input.errorCode !== gatewayStreamClientRetryErrorCode
+    || !input.accountId
+    || input.clientStrategy?.allowCodexTurnAccountAvoidance !== true
+  ) {
+    return
+  }
+  const codexTurnFailure = rememberCodexTurnStreamFailure(input.clientStrategy, input.accountId, {
+    errorCode: input.errorCode,
+    message: input.message
+  })
+  if (!codexTurnFailure) {
+    return
+  }
+  input.auditCapture.addGatewayMetadata({
+    label: 'codex_turn_stream_failure',
+    metadata: {
+      stateKey: codexTurnFailure.stateKey,
+      failureCount: codexTurnFailure.failureCount,
+      failedAccountIds: codexTurnFailure.failedAccountIds,
+      accountId: input.accountId
+    }
   })
 }
 

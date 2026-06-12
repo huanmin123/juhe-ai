@@ -23,7 +23,7 @@
 
 混合分组中如果同时存在 API Key 账号和 OAuth 账号，某条路径是否可用取决于调度命中的账号类型：OAuth 账号不支持的路径会跳过该账号，仍可由同分组内可用的 API Key 账号承接；如果当前 API Key 还绑定了后续号池，且当前分组没有任何账号类型能承接该路径，网关应继续尝试下一号池；如果所有号池都没有可用账号，则返回“没有可用的上游账户”一类网关错误，而不是自动协议翻译。多号池混合规则见 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
 
-单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，服务端不换账号也不重新请求上游续写；持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时按客户端策略处理可见输出前失败：只有命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时，才写出 Codex 可重试的 `response.failed/upstream_retryable_error`，并在同一 turn 第 4 次失败链路上避让已失败账号；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
+单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时对下游尚未提交的流式失败优先做服务端内部重试：关闭当前上游，本次请求排除失败账号，继续尝试后续账号 / 后续分组；只有服务端可承接账号耗尽后，才按客户端策略写最终失败。Codex 的 `response.failed/upstream_retryable_error` 只在命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时作为最终可见兜底；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
 ## 协议与供应商定义
 
@@ -220,7 +220,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
 - 账户时间计划只作为网关候选过滤条件，不改变手动启用/停用、异常、冷却和到期状态。账号池运行缓存按分钟边界刷新，避免计划切换时间点继续使用旧候选。
 - 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期由请求前懒刷新和后台 Access Token 预刷新维护，额度快照由真实请求响应头被动维护。
-- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户创建、导入和离线修复都不得自动绑定本机固定端口代理，代理必须由用户显式配置。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；前端测试模型默认来自账户所属供应商的 `default_test_model`，手动测试成功后把本次成功模型写入账户 `last_successful_test_model`。API Key 账户测试会优先复用最近真实请求的 endpoint/stream 形态，但手动测试模型以显式传入值为准，客户端兼容临时选择只对 API Key 生效；OAuth 账户测试固定使用 Codex Responses。API Key 账户的 Responses 测试按当前契约不发送 `max_output_tokens`；测试输入由后端使用默认探活输入生成。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号；复测模型优先使用账户 `last_successful_test_model`，没有手动成功记录时使用供应商 `default_test_model`。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常；失败会继续按指数退避，超过 `cooldownAccountRetestMaxBackoffHours` 表达的最长自动恢复观察窗口后转为 `status = error`，错误码为 `cooldown_retest_max_recovery_exceeded`，之后需要通过“恢复异常”人工清理。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。
+- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户创建、导入和离线修复都不得自动绑定本机固定端口代理，代理必须由用户显式配置。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；前端测试模型默认来自账户所属供应商的 `default_test_model`，手动测试成功后把本次成功模型写入账户 `last_successful_test_model`。API Key 账户测试会优先复用最近真实请求的 endpoint/stream 形态，但手动测试模型以显式传入值为准，客户端兼容临时选择只对 API Key 生效；OAuth 账户测试固定使用 Codex Responses。API Key 账户的 Responses 测试按当前契约不发送 `max_output_tokens`；测试输入由后端使用默认探活输入生成。手动账户测试、后台冷却复测和事前确认探针的诊断等待策略固定为 `10s -> 20s -> 30s` 三次真实网关请求尝试，总等待不超过 60 秒；未保存草稿 OAuth 测试如果需要先刷新 Access Token，刷新请求也纳入同一次诊断 attempt 的等待上限。每次尝试仍使用账号自己的凭据、Base URL、代理、兼容模式、分组上下文和请求形态，只按测试成功与否决定是否继续，不按上游状态码、错误码或错误文案分类重试。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号；复测模型优先使用账户 `last_successful_test_model`，没有手动成功记录时使用供应商 `default_test_model`。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常；失败会继续按指数退避，超过 `cooldownAccountRetestMaxBackoffHours` 表达的最长自动恢复观察窗口后转为 `status = error`，错误码为 `cooldown_retest_max_recovery_exceeded`，之后需要通过“恢复异常”人工清理。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。
 
 ## 会话亲和调度
 
@@ -233,7 +233,7 @@ OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过�
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
 - 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
-- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。Codex 第 4 次切号这类 turn 级策略只能使用可解析的 `x-codex-turn-metadata.turn_id` 加本地 API Key / endpoint / 请求体哈希边界；识别不到时不使用 `session_id` 或 `x-client-request-id` 回退。
+- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终可见的 Codex `upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 级策略只能使用可解析的 `x-codex-turn-metadata.turn_id` 加本地 API Key / endpoint / 请求体哈希边界；识别不到时不使用 `session_id` 或 `x-client-request-id` 回退。Codex turn 级切号在选择备用账号前会先做真实账号探针，探针等待档位同样使用 `10s -> 20s -> 30s`；但切号探针只在本地超时时同账号递进等待，一旦拿到明确失败结果就立即淘汰当前候选并尝试下一个账号。
 
 ### OpenAI OAuth 额度进度
 

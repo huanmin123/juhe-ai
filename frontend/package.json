@@ -13,6 +13,7 @@
     "@ant-design/icons-vue": "^7.0.1",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/language": "^6.12.3",
+    "@codemirror/search": "^6.7.0",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.42.1",
     "@vitejs/plugin-vue": "^5.2.0",

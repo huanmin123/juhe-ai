@@ -7,8 +7,7 @@ const publicCredentialKeys = new Set([
   'email',
   'account_id',
   'chatgpt_user_id',
-  'plan_type',
-  'stream_intercept_rules'
+  'plan_type'
 ])
 
 export function sanitizeAccountCredentialsForResponse(credentials: Record<string, unknown> | undefined): Record<string, unknown> {

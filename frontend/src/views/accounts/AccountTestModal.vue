@@ -33,28 +33,30 @@
       </div>
 
       <a-form layout="vertical" class="test-form">
-        <a-form-item :label="isBatchMode ? '优先测试模型' : '选择测试模型'">
-          <a-select
-            :value="model"
-            show-search
-            :loading="modelsLoading"
-            :disabled="running"
-            :options="modelOptions"
-            placeholder="选择测试模型"
-            @update:value="$emit('update:model', String($event))"
-          />
-        </a-form-item>
-        <a-form-item v-if="showClientCompatibilityControl" label="客户端兼容">
-          <a-select
-            :value="clientCompatibility"
-            :disabled="running"
-            :options="clientCompatibilityOptions"
-            @update:value="handleCompatibilityUpdate"
-          />
-        </a-form-item>
-        <a-form-item v-else label="客户端兼容">
-          <a-input :value="fixedOAuthCompatibilityText" disabled />
-        </a-form-item>
+        <div class="test-config-row">
+          <a-form-item class="test-config-field" :label="isBatchMode ? '优先测试模型' : '选择测试模型'">
+            <a-select
+              :value="model"
+              show-search
+              :loading="modelsLoading"
+              :disabled="running"
+              :options="modelOptions"
+              placeholder="选择测试模型"
+              @update:value="$emit('update:model', String($event))"
+            />
+          </a-form-item>
+          <a-form-item v-if="showClientCompatibilityControl" class="test-config-field" label="客户端兼容">
+            <a-select
+              :value="clientCompatibility"
+              :disabled="running"
+              :options="clientCompatibilityOptions"
+              @update:value="handleCompatibilityUpdate"
+            />
+          </a-form-item>
+          <a-form-item v-else class="test-config-field" label="客户端兼容">
+            <a-input :value="fixedOAuthCompatibilityText" disabled />
+          </a-form-item>
+        </div>
       </a-form>
 
       <div class="test-terminal">
@@ -470,6 +472,16 @@ function batchItemSnapshot(item: AccountBatchTestItem) {
   margin-bottom: 0;
 }
 
+.test-config-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.test-config-field {
+  min-width: 0;
+}
+
 .test-terminal {
   min-height: 112px;
   max-height: 300px;
@@ -651,6 +663,10 @@ function batchItemSnapshot(item: AccountBatchTestItem) {
 
   .test-account-meta {
     flex-wrap: wrap;
+  }
+
+  .test-config-row {
+    grid-template-columns: 1fr;
   }
 
   .batch-test-result-row :deep(.ant-btn) {

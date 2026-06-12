@@ -411,8 +411,7 @@ async function main(): Promise<void> {
     }
     assert(!authorizedDetailSecretJson.includes('sk-scope-user-b'), '授权实例详情不应泄露来源账户 API Key 明文')
     assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'error_handling_rules'), '授权实例详情不应返回来源账户错误处理策略')
-    const streamInterceptRules = authorizedDetailCredentials.stream_intercept_rules as Array<Record<string, unknown>> | undefined
-    assert(streamInterceptRules?.[0]?.name === '授权来源流式异常', '授权实例详情应返回来源账户流式拦截规则')
+    assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'stream_intercept_rules'), '授权实例详情不应返回旧账户流式拦截规则')
     summary.push('我的账户自有作用域检查通过')
 
     const adminMyAccounts = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.adminCookie)
@@ -717,16 +716,6 @@ function seedData(): SeedState {
     repositories.clearAccountFailureStateResult(userAAccount.id, userAAccess, { allowPendingTestRestore: true }).account?.status === 'active',
     '作用域回归种子应模拟用户 A 账户测试成功'
   )
-  const userBStreamInterceptRules = [{
-    enabled: true,
-    name: '授权来源流式异常',
-    priority: 20,
-    match: {
-      errorCodes: ['upstream_scope_error']
-    },
-    action: 'retry_next_account',
-    notes: '授权详情公开展示用'
-  }]
   const userBErrorHandlingRules = [{
     enabled: true,
     name: '授权来源错误处理',
@@ -756,8 +745,7 @@ function seedData(): SeedState {
     credentials: {
       api_key: 'sk-scope-user-b',
       base_url: 'https://api.openai.com/v1',
-      error_handling_rules: userBErrorHandlingRules,
-      stream_intercept_rules: userBStreamInterceptRules
+      error_handling_rules: userBErrorHandlingRules
     },
     concurrencyLimit: 3,
     supportedModels: ['gpt-5.5'],

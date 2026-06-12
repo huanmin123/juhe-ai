@@ -519,8 +519,7 @@ const publicAccountCredentialKeys = [
   'email',
   'account_id',
   'chatgpt_user_id',
-  'plan_type',
-  'stream_intercept_rules'
+  'plan_type'
 ] as const
 
 function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCredentials: boolean): AccountListRow[] {

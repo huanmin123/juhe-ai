@@ -520,9 +520,9 @@ function assertReadGatewayRuntimeDefersPolicyLists(): void {
   const handlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
   const readRuntimeBody = sourceFunctionBlock(handlersSource, 'function readGatewayRuntime')
   const validateIndex = readRuntimeBody.indexOf('validateGatewayApiKey')
-  const streamPolicyIndex = readRuntimeBody.indexOf('listActiveStreamInterceptPoliciesForGateway')
+  const responseInspectionPolicyIndex = readRuntimeBody.indexOf('listActiveResponseInspectionPoliciesForGateway')
   assert(validateIndex >= 0, 'read_gateway_runtime 应先验证 API Key')
-  assert(streamPolicyIndex > validateIndex, 'read_gateway_runtime 不能在验证 API Key 前加载全量流式拦截策略')
+  assert(responseInspectionPolicyIndex > validateIndex, 'read_gateway_runtime 不能在验证 API Key 前加载全量响应检查策略')
   assert(!readRuntimeBody.includes('listActiveClientIpPolicies'), 'read_gateway_runtime 不能携带全量 active IP 封禁策略')
 }
 
@@ -626,5 +626,4 @@ async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T):
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
-
 

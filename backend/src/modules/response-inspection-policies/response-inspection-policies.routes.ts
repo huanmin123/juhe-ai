@@ -1,31 +1,32 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
+import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
-  createStreamInterceptPolicy,
-  deleteStreamInterceptPolicy,
-  listStreamInterceptPolicies,
-  updateStreamInterceptPolicy,
-  type StreamInterceptPolicySummary
-} from '../../storage/stream-intercept-policy.repository.js'
-import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
+  createResponseInspectionPolicy,
+  deleteResponseInspectionPolicy,
+  listResponseInspectionPolicies,
+  updateResponseInspectionPolicy,
+  type ResponseInspectionPolicySummary
+} from '../../storage/response-inspection-policy.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
+import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
-import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 
-export const streamInterceptPoliciesRouter = Router()
+export const responseInspectionPoliciesRouter = Router()
 
 const textListSchema = z.array(z.string().trim().min(1).max(200)).max(50).optional()
 
 const matchSchema = z.object({
-  eventTypes: textListSchema,
-  dataTypes: textListSchema,
+  outputTextIncludes: textListSchema,
+  outputTextExcludes: textListSchema,
   errorCodes: textListSchema,
   errorTypes: textListSchema,
-  textIncludes: textListSchema,
-  textExcludes: textListSchema,
-  jsonPathsExists: textListSchema
+  errorMessageIncludes: textListSchema,
+  finishReasons: textListSchema,
+  jsonPathsExists: textListSchema,
+  rawTextIncludes: textListSchema
 }).strict().partial().optional()
 
 const policyBodySchema = z.object({
@@ -33,8 +34,8 @@ const policyBodySchema = z.object({
   enabled: z.boolean().optional(),
   priority: z.number().int().min(1).max(9999).optional(),
   scopeType: z.enum(['protocol', 'provider'], {
-    required_error: '请选择流式拦截策略作用层级',
-    invalid_type_error: '流式拦截策略作用层级无效'
+    required_error: '请选择响应检查策略作用层级',
+    invalid_type_error: '响应检查策略作用层级无效'
   }),
   providerCode: z.string().trim().min(1, '请选择供应商').max(80, '供应商编码不能超过 80 个字符').nullable().optional(),
   match: matchSchema,
@@ -52,24 +53,25 @@ const policyBodySchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['providerCode'],
-      message: '协议层流式拦截策略不能绑定供应商'
+      message: '协议层响应检查策略不能绑定供应商'
     })
   }
   if (value.scopeType === 'provider' && !value.providerCode?.trim()) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['providerCode'],
-      message: '供应商层流式拦截策略必须选择供应商'
+      message: '供应商层响应检查策略必须选择供应商'
     })
   }
   const matcher = value.match ?? {}
   const hasMatcher = [
-    matcher.eventTypes,
-    matcher.dataTypes,
+    matcher.outputTextIncludes,
     matcher.errorCodes,
     matcher.errorTypes,
-    matcher.textIncludes,
-    matcher.jsonPathsExists
+    matcher.errorMessageIncludes,
+    matcher.finishReasons,
+    matcher.jsonPathsExists,
+    matcher.rawTextIncludes
   ].some((items) => Array.isArray(items) && items.length > 0)
   if (!hasMatcher) {
     context.addIssue({
@@ -80,16 +82,16 @@ const policyBodySchema = z.object({
   }
 })
 
-streamInterceptPoliciesRouter.get('/', (_req, res) => {
-  const result = listStreamInterceptPolicies()
+responseInspectionPoliciesRouter.get('/', (_req, res) => {
+  const result = listResponseInspectionPolicies()
   res.json(ok({
     defaultRules: result.defaultRules.map(publicPolicySummary),
     policies: result.policies.map(publicPolicySummary)
   }))
 })
 
-streamInterceptPoliciesRouter.post('/', mutationGuard({
-  operationKey: 'stream_intercept_policies.create',
+responseInspectionPoliciesRouter.post('/', mutationGuard({
+  operationKey: 'response_inspection_policies.create',
   fingerprint: (req) => ({
     name: normalizedText(bodyField(req, 'name')),
     scopeType: bodyField(req, 'scopeType'),
@@ -99,14 +101,14 @@ streamInterceptPoliciesRouter.post('/', mutationGuard({
 }), (req, res) => {
   const parsed = policyBodySchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '流式拦截策略参数无效')))
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '响应检查策略参数无效')))
     return
   }
-  let policy: StreamInterceptPolicySummary
+  let policy: ResponseInspectionPolicySummary
   try {
-    policy = createStreamInterceptPolicy({ ...parsed.data, protocolCode: OPENAI_PROTOCOL_CODE })
+    policy = createResponseInspectionPolicy({ ...parsed.data, protocolCode: OPENAI_PROTOCOL_CODE })
   } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '流式拦截策略创建失败'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '响应检查策略创建失败'))
     return
   }
   recordPolicyOperation(req, 'create', policy.id, policy.name, [
@@ -119,8 +121,8 @@ streamInterceptPoliciesRouter.post('/', mutationGuard({
   res.status(201).json(ok(publicPolicySummary(policy)))
 })
 
-streamInterceptPoliciesRouter.patch('/:id', mutationGuard({
-  operationKey: 'stream_intercept_policies.update',
+responseInspectionPoliciesRouter.patch('/:id', mutationGuard({
+  operationKey: 'response_inspection_policies.update',
   fingerprint: (req) => ({
     id: req.params.id,
     name: normalizedText(bodyField(req, 'name')),
@@ -133,18 +135,18 @@ streamInterceptPoliciesRouter.patch('/:id', mutationGuard({
 }), (req, res) => {
   const parsed = policyBodySchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '流式拦截策略参数无效')))
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '响应检查策略参数无效')))
     return
   }
-  let policy: StreamInterceptPolicySummary | undefined
+  let policy: ResponseInspectionPolicySummary | undefined
   try {
-    policy = updateStreamInterceptPolicy(req.params.id, { ...parsed.data, protocolCode: OPENAI_PROTOCOL_CODE })
+    policy = updateResponseInspectionPolicy(req.params.id, { ...parsed.data, protocolCode: OPENAI_PROTOCOL_CODE })
   } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '流式拦截策略更新失败'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '响应检查策略更新失败'))
     return
   }
   if (!policy) {
-    res.status(404).json({ message: '流式拦截策略不存在' })
+    res.status(404).json({ message: '响应检查策略不存在' })
     return
   }
   recordPolicyOperation(req, 'update', policy.id, policy.name, [
@@ -157,13 +159,13 @@ streamInterceptPoliciesRouter.patch('/:id', mutationGuard({
   res.json(ok(publicPolicySummary(policy)))
 })
 
-streamInterceptPoliciesRouter.delete('/:id', mutationGuard({
-  operationKey: 'stream_intercept_policies.delete',
+responseInspectionPoliciesRouter.delete('/:id', mutationGuard({
+  operationKey: 'response_inspection_policies.delete',
   fingerprint: (req) => ({ id: req.params.id })
 }), (req, res) => {
-  const deleted = deleteStreamInterceptPolicy(req.params.id)
+  const deleted = deleteResponseInspectionPolicy(req.params.id)
   if (!deleted) {
-    res.status(404).json({ message: '流式拦截策略不存在' })
+    res.status(404).json({ message: '响应检查策略不存在' })
     return
   }
   recordPolicyOperation(req, 'delete', req.params.id, req.params.id, [
@@ -181,13 +183,13 @@ function recordPolicyOperation(
 ): void {
   const actor = getRequestAuthContext()?.systemAccountId
   recordOperationLog({
-    module: 'stream_intercept_policies',
+    module: 'response_inspection_policies',
     action,
-    operationKey: `stream_intercept_policies.${action}`,
-    resourceType: 'stream_intercept_policy',
+    operationKey: `response_inspection_policies.${action}`,
+    resourceType: 'response_inspection_policy',
     resourceId: policyId,
     resourceName: policyName,
-    summary: `${operationActionText(action)}流式拦截策略：${policyName}`,
+    summary: `${operationActionText(action)}响应检查策略：${policyName}`,
     detailLevel: 'full',
     visibilityScope: 'admin_only',
     changes,
@@ -204,8 +206,8 @@ function operationActionText(action: 'create' | 'update' | 'delete'): string {
   return '删除'
 }
 
-type PublicStreamInterceptPolicySummary = StreamInterceptPolicySummary
+type PublicResponseInspectionPolicySummary = ResponseInspectionPolicySummary
 
-function publicPolicySummary(policy: StreamInterceptPolicySummary): PublicStreamInterceptPolicySummary {
+function publicPolicySummary(policy: ResponseInspectionPolicySummary): PublicResponseInspectionPolicySummary {
   return policy
 }

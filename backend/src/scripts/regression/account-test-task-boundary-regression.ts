@@ -65,8 +65,13 @@ assert(
 )
 
 assert(
-  accountTestTaskQueueSource.includes('await testOpenAIAccount(account, {'),
-  '真实账号测试应在后台任务队列中执行'
+  accountTestTaskQueueSource.includes('testOpenAIAccountWithDiagnosticRetries(account, {'),
+  '真实账号测试应在后台任务队列中执行，并使用诊断重试等待策略'
+)
+assert(
+  accountTestTaskQueueSource.includes('testOpenAIDraftAccountWithDiagnosticRetries')
+    && accountTestTaskQueueSource.includes('openAIDraftAccountSecret(draft, attemptSignal)'),
+  '草稿账号测试应把 OAuth 刷新和候选账号生成纳入单次诊断 attempt 超时'
 )
 assert(
   accountTestTaskQueueSource.includes('const manualAccountTestConcurrency = 3'),

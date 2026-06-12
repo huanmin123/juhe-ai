@@ -96,7 +96,10 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
       && areGatewayAccountsCapacityBusyForLane(quotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
       continue
     }
-    if ((input.reason === 'local_account_suppressed' || input.reason === 'upstream_accounts_exhausted' || input.reason === 'stream_intercept_server_retry_exhausted')
+    if ((input.reason === 'local_account_suppressed'
+      || input.reason === 'upstream_accounts_exhausted'
+      || input.reason === 'response_inspection_server_retry_exhausted'
+      || input.reason === 'stream_server_retry_exhausted')
       && filterLocallySuppressedGatewayAccounts(quotaAllowedAccounts).allSuppressed) {
       continue
     }

@@ -352,16 +352,15 @@
                     <a-tag class="payload-state-tag" :color="payloadStorageStatusColor(selectedPayload.bodyStorageStatus)">
                       {{ payloadStorageStatusText('Body', selectedPayload.hasBody, selectedPayload.bodyStorageStatus) }}
                     </a-tag>
-                    <span v-if="payloadContentTab === 'body' && selectedPayloadBodyWindowText" class="payload-window-range">{{ selectedPayloadBodyWindowText }}</span>
                     <a-tabs v-model:activeKey="payloadContentTab" class="payload-content-tabs" size="small">
                       <a-tab-pane key="headers" tab="Headers" />
                       <a-tab-pane key="body" tab="Body" />
                     </a-tabs>
                   </div>
                   <div class="payload-viewer-actions">
-                    <a-tooltip v-if="selectedPayloadCanLoadMore" title="读取下一段正文">
-                      <a-button size="small" :loading="payloadLoadingId === selectedPayload.id" @click="loadNextPayloadWindow">
-                        <template #icon><arrow-right-outlined /></template>
+                    <a-tooltip title="搜索当前内容">
+                      <a-button size="small" :disabled="!selectedPayloadCurrentText" @click="openSelectedPayloadSearch">
+                        <template #icon><search-outlined /></template>
                       </a-button>
                     </a-tooltip>
                     <a-tooltip title="复制当前内容">
@@ -390,7 +389,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRightOutlined, CopyOutlined, PoweroffOutlined, SettingOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, PoweroffOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
@@ -478,7 +477,10 @@ const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
 const payloadContentTab = ref<'headers' | 'body'>('body')
-const payloadCodeViewer = ref<{ copyDisplayText: () => Promise<void> }>()
+const payloadCodeViewer = ref<{
+  copyDisplayText: () => Promise<void>
+  openSearch: () => Promise<void>
+}>()
 let detailRequestId = 0
 let payloadRequestId = 0
 const {
@@ -529,6 +531,7 @@ function clearAccountOptionsSearchTimer(): void {
 }
 
 const pageSize = 100
+const auditPayloadFullReadWindowBytes = 768 * 1024
 type AuditLogsPageState = {
   accountIdFilter: string
   accountSelection?: AccountSelection
@@ -753,20 +756,6 @@ const selectedPayloadEmptyText = computed(() => {
   }
   return '正文为空。'
 })
-const selectedPayloadBodyWindowText = computed(() => {
-  const payload = selectedPayload.value
-  if (!payload || payload.bodyTotalBytes <= 0) return ''
-  const start = payload.bodyOffset
-  const end = Math.min(payload.bodyTotalBytes, payload.bodyOffset + payload.bodyBytesReturned)
-  return `${formatBytes(start)} - ${formatBytes(end)} / ${formatBytes(payload.bodyTotalBytes)}`
-})
-const selectedPayloadCanLoadMore = computed(() => Boolean(
-  selectedPayload.value
-  && payloadContentTab.value === 'body'
-  && selectedPayload.value.bodyTruncated
-  && selectedPayload.value.bodyNextOffset !== undefined
-))
-
 function payloadCaptureStatusDescription(record: AuditPayloadRow): string {
   const available = [
     record.hasHeaders ? 'Headers' : '',
@@ -1254,8 +1243,10 @@ async function loadPayload(payloadId: string): Promise<void> {
   const requestId = payloadRequestId + 1
   payloadRequestId = requestId
   payloadLoadingId.value = payloadId
+  selectedPayload.value = undefined
   try {
-    const nextPayload = await api.auditLogs.payload(detail.value.id, payloadId)
+    const nextPayload = await loadCompletePayload(payloadId, requestId)
+    if (!nextPayload) return
     if (requestId === payloadRequestId) {
       selectedPayload.value = nextPayload
       payloadContentTab.value = nextPayload.hasBody ? 'body' : 'headers'
@@ -1270,33 +1261,113 @@ async function loadPayload(payloadId: string): Promise<void> {
   }
 }
 
-async function loadNextPayloadWindow(): Promise<void> {
-  if (!detail.value || !selectedPayload.value?.bodyTruncated || selectedPayload.value.bodyNextOffset === undefined) return
-  const payloadId = selectedPayload.value.id
-  const requestId = payloadRequestId + 1
-  payloadRequestId = requestId
-  payloadLoadingId.value = payloadId
-  try {
-    const nextPayload = await api.auditLogs.payload(detail.value.id, payloadId, {
-      offset: selectedPayload.value.bodyNextOffset,
-      limit: selectedPayload.value.bodyLimit
+async function loadCompletePayload(payloadId: string, requestId: number): Promise<AuditLogPayloadDetail | undefined> {
+  if (!detail.value) return undefined
+  const auditLogId = detail.value.id
+  let mergedPayload = await api.auditLogs.payload(auditLogId, payloadId, {
+    offset: 0,
+    limit: auditPayloadFullReadWindowBytes
+  })
+  if (requestId !== payloadRequestId) return undefined
+  while (mergedPayload.bodyTruncated && mergedPayload.bodyNextOffset !== undefined) {
+    const requestedOffset = mergedPayload.bodyNextOffset
+    const nextPayload = await api.auditLogs.payload(auditLogId, payloadId, {
+      offset: requestedOffset,
+      limit: auditPayloadFullReadWindowBytes
     })
-    if (requestId === payloadRequestId) {
-      selectedPayload.value = nextPayload
-      payloadContentTab.value = 'body'
+    if (requestId !== payloadRequestId) return undefined
+    if (nextPayload.bodyBytesReturned <= 0) break
+    mergedPayload = mergeAuditPayloadWindow(mergedPayload, nextPayload)
+    if (
+      nextPayload.bodyTruncated
+      && nextPayload.bodyNextOffset !== undefined
+      && nextPayload.bodyNextOffset <= requestedOffset
+    ) {
+      break
     }
-  } catch (error) {
-    console.error(error)
-    message.error('加载下一段正文失败')
-  } finally {
-    if (requestId === payloadRequestId) {
-      payloadLoadingId.value = ''
+  }
+  return finalizeMergedPayloadBody(mergedPayload)
+}
+
+function mergeAuditPayloadWindow(
+  current: AuditLogPayloadDetail,
+  next: AuditLogPayloadDetail
+): AuditLogPayloadDetail {
+  const body = mergePayloadBody(current, next)
+  return {
+    ...next,
+    headers: current.headers ?? next.headers,
+    bodyText: body.bodyText,
+    bodyBase64: body.bodyBase64,
+    bodyOffset: current.bodyOffset,
+    bodyLimit: current.bodyLimit,
+    bodyBytesReturned: current.bodyBytesReturned + next.bodyBytesReturned,
+    bodyTotalBytes: Math.max(current.bodyTotalBytes, next.bodyTotalBytes),
+    bodyNextOffset: next.bodyNextOffset,
+    bodyTruncated: next.bodyTruncated
+  }
+}
+
+function mergePayloadBody(
+  current: AuditLogPayloadDetail,
+  next: AuditLogPayloadDetail
+): Pick<AuditLogPayloadDetail, 'bodyText' | 'bodyBase64'> {
+  if (current.bodyText !== undefined && next.bodyText !== undefined) {
+    return { bodyText: current.bodyText + next.bodyText }
+  }
+  const currentBase64 = payloadBodyWindowBase64(current)
+  const nextBase64 = payloadBodyWindowBase64(next)
+  return currentBase64 || nextBase64
+    ? { bodyBase64: `${currentBase64}${nextBase64}` }
+    : {}
+}
+
+function payloadBodyWindowBase64(payload: AuditLogPayloadDetail): string {
+  if (payload.bodyBase64 !== undefined) return payload.bodyBase64
+  if (payload.bodyText !== undefined) return textToBase64(payload.bodyText)
+  return ''
+}
+
+function finalizeMergedPayloadBody(payload: AuditLogPayloadDetail): AuditLogPayloadDetail {
+  if (!payload.bodyBase64 || payload.bodyText !== undefined) return payload
+  const decodedText = base64ToUtf8Text(payload.bodyBase64)
+  if (decodedText === undefined) return payload
+  return {
+    ...payload,
+    bodyText: decodedText,
+    bodyBase64: undefined
+  }
+}
+
+function textToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+  return btoa(binary)
+}
+
+function base64ToUtf8Text(base64: string): string | undefined {
+  try {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index)
     }
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return undefined
   }
 }
 
 async function copySelectedPayloadText(): Promise<void> {
   await payloadCodeViewer.value?.copyDisplayText()
+}
+
+async function openSelectedPayloadSearch(): Promise<void> {
+  await payloadCodeViewer.value?.openSearch()
 }
 
 function closeTransientDetails(): void {
@@ -1535,11 +1606,6 @@ onDeactivated(() => {
 
 .payload-content-tabs :deep(.ant-tabs-content-holder) {
   display: none;
-}
-
-.payload-window-range {
-  max-width: 180px;
-  color: #475569;
 }
 
 .payload-state-tag {

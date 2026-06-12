@@ -22,7 +22,7 @@ import type { OperationLogInput } from '../../storage/operation-logs.repository.
 import type { RuntimeLogIndexInput } from '../../storage/runtime-logs.repository.js'
 import type { UsageRecordInput } from '../../storage/usage-records.repository.js'
 import { createPublicApiLog } from '../../storage/public-api-logs.repository.js'
-import { createStreamInterceptPolicy } from '../../storage/stream-intercept-policy.repository.js'
+import { createResponseInspectionPolicy } from '../../storage/response-inspection-policy.repository.js'
 import {
   aggregateClientIpStatsBatch,
   rebuildClientIpUsageRangeWindows,
@@ -149,7 +149,7 @@ interface CreatedMockdata {
   teams: MockTeams
   authorizations: ResourceAuthorizationSummary[]
   externalSources: MockExternalSources
-  streamInterceptPolicies: number
+  responseInspectionPolicies: number
 }
 
 interface UsageRecordSeed extends UsageRecordInput {
@@ -360,7 +360,7 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
   bindAuthorizedAccountToUserGroup(authorizationInstanceAccount(accounts.proxied, users.ops), groups.opsDefault, users.ops)
   const apiKeys = createApiKeys(adminAccess, groups, users)
   const externalSources = createExternalSources()
-  const streamInterceptPolicies = createStreamInterceptPolicies()
+  const responseInspectionPolicies = createResponseInspectionPolicies()
   createAnnouncements(admin.id, users)
   seedOauthUsageSnapshots(accounts)
   tuneGroupAccountBindings(groups, accounts)
@@ -373,7 +373,7 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
     teams,
     authorizations,
     externalSources,
-    streamInterceptPolicies
+    responseInspectionPolicies
   }
 }
 
@@ -1475,22 +1475,21 @@ function createExternalSources(): MockExternalSources {
   }
 }
 
-function createStreamInterceptPolicies(): number {
+function createResponseInspectionPolicies(): number {
   const policies = [
     {
-      name: `${namePrefix}流式错误切换账户`,
+      name: `${namePrefix}响应错误切换账户`,
       enabled: true,
       priority: 20,
       scopeType: 'provider' as const,
       protocolCode: OPENAI_PROTOCOL_CODE,
       providerCode: GPT_VENDOR_CODE,
       match: {
-        eventTypes: ['response.failed', 'error'],
         errorCodes: ['rate_limit_exceeded', 'server_error'],
-        textIncludes: ['Mockdata']
+        outputTextIncludes: ['Mockdata']
       },
       action: 'retry_next_account' as const,
-      notes: 'Mockdata 管理端策略：命中流式错误后请求下一个账号'
+      notes: 'Mockdata 管理端策略：命中响应错误后请求下一个账号'
     },
     {
       name: `${namePrefix}安全策略干跑观察`,
@@ -1502,29 +1501,29 @@ function createStreamInterceptPolicies(): number {
       match: {
         errorCodes: ['cyber_policy'],
         jsonPathsExists: ['response.error'],
-        textIncludes: ['policy']
+        outputTextIncludes: ['policy']
       },
       action: 'observe' as const,
-      notes: 'Mockdata GPT 供应商层策略：只观察安全策略命中，不改变流'
+      notes: 'Mockdata GPT 供应商层策略：只观察安全策略命中，不改变响应'
     },
     {
-      name: `${namePrefix}图像流异常账号避让`,
+      name: `${namePrefix}图像响应异常账号避让`,
       enabled: false,
       priority: 55,
       scopeType: 'provider' as const,
       protocolCode: OPENAI_PROTOCOL_CODE,
       providerCode: GPT_VENDOR_CODE,
       match: {
-        dataTypes: ['response.output_item.done'],
-        textIncludes: ['image_generation'],
-        textExcludes: ['completed']
+        finishReasons: ['failed'],
+        outputTextIncludes: ['image_generation'],
+        outputTextExcludes: ['completed']
       },
       action: 'avoid_account_ttl' as const,
-      notes: 'Mockdata 停用策略，用于流式拦截策略页面状态展示'
+      notes: 'Mockdata 停用策略，用于响应检查策略页面状态展示'
     }
   ]
   for (const policy of policies) {
-    createStreamInterceptPolicy(policy)
+    createResponseInspectionPolicy(policy)
   }
   return policies.length
 }
@@ -2885,7 +2884,7 @@ function createStorageMockdata(created: CreatedMockdata, options: MockdataOption
     'api_keys',
     'api_key_group_bindings',
     'proxy_profiles',
-    'stream_intercept_policies',
+    'response_inspection_policies',
     'external_integration_sources',
     'external_integration_source_tokens',
     'resource_authorization_grants',
@@ -3145,8 +3144,8 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     deleteWhereIn(database, 'external_integration_source_tokens', 'source_ref_id', mockExternalSourceIds)
     deleteWhereIn(database, 'external_integration_sources', 'id', mockExternalSourceIds)
 
-    const mockStreamInterceptPolicyIds = selectIds(database, 'SELECT id FROM stream_intercept_policies WHERE name LIKE ?', likeName)
-    deleteWhereIn(database, 'stream_intercept_policies', 'id', mockStreamInterceptPolicyIds)
+    const mockResponseInspectionPolicyIds = selectIds(database, 'SELECT id FROM response_inspection_policies WHERE name LIKE ?', likeName)
+    deleteWhereIn(database, 'response_inspection_policies', 'id', mockResponseInspectionPolicyIds)
 
     const mockRuntimeAuthorizationIds = selectIds(database, 'SELECT id FROM resource_authorizations WHERE created_by = ? AND remark LIKE ?', adminId, likeName)
     deleteWhereIn(database, 'resource_authorization_sources', 'authorization_id', mockRuntimeAuthorizationIds)
@@ -3593,7 +3592,7 @@ function writeSummary(
       teams: Object.keys(created.teams).length,
       authorizations: created.authorizations.length,
       externalSources: Object.keys(created.externalSources).length,
-      streamInterceptPolicies: created.streamInterceptPolicies,
+      responseInspectionPolicies: created.responseInspectionPolicies,
       usageRecords: records.length,
       publicApiLogs: extraCounts.publicApiLogs,
       auditLogs: Math.ceil(records.length / 4),

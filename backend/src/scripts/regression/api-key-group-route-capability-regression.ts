@@ -40,7 +40,7 @@ const [
   authorizationQuotaService,
   usageStatsRepository,
   usageRecordShards,
-  streamInterceptPolicyRepository,
+  responseInspectionPolicyRepository,
   upstreamModule,
   clientIpAccountAvoidance
 ] = await Promise.all([
@@ -58,7 +58,7 @@ const [
   import('../../modules/gateway/authorization-quota.service.js'),
   import('../../storage/usage-stats.repository.js'),
   import('../../storage/usage-record-shards.js'),
-  import('../../storage/stream-intercept-policy.repository.js'),
+  import('../../storage/response-inspection-policy.repository.js'),
   import('../../modules/gateway/openai-gateway-upstream.js'),
   import('../../modules/gateway/openai-gateway-client-ip-account-avoidance.service.js')
 ])
@@ -99,12 +99,12 @@ try {
   await assertPersonalConcurrencyBusyFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertLocalSuppressionFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertAuthorizationQuotaFallback(gatewayBaseUrl, upstreamBaseUrl)
-  await assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl, upstreamBaseUrl)
+  await assertResponseInspectionFallbackToNextGroup(gatewayBaseUrl, upstreamBaseUrl)
   await assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl, upstreamBaseUrl)
   await assertAllRouteStrategiesFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl, upstreamBaseUrl)
   await assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBaseUrl, upstreamBaseUrl)
 
-  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；配置化流式拦截未写下游且当前号池耗尽时可切后备分组；真实上游失败耗尽当前号池账号且未写下游时，会回到 API Key 分组候选序列继续尝试；主备、轮询、权重三种策略下账号耗尽 fallback 均按候选顺序工作；A -> B -> C 后 A 出现未失败可用账号时可回到 A 承接')
+  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；响应检查未写下游且当前号池耗尽时可切后备分组；真实上游失败耗尽当前号池账号且未写下游时，会回到 API Key 分组候选序列继续尝试；主备、轮询、权重三种策略下账号耗尽 fallback 均按候选顺序工作；A -> B -> C 后 A 出现未失败可用账号时可回到 A 承接')
 } finally {
   clearAccountConcurrency()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
@@ -124,10 +124,10 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertResponseInspectionFallbackToNextGroup(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const owner = repositories.createSystemAccount({
-    username: 'route_stream_intercept_fallback_owner',
-    displayName: '流式拦截切后备用户',
+    username: 'route_response_inspection_fallback_owner',
+    displayName: '响应检查切后备用户',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -135,19 +135,19 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
   })
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const primaryGroup = repositories.createGroup({
-    name: '流式拦截主号池',
+    name: '响应检查主号池',
     providerCode: 'gpt',
     groupType: 'personal'
   }, access)
   const fallbackGroup = repositories.createGroup({
-    name: '流式拦截后备号池',
+    name: '响应检查后备号池',
     providerCode: 'gpt',
     groupType: 'personal'
   }, access)
-  const primaryUpstreamKey = 'sk-route-stream-intercept-primary'
+  const primaryUpstreamKey = 'sk-route-response-inspection-primary'
   repositories.createAccount({
     providerCode: 'gpt',
-    name: '流式拦截主号池账号',
+    name: '响应检查主号池账号',
     type: 'api_key',
     credentials: {
       api_key: primaryUpstreamKey,
@@ -157,10 +157,10 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
     status: 'active',
     schedulable: true,
   }, access)
-  const fallbackUpstreamKey = 'sk-route-stream-intercept-fallback'
+  const fallbackUpstreamKey = 'sk-route-response-inspection-fallback'
   repositories.createAccount({
     providerCode: 'gpt',
-    name: '流式拦截后备账号',
+    name: '响应检查后备账号',
     type: 'api_key',
     credentials: {
       api_key: fallbackUpstreamKey,
@@ -170,18 +170,18 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
     status: 'active',
     schedulable: true,
   }, access)
-  streamInterceptPolicyRepository.createStreamInterceptPolicy({
+  responseInspectionPolicyRepository.createResponseInspectionPolicy({
     name: '回归：未写下游污染流切后备',
     enabled: true,
     priority: 20,
     scopeType: 'provider',
     protocolCode: OPENAI_PROTOCOL_CODE,
     providerCode: 'gpt',
-    match: { textIncludes: ['route-stream-pollution'] },
+    match: { outputTextIncludes: ['route-stream-pollution'] },
     action: 'retry_next_account'
   })
   const apiKey = repositories.createApiKeyRecord({
-    name: '流式拦截切后备 API Key',
+    name: '响应检查切后备 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
       { groupId: fallbackGroup.id, priority: 2, status: 'active' }
@@ -190,30 +190,30 @@ async function assertStreamInterceptFallbackToNextGroup(gatewayBaseUrl: string, 
   gatewayCache.clearGatewayRuntimeCache()
 
   const beforeCount = upstreamRequests.length
-  const traceId = 'trace-route-stream-intercept-fallback'
+  const traceId = 'trace-route-response-inspection-fallback'
   const response = await requestResponseStream(gatewayBaseUrl, apiKey.key, traceId)
-  assert.equal(response.status, 200, `流式拦截当前号池耗尽后应切后备并成功，实际 ${response.status}: ${response.text}`)
+  assert.equal(response.status, 200, `响应检查当前号池耗尽后应切后备并成功，实际 ${response.status}: ${response.text}`)
   assert(response.text.includes('route stream ok'), `后备流式响应应返回成功内容：${response.text}`)
   assert(!response.text.includes('route-stream-pollution'), `写下游前被拦截的主号池污染事件不应泄露给客户端：${response.text}`)
   const newRequests = upstreamRequests.slice(beforeCount)
-  assert.equal(newRequests.length, 2, '流式拦截切后备应先命中主号池，再命中后备号池')
-  assert.equal(newRequests[0]?.accountKey, primaryUpstreamKey, '流式拦截切后备应先尝试主号池账号')
-  assert.equal(newRequests[1]?.accountKey, fallbackUpstreamKey, '流式拦截切后备应在主号池耗尽后命中后备账号')
+  assert.equal(newRequests.length, 2, '响应检查切后备应先命中主号池，再命中后备号池')
+  assert.equal(newRequests[0]?.accountKey, primaryUpstreamKey, '响应检查切后备应先尝试主号池账号')
+  assert.equal(newRequests[1]?.accountKey, fallbackUpstreamKey, '响应检查切后备应在主号池耗尽后命中后备账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
   const usageRecords = usageRecordsByTraceId(traceId)
-  assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === false), '主号池流式拦截失败应记录失败尝试并归属主分组')
+  assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === false), '主号池响应检查失败应记录失败尝试并归属主分组')
   assert(usageRecords.some((record) => record.groupId === fallbackGroup.id && record.success === true), '后备流式成功应记录成功尝试并归属后备分组')
   const auditLogs = repositories.listAuditLogs({ traceId, pageSize: 10 })
-  assert.equal(auditLogs.total, 1, '流式拦截切后备应写入一条完整审计事件')
+  assert.equal(auditLogs.total, 1, '响应检查切后备应写入一条完整审计事件')
   const metadataPayloads = await gatewayMetadataPayloads(auditLogs.items[0]?.id ?? '')
-  assert(metadataPayloads.some((metadata) => metadata.label === 'stream_intercept_server_retry'
-    && metadata.metadata?.policyName === '回归：未写下游污染流切后备'), '审计 metadata 应记录配置化流式拦截服务端重试')
+  assert(metadataPayloads.some((metadata) => metadata.label === 'response_inspection_server_retry'
+    && metadata.metadata?.policyName === '回归：未写下游污染流切后备'), '审计 metadata 应记录配置化响应检查服务端重试')
   assert(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'
-    && metadata.metadata?.reason === 'stream_intercept_server_retry_exhausted'
+    && metadata.metadata?.reason === 'response_inspection_server_retry_exhausted'
     && metadata.metadata?.fromGroupId === primaryGroup.id
-    && metadata.metadata?.toGroupId === fallbackGroup.id), '审计 metadata 应记录流式拦截耗尽当前分组后的跨分组后备切换')
+    && metadata.metadata?.toGroupId === fallbackGroup.id), '审计 metadata 应记录响应检查耗尽当前分组后的跨分组后备切换')
 }
 
 async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -1242,17 +1242,20 @@ function createMockOpenAIUpstream(): http.Server {
         }))
         return
       }
-      if (token === 'sk-route-stream-intercept-primary') {
+      if (token === 'sk-route-response-inspection-primary') {
         res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
         res.end([
           'event: response.created',
-          'data: {"type":"response.created","response":{"id":"resp_route_polluted","metadata":{"note":"route-stream-pollution"}}}',
+          'data: {"type":"response.created","response":{"id":"resp_route_polluted","status":"in_progress"}}',
+          '',
+          'event: response.output_text.delta',
+          'data: {"type":"response.output_text.delta","delta":"route-stream-pollution"}',
           '',
           ''
         ].join('\n'))
         return
       }
-      if (token === 'sk-route-stream-intercept-fallback') {
+      if (token === 'sk-route-response-inspection-fallback') {
         res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
         res.end([
           'event: response.created',

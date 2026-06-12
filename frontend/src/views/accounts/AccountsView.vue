@@ -153,7 +153,6 @@
       v-if="modalOpen"
       v-model:open="modalOpen"
       v-model:error-policy-rules="accountErrorPolicyRules"
-      v-model:stream-intercept-rules="accountStreamInterceptRules"
       :account-type-choices="accountTypeChoices"
       :authorized-editing="editingAuthorizedAccount"
       :auth-loading="authLoading"
@@ -431,7 +430,6 @@ const {
 })
 const {
   accountErrorPolicyRules,
-  accountStreamInterceptRules,
   accountTagOptions,
   accountTagOptionsLoading,
   accountTypeChoices,
@@ -746,8 +744,7 @@ async function testAccountFromEditModal() {
     editingId: editingId.value,
     form,
     hasAuthSession: Boolean(authResult.value?.sessionId),
-    errorPolicyRules: accountErrorPolicyRules.value,
-    streamInterceptRules: accountStreamInterceptRules.value
+    errorPolicyRules: accountErrorPolicyRules.value
   })
   if (validationMessage) {
     message.warning(validationMessage)
@@ -760,8 +757,7 @@ async function testAccountFromEditModal() {
       accountDetail: editingAccountDetail.value,
       editingId: editingId.value,
       form,
-      errorPolicyRules: accountErrorPolicyRules.value,
-      streamInterceptRules: accountStreamInterceptRules.value
+      errorPolicyRules: accountErrorPolicyRules.value
     })
     if (!draftPayload.groupId) {
       message.warning('请选择加入分组')

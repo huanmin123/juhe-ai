@@ -12,7 +12,6 @@ import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerpr
 import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
 import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
-import { accountStreamInterceptValidationMessage, validateAccountStreamInterceptRules } from '../accounts/account-stream-intercept-policy-validation.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -28,8 +27,7 @@ export const openAIOAuthRouter = Router()
 
 const authUrlSchema = z.object({}).strict()
 const oauthCredentialsPatchSchema = z.object({
-  error_handling_rules: z.unknown().optional(),
-  stream_intercept_rules: z.unknown().optional()
+  error_handling_rules: z.unknown().optional()
 }).strict()
 
 const accountModelMappingSchema = z.object({
@@ -416,9 +414,6 @@ function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchS
   if (patch?.error_handling_rules !== undefined) {
     output.error_handling_rules = patch.error_handling_rules
   }
-  if (patch?.stream_intercept_rules !== undefined) {
-    output.stream_intercept_rules = patch.stream_intercept_rules
-  }
   return output
 }
 
@@ -426,10 +421,6 @@ function oauthCredentialsPatchValidationMessage(patch?: z.infer<typeof oauthCred
   if (patch?.error_handling_rules !== undefined) {
     const accountErrorPolicyMessage = accountErrorPolicyValidationMessage(validateAccountErrorHandlingRules(patch.error_handling_rules))
     if (accountErrorPolicyMessage) return accountErrorPolicyMessage
-  }
-  if (patch?.stream_intercept_rules !== undefined) {
-    const streamPolicyMessage = accountStreamInterceptValidationMessage(validateAccountStreamInterceptRules(patch.stream_intercept_rules))
-    if (streamPolicyMessage) return streamPolicyMessage
   }
   return undefined
 }

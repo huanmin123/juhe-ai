@@ -210,7 +210,7 @@ const menuIconMap = {
   '/runtime-logs': SearchOutlined,
   '/table-monitor': DatabaseOutlined,
   '/ip-stats': GlobalOutlined,
-  '/stream-intercept-policies': FilterOutlined,
+  '/response-inspection-policies': FilterOutlined,
   '/external-integration-sources': LinkOutlined,
   '/announcements': BellOutlined,
   '/settings': SettingOutlined,

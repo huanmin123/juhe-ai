@@ -32,6 +32,12 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import { currentSystemAccountId } from '../../storage/access-scope.js'
 import { handleOpenAIGatewayRequest, type OpenAIGatewayRequestIdentity } from '../gateway/openai-gateway.routes.js'
 import { MemoryGatewayResponse } from '../accounts/account-test.service.js'
+import {
+  accountDiagnosticRetryTimeoutMs,
+  diagnosticAccountTestGatewaySettingsOverride,
+  diagnosticAttemptSignal,
+  isDiagnosticTimeoutSignal
+} from '../accounts/account-diagnostic-retry-policy.js'
 
 const supportedModels = ['gpt-5.5', 'gpt-5.4'] as const
 const supportedModelSet = new Set<string>(supportedModels)
@@ -41,8 +47,7 @@ const probeSetVersion = 'openai-model-check-v2-strong-retry'
 const responsesPath = '/v1/responses'
 const modelsPath = '/v1/models'
 const distributionSampleCount = 5
-const probeMaxAttempts = 3
-const probeRetryDelayMs = 300
+const probeMaxAttempts = accountDiagnosticRetryTimeoutMs.length
 const behaviorProbeDefinitions = [
   {
     key: 'exact_uppercase',
@@ -654,17 +659,17 @@ async function runGatewayProbe(target: ProbeTarget, probe: GatewayProbeInput, si
   const startedAt = Date.now()
   const attempts: GatewayProbeResult[] = []
   for (let attempt = 1; attempt <= probeMaxAttempts; attempt += 1) {
-    const result = await runGatewayProbeAttempt(target, probe, signal, progress, attempt)
+    const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt - 1] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
+    const result = await runGatewayProbeAttempt(target, probe, signal, progress, attempt, timeoutMs)
     attempts.push(result)
     if (result.success || !isRetryableProbeFailure(result) || attempt >= probeMaxAttempts) {
       return attachProbeRetryEvidence(result, attempts, Date.now() - startedAt)
     }
-    await waitForProbeRetryDelay(probeRetryDelayMs * attempt, signal)
   }
   return attachProbeRetryEvidence(attempts[attempts.length - 1] ?? emptyProbeResult(), attempts, Date.now() - startedAt)
 }
 
-async function runGatewayProbeAttempt(target: ProbeTarget, probe: GatewayProbeInput, signal: AbortSignal | undefined, progress: ModelCheckProgressReporter | undefined, attempt: number): Promise<GatewayProbeResult> {
+async function runGatewayProbeAttempt(target: ProbeTarget, probe: GatewayProbeInput, signal: AbortSignal | undefined, progress: ModelCheckProgressReporter | undefined, attempt: number, timeoutMs: number): Promise<GatewayProbeResult> {
   throwIfAborted(signal)
   const attemptMessage = attempt > 1 ? `（第 ${attempt}/${probeMaxAttempts} 次重试）` : ''
   emitModelCheckProgress(progress, {
@@ -676,11 +681,12 @@ async function runGatewayProbeAttempt(target: ProbeTarget, probe: GatewayProbeIn
   })
   const startedAt = Date.now()
   const traceId = createTraceId()
+  const attemptSignal = diagnosticAttemptSignal(signal, timeoutMs)
   const request = createMemoryGatewayRequest({
     method: probe.method,
     path: probe.path,
     body: probe.body,
-    signal
+    signal: attemptSignal
   })
   const response = new MemoryGatewayResponse(startedAt)
   const context: RequestContext = {
@@ -702,26 +708,48 @@ async function runGatewayProbeAttempt(target: ProbeTarget, probe: GatewayProbeIn
       disableSessionAffinity: true,
       exposeUpstreamDiagnostics: false,
       disableAccountStateMutation: true,
-      settingsOverride: {
-        temporaryUnschedulableRetryAttempts: 0,
-        temporaryUnschedulableRetryIntervalSeconds: 0
-      }
+      settingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs)
     }))
   } catch (error) {
     if (signal?.aborted) throw error
+    const message = attemptSignal.aborted ? probeAbortMessage(attemptSignal) : probeErrorMessage(error)
     const result: GatewayProbeResult = {
       traceId,
-      statusCode: probeErrorStatusCode(error),
+      statusCode: attemptSignal.aborted ? 0 : probeErrorStatusCode(error),
       success: false,
       durationMs: Date.now() - startedAt,
-      bodyText: probeErrorMessage(error),
+      bodyText: message,
       bodyTruncated: false,
       headers: {},
-      errorMessage: probeErrorMessage(error)
+      errorMessage: message
     }
     emitModelCheckProgress(progress, {
       type: 'probe_completed',
       message: `${result.errorMessage ?? `探针执行异常，HTTP ${result.statusCode}`}${attemptMessage}`,
+      itemKey: probe.itemKey,
+      traceId: result.traceId,
+      statusCode: result.statusCode,
+      success: result.success,
+      durationMs: result.durationMs
+    })
+    return result
+  }
+  throwIfAborted(signal)
+  if (attemptSignal.aborted) {
+    const message = probeAbortMessage(attemptSignal)
+    const result: GatewayProbeResult = {
+      traceId,
+      statusCode: 0,
+      success: false,
+      durationMs: Date.now() - startedAt,
+      bodyText: message,
+      bodyTruncated: false,
+      headers: {},
+      errorMessage: message
+    }
+    emitModelCheckProgress(progress, {
+      type: 'probe_completed',
+      message: `${message}${attemptMessage}`,
       itemKey: probe.itemKey,
       traceId: result.traceId,
       statusCode: result.statusCode,
@@ -775,6 +803,10 @@ function probeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '网关探针执行异常'
 }
 
+function probeAbortMessage(signal: AbortSignal): string {
+  return isDiagnosticTimeoutSignal(signal) ? '模型检测探针超时' : '模型检测已取消'
+}
+
 function attachProbeRetryEvidence(result: GatewayProbeResult, attempts: GatewayProbeResult[], durationMs: number): GatewayProbeResult {
   if (attempts.length <= 1) return result
   const retryableFailureCount = attempts.filter((attempt) => isRetryableProbeFailure(attempt)).length
@@ -801,30 +833,6 @@ function retryEvidence(result: GatewayProbeResult): Record<string, unknown> {
     attemptStatusCodes: result.attemptStatusCodes,
     attemptMessages: result.attemptMessages
   }
-}
-
-async function waitForProbeRetryDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
-  throwIfAborted(signal)
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const cleanup = () => {
-      if (timer) clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-    }
-    const onAbort = () => {
-      cleanup()
-      rejectPromise(new Error('模型检测已取消'))
-    }
-    timer = setTimeout(() => {
-      cleanup()
-      resolvePromise()
-    }, delayMs)
-    if (signal) {
-      signal.addEventListener('abort', onAbort, { once: true })
-      if (signal.aborted) onAbort()
-    }
-  })
-  throwIfAborted(signal)
 }
 
 function pushProbeItem(items: ModelCheckItemCreateInput[], item: ModelCheckItemCreateInput, progress?: ModelCheckProgressReporter): void {

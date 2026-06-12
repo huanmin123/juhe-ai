@@ -1,7 +1,13 @@
 import type { Request } from 'express'
 
-import type { AccountSummary, AccountUsageSummary } from '../../domain/types.js'
+import type { AccountSummary, AccountTestResult, AccountUsageSummary } from '../../domain/types.js'
 import type { RecentOpenAIRequestShape } from '../../storage/repositories.js'
+import {
+  accountDiagnosticRetryTimeoutMs,
+  diagnosticAccountTestGatewaySettingsOverride,
+  diagnosticAttemptSignal,
+  isDiagnosticTimeoutSignal
+} from '../accounts/account-diagnostic-retry-policy.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import {
   requestEndpoint,
@@ -23,9 +29,6 @@ export interface CodexSwitchProbeResult {
   model?: string
 }
 
-const codexSwitchProbeTimeoutMs = 8_000
-const codexSwitchProbeTimeoutSeconds = Math.ceil(codexSwitchProbeTimeoutMs / 1000)
-
 export async function probeCodexSwitchCandidateAccount(
   account: UpstreamAccount,
   input: {
@@ -42,36 +45,38 @@ export async function probeCodexSwitchCandidateAccount(
   }
 
   const summary = accountSummaryFromUpstreamAccount(account)
-  const signal = codexSwitchProbeSignal(input.signal)
 
   try {
     const accountTestService = await import('../accounts/account-test.service.js')
     const model = requestModel(input.req) || accountTestService.preferredSystemAccountTestModel(summary)
-    const result = await accountTestService.testOpenAIAccount(summary, {
-      model,
-      requestShape: currentRequestShape(input.req, model),
-      groupId: input.groupId,
-      systemAccountId: input.systemAccountId,
-      signal,
-      diagnostics: 'full',
-      trafficSource: 'manual_account_test',
-      gatewaySettingsOverride: codexSwitchProbeGatewaySettings(input.settings),
-      disableAccountStateMutation: true,
-      clientCompatibility: account.clientCompatibility,
-      candidateAccount: account
-    })
-    return {
-      accountId: account.id,
-      accountName: account.name,
-      success: result.success,
-      statusCode: result.statusCode,
-      upstreamUrl: result.requestUrl,
-      durationMs: Date.now() - startedAt,
-      errorCode: result.success ? undefined : result.errorCode ?? probeErrorCode(result.statusCode),
-      message: result.success ? 'Codex 切号真实账号测试通过' : probeFailureMessage(result),
-      traceId: result.traceId,
-      model: result.model
+    let lastResult: AccountTestResult | undefined
+    for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
+      const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
+      const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
+      const result = await accountTestService.testOpenAIAccount(summary, {
+        model,
+        requestShape: currentRequestShape(input.req, model),
+        groupId: input.groupId,
+        systemAccountId: input.systemAccountId,
+        signal: attemptSignal,
+        diagnostics: 'full',
+        trafficSource: 'manual_account_test',
+        gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(
+          codexSwitchProbeGatewaySettings(input.settings),
+          codexSwitchProbeGatewayTimeoutMs(timeoutMs)
+        ),
+        disableAccountStateMutation: true,
+        clientCompatibility: account.clientCompatibility,
+        candidateAccount: account
+      })
+      lastResult = result
+      if (result.success || !shouldRetryCodexSwitchProbeSameAccount(attemptSignal, input.signal, attemptIndex)) {
+        return codexSwitchProbeResultFromAccountTest(account, result, startedAt)
+      }
     }
+    return lastResult
+      ? codexSwitchProbeResultFromAccountTest(account, lastResult, startedAt)
+      : failedProbe(account, startedAt, 'account_test_failed', 'Codex 切号真实账号测试失败：未执行探针')
   } catch (error) {
     return failedProbe(account, startedAt, 'account_test_failed', errorMessage(error))
   }
@@ -79,22 +84,38 @@ export async function probeCodexSwitchCandidateAccount(
 
 function codexSwitchProbeGatewaySettings(settings: GatewaySettings): Partial<GatewaySettings> {
   return {
-    streamCircuitBreakerEnabled: settings.streamCircuitBreakerEnabled,
-    streamRequestTimeoutSeconds: Math.min(settings.streamRequestTimeoutSeconds, codexSwitchProbeTimeoutSeconds),
-    streamIdleTimeoutSeconds: Math.min(settings.streamIdleTimeoutSeconds, codexSwitchProbeTimeoutSeconds),
-    temporaryUnschedulableRetryAttempts: 0
+    streamCircuitBreakerEnabled: settings.streamCircuitBreakerEnabled
   }
 }
 
-function codexSwitchProbeSignal(signal?: AbortSignal): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(codexSwitchProbeTimeoutMs)
-  if (!signal) {
-    return timeoutSignal
+function codexSwitchProbeGatewayTimeoutMs(timeoutMs: number): number {
+  return Math.max(1, Math.trunc(timeoutMs)) + 1_000
+}
+
+function shouldRetryCodexSwitchProbeSameAccount(attemptSignal: AbortSignal, inputSignal: AbortSignal | undefined, attemptIndex: number): boolean {
+  return attemptIndex + 1 < accountDiagnosticRetryTimeoutMs.length
+    && inputSignal?.aborted !== true
+    && attemptSignal.aborted
+    && isDiagnosticTimeoutSignal(attemptSignal)
+}
+
+function codexSwitchProbeResultFromAccountTest(
+  account: UpstreamAccount,
+  result: AccountTestResult,
+  startedAt: number
+): CodexSwitchProbeResult {
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    success: result.success,
+    statusCode: result.statusCode,
+    upstreamUrl: result.requestUrl,
+    durationMs: Date.now() - startedAt,
+    errorCode: result.success ? undefined : result.errorCode ?? probeErrorCode(result.statusCode),
+    message: result.success ? 'Codex 切号真实账号测试通过' : probeFailureMessage(result),
+    traceId: result.traceId,
+    model: result.model
   }
-  if (signal.aborted) {
-    return signal
-  }
-  return AbortSignal.any([signal, timeoutSignal])
 }
 
 function currentRequestShape(req: Request, model?: string): RecentOpenAIRequestShape {
