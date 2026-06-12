@@ -4,6 +4,7 @@ import type { GatewayApiKeyRow } from '../../storage/repositories.js'
 import { checkGatewayAuthorizationQuotaBatchAsync } from './authorization-quota.service.js'
 import {
   listCachedOpenAIAccountsForGroupAsync,
+  listCachedActiveResponseInspectionPoliciesAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from './gateway-runtime-cache.service.js'
 import {
@@ -19,6 +20,7 @@ import { requestModel } from './openai-gateway-usage.js'
 import type { OpenAIGatewayRequestLane } from './openai-gateway-request-lane.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 import { areGatewayAccountsCapacityBusyForLane } from './openai-gateway-dispatch-capacity.js'
+import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
 
 export interface ApiKeyGroupFallbackCandidateInput {
   req: Request
@@ -34,6 +36,7 @@ export interface ApiKeyGroupFallbackCandidateInput {
 export interface ApiKeyGroupFallbackCandidate {
   groupId: string
   accounts: UpstreamAccount[]
+  responseInspectionPolicies: ResponseInspectionPolicySummary[]
 }
 
 export function canAttemptApiKeyGroupFallback(
@@ -103,9 +106,14 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
       && filterLocallySuppressedGatewayAccounts(quotaAllowedAccounts).allSuppressed) {
       continue
     }
+    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({
+      protocolCode: groupAccess.protocolCode,
+      providerCode: groupAccess.providerCode
+    })
     return {
       groupId: binding.group_id,
-      accounts: quotaAllowedAccounts
+      accounts: quotaAllowedAccounts,
+      responseInspectionPolicies
     }
   }
   return undefined

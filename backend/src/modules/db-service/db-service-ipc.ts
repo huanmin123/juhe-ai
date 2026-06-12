@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
-import { runtimeConfig, type AuditFullBodyCaptureRuntimeConfig } from '../../config/runtime.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import { normalizeAuditFullBodyCaptureConfig, readAuditFullBodyCaptureConfig, setAuditLogFullBodyCaptureConfig, type AuditFullBodyCaptureConfigInput } from '../audit-logs/audit-log-settings.js'
 import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
 import { invalidateGatewayAuthorizationQuotaSnapshot } from '../gateway/gateway-quota-snapshot-cache.service.js'
 import type {
@@ -68,7 +67,6 @@ let dbServiceHttpHost: string | undefined
 let dbServiceHttpPort: number | undefined
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>()
-let pendingServerAuditFullBodyCaptureUpdateRequests = new Map<string, PendingServerAuditFullBodyCaptureUpdateRequest>()
 let pendingServerAccountRuntimeClearRequests = new Map<string, PendingServerAccountRuntimeClearRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let timedOutRequestCount = 0
@@ -86,16 +84,6 @@ let dbServiceReadyHandler: (() => void) | undefined
 interface PendingServerRuntimeRequest {
   resolve: (snapshot: DbServiceServerRuntimeSnapshot | undefined) => void
   timeout: NodeJS.Timeout
-}
-
-interface PendingServerAuditFullBodyCaptureUpdateRequest {
-  resolve: (result: AuditFullBodyCaptureUpdateResult | undefined) => void
-  timeout: NodeJS.Timeout
-}
-
-interface AuditFullBodyCaptureUpdateResult {
-  fullBodyCaptureEnabled: boolean
-  fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
 }
 
 interface PendingServerAccountRuntimeClearRequest {
@@ -340,48 +328,6 @@ export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): P
   })
 }
 
-export async function updateServerAuditFullBodyCaptureEnabled(
-  enabled: boolean,
-  timeoutMs = 1000
-): Promise<AuditFullBodyCaptureUpdateResult | undefined> {
-  return updateServerAuditFullBodyCaptureConfig({
-    enabled,
-    scope: 'global',
-    includeSuccess: false
-  }, timeoutMs)
-}
-
-export async function updateServerAuditFullBodyCaptureConfig(
-  config: AuditFullBodyCaptureConfigInput,
-  timeoutMs = 1000
-): Promise<AuditFullBodyCaptureUpdateResult | undefined> {
-  const normalizedConfig = normalizeAuditFullBodyCaptureConfig(config)
-  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
-    const settings = setAuditLogFullBodyCaptureConfig(normalizedConfig)
-    return { fullBodyCaptureEnabled: settings.fullBodyCaptureEnabled, fullBodyCapture: settings.fullBodyCapture }
-  }
-
-  const requestId = randomUUID()
-  return await new Promise<AuditFullBodyCaptureUpdateResult | undefined>((resolve) => {
-    const timeout = setTimeout(() => {
-      const pending = pendingServerAuditFullBodyCaptureUpdateRequests.get(requestId)
-      if (!pending) {
-        return
-      }
-      pendingServerAuditFullBodyCaptureUpdateRequests.delete(requestId)
-      pending.resolve(undefined)
-    }, timeoutMs)
-    pendingServerAuditFullBodyCaptureUpdateRequests.set(requestId, { resolve, timeout })
-    sendDbServiceChildMessage({
-      type: 'db_service_server_audit_full_body_capture_update_request',
-      requestId,
-      config: normalizedConfig
-    }, () => {
-      finishServerAuditFullBodyCaptureUpdateRequest(requestId, undefined)
-    })
-  })
-}
-
 export async function clearServerAccountRuntimeAvailability(
   target: AccountRuntimeAvailabilityClearTarget,
   timeoutMs = 1000
@@ -429,17 +375,6 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
       sample: buildProcessEventLoopSample('db-service')
     }
     sendDbServiceChildMessage(response, () => exitDbServiceAfterChildIpcFailure(response.type))
-    return true
-  }
-
-  if (record.type === 'db_service_server_audit_full_body_capture_update_response' && typeof record.requestId === 'string') {
-    const result = record.ok === true && isAuditFullBodyCaptureUpdateResult(record.result)
-      ? record.result
-      : undefined
-    if (result) {
-      setAuditLogFullBodyCaptureConfig(result.fullBodyCapture)
-    }
-    finishServerAuditFullBodyCaptureUpdateRequest(record.requestId, result)
     return true
   }
 
@@ -505,11 +440,6 @@ function handleDbServiceMessage(message: unknown): void {
           record.requestId,
           record.scope === 'account_concurrency' || record.scope === 'account_runtime' ? record.scope : 'full'
         )
-      }
-      break
-    case 'db_service_server_audit_full_body_capture_update_request':
-      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && isAuditFullBodyCaptureConfig(record.config)) {
-        respondToServerAuditFullBodyCaptureUpdateRequest(record.requestId, record.config)
       }
       break
     case 'db_service_server_account_runtime_clear_request':
@@ -593,11 +523,6 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingServerRuntimeRequests.delete(requestId)
-  }
-  for (const [requestId, pending] of pendingServerAuditFullBodyCaptureUpdateRequests) {
-    clearTimeout(pending.timeout)
-    pending.resolve(undefined)
-    pendingServerAuditFullBodyCaptureUpdateRequests.delete(requestId)
   }
   for (const [requestId, pending] of pendingServerAccountRuntimeClearRequests) {
     clearTimeout(pending.timeout)
@@ -756,20 +681,6 @@ function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServer
   pending.resolve(snapshot)
 }
 
-function finishServerAuditFullBodyCaptureUpdateRequest(
-  requestId: string,
-  result: AuditFullBodyCaptureUpdateResult | undefined
-): void {
-  const pending = pendingServerAuditFullBodyCaptureUpdateRequests.get(requestId)
-  if (!pending) {
-    return
-  }
-
-  clearTimeout(pending.timeout)
-  pendingServerAuditFullBodyCaptureUpdateRequests.delete(requestId)
-  pending.resolve(result)
-}
-
 function finishServerAccountRuntimeClearRequest(
   requestId: string,
   result: AccountRuntimeAvailabilityClearResult | undefined
@@ -815,7 +726,6 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
   const workerSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined)
   const workerState = backgroundIpc.getBackgroundWorkerState()
   const dbServiceState = getDbServiceState()
-  const fullBodyCapture = readAuditFullBodyCaptureConfig()
 
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
@@ -869,38 +779,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       httpPort: dbServiceState.httpPort
     },
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
-    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
-    audit: {
-      fullBodyCaptureEnabled: fullBodyCapture.enabled,
-      fullBodyCapture
-    }
-  }
-}
-
-function respondToServerAuditFullBodyCaptureUpdateRequest(requestId: string, config: AuditFullBodyCaptureRuntimeConfig): void {
-  const child = dbServiceProcess
-  if (!child) {
-    return
-  }
-
-  try {
-    const settings = setAuditLogFullBodyCaptureConfig(config)
-    sendToDbServiceProcess(child, {
-      type: 'db_service_server_audit_full_body_capture_update_response',
-      requestId,
-      ok: true,
-      result: {
-        fullBodyCaptureEnabled: settings.fullBodyCaptureEnabled,
-        fullBodyCapture: settings.fullBodyCapture
-      }
-    })
-  } catch (error) {
-    sendToDbServiceProcess(child, {
-      type: 'db_service_server_audit_full_body_capture_update_response',
-      requestId,
-      ok: false,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    })
+    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
   }
 }
 
@@ -930,40 +809,6 @@ async function respondToServerAccountRuntimeClearRequest(
       errorMessage: error instanceof Error ? error.message : String(error)
     })
   }
-}
-
-function isAuditFullBodyCaptureUpdateResult(value: unknown): value is AuditFullBodyCaptureUpdateResult {
-  return typeof value === 'object'
-    && value !== null
-    && !Array.isArray(value)
-    && typeof (value as Record<string, unknown>).fullBodyCaptureEnabled === 'boolean'
-    && isAuditFullBodyCaptureConfig((value as Record<string, unknown>).fullBodyCapture)
-}
-
-function isAuditFullBodyCaptureConfig(value: unknown): value is AuditFullBodyCaptureRuntimeConfig {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false
-  }
-  const record = value as Record<string, unknown>
-  if (typeof record.enabled !== 'boolean') {
-    return false
-  }
-  if (record.scope !== 'global' && record.scope !== 'account') {
-    return false
-  }
-  if (typeof record.includeSuccess !== 'boolean') {
-    return false
-  }
-  if (record.accountId !== undefined && typeof record.accountId !== 'string') {
-    return false
-  }
-  if (record.expiresAt !== undefined && typeof record.expiresAt !== 'string') {
-    return false
-  }
-  if (record.updatedAt !== undefined && typeof record.updatedAt !== 'string') {
-    return false
-  }
-  return true
 }
 
 function isAccountRuntimeClearTarget(value: unknown): value is AccountRuntimeAvailabilityClearTarget {

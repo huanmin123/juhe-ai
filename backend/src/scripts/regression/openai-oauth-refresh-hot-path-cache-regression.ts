@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-oauth-refresh-hot-path-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -106,6 +106,11 @@ try {
     schedulable: true,
     groupId: group.id
   }, access)
+  const accountRefreshTarget = {
+    ...account,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION
+  }
 
   let refreshCallCount = 0
   oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
@@ -131,9 +136,9 @@ try {
   })
 
   const refreshed = await Promise.all([
-    oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(account, { force: false, persistMode: 'db-service' }),
-    oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(account, { force: false, persistMode: 'db-service' }),
-    oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(account, { force: false, persistMode: 'db-service' })
+    oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(accountRefreshTarget, { force: false, persistMode: 'db-service' }),
+    oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(accountRefreshTarget, { force: false, persistMode: 'db-service' }),
+    oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(accountRefreshTarget, { force: false, persistMode: 'db-service' })
   ])
 
   assert.equal(refreshCallCount, 1, '同一账号并发懒刷新应只请求一次上游 token endpoint')
@@ -148,6 +153,8 @@ try {
   await oauthRefreshService.refreshOpenAIOAuthAccountAccessToken({
     id: account.id,
     providerCode: GPT_VENDOR_CODE,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
     type: 'oauth',
     credentials: refreshed[0].credentials
   }, { force: true, persistMode: 'db-service' })

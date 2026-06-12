@@ -955,7 +955,7 @@ export async function cleanupAuditLogsByRetentionAsync(input: {
   return deletedLogs + deletedGroups + deletedBlobs
 }
 
-const successHotRetentionDeleteWhereClause = "audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ? AND sample_reason NOT IN ('full_capture_success', 'targeted_full_capture_success')"
+const successHotRetentionDeleteWhereClause = "audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ?"
 
 function normalizeSuccessSampleBucketThreshold(value: number | undefined): number {
   if (!Number.isFinite(value)) return 1000

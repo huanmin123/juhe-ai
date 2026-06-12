@@ -503,7 +503,6 @@ interface ApiKeyGroupFallbackDispatchInput {
   groupId: string
   trafficSource: OpenAIGatewayTrafficSource
   requestLane: OpenAIGatewayRequestLane
-  responseInspectionPolicies?: ResponseInspectionPolicySummary[]
   excludedAccountIds?: Iterable<string>
   allowCandidateWrap?: boolean
 }
@@ -544,7 +543,7 @@ export async function prepareApiKeyGroupFallbackDispatchContext(
       },
       apiKeyRecord: input.apiKeyRecord,
       candidateAccounts: candidate.accounts,
-      responseInspectionPolicies: input.responseInspectionPolicies ?? input.options.responseInspectionPolicies,
+      responseInspectionPolicies: candidate.responseInspectionPolicies,
       trafficSource: input.trafficSource,
       requestLane: input.requestLane
     },

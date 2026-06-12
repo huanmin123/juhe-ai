@@ -18,8 +18,6 @@ runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
-runtimeConfig.audit.fullBodyCaptureEnabled = false
-runtimeConfig.audit.fullBodyCapture = { enabled: false, scope: 'global', includeSuccess: false }
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -30,7 +28,6 @@ const [
   databaseModule,
   repositories,
   settingsRepository,
-  auditSettings,
   auditLogQueue,
   usageRecordQueue,
   gatewayCache,
@@ -42,7 +39,6 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/settings.repository.js'),
-  import('../../modules/audit-logs/audit-log-settings.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/gateway/gateway-runtime-cache.service.js'),
@@ -94,13 +90,13 @@ try {
   const gatewayBaseUrl = `http://127.0.0.1:${serverPort(appServer)}`
 
   try {
-    await assertFullCapturedNonStreamSuccess(gatewayBaseUrl, upstreamBaseUrl)
+    await assertHotRetainedNonStreamSuccess(gatewayBaseUrl, upstreamBaseUrl)
     await assertSuccessAfterRetryCapturesFinalUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
     await assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
-    await assertFullCapturedStreamSuccess(gatewayBaseUrl, upstreamBaseUrl)
+    await assertHotRetainedStreamSuccess(gatewayBaseUrl, upstreamBaseUrl)
     await assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
     await assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl, upstreamBaseUrl)
-    await assertFullCapturedImageStreamSuccessKeepsStreamBodies(gatewayBaseUrl, upstreamBaseUrl)
+    await assertImageStreamSuccessOmissionRecordsMetadata(gatewayBaseUrl, upstreamBaseUrl)
     await assertMissingPayloadBlobReportsStatusAndRepairsAsync(gatewayBaseUrl, upstreamBaseUrl)
   } finally {
     await closeServer(appServer)
@@ -121,10 +117,9 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-async function assertFullCapturedNonStreamSuccess(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
-  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: true, scope: 'global', includeSuccess: true })
-  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计成功全量捕获', ['sk-audit-non-stream-success'])
-  const traceId = 'trace-audit-non-stream-success-full-capture'
+async function assertHotRetainedNonStreamSuccess(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计成功热保留', ['sk-audit-non-stream-success'])
+  const traceId = 'trace-audit-non-stream-success-hot-retention'
 
   const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
     method: 'POST',
@@ -140,7 +135,7 @@ async function assertFullCapturedNonStreamSuccess(gatewayBaseUrl: string, upstre
   assert.equal(text, nonStreamSuccessBody, '非流式成功响应体应完整透传')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'success', '全量捕获成功请求应写入 success 审计')
+  assert.equal(detail.auditOutcome, 'success', '成功热保留请求应写入 success 审计')
   await assertPayloadBodyEquals(detail, 'upstream_response', nonStreamSuccessBody)
   await assertPayloadBodyEquals(detail, 'gateway_response', nonStreamSuccessBody)
   await assertPayloadBodyContains(detail, 'client_request', 'audit non stream success')
@@ -148,7 +143,6 @@ async function assertFullCapturedNonStreamSuccess(gatewayBaseUrl: string, upstre
 }
 
 async function assertSuccessAfterRetryCapturesFinalUpstreamResponse(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
-  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: false })
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计先失败后成功', ['sk-audit-retry-fail', 'sk-audit-retry-success'])
   const traceId = 'trace-audit-success-after-retry'
 
@@ -177,7 +171,6 @@ async function assertSuccessAfterRetryCapturesFinalUpstreamResponse(gatewayBaseU
 }
 
 async function assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
-  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: false })
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计全失败', ['sk-audit-all-fail'])
   const traceId = 'trace-audit-all-upstream-failure'
 
@@ -199,10 +192,9 @@ async function assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl: 
   await assertPayloadBodyContains(detail, 'gateway_error', '没有可用的上游账户')
 }
 
-async function assertFullCapturedStreamSuccess(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
-  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: true, scope: 'global', includeSuccess: true })
+async function assertHotRetainedStreamSuccess(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计流式成功', ['sk-audit-stream-success'])
-  const traceId = 'trace-audit-stream-success-full-capture'
+  const traceId = 'trace-audit-stream-success-hot-retention'
 
   const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
     method: 'POST',
@@ -218,13 +210,12 @@ async function assertFullCapturedStreamSuccess(gatewayBaseUrl: string, upstreamB
   assert.match(text, /response\.completed/, '流式成功响应应包含 completed 事件')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'success', '全量捕获流式成功应写入 success 审计')
+  assert.equal(detail.auditOutcome, 'success', '成功热保留流式请求应写入 success 审计')
   await assertPayloadBodyContains(detail, 'upstream_response', 'response.completed')
   await assertPayloadBodyContains(detail, 'gateway_response', 'response.completed')
 }
 
 async function assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
-  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: false })
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计流式失败', ['sk-audit-stream-failure'])
   const traceId = 'trace-audit-stream-failure'
 
@@ -248,7 +239,6 @@ async function assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseU
 }
 
 async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
-  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: false })
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计图像流失败省略', ['sk-audit-image-stream-failure'])
   const traceId = 'trace-audit-image-stream-failure-omission'
 
@@ -271,10 +261,9 @@ async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayB
   await assertPayloadBodyContains(detail, 'upstream_request', 'audit image stream failure should keep request payload')
 }
 
-async function assertFullCapturedImageStreamSuccessKeepsStreamBodies(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
-  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: true, scope: 'global', includeSuccess: true })
-  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计图像流全量捕获', ['sk-audit-image-stream-success'])
-  const traceId = 'trace-audit-image-stream-success-full-capture'
+async function assertImageStreamSuccessOmissionRecordsMetadata(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计图像流成功省略', ['sk-audit-image-stream-success'])
+  const traceId = 'trace-audit-image-stream-success-omission'
 
   const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
     method: 'POST',
@@ -290,15 +279,11 @@ async function assertFullCapturedImageStreamSuccessKeepsStreamBodies(gatewayBase
   assert.match(text, /partial_image_b64/, '图像流成功响应应包含图片增量事件')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'success', '全量捕获图像流成功应写入 success 审计')
-  await assertPayloadBodyContains(detail, 'client_request', 'audit image stream success should keep stream body')
-  await assertPayloadBodyContains(detail, 'upstream_request', 'audit image stream success should keep stream body')
-  await assertPayloadBodyContains(detail, 'upstream_response', 'partial_image_b64')
-  await assertPayloadBodyContains(detail, 'gateway_response', 'partial_image_b64')
+  assert.equal(detail.auditOutcome, 'success', '图像流成功热保留应写入 success 审计')
+  await assertStreamBodyOmissionMetadata(detail)
 }
 
 async function assertMissingPayloadBlobReportsStatusAndRepairsAsync(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
-  auditSettings.setAuditLogFullBodyCaptureConfig({ enabled: true, scope: 'global', includeSuccess: true })
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计缺失文件状态', ['sk-audit-missing-blob-status'])
   const traceId = 'trace-audit-missing-blob-status'
 
@@ -546,6 +531,37 @@ async function assertPayloadBodyContains(
     `${detail.traceId} ${partType} 正文应包含 ${expectedText}，实际 ${payload.bodyText ?? payload.bodyBase64 ?? '[empty]'}`
   )
   assert((payload.bodyTotalBytes ?? 0) > 0, `${detail.traceId} ${partType} 正文字节数应大于 0`)
+}
+
+async function assertStreamBodyOmissionMetadata(
+  detail: NonNullable<ReturnType<typeof repositories.getAuditLogDetail>>
+): Promise<void> {
+  let metadata: {
+    label?: string
+    metadata?: {
+      reason?: string
+      auditBodyPayloadsOmitted?: boolean
+      omittedPayloadCount?: number
+    }
+  } | undefined
+  for (const payload of detail.payloads.filter((item) => item.partType === 'gateway_metadata' && item.hasBody)) {
+    const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
+    const parsed = JSON.parse(payloadDetail?.bodyText ?? '{}') as typeof metadata
+    if (parsed?.label === 'stream_body_omission') {
+      metadata = parsed
+      break
+    }
+  }
+  assert(metadata, `${detail.traceId} 应记录流式正文省略元数据`)
+  assert.equal(metadata.metadata?.reason, 'image_stream_payload', `${detail.traceId} 省略原因应为图像流 payload`)
+  assert.equal(metadata.metadata?.auditBodyPayloadsOmitted, true, `${detail.traceId} 应标记审计 body 已省略`)
+  assert((metadata.metadata?.omittedPayloadCount ?? 0) >= 1, `${detail.traceId} 应至少省略一个 payload body`)
+
+  for (const payload of detail.payloads) {
+    if (!payload.hasBody || payload.partType === 'gateway_metadata') continue
+    const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
+    assert(!payloadDetail?.bodyText?.includes('partial_image_b64'), `${detail.traceId} 图像流正文不应继续保留在 ${payload.partType}`)
+  }
 }
 
 async function readPayload(

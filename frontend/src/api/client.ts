@@ -28,8 +28,6 @@ import type {
   AuditLogRuntime,
   AuditLogSummary,
   AuditOutcome,
-  AuditFullBodyCaptureConfig,
-  AuditFullBodyCaptureScope,
   AuditTrafficSource,
   AuthorizationResourceType,
   AuthorizationTeamUsageOverview,
@@ -84,7 +82,10 @@ import type {
   RuntimeLogSummary,
   RuntimeLogSearchResult,
   ResourceAuthorizationListResult,
+  ResponseInspectionPolicyAction,
   ResponseInspectionPolicyListResult,
+  ResponseInspectionPolicyMatch,
+  ResponseInspectionPolicyScopeType,
   ResponseInspectionPolicySummary,
   SystemTeamMemberSummary,
   SystemTeamListResult,
@@ -327,14 +328,6 @@ export interface PublicApiLogListParams {
   endAt?: string
 }
 
-export interface AuditFullBodyCaptureUpdatePayload {
-  enabled: boolean
-  scope?: AuditFullBodyCaptureScope
-  accountId?: string
-  includeSuccess?: boolean
-  durationMinutes?: number
-}
-
 export interface RuntimeLogGrepParams {
   keywords?: string
   startAt?: string
@@ -419,7 +412,16 @@ export interface ExternalIntegrationSourceListParams {
   status?: ExternalIntegrationSourceStatus | 'all'
 }
 
-export type ResponseInspectionPolicyPayload = Omit<ResponseInspectionPolicySummary, 'id' | 'defaultRule' | 'editable' | 'protocolCode' | 'createdAt' | 'updatedAt'>
+export interface ResponseInspectionPolicyPayload {
+  name: string
+  enabled: boolean
+  priority: number
+  scopeType: ResponseInspectionPolicyScopeType
+  providerCode?: string
+  match: ResponseInspectionPolicyMatch
+  action: ResponseInspectionPolicyAction
+  notes?: string
+}
 
 export interface ModelCheckScopeParams {
   systemAccountId?: string
@@ -724,7 +726,7 @@ export const api = {
   responseInspectionPolicies: {
     list: () => unwrap<ResponseInspectionPolicyListResult>(http.get('/response-inspection-policies')),
     create: (payload: ResponseInspectionPolicyPayload) => unwrap<ResponseInspectionPolicySummary>(http.post('/response-inspection-policies', payload)),
-    update: (id: string, payload: ResponseInspectionPolicyPayload) => unwrap<ResponseInspectionPolicySummary>(http.patch(`/response-inspection-policies/${id}`, payload)),
+    update: (id: string, payload: ResponseInspectionPolicyPayload) => unwrap<ResponseInspectionPolicySummary>(http.put(`/response-inspection-policies/${id}`, payload)),
     delete: (id: string) => http.delete(`/response-inspection-policies/${id}`)
   },
   accounts: {
@@ -850,6 +852,7 @@ export const api = {
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<CreatedApiKey>(http.post('/api-keys', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<ApiKeySummary>(http.patch(`/api-keys/${id}`, payload, { params })),
     secret: (id: string, params?: ListParams) => unwrap<ApiKeySecretResult>(http.get(`/api-keys/${id}/secret`, { params })),
+    refreshKey: (id: string, params?: ListParams) => unwrap<CreatedApiKey>(http.post(`/api-keys/${id}/refresh-key`, {}, { params })),
     delete: (id: string, params?: ListParams) => http.delete(`/api-keys/${id}`, { params })
   },
   myApiKeys: {
@@ -857,6 +860,7 @@ export const api = {
     create: (payload: Record<string, unknown>) => unwrap<CreatedApiKey>(http.post('/my-api-keys', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ApiKeySummary>(http.patch(`/my-api-keys/${id}`, payload)),
     secret: (id: string) => unwrap<ApiKeySecretResult>(http.get(`/my-api-keys/${id}/secret`)),
+    refreshKey: (id: string) => unwrap<CreatedApiKey>(http.post(`/my-api-keys/${id}/refresh-key`, {})),
     delete: (id: string) => http.delete(`/my-api-keys/${id}`)
   },
   openaiOAuth: {
@@ -895,9 +899,6 @@ export const api = {
     list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
     searchHot: (params?: AuditLogHotSearchParams) => unwrap<AuditLogHotSearchResult>(http.get('/audit-logs/search-hot', { params, ...noTimeout })),
     runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
-    updateFullBodyCapture: (payload: AuditFullBodyCaptureUpdatePayload) => unwrap<{ fullBodyCaptureEnabled: boolean; fullBodyCapture: AuditFullBodyCaptureConfig; settings: AuditLogRuntime['settings'] }>(
-      http.patch('/audit-logs/runtime/full-body-capture', payload, noTimeout)
-    ),
     detail: (id: string) => unwrap<AuditLogDetail>(http.get(`/audit-logs/${id}`, noTimeout)),
     payload: (id: string, payloadId: string, params?: AuditLogPayloadParams) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, { params, ...noTimeout }))
   },

@@ -166,7 +166,6 @@ export async function handleOpenAIGatewayRequest(
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
   const switchToFallbackGroup = async (
     reason: string,
-    responseInspectionPolicies?: OpenAIGatewayDispatchContext['responseInspectionPolicies'],
     input: { allowCandidateWrap?: boolean } = {}
   ): Promise<'none' | 'switched' | 'completed'> => {
     const gatewayUsageContext = currentPreflight.usageContext
@@ -177,8 +176,7 @@ export async function handleOpenAIGatewayRequest(
       options: {
         ...options,
         trafficSource,
-        requestLane: currentPreflight.requestLane,
-        responseInspectionPolicies
+        requestLane: currentPreflight.requestLane
       },
       startedAt,
       traceId,
@@ -193,7 +191,6 @@ export async function handleOpenAIGatewayRequest(
       groupId: gatewayUsageContext.groupId,
       trafficSource: gatewayUsageContext.trafficSource,
       requestLane: currentPreflight.requestLane,
-      responseInspectionPolicies,
       excludedAccountIds: exhaustedAccountIds,
       allowCandidateWrap: input.allowCandidateWrap
     })
@@ -234,7 +231,7 @@ export async function handleOpenAIGatewayRequest(
         for (const accountId of streamServerRetryExcludedAccountIds) {
           exhaustedAccountIds.add(accountId)
         }
-        const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', responseInspectionPolicies, { allowCandidateWrap: true })
+        const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', { allowCandidateWrap: true })
         if (fallbackSwitch === 'completed') {
           return
         }
@@ -272,7 +269,7 @@ export async function handleOpenAIGatewayRequest(
           for (const accountId of streamServerRetryExcludedAccountIds) {
             exhaustedAccountIds.add(accountId)
           }
-          const fallbackSwitch = await switchToFallbackGroup('codex_switch_probe_failed', responseInspectionPolicies, { allowCandidateWrap: true })
+          const fallbackSwitch = await switchToFallbackGroup('codex_switch_probe_failed', { allowCandidateWrap: true })
           if (fallbackSwitch === 'completed') {
             return
           }
@@ -320,7 +317,7 @@ export async function handleOpenAIGatewayRequest(
           if (codexTurnAccountAvoidanceApplied) {
             continue
           }
-          const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', responseInspectionPolicies, { allowCandidateWrap: true })
+          const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', { allowCandidateWrap: true })
           if (fallbackSwitch === 'completed') {
             return
           }
@@ -451,7 +448,7 @@ export async function handleOpenAIGatewayRequest(
               exhaustedAccountIds.add(accountId)
             }
             const fallbackReason = streamServerRetryFallbackReason(handledResponse.retryReason)
-            const fallbackSwitch = await switchToFallbackGroup(fallbackReason, responseInspectionPolicies, { allowCandidateWrap: true })
+            const fallbackSwitch = await switchToFallbackGroup(fallbackReason, { allowCandidateWrap: true })
             if (fallbackSwitch !== 'none') {
               if (fallbackSwitch === 'completed') {
                 return

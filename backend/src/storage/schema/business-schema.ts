@@ -177,17 +177,18 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS response_inspection_policies (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      priority INTEGER NOT NULL DEFAULT 100,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      priority INTEGER NOT NULL DEFAULT 100 CHECK (priority BETWEEN 1 AND 9999),
       scope_type TEXT NOT NULL DEFAULT 'protocol',
       protocol_code TEXT NOT NULL,
       provider_code TEXT,
-      match_json TEXT NOT NULL DEFAULT '{}',
-      action TEXT NOT NULL DEFAULT 'avoid_account_ttl',
+      match_json TEXT NOT NULL CHECK (json_valid(match_json) AND json_type(match_json) = 'object'),
+      action TEXT NOT NULL,
       notes TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       CHECK (scope_type IN ('protocol', 'provider')),
+      CHECK (action IN ('observe', 'drop_event', 'retry_no_avoidance', 'retry_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl')),
       CHECK (
         (scope_type = 'protocol' AND provider_code IS NULL)
         OR (scope_type = 'provider' AND provider_code IS NOT NULL)

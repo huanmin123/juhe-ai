@@ -38,7 +38,6 @@ const exactPhraseTraceId = `trace-hot-search-exact-phrase-${nowMs}`
 const crossChunkTraceId = `trace-hot-search-cross-chunk-${nowMs}`
 const unsampledTraceId = `trace-hot-trim-unsampled-${nowMs}`
 const sampledTraceId = `trace-hot-trim-sampled-${nowMs}`
-const fullCaptureTraceId = `trace-hot-trim-full-capture-${nowMs}`
 const failedTraceId = `trace-hot-trim-failed-${nowMs}`
 
 try {
@@ -123,14 +122,6 @@ try {
       sampleReason: 'success_sample_0.1',
       body: JSON.stringify({ keyword: `${uniqueKeyword}-sampled`, retention: 'sampled' })
     }),
-    successAuditLog({
-      id: 'audit_hot_trim_full_capture',
-      traceId: fullCaptureTraceId,
-      createdAt: oldCreatedAt,
-      sampleBucket: 9000,
-      sampleReason: 'targeted_full_capture_success',
-      body: JSON.stringify({ keyword: `${uniqueKeyword}-full-capture`, retention: 'full_capture' })
-    }),
     failedAuditLog({
       id: 'audit_hot_trim_failed',
       traceId: failedTraceId,
@@ -145,7 +136,6 @@ try {
   assert(cleanupResult.auditHotSearchFiles >= 1, '热窗口清理应删除已完全超过热窗口的旧热搜索镜像文件')
   assert.equal(repositories.listAuditLogs({ traceId: unsampledTraceId }).total, 0, '未采样普通成功审计超过热窗口后应被删除')
   assert.equal(repositories.listAuditLogs({ traceId: sampledTraceId }).total, 1, '命中 10% 稳定采样的成功审计应继续保留')
-  assert.equal(repositories.listAuditLogs({ traceId: fullCaptureTraceId }).total, 1, '临时全量捕获成功审计应跳过后置采样清理')
   assert.equal(repositories.listAuditLogs({ traceId: failedTraceId }).total, 1, '失败审计不应被成功热窗口清理删除')
 
   console.log('审计热搜索与热保留清理回归通过：rg 可搜索最近 1 小时内容，超过热窗口后只删除未采样普通成功审计')

@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySecret, findApiKeySummary, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
+import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySecret, findApiKeySummary, listApiKeysPage, refreshApiKeySecret, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -52,6 +52,57 @@ apiKeysRouter.get('/:id/secret', (req, res) => {
     return
   }
   res.json(ok({ key: apiKey.key }))
+})
+
+apiKeysRouter.post('/:id/refresh-key', mutationGuard({
+  operationKey: 'api_keys.refresh_key',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    id: normalizedText(req.params.id)
+  })
+}), (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const before = findApiKeySummary(req.params.id, requestAccess)
+  try {
+    const apiKey = runLoggedOperation(() => {
+      const apiKey = refreshApiKeySecret(req.params.id, requestAccess)
+      if (!apiKey) {
+        throw new Error('API Key 不存在')
+      }
+      const ownerSystemAccountId = resolveOperationOwner(apiKey as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: apiKey,
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'api_keys',
+          action: 'refresh_key',
+          operationKey: 'api_keys.refresh_key',
+          resourceType: 'api_key',
+          resourceId: apiKey.id,
+          resourceName: apiKey.name,
+          summary: `刷新 API Key 密钥：${apiKey.name}`,
+          changes: [
+            safeChange('key', '密钥标识', before ? `${before.keyPrefix}...${before.keySuffix}` : undefined, `${apiKey.keyPrefix}...${apiKey.keySuffix}`)
+          ],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
+    res.json(ok(apiKey, 'API Key 密钥已刷新，请立即复制完整密钥'))
+  } catch (error) {
+    if (error instanceof Error && error.message === 'API Key 不存在') {
+      res.status(404).json({ message: 'API Key 不存在' })
+      return
+    }
+    throw error
+  }
 })
 
 function parseApiKeyListOptions(query: Record<string, unknown>): ApiKeyListOptions {

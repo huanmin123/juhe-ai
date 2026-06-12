@@ -32,10 +32,6 @@ export interface RuntimeConfig {
   usageShardCount: number
   secret: string
   oauthProxyUrl?: string
-  audit: {
-    fullBodyCaptureEnabled: boolean
-    fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
-  }
   gateway: {
     bodyInFlightMaxBytes: number
   }
@@ -61,18 +57,7 @@ export interface RuntimeConfig {
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent'
 export type ProcessRole = 'server' | 'worker' | 'db-service'
-export type AuditFullBodyCaptureScope = 'global' | 'account'
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
-
-export interface AuditFullBodyCaptureRuntimeConfig {
-  enabled: boolean
-  scope: AuditFullBodyCaptureScope
-  accountId?: string
-  includeSuccess: boolean
-  expiresAt?: string
-  updatedAt?: string
-}
-
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -83,7 +68,6 @@ export const defaultRuntimeSecret = 'juhe-ai-dev-secret-change-me'
 const minimumProductionSecretLength = 32
 
 const localEnv = loadLocalEnv(localEnvPath)
-const initialAuditFullBodyCaptureEnabled = booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', false)
 
 export const runtimeConfig: RuntimeConfig = {
   processRole: processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server'),
@@ -100,14 +84,6 @@ export const runtimeConfig: RuntimeConfig = {
   httpSecurity: httpSecurityConfig(),
   upstreamUrlSecurity: upstreamUrlSecurityConfig(),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
-  audit: {
-    fullBodyCaptureEnabled: initialAuditFullBodyCaptureEnabled,
-    fullBodyCapture: {
-      enabled: initialAuditFullBodyCaptureEnabled,
-      scope: 'global',
-      includeSuccess: false
-    }
-  },
   gateway: {
     bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024
   },

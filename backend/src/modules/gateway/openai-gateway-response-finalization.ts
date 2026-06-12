@@ -230,7 +230,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
-        preserveImageStreamBodyCapture: auditCapture.shouldPreserveFullPayloadBodies(),
         responseInspectionPolicies: resolveRuntimeResponseInspectionPolicies({
           account,
           managementPolicies: input.responseInspectionPolicies

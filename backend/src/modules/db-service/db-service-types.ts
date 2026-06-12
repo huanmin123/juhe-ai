@@ -9,7 +9,6 @@ import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/acc
 import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import type { AuditFullBodyCaptureRuntimeConfig } from '../../config/runtime.js'
 import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
@@ -127,10 +126,6 @@ export interface DbServiceServerRuntimeSnapshot {
   }
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
-  audit?: {
-    fullBodyCaptureEnabled: boolean
-    fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
-  }
 }
 
 export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime'
@@ -366,21 +361,6 @@ export type DbServiceParentMessage =
     requestId: string
   }
   | {
-    type: 'db_service_server_audit_full_body_capture_update_response'
-    requestId: string
-    ok: true
-    result: {
-      fullBodyCaptureEnabled: boolean
-      fullBodyCapture: AuditFullBodyCaptureRuntimeConfig
-    }
-  }
-  | {
-    type: 'db_service_server_audit_full_body_capture_update_response'
-    requestId: string
-    ok: false
-    errorMessage: string
-  }
-  | {
     type: 'db_service_server_account_runtime_clear_response'
     requestId: string
     ok: true
@@ -421,11 +401,6 @@ export type DbServiceChildMessage =
     type: 'db_service_process_event_loop_response'
     requestId: string
     sample?: ProcessEventLoopSample
-  }
-  | {
-    type: 'db_service_server_audit_full_body_capture_update_request'
-    requestId: string
-    config: AuditFullBodyCaptureRuntimeConfig
   }
   | {
     type: 'db_service_server_account_runtime_clear_request'

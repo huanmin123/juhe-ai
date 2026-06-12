@@ -143,7 +143,7 @@
           <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <RowActions :actions="apiKeyActions(record)" @action-click="handleApiKeyAction($event, record)" />
+          <RowActions :actions="apiKeyPrimaryActions(record)" :more-actions="apiKeyMoreActions(record)" @action-click="handleApiKeyAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -197,7 +197,7 @@
             </div>
           </div>
           <div class="mobile-list-card-actions">
-            <RowActions variant="button" :actions="apiKeyActions(record)" @action-click="handleApiKeyAction($event, record)" />
+            <RowActions variant="button" :actions="apiKeyPrimaryActions(record)" :more-actions="apiKeyMoreActions(record)" @action-click="handleApiKeyAction($event, record)" />
           </div>
         </article>
       </template>
@@ -316,8 +316,8 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="createdKeyOpen" title="API Key 已创建" width="640px" :footer="null">
-      <a-alert message="复制下方 API Key 和 Base URL；统计、会话亲和和缓存按本地 API Key 与分组保持连续。" type="info" show-icon />
+    <a-modal v-model:open="createdKeyOpen" :title="createdKeyModalTitle" width="640px" :footer="null">
+      <a-alert :message="createdKeyModalMessage" type="info" show-icon />
       <div class="created-key-base-url">
         <span class="created-key-label">Base URL</span>
         <span class="created-key-value">{{ gatewayBaseUrl }}</span>
@@ -387,7 +387,10 @@ const helpOpen = ref(false)
 const editingId = ref<string>()
 const editingSystemAccountId = ref<string>()
 const createdKey = ref('')
+const createdKeyModalTitle = ref('API Key 已创建')
+const createdKeyModalMessage = ref('复制下方 API Key 和 Base URL；统计、会话亲和和缓存按本地 API Key 与分组保持连续。')
 const statusUpdatingId = ref('')
+const keyRefreshingId = ref('')
 const keyCopyingId = ref('')
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
@@ -716,18 +719,36 @@ async function copyKeyPreview(apiKey: ApiKeySummary): Promise<void> {
   }
 }
 
-function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {
-  const updating = statusUpdatingId.value === apiKey.id
-  const actions: RowActionItem[] = [
-    { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: updating }
+function apiKeyActionBusy(apiKey: ApiKeySummary): boolean {
+  return statusUpdatingId.value === apiKey.id || keyRefreshingId.value === apiKey.id
+}
+
+function apiKeyPrimaryActions(apiKey: ApiKeySummary): RowActionItem[] {
+  const busy = apiKeyActionBusy(apiKey)
+  return [
+    { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: busy },
+    {
+      key: 'delete',
+      label: '删除',
+      icon: 'delete',
+      tone: 'danger',
+      disabled: busy,
+      confirmTitle: `确认删除 API Key ${apiKey.name}？`,
+      confirmOkText: '删除'
+    }
   ]
+}
+
+function apiKeyMoreActions(apiKey: ApiKeySummary): RowActionItem[] {
+  const busy = apiKeyActionBusy(apiKey)
+  const refreshDisabled = Boolean(keyRefreshingId.value) || statusUpdatingId.value === apiKey.id
   const statusAction: RowActionItem = apiKey.status === 'active'
     ? {
         key: 'disable',
         label: '停用',
         icon: 'disable',
         tone: 'warning',
-        disabled: updating,
+        disabled: busy,
         confirmTitle: '确认停用这个 API Key？停用后后续请求会立即被拒绝。',
         confirmOkText: '停用'
       }
@@ -736,19 +757,18 @@ function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {
         label: '启用',
         icon: 'enable',
         tone: 'success',
-        disabled: updating
+        disabled: busy
       }
   return [
-    ...actions,
     statusAction,
     {
-      key: 'delete',
-      label: '删除',
-      icon: 'delete',
-      tone: 'danger',
-      disabled: updating,
-      confirmTitle: `确认删除 API Key ${apiKey.name}？`,
-      confirmOkText: '删除'
+      key: 'refresh-key',
+      label: '刷新密钥',
+      icon: 'refresh',
+      tone: 'warning',
+      disabled: refreshDisabled,
+      confirmTitle: `确认刷新 API Key ${apiKey.name} 的密钥？刷新后旧密钥会立即失效，请先确认客户端配置可同步更新。`,
+      confirmOkText: '刷新'
     }
   ]
 }
@@ -1362,6 +1382,10 @@ function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
     void updateApiKeyStatus(apiKey, key === 'enable' ? 'active' : 'disabled')
     return
   }
+  if (key === 'refresh-key') {
+    void refreshApiKeySecret(apiKey)
+    return
+  }
   if (key === 'delete') {
     void removeApiKey(apiKey)
   }
@@ -1387,6 +1411,28 @@ async function updateApiKeyStatus(apiKey: ApiKeySummary, status: 'active' | 'dis
   } finally {
     if (statusUpdatingId.value === apiKey.id) {
       statusUpdatingId.value = ''
+    }
+  }
+}
+
+async function refreshApiKeySecret(apiKey: ApiKeySummary) {
+  if (keyRefreshingId.value) return
+  keyRefreshingId.value = apiKey.id
+  try {
+    const result = await apiKeysApi.refreshKey(apiKey.id, apiKeyOperationScopeParams(apiKey))
+    updateApiKeyItems((item) => item.id === apiKey.id, () => result)
+    createdKey.value = result.key
+    createdKeyModalTitle.value = 'API Key 密钥已刷新'
+    createdKeyModalMessage.value = '密钥已刷新，旧密钥已失效，请立即复制新密钥并更新客户端配置。'
+    createdKeyOpen.value = true
+    message.success('API Key 密钥已刷新')
+    void loadData({ quiet: true })
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '刷新 API Key 密钥失败'))
+  } finally {
+    if (keyRefreshingId.value === apiKey.id) {
+      keyRefreshingId.value = ''
     }
   }
 }
@@ -1452,6 +1498,8 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     } else {
       const result = await apiKeysApi.create(payload, apiKeyScopeParams.value)
       createdKey.value = result.key
+      createdKeyModalTitle.value = 'API Key 已创建'
+      createdKeyModalMessage.value = '复制下方 API Key 和 Base URL；统计、会话亲和和缓存按本地 API Key 与分组保持连续。'
       createdKeyOpen.value = true
       message.success('API Key 已创建')
       await loadData()

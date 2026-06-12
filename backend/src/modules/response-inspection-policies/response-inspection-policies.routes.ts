@@ -121,7 +121,7 @@ responseInspectionPoliciesRouter.post('/', mutationGuard({
   res.status(201).json(ok(publicPolicySummary(policy)))
 })
 
-responseInspectionPoliciesRouter.patch('/:id', mutationGuard({
+responseInspectionPoliciesRouter.put('/:id', mutationGuard({
   operationKey: 'response_inspection_policies.update',
   fingerprint: (req) => ({
     id: req.params.id,

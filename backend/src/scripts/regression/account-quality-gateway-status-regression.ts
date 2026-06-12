@@ -1,0 +1,250 @@
+import { strict as assert } from 'node:assert'
+import { mkdirSync, rmSync } from 'node:fs'
+import http from 'node:http'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import express from 'express'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { logger } from '../../shared/logger.js'
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-account-quality-gateway-status-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.secret = 'account-quality-gateway-status-secret'
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+runtimeConfig.processRole = 'db-service'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
+mkdirSync(tempRoot, { recursive: true })
+logger.level = 'silent'
+
+const [
+  { openAIGatewayRouter },
+  { captureGatewayRawBody },
+  { requestContextMiddleware },
+  databaseModule,
+  repositories,
+  gatewayCache,
+  accountSideEffects,
+  usageRecordQueue,
+  auditLogQueue,
+  usageStatsRepository,
+  accountQualityRepository
+] = await Promise.all([
+  import('../../modules/gateway/openai-gateway.routes.js'),
+  import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../modules/gateway/gateway-runtime-cache.service.js'),
+  import('../../modules/gateway/gateway-account-side-effects.service.js'),
+  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/usage-stats.repository.js'),
+  import('../../storage/account-quality.repository.js')
+])
+
+interface MockUpstreamState {
+  mode: 'failure' | 'success'
+  hits: number
+}
+
+const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const app = express()
+app.use(requestContextMiddleware)
+app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+
+try {
+  let upstreamServer: http.Server | undefined
+  let gatewayServer: http.Server | undefined
+  const upstreamState: MockUpstreamState = { mode: 'failure', hits: 0 }
+
+  try {
+    updateSystemSettingsForTest({
+      temporaryUnschedulableRetryAttempts: 0,
+      temporaryUnschedulableRetryIntervalSeconds: 0,
+      defaultTemporaryUnschedulableMinutes: 5
+    })
+    gatewayCache.clearGatewayRuntimeCache()
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+
+    upstreamServer = createMockOpenAIUpstream(upstreamState)
+    await listen(upstreamServer)
+    const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
+
+    const group = repositories.createGroup({
+      name: '状态质量 mock AI 分组',
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      enabled: true
+    }, access)
+    const account = repositories.createAccount({
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      name: '状态质量 mock AI 账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-quality-gateway-status-upstream',
+        base_url: upstreamBaseUrl
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true
+    }, access)
+    const apiKey = repositories.createApiKeyRecord({
+      name: '状态质量 mock AI Key',
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(apiKey.key, '回归 API Key 未返回明文密钥')
+
+    gatewayServer = http.createServer(app)
+    await listen(gatewayServer)
+    const baseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
+
+    for (let index = 0; index < 5; index += 1) {
+      const response = await requestChatCompletion(baseUrl, apiKey.key, `mock upstream 504 ${index}`)
+      assert.equal(response.status, 503, `单账号上游 504 用尽候选后应返回网关 503，实际 HTTP ${response.status}: ${response.text}`)
+      assert.match(response.text, /没有可用的上游账户/, `网关失败响应应说明没有可用上游账户：${response.text}`)
+      accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    }
+    assert.equal(upstreamState.hits, 5, 'mock 上游应收到 5 次真实失败请求')
+
+    upstreamState.mode = 'success'
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    const successResponse = await requestChatCompletion(baseUrl, apiKey.key, 'mock upstream recovery')
+    assert.equal(successResponse.status, 200, `mock 上游恢复后网关请求应成功，实际 HTTP ${successResponse.status}: ${successResponse.text}`)
+    assert.match(successResponse.text, /mock quality recovery ok/, '成功响应应来自 mock 上游')
+    assert.equal(upstreamState.hits, 6, 'mock 上游应收到 5 次失败和 1 次成功请求')
+
+    usageRecordQueue.flushAllUsageRecordQueue()
+    await waitForUsageStatsSafeCursor()
+    assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100), 6, '真实网关使用记录应进入统计聚合')
+    const qualityResult = accountQualityRepository.refreshAccountQualityFromUsage(10)
+    assert.equal(qualityResult.refreshed, 1, '账号质量刷新应处理 mock AI 命中的账户')
+
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    const listed = repositories.listAccountsPage(access, { keyword: account.name, page: 1, pageSize: 10 }).items.find((item) => item.id === account.id)
+    assert(listed, '账户列表应返回 mock AI 账户')
+    assert.equal(listed.status, 'active', '频繁 504 后恢复成功不应把账户持久状态写死')
+    assert.equal(listed.effectiveAvailability.status, 'available', '质量反馈不应改变账户筛选可用性')
+    assert.equal(listed.qualityRecentRequestCount, 6, '账户列表应返回真实聚合的近窗口请求数')
+    assert.equal(listed.qualityRecentErrorCount, 5, '账户列表应返回真实聚合的近窗口失败数')
+    assert.equal(Math.round((listed.qualityRecentSuccessRate ?? 0) * 100), 17, '账户列表应返回真实聚合的近窗口成功率')
+    assert.match(listed.qualityLastErrorMessage ?? '', /mock upstream 504/, '账户列表应返回 mock 上游最后失败原因')
+
+    console.log('账号质量状态 mock AI 回归通过：真实网关 5 次 504 后 1 次成功，账户仍 active/available，列表返回近窗口失败反馈')
+  } finally {
+    usageRecordQueue.flushAllUsageRecordQueue()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    auditLogQueue.flushAllAuditLogQueue()
+    await closeServer(gatewayServer)
+    await closeServer(upstreamServer)
+  }
+} finally {
+  try {
+    databaseModule.getBusinessDatabase().close()
+    databaseModule.closeStorageDatabases()
+  } catch {
+  }
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
+  return http.createServer((_req, res) => {
+    state.hits += 1
+    if (state.mode === 'failure') {
+      res.writeHead(504, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({
+        error: {
+          message: `mock upstream 504 failure ${state.hits}`,
+          code: 'mock_upstream_504',
+          type: 'upstream_timeout'
+        }
+      }))
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      id: 'chatcmpl-account-quality-gateway-status',
+      object: 'chat.completion',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: 'mock quality recovery ok' },
+          finish_reason: 'stop'
+        }
+      ],
+      usage: {
+        input_tokens: 3,
+        output_tokens: 4,
+        total_tokens: 7
+      }
+    }))
+  })
+}
+
+async function requestChatCompletion(baseUrl: string, apiKey: string, content: string): Promise<{ status: number; text: string }> {
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content }],
+      stream: false
+    })
+  })
+  return {
+    status: response.status,
+    text: await response.text()
+  }
+}
+
+function listen(server: http.Server): Promise<void> {
+  if (server.listening) return Promise.resolve()
+  server.listen(0, '127.0.0.1')
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.once('listening', resolvePromise)
+    server.once('error', rejectPromise)
+  })
+}
+
+function serverPort(server: http.Server): number {
+  const address = server.address()
+  assert(typeof address === 'object' && address !== null, 'server 未监听端口')
+  return address.port
+}
+
+function closeServer(server: http.Server | undefined): Promise<void> {
+  if (!server || !server.listening) return Promise.resolve()
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.close((error) => {
+      if (error) rejectPromise(error)
+      else resolvePromise()
+    })
+  })
+}
+
+function waitForUsageStatsSafeCursor(): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, 5_200))
+}
+
+function updateSystemSettingsForTest(settings: Record<string, unknown>): void {
+  const now = new Date().toISOString()
+  const statement = databaseModule.getBusinessDatabase().prepare(`
+    INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+    VALUES ('sys_admin', ?, ?, ?)
+    ON CONFLICT(system_account_id, key) DO UPDATE SET
+      value_json = excluded.value_json,
+      updated_at = excluded.updated_at
+  `)
+  for (const [key, value] of Object.entries(settings)) {
+    statement.run(key, JSON.stringify(value), now)
+  }
+}

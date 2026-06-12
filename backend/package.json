@@ -35,6 +35,7 @@
     "test:external-public-account-usage-query-guard": "tsx src/scripts/regression/external-public-account-usage-query-guard-regression.ts",
     "test:disabled-account-state-guard": "tsx src/scripts/regression/disabled-account-state-guard-regression.ts",
     "test:account-quality-refresh": "tsx src/scripts/regression/account-quality-refresh-regression.ts",
+    "test:account-quality-gateway-status": "tsx src/scripts/regression/account-quality-gateway-status-regression.ts",
     "test:account-list-stable-sort": "tsx src/scripts/regression/account-list-stable-sort-regression.ts",
     "test:account-list-query-guard": "tsx src/scripts/regression/account-list-query-guard-regression.ts",
     "test:account-priority-field-contract": "tsx src/scripts/regression/account-priority-field-contract-regression.ts",

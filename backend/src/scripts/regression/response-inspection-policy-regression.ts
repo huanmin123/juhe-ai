@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
 import {
   OpenAIResponseInspectionBuffer,
@@ -13,7 +16,12 @@ import {
 } from '../../modules/gateway/openai-gateway-response-semantics.js'
 import { pipeUpstreamStream } from '../../modules/gateway/openai-gateway-stream.js'
 import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
-import { listResponseInspectionPolicyDefaultRules } from '../../storage/response-inspection-policy.repository.js'
+import { closeStorageDatabases, getBusinessDatabase } from '../../storage/database.js'
+import {
+  createResponseInspectionPolicy,
+  listResponseInspectionPolicyDefaultRules,
+  updateResponseInspectionPolicy
+} from '../../storage/response-inspection-policy.repository.js'
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
@@ -293,11 +301,93 @@ function dataEvent(data: Record<string, unknown>): Buffer {
 {
   const repositorySource = readFileSync(new URL('../../storage/response-inspection-policy.repository.ts', import.meta.url), 'utf8')
   const responseFinalizationSource = readFileSync(new URL('../../modules/gateway/openai-gateway-response-finalization.ts', import.meta.url), 'utf8')
+  const routeSource = readFileSync(new URL('../../modules/response-inspection-policies/response-inspection-policies.routes.ts', import.meta.url), 'utf8')
+  const schemaSource = readFileSync(new URL('../../storage/schema/business-schema.ts', import.meta.url), 'utf8')
+  const gatewayPreflightSource = readFileSync(new URL('../../modules/gateway/openai-gateway-request-preflight.ts', import.meta.url), 'utf8')
+  const fallbackCandidateSource = readFileSync(new URL('../../modules/gateway/openai-gateway-api-key-group-fallback-candidate.ts', import.meta.url), 'utf8')
   assert(repositorySource.includes('maxManagementResponseInspectionPolicies'), '管理端响应检查策略必须有固定数量上限')
   assert(repositorySource.includes('SELECT id FROM response_inspection_policies LIMIT ?'), '创建管理端响应检查策略容量预检必须使用固定窗口')
   assert(!repositorySource.includes('COUNT(*) AS total FROM response_inspection_policies'), '创建管理端响应检查策略不能用 COUNT(*) 容量预检')
+  assert(repositorySource.includes('positiveMatchKeys'), '排除条件不能作为独立正向 matcher 使用')
   assert(responseFinalizationSource.includes('nonStreamResponseInspectionMaxBytes'), '非流式 JSON 响应检查必须有固定检查窗口')
   assert(responseFinalizationSource.includes('pipeNonStreamUpstreamResponseForInspection'), '非流式 JSON 必须先经过写前检查管道')
+  assert(routeSource.includes("responseInspectionPoliciesRouter.put('/:id'"), '响应检查策略更新接口必须使用 PUT 全量替换，不保留 PATCH partial 语义')
+  assert(!routeSource.includes("responseInspectionPoliciesRouter.patch('/:id'"), '响应检查策略更新接口不应继续暴露 PATCH partial 入口')
+  assert(schemaSource.includes("CHECK (action IN ('observe', 'drop_event', 'retry_no_avoidance', 'retry_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl'))"), '响应检查策略动作必须有数据库 CHECK 约束')
+  assert(schemaSource.includes('json_valid(match_json)'), '响应检查策略 match_json 必须有 JSON 有效性约束')
+  assert(fallbackCandidateSource.includes('listCachedActiveResponseInspectionPoliciesAsync'), 'API Key 分组 fallback 候选必须按目标分组协议和供应商加载响应检查策略')
+  assert(gatewayPreflightSource.includes('responseInspectionPolicies: candidate.responseInspectionPolicies'), 'fallback dispatch context 必须使用目标候选分组的响应检查策略')
+  assert(!gatewayPreflightSource.includes('responseInspectionPolicies: input.responseInspectionPolicies'), 'fallback dispatch context 不得沿用原分组传入的响应检查策略')
+}
+
+{
+  const tempRoot = resolve(tmpdir(), `juhe-ai-response-inspection-policy-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+  runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+  runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+  runtimeConfig.secret = 'response-inspection-policy-regression-secret'
+  runtimeConfig.log.consoleEnabled = false
+  runtimeConfig.log.fileEnabled = false
+  runtimeConfig.processRole = 'db-service'
+  mkdirSync(tempRoot, { recursive: true })
+  try {
+    assert.throws(() => createResponseInspectionPolicy({
+      name: '只有排除条件的策略',
+      enabled: true,
+      priority: 10,
+      scopeType: 'protocol',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      match: { outputTextExcludes: ['允许文本'] },
+      action: 'observe'
+    }), /至少需要一个匹配条件/, 'outputTextExcludes 只能作为排除条件，不能单独构成命中规则')
+
+    const created = createResponseInspectionPolicy({
+      name: '全量替换备注清空策略',
+      enabled: true,
+      priority: 11,
+      scopeType: 'protocol',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      match: {
+        outputTextIncludes: ['污染文本'],
+        outputTextExcludes: ['允许文本']
+      },
+      action: 'observe',
+      notes: '等待清空'
+    })
+    const updated = updateResponseInspectionPolicy(created.id, {
+      name: '全量替换备注清空策略',
+      enabled: true,
+      priority: 12,
+      scopeType: 'protocol',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      match: { outputTextIncludes: ['新污染文本'] },
+      action: 'retry_no_avoidance'
+    })
+    assert.equal(updated?.notes, undefined, 'PUT 全量替换语义下，未提交 notes 应清空旧备注')
+    assert.equal(updated?.priority, 12, 'PUT 全量替换应使用本次提交的优先级')
+
+    const database = getBusinessDatabase()
+    const row = database.prepare('SELECT notes, action, priority FROM response_inspection_policies WHERE id = ?')
+      .get(created.id) as { notes: string | null; action: string; priority: number } | undefined
+    assert.equal(row?.notes, null, '数据库中的旧备注必须被清空')
+    assert.equal(row?.action, 'retry_no_avoidance', '数据库中的 action 必须按全量替换更新')
+    assert.equal(row?.priority, 12, '数据库中的 priority 必须按全量替换更新')
+
+    const now = new Date().toISOString()
+    assert.throws(() => database.prepare(`
+      INSERT INTO response_inspection_policies (
+        id, name, enabled, priority, scope_type, protocol_code, match_json, action, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('rip_invalid_action', '非法动作', 1, 20, 'protocol', OPENAI_PROTOCOL_CODE, '{"outputTextIncludes":["x"]}', 'legacy_action', now, now), /constraint|CHECK/i, '数据库必须拒绝非法 action')
+    assert.throws(() => database.prepare(`
+      INSERT INTO response_inspection_policies (
+        id, name, enabled, priority, scope_type, protocol_code, match_json, action, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('rip_invalid_json', '非法 JSON', 1, 21, 'protocol', OPENAI_PROTOCOL_CODE, '{bad json', 'observe', now, now), /constraint|CHECK/i, '数据库必须拒绝非法 match_json')
+  } finally {
+    closeStorageDatabases()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
 }
 
 console.info('response inspection policy regression passed')

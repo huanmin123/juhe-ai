@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vue-tsc -b && vite build",
     "typecheck": "vue-tsc --noEmit",
-    "lint": "vue-tsc --noEmit"
+    "lint": "vue-tsc --noEmit",
+    "test:account-status-formatters": "..\\backend\\node_modules\\.bin\\tsx.CMD src/scripts/regression/account-status-formatters-regression.ts"
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",

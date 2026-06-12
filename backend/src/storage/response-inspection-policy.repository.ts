@@ -112,6 +112,16 @@ const matchKeys = [
   'rawTextIncludes'
 ] as const
 
+const positiveMatchKeys = [
+  'outputTextIncludes',
+  'errorCodes',
+  'errorTypes',
+  'errorMessageIncludes',
+  'finishReasons',
+  'jsonPathsExists',
+  'rawTextIncludes'
+] as const
+
 const systemDefaultRules: ResponseInspectionPolicySummary[] = [
   {
     id: 'default_openai_error_object',
@@ -261,8 +271,7 @@ export function updateResponseInspectionPolicy(id: string, input: ResponseInspec
   const policy = normalizePolicyInput(input, {
     id,
     createdAt: current.created_at,
-    updatedAt: nowIso(),
-    fallback: policyFromRow(current)
+    updatedAt: nowIso()
   })
   getBusinessDatabase()
     .prepare(`
@@ -352,13 +361,12 @@ function normalizePolicyInput(
     id: string
     createdAt: string
     updatedAt: string
-    fallback?: ResponseInspectionPolicySummary
   }
 ): ResponseInspectionPolicySummary {
-  const scopeType = normalizeScopeType(input.scopeType ?? options.fallback?.scopeType)
-  const protocolCode = normalizeProtocolCode(input.protocolCode ?? options.fallback?.protocolCode)
+  const scopeType = normalizeScopeType(input.scopeType)
+  const protocolCode = normalizeProtocolCode(input.protocolCode)
   const providerCode = scopeType === 'provider'
-    ? normalizeProviderCode(input.providerCode ?? options.fallback?.providerCode)
+    ? normalizeProviderCode(input.providerCode)
     : undefined
   if (scopeType === 'provider' && (providerCode === undefined || !isOpenAIProtocolProviderCode(providerCode))) {
     throw new Error('响应检查策略供应商必须使用 OpenAI v1 协议档案')
@@ -370,15 +378,15 @@ function normalizePolicyInput(
     id: options.id,
     defaultRule: false,
     editable: true,
-    name: requiredText(input.name ?? options.fallback?.name, '规则名称', 100),
-    enabled: input.enabled ?? options.fallback?.enabled ?? true,
-    priority: positiveInt(input.priority ?? options.fallback?.priority ?? 100, '优先级', 9999),
+    name: requiredText(input.name, '规则名称', 100),
+    enabled: input.enabled ?? true,
+    priority: positiveInt(input.priority ?? 100, '优先级', 9999),
     scopeType,
     protocolCode,
     providerCode,
-    match: normalizeMatch(input.match ?? options.fallback?.match ?? {}),
-    action: normalizeAction(input.action ?? options.fallback?.action),
-    notes: optionalText(input.notes ?? options.fallback?.notes, '备注', 1000),
+    match: normalizeMatch(input.match ?? {}),
+    action: normalizeAction(input.action),
+    notes: optionalText(input.notes, '备注', 1000),
     createdAt: options.createdAt,
     updatedAt: options.updatedAt
   }
@@ -426,7 +434,7 @@ function normalizeMatch(value: unknown): ResponseInspectionPolicyMatch {
       match[key] = normalized
     }
   }
-  const hasMatcher = matchKeys.some((key) => (match[key]?.length ?? 0) > 0)
+  const hasMatcher = positiveMatchKeys.some((key) => (match[key]?.length ?? 0) > 0)
   if (!hasMatcher) {
     throw new Error('响应检查策略至少需要一个匹配条件')
   }

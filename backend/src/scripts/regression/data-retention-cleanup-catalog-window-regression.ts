@@ -181,9 +181,9 @@ function seedShardsWithCatalogEntries(count: number): void {
   `)
   const entryStatement = datasetDatabase.prepare(`
     INSERT INTO usage_record_shard_entries (
-      usage_id, shard_key, system_account_id, traffic_source, success, created_at, indexed_at
+      usage_id, shard_key, trace_id, system_account_id, traffic_source, success, created_at, indexed_at
     )
-    VALUES (?, ?, 'sys_admin', 'api_key', 1, ?, ?)
+    VALUES (?, ?, ?, 'sys_admin', 'api_key', 1, ?, ?)
   `)
   const cursorStatement = statsDatabase.prepare(`
     INSERT INTO stats_job_state (
@@ -195,7 +195,7 @@ function seedShardsWithCatalogEntries(count: number): void {
     const shardKey = `20240101:s${index}`
     const usageId = `usage_20240101_s${String(index).padStart(3, '0')}_000001`
     shardStatement.run(shardKey, index, join(shardRoot, `shard-${index}.sqlite3`), now, now, now)
-    entryStatement.run(usageId, shardKey, `2024-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z`, now)
+    entryStatement.run(usageId, shardKey, `trace_${usageId}`, `2024-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z`, now)
     cursorStatement.run(shardKey, 'usage_stats_aggregation', usageId, now, now)
     cursorStatement.run(shardKey, 'client_ip_stats_aggregation', usageId, now, now)
   }

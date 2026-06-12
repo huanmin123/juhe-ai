@@ -58,19 +58,6 @@
         </a-form>
       </template>
       <template #actions>
-        <a-button
-          v-if="!fullBodyCaptureEnabled"
-          :disabled="!runtime"
-          :loading="fullBodyCaptureUpdating"
-          @click="openFullBodyCaptureModal"
-        >
-          <template #icon><SettingOutlined /></template>
-          开启临时捕获
-        </a-button>
-        <a-button v-else danger :loading="fullBodyCaptureUpdating" @click="disableFullBodyCapture">
-          <template #icon><PoweroffOutlined /></template>
-          关闭
-        </a-button>
         <TableColumnManager
           :columns="auditLogColumns"
           :settings="columnSettings"
@@ -129,7 +116,7 @@
 
     <RuntimeAvailabilityAlert
       :visible="auditRuntimeAlertVisible"
-      message="审计运行态暂时不可观测"
+      message="审计队列需要关注"
       :description="auditRuntimeAlertDescription"
     />
 
@@ -153,49 +140,6 @@
       @mobile-load-more="loadMoreCurrentMobileRecords"
       @mobile-refresh="refreshCurrentMobileRecords"
     />
-
-    <a-modal
-      v-model:open="fullBodyCaptureModalOpen"
-      title="临时全量捕获"
-      ok-text="保存配置"
-      cancel-text="取消"
-      :confirm-loading="fullBodyCaptureUpdating"
-      @ok="submitFullBodyCaptureConfig"
-    >
-      <a-form layout="vertical" class="full-capture-form">
-        <a-alert
-          type="warning"
-          show-icon
-          message="临时捕获会放大审计写入，建议只选择一个 AI 账户并设置较短有效期。"
-        />
-        <a-form-item label="捕获范围" required>
-          <a-radio-group v-model:value="fullBodyCaptureForm.scope" button-style="solid">
-            <a-radio-button value="account">指定 AI 账户</a-radio-button>
-            <a-radio-button value="global">全局</a-radio-button>
-          </a-radio-group>
-        </a-form-item>
-        <a-form-item v-if="fullBodyCaptureForm.scope === 'account'" label="AI 账户" required>
-          <AccountSelect
-            v-model:value="fullBodyCaptureForm.accountId"
-            v-model:selected-account="fullBodyCaptureAccountSelection"
-            :accounts="accountOptions"
-            :filter-option="false"
-            :loading="accountOptionsLoading"
-            placeholder="选择要观察的 AI 账户"
-            @dropdown-visible-change="handleAccountOptionsDropdown"
-            @search="handleAccountOptionsSearch"
-          />
-        </a-form-item>
-        <a-form-item label="普通成功请求">
-          <a-switch v-model:checked="fullBodyCaptureForm.includeSuccess" checked-children="捕获 200" un-checked-children="按采样" />
-          <div class="form-help">开启后命中范围内的普通成功请求会跳过 1 小时后的 10% 后置采样，继续长期保留。</div>
-        </a-form-item>
-        <a-form-item label="有效期" required>
-          <a-input-number v-model:value="fullBodyCaptureForm.durationMinutes" :min="1" :max="1440" :precision="0" addon-after="分钟" />
-          <div class="form-help">到期后自动关闭；最大 1440 分钟。单请求仍受 64MB 活跃捕获硬上限约束。</div>
-        </a-form-item>
-      </a-form>
-    </a-modal>
 
     <a-drawer v-model:open="detailOpen" width="min(980px, 96vw)" title="审计详情" :body-style="{ padding: '18px' }">
       <a-spin :spinning="detailLoading">
@@ -389,7 +333,7 @@
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined, PoweroffOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
@@ -397,7 +341,6 @@ import { message } from '@/lib/antd'
 import { api } from '@/api/client'
 import type {
   AccountOptionSummary,
-  AuditFullBodyCaptureScope,
   AuditLogDetail,
   AuditLogHotSearchResult,
   AuditLogPayloadDetail,
@@ -421,7 +364,6 @@ import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQ
 import { accountSelectionForId, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -459,20 +401,6 @@ const runtime = ref<AuditLogRuntime>()
 const hotSearchResult = ref<AuditLogHotSearchResult>()
 const hotSearchRecords = ref<AuditLogSummary[]>([])
 const hotSearchLoading = ref(false)
-const fullBodyCaptureUpdating = ref(false)
-const fullBodyCaptureModalOpen = ref(false)
-const fullBodyCaptureAccountSelection = ref<AccountSelection | undefined>()
-const fullBodyCaptureForm = ref<{
-  scope: AuditFullBodyCaptureScope
-  accountId: string
-  includeSuccess: boolean
-  durationMinutes: number
-}>({
-  scope: 'account',
-  accountId: '',
-  includeSuccess: true,
-  durationMinutes: 15
-})
 const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
@@ -691,29 +619,27 @@ const hotSearchTablePagination = computed(() => {
   }
 })
 const currentTablePagination = computed(() => viewMode.value === 'search' ? hotSearchTablePagination.value : tablePagination.value)
-const auditRuntimeAlertVisible = computed(() => Boolean(runtime.value && (
-  !runtime.value.runtimeAvailable
-  || !runtime.value.workerSnapshotAvailable
-  || !runtime.value.auditLogQueueAvailable
-  || !runtime.value.activeCaptureAvailable
-)))
+const auditRuntimeRiskReasons = computed(() => {
+  const info = runtime.value
+  if (!info) return []
+  const reasons: string[] = []
+  if (info.flushLastError) reasons.push(`最近写入失败：${info.flushLastError}`)
+  if (positiveRuntimeCount(info.droppedSuccessCount)) reasons.push(`成功审计丢弃 ${info.droppedSuccessCount} 条`)
+  if (positiveRuntimeCount(info.droppedFailureCount)) reasons.push(`失败审计丢弃 ${info.droppedFailureCount} 条`)
+  if (positiveRuntimeCount(info.droppedOverflowCount)) reasons.push(`队列溢出丢弃 ${info.droppedOverflowCount} 条`)
+  if (positiveRuntimeCount(info.droppedOversizeCount)) reasons.push(`超限审计丢弃 ${info.droppedOversizeCount} 条`)
+  return reasons
+})
+const auditRuntimeAlertVisible = computed(() => auditRuntimeRiskReasons.value.length > 0)
 const auditRuntimeAlertDescription = computed(() => {
   const info = runtime.value
   if (!info) return ''
-  const reasons: string[] = []
-  if (!info.runtimeAvailable) {
-    reasons.push('服务运行态不可用')
-  } else {
-    if (!info.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
-    if (!info.auditLogQueueAvailable) reasons.push('审计队列状态不可用')
-    if (!info.activeCaptureAvailable) reasons.push('活跃捕获计数不可用')
-  }
+  const reasons = auditRuntimeRiskReasons.value
   const workerText = info.worker.available
     ? `后台进程${runtimeReadyText(info.worker.ready)}`
     : '后台进程状态不可用'
-  return `${reasons.join('；') || '运行态状态未知'}。${workerText}。`
+  return `${reasons.join('；')}。${workerText}。`
 })
-const fullBodyCaptureEnabled = computed(() => runtime.value?.settings.fullBodyCaptureEnabled ?? false)
 let skipNextRouteTraceRestore = false
 
 const selectedPayloadCurrentText = computed(() => {
@@ -969,86 +895,6 @@ function normalizeHotSearchKeywordInput(value: string): string {
   return value.trim()
 }
 
-function openFullBodyCaptureModal(): void {
-  if (!runtime.value || fullBodyCaptureUpdating.value) return
-  const config = runtime.value.settings.fullBodyCapture
-  const fallbackAccountId = config.accountId || accountIdFilter.value || ''
-  fullBodyCaptureForm.value = {
-    scope: config.scope === 'global' ? 'global' : 'account',
-    accountId: fallbackAccountId,
-    includeSuccess: config.enabled ? config.includeSuccess : true,
-    durationMinutes: remainingDurationMinutes(config.expiresAt) ?? 15
-  }
-  fullBodyCaptureAccountSelection.value = accountSelectionForId(fallbackAccountId) ?? accountSelection.value
-  if (fallbackAccountId) {
-    void ensureAccountOptionById(fallbackAccountId)
-  }
-  fullBodyCaptureModalOpen.value = true
-}
-
-async function submitFullBodyCaptureConfig(): Promise<void> {
-  if (!runtime.value || fullBodyCaptureUpdating.value) return
-  const form = fullBodyCaptureForm.value
-  if (form.scope === 'account' && !form.accountId) {
-    message.warning('请选择要定向捕获的 AI 账户')
-    return
-  }
-  if (!Number.isInteger(form.durationMinutes) || form.durationMinutes < 1 || form.durationMinutes > 1440) {
-    message.warning('请填写有效期')
-    return
-  }
-  await updateFullBodyCapture({
-    enabled: true,
-    scope: form.scope,
-    accountId: form.scope === 'account' ? form.accountId : undefined,
-    includeSuccess: form.includeSuccess,
-    durationMinutes: form.durationMinutes
-  }, '临时全量捕获配置已保存')
-  fullBodyCaptureModalOpen.value = false
-}
-
-async function disableFullBodyCapture(): Promise<void> {
-  await updateFullBodyCapture({ enabled: false }, '临时全量捕获已关闭')
-}
-
-async function updateFullBodyCapture(
-  payload: Parameters<typeof api.auditLogs.updateFullBodyCapture>[0],
-  successMessage: string
-): Promise<void> {
-  if (!runtime.value || fullBodyCaptureUpdating.value) return
-  const previousRuntime = runtime.value
-  if (payload.enabled === false) {
-    runtime.value = {
-      ...previousRuntime,
-      settings: {
-        ...previousRuntime.settings,
-        fullBodyCaptureEnabled: false,
-        fullBodyCapture: {
-          ...previousRuntime.settings.fullBodyCapture,
-          enabled: false
-        }
-      }
-    }
-  }
-  fullBodyCaptureUpdating.value = true
-  try {
-    const result = await api.auditLogs.updateFullBodyCapture(payload)
-    if (runtime.value) {
-      runtime.value = {
-        ...runtime.value,
-        settings: result.settings
-      }
-    }
-    message.success(successMessage)
-  } catch (error) {
-    runtime.value = previousRuntime
-    console.error(error)
-    message.error('保存临时全量捕获配置失败')
-  } finally {
-    fullBodyCaptureUpdating.value = false
-  }
-}
-
 function applyPageState(state: AuditLogsPageState): void {
   traceIdFilter.value = state.traceIdFilter
   hotSearchKeywordFilter.value = state.hotSearchKeywordFilter
@@ -1124,7 +970,7 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
 async function loadAccountOptions(keyword = accountOptionsKeyword.value, force = false): Promise<void> {
   accountOptionsKeyword.value = keyword
   const requestKeyword = keyword.trim() || undefined
-  const selectedIds = [accountIdFilter.value, fullBodyCaptureForm.value.accountId].filter(Boolean)
+  const selectedIds = [accountIdFilter.value].filter(Boolean)
   const requestKey = JSON.stringify([requestKeyword ?? '', selectedIds])
   if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
     return accountOptionsLoadingPromise
@@ -1169,7 +1015,7 @@ async function loadAccountOptions(keyword = accountOptionsKeyword.value, force =
 }
 
 async function ensureSelectedAccountOption(options: AccountOptionSummary[]): Promise<AccountOptionSummary[]> {
-  const selectedIds = [accountIdFilter.value, fullBodyCaptureForm.value.accountId].filter(Boolean)
+  const selectedIds = [accountIdFilter.value].filter(Boolean)
   const missingIds = selectedIds.filter((id) => !options.some((account) => account.id === id))
   if (!missingIds.length) return options
   try {
@@ -1177,15 +1023,6 @@ async function ensureSelectedAccountOption(options: AccountOptionSummary[]): Pro
     return mergeOptionsById(selectedOptions, options)
   } catch {
     return options
-  }
-}
-
-async function ensureAccountOptionById(accountId: string): Promise<void> {
-  if (!accountId || accountOptions.value.some((account) => account.id === accountId)) return
-  try {
-    const selectedOptions = await api.accounts.options({ ids: [accountId], limit: 50 })
-    accountOptions.value = mergeOptionsById(selectedOptions, accountOptions.value)
-  } catch {
   }
 }
 
@@ -1406,13 +1243,8 @@ function runtimeReadyText(value: boolean | null): string {
   return '状态未知'
 }
 
-function remainingDurationMinutes(expiresAt?: string): number | undefined {
-  if (!expiresAt) return undefined
-  const timestamp = serverDateTimeTimestamp(expiresAt)
-  if (timestamp === undefined) return undefined
-  const remainingMs = timestamp - Date.now()
-  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return undefined
-  return Math.min(Math.max(Math.ceil(remainingMs / 60_000), 1), 1440)
+function positiveRuntimeCount(value: number | null): boolean {
+  return typeof value === 'number' && value > 0
 }
 
 function snapshotPageState(): AuditLogsPageState {

@@ -77,7 +77,6 @@ export interface StreamPipeOptions {
   clientRetryEnabled?: boolean
   onFirstOutput?: () => void
   captureSuccessPayloads?: boolean
-  preserveImageStreamBodyCapture?: boolean
   retryBeforeDownstreamWriteUntilOutput?: boolean
   responseInspectionPolicies?: RuntimeResponseInspectionPolicy[]
   endpointFamily?: OpenAIResponseEndpointFamily
@@ -132,7 +131,6 @@ export async function pipeUpstreamStream(
   let clientClosed = false
   let terminalEventWritten = false
   let bodyCaptureOmitted = false
-  let bodyCaptureOmissionSkipped = false
   let downstreamPrepared = false
   let preCommitBuffering = options.retryBeforeDownstreamWriteUntilOutput === true
   let preCommitBufferedBytes = 0
@@ -205,24 +203,6 @@ export async function pipeUpstreamStream(
     input: { eofPendingFlush?: boolean } = {}
   ) => {
     if (!inspection.imageOutputReceived || bodyCaptureOmitted) {
-      return
-    }
-    if (options.preserveImageStreamBodyCapture === true) {
-      if (!bodyCaptureOmissionSkipped) {
-        bodyCaptureOmissionSkipped = true
-        streamLogger.info({
-          event: 'gateway_stream_body_capture_omission_skipped',
-          reason: 'full_body_capture_enabled',
-          elapsedMs: Date.now() - startedAt,
-          chunkIndex,
-          totalUpstreamBytes,
-          totalResponseBytes,
-          sseEventCount: inspection.eventCount,
-          lastSseEventType: inspection.lastEventType,
-          recentSseEventTypes: inspection.recentEventTypes,
-          eofPendingFlush: input.eofPendingFlush
-        }, '网关识别到图像流输出，临时全量捕获已命中，保留流式响应正文捕获')
-      }
       return
     }
     bodyCaptureOmitted = true

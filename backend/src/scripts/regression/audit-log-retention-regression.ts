@@ -18,8 +18,6 @@ runtimeConfig.secret = 'audit-log-retention-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
-runtimeConfig.audit.fullBodyCaptureEnabled = false
-runtimeConfig.audit.fullBodyCapture = { enabled: false, scope: 'global', includeSuccess: false }
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -32,7 +30,6 @@ const [databaseModule, repositories, backgroundIpc, usageRecordQueue, usageRecor
 ])
 const auditCapture = await import('../../modules/gateway/audit-capture.service.js')
 const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
-const auditSettings = await import('../../modules/audit-logs/audit-log-settings.js')
 
 assertAuditPayloadCleanupUsesAsyncFiles()
 
@@ -53,8 +50,6 @@ const largeSuccessRequestBody = Buffer.from(JSON.stringify({
 }), 'utf8')
 
 try {
-  assert.equal(runtimeConfig.audit.fullBodyCaptureEnabled, false, '回归默认应关闭全量捕获开关，超限 body 走摘要保全')
-
   const unsampledTraceId = traceIdForBucket((bucket) => bucket >= 1000)
   const sampledTraceId = traceIdForBucket((bucket) => bucket < 1000)
   finalizeSuccessfulRequest(unsampledTraceId)
@@ -258,84 +253,22 @@ try {
     rawGreaterThan: largeSuccessRequestBody.byteLength
   })
 
-  const previousFullBodyCapture = { ...runtimeConfig.audit.fullBodyCapture }
-  const previousFullBodyCaptureEnabled = runtimeConfig.audit.fullBodyCaptureEnabled
-  auditSettings.setAuditLogFullBodyCaptureConfig({
-    enabled: true,
-    scope: 'global',
-    includeSuccess: false
+  const hotTrimSuccessTraceId = traceIdForBucket((bucket) => bucket >= 1000, 'trace-success-hot-trim')
+  finalizeSuccessfulRequestWithBody(hotTrimSuccessTraceId, largeSuccessRequestBody)
+  auditQueue.flushAllAuditLogQueue()
+  const hotTrimSuccessEvents = repositories.listAuditLogs({ traceId: hotTrimSuccessTraceId })
+  assert.equal(hotTrimSuccessEvents.total, 1, '未采样成功大请求应先按 1 小时热保留写入审计')
+  assert.equal(hotTrimSuccessEvents.items[0]?.sampleReason, 'success_hot_full_retention', '未采样成功大请求应标记为成功热保留')
+
+  const hotTrimmed = await repositories.cleanupAuditLogsByRetentionAsync({
+    successHotCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
+    successCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
+    failureCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
+    errorGroupCutoffUpdatedAt: '2000-01-01T00:00:00.000Z',
+    limit: 100
   })
-  try {
-    const fullBodyCaptureTraceId = 'trace-full-body-capture-large'
-    finalizeFailedRequestWithBody(fullBodyCaptureTraceId, largeFailedRequestBody)
-    auditQueue.flushAllAuditLogQueue()
-    const fullBodyCaptureEvents = repositories.listAuditLogs({ traceId: fullBodyCaptureTraceId })
-    assert.equal(fullBodyCaptureEvents.total, 1, '临时全量捕获开启后仍应保留审计事件')
-    const fullBodyCaptureDetail = repositories.getAuditLogDetail(fullBodyCaptureEvents.items[0]?.id ?? '')
-    const fullBodyClientPayload = fullBodyCaptureDetail?.payloads.find((payload) => payload.partType === 'client_request')
-    assert(fullBodyClientPayload, '临时全量捕获开启后应保留客户端请求 payload')
-    assert.equal(fullBodyClientPayload.captureStatus, 'complete', '临时全量捕获开启后大 body 不应转为摘要')
-    assert.equal(fullBodyClientPayload.bodySha256, sha256Buffer(largeFailedRequestBody), '临时全量捕获开启后 bodySha256 仍应指向原始 body')
-    assert.equal(fullBodyClientPayload.sizeBytes, largeFailedRequestBody.byteLength + headerBytes({ 'content-type': 'application/json' }), '临时全量捕获开启后 payload 原始大小应等于完整 body 加 headers')
-    assert.equal(fullBodyClientPayload.compressedSizeBytes, fullBodyClientPayload.sizeBytes, '临时全量捕获开启后超过压缩窗口的大 body 应按未压缩落盘字节计入')
-    assertAuditPayloadByteColumns(fullBodyCaptureEvents.items[0]?.id ?? '', {
-      compressedEqualsRaw: true,
-      rawGreaterThan: largeFailedRequestBody.byteLength
-    })
-    const fullBodyPayloadDetail = await repositories.getAuditLogPayload(fullBodyCaptureEvents.items[0]?.id ?? '', fullBodyClientPayload.id, { limit: 1024 * 1024 })
-    assert.equal(fullBodyPayloadDetail?.bodyTotalBytes, largeFailedRequestBody.byteLength, '临时全量捕获开启后应保存完整 body 原文大小')
-    assert.equal(fullBodyPayloadDetail?.bodyTruncated, true, '完整大 body 读取接口仍应按窗口返回')
-  } finally {
-    runtimeConfig.audit.fullBodyCapture = previousFullBodyCapture
-    runtimeConfig.audit.fullBodyCaptureEnabled = previousFullBodyCaptureEnabled
-  }
-
-  const previousTargetedCapture = { ...runtimeConfig.audit.fullBodyCapture }
-  const previousTargetedCaptureEnabled = runtimeConfig.audit.fullBodyCaptureEnabled
-  auditSettings.setAuditLogFullBodyCaptureConfig({
-    enabled: true,
-    scope: 'account',
-    accountId: 'account_targeted_full_capture',
-    includeSuccess: true,
-    durationMinutes: 15
-  })
-  try {
-    const targetedSuccessTraceId = traceIdForBucket((bucket) => bucket >= 1000, 'trace-targeted-success-full-capture')
-    finalizeSuccessfulAccountRequestWithBody(targetedSuccessTraceId, largeSuccessRequestBody, 'account_targeted_full_capture')
-    auditQueue.flushAllAuditLogQueue()
-    const targetedSuccessEvents = repositories.listAuditLogs({ traceId: targetedSuccessTraceId })
-    assert.equal(targetedSuccessEvents.total, 1, '定向临时全量捕获开启后，命中账户的未采样 200 成功请求也应进入审计')
-    assert.equal(targetedSuccessEvents.items[0]?.sampleReason, 'targeted_full_capture_success', '定向 200 成功请求应记录定向捕获采样原因')
-    const targetedSuccessDetail = repositories.getAuditLogDetail(targetedSuccessEvents.items[0]?.id ?? '')
-    const targetedClientPayload = targetedSuccessDetail?.payloads.find((payload) => payload.partType === 'client_request')
-    const targetedUpstreamRequestPayload = targetedSuccessDetail?.payloads.find((payload) => payload.partType === 'upstream_request')
-    assert(targetedClientPayload, '定向 200 成功请求应补充客户端请求 payload')
-    assert(targetedUpstreamRequestPayload, '定向 200 成功请求应捕获命中账户的上游请求 payload')
-    assert.equal(targetedClientPayload.captureStatus, 'complete', '定向全量捕获下成功大 body 不应转为摘要')
-    const targetedPayloadDetail = await repositories.getAuditLogPayload(targetedSuccessEvents.items[0]?.id ?? '', targetedClientPayload.id, { limit: 1024 * 1024 })
-    assert.equal(targetedPayloadDetail?.bodyTotalBytes, largeSuccessRequestBody.byteLength, '定向全量捕获应保存成功大 body 完整原文大小')
-
-    const nonTargetSuccessTraceId = traceIdForBucket((bucket) => bucket >= 1000, 'trace-targeted-success-non-target')
-    finalizeSuccessfulAccountRequestWithBody(nonTargetSuccessTraceId, largeSuccessRequestBody, 'account_other_full_capture')
-    auditQueue.flushAllAuditLogQueue()
-    const nonTargetSuccessEvents = repositories.listAuditLogs({ traceId: nonTargetSuccessTraceId })
-    assert.equal(nonTargetSuccessEvents.total, 1, '非目标账户的未采样 200 成功请求应按热保留写入审计')
-    assert.equal(nonTargetSuccessEvents.items[0]?.sampleReason, 'success_hot_full_retention', '非目标账户未采样成功请求不应标记为定向捕获')
-
-    const hotTrimmed = await repositories.cleanupAuditLogsByRetentionAsync({
-      successHotCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
-      successCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
-      failureCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
-      errorGroupCutoffUpdatedAt: '2000-01-01T00:00:00.000Z',
-      limit: 100
-    })
-    assert(hotTrimmed >= 1, '热窗口后置清理应删除未命中长期采样的普通成功请求')
-    assert.equal(repositories.listAuditLogs({ traceId: nonTargetSuccessTraceId }).total, 0, '非目标未采样成功请求超过热窗口后应被删除')
-    assert.equal(repositories.listAuditLogs({ traceId: targetedSuccessTraceId }).total, 1, '定向临时全量捕获成功请求应跳过后置采样清理')
-  } finally {
-    runtimeConfig.audit.fullBodyCapture = previousTargetedCapture
-    runtimeConfig.audit.fullBodyCaptureEnabled = previousTargetedCaptureEnabled
-  }
+  assert(hotTrimmed >= 1, '热窗口后置清理应删除未命中长期采样的普通成功请求')
+  assert.equal(repositories.listAuditLogs({ traceId: hotTrimSuccessTraceId }).total, 0, '未采样成功请求超过热窗口后应被删除')
 
   const previousProcessRole = runtimeConfig.processRole
   const pendingWorkerMessagesBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
@@ -578,37 +511,6 @@ function finalizeSuccessfulRequestWithBody(traceId: string, body: Buffer<ArrayBu
   })
 }
 
-function finalizeSuccessfulAccountRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>, accountId: string): void {
-  const capture = auditCapture.createAuditCapture({
-    req: auditRequest(body),
-    traceId,
-    clientIp: '127.0.0.1',
-    startedAtMs: Date.parse(now)
-  })
-  const attemptId = capture.startAttempt({
-    account: auditOpenAIAccount(accountId),
-    attemptIndex: 0,
-    upstreamUrl: 'https://api.openai.com/v1/responses?token=audit-upstream-query-token&safe=ok',
-    method: 'POST',
-    headers: new Headers({ 'content-type': 'application/json' }),
-    body
-  })
-  capture.completeAttempt(attemptId, {
-    success: true,
-    statusCode: 200,
-    responseHeaders: new Headers({ 'content-type': 'application/json' }),
-    responseBody: JSON.stringify({ ok: true })
-  })
-  capture.finalize({
-    outcome: 'success',
-    success: true,
-    statusCode: 200,
-    accountId,
-    responseHeaders: { 'content-type': 'application/json' },
-    responseBody: JSON.stringify({ ok: true })
-  })
-}
-
 function finalizeFailedRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>): void {
   const capture = auditCapture.createAuditCapture({
     req: auditRequest(body),
@@ -811,7 +713,7 @@ function sha256Buffer(buffer: Buffer<ArrayBufferLike>): string {
 
 function assertAuditPayloadByteColumns(
   auditLogId: string,
-  options: { compressedLessThanRaw?: boolean; compressedEqualsRaw?: boolean; rawGreaterThan?: number } = {}
+  options: { compressedLessThanRaw?: boolean; rawGreaterThan?: number } = {}
 ): void {
   const database = databaseModule.getDatasetDatabase()
   const logRow = database
@@ -836,27 +738,6 @@ function assertAuditPayloadByteColumns(
   if (options.compressedLessThanRaw) {
     assert(compressedPayloadBytes < rawPayloadBytes, '摘要/压缩场景 compressed_payload_bytes 应小于 raw_payload_bytes')
   }
-  if (options.compressedEqualsRaw) {
-    assert.equal(compressedPayloadBytes, rawPayloadBytes, '全量未压缩场景 compressed_payload_bytes 应等于 raw_payload_bytes')
-  }
-}
-
-function headerBytes(headers: Record<string, string | string[]>): number {
-  return Buffer.byteLength(stableJsonStringify(headers), 'utf8')
-}
-
-function stableJsonStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJsonStringify).join(',')}]`
-  }
-  if (value && typeof value === 'object') {
-    const object = value as Record<string, unknown>
-    return `{${Object.keys(object)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(object[key])}`)
-      .join(',')}}`
-  }
-  return JSON.stringify(value)
 }
 
 function assertAllAbsent(text: string, markers: string[], message: string): void {

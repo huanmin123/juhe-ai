@@ -25,6 +25,9 @@ export function useScopedApiKeysApi(isManagementView: Ref<boolean>) {
     secret: (id: string, params?: ApiKeyMutationScopeParams) => isManagementView.value
       ? api.apiKeys.secret(id, params)
       : api.myApiKeys.secret(id),
+    refreshKey: (id: string, params?: ApiKeyMutationScopeParams) => isManagementView.value
+      ? api.apiKeys.refreshKey(id, params)
+      : api.myApiKeys.refreshKey(id),
     delete: (id: string, params?: ApiKeyMutationScopeParams) => isManagementView.value
       ? api.apiKeys.delete(id, params)
       : api.myApiKeys.delete(id)
