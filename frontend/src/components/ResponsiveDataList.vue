@@ -440,13 +440,13 @@ function normalizeTableColumn(column: Record<string, any>, isFlexColumn: boolean
       class: 'responsive-data-list-actions-column'
     }))
   }
-  if (props.adaptiveColumnWidth && !column.fixed) {
-    const minWidth = resolveColumnMinWidth(column)
+  if (props.adaptiveColumnWidth) {
+    const minWidth = resolveColumnMinWidth(column, false)
     const manualWidth = isManualColumnWidth(column) ? resolveColumnWidth(column) : undefined
     const { width: _width, [tableColumnManualWidthMarker]: _manualWidth, ...restColumn } = column
     return withColumnResizeHeaderProps(withCellProps({
       ...restColumn,
-      ...(manualWidth === undefined ? {} : { width: manualWidth }),
+      ...(manualWidth === undefined ? (column.fixed ? { width: minWidth } : {}) : { width: manualWidth }),
       minWidth,
       className: mergeClassName(column.className, 'responsive-data-list-auto-column', isFlexColumn ? 'responsive-data-list-flex-column' : undefined)
     }, {
@@ -503,12 +503,40 @@ function resolveActionColumnWidth(value: unknown, actionCount: unknown): number 
   return rowActionColumnWidth(Number.isFinite(numericActionCount) ? numericActionCount : undefined)
 }
 
-function resolveColumnMinWidth(column: Record<string, any>): number {
+function resolveColumnMinWidth(column: Record<string, any>, includeWidth = true): number {
   const minWidth = typeof column.minWidth === 'number' ? column.minWidth : Number.parseFloat(String(column.minWidth ?? ''))
   if (Number.isFinite(minWidth) && minWidth > 0) return minWidth
-  const width = typeof column.width === 'number' ? column.width : Number.parseFloat(String(column.width ?? ''))
-  if (Number.isFinite(width) && width > 0) return width
-  return 160
+  if (includeWidth) {
+    const width = typeof column.width === 'number' ? column.width : Number.parseFloat(String(column.width ?? ''))
+    if (Number.isFinite(width) && width > 0) return width
+  }
+  return resolveCompactColumnMinWidth(column)
+}
+
+function resolveCompactColumnMinWidth(column: Record<string, any>): number {
+  const title = typeof column.title === 'string' || typeof column.title === 'number' ? String(column.title) : ''
+  const key = String(column.key ?? column.dataIndex ?? '')
+  const titleWidth = visualTextWidth(title)
+  const controlWidth = column.sorter || column.sortOrder ? 34 : 24
+  const baseWidth = title ? titleWidth + controlWidth : 96
+  const keyMinimumWidth = compactKeyMinimumWidth(key)
+  return Math.max(72, Math.min(180, Math.max(baseWidth, keyMinimumWidth)))
+}
+
+function compactKeyMinimumWidth(key: string): number {
+  if (key === 'status' || key === 'success' || key === 'stream') return 76
+  if (key === 'priority' || key === 'duration' || key === 'cost') return 82
+  if (key === 'type' || key === 'providerCode') return 88
+  if (key === 'createdAt' || key.endsWith('At')) return 120
+  return 0
+}
+
+function visualTextWidth(value: string): number {
+  let width = 0
+  for (const character of value) {
+    width += character.charCodeAt(0) > 255 ? 14 : 8
+  }
+  return width
 }
 
 function withColumnResizeHeaderProps(column: Record<string, any>): Record<string, any> {
