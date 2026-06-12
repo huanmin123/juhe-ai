@@ -105,7 +105,7 @@
       <a-col :xs="24" :xl="14">
         <StatsChartCard
           :title="`进程事件循环延迟（${currentWindowLabel}）`"
-          description="主进程、后台 worker 和 DB service 独立采样，按后台窗口缓存展示峰值；上方为最近 24 小时最大值。单位为毫秒。"
+          description="主进程、后台 worker 和 DB service 独立采样，按后台窗口缓存展示峰值；上方为最近 24 小时最大值。单位为秒。"
           :loading="systemInitialLoading"
           :has-data="hasProcessEventLoopData"
           :empty-description="processEventLoopEmptyDescription"

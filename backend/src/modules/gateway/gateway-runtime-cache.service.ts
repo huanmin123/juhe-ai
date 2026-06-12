@@ -15,7 +15,10 @@ import { availabilityScheduleCacheTtlMs } from '../../storage/availability-sched
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
-import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
+import {
+  listActiveResponseInspectionPoliciesForGateway,
+  type ResponseInspectionPolicySummary
+} from '../../storage/response-inspection-policy.repository.js'
 import { listProviderModelCatalog, type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 
 const gatewayRuntimeTtlMs = 60_000
@@ -59,6 +62,12 @@ const providerModelCatalogCache = createAppCache<string, ProviderModelCatalogIte
   name: 'gateway:provider-model-catalog',
   max: 1000,
   ttlMs: providerModelCatalogTtlMs
+})
+
+const responseInspectionPolicyCache = createAppCache<string, ResponseInspectionPolicySummary[]>({
+  name: 'gateway:response-inspection-policies',
+  max: 100,
+  ttlMs: gatewayRuntimeTtlMs
 })
 
 const pendingGatewayRuntimeLoads = new Map<string, Promise<DbServiceGatewayRuntime>>()
@@ -191,6 +200,26 @@ export async function listCachedProviderModelCatalogAsync(input: {
   return value.map((item) => ({ ...item }))
 }
 
+export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
+  protocolCode: string
+  providerCode?: string
+}): Promise<ResponseInspectionPolicySummary[]> {
+  const cacheKey = responseInspectionPolicyCacheKey(input.protocolCode, input.providerCode)
+  const cached = responseInspectionPolicyCache.get(cacheKey)
+  if (cached) {
+    return cached.map(cloneResponseInspectionPolicy)
+  }
+  const value = runtimeConfig.processRole !== 'server'
+    ? listActiveResponseInspectionPoliciesForGateway(input)
+    : await requestDbService({
+        type: 'list_active_response_inspection_policies',
+        protocolCode: input.protocolCode,
+        providerCode: input.providerCode
+      })
+  responseInspectionPolicyCache.set(cacheKey, value.map(cloneResponseInspectionPolicy))
+  return value.map(cloneResponseInspectionPolicy)
+}
+
 export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbServiceGatewayRuntime> {
   const cacheKey = hashSecret(apiKey)
   const cached = gatewayRuntimeCache.get(cacheKey)
@@ -228,11 +257,16 @@ export function clearGatewayRuntimeCacheLocal(): void {
   groupUsageAccessCache.clear()
   openAIAccountsCache.clear()
   providerModelCatalogCache.clear()
+  responseInspectionPolicyCache.clear()
   clearSettingsRepositoryCache()
 }
 
 function gatewayCacheKey(groupId: string, systemAccountId: string): string {
   return `${groupId}:${systemAccountId}`
+}
+
+function responseInspectionPolicyCacheKey(protocolCode: string, providerCode?: string): string {
+  return `${protocolCode}:${providerCode ?? ''}`
 }
 
 function assertLocalGatewayDatabaseAccess(operation: string): void {
@@ -303,6 +337,12 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
     openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), accounts, {
       ttlMs: openAIAccountsCacheTtlMs(runtime.hasAccountAvailabilitySchedule === true, nowMs, accounts)
     })
+  }
+  if (runtime.groupAccess && runtime.responseInspectionPolicies) {
+    responseInspectionPolicyCache.set(
+      responseInspectionPolicyCacheKey(runtime.groupAccess.protocolCode, runtime.groupAccess.providerCode),
+      runtime.responseInspectionPolicies.map(cloneResponseInspectionPolicy)
+    )
   }
 }
 

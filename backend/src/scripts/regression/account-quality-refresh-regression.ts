@@ -144,6 +144,13 @@ try {
   assert.equal(row?.recent_error_count, 1)
   assert.equal(row?.last_error_message, '质量刷新模拟错误')
   assert(row?.quality_score && row.quality_score >= 1_000_000, '没有成功首段样本时质量分应保持未知保守值')
+  const listedAccount = repositories
+    .listAccountsPage(access, { keyword: account.name, page: 1, pageSize: 10 })
+    .items.find((item) => item.id === account.id)
+  assert.equal(listedAccount?.status, 'active', '账号质量反馈不应写成账户持久状态')
+  assert.equal(listedAccount?.effectiveAvailability.status, 'available', '账号质量反馈不应改变可用性筛选语义')
+  assert.equal(listedAccount?.qualityRecentErrorCount, 1, '账户列表应返回近窗口失败数，供状态列细分正常状态')
+  assert.equal(listedAccount?.qualityLastErrorMessage, '质量刷新模拟错误', '账户列表应返回最后质量错误，供状态 tooltip 解释')
   const staleRow = statsDatabase
     .prepare('SELECT quality_state, recent_request_count FROM account_quality_scores WHERE account_id = ?')
     .get(staleAccount.id) as { quality_state?: string; recent_request_count?: number } | undefined

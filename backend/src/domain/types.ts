@@ -458,7 +458,10 @@ export interface AccountSummary {
   qualityEwmaFirstTokenMs?: number
   qualityRecentAvgFirstTokenMs?: number
   qualityRecentRequestCount?: number
+  qualityRecentErrorCount?: number
   qualityRecentSuccessRate?: number
+  qualityLastErrorAt?: string
+  qualityLastErrorMessage?: string
   qualityUpdatedAt?: string
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean

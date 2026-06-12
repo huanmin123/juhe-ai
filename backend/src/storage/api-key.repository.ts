@@ -364,6 +364,37 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   return findApiKeySummary(id, access) ?? next
 }
 
+export function refreshApiKeySecret(id: string, access?: AccessScope): (ApiKeySummary & { key: string }) | undefined {
+  const systemAccountId = apiKeySystemAccountId(id)
+  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
+    return undefined
+  }
+  const key = createApiKey()
+  const keyPrefix = key.slice(0, 8)
+  const keySuffix = key.slice(-8)
+  const now = nowIso()
+  const result = getBusinessDatabase()
+    .prepare(`
+      UPDATE api_keys
+      SET key_hash = ?,
+          key_prefix = ?,
+          key_suffix = ?,
+          key_secret_encrypted = ?,
+          updated_at = ?
+      WHERE id = ? AND system_account_id = ?
+    `)
+    .run(hashSecret(key), keyPrefix, keySuffix, encryptJson({ key }), now, id, systemAccountId)
+  if (result.changes <= 0) {
+    return undefined
+  }
+  invalidateGatewayApiKeyCacheById(id)
+  invalidateApiKeyLookupCache(id)
+  notifyGatewayRuntimeCacheInvalidation('api_key_secret_refreshed')
+  notifyApiKeyQuotaCacheInvalidation(id, 'api_key_secret_refreshed')
+  const summary = findApiKeySummary(id, access)
+  return summary ? { ...summary, key } : undefined
+}
+
 export interface ApiKeyDeleteCleanupTarget {
   apiKeyId: string
   systemAccountId: string

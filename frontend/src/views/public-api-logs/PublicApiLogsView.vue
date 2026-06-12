@@ -192,7 +192,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime } from '@/shared/formatters'
+import { formatDateTime, formatMillisecondsAsSeconds } from '@/shared/formatters'
 
 type TimeRangeValue = [Dayjs | null | undefined, Dayjs | null | undefined] | null | undefined
 type PublicApiLogsPageState = {
@@ -408,9 +408,7 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 function formatDuration(value?: number): string {
-  if (value === undefined || value === null) return '-'
-  if (value < 1000) return `${value} ms`
-  return `${(value / 1000).toFixed(2)} s`
+  return formatMillisecondsAsSeconds(value)
 }
 
 function statusColor(value?: number): string {

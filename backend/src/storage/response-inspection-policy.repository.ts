@@ -4,7 +4,7 @@ import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { isOpenAIProtocolProviderCode } from './provider.repository.js'
 
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
-export type ResponseInspectionPolicySource = 'system_default' | 'management' | 'account'
+export type ResponseInspectionPolicySource = 'system_default' | 'management'
 export type ResponseInspectionPolicyAction =
   | 'observe'
   | 'drop_event'

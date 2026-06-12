@@ -212,7 +212,10 @@ export type AccountListRow = AccountRow & {
   quality_ewma_first_token_ms?: number | null
   quality_recent_avg_first_token_ms?: number | null
   quality_recent_request_count?: number | null
+  quality_recent_error_count?: number | null
   quality_recent_success_rate?: number | null
+  quality_last_error_at?: string | null
+  quality_last_error_message?: string | null
   quality_updated_at?: string | null
 }
 

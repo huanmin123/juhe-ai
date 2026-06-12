@@ -16,7 +16,7 @@ const queueFiles = [
   },
   {
     path: '../../modules/runtime-logs/runtime-log-index-queue.service.ts',
-    required: ['pendingRuntimeLogs.slice(0, runtimeLogBatchSize)']
+    required: ['peekRuntimeLogFlushBatch', 'removeRuntimeLogFlushBatch']
   },
   {
     path: '../../modules/record-maintenance/record-maintenance-queue.service.ts',

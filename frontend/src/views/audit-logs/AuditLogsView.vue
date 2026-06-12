@@ -646,7 +646,7 @@ const activeFilterCount = computed(() => {
   if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
-const hotSearchActiveFilterCount = computed(() => hotSearchKeywordFilter.value.trim() ? 1 : 0)
+const hotSearchActiveFilterCount = computed(() => normalizeHotSearchKeywordInput(hotSearchKeywordFilter.value) ? 1 : 0)
 const toolbarKeyword = computed({
   get: () => viewMode.value === 'search' ? hotSearchKeywordFilter.value : traceIdFilter.value,
   set: (value: string) => {
@@ -658,7 +658,7 @@ const toolbarKeyword = computed({
   }
 })
 const toolbarSearchPlaceholder = computed(() => viewMode.value === 'search'
-  ? '搜索最近1小时审计原始内容，空格分隔表示同时命中'
+  ? '搜索最近1小时审计原始内容'
   : '搜索 traceId')
 const toolbarFilterTitle = computed(() => viewMode.value === 'search' ? '最近内容搜索' : '审计筛选')
 const toolbarActiveFilterCount = computed(() => viewMode.value === 'search' ? hotSearchActiveFilterCount.value : activeFilterCount.value)
@@ -934,7 +934,10 @@ function applyFilters(): void {
 }
 
 async function searchHotAuditLogs(): Promise<void> {
-  const keyword = hotSearchKeywordFilter.value.trim()
+  const keyword = normalizeHotSearchKeywordInput(hotSearchKeywordFilter.value)
+  if (hotSearchKeywordFilter.value !== keyword) {
+    hotSearchKeywordFilter.value = keyword
+  }
   const requestId = ++hotSearchRequestSeq
   if (!keyword) {
     hotSearchRecords.value = []
@@ -960,6 +963,10 @@ async function searchHotAuditLogs(): Promise<void> {
       hotSearchLoading.value = false
     }
   }
+}
+
+function normalizeHotSearchKeywordInput(value: string): string {
+  return value.trim()
 }
 
 function openFullBodyCaptureModal(): void {

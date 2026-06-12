@@ -52,6 +52,15 @@ export function formatUsd(value?: number, digits = 2): string {
   return `$${(value ?? 0).toFixed(digits)}`
 }
 
+export function formatMillisecondsAsSeconds(value?: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  const seconds = Math.max(0, value) / 1000
+  if (seconds === 0) return '0s'
+  if (seconds < 1) return `${seconds.toFixed(2)}s`
+  if (seconds < 10) return `${seconds.toFixed(1)}s`
+  return `${Math.round(seconds)}s`
+}
+
 export function parseStrictDatePickerValue(value?: string, label = '时间'): Dayjs | undefined {
   if (!value) return undefined
   if (!serverDateTimePattern.test(value)) {

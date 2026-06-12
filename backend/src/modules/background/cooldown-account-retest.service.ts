@@ -56,7 +56,7 @@ async function runCooldownAccountRetestQueueItem(
 ) {
   const account = cooldownRetestAccountForQueueItem(item)
   if (!account || !isAccountDueForCooldownRetest(account)) {
-    logger.info({
+    logger.debug({
       event: 'background_cooldown_account_retest_discarded',
       accountId: item.accountId,
       accountName: item.accountName,

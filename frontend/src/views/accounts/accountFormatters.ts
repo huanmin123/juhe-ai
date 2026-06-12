@@ -1,6 +1,7 @@
 import {
   formatCompactUsageAmount,
   formatDateTime,
+  formatMillisecondsAsSeconds,
   formatNumber,
   formatServerDateTimeInput,
   formatUsd,
@@ -23,6 +24,10 @@ export interface OAuthUsageBar {
 export interface AccountStatusTagInfo {
   color: string
   label: string
+}
+
+interface AccountQualityStatusInfo extends AccountStatusTagInfo {
+  tooltipLines: string[]
 }
 
 export interface AccountDiagnosticMessageParts {
@@ -65,7 +70,7 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountSummary) {
-  if (account.effectiveAvailability && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.color
+  if (account.effectiveAvailability && !account.effectiveAvailability.available && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
   if (isAccountPackageExpiredStatus(account)) return 'red'
@@ -75,6 +80,9 @@ export function accountStatusColor(account: AccountSummary) {
   if (runtimeStatus === 'local_suppressed') return 'gold'
   if (runtimeStatus === 'half_open') return 'blue'
   if (runtimeStatus === 'precheck_failed') return 'gold'
+  const qualityStatus = accountQualityStatusInfo(account)
+  if (qualityStatus) return qualityStatus.color
+  if (account.effectiveAvailability && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.color
   return statusColor(account.status)
 }
 
@@ -82,7 +90,7 @@ export function accountStatusText(account: AccountSummary) {
   if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
     return directAccountStatusText(account)
   }
-  if (account.effectiveAvailability && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.label
+  if (account.effectiveAvailability && !account.effectiveAvailability.available && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.label
   if (isAuthorizationPaused(account)) return '授权暂停'
   if (isAuthorizationExpired(account)) return '授权到期'
   if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
@@ -93,7 +101,58 @@ export function accountStatusText(account: AccountSummary) {
   if (runtimeStatus === 'local_suppressed') return '短暂避让'
   if (runtimeStatus === 'half_open') return '半开探测'
   if (runtimeStatus === 'precheck_failed') return '探针确认失败'
+  const qualityStatus = accountQualityStatusInfo(account)
+  if (qualityStatus) return qualityStatus.label
+  if (account.effectiveAvailability && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.label
   return statusText(account.status)
+}
+
+function accountQualityStatusInfo(account: AccountSummary): AccountQualityStatusInfo | undefined {
+  if (account.effectiveAvailability?.status !== 'available') return undefined
+  if (account.status !== 'active' || !account.schedulable) return undefined
+
+  const requestCount = Math.max(0, Math.trunc(account.qualityRecentRequestCount ?? 0))
+  const successRate = normalizedRate(account.qualityRecentSuccessRate)
+  const derivedErrorCount = successRate === undefined
+    ? 0
+    : Math.max(0, requestCount - Math.round(requestCount * successRate))
+  const errorCount = Math.max(0, Math.trunc(account.qualityRecentErrorCount ?? derivedErrorCount))
+  if (requestCount < 3 || errorCount < 2) return undefined
+
+  const successRateText = successRate === undefined ? '' : `，成功率 ${Math.round(successRate * 100)}%`
+  const lines = [
+    `近期质量：近窗口 ${formatNumber(requestCount)} 次请求，失败 ${formatNumber(errorCount)} 次${successRateText}`,
+    '持久状态仍为正常；这是近期质量反馈，不参与状态筛选'
+  ]
+  if (account.qualityLastErrorAt) {
+    lines.push(`最后失败：${formatDateTime(account.qualityLastErrorAt)}`)
+  }
+  const lastErrorMessage = formatAccountQualityLastError(account.qualityLastErrorMessage)
+  if (lastErrorMessage) {
+    lines.push(`最后原因：${lastErrorMessage}`)
+  }
+  if (account.qualityUpdatedAt) {
+    lines.push(`统计刷新：${formatDateTime(account.qualityUpdatedAt)}`)
+  }
+
+  if (requestCount >= 5 && (errorCount >= 5 || (successRate !== undefined && successRate <= 0.5))) {
+    return { color: 'red', label: '频繁失败', tooltipLines: lines }
+  }
+  if (errorCount >= 3 || (successRate !== undefined && successRate <= 0.8)) {
+    return { color: 'orange', label: '近期不稳', tooltipLines: lines }
+  }
+  return { color: 'gold', label: '近期失败', tooltipLines: lines }
+}
+
+function normalizedRate(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  return Math.max(0, Math.min(1, value))
+}
+
+function formatAccountQualityLastError(message?: string): string {
+  const value = conciseAccountLastErrorText(message)
+  const maxLength = 120
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
 }
 
 export function accountCooldownText(account: AccountSummary) {
@@ -249,6 +308,10 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push('授权额度已用完，当前调用会被拦截')
   }
   lines.push(...accountRuntimeAvailabilityTooltipLines(account))
+  const qualityStatus = accountQualityStatusInfo(account)
+  if (qualityStatus) {
+    lines.push(...qualityStatus.tooltipLines)
+  }
   if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
   }
@@ -678,9 +741,7 @@ export function formatTestTerminalResult(result: AccountTestResult): string {
 }
 
 export function formatAccountTestDuration(value?: number): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
-  if (value < 1000) return `${Math.max(0, Math.round(value))} ms`
-  return `${(value / 1000).toFixed(2)} s`
+  return formatMillisecondsAsSeconds(value)
 }
 
 function oauthUsageBar(key: string, label: string, window?: { utilization: number; resetsAt?: string; remainingSeconds: number }): OAuthUsageBar | undefined {

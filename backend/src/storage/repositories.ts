@@ -33,7 +33,7 @@ import {
 } from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
 import { maxGroupDeleteAffectedApiKeyRoutes } from './api-key-group-binding-limits.js'
-import { createApiKeyRecord, deleteApiKey, findApiKeySecret, findApiKeySummary, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
+import { createApiKeyRecord, deleteApiKey, findApiKeySecret, findApiKeySummary, listApiKeys, listApiKeysPage, refreshApiKeySecret, updateApiKey } from './api-key.repository.js'
 import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
@@ -274,6 +274,7 @@ export {
   findApiKeySummary,
   listApiKeys,
   listApiKeysPage,
+  refreshApiKeySecret,
   updateApiKey
 } from './api-key.repository.js'
 export { defaultProviderProtocolProfile, findProviderDefaultTestModel, findProviderProtocolProfile, isOpenAIProtocolProviderCode, listOpenAIProtocolProfileIds, listOpenAIProtocolProviderCodes, listProviders } from './provider.repository.js'
@@ -1761,7 +1762,10 @@ function accountSummariesFromRows(
       qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
       qualityRecentAvgFirstTokenMs: typeof row.quality_recent_avg_first_token_ms === 'number' ? row.quality_recent_avg_first_token_ms : undefined,
       qualityRecentRequestCount: typeof row.quality_recent_request_count === 'number' ? row.quality_recent_request_count : undefined,
+      qualityRecentErrorCount: typeof row.quality_recent_error_count === 'number' ? row.quality_recent_error_count : undefined,
       qualityRecentSuccessRate: typeof row.quality_recent_success_rate === 'number' ? row.quality_recent_success_rate : undefined,
+      qualityLastErrorAt: row.quality_last_error_at ?? undefined,
+      qualityLastErrorMessage: row.quality_last_error_message ?? undefined,
       qualityUpdatedAt: row.quality_updated_at ?? undefined,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       schedulable: effectiveAuthorizedSchedulable,

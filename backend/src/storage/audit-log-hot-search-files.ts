@@ -337,20 +337,18 @@ function normalizeHotSearchKeywords(values: string[]): { keywords: string[]; sho
   const keywords: string[] = []
   let shortKeywordCount = 0
   for (const value of values) {
-    for (const part of value.split(/[\s,;，；]+/)) {
-      const keyword = part.trim()
-      if (!keyword) continue
-      const normalized = keyword.slice(0, maxHotSearchKeywordLength)
-      if ([...normalized].length < minHotSearchKeywordLength) {
-        shortKeywordCount += 1
-        continue
-      }
-      const dedupeKey = normalized.toLowerCase()
-      if (seen.has(dedupeKey)) continue
-      seen.add(dedupeKey)
-      keywords.push(normalized)
-      if (keywords.length >= maxHotSearchKeywords) return { keywords, shortKeywordCount }
+    const keyword = value.trim()
+    if (!keyword) continue
+    const normalized = keyword.slice(0, maxHotSearchKeywordLength)
+    if ([...normalized].length < minHotSearchKeywordLength) {
+      shortKeywordCount += 1
+      continue
     }
+    const dedupeKey = normalized.toLowerCase()
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+    keywords.push(normalized)
+    if (keywords.length >= maxHotSearchKeywords) return { keywords, shortKeywordCount }
   }
   return { keywords, shortKeywordCount }
 }
@@ -441,25 +439,24 @@ async function searchHotFilesWithRg(options: {
   startedAt: number
 }): Promise<AuditHotSearchFileResult> {
   const normalizedKeywords = options.keywords.map((keyword) => keyword.toLowerCase())
-  const primaryKeyword = selectPrimaryKeyword(options.keywords)
   const matches: Array<{ id: string; createdAtMs: number }> = []
   const seenIds = new Set<string>()
-  let matchedCount = 0
+  let parsedMatchEventCount = 0
   let stoppedReason: RgStopReason | undefined
 
   const result = await runRgSearch({
     executable: options.rgExecutable,
-    pattern: primaryKeyword,
+    patterns: options.keywords,
     files: options.files,
-    shouldStop: () => matchedCount >= maxRgParsedMatchEvents,
+    shouldStop: () => parsedMatchEventCount >= maxRgParsedMatchEvents,
     onMatch: (event) => {
+      parsedMatchEventCount += 1
       const line = event.data?.lines?.text?.replace(/\r?\n$/, '')
-      if (!line || !lineMatchesKeywords(line, normalizedKeywords)) return
+      if (!line || !lineMatchesAnyKeyword(line, normalizedKeywords)) return
       const item = parseHotSearchLine(line)
       if (!item.auditLogId || seenIds.has(item.auditLogId)) return
       const createdAtMs = parseTimeMs(item.createdAt)
       if (createdAtMs === undefined || createdAtMs < options.startMs || createdAtMs > options.endMs) return
-      matchedCount += 1
       seenIds.add(item.auditLogId)
       matches.push({ id: item.auditLogId, createdAtMs })
     }
@@ -492,14 +489,10 @@ async function searchHotFilesWithRg(options: {
   }
 }
 
-function selectPrimaryKeyword(keywords: string[]): string {
-  return [...keywords].sort((left, right) => right.length - left.length)[0] ?? ''
-}
-
-function lineMatchesKeywords(line: string, normalizedKeywords: string[]): boolean {
+function lineMatchesAnyKeyword(line: string, normalizedKeywords: string[]): boolean {
   if (line.length > maxHotSearchLineChars) return false
   const searchableLine = line.toLowerCase()
-  return normalizedKeywords.every((keyword) => searchableLine.includes(keyword))
+  return normalizedKeywords.some((keyword) => searchableLine.includes(keyword))
 }
 
 function parseHotSearchLine(value: string): AuditHotSearchLine {
@@ -513,29 +506,32 @@ function parseHotSearchLine(value: string): AuditHotSearchLine {
   }
 }
 
-function baseRgArgs(pattern: string): string[] {
-  return [
+function baseRgArgs(patterns: string[]): string[] {
+  const args = [
     '--json',
     '--fixed-strings',
     '--ignore-case',
     '--no-heading',
     '--color=never',
     '--max-columns',
-    String(maxHotSearchLineChars),
-    '--',
-    pattern
+    String(maxHotSearchLineChars)
   ]
+  for (const pattern of patterns) {
+    args.push('-e', pattern)
+  }
+  args.push('--')
+  return args
 }
 
 function runRgSearch(options: {
   executable: string
-  pattern: string
+  patterns: string[]
   files: HotSearchFile[]
   onMatch: (event: RgMatchEvent) => void
   shouldStop?: () => boolean
 }): Promise<RgSearchResult> {
   return new Promise((resolve, reject) => {
-    const args = [...baseRgArgs(options.pattern), ...options.files.map((file) => file.path)]
+    const args = [...baseRgArgs(options.patterns), ...options.files.map((file) => file.path)]
     const child = spawn(options.executable, args, { windowsHide: true })
     let stdoutPending = ''
     let droppingOversizedStdoutLine = false

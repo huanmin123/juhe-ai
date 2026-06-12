@@ -30,7 +30,7 @@ const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpP
 
 try {
   assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot()
-  assertIpStatsViewSeparatesUsageWindowAndLastUsedFilter()
+  assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter()
   const createdAtBase = Date.now() - 60_000
   const today = usageStatsHelpers.dateKey(new Date(createdAtBase), usageStatsHelpers.usageStatsTimezone())
   const emptyWindowBeforeBuild = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
@@ -491,14 +491,19 @@ function clientIpListOrderByForPlan(sortField: string): string {
   }
 }
 
-function assertIpStatsViewSeparatesUsageWindowAndLastUsedFilter(): void {
+function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
   const source = readFileSync(resolve('..', 'frontend', 'src', 'views', 'ip-stats', 'IpStatsView.vue'), 'utf8')
   const buildListParamsSource = sourceFunctionBlock(source, 'function buildListParams')
-  assert(buildListParamsSource.includes('const usageRange = usageWindowDateRange(usageWindow.value)'), 'IP 管理页面应使用固定用量窗口构造统计范围')
+  assert(source.includes("type UsageWindow = 'today' | 'recent7d' | 'recent31d'"), 'IP 管理页面应显式提供今天、近 7 天和近 31 天统计范围')
+  assert(source.includes("const usageWindow = ref<UsageWindow>('recent7d')"), 'IP 管理页面默认统计范围应为近 7 天')
+  assert(!source.includes('lastUsedDateRange'), 'IP 管理页面不应再展示最后使用日期筛选')
+  assert(source.includes('if (value === \'today\') return [today, today]'), 'IP 管理今天统计范围应提交当天窗口')
+  assert(source.includes('if (value === \'recent31d\') return [today.subtract(30, \'day\'), today]'), 'IP 管理近 31 天统计范围应提交最近 31 天窗口')
+  assert(buildListParamsSource.includes('const usageRange = usageWindowDateRange(usageWindow.value)'), 'IP 管理页面应使用统计范围构造 startDate/endDate')
   assert(buildListParamsSource.includes('startDate: formatDateKey(usageRange[0])'), 'IP 管理 startDate 应来自用量统计窗口')
   assert(buildListParamsSource.includes('endDate: formatDateKey(usageRange[1])'), 'IP 管理 endDate 应来自用量统计窗口')
-  assert(buildListParamsSource.includes('lastUsedStartDate: formatDateKey(lastUsedDateRange.value[0])'), 'IP 管理最后使用开始日期应独立提交')
-  assert(buildListParamsSource.includes('lastUsedEndDate: formatDateKey(lastUsedDateRange.value[1])'), 'IP 管理最后使用结束日期应独立提交')
+  assert(!buildListParamsSource.includes('lastUsedStartDate'), 'IP 管理页面不应提交最后使用开始日期')
+  assert(!buildListParamsSource.includes('lastUsedEndDate'), 'IP 管理页面不应提交最后使用结束日期')
   assert(!buildListParamsSource.includes('startDate: formatDateKey(lastUsedDateRange.value[0])'), 'IP 管理 startDate 不能直接绑定最后使用日期')
   assert(!buildListParamsSource.includes('endDate: formatDateKey(lastUsedDateRange.value[1])'), 'IP 管理 endDate 不能直接绑定最后使用日期')
 }

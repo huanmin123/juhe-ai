@@ -1,5 +1,6 @@
 import type { EChartsOption } from 'echarts'
 
+import { formatMillisecondsAsSeconds } from '@/shared/formatters'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import type { AiPerformanceOverview } from '@/types/domain'
 import { formatInteger } from '@/views/stats/statsFormatters'
@@ -267,10 +268,5 @@ function durationAxisLabel(value: number) {
 }
 
 function formatDurationSeconds(value?: number) {
-  if (value === undefined || !Number.isFinite(value)) return '-'
-  const seconds = value / 1000
-  if (seconds === 0) return '0s'
-  if (seconds < 1) return `${seconds.toFixed(2)}s`
-  if (seconds < 10) return `${seconds.toFixed(1)}s`
-  return `${Math.round(seconds)}s`
+  return formatMillisecondsAsSeconds(value)
 }

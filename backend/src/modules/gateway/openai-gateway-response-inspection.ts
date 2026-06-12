@@ -115,8 +115,7 @@ export function resolveRuntimeResponseInspectionPolicies(input: {
   const management = (input.managementPolicies ?? [])
     .filter((policy) => policyMatchesAccountScope(policy, input.account))
     .map((policy) => runtimePolicyFromSummary(policy, policy.defaultRule ? 'system_default' : 'management'))
-  const accountRules = accountResponseInspectionRules(input.account)
-  return [...accountRules, ...management].sort((a, b) => sourceOrder(a.source) - sourceOrder(b.source) || scopeOrder(a) - scopeOrder(b) || a.priority - b.priority)
+  return management.sort((a, b) => sourceOrder(a.source) - sourceOrder(b.source) || scopeOrder(a) - scopeOrder(b) || a.priority - b.priority)
 }
 
 export function inspectResponseSemanticFrames(input: {
@@ -460,54 +459,8 @@ function runtimePolicyFromSummary(policy: ResponseInspectionPolicySummary, sourc
   }
 }
 
-function accountResponseInspectionRules(account: UpstreamAccount): RuntimeResponseInspectionPolicy[] {
-  const rules = account.credentials.response_inspection_rules
-  if (rules === undefined) return []
-  if (!Array.isArray(rules)) throw new Error('账户响应检查规则格式无效')
-  return rules.map((item, index) => accountResponseInspectionRule(item, index, account.providerCode, account.protocolCode))
-}
-
-function accountResponseInspectionRule(value: unknown, index: number, providerCode: string, protocolCode: string): RuntimeResponseInspectionPolicy {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`第 ${index + 1} 条账户响应检查规则格式无效`)
-  }
-  const record = value as Record<string, unknown>
-  const action = actionValue(record.action)
-  if (!action) throw new Error(`第 ${index + 1} 条账户响应检查规则动作无效`)
-  const runtime = responseInspectionPolicyActionRuntime(action)
-  return {
-    id: `account:${index + 1}`,
-    source: 'account',
-    name: requiredString(record.name, `第 ${index + 1} 条账户响应检查规则名称`),
-    enabled: requiredBoolean(record.enabled, `第 ${index + 1} 条账户响应检查规则启用状态`),
-    priority: requiredPositiveInt(record.priority, `第 ${index + 1} 条账户响应检查规则优先级`),
-    scopeType: 'provider',
-    protocolCode,
-    providerCode,
-    match: normalizeMatch(record.match),
-    action,
-    ...runtime
-  }
-}
-
-function normalizeMatch(value: unknown): ResponseInspectionPolicyMatch {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('账户响应检查规则匹配条件无效')
-  }
-  const record = value as Record<string, unknown>
-  const match: ResponseInspectionPolicyMatch = {}
-  for (const key of ['outputTextIncludes', 'outputTextExcludes', 'errorCodes', 'errorTypes', 'errorMessageIncludes', 'finishReasons', 'jsonPathsExists', 'rawTextIncludes'] as const) {
-    const items = stringArray(record[key])
-    if (items.length > 0) match[key] = items
-  }
-  if (!Object.keys(match).length) throw new Error('账户响应检查规则至少需要一个匹配条件')
-  return match
-}
-
 function sourceOrder(source: ResponseInspectionPolicySource): number {
-  if (source === 'account') return 0
-  if (source === 'management') return 1
-  return 2
+  return source === 'management' ? 0 : 1
 }
 
 function scopeOrder(policy: RuntimeResponseInspectionPolicy): number {
@@ -537,50 +490,6 @@ function snippetAround(value: string, needle: string): string {
   const start = Math.max(0, index - 40)
   const end = Math.min(value.length, index + needle.length + 80)
   return value.slice(start, end)
-}
-
-function requiredString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label}不能为空`)
-  const text = value.trim()
-  if (text.length > 100) throw new Error(`${label}不能超过 100 个字符`)
-  return text
-}
-
-function requiredBoolean(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') throw new Error(`${label}无效`)
-  return value
-}
-
-function requiredPositiveInt(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 9999) {
-    throw new Error(`${label}必须是 1-9999 的整数`)
-  }
-  return value
-}
-
-function actionValue(value: unknown): ResponseInspectionPolicySummary['action'] | undefined {
-  return value === 'observe'
-    || value === 'drop_event'
-    || value === 'retry_no_avoidance'
-    || value === 'retry_next_account'
-    || value === 'avoid_account_ttl'
-    || value === 'avoid_upstream_bucket_ttl'
-    ? value
-    : undefined
-}
-
-function stringArray(value: unknown): string[] {
-  if (value === undefined) return []
-  if (!Array.isArray(value)) throw new Error('账户响应检查规则匹配条件必须是字符串数组')
-  if (value.length > 50) throw new Error('账户响应检查规则匹配条件不能超过 50 项')
-  const output: string[] = []
-  for (const item of value) {
-    if (typeof item !== 'string' || !item.trim()) throw new Error('账户响应检查规则匹配条件不能为空')
-    const text = item.trim()
-    if (text.length > 200) throw new Error('账户响应检查规则匹配条件不能超过 200 个字符')
-    if (!output.includes(text)) output.push(text)
-  }
-  return output
 }
 
 function isDeferrableLeadingChatCompletionNoopEvent(event: ParsedOpenAIStreamEvent): boolean {

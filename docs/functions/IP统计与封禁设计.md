@@ -303,8 +303,8 @@ else:
 
 - 今天
 - 最近 7 天
-- 最近 30 / 31 天
-- 列表默认使用已经预生成的固定窗口；任意自然日范围若未预生成，接口返回 `rangeReady=false`，前端提示稍后刷新。
+- 最近 31 天
+- 列表使用已经预生成的固定窗口；窗口若未预生成，接口返回 `rangeReady=false`，前端提示稍后刷新。
 
 ### IP 策略运行态缓存
 
@@ -354,8 +354,7 @@ else:
 
 筛选：
 
-- 最后使用日期范围，最大最近 31 天；管理页用 `client_ip_registry.last_seen_at` 做全局最后使用筛选。
-- 管理页固定展示最近 7 天用量；请求数、Token、成本、失败率、活跃天数和速度指标只读取对应的预聚合范围窗口，不跟随最后使用筛选生成任意自然日窗口。
+- 统计范围：今天、最近 7 天、最近 31 天；页面默认最近 7 天。请求数、Token、成本、失败率、活跃天数和速度指标都跟随统计范围读取对应的 `client_ip_usage_range_windows` 预聚合窗口。
 - IP 关键词，精确或右侧前缀匹配。
 - 状态：全部、正常、已封禁。
 - 高消耗：成本或 token 大于阈值。
@@ -387,8 +386,6 @@ POST /__aisys__/api/ip-stats/:ipHash/unblock
 ```text
 startDate=YYYY-MM-DD
 endDate=YYYY-MM-DD
-lastUsedStartDate=YYYY-MM-DD
-lastUsedEndDate=YYYY-MM-DD
 page=1
 pageSize=20
 keyword=1.2.3
@@ -498,7 +495,7 @@ GET /__aipublic__/access/info
 
 ### 查询影响
 
-- IP 列表按范围窗口表查询，配合排序索引；管理页最后使用日期筛选只追加 `client_ip_registry.last_seen_at` 范围条件，不回扫使用明细；管理页按最后使用排序时走 `client_ip_registry(last_seen_at DESC, ip_hash)`，公开 IP 用量接口保持范围窗口 `last_used_at` 排序。
+- IP 列表按范围窗口表查询，配合排序索引；管理页按最后使用排序时走 `client_ip_registry(last_seen_at DESC, ip_hash)`，公开 IP 用量接口保持范围窗口 `last_used_at` 排序。
 - IP 管理不展示范围总统计卡片，也不在后端维护范围总聚合。
 - IP 速度指标只读窗口表中已经落表的 `average_first_token_ms`、`average_duration_ms` 和 `duration_ms_max`；`sum/count` 只作为后台刷新单个 IP 窗口行派生字段的输入，不回扫 `usage_records`。
 - 列表请求不触发窗口重建；未命中窗口或窗口已被新 daily 标记为 stale 时返回空列表和 `rangeReady=false`，等待后台 worker 生成。

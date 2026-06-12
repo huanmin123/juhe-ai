@@ -28,8 +28,14 @@ const [databaseModule, repositories, hotSearchFiles, hotRetentionCleanup] = awai
 const hourMs = 60 * 60 * 1000
 const nowMs = Date.now()
 const uniqueKeyword = `hot-search-regression-${nowMs}`
+const trimKeyword = `hot-search exact phrase ${nowMs}`
+const trimKeywordInput = ` ${trimKeyword} `
+const crossChunkFirstKeyword = `hot-search-cross-alpha-${nowMs}`
+const crossChunkSecondKeyword = `hot-search-cross-beta-${nowMs}`
 const newerTraceId = `trace-hot-search-newer-${nowMs}`
 const olderTraceId = `trace-hot-search-older-${nowMs}`
+const exactPhraseTraceId = `trace-hot-search-exact-phrase-${nowMs}`
+const crossChunkTraceId = `trace-hot-search-cross-chunk-${nowMs}`
 const unsampledTraceId = `trace-hot-trim-unsampled-${nowMs}`
 const sampledTraceId = `trace-hot-trim-sampled-${nowMs}`
 const fullCaptureTraceId = `trace-hot-trim-full-capture-${nowMs}`
@@ -54,6 +60,25 @@ try {
       sampleBucket: 9000,
       sampleReason: 'success_hot_full_retention',
       body: JSON.stringify({ keyword: uniqueKeyword, order: 'newer', content: '最近1小时 rg 搜索应按最新审计优先返回' })
+    }),
+    successAuditLog({
+      id: 'audit_hot_search_exact_phrase',
+      traceId: exactPhraseTraceId,
+      createdAt: new Date(nowMs - 4_500).toISOString(),
+      sampleBucket: 9000,
+      sampleReason: 'success_hot_full_retention',
+      body: JSON.stringify({ keyword: trimKeyword, content: '搜索输入只清理前后空格再匹配' })
+    }),
+    successAuditLog({
+      id: 'audit_hot_search_cross_chunk',
+      traceId: crossChunkTraceId,
+      createdAt: new Date(nowMs - 4_000).toISOString(),
+      sampleBucket: 9000,
+      sampleReason: 'success_hot_full_retention',
+      body: JSON.stringify({
+        keyword: crossChunkFirstKeyword,
+        content: `${'x'.repeat(13_000)} ${crossChunkSecondKeyword}`
+      })
     })
   ])
 
@@ -66,6 +91,19 @@ try {
 
   const searchRows = repositories.listAuditLogsByIds(searchResult.auditLogIds)
   assert.deepEqual(searchRows.slice(0, 2).map((item) => item.id), ['audit_hot_search_newer', 'audit_hot_search_older'], '热搜索命中 ID 回表后应保持 rg 结果顺序')
+
+  const exactPhraseResult = await hotSearchFiles.grepAuditHotSearchFiles({
+    keywords: [trimKeywordInput],
+    limit: 10
+  })
+  assert.deepEqual(exactPhraseResult.keywords, [trimKeyword], '热搜索应只清理输入前后的空格')
+  assert.deepEqual(exactPhraseResult.auditLogIds, ['audit_hot_search_exact_phrase'], '热搜索应保留内部空格并按完整关键字匹配')
+
+  const nonSplitResult = await hotSearchFiles.grepAuditHotSearchFiles({
+    keywords: [`${crossChunkFirstKeyword} ${crossChunkSecondKeyword}`],
+    limit: 10
+  })
+  assert.deepEqual(nonSplitResult.auditLogIds, [], '热搜索不能把空格分隔的输入拆成多个关键词后误命中')
 
   const oldCreatedAt = new Date(nowMs - 3 * hourMs).toISOString()
   await repositories.createAuditLogsBatchAsync([

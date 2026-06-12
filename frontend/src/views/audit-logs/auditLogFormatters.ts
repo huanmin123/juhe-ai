@@ -1,5 +1,6 @@
 import type { AuditOutcome, AuditPayloadPartType, AuditTrafficSource } from '@/types/domain'
 import { displayGroupName } from '@/shared/groupLabelCache'
+import { formatMillisecondsAsSeconds } from '@/shared/formatters'
 
 export { formatDateTime } from '@/shared/formatters'
 
@@ -61,8 +62,7 @@ export function displayAuditGroupName(name?: string, id?: string): string {
 }
 
 export function formatDuration(value?: number): string {
-  if (typeof value !== 'number') return '-'
-  return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value}ms`
+  return formatMillisecondsAsSeconds(value)
 }
 
 export function formatBytes(value: number): string {

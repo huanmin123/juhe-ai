@@ -285,7 +285,10 @@ function accountQualitySelectColumns(includeQualityInQuery: boolean): string {
           NULL AS quality_ewma_first_token_ms,
           NULL AS quality_recent_avg_first_token_ms,
           NULL AS quality_recent_request_count,
+          NULL AS quality_recent_error_count,
           NULL AS quality_recent_success_rate,
+          NULL AS quality_last_error_at,
+          NULL AS quality_last_error_message,
           NULL AS quality_updated_at`
   }
   return `quality_scores.quality_score AS quality_score,
@@ -293,7 +296,10 @@ function accountQualitySelectColumns(includeQualityInQuery: boolean): string {
           quality_scores.ewma_first_token_ms AS quality_ewma_first_token_ms,
           quality_scores.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
           quality_scores.recent_request_count AS quality_recent_request_count,
+          quality_scores.recent_error_count AS quality_recent_error_count,
           quality_scores.success_rate AS quality_recent_success_rate,
+          quality_scores.last_error_at AS quality_last_error_at,
+          quality_scores.last_error_message AS quality_last_error_message,
           quality_scores.updated_at AS quality_updated_at`
 }
 
@@ -452,7 +458,7 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
   const qualityRows = getStatsDatabase()
     .prepare(`
       SELECT account_id, quality_score, quality_state, ewma_first_token_ms, recent_avg_first_token_ms,
-        recent_request_count, success_rate, updated_at
+        recent_request_count, recent_error_count, success_rate, last_error_at, last_error_message, updated_at
       FROM account_quality_scores
       WHERE account_id IN (${ids.map(() => '?').join(',')})
     `)
@@ -463,7 +469,10 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
       ewma_first_token_ms: number | null
       recent_avg_first_token_ms: number | null
       recent_request_count: number | null
+      recent_error_count: number | null
       success_rate: number | null
+      last_error_at: string | null
+      last_error_message: string | null
       updated_at: string | null
     }>
   const qualityByAccount = new Map(qualityRows.map((row) => [row.account_id, row]))
@@ -482,7 +491,10 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
       quality_ewma_first_token_ms: quality.ewma_first_token_ms,
       quality_recent_avg_first_token_ms: quality.recent_avg_first_token_ms,
       quality_recent_request_count: quality.recent_request_count,
+      quality_recent_error_count: quality.recent_error_count,
       quality_recent_success_rate: quality.success_rate,
+      quality_last_error_at: quality.last_error_at,
+      quality_last_error_message: quality.last_error_message,
       quality_updated_at: quality.updated_at
     }
   })

@@ -326,7 +326,7 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { formatDateTime, formatMillisecondsAsSeconds, formatNumber } from '@/shared/formatters'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
@@ -994,9 +994,7 @@ function selectValueOrUndefined(value?: string) {
 }
 
 function formatDuration(value?: number) {
-  if (value === undefined) return '-'
-  if (value >= 1000) return `${(value / 1000).toFixed(1)} 秒`
-  return `${Math.round(value)} 毫秒`
+  return formatMillisecondsAsSeconds(value)
 }
 
 function checkTitle(check: ModelCheckCheckResult) {

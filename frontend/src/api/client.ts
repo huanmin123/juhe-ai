@@ -402,8 +402,6 @@ export interface ClientIpStatsListParams {
   status?: ClientIpStatus
   startDate?: string
   endDate?: string
-  lastUsedStartDate?: string
-  lastUsedEndDate?: string
   sortField?: ClientIpStatsSortField
   sortOrder?: SortDirection
 }

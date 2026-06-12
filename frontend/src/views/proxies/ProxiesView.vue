@@ -249,7 +249,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { formatDateTime, formatMillisecondsAsSeconds, formatNumber } from '@/shared/formatters'
 import type { ProxyProfileSummary, ProxyTestItemStatus, ProxyTestReport } from '@/types/domain'
 
 const pageSize = 20
@@ -374,7 +374,7 @@ function testItemStatusText(status: ProxyTestItemStatus) {
 }
 
 function formatLatency(value?: number) {
-  return value === undefined ? '-' : `${Math.round(value)}ms`
+  return formatMillisecondsAsSeconds(value)
 }
 
 function latencyTooltip(proxy: ProxyProfileSummary) {

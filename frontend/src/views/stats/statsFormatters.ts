@@ -1,3 +1,5 @@
+import { formatMillisecondsAsSeconds } from '@/shared/formatters'
+
 export function formatInteger(value?: number) {
   return new Intl.NumberFormat('zh-CN').format(Math.round(value ?? 0))
 }
@@ -16,16 +18,11 @@ export function formatPercent(value?: number) {
 }
 
 export function formatDuration(value?: number) {
-  return value === undefined ? '-' : `${Math.round(value)} ms`
+  return formatMillisecondsAsSeconds(value)
 }
 
 export function formatDurationSeconds(value?: number) {
-  if (value === undefined || !Number.isFinite(value)) return '-'
-  const seconds = value / 1000
-  if (seconds === 0) return '0s'
-  if (seconds < 1) return `${seconds.toFixed(2)}s`
-  if (seconds < 10) return `${seconds.toFixed(1)}s`
-  return `${Math.round(seconds)}s`
+  return formatMillisecondsAsSeconds(value)
 }
 
 export function formatSeconds(value?: number) {

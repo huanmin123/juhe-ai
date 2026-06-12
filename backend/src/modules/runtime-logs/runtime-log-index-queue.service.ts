@@ -15,6 +15,8 @@ import { sendRuntimeLogLineToWorker } from '../background/background-ipc.js'
 const runtimeLogFlushIntervalMs = 200
 const runtimeLogRetryPolicy = fixedRetryPolicy('runtime_log_index_queue_flush', 1000)
 const runtimeLogBatchSize = 500
+const runtimeLogBatchMaxBytes = 512 * 1024
+const runtimeLogDefaultFlushMaxBatches = 1
 const runtimeLogShutdownFlushMaxBatches = 1
 const runtimeLogMaxRawJsonChars = 128 * 1024
 const runtimeLogQueueMaxItems = 5_000
@@ -110,7 +112,7 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
   const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     do {
-      const batch = pendingRuntimeLogs.slice(0, runtimeLogBatchSize)
+      const batch = peekRuntimeLogFlushBatch()
       if (batch.length === 0) {
         break
       }
@@ -119,8 +121,7 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
 
       try {
         createRuntimeLogsBatch(batch.map((item) => item.input))
-        pendingRuntimeLogs.splice(0, batch.length)
-        pendingRuntimeLogBytes = Math.max(0, pendingRuntimeLogBytes - batchBytes)
+        removeRuntimeLogFlushBatch(batch, batchBytes)
         flushLastSuccessAt = nowIso()
         flushLastError = undefined
       } catch (error) {
@@ -142,7 +143,7 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
 }
 
 export function flushAllRuntimeLogIndexQueue(): boolean {
-  return flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
+  return flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false, maxBatches: Number.POSITIVE_INFINITY })
 }
 
 export function flushRuntimeLogIndexQueueForShutdown(): boolean {
@@ -292,7 +293,10 @@ function truncateRawJson(value: string): string {
 }
 
 function normalizeMaxBatches(value: number | undefined): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
+  if (value === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(1, Math.trunc(value))
+    : runtimeLogDefaultFlushMaxBatches
 }
 
 function scheduleRuntimeLogFlush(delayMs: number): void {
@@ -319,6 +323,30 @@ function writeRuntimeLogIndexError(message: string): void {
 
 function estimateRuntimeLogBytes(input: RuntimeLogIndexInput): number {
   return estimateJsonLikeBytes(input) + 256
+}
+
+function peekRuntimeLogFlushBatch(): QueuedRuntimeLog[] {
+  const batch: QueuedRuntimeLog[] = []
+  let batchBytes = 0
+  for (const item of pendingRuntimeLogs) {
+    if (batch.length >= runtimeLogBatchSize) {
+      break
+    }
+    if (batch.length > 0 && batchBytes + item.bytes > runtimeLogBatchMaxBytes) {
+      break
+    }
+    batch.push(item)
+    batchBytes += item.bytes
+    if (batchBytes >= runtimeLogBatchMaxBytes) {
+      break
+    }
+  }
+  return batch
+}
+
+function removeRuntimeLogFlushBatch(batch: QueuedRuntimeLog[], batchBytes: number): void {
+  pendingRuntimeLogs.splice(0, batch.length)
+  pendingRuntimeLogBytes = Math.max(0, pendingRuntimeLogBytes - batchBytes)
 }
 
 function sumQueuedRuntimeLogBytes(items: QueuedRuntimeLog[]): number {

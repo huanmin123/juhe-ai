@@ -1,5 +1,6 @@
 import type { UsageRecordSummary } from '@/types/domain'
 import { displayGroupName } from '@/shared/groupLabelCache'
+import { formatMillisecondsAsSeconds } from '@/shared/formatters'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 export { formatDateTime } from '@/shared/formatters'
@@ -50,7 +51,7 @@ export function formatCacheRate(record: UsageRecordSummary): string {
 }
 
 export function formatDuration(value?: number): string {
-  return typeof value === 'number' ? `${(value / 1000).toFixed(2)} s` : '-'
+  return formatMillisecondsAsSeconds(value)
 }
 
 export function statusCodeColor(record: UsageRecordSummary): string {

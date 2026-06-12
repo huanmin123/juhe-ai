@@ -11,13 +11,11 @@
       @refresh="loadData"
     >
       <template #inline-filters>
-        <a-range-picker
-          v-model:value="lastUsedDateRange"
-          :allow-clear="false"
+        <a-segmented
+          v-model:value="usageWindow"
           :disabled="loading"
-          :disabled-date="disabledDate"
-          class="toolbar-select ip-stats-range responsive-list-inline-filter"
-          format="YYYY-MM-DD"
+          :options="usageWindowOptions"
+          class="ip-stats-usage-window responsive-list-inline-filter"
           @change="applyFilters"
         />
         <a-select
@@ -30,14 +28,12 @@
       </template>
       <template #filters>
         <a-form layout="vertical">
-          <a-form-item label="最后使用日期">
-            <a-range-picker
-              v-model:value="lastUsedDateRange"
-              :allow-clear="false"
+          <a-form-item label="统计范围">
+            <a-segmented
+              v-model:value="usageWindow"
               :disabled="loading"
-              :disabled-date="disabledDate"
-              class="drawer-range-picker"
-              format="YYYY-MM-DD"
+              :options="usageWindowOptions"
+              block
               @change="applyFilters"
             />
           </a-form-item>
@@ -262,7 +258,7 @@ import { formatCompactInteger, formatCost, formatDuration, formatInteger, format
 type TableSortOrder = 'ascend' | 'descend' | null
 type PolicyAction = 'blacklist' | 'unblock'
 type PolicyDurationMode = 'permanent' | 'minutes' | 'days'
-type UsageWindow = 'recent7d'
+type UsageWindow = 'today' | 'recent7d' | 'recent31d'
 
 const columns = [
   { title: 'IP', key: 'ip', width: 180, fixed: 'left', align: 'left' },
@@ -284,6 +280,12 @@ const columns = [
   { title: '操作', key: 'actions', fixed: 'right', align: 'left' }
 ]
 
+const usageWindowOptions = [
+  { label: '今天', value: 'today' },
+  { label: '近 7 天', value: 'recent7d' },
+  { label: '近 31 天', value: 'recent31d' }
+]
+
 const statusOptions = [
   { label: '全部状态', value: 'all' },
   { label: '正常', value: 'normal' },
@@ -300,7 +302,6 @@ const loading = ref(false)
 const keyword = ref('')
 const statusFilter = ref<ClientIpStatus>('all')
 const usageWindow = ref<UsageWindow>('recent7d')
-const lastUsedDateRange = ref<[Dayjs, Dayjs]>(defaultLastUsedDateRange())
 const rows = ref<ClientIpStatsRow[]>([])
 const paginationUpperBound = ref(0)
 const rangeReady = ref(true)
@@ -317,8 +318,8 @@ const policyForm = reactive<{ reason?: string; durationMode: PolicyDurationMode;
 const activeFilterCount = computed(() => {
   let count = 0
   if (keyword.value.trim()) count += 1
+  if (usageWindow.value !== 'recent7d') count += 1
   if (statusFilter.value !== 'all') count += 1
-  if (!isDefaultLastUsedDateRange(lastUsedDateRange.value)) count += 1
   return count
 })
 
@@ -329,7 +330,8 @@ const tablePagination = computed(() => ({
   showSizeChanger: true
 }))
 
-const emptyDescription = computed(() => rangeReady.value ? '当前最后使用日期范围下没有 IP 统计数据。' : '当前近 7 天用量窗口尚未完成预聚合，请稍后刷新。')
+const currentUsageWindowLabel = computed(() => usageWindowOptions.find((option) => option.value === usageWindow.value)?.label ?? '当前范围')
+const emptyDescription = computed(() => rangeReady.value ? '当前筛选下没有 IP 统计数据。' : `${currentUsageWindowLabel.value}用量窗口尚未完成预聚合，请稍后刷新。`)
 
 const policyModalTitle = computed(() => {
   if (policyAction.value === 'blacklist') return '封禁 IP'
@@ -365,8 +367,6 @@ function buildListParams(): ClientIpStatsListParams {
     status: statusFilter.value,
     startDate: formatDateKey(usageRange[0]),
     endDate: formatDateKey(usageRange[1]),
-    lastUsedStartDate: formatDateKey(lastUsedDateRange.value[0]),
-    lastUsedEndDate: formatDateKey(lastUsedDateRange.value[1]),
     sortField: sortState.value.field,
     sortOrder: tableSortOrderToApi(sortState.value.order)
   }
@@ -379,8 +379,8 @@ function applyFilters(): void {
 
 function resetFilters(): void {
   keyword.value = ''
+  usageWindow.value = 'recent7d'
   statusFilter.value = 'all'
-  lastUsedDateRange.value = defaultLastUsedDateRange()
   pagination.current = 1
   sortState.value = { field: 'requestCount', order: 'descend' }
   void loadData()
@@ -524,33 +524,21 @@ function statusColor(status: ClientIpStatus): string {
   return 'default'
 }
 
-function disabledDate(current: Dayjs): boolean {
-  const today = dayjs()
-  return current.isAfter(today, 'day') || current.isBefore(today.subtract(30, 'day'), 'day')
-}
-
 function formatDateKey(value: Dayjs): string {
   return value.format('YYYY-MM-DD')
 }
 
-function defaultLastUsedDateRange(): [Dayjs, Dayjs] {
-  return [dayjs().subtract(6, 'day'), dayjs()]
-}
-
 function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
-  if (value === 'recent7d') return defaultLastUsedDateRange()
-  return defaultLastUsedDateRange()
-}
-
-function isDefaultLastUsedDateRange(range: [Dayjs, Dayjs]): boolean {
-  const defaultRange = defaultLastUsedDateRange()
-  return range[0].isSame(defaultRange[0], 'day') && range[1].isSame(defaultRange[1], 'day')
+  const today = dayjs().startOf('day')
+  if (value === 'today') return [today, today]
+  if (value === 'recent31d') return [today.subtract(30, 'day'), today]
+  return [today.subtract(6, 'day'), today]
 }
 </script>
 
 <style scoped>
-.ip-stats-range {
-  width: 260px;
+.ip-stats-usage-window {
+  min-width: 236px;
 }
 
 .ip-stats-status {
@@ -589,8 +577,7 @@ function isDefaultLastUsedDateRange(range: [Dayjs, Dayjs]): boolean {
   line-height: 1.4;
 }
 
-.policy-duration-input,
-.drawer-range-picker {
+.policy-duration-input {
   width: 100%;
 }
 
@@ -614,7 +601,7 @@ function isDefaultLastUsedDateRange(range: [Dayjs, Dayjs]): boolean {
 }
 
 @media (max-width: 768px) {
-  .ip-stats-range,
+  .ip-stats-usage-window,
   .ip-stats-status {
     width: 100%;
   }

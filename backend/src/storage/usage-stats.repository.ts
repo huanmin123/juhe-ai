@@ -1798,16 +1798,26 @@ async function publishUsageScopeRangeWindowSnapshotsInStages(
   yieldToEventLoop: () => Promise<void>
 ): Promise<void> {
   for (let endIndex = refreshStartIndex; endIndex < dates.length; endIndex += 1) {
-    publishUsageScopeRangeWindowSnapshotEndDate(database, dates[endIndex], tempTableName)
-    await yieldToEventLoop()
+    await publishUsageScopeRangeWindowSnapshotEndDate(database, dates, endIndex, tempTableName, yieldToEventLoop)
   }
 }
 
-function publishUsageScopeRangeWindowSnapshotEndDate(database: DatabaseSync, endDate: string, tempTableName: string): void {
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ?').run(endDate)
-    database.prepare(`
+async function publishUsageScopeRangeWindowSnapshotEndDate(
+  database: DatabaseSync,
+  dates: string[],
+  endIndex: number,
+  tempTableName: string,
+  yieldToEventLoop: () => Promise<void>
+): Promise<void> {
+  const endDate = dates[endIndex]
+  for (let startIndex = 0; startIndex <= endIndex; startIndex += 1) {
+    const startDate = dates[startIndex]
+    const transactionStarted = beginDatabaseTransaction(database)
+    try {
+      database
+        .prepare('DELETE FROM usage_scope_range_windows WHERE end_date = ? AND start_date = ?')
+        .run(endDate, startDate)
+      database.prepare(`
       INSERT INTO usage_scope_range_windows (
         system_account_id, scope_type, scope_id, start_date, end_date,
         request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
@@ -1840,12 +1850,14 @@ function publishUsageScopeRangeWindowSnapshotEndDate(database: DatabaseSync, end
         last_error_at,
         updated_at
       FROM ${tempTableName}
-      WHERE end_date = ?
-    `).run(endDate)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
+      WHERE end_date = ? AND start_date = ?
+    `).run(endDate, startDate)
+      commitDatabaseTransaction(database, transactionStarted)
+    } catch (error) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      throw error
+    }
+    await yieldToEventLoop()
   }
 }
 
