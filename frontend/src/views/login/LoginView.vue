@@ -20,15 +20,6 @@
         <a-form-item label="密码">
           <a-input-password v-model:value="form.password" size="large" autocomplete="current-password" placeholder="请输入密码" />
         </a-form-item>
-        <a-form-item label="验证码">
-          <div class="captcha-row">
-            <a-input v-model:value="form.captchaCode" size="large" autocomplete="off" maxlength="6" placeholder="请输入验证码" />
-            <button class="captcha-image-button" type="button" :disabled="captchaLoading" title="点击刷新验证码" @click="refreshCaptcha">
-              <img v-if="captcha?.image" :src="captcha.image" alt="验证码" />
-              <span v-else>{{ captchaLoading ? '加载中' : '刷新' }}</span>
-            </button>
-          </div>
-        </a-form-item>
         <a-button block size="large" type="primary" :loading="loading" @click="handleLogin">进入控制台</a-button>
       </a-form>
     </a-card>
@@ -40,11 +31,10 @@ import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { loadCaptcha, login } from '@/composables/useAuth'
+import { login } from '@/composables/useAuth'
 import { appBrand, loadGlobalBrandSettings } from '@/composables/useAppBrand'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { CaptchaChallengeSummary } from '@/types/domain'
 
 import LoginBackground from './LoginBackground.vue'
 import LoginBrandPanel from './LoginBrandPanel.vue'
@@ -52,9 +42,7 @@ import LoginBrandPanel from './LoginBrandPanel.vue'
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
-const captchaLoading = ref(false)
-const captcha = ref<CaptchaChallengeSummary>()
-const form = reactive({ username: '', password: '', captchaCode: '' })
+const form = reactive({ username: '', password: '' })
 const whitespacePattern = /\s/
 
 const loginTitle = computed(() => `${appBrand.appName} 管理平台`)
@@ -108,25 +96,19 @@ function applyPointerPosition(): void {
 
 async function handleLogin() {
   if (loading.value) return
-  if (!form.username.trim() || !form.password || !form.captchaCode.trim()) {
-    message.warning('请输入账号、密码和验证码')
+  if (!form.username.trim() || !form.password) {
+    message.warning('请输入账号和密码')
     return
   }
   if (hasWhitespace(form.username) || hasWhitespace(form.password)) {
     message.warning('用户名和密码不能包含空格')
     return
   }
-  if (!captcha.value?.captchaId) {
-    message.warning('验证码未加载，请刷新验证码')
-    return
-  }
   loading.value = true
   try {
     const user = await login({
       username: form.username.trim(),
-      password: form.password,
-      captchaId: captcha.value.captchaId,
-      captchaCode: form.captchaCode
+      password: form.password
     })
     if (user.mustChangePassword) {
       message.warning('当前账户使用初始密码，请先完成修改')
@@ -135,27 +117,13 @@ async function handleLogin() {
   } catch (error) {
     console.error(error)
     message.error(getLoginErrorMessage(error))
-    await refreshCaptcha()
   } finally {
     loading.value = false
   }
 }
 
-async function refreshCaptcha(): Promise<void> {
-  captchaLoading.value = true
-  try {
-    captcha.value = await loadCaptcha()
-    form.captchaCode = ''
-  } catch (error) {
-    console.error(error)
-    message.error('验证码加载失败，请刷新页面重试')
-  } finally {
-    captchaLoading.value = false
-  }
-}
-
 function getLoginErrorMessage(error: unknown): string {
-  return extractApiErrorMessage(error, '登录失败，请检查账号、密码或验证码')
+  return extractApiErrorMessage(error, '登录失败，请检查账号或密码')
 }
 
 function resolveLoginRedirect(user: Awaited<ReturnType<typeof login>>): string {
@@ -177,7 +145,7 @@ onMounted(async () => {
   updatePageRect()
   updateCursorLightElement()
   window.addEventListener('resize', updatePageRect, { passive: true })
-  await Promise.all([loadBrandSettings(), refreshCaptcha()])
+  await loadBrandSettings()
 })
 
 onBeforeUnmount(() => {
@@ -317,46 +285,6 @@ async function loadBrandSettings(): Promise<void> {
   line-height: 1.2;
 }
 
-.captcha-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 144px;
-  gap: 12px;
-  align-items: center;
-}
-
-.captcha-image-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 144px;
-  height: 46px;
-  padding: 0;
-  overflow: hidden;
-  color: #2563eb;
-  font-weight: 700;
-  background: rgba(239, 246, 255, 0.92);
-  border: 1px solid rgba(191, 219, 254, 0.94);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.captcha-image-button:hover:not(:disabled) {
-  border-color: #60a5fa;
-  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.16);
-}
-
-.captcha-image-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.72;
-}
-
-.captcha-image-button img {
-  display: block;
-  width: 144px;
-  height: 46px;
-}
-
 @keyframes cardFloat {
   0%, 100% {
     transform: translate3d(0, 0, 0);
@@ -461,14 +389,6 @@ async function loadBrandSettings(): Promise<void> {
     font-size: 22px;
   }
 
-  .captcha-row {
-    grid-template-columns: 1fr;
-  }
-
-  .captcha-image-button,
-  .captcha-image-button img {
-    width: 100%;
-  }
 }
 
 </style>

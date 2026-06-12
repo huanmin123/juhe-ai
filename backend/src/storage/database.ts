@@ -13,6 +13,7 @@ let datasetDatabase: DatabaseSync | undefined
 let statsDatabase: DatabaseSync | undefined
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
+const activeHelperTransactions = new WeakSet<DatabaseSync>()
 
 export function getBusinessDatabase(): DatabaseSync {
   assertDistinctStoragePaths()
@@ -85,24 +86,27 @@ function openStatsDatabase(databasePath: string): DatabaseSync {
 }
 
 export function beginDatabaseTransaction(target = getBusinessDatabase()): boolean {
-  if (target.isTransaction) {
+  if (isDatabaseTransactionActive(target)) {
     return false
   }
   target.exec('BEGIN')
+  activeHelperTransactions.add(target)
   return true
 }
 
 export function beginImmediateDatabaseTransaction(target = getBusinessDatabase()): boolean {
-  if (target.isTransaction) {
+  if (isDatabaseTransactionActive(target)) {
     return false
   }
   target.exec('BEGIN IMMEDIATE')
+  activeHelperTransactions.add(target)
   return true
 }
 
 export function commitDatabaseTransaction(target: DatabaseSync, started: boolean): void {
   if (started) {
     target.exec('COMMIT')
+    activeHelperTransactions.delete(target)
     flushAfterCommitEffects(target)
   }
 }
@@ -112,6 +116,7 @@ export function rollbackDatabaseTransaction(target: DatabaseSync, started: boole
     try {
       target.exec('ROLLBACK')
     } finally {
+      activeHelperTransactions.delete(target)
       discardAfterCommitEffects(target)
     }
   }
@@ -182,7 +187,7 @@ export function newId(prefix: string): string {
 }
 
 export function runAfterDatabaseCommit(effect: AfterCommitEffect, target = getBusinessDatabase()): void {
-  if (!target.isTransaction) {
+  if (!isDatabaseTransactionActive(target)) {
     effect()
     return
   }
@@ -192,6 +197,10 @@ export function runAfterDatabaseCommit(effect: AfterCommitEffect, target = getBu
     return
   }
   afterCommitEffectsByDatabase.set(target, [effect])
+}
+
+function isDatabaseTransactionActive(target: DatabaseSync): boolean {
+  return activeHelperTransactions.has(target) || target.isTransaction
 }
 
 function flushAfterCommitEffects(target: DatabaseSync): void {

@@ -202,6 +202,8 @@ const tablePaginationHeight = 56
 const minTableBodyHeight = 160
 const defaultMobileItemHeight = 148
 const mobileVirtualOverscanItems = 10
+const columnResizeHitAreaBefore = 14
+const columnResizeHitAreaAfter = 6
 let listResizeObserver: ResizeObserver | undefined
 let tableMutationObserver: MutationObserver | undefined
 let mobileItemResizeObserver: ResizeObserver | undefined
@@ -548,6 +550,8 @@ function withColumnResizeHeaderProps(column: Record<string, any>): Record<string
     customHeaderCell: (...args: any[]) => mergeCellProps(column.customHeaderCell?.(...args), {
       class: 'responsive-data-list-resizable-header',
       style: { width: `${width}px` },
+      onMousemove: handleColumnResizePointerMove,
+      onMouseleave: handleColumnResizePointerLeave,
       onMousedown: (event: MouseEvent) => handleColumnResizePointerDown(event, columnKey, width)
     })
   }
@@ -592,9 +596,22 @@ function handleColumnResizePointerDown(event: MouseEvent, key: string, startWidt
   document.addEventListener('mouseup', up, { once: true })
 }
 
+function handleColumnResizePointerMove(event: MouseEvent): void {
+  const target = event.currentTarget
+  if (!(target instanceof HTMLElement)) return
+  target.classList.toggle('responsive-data-list-resize-edge-hover', isColumnResizeEdge(event, target))
+}
+
+function handleColumnResizePointerLeave(event: MouseEvent): void {
+  const target = event.currentTarget
+  if (target instanceof HTMLElement) {
+    target.classList.remove('responsive-data-list-resize-edge-hover')
+  }
+}
+
 function isColumnResizeEdge(event: MouseEvent, target: HTMLElement): boolean {
   const rect = target.getBoundingClientRect()
-  return event.clientX >= rect.right - 8 && event.clientX <= rect.right + 4
+  return event.clientX >= rect.right - columnResizeHitAreaBefore && event.clientX <= rect.right + columnResizeHitAreaAfter
 }
 
 function tableColumnKey(column: Record<string, any>): string {
@@ -623,6 +640,8 @@ function mergeCellProps(baseProps: Record<string, any> | undefined, propsToMerge
     ...base,
     class: mergeClassName(base.class, propsToMerge.class),
     style: mergeStyle(base.style, propsToMerge.style),
+    onMousemove: mergeEventHandlers(base.onMousemove, propsToMerge.onMousemove),
+    onMouseleave: mergeEventHandlers(base.onMouseleave, propsToMerge.onMouseleave),
     onMousedown: mergeEventHandlers(base.onMousedown, propsToMerge.onMousedown)
   }
 }
@@ -1111,6 +1130,11 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 
+:global(body.responsive-data-list-column-resizing *) {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 .responsive-data-list {
   display: flex;
   min-height: 0;
@@ -1206,18 +1230,21 @@ onBeforeUnmount(() => {
 
 .responsive-data-list-table :deep(.responsive-data-list-resizable-header::after) {
   position: absolute;
-  top: 20%;
-  right: 0;
-  width: 8px;
-  height: 60%;
+  top: 12%;
+  right: -6px;
+  z-index: 3;
+  width: 20px;
+  height: 76%;
   border-right: 2px solid transparent;
   cursor: col-resize;
   content: "";
-  transition: border-color 0.16s ease;
+  transition: border-color 0.16s ease, background 0.16s ease;
 }
 
+.responsive-data-list-table :deep(.responsive-data-list-resizable-header.responsive-data-list-resize-edge-hover::after),
 .responsive-data-list-table :deep(.responsive-data-list-resizable-header:hover::after) {
-  border-right-color: #94a3b8;
+  border-right-color: #2563eb;
+  background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.08));
 }
 
 .responsive-data-list-table :deep(.responsive-data-list-flex-column) {

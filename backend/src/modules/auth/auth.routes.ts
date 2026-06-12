@@ -5,7 +5,7 @@ import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
 import { createSession, findSessionByToken, findSystemAccountById, revokeOtherSessionsForAccount, revokeSession, touchSession, updateSystemAccount, updateSystemAccountAsync, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
 import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
-import { consumeCaptchaIssueAllowance, createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
+import { consumeCaptchaIssueAllowance, createCaptchaChallenge } from './captcha.service.js'
 import { checkLoginAllowed, getLoginClientIp, recordFailedLogin, recordSuccessfulLogin } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 
@@ -17,9 +17,7 @@ const whitespacePattern = /\s/
 
 const loginSchema = z.object({
   username: z.string().min(1),
-  password: z.string().min(1),
-  captchaId: z.string().trim().min(1),
-  captchaCode: z.string().trim().min(1)
+  password: z.string().min(1)
 }).strict()
 
 const passwordSchema = z.object({
@@ -56,11 +54,6 @@ authRouter.post('/login', async (req, res, next) => {
 
     if (hasWhitespace(parsed.data.username) || hasWhitespace(parsed.data.password)) {
       res.status(400).json(badRequest('用户名和密码不能包含空格'))
-      return
-    }
-
-    if (!verifyCaptchaChallenge(parsed.data.captchaId, parsed.data.captchaCode)) {
-      res.status(400).json({ message: '验证码错误或已过期' })
       return
     }
 
