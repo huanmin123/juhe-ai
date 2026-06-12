@@ -108,6 +108,7 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMoun
 import DeferredRender from './DeferredRender.vue'
 import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
 import { rowActionColumnWidth } from './rowActions'
+import { tableColumnManualWidthMarker } from './tableColumnSettings'
 
 type RowKey = string | ((record: T) => string | number)
 type TablePagination = false | Record<string, any>
@@ -168,6 +169,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (event: 'change', ...args: unknown[]): void
+  (event: 'column-resize', payload: { key: string; width: number }): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
   (event: 'row-click', record: T, index?: number): void
   (event: 'mobile-load-more'): void
@@ -429,28 +431,30 @@ function normalizeTableColumn(column: Record<string, any>, isFlexColumn: boolean
   }
   if (isActionColumn(column)) {
     const width = resolveActionColumnWidth(column.width, column.actionCount)
-    const { actionCount: _actionCount, ...restColumn } = column
-    return withCellProps({
+    const { actionCount: _actionCount, [tableColumnManualWidthMarker]: _manualWidth, ...restColumn } = column
+    return withColumnResizeHeaderProps(withCellProps({
       ...restColumn,
       width,
       className: mergeClassName(column.className, 'responsive-data-list-actions-column')
     }, {
       class: 'responsive-data-list-actions-column'
-    })
+    }))
   }
   if (props.adaptiveColumnWidth && !column.fixed) {
     const minWidth = resolveColumnMinWidth(column)
-    const { width: _width, ...restColumn } = column
-    return withCellProps({
+    const manualWidth = isManualColumnWidth(column) ? resolveColumnWidth(column) : undefined
+    const { width: _width, [tableColumnManualWidthMarker]: _manualWidth, ...restColumn } = column
+    return withColumnResizeHeaderProps(withCellProps({
       ...restColumn,
+      ...(manualWidth === undefined ? {} : { width: manualWidth }),
       minWidth,
       className: mergeClassName(column.className, 'responsive-data-list-auto-column', isFlexColumn ? 'responsive-data-list-flex-column' : undefined)
     }, {
       class: mergeClassName('responsive-data-list-auto-column', isFlexColumn ? 'responsive-data-list-flex-column' : undefined),
       style: { minWidth: `${minWidth}px` }
-    })
+    }))
   }
-  return column
+  return withColumnResizeHeaderProps(stripInternalColumnProps(column))
 }
 
 function findFlexColumnIndex(columns: Array<Record<string, any>>): number {
@@ -507,6 +511,76 @@ function resolveColumnMinWidth(column: Record<string, any>): number {
   return 160
 }
 
+function withColumnResizeHeaderProps(column: Record<string, any>): Record<string, any> {
+  if (!isResizableColumn(column)) return column
+  const columnKey = tableColumnKey(column)
+  const width = resolveColumnWidth(column) ?? resolveColumnMinWidth(column)
+  return {
+    ...column,
+    customHeaderCell: (...args: any[]) => mergeCellProps(column.customHeaderCell?.(...args), {
+      class: 'responsive-data-list-resizable-header',
+      style: { width: `${width}px` },
+      onMousedown: (event: MouseEvent) => handleColumnResizePointerDown(event, columnKey, width)
+    })
+  }
+}
+
+function isResizableColumn(column: Record<string, any>): boolean {
+  return column.resizable !== false && !Array.isArray(column.children) && tableColumnKey(column) !== ''
+}
+
+function isManualColumnWidth(column: Record<string, any>): boolean {
+  return column[tableColumnManualWidthMarker] === true
+}
+
+function stripInternalColumnProps(column: Record<string, any>): Record<string, any> {
+  if (!(tableColumnManualWidthMarker in column)) return column
+  const { [tableColumnManualWidthMarker]: _manualWidth, ...restColumn } = column
+  return restColumn
+}
+
+function handleColumnResizePointerDown(event: MouseEvent, key: string, startWidth: number): void {
+  const target = event.currentTarget
+  if (!(target instanceof HTMLElement) || !isColumnResizeEdge(event, target)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const startX = event.clientX
+  const minWidth = 72
+  const maxWidth = 720
+  const move = (moveEvent: MouseEvent) => {
+    moveEvent.preventDefault()
+    emit('column-resize', {
+      key,
+      width: Math.max(minWidth, Math.min(maxWidth, Math.round(startWidth + moveEvent.clientX - startX)))
+    })
+  }
+  const up = () => {
+    document.removeEventListener('mousemove', move)
+    document.removeEventListener('mouseup', up)
+    document.body.classList.remove('responsive-data-list-column-resizing')
+  }
+  document.body.classList.add('responsive-data-list-column-resizing')
+  document.addEventListener('mousemove', move)
+  document.addEventListener('mouseup', up, { once: true })
+}
+
+function isColumnResizeEdge(event: MouseEvent, target: HTMLElement): boolean {
+  const rect = target.getBoundingClientRect()
+  return event.clientX >= rect.right - 8 && event.clientX <= rect.right + 4
+}
+
+function tableColumnKey(column: Record<string, any>): string {
+  const value = column.key ?? column.dataIndex
+  if (Array.isArray(value)) return value.map(String).join('.')
+  if (value !== undefined && value !== null && String(value).trim()) return String(value)
+  return ''
+}
+
+function resolveColumnWidth(column: Record<string, any>): number | undefined {
+  const width = typeof column.width === 'number' ? column.width : Number.parseFloat(String(column.width ?? ''))
+  return Number.isFinite(width) && width > 0 ? width : undefined
+}
+
 function withCellProps(column: Record<string, any>, propsToMerge: Record<string, any>): Record<string, any> {
   return {
     ...column,
@@ -520,7 +594,8 @@ function mergeCellProps(baseProps: Record<string, any> | undefined, propsToMerge
   return {
     ...base,
     class: mergeClassName(base.class, propsToMerge.class),
-    style: mergeStyle(base.style, propsToMerge.style)
+    style: mergeStyle(base.style, propsToMerge.style),
+    onMousedown: mergeEventHandlers(base.onMousedown, propsToMerge.onMousedown)
   }
 }
 
@@ -528,7 +603,8 @@ function mergeClassName(...values: unknown[]): string {
   return values.filter(Boolean).map(String).join(' ')
 }
 
-function mergeStyle(baseStyle: unknown, styleToMerge: Record<string, string>): unknown {
+function mergeStyle(baseStyle: unknown, styleToMerge?: Record<string, string>): unknown {
+  if (!styleToMerge) return baseStyle
   if (!baseStyle) return styleToMerge
   if (typeof baseStyle === 'string') {
     return `${baseStyle};${Object.entries(styleToMerge).map(([key, value]) => `${toKebabCase(key)}:${value}`).join(';')}`
@@ -536,6 +612,15 @@ function mergeStyle(baseStyle: unknown, styleToMerge: Record<string, string>): u
   if (Array.isArray(baseStyle)) return [...baseStyle, styleToMerge]
   if (typeof baseStyle === 'object') return { ...(baseStyle as Record<string, unknown>), ...styleToMerge }
   return styleToMerge
+}
+
+function mergeEventHandlers(first: unknown, second: unknown): unknown {
+  if (typeof first !== 'function') return second
+  if (typeof second !== 'function') return first
+  return (...args: unknown[]) => {
+    first(...args)
+    second(...args)
+  }
 }
 
 function toKebabCase(value: string): string {
@@ -993,6 +1078,11 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+:global(body.responsive-data-list-column-resizing) {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
 .responsive-data-list {
   display: flex;
   min-height: 0;
@@ -1080,6 +1170,26 @@ onBeforeUnmount(() => {
 
 .responsive-data-list-table :deep(.responsive-data-list-actions-column .ant-btn-link) {
   padding-inline: 0 !important;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-resizable-header) {
+  position: relative;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-resizable-header::after) {
+  position: absolute;
+  top: 20%;
+  right: 0;
+  width: 8px;
+  height: 60%;
+  border-right: 2px solid transparent;
+  cursor: col-resize;
+  content: "";
+  transition: border-color 0.16s ease;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-resizable-header:hover::after) {
+  border-right-color: #94a3b8;
 }
 
 .responsive-data-list-table :deep(.responsive-data-list-flex-column) {

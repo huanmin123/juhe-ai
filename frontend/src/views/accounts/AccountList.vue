@@ -17,6 +17,7 @@
     :loading-more="loadingMore"
     :refreshing="refreshing"
     @change="(...args) => $emit('change', ...args)"
+    @column-resize="$emit('column-resize', $event)"
     @sort-change="$emit('sort-change', $event)"
     @mobile-load-more="$emit('mobile-load-more')"
     @mobile-refresh="$emit('mobile-refresh')"
@@ -106,6 +107,7 @@ defineProps<{
 defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
   (event: 'change', ...args: unknown[]): void
+  (event: 'column-resize', payload: { key: string; width: number }): void
   (event: 'clone', account: AccountSummary): void
   (event: 'delete', accountId: string): void
   (event: 'edit', account: AccountSummary): void

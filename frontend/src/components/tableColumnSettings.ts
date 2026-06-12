@@ -2,10 +2,13 @@ import { computed, ref, toValue, watch, type ComputedRef, type MaybeRefOrGetter,
 
 export type TableColumnFixed = 'none' | 'left' | 'right'
 
+export const tableColumnManualWidthMarker = '__tableColumnManualWidth'
+
 export type TableColumnSetting = {
   key: string
   visible: boolean
   fixed: TableColumnFixed
+  width?: number
 }
 
 export type TableColumnManagerItem = TableColumnSetting & {
@@ -29,6 +32,7 @@ export function useTableColumnSettings(
   managedColumns: ComputedRef<Array<Record<string, any>>>
   columnSettings: Ref<TableColumnSetting[]>
   updateColumnSettings: (nextSettings: TableColumnSetting[]) => void
+  updateColumnWidth: (columnKey: string, width: number) => void
   resetColumnSettings: () => void
 } {
   const columnSettings = ref<TableColumnSetting[]>([])
@@ -44,6 +48,20 @@ export function useTableColumnSettings(
     writeTableColumnSettings(toValue(storageKey), normalizedSettings)
   }
 
+  function updateColumnWidth(columnKey: string, width: number): void {
+    const normalizedKey = columnKey.trim()
+    if (!normalizedKey) return
+    const sourceColumns = toValue(columns)
+    const column = uniqueColumnsByKey(sourceColumns).find((item) => tableColumnKey(item) === normalizedKey)
+    const normalizedWidth = normalizeColumnWidth(width, normalizeColumnWidth(column?.minWidth) ?? 72)
+    if (normalizedWidth === undefined) return
+    const currentItems = buildTableColumnManagerItems(sourceColumns, columnSettings.value, toValue(options))
+    const nextSettings = currentItems.map((item) => (
+      item.key === normalizedKey ? { ...item, width: normalizedWidth } : item
+    ))
+    updateColumnSettings(nextSettings)
+  }
+
   function resetColumnSettings(): void {
     columnSettings.value = []
     removeTableColumnSettings(toValue(storageKey))
@@ -53,6 +71,7 @@ export function useTableColumnSettings(
     managedColumns,
     columnSettings,
     updateColumnSettings,
+    updateColumnWidth,
     resetColumnSettings
   }
 }
@@ -72,7 +91,7 @@ export function buildTableColumnManagerItems(
   ]
   const dedupedKeys = [...new Set(orderedKeys)]
   const items = dedupedKeys
-    .map((key) => {
+    .map((key): TableColumnManagerItem | undefined => {
       const column = columnByKey.get(key)
       if (!column) return undefined
       const setting = settingByKey.get(key)
@@ -82,6 +101,7 @@ export function buildTableColumnManagerItems(
         title: tableColumnTitle(column, key),
         visible: required ? true : setting?.visible ?? true,
         fixed: setting?.fixed ?? normalizeColumnFixed(column.fixed),
+        width: setting?.width,
         required
       }
     })
@@ -109,7 +129,7 @@ export function applyTableColumnSettings(
     .filter((item) => item.visible)
     .map((item) => {
       const column = columnByKey.get(item.key)
-      return column ? applyColumnFixed(column, item.fixed) : undefined
+      return column ? applyColumnSetting(column, item) : undefined
     })
     .filter((column): column is Record<string, any> => Boolean(column))
 }
@@ -118,7 +138,8 @@ export function tableColumnSettingFromItem(item: TableColumnSetting): TableColum
   return {
     key: item.key,
     visible: item.visible,
-    fixed: item.fixed
+    fixed: item.fixed,
+    width: normalizeColumnWidth(item.width)
   }
 }
 
@@ -207,14 +228,16 @@ function normalizeColumnFixed(value: unknown): TableColumnFixed {
   return 'none'
 }
 
-function applyColumnFixed(column: Record<string, any>, fixed: TableColumnFixed): Record<string, any> {
-  if (fixed === 'none') {
-    const { fixed: _fixed, ...restColumn } = column
+function applyColumnSetting(column: Record<string, any>, setting: TableColumnSetting): Record<string, any> {
+  const width = normalizeColumnWidth(setting.width)
+  const nextColumn = width === undefined ? column : { ...column, width, [tableColumnManualWidthMarker]: true }
+  if (setting.fixed === 'none') {
+    const { fixed: _fixed, ...restColumn } = nextColumn
     return restColumn
   }
   return {
-    ...column,
-    fixed
+    ...nextColumn,
+    fixed: setting.fixed
   }
 }
 
@@ -230,10 +253,17 @@ function sanitizeStoredSettings(items: unknown[]): TableColumnSetting[] {
     nextSettings.push({
       key,
       visible: typeof record.visible === 'boolean' ? record.visible : true,
-      fixed: normalizeColumnFixed(record.fixed)
+      fixed: normalizeColumnFixed(record.fixed),
+      width: normalizeColumnWidth(record.width)
     })
   }
   return nextSettings
+}
+
+function normalizeColumnWidth(value: unknown, minWidth = 72): number | undefined {
+  const width = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
+  if (!Number.isFinite(width) || width <= 0) return undefined
+  return Math.max(minWidth, Math.round(width))
 }
 
 function ensureMinimumVisibleColumns(items: TableColumnManagerItem[], minVisible: number): TableColumnManagerItem[] {

@@ -117,6 +117,7 @@
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
       @change="handleAccountTableChange"
+      @column-resize="handleAccountColumnResize"
       @clone="openClone"
       @delete="removeAccount"
       @edit="openEdit"
@@ -384,6 +385,7 @@ const {
   managedColumns,
   columnSettings,
   updateColumnSettings,
+  updateColumnWidth,
   resetColumnSettings
 } = useTableColumnSettings(columnStorageKey, rawColumns, {
   requiredKeys: ['name'],
@@ -395,6 +397,10 @@ const tableScrollY = computed(accountTableScrollY)
 function handleAccountTableChange(...args: unknown[]): void {
   if (tableChangeAction(args[3]) === 'sort') return
   void handleAccountTableChangeAndLoad(args[0])
+}
+
+function handleAccountColumnResize(payload: { key: string; width: number }): void {
+  updateColumnWidth(payload.key, payload.width)
 }
 
 function tableChangeAction(value: unknown): string | undefined {

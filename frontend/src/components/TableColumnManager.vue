@@ -19,6 +19,7 @@
       <div class="table-column-manager-header">
         <span>列名</span>
         <span>显示</span>
+        <span>列宽</span>
         <span>固定位置</span>
         <span>顺序</span>
       </div>
@@ -48,6 +49,15 @@
           >
             显示
           </a-checkbox>
+          <a-input-number
+            size="small"
+            :value="item.width"
+            :min="minColumnWidth"
+            :max="maxColumnWidth"
+            :step="10"
+            placeholder="默认"
+            @update:value="updateItemWidth(item.key, $event)"
+          />
           <a-segmented
             size="small"
             :value="item.fixed"
@@ -123,6 +133,8 @@ const modalOpen = ref(false)
 const draftItems = ref<TableColumnManagerItem[]>([])
 const draggedKey = ref<string>()
 const dragOverKey = ref<string>()
+const minColumnWidth = 72
+const maxColumnWidth = 720
 const fixedOptions = [
   { label: '不固定', value: 'none' },
   { label: '左侧', value: 'left' },
@@ -174,6 +186,16 @@ function updateItemFixed(key: string, value: unknown): void {
   draftItems.value = normalizeDraftItemOrder(draftItems.value.map((item) => (
     item.key === key ? { ...item, fixed } : item
   )))
+}
+
+function updateItemWidth(key: string, value: unknown): void {
+  const numericWidth = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
+  const width = Number.isFinite(numericWidth)
+    ? Math.max(minColumnWidth, Math.min(maxColumnWidth, Math.round(numericWidth)))
+    : undefined
+  draftItems.value = draftItems.value.map((item) => (
+    item.key === key ? { ...item, width } : item
+  ))
 }
 
 function canMoveItemByOffset(key: string, offset: number): boolean {
@@ -279,7 +301,7 @@ function normalizeDraftItemOrder(items: TableColumnManagerItem[]): TableColumnMa
 .table-column-manager-header,
 .table-column-manager-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 74px 188px 74px;
+  grid-template-columns: minmax(0, 1fr) 74px 100px 188px 74px;
   align-items: center;
   gap: 10px;
 }
@@ -368,6 +390,7 @@ function normalizeDraftItemOrder(items: TableColumnManagerItem[]): TableColumnMa
     padding-left: 38px;
   }
 
+  .table-column-manager-item :deep(.ant-input-number),
   .table-column-manager-item :deep(.ant-segmented),
   .table-column-manager-order {
     grid-column: 1 / -1;
