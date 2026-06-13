@@ -351,7 +351,6 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
-import type { RowActionItem } from '@/components/rowActions'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -363,6 +362,9 @@ import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/pr
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import type { OperationLogChange, OperationLogDetail, OperationLogSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
+import { actorText, displayName, requestText, resourceText, valueText } from './operationLogDisplay'
+import { actionColor, actionText, moduleText, relationText, resourceTypeText, visibilityReasonText, visibilityText } from './operationLogLabels'
+import { actionOptions, changeColumns, detailActions, moduleOptions, resourceTypeOptions, targetColumns, viewerColumns } from './operationLogOptions'
 
 type OperationLogsPageState = {
   actionFilter: string
@@ -491,65 +493,6 @@ const {
   }
 })
 
-const detailActions: RowActionItem[] = [{ key: 'detail', label: '详情', icon: 'detail', tone: 'info' }]
-const moduleOptions = [
-  { label: '全部模块', value: 'all' },
-  { label: '系统账户', value: 'system_accounts' },
-  { label: 'AI 账户', value: 'accounts' },
-  { label: '分组', value: 'groups' },
-  { label: 'API Key', value: 'api_keys' },
-  { label: '统一授权', value: 'authorizations' },
-  { label: '系统团队', value: 'system_teams' },
-  { label: '代理', value: 'proxies' },
-  { label: '系统设置', value: 'settings' },
-  { label: '公告中心', value: 'announcements' },
-  { label: 'OpenAI OAuth', value: 'openai_oauth' },
-  { label: '表监控', value: 'table_monitor' }
-]
-const actionOptions = [
-  { label: '全部动作', value: 'all' },
-  { label: '创建', value: 'create' },
-  { label: '创建账户', value: 'create_account' },
-  { label: '授权码创建账户', value: 'create_from_code' },
-  { label: 'Refresh Token 创建账户', value: 'create_from_refresh_token' },
-  { label: '更新', value: 'update' },
-  { label: '更新有效期', value: 'update_expire' },
-  { label: '更新全局设置', value: 'update_global' },
-  { label: '更新系统设置', value: 'update_settings' },
-  { label: '删除', value: 'delete' },
-  { label: '绑定分组', value: 'bind_group' },
-  { label: '流量迁移', value: 'traffic_migration' },
-  { label: '回收授权', value: 'revoke' },
-  { label: '添加成员', value: 'add_members' },
-  { label: '移除成员', value: 'remove_member' },
-  { label: '发布', value: 'publish' },
-  { label: '下线', value: 'unpublish' },
-  { label: '刷新 Token', value: 'refresh_token' },
-  { label: '重新授权（授权码）', value: 'reauthorize_from_code' },
-  { label: '重新授权（Refresh Token）', value: 'reauthorize_from_refresh_token' },
-  { label: '恢复', value: 'restore' },
-  { label: '重置密码', value: 'reset_password' },
-  { label: '检测', value: 'test' },
-  { label: '测试改状态', value: 'test_status_changed' },
-  { label: '清理非业务数据', value: 'cleanup_non_business_data' },
-  { label: '清理使用记录', value: 'cleanup_usage_records' }
-]
-const resourceTypeOptions = [
-  { label: '全部资源类型', value: 'all' },
-  { label: 'AI 账户', value: 'account' },
-  { label: '公告', value: 'announcement' },
-  { label: 'API Key', value: 'api_key' },
-  { label: '授权', value: 'authorization' },
-  { label: '全局设置', value: 'global_settings' },
-  { label: '分组', value: 'group' },
-  { label: '代理', value: 'proxy' },
-  { label: '系统账户', value: 'system_account' },
-  { label: '系统设置', value: 'system_settings' },
-  { label: '系统团队', value: 'system_team' },
-  { label: '非业务数据', value: 'non_business_data' },
-  { label: '使用记录', value: 'usage_records' }
-]
-
 const activeFilterCount = computed(() => {
   let count = 0
   if (summaryKeywordFilter.value.trim()) count += 1
@@ -604,24 +547,6 @@ const {
   requiredKeys: ['summary'],
   minVisible: 1
 })
-const changeColumns = [
-  { title: '字段', key: 'field', dataIndex: 'field', width: 160 },
-  { title: '名称', key: 'label', dataIndex: 'label', width: 160 },
-  { title: '变更前', key: 'before', width: 240 },
-  { title: '变更后', key: 'after', width: 240 }
-]
-const targetColumns = [
-  { title: '对象', key: 'target', width: 220 },
-  { title: '类型', key: 'type', width: 120 },
-  { title: '归属用户', key: 'owner', width: 180 },
-  { title: '关系', key: 'relation', width: 120 }
-]
-const viewerColumns = [
-  { title: '用户', key: 'user', width: 220 },
-  { title: '可见原因', key: 'reason', width: 180 },
-  { title: '详情级别', key: 'level', width: 100 }
-]
-
 function applyFilters(): void {
   clearRouteTraceIdForManualState()
   resetPagination()
@@ -783,67 +708,6 @@ function clearRouteTraceIdForManualState(): void {
   })
 }
 
-function moduleText(value: string): string {
-  return moduleTextMap[value] ?? value
-}
-
-function actionText(value: string): string {
-  return actionTextMap[value] ?? value
-}
-
-function actionColor(value: string): string {
-  if (value.includes('delete') || value.includes('revoke') || value.includes('remove') || value.includes('cleanup')) return 'red'
-  if (value.includes('create') || value.includes('publish') || value.includes('add')) return 'green'
-  if (value.includes('test') || value.includes('refresh')) return 'cyan'
-  if (value.includes('password') || value.includes('restore')) return 'orange'
-  return 'blue'
-}
-
-function actorText(record: OperationLogSummary): string {
-  return displayName(record.actorDisplayName ?? record.actorSystemAccountName)
-}
-
-function displayName(name?: string, _id?: string): string {
-  return name || '-'
-}
-
-function resourceText(record: Pick<OperationLogSummary, 'resourceType' | 'resourceName' | 'resourceId'>): string {
-  return `${resourceTypeText(record.resourceType)}：${displayName(record.resourceName)}`
-}
-
-function requestText(record: Pick<OperationLogSummary, 'method' | 'path'>): string {
-  return [record.method, record.path].filter(Boolean).join(' ') || '-'
-}
-
-function resourceTypeText(value: string): string {
-  return resourceTypeTextMap[value] ?? value
-}
-
-function valueText(value: unknown): string {
-  if (value === undefined || value === null || value === '') return '-'
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return String(value)
-  }
-}
-
-function visibilityText(value: string): string {
-  if (value === 'all_users') return '所有用户'
-  if (value === 'admin_only') return '仅管理员'
-  return '相关用户'
-}
-
-function relationText(value: string): string {
-  return relationTextMap[value] ?? value
-}
-
-function visibilityReasonText(value: string): string {
-  return visibilityReasonTextMap[value] ?? value
-}
-
 function snapshotPageState(): OperationLogsPageState {
   const range = normalizeCreatedAtRange(createdAtRange.value)
   return {
@@ -876,82 +740,6 @@ function normalizeCreatedAtRange(value: CreatedAtRangeValue): [Dayjs, Dayjs] | u
   const end = value?.[1]
   if (!start?.isValid() || !end?.isValid()) return undefined
   return start.isAfter(end) ? [end, start] : [start, end]
-}
-
-const moduleTextMap: Record<string, string> = {
-  accounts: 'AI 账户',
-  announcements: '公告中心',
-  api_keys: 'API Key',
-  authorizations: '统一授权',
-  groups: '分组',
-  openai_oauth: 'OpenAI OAuth',
-  proxies: '代理',
-  settings: '系统设置',
-  table_monitor: '表监控',
-  system_accounts: '系统账户',
-  system_teams: '系统团队'
-}
-const actionTextMap: Record<string, string> = {
-  add_members: '添加成员',
-  bind_group: '绑定分组',
-  cleanup_non_business_data: '清理非业务数据',
-  cleanup_usage_records: '清理使用记录',
-  create: '创建',
-  create_account: '创建账户',
-  create_from_code: '授权码创建账户',
-  create_from_refresh_token: 'Refresh Token 创建账户',
-  delete: '删除',
-  publish: '发布',
-  reauthorize_from_code: '重新授权',
-  reauthorize_from_refresh_token: '重新授权',
-  refresh_token: '刷新 Token',
-  remove_member: '移除成员',
-  reset_password: '重置密码',
-  restore: '恢复',
-  revoke: '回收',
-  test: '检测',
-  test_status_changed: '测试改状态',
-  traffic_migration: '流量迁移',
-  unpublish: '下线',
-  update: '更新',
-  update_expire: '更新有效期',
-  update_global: '更新全局设置',
-  update_settings: '更新系统设置'
-}
-const resourceTypeTextMap: Record<string, string> = {
-  account: 'AI 账户',
-  announcement: '公告',
-  api_key: 'API Key',
-  authorization: '授权',
-  global_settings: '全局设置',
-  group: '分组',
-  proxy: '代理',
-  system_account: '系统账户',
-  system_settings: '系统设置',
-  system_team: '系统团队',
-  non_business_data: '非业务数据',
-  usage_records: '使用记录'
-}
-const relationTextMap: Record<string, string> = {
-  affected: '受影响',
-  bound_resource: '绑定资源',
-  created: '新建',
-  deleted: '删除',
-  grantee: '被授权',
-  owner: '所有者',
-  primary: '主资源',
-  team_member: '团队成员'
-}
-const visibilityReasonTextMap: Record<string, string> = {
-  actor_self: '本人操作',
-  admin_managed_my_resource: '管理员代操作',
-  authorization_grantee: '被授权用户',
-  authorization_owner: '资源所有者',
-  bound_resource_affected: '绑定资源影响',
-  global_affected: '全局影响',
-  resource_owner: '资源所有者',
-  team_authorization: '团队授权',
-  team_member: '团队成员'
 }
 
 watch(snapshotPageState, () => {

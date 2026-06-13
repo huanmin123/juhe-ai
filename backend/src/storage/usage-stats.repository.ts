@@ -1,16 +1,15 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { ProcessRole } from '../config/runtime.js'
 import type {
   AccountUsageStatsRange,
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { refreshSystemMetricsTrendWindowSnapshotsStage } from './system-metrics.repository.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
-import { averageFromSum, dateKey, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
-import { emptyStatsAggregateMathRow, mapProcessEventLoopHourly, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
-import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
+import { averageFromSum, dateKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { emptyStatsAggregateMathRow, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import {
   refreshAccountLast7dRequestRankSnapshot,
@@ -31,55 +30,46 @@ import {
   type UsageStatsDailyWindowRow
 } from './usage-stats-window-aggregates.js'
 import {
-  compareText,
   fixedUsageStatsDateKeys,
   fixedUsageStatsRanges,
   nextDateKey,
   rangeWindowKey,
   rowsByStatDate,
   rowsByStatHourDate,
-  rowsForDateRange,
-  sortedMapEntries,
-  trendBucketKey,
-  trendBucketHours
+  sortedMapEntries
 } from './usage-stats-window-helpers.js'
 import {
   GLOBAL_STATS_SCOPE_ID,
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
   USAGE_STATS_RECORD_SELECT_COLUMNS,
   type AccountUsageAggregateRow,
-  type ProcessEventLoopSampleInput,
   type StatsAggregateMathRow,
   type StatsJobStateRow,
-  type SystemMetricsOverview,
-  type SystemMetricsSampleInput,
   type UsageStatsOverview,
   type UsageStatsRecordRow
 } from './usage-stats-types.js'
 
-export type { SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
+export type { ProcessEventLoopSampleInput, SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
 export { getAiPerformanceOverview, listAiPerformanceAccountOptions } from './usage-stats-ai-performance.repository.js'
+export { getSystemMetricsOverview, insertProcessEventLoopSample, insertSystemMetricsSample } from './system-metrics.repository.js'
+export {
+  GROUP_ACCOUNT_STATS_DIRTY_ALL,
+  markAllGroupAccountStatsDirty,
+  markGroupAccountStatsDirty,
+  markGroupAccountStatsDirtyByAccountIds,
+  refreshDirtyGroupAccountStatsCache,
+  refreshGroupAccountStatsCache
+} from './group-account-stats-cache.repository.js'
 export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const USAGE_STATS_MAX_SHARDS_PER_BATCH = 16
-const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
-const PROCESS_EVENT_LOOP_PEAK_WINDOW_MS = 24 * 60 * 60 * 1000
 const USAGE_RANGE_WINDOW_STAGED_YIELD_EVERY = 1
 const USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE = 'global'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID = ''
-export const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
-const GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX = 'all_cursor:'
-const groupAccountStatsFullRefreshBatchLimit = 1000
 const maxUsageOverviewSnapshotScopes = 5000
 let usageStatsShardScanOffset = 0
-
-interface GroupAccountStatsDirtyRow {
-  groupId: string
-  reason: string | null
-  updatedAt: string
-}
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getStatsDatabase()
@@ -208,341 +198,6 @@ function usageStatsShardLocationsForBatch(batchLimit: number): ReturnType<typeof
     ? (usageStatsShardScanOffset + window.locations.length) % window.total
     : 0
   return window
-}
-
-export function markGroupAccountStatsDirty(groupIds: Array<string | null | undefined> | string | null | undefined, reason = 'write'): void {
-  const ids = uniqueGroupAccountStatsIds(Array.isArray(groupIds) ? groupIds : [groupIds])
-  if (!ids.length) return
-  const database = getBusinessDatabase()
-  const updatedAt = nowIso()
-  const insert = database.prepare(`
-    INSERT INTO group_account_stats_dirty (group_id, reason, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(group_id) DO UPDATE SET
-      reason = excluded.reason,
-      updated_at = excluded.updated_at
-  `)
-  for (const id of ids) {
-    insert.run(id, reason, updatedAt)
-  }
-}
-
-export function markAllGroupAccountStatsDirty(reason = 'write'): void {
-  markGroupAccountStatsDirty(GROUP_ACCOUNT_STATS_DIRTY_ALL, reason)
-}
-
-export function markGroupAccountStatsDirtyByAccountIds(accountIds: Array<string | null | undefined>, reason = 'account_write'): void {
-  const ids = uniqueGroupAccountStatsIds(accountIds)
-  if (!ids.length) return
-  const groupIds: string[] = []
-  const database = getBusinessDatabase()
-  for (const chunk of chunkValues(ids, 900)) {
-    groupIds.push(...(database.prepare(`
-      SELECT DISTINCT group_id
-      FROM group_accounts
-      WHERE account_id IN (${sqlPlaceholders(chunk.length)})
-    `).all(...chunk) as unknown as Array<{ group_id: string }>).map((row) => row.group_id))
-  }
-  markGroupAccountStatsDirty(groupIds, reason)
-}
-
-export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
-  const businessDatabase = getBusinessDatabase()
-  const statsDatabase = getStatsDatabase()
-  const normalizedLimit = Math.max(1, Math.min(groupAccountStatsFullRefreshBatchLimit, Math.trunc(limit)))
-  const allDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase)
-  if (allDirtyRows.length > 0) {
-    return refreshAllDirtyGroupAccountStatsCacheBatch(businessDatabase, allDirtyRows[0], normalizedLimit)
-  }
-
-  const rows = loadGroupAccountStatsDirtyRows(businessDatabase, normalizedLimit)
-  if (!rows.length) {
-    const hasStats = statsDatabase.prepare('SELECT 1 FROM group_account_stats LIMIT 1').get()
-    if (!hasStats) {
-      markAllGroupAccountStatsDirty('initial_cache_build')
-      const initialAllDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase)
-      return initialAllDirtyRows[0]
-        ? refreshAllDirtyGroupAccountStatsCacheBatch(businessDatabase, initialAllDirtyRows[0], normalizedLimit)
-        : 0
-    }
-    return 0
-  }
-
-  refreshGroupAccountStatsCache(rows.map((row) => row.groupId))
-  deleteGroupAccountStatsDirtyRows(businessDatabase, rows)
-  return rows.length
-}
-
-function loadAllGroupAccountStatsDirtyRows(businessDatabase: DatabaseSync): GroupAccountStatsDirtyRow[] {
-  const businessRow = businessDatabase
-    .prepare('SELECT group_id, reason, updated_at FROM group_account_stats_dirty WHERE group_id = ? LIMIT 1')
-    .get(GROUP_ACCOUNT_STATS_DIRTY_ALL) as unknown as { group_id: string; reason: string | null; updated_at: string } | undefined
-  return businessRow ? [mapGroupAccountStatsDirtyRow(businessRow)] : []
-}
-
-function refreshAllDirtyGroupAccountStatsCacheBatch(
-  businessDatabase: DatabaseSync,
-  dirtyRow: GroupAccountStatsDirtyRow,
-  limit: number
-): number {
-  const cursorGroupId = groupAccountStatsAllCursor(dirtyRow.reason)
-  const groups = loadGroupAccountStatsGroupsPage(businessDatabase, cursorGroupId, limit)
-  if (groups.length === 0) {
-    deleteGroupAccountStatsDirtyRows(businessDatabase, [dirtyRow])
-    return 1
-  }
-  refreshGroupAccountStatsCache(groups.map((group) => group.id))
-  if (groups.length < limit) {
-    deleteGroupAccountStatsDirtyRows(businessDatabase, [dirtyRow])
-    return 1
-  }
-  updateGroupAccountStatsAllCursor(businessDatabase, groups[groups.length - 1].id)
-  return 1
-}
-
-function groupAccountStatsAllCursor(reason: string | null | undefined): string | undefined {
-  return reason?.startsWith(GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX)
-    ? reason.slice(GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX.length)
-    : undefined
-}
-
-function updateGroupAccountStatsAllCursor(businessDatabase: DatabaseSync, cursorGroupId: string): void {
-  businessDatabase
-    .prepare(`
-      UPDATE group_account_stats_dirty
-      SET reason = ?,
-          updated_at = ?
-      WHERE group_id = ?
-    `)
-    .run(`${GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX}${cursorGroupId}`, nowIso(), GROUP_ACCOUNT_STATS_DIRTY_ALL)
-}
-
-function loadGroupAccountStatsDirtyRows(
-  businessDatabase: DatabaseSync,
-  limit: number
-): GroupAccountStatsDirtyRow[] {
-  const normalizedLimit = Math.max(1, Math.trunc(limit))
-  const businessRows = businessDatabase
-    .prepare('SELECT group_id, reason, updated_at FROM group_account_stats_dirty WHERE group_id <> ? ORDER BY updated_at ASC, group_id ASC LIMIT ?')
-    .all(GROUP_ACCOUNT_STATS_DIRTY_ALL, normalizedLimit) as unknown as Array<{ group_id: string; reason: string | null; updated_at: string }>
-  return businessRows
-    .map((row) => mapGroupAccountStatsDirtyRow(row))
-    .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.groupId.localeCompare(right.groupId))
-    .slice(0, normalizedLimit)
-}
-
-function mapGroupAccountStatsDirtyRow(row: { group_id: string; reason?: string | null; updated_at: string }): GroupAccountStatsDirtyRow {
-  return {
-    groupId: row.group_id,
-    reason: row.reason ?? null,
-    updatedAt: row.updated_at
-  }
-}
-
-function deleteGroupAccountStatsDirtyRows(
-  businessDatabase: DatabaseSync,
-  rows: GroupAccountStatsDirtyRow[]
-): void {
-  const deleteBusinessDirty = businessDatabase.prepare('DELETE FROM group_account_stats_dirty WHERE group_id = ? AND updated_at = ?')
-  for (const row of rows) {
-    deleteBusinessDirty.run(row.groupId, row.updatedAt)
-  }
-}
-
-export function refreshGroupAccountStatsCache(groupIds?: Array<string | null | undefined>): void {
-  const database = getStatsDatabase()
-  const businessDatabase = getBusinessDatabase()
-  const updatedAt = nowIso()
-  const targetGroupIds = groupIds === undefined ? undefined : uniqueGroupAccountStatsIds(groupIds)
-  if (targetGroupIds && !targetGroupIds.length) return
-  const groups = loadGroupAccountStatsGroups(businessDatabase, targetGroupIds)
-  const refreshGroupIds = targetGroupIds ?? groups.map((group) => group.id)
-  const groupAccountRows = loadGroupAccountStatsRows(businessDatabase, refreshGroupIds)
-  const statsByGroup = new Map<string, GroupAccountStatsAccumulator>()
-  for (const group of groups) {
-    statsByGroup.set(group.id, emptyGroupAccountStatsAccumulator(group.id, group.system_account_id))
-  }
-  for (const row of groupAccountRows) {
-    const stats = statsByGroup.get(row.group_id) ?? emptyGroupAccountStatsAccumulator(row.group_id, row.group_system_account_id)
-    statsByGroup.set(row.group_id, stats)
-    if (!row.account_id || !row.account_system_account_id) continue
-    const authorizationActive = row.authorization_status === 'active' && (!row.authorization_expires_at || row.authorization_expires_at > updatedAt)
-    const authorized = row.account_authorization_id
-      ? authorizationActive
-      : row.account_system_account_id === row.group_system_account_id
-    if (!authorized) continue
-    stats.total += 1
-    stats.concurrencyLimit += Number(row.concurrency_limit ?? 0)
-    if (row.status === 'active') {
-      stats.active += 1
-      if (row.schedulable === 1 && (!row.cooldown_until || row.cooldown_until <= updatedAt)) {
-        stats.available += 1
-      }
-    } else if (row.status === 'disabled') {
-      stats.disabled += 1
-    } else {
-      stats.error += 1
-    }
-    if (row.status === 'rate_limited') {
-      stats.rateLimited += 1
-    }
-  }
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    deleteGroupAccountStatsRows(database, refreshGroupIds)
-    const insert = database.prepare(`
-      INSERT INTO group_account_stats (
-        system_account_id, group_id, total, available, active, disabled, error,
-        rate_limited, current_concurrency, concurrency_limit, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-    `)
-    for (const stats of statsByGroup.values()) {
-      insert.run(
-        stats.systemAccountId,
-        stats.groupId,
-        stats.total,
-        stats.available,
-        stats.active,
-        stats.disabled,
-        stats.error,
-        stats.rateLimited,
-        stats.concurrencyLimit,
-        updatedAt
-      )
-    }
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-}
-
-function loadGroupAccountStatsGroups(
-  database: DatabaseSync,
-  groupIds?: string[]
-): Array<{ id: string; system_account_id: string }> {
-  if (!groupIds) {
-    return loadGroupAccountStatsGroupsPage(database, undefined, groupAccountStatsFullRefreshBatchLimit)
-  }
-  const rows: Array<{ id: string; system_account_id: string }> = []
-  for (const chunk of chunkValues(groupIds, 900)) {
-    rows.push(...database.prepare(`
-      SELECT id, system_account_id
-      FROM groups
-      WHERE id IN (${sqlPlaceholders(chunk.length)})
-    `).all(...chunk) as unknown as Array<{ id: string; system_account_id: string }>)
-  }
-  return rows
-}
-
-function loadGroupAccountStatsGroupsPage(
-  database: DatabaseSync,
-  cursorGroupId: string | undefined,
-  limit: number
-): Array<{ id: string; system_account_id: string }> {
-  const cursorClause = cursorGroupId ? 'WHERE id > ?' : ''
-  const params = cursorGroupId ? [cursorGroupId, Math.max(1, Math.trunc(limit))] : [Math.max(1, Math.trunc(limit))]
-  return database.prepare(`
-    SELECT id, system_account_id
-    FROM groups
-    ${cursorClause}
-    ORDER BY id ASC
-    LIMIT ?
-  `).all(...params) as unknown as Array<{ id: string; system_account_id: string }>
-}
-
-function loadGroupAccountStatsRows(
-  database: DatabaseSync,
-  groupIds?: string[]
-): Array<{
-  group_id: string
-  account_id: string | null
-  account_authorization_id: string | null
-  group_system_account_id: string
-  account_system_account_id: string | null
-  status: string | null
-  schedulable: number | null
-  cooldown_until: string | null
-  concurrency_limit: number | null
-  authorization_status: string | null
-  authorization_expires_at: string | null
-}> {
-  const rows: Array<{
-    group_id: string
-    account_id: string | null
-    account_authorization_id: string | null
-    group_system_account_id: string
-    account_system_account_id: string | null
-    status: string | null
-    schedulable: number | null
-    cooldown_until: string | null
-    concurrency_limit: number | null
-    authorization_status: string | null
-    authorization_expires_at: string | null
-  }> = []
-  const chunks = groupIds ? chunkValues(groupIds, 900) : [undefined]
-  for (const chunk of chunks) {
-    const where = chunk ? `AND group_accounts.group_id IN (${sqlPlaceholders(chunk.length)})` : ''
-    rows.push(...database.prepare(`
-      SELECT
-        group_accounts.group_id,
-        group_accounts.account_id,
-        group_accounts.account_authorization_id,
-        groups.system_account_id AS group_system_account_id,
-        accounts.system_account_id AS account_system_account_id,
-        accounts.status,
-        accounts.schedulable,
-        accounts.cooldown_until,
-        accounts.concurrency_limit,
-        resource_authorization_rows.status AS authorization_status,
-        resource_authorization_rows.expires_at AS authorization_expires_at
-      FROM group_accounts
-      INNER JOIN groups ON groups.id = group_accounts.group_id
-      LEFT JOIN accounts ON accounts.id = group_accounts.account_id
-      LEFT JOIN resource_authorizations resource_authorization_rows
-        ON resource_authorization_rows.id = group_accounts.account_authorization_id
-      WHERE group_accounts.enabled = 1
-        AND accounts.deleted_at IS NULL
-        ${where}
-    `).all(...(chunk ?? [])) as unknown as typeof rows)
-  }
-  return rows
-}
-
-function deleteGroupAccountStatsRows(database: DatabaseSync, groupIds: string[]): void {
-  for (const chunk of chunkValues(groupIds, 900)) {
-    database.prepare(`DELETE FROM group_account_stats WHERE group_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
-  }
-}
-
-function uniqueGroupAccountStatsIds(values: Array<string | null | undefined>): string[] {
-  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
-}
-
-interface GroupAccountStatsAccumulator {
-  groupId: string
-  systemAccountId: string
-  total: number
-  available: number
-  active: number
-  disabled: number
-  error: number
-  rateLimited: number
-  concurrencyLimit: number
-}
-
-function emptyGroupAccountStatsAccumulator(groupId: string, systemAccountId: string): GroupAccountStatsAccumulator {
-  return {
-    groupId,
-    systemAccountId,
-    total: 0,
-    available: 0,
-    active: 0,
-    disabled: 0,
-    error: 0,
-    rateLimited: 0,
-    concurrencyLimit: 0
-  }
 }
 
 interface UsageRankSnapshotContext {
@@ -923,13 +578,6 @@ function refreshAiPerformanceSummaryWindowSnapshots(database: DatabaseSync, cont
   }
 }
 
-function refreshSystemMetricsTrendWindowSnapshotsStage(database: DatabaseSync, context: UsageRankSnapshotContext): void {
-  database.prepare('DELETE FROM system_metrics_trend_windows').run()
-  database.prepare('DELETE FROM process_event_loop_trend_windows').run()
-  refreshSystemMetricsTrendWindows(database, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
-  refreshProcessEventLoopTrendWindows(database, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
-}
-
 function defaultUsageSnapshotYield(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))
 }
@@ -1201,163 +849,6 @@ function refreshAiPerformanceSummaryWindows(
       updatedAt
     )
   }
-}
-
-function refreshSystemMetricsTrendWindows(
-  database: DatabaseSync,
-  ranges: AccountUsageStatsRange[],
-  earliestDate: string,
-  todayKey: string,
-  updatedAt: string
-): void {
-  const rows = database.prepare(`
-    SELECT ${systemMetricsHourlySelectColumns()}
-    FROM system_metrics_hourly
-    WHERE stat_hour >= ? AND stat_hour <= ?
-    ORDER BY stat_hour ASC
-  `).all(`${earliestDate}T00`, `${todayKey}T23`) as unknown as Array<Record<string, unknown>>
-  const rowsByDate = rowsByStatHourDate(rows.map((row) => ({ ...row, stat_hour: String(row.stat_hour ?? '') })))
-  const insert = database.prepare(`
-    INSERT INTO system_metrics_trend_windows (
-      window_key, start_date, end_date, bucket_key, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
-      memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
-      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
-      network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
-      network_rx_total_bytes_max, network_tx_total_bytes_max,
-      db_file_bytes_max, stats_lag_seconds_max, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  for (const range of ranges) {
-    const buckets = aggregateSystemMetricsRows(rowsForDateRange(rowsByDate, range), trendBucketHours(range))
-    for (const row of buckets.sort((left, right) => compareText(String(left.stat_hour ?? ''), String(right.stat_hour ?? '')))) {
-      insert.run(
-        rangeWindowKey(range),
-        range.startDate,
-        range.endDate,
-        String(row.stat_hour ?? ''),
-        Number(row.sample_count ?? 0),
-        Number(row.cpu_percent_sum ?? 0),
-        nullableNumber(row.cpu_percent_max),
-        Number(row.memory_used_percent_sum ?? 0),
-        nullableNumber(row.memory_used_percent_max),
-        Number(row.process_rss_bytes_sum ?? 0),
-        nullableNumber(row.process_rss_bytes_max),
-        Number(row.process_heap_used_bytes_sum ?? 0),
-        nullableNumber(row.process_heap_used_bytes_max),
-        Number(row.event_loop_lag_ms_sum ?? 0),
-        Number(row.event_loop_lag_ms_count ?? 0),
-        nullableNumber(row.event_loop_lag_ms_max),
-        Number(row.network_rx_bytes_per_sec_sum ?? 0),
-        nullableNumber(row.network_rx_bytes_per_sec_max),
-        Number(row.network_rx_bytes_per_sec_count ?? 0),
-        Number(row.network_tx_bytes_per_sec_sum ?? 0),
-        nullableNumber(row.network_tx_bytes_per_sec_max),
-        Number(row.network_tx_bytes_per_sec_count ?? 0),
-        nullableNumber(row.network_rx_total_bytes_max),
-        nullableNumber(row.network_tx_total_bytes_max),
-        nullableNumber(row.db_file_bytes_max),
-        nullableNumber(row.stats_lag_seconds_max),
-        updatedAt
-      )
-    }
-  }
-}
-
-function refreshProcessEventLoopTrendWindows(
-  database: DatabaseSync,
-  ranges: AccountUsageStatsRange[],
-  earliestDate: string,
-  todayKey: string,
-  updatedAt: string
-): void {
-  const rows = database.prepare(`
-    SELECT ${processEventLoopHourlySelectColumns()}
-    FROM process_event_loop_hourly
-    WHERE stat_hour >= ? AND stat_hour <= ?
-    ORDER BY stat_hour ASC, process_role ASC
-  `).all(`${earliestDate}T00`, `${todayKey}T23`) as unknown as Array<Record<string, unknown>>
-  const rowsByDate = rowsByStatHourDate(rows.map((row) => ({ ...row, stat_hour: String(row.stat_hour ?? '') })))
-  const insert = database.prepare(`
-    INSERT INTO process_event_loop_trend_windows (
-      window_key, start_date, end_date, bucket_key, process_role, sample_count,
-      event_loop_lag_ms_sum, event_loop_lag_ms_max, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  for (const range of ranges) {
-    const buckets = aggregateProcessEventLoopRows(rowsForDateRange(rowsByDate, range), trendBucketHours(range))
-    for (const row of buckets.sort((left, right) => compareText(String(left.stat_hour ?? ''), String(right.stat_hour ?? '')) || compareText(String(left.process_role ?? ''), String(right.process_role ?? '')))) {
-      insert.run(
-        rangeWindowKey(range),
-        range.startDate,
-        range.endDate,
-        String(row.stat_hour ?? ''),
-        String(row.process_role ?? ''),
-        Number(row.sample_count ?? 0),
-        Number(row.event_loop_lag_ms_sum ?? 0),
-        nullableNumber(row.event_loop_lag_ms_max),
-        updatedAt
-      )
-    }
-  }
-}
-
-function aggregateProcessEventLoopRows(rows: Array<Record<string, unknown>>, bucketHours: number): Array<Record<string, unknown>> {
-  const buckets = new Map<string, Record<string, unknown>>()
-  for (const row of rows) {
-    const processRole = String(row.process_role ?? '')
-    if (!processRole) continue
-    const statHour = trendBucketKey(String(row.stat_hour ?? ''), bucketHours)
-    const bucketKey = `${statHour}:${processRole}`
-    const bucket = buckets.get(bucketKey) ?? { stat_hour: statHour, process_role: processRole, sample_count: 0, event_loop_lag_ms_sum: 0 }
-    bucket.sample_count = Number(bucket.sample_count ?? 0) + Number(row.sample_count ?? 0)
-    bucket.event_loop_lag_ms_sum = Number(bucket.event_loop_lag_ms_sum ?? 0) + Number(row.event_loop_lag_ms_sum ?? 0)
-    const value = nullableNumber(row.event_loop_lag_ms_max)
-    const current = nullableNumber(bucket.event_loop_lag_ms_max)
-    if (value !== null) {
-      bucket.event_loop_lag_ms_max = current === null ? value : Math.max(current, value)
-    }
-    buckets.set(bucketKey, bucket)
-  }
-  return [...buckets.values()]
-}
-
-function systemMetricsHourlySelectColumns(): string {
-  return [
-    'stat_hour',
-    'sample_count',
-    'cpu_percent_sum',
-    'cpu_percent_max',
-    'memory_used_percent_sum',
-    'memory_used_percent_max',
-    'process_rss_bytes_sum',
-    'process_rss_bytes_max',
-    'process_heap_used_bytes_sum',
-    'process_heap_used_bytes_max',
-    'event_loop_lag_ms_sum',
-    'event_loop_lag_ms_count',
-    'event_loop_lag_ms_max',
-    'network_rx_bytes_per_sec_sum',
-    'network_rx_bytes_per_sec_max',
-    'network_rx_bytes_per_sec_count',
-    'network_tx_bytes_per_sec_sum',
-    'network_tx_bytes_per_sec_max',
-    'network_tx_bytes_per_sec_count',
-    'network_rx_total_bytes_max',
-    'network_tx_total_bytes_max',
-    'db_file_bytes_max',
-    'stats_lag_seconds_max'
-  ].join(', ')
-}
-
-function processEventLoopHourlySelectColumns(): string {
-  return [
-    'stat_hour',
-    'process_role',
-    'sample_count',
-    'event_loop_lag_ms_sum',
-    'event_loop_lag_ms_max'
-  ].join(', ')
 }
 
 function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
@@ -1986,81 +1477,6 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
   return issues
 }
 
-export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void {
-  const database = getStatsDatabase()
-  const sampledAt = nowIso()
-  const statHour = hourKey(new Date(sampledAt), usageStatsTimezone())
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    database
-      .prepare(`
-        INSERT INTO system_metrics_samples (
-          sampled_at, cpu_percent, memory_used_percent, memory_total_bytes, memory_free_bytes,
-          process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes, event_loop_lag_ms,
-          network_rx_bytes_per_sec, network_tx_bytes_per_sec, network_rx_total_bytes, network_tx_total_bytes,
-          db_file_bytes, stats_lag_seconds, id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        sampledAt,
-        input.cpuPercent ?? null,
-        input.memoryUsedPercent ?? null,
-        input.memoryTotalBytes ?? null,
-        input.memoryFreeBytes ?? null,
-        input.processRssBytes ?? null,
-        input.processHeapUsedBytes ?? null,
-        input.processHeapTotalBytes ?? null,
-        input.eventLoopLagMs ?? null,
-        input.networkRxBytesPerSecond ?? null,
-        input.networkTxBytesPerSecond ?? null,
-        input.networkRxTotalBytes ?? null,
-        input.networkTxTotalBytes ?? null,
-        input.dbFileBytes ?? null,
-        input.statsLagSeconds ?? null,
-        newId('metric'),
-        sampledAt
-      )
-    upsertSystemMetricsHourly(database, statHour, input, sampledAt)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-}
-
-export function insertProcessEventLoopSample(input: ProcessEventLoopSampleInput): void {
-  const eventLoopLagMs = input.eventLoopLagMs
-  if (eventLoopLagMs === undefined || !Number.isFinite(eventLoopLagMs)) {
-    return
-  }
-
-  const database = getStatsDatabase()
-  const sampledAt = input.sampledAt ?? nowIso()
-  const statHour = hourKey(new Date(sampledAt), usageStatsTimezone())
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    database
-      .prepare(`
-        INSERT INTO process_event_loop_samples (
-          sampled_at, process_role, process_pid, event_loop_lag_ms, id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        sampledAt,
-        input.processRole,
-        input.processPid ?? null,
-        eventLoopLagMs,
-        newId('process_metric'),
-        sampledAt
-      )
-    upsertProcessEventLoopHourly(database, statHour, input.processRole, eventLoopLagMs, sampledAt)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-}
-
 export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): UsageStatsOverview {
   const database = getStatsDatabase()
   const statsScope = usageOverviewStatsScope(access)
@@ -2117,145 +1533,6 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
     })),
     statsLagSeconds: latestUsageStatsLagSeconds()
   }
-}
-
-export function getSystemMetricsOverview(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): SystemMetricsOverview {
-  const database = getStatsDatabase()
-  const latest = database.prepare(`
-    SELECT ${systemMetricsLatestSelectColumns()}
-    FROM system_metrics_samples
-    ORDER BY sampled_at DESC, id DESC
-    LIMIT 1
-  `).get() as unknown as Record<string, unknown> | undefined
-  const windowKey = rangeWindowKey(range)
-  const rows = database.prepare(`
-    SELECT bucket_key AS stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
-      memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
-      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
-      network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
-      network_rx_total_bytes_max, network_tx_total_bytes_max,
-      db_file_bytes_max, stats_lag_seconds_max
-    FROM system_metrics_trend_windows
-    WHERE window_key = ? AND start_date = ? AND end_date = ?
-    ORDER BY bucket_key ASC
-  `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
-  const processLatestStatement = database.prepare(`
-    SELECT ${processEventLoopLatestSelectColumns()}
-    FROM process_event_loop_samples
-    WHERE process_role = ?
-    ORDER BY sampled_at DESC, id DESC
-    LIMIT 1
-  `)
-  const processLatestRows = PROCESS_EVENT_LOOP_ROLES
-    .map((role) => processLatestStatement.get(role) as unknown as Record<string, unknown> | undefined)
-    .filter((row): row is Record<string, unknown> => Boolean(row))
-  const processEventLoopStartedAt = processEventLoopPeakStartIso()
-  const processRows = loadProcessEventLoopTrendWindowRows(database, range)
-  const processEventLoopLatestStatus = buildProcessEventLoopStatus(processLatestRows)
-  const processEventLoopPeakStatus = buildProcessEventLoopStatus(processEventLoopPeakRows(database, processEventLoopStartedAt))
-  return {
-    latest: latest ? mapSystemMetricsLatest(latest) : undefined,
-    hourlyTrend: rows.map(mapSystemMetricsHourly),
-    processEventLoopLatestStatus,
-    processEventLoopPeakStatus,
-    processEventLoopTrend: processRows,
-    backgroundJobs: []
-  }
-}
-
-function processEventLoopPeakStartIso(): string {
-  return new Date(Date.now() - PROCESS_EVENT_LOOP_PEAK_WINDOW_MS).toISOString()
-}
-
-function loadProcessEventLoopTrendWindowRows(database: DatabaseSync, range: AccountUsageStatsRange): SystemMetricsOverview['processEventLoopTrend'] {
-  const rows = database.prepare(`
-    SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max
-    FROM process_event_loop_trend_windows
-    WHERE window_key = ? AND start_date = ? AND end_date = ?
-    ORDER BY bucket_key ASC, process_role ASC
-  `).all(rangeWindowKey(range), range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
-  return rows.map(mapProcessEventLoopHourly)
-}
-
-function processEventLoopPeakRows(database: DatabaseSync, startedAt: string): Array<Record<string, unknown>> {
-  const peakStatement = database.prepare(`
-    SELECT ${processEventLoopLatestSelectColumns()}
-    FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_role_peak
-    WHERE process_role = ?
-      AND sampled_at >= ?
-      AND event_loop_lag_ms IS NOT NULL
-    ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
-    LIMIT 1
-  `)
-  return PROCESS_EVENT_LOOP_ROLES
-    .map((role) => peakStatement.get(role, startedAt) as unknown as Record<string, unknown> | undefined)
-    .filter((row): row is Record<string, unknown> => Boolean(row))
-}
-
-function processRoleFromValue(value: unknown): ProcessRole | undefined {
-  return PROCESS_EVENT_LOOP_ROLES.find((role) => role === value)
-}
-
-function buildProcessEventLoopStatus(rows: Array<Record<string, unknown>>): SystemMetricsOverview['processEventLoopLatestStatus'] {
-  const statusByRole = new Map<ProcessRole, { processPid?: number; sampledAt: string; eventLoopLagMs?: number }>()
-  for (const row of rows) {
-    const processRole = processRoleFromValue(row.process_role)
-    if (!processRole || statusByRole.has(processRole)) continue
-    statusByRole.set(processRole, {
-      processPid: nullableNumber(row.process_pid) ?? undefined,
-      sampledAt: String(row.sampled_at ?? ''),
-      eventLoopLagMs: nullableNumber(row.event_loop_lag_ms) ?? undefined
-    })
-  }
-  return PROCESS_EVENT_LOOP_ROLES.map((processRole) => {
-    const row = statusByRole.get(processRole)
-    if (!row) {
-      return {
-        processRole,
-        sampleAvailable: false,
-        processPid: null,
-        sampledAt: null,
-        eventLoopLagMs: null
-      }
-    }
-    return {
-      processRole,
-      sampleAvailable: true,
-      processPid: row.processPid ?? null,
-      sampledAt: row.sampledAt,
-      eventLoopLagMs: row.eventLoopLagMs ?? null
-    }
-  })
-}
-
-function systemMetricsLatestSelectColumns(): string {
-  return [
-    'sampled_at',
-    'cpu_percent',
-    'memory_used_percent',
-    'memory_total_bytes',
-    'memory_free_bytes',
-    'process_rss_bytes',
-    'process_heap_used_bytes',
-    'process_heap_total_bytes',
-    'event_loop_lag_ms',
-    'network_rx_bytes_per_sec',
-    'network_tx_bytes_per_sec',
-    'network_rx_total_bytes',
-    'network_tx_total_bytes',
-    'db_file_bytes',
-    'stats_lag_seconds'
-  ].join(', ')
-}
-
-function processEventLoopLatestSelectColumns(): string {
-  return [
-    'process_role',
-    'process_pid',
-    'sampled_at',
-    'event_loop_lag_ms'
-  ].join(', ')
 }
 
 function mapUsageTrendRows(
@@ -2390,95 +1667,6 @@ function compareConsistencyRows(daily: ConsistencyStatsRow, hourly: ConsistencyS
 function boundedConsistencySampleLimit(value: number): number {
   const number = Number(value)
   return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), 1), 100) : 20
-}
-
-function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, input: SystemMetricsSampleInput, updatedAt: string): void {
-  database.prepare(`
-    INSERT INTO system_metrics_hourly (
-      stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
-      memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
-      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
-      network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
-      network_rx_total_bytes_max, network_tx_total_bytes_max,
-      db_file_bytes_max, stats_lag_seconds_max, updated_at
-    )
-    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(stat_hour) DO UPDATE SET
-      sample_count = sample_count + 1,
-      cpu_percent_sum = cpu_percent_sum + excluded.cpu_percent_sum,
-      cpu_percent_max = CASE WHEN excluded.cpu_percent_max IS NULL THEN system_metrics_hourly.cpu_percent_max WHEN system_metrics_hourly.cpu_percent_max IS NULL OR excluded.cpu_percent_max > system_metrics_hourly.cpu_percent_max THEN excluded.cpu_percent_max ELSE system_metrics_hourly.cpu_percent_max END,
-      memory_used_percent_sum = memory_used_percent_sum + excluded.memory_used_percent_sum,
-      memory_used_percent_max = CASE WHEN excluded.memory_used_percent_max IS NULL THEN system_metrics_hourly.memory_used_percent_max WHEN system_metrics_hourly.memory_used_percent_max IS NULL OR excluded.memory_used_percent_max > system_metrics_hourly.memory_used_percent_max THEN excluded.memory_used_percent_max ELSE system_metrics_hourly.memory_used_percent_max END,
-      process_rss_bytes_sum = process_rss_bytes_sum + excluded.process_rss_bytes_sum,
-      process_rss_bytes_max = CASE WHEN excluded.process_rss_bytes_max IS NULL THEN system_metrics_hourly.process_rss_bytes_max WHEN system_metrics_hourly.process_rss_bytes_max IS NULL OR excluded.process_rss_bytes_max > system_metrics_hourly.process_rss_bytes_max THEN excluded.process_rss_bytes_max ELSE system_metrics_hourly.process_rss_bytes_max END,
-      process_heap_used_bytes_sum = process_heap_used_bytes_sum + excluded.process_heap_used_bytes_sum,
-      process_heap_used_bytes_max = CASE WHEN excluded.process_heap_used_bytes_max IS NULL THEN system_metrics_hourly.process_heap_used_bytes_max WHEN system_metrics_hourly.process_heap_used_bytes_max IS NULL OR excluded.process_heap_used_bytes_max > system_metrics_hourly.process_heap_used_bytes_max THEN excluded.process_heap_used_bytes_max ELSE system_metrics_hourly.process_heap_used_bytes_max END,
-      event_loop_lag_ms_sum = event_loop_lag_ms_sum + excluded.event_loop_lag_ms_sum,
-      event_loop_lag_ms_count = event_loop_lag_ms_count + excluded.event_loop_lag_ms_count,
-      event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN system_metrics_hourly.event_loop_lag_ms_max WHEN system_metrics_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > system_metrics_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE system_metrics_hourly.event_loop_lag_ms_max END,
-      network_rx_bytes_per_sec_sum = network_rx_bytes_per_sec_sum + excluded.network_rx_bytes_per_sec_sum,
-      network_rx_bytes_per_sec_max = CASE WHEN excluded.network_rx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_rx_bytes_per_sec_max WHEN system_metrics_hourly.network_rx_bytes_per_sec_max IS NULL OR excluded.network_rx_bytes_per_sec_max > system_metrics_hourly.network_rx_bytes_per_sec_max THEN excluded.network_rx_bytes_per_sec_max ELSE system_metrics_hourly.network_rx_bytes_per_sec_max END,
-      network_rx_bytes_per_sec_count = network_rx_bytes_per_sec_count + excluded.network_rx_bytes_per_sec_count,
-      network_tx_bytes_per_sec_sum = network_tx_bytes_per_sec_sum + excluded.network_tx_bytes_per_sec_sum,
-      network_tx_bytes_per_sec_max = CASE WHEN excluded.network_tx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_tx_bytes_per_sec_max WHEN system_metrics_hourly.network_tx_bytes_per_sec_max IS NULL OR excluded.network_tx_bytes_per_sec_max > system_metrics_hourly.network_tx_bytes_per_sec_max THEN excluded.network_tx_bytes_per_sec_max ELSE system_metrics_hourly.network_tx_bytes_per_sec_max END,
-      network_tx_bytes_per_sec_count = network_tx_bytes_per_sec_count + excluded.network_tx_bytes_per_sec_count,
-      network_rx_total_bytes_max = CASE WHEN excluded.network_rx_total_bytes_max IS NULL THEN system_metrics_hourly.network_rx_total_bytes_max WHEN system_metrics_hourly.network_rx_total_bytes_max IS NULL OR excluded.network_rx_total_bytes_max > system_metrics_hourly.network_rx_total_bytes_max THEN excluded.network_rx_total_bytes_max ELSE system_metrics_hourly.network_rx_total_bytes_max END,
-      network_tx_total_bytes_max = CASE WHEN excluded.network_tx_total_bytes_max IS NULL THEN system_metrics_hourly.network_tx_total_bytes_max WHEN system_metrics_hourly.network_tx_total_bytes_max IS NULL OR excluded.network_tx_total_bytes_max > system_metrics_hourly.network_tx_total_bytes_max THEN excluded.network_tx_total_bytes_max ELSE system_metrics_hourly.network_tx_total_bytes_max END,
-      db_file_bytes_max = CASE WHEN excluded.db_file_bytes_max IS NULL THEN system_metrics_hourly.db_file_bytes_max WHEN system_metrics_hourly.db_file_bytes_max IS NULL OR excluded.db_file_bytes_max > system_metrics_hourly.db_file_bytes_max THEN excluded.db_file_bytes_max ELSE system_metrics_hourly.db_file_bytes_max END,
-      stats_lag_seconds_max = CASE WHEN excluded.stats_lag_seconds_max IS NULL THEN system_metrics_hourly.stats_lag_seconds_max WHEN system_metrics_hourly.stats_lag_seconds_max IS NULL OR excluded.stats_lag_seconds_max > system_metrics_hourly.stats_lag_seconds_max THEN excluded.stats_lag_seconds_max ELSE system_metrics_hourly.stats_lag_seconds_max END,
-      updated_at = excluded.updated_at
-  `).run(
-    statHour,
-    input.cpuPercent ?? 0,
-    input.cpuPercent ?? null,
-    input.memoryUsedPercent ?? 0,
-    input.memoryUsedPercent ?? null,
-    input.processRssBytes ?? 0,
-    input.processRssBytes ?? null,
-    input.processHeapUsedBytes ?? 0,
-    input.processHeapUsedBytes ?? null,
-    input.eventLoopLagMs ?? 0,
-    input.eventLoopLagMs === undefined ? 0 : 1,
-    input.eventLoopLagMs ?? null,
-    input.networkRxBytesPerSecond ?? 0,
-    input.networkRxBytesPerSecond ?? null,
-    input.networkRxBytesPerSecond === undefined ? 0 : 1,
-    input.networkTxBytesPerSecond ?? 0,
-    input.networkTxBytesPerSecond ?? null,
-    input.networkTxBytesPerSecond === undefined ? 0 : 1,
-    input.networkRxTotalBytes ?? null,
-    input.networkTxTotalBytes ?? null,
-    input.dbFileBytes ?? null,
-    input.statsLagSeconds ?? null,
-    updatedAt
-  )
-}
-
-function upsertProcessEventLoopHourly(
-  database: DatabaseSync,
-  statHour: string,
-  processRole: ProcessEventLoopSampleInput['processRole'],
-  eventLoopLagMs: number,
-  updatedAt: string
-): void {
-  database.prepare(`
-    INSERT INTO process_event_loop_hourly (
-      stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max, updated_at
-    )
-    VALUES (?, ?, 1, ?, ?, ?)
-    ON CONFLICT(stat_hour, process_role) DO UPDATE SET
-      sample_count = sample_count + 1,
-      event_loop_lag_ms_sum = event_loop_lag_ms_sum + excluded.event_loop_lag_ms_sum,
-      event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN process_event_loop_hourly.event_loop_lag_ms_max WHEN process_event_loop_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > process_event_loop_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE process_event_loop_hourly.event_loop_lag_ms_max END,
-      updated_at = excluded.updated_at
-  `).run(
-    statHour,
-    processRole,
-    eventLoopLagMs,
-    eventLoopLagMs,
-    updatedAt
-  )
 }
 
 function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {

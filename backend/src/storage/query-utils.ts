@@ -38,3 +38,7 @@ export function normalizeListPage(value: unknown, pageSize: number, windowRows =
     ? Math.min(pageUpperBoundForWindow(pageSize, windowRows), Math.max(1, value))
     : 1
 }
+
+export function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+}

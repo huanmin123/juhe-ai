@@ -238,7 +238,7 @@ function accountQualityDirtyCount(): number {
 function assertSourceGuards(): void {
   const source = readFileSync(resolve('src/storage/account-quality.repository.ts'), 'utf8')
   const schemaSource = readFileSync(resolve('src/storage/schema/stats-schema.ts'), 'utf8')
-  const writerSource = readFileSync(resolve('src/storage/usage-stats-writers.ts'), 'utf8')
+  const accountQualityWriterSource = readFileSync(resolve('src/storage/usage-stats-account-quality-writer.ts'), 'utf8')
   const failurePrecheckSource = readFileSync(resolve('src/modules/background/account-quality-failure-precheck.service.ts'), 'utf8')
   assert.doesNotMatch(source, /SELECT id, system_account_id, provider_code FROM accounts'\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部账号元数据')
   assert.doesNotMatch(source, /SELECT \$\{accountQualitySelectColumns\(\)\} FROM account_quality_scores`\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部质量缓存')
@@ -249,7 +249,7 @@ function assertSourceGuards(): void {
   assert.match(schemaSource, /idx_account_quality_scores_failure_precheck/, '统计库应为账号质量频繁失败确认候选提供索引')
   assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts/, '统计库应保存账号质量 dirty 游标表')
   assert.match(schemaSource, /idx_account_quality_dirty_accounts_updated/, '账号质量 dirty 表应有更新时间窗口索引')
-  assert.match(writerSource, /markAccountQualityDirty/, '用量统计写入账号质量分钟桶时应同步打 dirty 标记')
+  assert.match(accountQualityWriterSource, /markAccountQualityDirty/, '用量统计写入账号质量分钟桶时应同步打 dirty 标记')
   assert.match(failurePrecheckSource, /findAccountForTest\(item\.accountId,\s*accountAccess\)/, '频繁失败确认应按质量样本所属系统账户上下文读取账户')
   assert.match(failurePrecheckSource, /markAccountTestTemporaryUnavailable/, '频繁失败确认落库应复用账户测试临时不可调用语义')
   assert.match(failurePrecheckSource, /trafficSource:\s*'cooldown_retest'/, '频繁失败确认探针不应写入普通网关质量样本')

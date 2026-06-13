@@ -16,6 +16,14 @@ import {
   accountDiagnosticRetryTimeoutMs,
   diagnosticAccountTestGatewaySettingsOverride
 } from '../../accounts/account-diagnostic-retry-policy.js'
+import {
+  gatewayAccountId,
+  gatewayAccountRuntimeClearKeys,
+  gatewayAccountRuntimeKey,
+  runtimeAccountIdFromKey,
+  type GatewayAccountRuntimeClearTarget,
+  type SuppressibleGatewayAccount
+} from './account-runtime-keys.js'
 
 type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
 type StreamFailureOperation = Extract<DbServiceOperation, { type: 'record_account_stream_failure' }>
@@ -44,24 +52,7 @@ interface LocalAccountSuppression {
   halfOpenLeaseId?: string
 }
 
-type SuppressibleGatewayAccount = {
-  id: string
-  accessType?: 'owner' | 'authorized'
-  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
-  bindingSystemAccountId?: string
-  groupOwnerSystemAccountId?: string
-  boundGroupId?: string
-  accountAuthorizationId?: string
-}
-
-export interface GatewayAccountRuntimeClearTarget {
-  accountId: string
-  authorizedBinding?: {
-    systemAccountId?: string
-    groupId?: string
-    accountAuthorizationId?: string
-  }
-}
+export type { GatewayAccountRuntimeClearTarget, SuppressibleGatewayAccount } from './account-runtime-keys.js'
 
 export interface GatewayAccountRuntimeClearResult {
   cleared: boolean
@@ -828,58 +819,6 @@ function swapSideEffects(leftIndex: number, rightIndex: number): void {
   const left = sideEffectQueue[leftIndex]
   sideEffectQueue[leftIndex] = sideEffectQueue[rightIndex]
   sideEffectQueue[rightIndex] = left
-}
-
-function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string): string {
-  if (typeof account === 'string') {
-    return account
-  }
-  if (account.accountAccessType === 'account_authorized' || account.accessType === 'authorized') {
-    const systemAccountId = account.bindingSystemAccountId ?? ''
-    const groupId = account.boundGroupId ?? ''
-    const authorizationId = account.accountAuthorizationId ?? ''
-    if (systemAccountId && groupId && authorizationId) {
-      return `${account.id}:authorized:${systemAccountId}:${groupId}:${authorizationId}`
-    }
-    throw new Error('授权账户运行态键缺少绑定上下文')
-  }
-  return account.id
-}
-
-function gatewayAccountId(account: SuppressibleGatewayAccount | string): string {
-  return typeof account === 'string' ? account : account.id
-}
-
-function runtimeAccountIdFromKey(runtimeKey: string): string {
-  return runtimeKey.split(':', 1)[0] || runtimeKey
-}
-
-function gatewayAccountRuntimeClearKeys(account: GatewayAccountRuntimeClearTarget | SuppressibleGatewayAccount | string): string[] {
-  if (typeof account === 'string') {
-    return account.trim() ? [account.trim()] : []
-  }
-  const isClearTarget = 'accountId' in account
-  const accountId = (isClearTarget ? account.accountId : account.id)?.trim()
-  if (!accountId) {
-    return []
-  }
-  const keys = new Set<string>([accountId])
-  const authorizedBinding = isClearTarget
-      ? account.authorizedBinding
-      : account.accountAccessType === 'account_authorized' || account.accessType === 'authorized'
-        ? {
-          systemAccountId: account.bindingSystemAccountId,
-          groupId: account.boundGroupId,
-          accountAuthorizationId: account.accountAuthorizationId
-        }
-      : undefined
-  const systemAccountId = authorizedBinding?.systemAccountId
-  const groupId = authorizedBinding?.groupId
-  const authorizationId = authorizedBinding?.accountAuthorizationId
-  if (systemAccountId?.trim() && groupId?.trim() && authorizationId?.trim()) {
-    keys.add(`${accountId}:authorized:${systemAccountId.trim()}:${groupId.trim()}:${authorizationId.trim()}`)
-  }
-  return [...keys]
 }
 
 function suppressLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): GatewayAccountLocalSuppressionResult {

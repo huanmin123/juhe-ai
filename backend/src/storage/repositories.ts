@@ -1,17 +1,17 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
+import { loadAccountCurrentConcurrencyByIds } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
-import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions, type AccountOptionListOptions } from './account-list-options.js'
+import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
 import { cleanupDeletedAccountDetachedStats, cleanupDeletedAccountRelatedRecordData as cleanupDeletedAccountRelatedRecordDataTarget, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
 import { deleteAccountTagBindingsForAccounts, loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags } from './account-tags.repository.js'
 import { normalizeAccountModelMappingsForProvider, normalizeAccountSupportedModelsForProvider } from './account-model-normalization.js'
@@ -26,7 +26,7 @@ import {
   parseAccountAvailabilityScheduleJson
 } from './account-availability-schedule.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
-import { maxAccountExpirySweepBatchSize } from './account-sweep-limits.js'
+import { authorizationRuntimeBlockingStatus, disableExpiredAccounts } from './account-runtime-status.js'
 import {
   getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
   getAccountUsageStatsOverviewPageFromWindows as buildAccountUsageStatsOverviewPageFromWindows
@@ -37,9 +37,23 @@ import { createApiKeyRecord, deleteApiKey, findApiKeySecret, findApiKeySummary, 
 import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
-import { findGroupRowForAccess, listGroupOptionRowsForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions, type GroupOptionListOptions } from './group-read.repository.js'
-import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
+import { emptyGroupAccountStats } from './group-account-stats.mapper.js'
+import { loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
+import {
+  findGroupSummary,
+  listAccountGroupOptions,
+  listGroupOptions,
+  listGroups,
+  listGroupsPage
+} from './group-summary.repository.js'
+export {
+  findGroupSummary,
+  listAccountGroupOptions,
+  listGroupOptions,
+  listGroups,
+  listGroupsPage
+} from './group-summary.repository.js'
+import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { defaultProviderProtocolProfile, findProviderProtocolProfile, listOpenAIProtocolProfileIds, listProviders } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
@@ -61,18 +75,15 @@ import {
 import {
   normalizeResourceType
 } from './resource-authorization-list-helpers.js'
+import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, ownerPermissions } from './resource-permissions.js'
 import { findResourceAuthorizationSummary, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
 import {
   activeTeamMemberRows,
-  applyActiveTeamGrantsToMember,
   assertActiveTeamGrantFanoutWithinLimit,
   cleanupInactiveAuthorizationBindings,
   deactivateAuthorizationIfNoActiveSources,
   expireDueResourceAuthorizations,
-  reactivateTeamGrantSources,
-  revokeAllTeamSources,
   revokeResourceAuthorizationGrant,
-  revokeTeamSourcesForMember,
   returnResourceAuthorizationGrant,
   syncAccountAuthorizationInstanceNamesForSourceAccount,
   syncResourceAuthorizationGrantRuntime,
@@ -82,22 +93,27 @@ import {
 import {
   invalidateAccountLookupCache,
   invalidateGroupLookupCache,
-  invalidateSystemAccountTeamMembershipLookupCache,
-  invalidateSystemTeamLookupCache,
   loadSystemAccountNameMapByIds,
   loadSystemAccountPrincipalMapByIds
 } from './repository-lookups.js'
 import { hasEnabledRequestQuotaLimit, normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
-import type { AccountFailureRow, AccountListRow, AccountRow, GroupListRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
+import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
-import { systemAccountPrincipalSummaryFromRow } from './system-account-mappers.js'
-import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
-import { maxSystemTeamListPageSize, maxSystemTeamMemberBatchSize, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
+export type { SystemTeamListOptions } from './system-team.repository.js'
+export {
+  addSystemTeamMembers,
+  createSystemTeam,
+  findSystemTeamSummary,
+  listSystemTeams,
+  listSystemTeamsPage,
+  removeSystemTeamMember,
+  updateSystemTeam
+} from './system-team.repository.js'
 import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
-import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
+import { loadAccountUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
   nullableServerDateTimeIso,
@@ -116,8 +132,6 @@ const temporaryUnavailableBackoffMultiplier = 2
 const internalAccountReadAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const deletedAccountPhysicalCleanupRetentionMonths = 1
 const deletedAccountPhysicalCleanupBatchSize = 20
-type AccountOptionFilterValue = string | number
-const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
 function openAIProtocolProfileIdsForQuery(): string[] {
   const profileIds = listOpenAIProtocolProfileIds().map((profileId) => profileId.trim()).filter(Boolean)
@@ -148,32 +162,6 @@ function requireEnabledProviderProtocolProfile(providerCode: string, profileIdIn
     throw new Error(`供应商协议档案已停用：${profile.name}`)
   }
   return profile
-}
-
-interface AccountOptionRow {
-  id: string
-  system_account_id: string
-  provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
-  name: string
-  type: string
-  status: AccountStatus
-  schedulable: number
-  account_expires_at: string | null
-  cooldown_until?: string | null
-  priority: number
-  created_at: string
-  authorization_instance_source_account_id?: string | null
-  authorization_instance_authorization_id?: string | null
-  authorization_instance_owner_system_account_id?: string | null
-  access_type: 'owner' | 'authorized'
-  authorization_id: string | null
-  authorization_status: AuthorizationStatus | null
-  authorization_expires_at?: string | null
-  authorization_resource_owner_system_account_id?: string | null
-  authorization_resource_id?: string | null
 }
 
 interface OpenAIOAuthRefreshCandidateRow {
@@ -246,6 +234,7 @@ export {
   type DeletedAccountRecordCleanupTarget,
   type PendingDeletedAccountRecordCleanupSummary
 } from './account-record-cleanup.js'
+export { listAccountOptions } from './account-options.repository.js'
 export {
   AccountTagInUseError,
   deleteAccountTag,
@@ -278,6 +267,11 @@ export {
   refreshApiKeySecret,
   updateApiKey
 } from './api-key.repository.js'
+export {
+  listAuthorizationGranteeAccounts,
+  listAuthorizationGranteeGroups,
+  listAuthorizationGranteeTeams
+} from './authorization-options.repository.js'
 export { defaultProviderProtocolProfile, findProviderDefaultTestModel, findProviderProtocolProfile, isOpenAIProtocolProviderCode, listOpenAIProtocolProfileIds, listOpenAIProtocolProviderCodes, listProviders } from './provider.repository.js'
 export {
   createSession,
@@ -503,45 +497,6 @@ export {
   type AccountQualityFailurePrecheckCandidate,
   type AccountQualityRealtimeRefreshResult
 } from './account-quality.repository.js'
-function ownerPermissions(): ResourcePermissions {
-  return {
-    canUse: true,
-    canEdit: true,
-    canDelete: true,
-    canReturnAuthorization: false,
-    canAuthorize: true,
-    canViewCredentials: true,
-    canManageAccounts: true,
-    canBindToApiKey: true
-  }
-}
-
-function authorizedPermissions(): ResourcePermissions {
-  return {
-    canUse: true,
-    canEdit: false,
-    canDelete: false,
-    canReturnAuthorization: false,
-    canAuthorize: false,
-    canViewCredentials: false,
-    canManageAccounts: false,
-    canBindToApiKey: false
-  }
-}
-
-function authorizedGroupPermissions(canBindToApiKey: boolean, canReturnAuthorization = false): ResourcePermissions {
-  return {
-    ...authorizedPermissions(),
-    canEdit: true,
-    canReturnAuthorization,
-    canBindToApiKey
-  }
-}
-
-function canBindAuthorizedGroupRowToApiKey(row: GroupListRow): boolean {
-  return row.enabled === 1 && row.authorization_status === 'active' && !isResourceAuthorizationExpired(row.authorization_expires_at)
-}
-
 function canUseAccount(accountId: string, systemAccountId: string): boolean {
   const row = getBusinessDatabase()
     .prepare('SELECT system_account_id, authorization_instance_authorization_id FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
@@ -638,17 +593,6 @@ function accountGroupBinding(accountId: string, systemAccountId: string): { grou
     groupName: row.group_name ?? '',
     groupBindStatus: row.account_authorization_id && authorization?.id !== row.account_authorization_id ? 'authorization_unavailable' : 'bound'
   }
-}
-
-function authorizedAccountPermissions(canReturnAuthorization = false): ResourcePermissions {
-  return {
-    ...authorizedPermissions(),
-    canReturnAuthorization
-  }
-}
-
-function hasActiveManualAuthorizationSource(sources?: ResourceAuthorizationSourceSummary[]): boolean {
-  return sources?.some((source) => source.sourceType === 'manual' && source.status === 'active') ?? false
 }
 
 function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
@@ -794,60 +738,6 @@ function canTestAuthorizedInstanceFailureState(account: AccountSummary): boolean
   return isAuthorizedInstanceAvailable(account)
 }
 
-function disableExpiredAccounts(access?: AccessScope, limit = maxAccountExpirySweepBatchSize): number {
-  const scope = buildSystemAccountScopeClause(access)
-  const now = nowIso()
-  const requestedBatchSize = Math.trunc(limit)
-  const batchSize = Number.isFinite(requestedBatchSize)
-    ? Math.max(1, Math.min(requestedBatchSize, maxAccountExpirySweepBatchSize))
-    : maxAccountExpirySweepBatchSize
-  const database = getBusinessDatabase()
-  const rows = database
-    .prepare(`
-      SELECT id
-      FROM accounts
-      WHERE account_expires_at IS NOT NULL
-        AND account_expires_at <= ?
-        AND deleted_at IS NULL
-        AND (
-          status <> 'disabled'
-          OR schedulable <> 0
-          OR cooldown_until IS NOT NULL
-          OR last_error_code IS NOT NULL
-          OR last_error_message IS NULL
-        )${scope.clause}
-      ORDER BY account_expires_at ASC, updated_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(now, ...scope.params, batchSize) as unknown as Array<{ id: string }>
-  const expiredIds = rows.map((row) => row.id).filter(Boolean)
-  if (!expiredIds.length) return 0
-
-  const result = database
-    .prepare(`
-      UPDATE accounts
-      SET status = 'disabled',
-          schedulable = 0,
-          cooldown_until = NULL,
-          last_error_code = 'account_expired',
-          last_error_message = ?,
-          cooldown_retest_failure_count = 0,
-          cooldown_retest_observation_started_at = NULL,
-          cooldown_retest_last_at = NULL,
-          cooldown_retest_last_status_code = NULL,
-          updated_at = ?
-      WHERE id IN (${sqlPlaceholders(expiredIds.length)})
-        AND deleted_at IS NULL
-    `)
-    .run('账户套餐已过期，已自动停用', now, ...expiredIds)
-  const changed = Number(result.changes ?? 0)
-  if (changed > 0) {
-    refreshGroupAccountStatsAfterWrite({ all: true, reason: 'account_expired' })
-    invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
-  }
-  return changed
-}
-
 const accountStatusValues: readonly AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 const coolingAccountStatusValues: readonly AccountStatus[] = ['rate_limited', 'temporary_unavailable']
 
@@ -959,12 +849,6 @@ function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean
 
 function normalizeFallbackInput(value: unknown, fallback: boolean): boolean {
   return normalizeBooleanDispatchInput(value, fallback, '降级备用')
-}
-
-function authorizationRuntimeBlockingStatus(status?: AuthorizationStatus | null, expiresAt?: string | null): AccountStatus | undefined {
-  if (status && status !== 'active') return 'disabled'
-  if (isResourceAuthorizationExpired(expiresAt)) return 'disabled'
-  return undefined
 }
 
 function authorizedAccountInstanceUnavailableMessage(account: AccountSummary, options: { includeRuntimeState?: boolean } = {}): string | undefined {
@@ -1199,14 +1083,6 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
   }
 }
 
-export function listAccountOptions(access?: AccessScope, options?: AccountOptionListOptions): AccountOptionSummary[] {
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  disableExpiredAccounts(access)
-  const listOptions = normalizeAccountOptionListOptions(options)
-  const rows = queryAccountOptionRowsForAccess(access, listOptions)
-  return accountOptionSummariesFromRows(rows, access, viewerSystemAccountId)
-}
-
 export function findAccountSummary(accountId: string, access?: AccessScope): AccountSummary | undefined {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
@@ -1219,254 +1095,6 @@ export function findAccountSummary(accountId: string, access?: AccessScope): Acc
 
 function findInternalAccountSummary(accountId: string): AccountSummary | undefined {
   return findAccountSummary(accountId, internalAccountReadAccess)
-}
-
-function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {
-  const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
-  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows
-    ? loadSystemAccountNameMapByIds(rows.flatMap((row) => [
-        row.system_account_id,
-        row.authorization_resource_owner_system_account_id ?? '',
-        row.authorization_instance_owner_system_account_id ?? ''
-      ]))
-    : new Map<string, string>()
-  return rows.map((row) => {
-    const isAuthorizedView = row.access_type === 'authorized'
-    const effectiveStatus = isAuthorizedView
-      ? authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) ?? row.status
-      : row.status
-    return {
-      id: row.id,
-      systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
-      systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
-      ownerSystemAccountId: isAuthorizedView ? row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id : row.system_account_id,
-      ownerSystemAccountName: accountNames.get(isAuthorizedView ? row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id : row.system_account_id),
-      providerCode: row.provider_code,
-      providerProtocolProfileId: row.provider_protocol_profile_id,
-      protocolCode: row.protocol_code,
-      protocolVersion: row.protocol_version,
-      name: row.name,
-      type: row.type,
-      status: effectiveStatus,
-      accessType: row.access_type ?? 'owner',
-      accountAuthorizationId: row.authorization_id ?? undefined,
-      authorizationInstanceSourceAccountId: isAuthorizedView ? row.authorization_instance_source_account_id ?? undefined : undefined,
-      authorizationInstanceOwnerSystemAccountId: isAuthorizedView ? row.authorization_instance_owner_system_account_id ?? row.authorization_resource_owner_system_account_id ?? undefined : undefined,
-      authorizationStatus: row.authorization_status ?? undefined,
-      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
-      accountExpiresAt: row.account_expires_at ?? undefined,
-      permissions: isAuthorizedView ? authorizedAccountPermissions(false) : ownerPermissions()
-    }
-  })
-}
-
-function queryAccountOptionRowsForAccess(access: AccessScope | undefined, options: ReturnType<typeof normalizeAccountOptionListOptions>): AccountOptionRow[] {
-  const database = getBusinessDatabase()
-  const ownerSystemAccountId = manageableSystemAccountId(access)
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const limit = options.pageSize
-  const offset = (options.page - 1) * options.pageSize
-  const queryRows = (selectSql: string, params: AccountOptionFilterValue[]): AccountOptionRow[] => database
-    .prepare(`
-      SELECT *
-      FROM (
-        ${selectSql}
-      ) account_option_rows
-      ORDER BY CASE WHEN account_option_rows.access_type = 'authorized' THEN 0 ELSE account_option_rows.priority END ASC,
-        account_option_rows.created_at ASC,
-        account_option_rows.id ASC
-      LIMIT ? OFFSET ?
-    `)
-    .all(...params, limit, offset) as unknown as AccountOptionRow[]
-
-  if (!ownerSystemAccountId && canAccessAll(access)) {
-    const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
-    return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at
-      FROM accounts
-      WHERE accounts.deleted_at IS NULL${filters.clause}
-    `, filters.params)
-  }
-  if (!viewerSystemAccountId) {
-    throw new Error('缺少系统账户上下文')
-  }
-
-  const ownerId = ownerSystemAccountId ?? viewerSystemAccountId
-  const ownerFilters = buildAccountOptionFilters(options, 'accounts.system_account_id')
-  const authorizedFilters = buildAccountOptionFilters(options, '?', [viewerSystemAccountId], true)
-  return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type,
-      NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at,
-      NULL AS authorization_resource_owner_system_account_id, NULL AS authorization_resource_id
-    FROM accounts
-    WHERE accounts.system_account_id = ?
-      AND accounts.deleted_at IS NULL
-      AND accounts.authorization_instance_authorization_id IS NULL${ownerFilters.clause}
-    UNION ALL
-    SELECT ${accountOptionSelectColumns()}, 'authorized' AS access_type,
-      ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
-      ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
-      ra.resource_id AS authorization_resource_id
-    FROM accounts
-    INNER JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
-    LEFT JOIN group_accounts option_group_bindings
-      ON option_group_bindings.account_id = accounts.id
-      AND option_group_bindings.system_account_id = ?
-      AND option_group_bindings.enabled = 1
-    WHERE accounts.system_account_id = ?
-      AND accounts.deleted_at IS NULL
-      AND ra.resource_type = 'account'
-      AND ra.grantee_system_account_id = ?
-      AND ra.status IN ('active', 'paused', 'expired')
-      AND accounts.authorization_instance_authorization_id IS NOT NULL${authorizedFilters.clause}
-  `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, ownerId, viewerSystemAccountId, ...authorizedFilters.params])
-}
-
-function accountOptionSelectColumns(): string {
-  return [
-    'accounts.id',
-    'accounts.system_account_id',
-    'accounts.provider_code',
-    'accounts.provider_protocol_profile_id',
-    'accounts.protocol_code',
-    'accounts.protocol_version',
-    'accounts.name',
-    'accounts.type',
-    'accounts.status',
-    'accounts.schedulable',
-    'accounts.account_expires_at',
-    'accounts.cooldown_until',
-    'accounts.priority',
-    'accounts.created_at',
-    'accounts.authorization_instance_source_account_id',
-    'accounts.authorization_instance_authorization_id',
-    'accounts.authorization_instance_owner_system_account_id',
-    'accounts.deleted_at',
-    'accounts.deleted_by'
-  ].join(', ')
-}
-
-function buildAccountOptionFilters(
-  options: ReturnType<typeof normalizeAccountOptionListOptions>,
-  groupBindingSystemAccountExpression: string,
-  groupBindingSystemAccountParams: string[] = [],
-  authorizedView = false
-): { clause: string; params: AccountOptionFilterValue[] } {
-  const clauses: string[] = []
-  const params: AccountOptionFilterValue[] = []
-  if (options.ids.length) {
-    clauses.push(`accounts.id IN (${sqlPlaceholders(options.ids.length)})`)
-    params.push(...options.ids)
-  }
-  const keyword = options.keyword?.trim()
-  if (keyword) {
-    const keywordPrefix = `${escapeLikePrefix(keyword)}%`
-    clauses.push(`(
-      accounts.name COLLATE NOCASE = ?
-      OR accounts.name LIKE ? ESCAPE '\\'
-    )`)
-    params.push(
-      keyword,
-      keywordPrefix
-    )
-  }
-  const groupId = options.groupId?.trim()
-  if (groupId) {
-    clauses.push(`EXISTS (
-      SELECT 1
-      FROM group_accounts option_group_accounts
-      WHERE option_group_accounts.account_id = accounts.id
-        AND option_group_accounts.system_account_id = ${groupBindingSystemAccountExpression}
-        AND option_group_accounts.group_id = ?
-        AND option_group_accounts.enabled = 1
-    )`)
-    params.push(...groupBindingSystemAccountParams, groupId)
-  }
-  if (options.tagIds.length) {
-    clauses.push(`EXISTS (
-      SELECT 1
-      FROM account_tag_bindings option_tag_bindings
-      WHERE option_tag_bindings.account_id = accounts.id
-        AND option_tag_bindings.system_account_id = accounts.system_account_id
-        AND option_tag_bindings.tag_id IN (${sqlPlaceholders(options.tagIds.length)})
-    )`)
-    params.push(...options.tagIds)
-  }
-  if (options.type && options.type !== 'all') {
-    clauses.push('accounts.type = ?')
-    params.push(options.type)
-  }
-  const statuses = accountStatusFilterValues(options.status)
-  const authorizedStatusExpression = `CASE
-    WHEN ra.status <> 'active'
-      OR (ra.expires_at IS NOT NULL AND ra.expires_at <= ${currentIsoSql})
-    THEN 'disabled'
-    WHEN accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql} THEN 'disabled'
-    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
-    WHEN accounts.schedulable <> 1 THEN 'disabled'
-    WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    ELSE accounts.status
-  END`
-  const authorizedBindingAvailableExpression = `option_group_bindings.group_id IS NOT NULL
-    AND option_group_bindings.account_authorization_id IS NOT NULL
-    AND option_group_bindings.account_authorization_id = ra.id`
-  const authorizedBindingUnavailableExpression = `option_group_bindings.group_id IS NULL
-    OR option_group_bindings.account_authorization_id IS NULL
-    OR option_group_bindings.account_authorization_id <> ra.id`
-  const authorizedAuthorizationAvailableExpression = `ra.status = 'active'
-    AND (ra.expires_at IS NULL OR ra.expires_at > ${currentIsoSql})`
-  const authorizedAccountAvailableExpression = `accounts.schedulable = 1
-    AND accounts.status = 'active'
-    AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ${currentIsoSql})
-    AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ${currentIsoSql})`
-  const authorizedAccountHardUnavailableExpression = `accounts.schedulable <> 1
-    OR accounts.status IN ('pending_test', 'disabled', 'error')
-    OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})`
-  const authorizedAccountCoolingExpression = `accounts.status IN ('rate_limited', 'temporary_unavailable')
-    OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql})`
-  if (statuses.length === 1) {
-    clauses.push(authorizedView ? `${authorizedStatusExpression} = ?` : 'accounts.status = ?')
-    params.push(statuses[0])
-  } else if (statuses.length > 1) {
-    clauses.push(authorizedView
-      ? `${authorizedStatusExpression} IN (${statuses.map(() => '?').join(', ')})`
-      : `accounts.status IN (${statuses.map(() => '?').join(', ')})`)
-    params.push(...statuses)
-  }
-  if (options.schedulable === 'enabled') {
-    if (authorizedView) {
-      clauses.push(`${authorizedBindingAvailableExpression}
-        AND ${authorizedAuthorizationAvailableExpression}
-        AND ${authorizedAccountAvailableExpression}`)
-    } else {
-      clauses.push(`accounts.status = 'active'
-        AND accounts.schedulable = 1
-        AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ${currentIsoSql})`)
-    }
-  } else if (options.schedulable === 'disabled') {
-    if (authorizedView) {
-      clauses.push(`(${authorizedBindingUnavailableExpression}
-        OR ${authorizedStatusExpression} IN ('disabled', 'error')
-      )`)
-    } else {
-      clauses.push("(accounts.status = 'disabled' OR accounts.schedulable <> 1)")
-    }
-  } else if (options.schedulable === 'cooling') {
-    if (authorizedView) {
-      clauses.push(`${authorizedBindingAvailableExpression}
-        AND ${authorizedAuthorizationAvailableExpression}
-        AND NOT (${authorizedAccountHardUnavailableExpression})
-        AND (${authorizedAccountCoolingExpression})`)
-    } else {
-      clauses.push(`(accounts.status IN ('rate_limited', 'temporary_unavailable')
-        OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql}))`)
-    }
-  }
-  return {
-    clause: clauses.length ? ` AND ${clauses.join(' AND ')}` : '',
-    params
-  }
 }
 
 function accountSummariesFromRows(
@@ -4666,144 +4294,6 @@ export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAcc
   }
 }
 
-export function listGroups(access?: AccessScope): GroupSummary[] {
-  return buildGroupSummaries(listGroupRowsForAccess(access), access)
-}
-
-export function listGroupsPage(access?: AccessScope, options?: GroupListOptions): GroupListResult {
-  const page = listGroupRowsPageForAccess(access, options)
-  return {
-    items: buildGroupSummaries(page.rows, access),
-    total: page.total,
-    hasMore: page.hasMore,
-    page: page.page,
-    pageSize: page.pageSize
-  }
-}
-
-export function listGroupOptions(access?: AccessScope, options?: GroupOptionListOptions): GroupOptionSummary[] {
-  return buildGroupOptionSummaries(listGroupOptionRowsForAccess(access, options), access)
-}
-
-export function listAccountGroupOptions(access?: AccessScope, options?: GroupOptionListOptions): AccountGroupOptionSummary[] {
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const rows = listGroupOptionRowsForAccess(access, options)
-  const accountIdsByGroup = loadGroupAccountIdsByGroupIds(rows.map((row) => row.id))
-  return buildGroupOptionSummaries(rows, access).map((group, index) => {
-    const row = rows[index]
-    const isAuthorizedView = row?.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId
-    return {
-      ...group,
-      accountIds: isAuthorizedView ? [] : accountIdsByGroup.get(group.id) ?? []
-    }
-  })
-}
-
-export function findGroupSummary(id: string, access?: AccessScope): GroupSummary | undefined {
-  const row = findGroupRowForAccess(access, id)
-  return row ? buildGroupSummaries([row], access)[0] : undefined
-}
-
-function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): GroupOptionSummary[] {
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
-  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
-  return rows.map((row) => {
-    const isAuthorizedView = row.access_type === 'authorized'
-    return {
-      id: row.id,
-      systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
-      systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
-      ownerSystemAccountId: row.system_account_id,
-      ownerSystemAccountName: accountNames.get(row.system_account_id),
-      name: row.name,
-      providerCode: row.provider_code,
-      providerProtocolProfileId: row.provider_protocol_profile_id,
-      protocolCode: row.protocol_code,
-      protocolVersion: row.protocol_version,
-      enabled: row.enabled === 1,
-      isDefault: isAuthorizedView ? false : row.is_default === 1,
-      groupType: groupTypeFromRow(row),
-      schedulingPolicy: groupSchedulingPolicyFromRow(row),
-      accessType: row.access_type ?? 'owner',
-      groupAuthorizationId: row.authorization_id ?? undefined,
-      authorizationStatus: row.authorization_status ?? undefined,
-      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
-      authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
-      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row)) : ownerPermissions()
-    }
-  })
-}
-
-function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupSummary[] {
-  const timezone = usageStatsTimezone()
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const groupIds = rows.map((row) => row.id)
-  const groupStatsByGroup = loadGroupAccountStatsByGroupIds(groupIds)
-  const accountIdsByGroup = loadGroupAccountIdsByGroupIds(groupIds)
-  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds([...accountIdsByGroup.values()].flat())
-  const groupUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const groupAuthorizationScopes = rows
-    .filter((row) => row.authorization_id)
-    .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
-  const todayUsageByGroup = loadGroupUsageSummariesForScopes(groupUsageScopes, todayDateKey(timezone))
-  const totalUsageByGroup = loadGroupUsageSummariesForScopes(groupUsageScopes)
-  const todayUsageByAuthorization = loadGroupAuthorizationUsageSummaries(groupAuthorizationScopes, todayDateKey(timezone))
-  const totalUsageByAuthorization = loadGroupAuthorizationUsageSummaries(groupAuthorizationScopes)
-  const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
-  const accountNames = loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
-  return rows.map((row) => {
-    const isAuthorizedView = row.access_type === 'authorized'
-    const todayUsage = isAuthorizedView && row.authorization_id
-      ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
-      : todayUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
-    const totalUsage = isAuthorizedView && row.authorization_id
-      ? totalUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
-      : totalUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
-    const accountStats = groupAccountStatsFromRow(groupStatsByGroup.get(row.id), todayUsage, totalUsage)
-    if (!isAuthorizedView) {
-      accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIdsByGroup.get(row.id) ?? [], currentConcurrencyByAccount)
-    }
-    return {
-      id: row.id,
-      systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
-      systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
-      ownerSystemAccountId: row.system_account_id,
-      ownerSystemAccountName: accountNames.get(row.system_account_id),
-      name: row.name,
-      providerCode: row.provider_code,
-      providerProtocolProfileId: row.provider_protocol_profile_id,
-      protocolCode: row.protocol_code,
-      protocolVersion: row.protocol_version,
-      description: row.description ?? undefined,
-      enabled: row.enabled === 1,
-      isDefault: isAuthorizedView ? false : row.is_default === 1,
-      groupType: groupTypeFromRow(row),
-      schedulingPolicy: groupSchedulingPolicyFromRow(row),
-      accountIds: isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? [],
-      accountStats,
-      accessType: row.access_type ?? 'owner',
-      groupAuthorizationId: row.authorization_id ?? undefined,
-      authorizationStatus: row.authorization_status ?? undefined,
-      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
-      authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
-      authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(sourcesByAuthorization.get(row.authorization_id) ?? [], isAuthorizedView) : undefined,
-      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId
-        ? authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row), hasActiveManualAuthorizationSource(sourcesByAuthorization.get(row.authorization_id ?? '') ?? []))
-        : ownerPermissions()
-    }
-  })
-}
-
-function groupTypeFromRow(row: Pick<GroupListRow, 'group_type'>): GroupType {
-  return normalizeGroupType(row.group_type)
-}
-
-function groupSchedulingPolicyFromRow(row: Pick<GroupListRow, 'group_type' | 'scheduling_policy_json'>): GroupSchedulingPolicy | undefined {
-  return parseGroupSchedulingPolicyJson(row.scheduling_policy_json, groupTypeFromRow(row))
-}
-
 function hasGroupSchedulingPolicyInput(input: Record<string, unknown>): boolean {
   return hasOwnInput(input, 'schedulingPolicy')
 }
@@ -5293,434 +4783,6 @@ export function addAccountToGroup(groupId: string, accountId: string): GroupSumm
   return findGroupSummary(groupId)
 }
 
-export interface SystemTeamListOptions {
-  page?: number
-  pageSize?: number
-  keyword?: string
-}
-
-interface NormalizedSystemTeamListOptions {
-  page: number
-  pageSize: number
-  keyword?: string
-}
-
-export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
-  const rows = querySystemTeamRows(access, undefined, normalizeSystemTeamListOptions()).rows
-  const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
-  return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
-}
-
-export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamListOptions = {}): SystemTeamListResult {
-  const listOptions = normalizeSystemTeamListOptions(options)
-  const rows = querySystemTeamRows(access, {
-    limit: listOptions.pageSize + 1,
-    offset: (listOptions.page - 1) * listOptions.pageSize
-  }, listOptions).rows
-  const pageRows = takePageRows(rows, listOptions.pageSize)
-  const members = listSystemTeamMembersForTeamIds(pageRows.rows.map((row) => row.id), true)
-  const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
-  return {
-    items,
-    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
-    hasMore: pageRows.hasMore,
-    page: listOptions.page,
-    pageSize: listOptions.pageSize
-  }
-}
-
-function querySystemTeamRows(access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, options: Pick<NormalizedSystemTeamListOptions, 'keyword'>): { rows: SystemTeamRow[] } {
-  const scopedId = scopedSystemAccountId(access)
-  const clauses: string[] = []
-  const params: string[] = []
-  if (scopedId) {
-    clauses.push(`EXISTS (
-      SELECT 1
-      FROM system_team_members
-      WHERE system_team_members.team_id = system_teams.id
-        AND system_team_members.system_account_id = ?
-        AND system_team_members.status = 'active'
-    )`)
-    params.push(scopedId)
-  }
-  const keyword = options.keyword?.trim()
-  if (keyword) {
-    const prefix = `${escapeLikePrefix(keyword)}%`
-    clauses.push(`(
-      system_teams.name COLLATE NOCASE = ?
-      OR system_teams.name LIKE ? ESCAPE '\\'
-    )`)
-    params.push(keyword, prefix)
-  }
-  const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
-  const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
-  const pageParams = pagination ? [pagination.limit, pagination.offset] : []
-  const rows = getBusinessDatabase()
-    .prepare(`SELECT id, name, description, status, created_by, created_at, updated_at FROM system_teams${whereClause} ORDER BY status ASC, updated_at DESC, name ASC, id ASC${pageClause}`)
-    .all(...params, ...pageParams) as unknown as SystemTeamRow[]
-  return { rows }
-}
-
-function normalizeSystemTeamListOptions(options: SystemTeamListOptions = {}): NormalizedSystemTeamListOptions {
-  const rawPage = options.page
-  const rawPageSize = options.pageSize
-  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
-    ? Math.min(maxSystemTeamListPageSize, Math.max(1, rawPageSize))
-    : 20
-  const page = normalizeListPage(rawPage, pageSize)
-  return {
-    page,
-    pageSize,
-    keyword: optionalString(options.keyword)
-  }
-}
-
-export function findSystemTeamSummary(id: string, access?: AccessScope): SystemTeamSummary | undefined {
-  const scopedId = scopedSystemAccountId(access)
-  const row = scopedId
-    ? getBusinessDatabase()
-      .prepare(`
-        SELECT DISTINCT system_teams.*
-        FROM system_teams
-        INNER JOIN system_team_members ON system_team_members.team_id = system_teams.id
-        WHERE system_teams.id = ?
-          AND system_team_members.system_account_id = ?
-          AND system_team_members.status = 'active'
-        LIMIT 1
-      `)
-      .get(id, scopedId) as unknown as SystemTeamRow | undefined
-    : getBusinessDatabase().prepare('SELECT * FROM system_teams WHERE id = ?').get(id) as unknown as SystemTeamRow | undefined
-  if (!row) return undefined
-  const members = listSystemTeamMembersForTeamIds([row.id], true)
-  return systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access)
-}
-
-interface AuthorizationPrincipalOptionListOptions {
-  ids?: string[]
-  keyword?: string
-  limit?: number
-}
-
-export function listAuthorizationGranteeAccounts(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): SystemAccountPrincipalSummary[] {
-  void access
-  const database = getBusinessDatabase()
-  const principalFilter = buildSystemAccountPrincipalFilter(options)
-  const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
-  const rows = database.prepare(`
-    SELECT id, username, display_name, status
-    FROM system_accounts
-    ${principalFilter.clause}
-    ORDER BY status ASC, display_name ASC, username ASC, id ASC
-    ${limitClause.clause}
-  `).all(...principalFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
-  return rows.map(systemAccountPrincipalSummaryFromRow)
-}
-
-export function listAuthorizationGranteeTeams(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): SystemTeamPrincipalSummary[] {
-  void access
-  const database = getBusinessDatabase()
-  const principalFilter = buildSystemTeamPrincipalFilter(options)
-  const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
-  const rows = database.prepare(`
-    SELECT id, name, status
-    FROM system_teams
-    ${principalFilter.clause}
-    ORDER BY status ASC, name ASC, id ASC
-    ${limitClause.clause}
-  `).all(...principalFilter.params, ...limitClause.params) as unknown as SystemTeamRow[]
-  return rows.map(systemTeamPrincipalSummaryFromRow)
-}
-
-interface AuthorizationGranteeGroupOptionListOptions extends AuthorizationPrincipalOptionListOptions {
-  granteeSystemAccountId?: string
-  providerCode?: string
-  preferDefault?: boolean
-}
-
-export function listAuthorizationGranteeGroups(access?: AccessScope, options: AuthorizationGranteeGroupOptionListOptions = {}): GroupOptionSummary[] {
-  void access
-  const granteeSystemAccountId = optionalString(options.granteeSystemAccountId)
-  if (!granteeSystemAccountId) return []
-  const grantee = findSystemAccountById(granteeSystemAccountId)
-  if (!grantee || grantee.status !== 'active') return []
-  const filter = buildAuthorizationGranteeGroupFilter(options, granteeSystemAccountId)
-  const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
-  const rows = getBusinessDatabase()
-    .prepare(`
-      SELECT ${authorizationGranteeGroupSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
-      FROM groups
-      ${filter.clause}
-      ${options.preferDefault === false ? 'ORDER BY groups.updated_at DESC, groups.id DESC' : 'ORDER BY groups.is_default DESC, groups.updated_at DESC, groups.id DESC'}
-      ${limitClause.clause}
-    `)
-    .all(...filter.params, ...limitClause.params) as unknown as GroupListRow[]
-  return buildGroupOptionSummaries(rows, access).map((group) => ({
-    ...group,
-    permissions: authorizedPermissions()
-  }))
-}
-
-function authorizationGranteeGroupSelectColumns(): string {
-  return [
-    'id',
-    'system_account_id',
-    'name',
-    'provider_code',
-    'provider_protocol_profile_id',
-    'protocol_code',
-    'protocol_version',
-    'description',
-    'enabled',
-    'is_default',
-    'group_type',
-    'scheduling_policy_json',
-    'created_at',
-    'updated_at'
-  ].map((column) => `groups.${column}`).join(', ')
-}
-
-function buildSystemAccountPrincipalFilter(options: AuthorizationPrincipalOptionListOptions): { clause: string; params: string[] } {
-  return buildPrincipalFilter(options, buildSystemAccountPrincipalKeywordFilter)
-}
-
-function buildSystemTeamPrincipalFilter(options: AuthorizationPrincipalOptionListOptions): { clause: string; params: string[] } {
-  return buildPrincipalFilter(options, buildSystemTeamPrincipalKeywordFilter)
-}
-
-function buildAuthorizationGranteeGroupFilter(options: AuthorizationGranteeGroupOptionListOptions, granteeSystemAccountId: string): { clause: string; params: string[] } {
-  const clauses = ['groups.system_account_id = ?', 'groups.enabled = 1']
-  const params = [granteeSystemAccountId]
-  const ids = normalizeTextList(options.ids)
-  if (ids.length) {
-    clauses.push(`groups.id IN (${sqlPlaceholders(ids.length)})`)
-    params.push(...ids)
-  }
-  const providerCode = optionalString(options.providerCode)
-  if (providerCode) {
-    clauses.push('groups.provider_code COLLATE NOCASE = ?')
-    params.push(providerCode)
-  }
-  const keyword = optionalString(options.keyword)
-  if (keyword) {
-    const prefix = `${escapeLikePrefix(keyword)}%`
-    clauses.push(`(
-      groups.name COLLATE NOCASE = ?
-      OR groups.name LIKE ? ESCAPE '\\'
-    )`)
-    params.push(keyword, prefix)
-  }
-  return {
-    clause: `WHERE ${clauses.join(' AND ')}`,
-    params
-  }
-}
-
-function buildPrincipalFilter(
-  options: AuthorizationPrincipalOptionListOptions,
-  keywordFilterBuilder: (keyword?: string) => { clause: string; params: string[] }
-): { clause: string; params: string[] } {
-  const clauses: string[] = []
-  const params: string[] = []
-  const ids = normalizeTextList(options.ids)
-  if (ids.length) {
-    clauses.push(`id IN (${sqlPlaceholders(ids.length)})`)
-    params.push(...ids)
-  }
-  const keywordFilter = keywordFilterBuilder(options.keyword)
-  if (keywordFilter.clause) {
-    clauses.push(keywordFilter.clause.replace(/^WHERE\s+/i, ''))
-    params.push(...keywordFilter.params)
-  }
-  return {
-    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
-    params
-  }
-}
-
-function normalizeTextList(values?: string[]): string[] {
-  if (!values?.length) return []
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
-    .sort()
-    .slice(0, 50)
-}
-
-function buildSystemAccountPrincipalKeywordFilter(keyword?: string): { clause: string; params: string[] } {
-  const text = optionalString(keyword)
-  if (!text) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(text)}%`
-  return {
-    clause: `WHERE (
-      username COLLATE NOCASE = ?
-      OR username LIKE ? ESCAPE '\\'
-      OR display_name COLLATE NOCASE = ?
-      OR display_name LIKE ? ESCAPE '\\'
-    )`,
-    params: [text, prefix, text, prefix]
-  }
-}
-
-function buildSystemTeamPrincipalKeywordFilter(keyword?: string): { clause: string; params: string[] } {
-  const text = optionalString(keyword)
-  if (!text) return { clause: '', params: [] }
-  const prefix = `${escapeLikePrefix(text)}%`
-  return {
-    clause: `WHERE (
-      name COLLATE NOCASE = ?
-      OR name LIKE ? ESCAPE '\\'
-    )`,
-    params: [text, prefix]
-  }
-}
-
-function authorizationPrincipalOptionLimitClause(limit?: number): { clause: string; params: number[] } {
-  const safeLimit = typeof limit === 'number' && Number.isInteger(limit)
-    ? Math.min(50, Math.max(1, limit))
-    : 50
-  return { clause: 'LIMIT ?', params: [safeLimit] }
-}
-
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
-}
-
-const systemTeamInputKeys = new Set(['name', 'description', 'status'])
-const systemTeamMembersInputKeys = new Set(['systemAccountIds'])
-
-export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {
-  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
-  const name = normalizeSystemTeamName(input.name)
-  const database = getBusinessDatabase()
-  ensureSystemTeamNameUnique(name, undefined, database)
-  const now = nowIso()
-  const id = newId('team')
-  database
-    .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(id, name, normalizeSystemTeamDescription(input.description), normalizeSystemTeamStatus(input.status, 'active'), currentSystemAccountId(access), now, now)
-  const created = findSystemTeamSummary(id, access)
-  if (!created) throw new Error('创建团队失败')
-  invalidateSystemTeamLookupCache(id)
-  return created
-}
-
-export function updateSystemTeam(id: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
-  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
-  const database = getBusinessDatabase()
-  const row = database.prepare('SELECT * FROM system_teams WHERE id = ?').get(id) as unknown as SystemTeamRow | undefined
-  if (!row) return undefined
-  const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
-  ensureSystemTeamNameUnique(name, id, database)
-  const status = normalizeSystemTeamStatus(input.status, row.status)
-  const now = nowIso()
-  let authorizationChanged = false
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    database
-      .prepare('UPDATE system_teams SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?')
-      .run(name, input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description), status, now, id)
-    if (row.status !== 'disabled' && status === 'disabled') {
-      revokeAllTeamSources(id, currentSystemAccountId(access), database, now, 'team_disabled')
-      authorizationChanged = true
-    }
-    if (row.status === 'disabled' && status === 'active') {
-      reactivateTeamGrantSources(id, access, database, now)
-      authorizationChanged = true
-    }
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  if (authorizationChanged) {
-    refreshGroupAccountStatsAfterWrite({ all: true, reason: 'team_authorization_changed' })
-    invalidateAuthorizationRuntimeAfterBusinessWrite('team_authorization_changed')
-  }
-  invalidateSystemTeamLookupCache(id)
-  invalidateSystemAccountTeamMembershipLookupCache()
-  clearResourceAuthorizationLookupCaches()
-  return findSystemTeamSummary(id, access)
-}
-
-export function addSystemTeamMembers(teamId: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
-  assertKnownInputKeys(input, systemTeamMembersInputKeys, '团队成员')
-  const team = getBusinessDatabase().prepare("SELECT * FROM system_teams WHERE id = ? AND status = 'active'").get(teamId) as unknown as SystemTeamRow | undefined
-  if (!team) return undefined
-  const systemAccountIds = normalizeSystemAccountIds(input.systemAccountIds)
-  if (!systemAccountIds.length) throw new Error('请选择团队成员')
-  if (systemAccountIds.length > maxSystemTeamMemberBatchSize) {
-    throw new Error(`单次最多添加 ${maxSystemTeamMemberBatchSize} 个团队成员`)
-  }
-  const database = getBusinessDatabase()
-  const existingActiveMemberRows = database.prepare(`
-    SELECT system_account_id
-    FROM system_team_members
-    WHERE team_id = ?
-      AND status = 'active'
-    ORDER BY system_account_id ASC
-    LIMIT ?
-  `).all(teamId, maxSystemTeamMembersPerTeam + 1) as unknown as Array<{ system_account_id?: string }>
-  if (existingActiveMemberRows.length > maxSystemTeamMembersPerTeam) {
-    throw new Error(`授权团队最多支持 ${maxSystemTeamMembersPerTeam} 个成员，请先移除部分成员后再添加`)
-  }
-  const existingActiveMemberIds = new Set<string>()
-  for (const memberRow of existingActiveMemberRows) {
-    const systemAccountId = memberRow.system_account_id?.trim()
-    if (systemAccountId) {
-      existingActiveMemberIds.add(systemAccountId)
-    }
-  }
-  const nextActiveMemberIds = systemAccountIds.filter((systemAccountId) => !existingActiveMemberIds.has(systemAccountId))
-  if (existingActiveMemberIds.size + nextActiveMemberIds.length > maxSystemTeamMembersPerTeam) {
-    throw new Error(`授权团队最多支持 ${maxSystemTeamMembersPerTeam} 个成员，请先移除部分成员后再添加`)
-  }
-  const now = nowIso()
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    for (const systemAccountId of systemAccountIds) {
-      const account = findSystemAccountById(systemAccountId)
-      if (!account || account.status !== 'active') throw new Error('团队成员不存在或已停用')
-      const existing = database.prepare('SELECT * FROM system_team_members WHERE team_id = ? AND system_account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(teamId, systemAccountId) as unknown as SystemTeamMemberRow | undefined
-      if (existing?.status === 'active') continue
-      if (existing) {
-        database.prepare("UPDATE system_team_members SET status = 'active', joined_at = ?, removed_at = NULL, updated_at = ? WHERE id = ?").run(now, now, existing.id)
-      } else {
-        database.prepare("INSERT INTO system_team_members (id, team_id, system_account_id, member_role, status, joined_at, removed_at, created_by, created_at, updated_at) VALUES (?, ?, ?, 'member', 'active', ?, NULL, ?, ?, ?)")
-          .run(newId('teammem'), teamId, systemAccountId, now, currentSystemAccountId(access), now, now)
-      }
-      applyActiveTeamGrantsToMember(teamId, systemAccountId, access, database, now)
-    }
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'team_members_changed' })
-  invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
-  for (const systemAccountId of systemAccountIds) {
-    invalidateSystemAccountTeamMembershipLookupCache(systemAccountId)
-  }
-  return findSystemTeamSummary(teamId, access)
-}
-
-export function removeSystemTeamMember(teamId: string, memberId: string, access?: AccessScope): SystemTeamSummary | undefined {
-  const database = getBusinessDatabase()
-  const member = database.prepare("SELECT * FROM system_team_members WHERE id = ? AND team_id = ? AND status = 'active'").get(memberId, teamId) as unknown as SystemTeamMemberRow | undefined
-  if (!member) return undefined
-  const now = nowIso()
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    database.prepare("UPDATE system_team_members SET status = 'removed', removed_at = ?, updated_at = ? WHERE id = ?").run(now, now, memberId)
-    revokeTeamSourcesForMember(teamId, member.system_account_id, currentSystemAccountId(access), database, now)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'team_members_changed' })
-  invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
-  invalidateSystemAccountTeamMembershipLookupCache(member.system_account_id)
-  return findSystemTeamSummary(teamId, access)
-}
-
 export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   expireDueResourceAuthorizations()
   return listResourceAuthorizationSummaries(filters, access, options)
@@ -6076,133 +5138,6 @@ export function getResourceAuthorizationUsage(authorizationId: string, access?: 
     usageBySystemAccountHasMore: detail.usageBySystemAccountHasMore,
     usageRange: range
   }
-}
-
-function systemTeamSummaryFromRow(row: SystemTeamRow, members: SystemTeamMemberSummary[], _access?: AccessScope): SystemTeamSummary {
-  return { id: row.id, name: row.name, description: row.description ?? undefined, status: row.status, memberCount: members.length, activeMemberCount: members.filter((member) => member.status === 'active').length, members, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }
-}
-
-function systemTeamPrincipalSummaryFromRow(row: SystemTeamRow): SystemTeamPrincipalSummary {
-  return {
-    id: row.id,
-    name: row.name,
-    status: row.status
-  }
-}
-
-function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false): Map<string, SystemTeamMemberSummary[]> {
-  const ids = [...new Set(teamIds)].filter(Boolean)
-  if (!ids.length) return new Map()
-  const statusClause = activeOnly ? " AND system_team_members.status = 'active'" : ''
-  const rows: Array<SystemTeamMemberRow & { display_name?: string; username?: string }> = []
-  const database = getBusinessDatabase()
-  for (const chunk of chunkValues(ids, 900)) {
-    const teamRows = database.prepare(`
-      SELECT *
-      FROM (
-        SELECT ${systemTeamMemberSelectColumns('system_team_members')}, system_accounts.display_name, system_accounts.username,
-          ROW_NUMBER() OVER (PARTITION BY system_team_members.team_id ORDER BY system_team_members.status ASC, system_team_members.joined_at ASC, system_team_members.id ASC) AS team_member_rank
-        FROM system_team_members
-        INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id
-        WHERE system_team_members.team_id IN (${sqlPlaceholders(chunk.length)})${statusClause}
-      )
-      WHERE team_member_rank <= ?
-    `).all(...chunk, maxSystemTeamMembersPerTeam) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>
-    rows.push(...teamRows.sort(compareSystemTeamMembersForList))
-  }
-  const result = new Map<string, SystemTeamMemberSummary[]>()
-  for (const row of rows) {
-    const member: SystemTeamMemberSummary = { id: row.id, teamId: row.team_id, systemAccountId: row.system_account_id, systemAccountName: row.display_name, username: row.username, memberRole: 'member', status: row.status, joinedAt: row.joined_at, removedAt: row.removed_at ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at }
-    result.set(row.team_id, [...(result.get(row.team_id) ?? []), member])
-  }
-  return result
-}
-
-function compareSystemTeamMembersForList(left: SystemTeamMemberRow, right: SystemTeamMemberRow): number {
-  const team = left.team_id.localeCompare(right.team_id)
-  if (team !== 0) return team
-  const status = left.status.localeCompare(right.status)
-  if (status !== 0) return status
-  const joinedAt = left.joined_at.localeCompare(right.joined_at)
-  return joinedAt !== 0 ? joinedAt : left.id.localeCompare(right.id)
-}
-
-function systemTeamMemberSelectColumns(alias: string): string {
-  return [
-    'id',
-    'team_id',
-    'system_account_id',
-    'member_role',
-    'status',
-    'joined_at',
-    'removed_at',
-    'created_by',
-    'created_at',
-    'updated_at'
-  ].map((column) => `${alias}.${column}`).join(', ')
-}
-
-function ensureSystemTeamNameUnique(name: string, excludeId?: string, database = getBusinessDatabase()): void {
-  const row = database
-    .prepare('SELECT id FROM system_teams WHERE lower(name) = lower(?) AND id <> ? LIMIT 1')
-    .get(name, excludeId ?? '') as unknown as { id?: string } | undefined
-  if (row?.id) throw new Error('团队名称已存在')
-}
-
-function normalizeSystemTeamName(value: unknown): string {
-  if (typeof value !== 'string') {
-    throw new Error('团队名称不能为空')
-  }
-  const name = value.trim()
-  if (!name) {
-    throw new Error('团队名称不能为空')
-  }
-  return name
-}
-
-function normalizeSystemTeamDescription(value: unknown): string | null {
-  if (value === undefined || value === null) {
-    return null
-  }
-  if (typeof value !== 'string') {
-    throw new Error('团队说明必须是字符串')
-  }
-  const description = value.trim()
-  return description || null
-}
-
-function normalizeSystemTeamStatus(value: unknown, fallback: string): 'active' | 'disabled' {
-  if (value === undefined) {
-    if (fallback === 'active' || fallback === 'disabled') return fallback
-    throw new Error('团队状态无效')
-  }
-  if (value === 'active' || value === 'disabled') {
-    return value
-  }
-  throw new Error('团队状态无效')
-}
-
-function normalizeSystemAccountIds(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error('团队成员必须是系统账户 ID 数组')
-  }
-  const ids: string[] = []
-  const seen = new Set<string>()
-  for (const item of value) {
-    if (typeof item !== 'string') {
-      throw new Error('团队成员必须是系统账户 ID 数组')
-    }
-    const id = item.trim()
-    if (!id) {
-      throw new Error('团队成员 ID 不能为空')
-    }
-    if (seen.has(id)) {
-      throw new Error('团队成员不能重复')
-    }
-    seen.add(id)
-    ids.push(id)
-  }
-  return ids
 }
 
 function normalizeRequiredTextInput(value: unknown, label: string): string {

@@ -320,18 +320,12 @@ import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/use
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import {
   accountLabelForId,
-  accountSelectionForId,
-  accountSelectOptionLabel,
-  rememberAccountLabel,
-  type AccountSelection
+  rememberAccountLabel
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type {
-  AccountOptionSummary,
   ModelCheckLevel,
   ModelCheckModel,
   ModelCheckOptions,
@@ -366,34 +360,10 @@ import {
   terminalLevelForCheckStatus,
   type ModelCheckTerminalLineLevel
 } from './modelCheckFormatters'
+import { modelCheckFallbackOptions, modelCheckHistoryColumns, modelCheckPageSize } from './modelCheckPageConfig'
+import { useModelCheckAccountOptions } from './useModelCheckAccountOptions'
 
-const fallbackOptions: ModelCheckOptions = {
-  supportedModels: [
-    { value: 'gpt-5.5', label: 'gpt-5.5' },
-    { value: 'gpt-5.4', label: 'gpt-5.4' }
-  ],
-  supportedProfiles: [
-    { value: 'full', label: '强诊断完整检测', description: '准确优先，不以成本和耗时为约束' }
-  ],
-  trustedComparison: { enabledByDefault: false, available: true, message: '可信对比默认关闭；选择可信账户后会额外消耗该账户额度。' },
-  defaultModel: 'gpt-5.5',
-  defaultProfile: 'full'
-}
-
-const columns = [
-  { title: '目标', key: 'target', width: 280 },
-  { title: '账户类型', key: 'targetType', width: 110 },
-  { title: '供应商', key: 'providerCode', width: 110 },
-  { title: '模型', key: 'model', width: 130 },
-  { title: '状态', key: 'status', width: 110 },
-  { title: '级别', key: 'level', width: 100 },
-  { title: '摘要', key: 'summary', width: 320 },
-  { title: '创建时间', key: 'createdAt', width: 180 },
-  { title: '操作', key: 'actions', fixed: 'right' }
-]
-const modelCheckPageSize = 20
-type AccountSelectOption = { label: string; value: string }
-type SelectValue = string | string[] | undefined
+const columns = modelCheckHistoryColumns
 
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
@@ -419,9 +389,6 @@ const {
   selectedIds: () => [systemAccountFilter.value]
 })
 const optionsLoading = ref(false)
-const targetOptionsLoading = ref(false)
-const comparisonOptionsLoading = ref(false)
-const historyTargetOptionsLoading = ref(false)
 const submitting = ref(false)
 const detailLoading = ref(false)
 const detailOpen = ref(false)
@@ -429,17 +396,8 @@ const terminalVisible = ref(false)
 const terminalLines = ref<TerminalLine[]>([])
 const terminalBodyRef = ref<HTMLElement>()
 let modelCheckAbortController: AbortController | undefined
-const options = ref<ModelCheckOptions>(fallbackOptions)
-const targetOptions = ref<AccountSelectOption[]>([])
-const comparisonOptions = ref<AccountSelectOption[]>([])
-const historyTargetOptions = ref<AccountSelectOption[]>([])
-const targetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
-const comparisonOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
-const historyTargetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
+const options = ref<ModelCheckOptions>(modelCheckFallbackOptions)
 const currentRun = ref<ModelCheckRunDetail>()
-const selectedTargetAccount = ref<AccountSelection>()
-const selectedComparisonAccount = ref<AccountSelection>()
-const selectedHistoryTargetAccount = ref<AccountSelection>()
 const form = reactive<ModelCheckRunPayload>({
   targetType: 'account',
   targetId: '',
@@ -503,15 +461,41 @@ const accountSelectDisabled = computed(() => submitting.value)
 const accountSelectPlaceholder = computed(() => '输入账户名称搜索')
 const comparisonSelectPlaceholder = computed(() => '可信对比账户（可选）')
 const historyAccountSelectPlaceholder = computed(() => '全部账户')
+const {
+  comparisonOptions,
+  comparisonOptionsLoading,
+  historyTargetOptions,
+  historyTargetOptionsLoading,
+  selectedComparisonAccount,
+  selectedHistoryTargetAccount,
+  selectedTargetAccount,
+  targetOptions,
+  targetOptionsLoading,
+  handleComparisonDropdownVisibleChange,
+  handleComparisonSearch,
+  handleHistoryTargetDropdownVisibleChange,
+  handleHistoryTargetSearch,
+  handleTargetChange,
+  handleTargetDropdownVisibleChange,
+  handleTargetSearch,
+  handleTargetValueUpdate,
+  resetAccountOptionsState,
+  resetRunAccountSelection,
+  comparisonOptionText,
+  selectValueOrUndefined,
+  targetOptionText
+} = useModelCheckAccountOptions({
+  accountsApi,
+  form,
+  modelCheckScopeParams,
+  knownTargetName
+})
 const modelCheckHistoryEmptyText = computed(() => '暂无模型检测历史')
 const viewportWidth = ref(window.innerWidth)
 const detailDescriptionColumns = computed(() => (viewportWidth.value < 900 ? 1 : 2))
 const terminalStatusText = computed(() => submitting.value ? '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
 const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalLines.value.length ? 'green' : 'default')
 const terminalNow = ref(formatClockTime(new Date()))
-let targetOptionsRequestId = 0
-let comparisonOptionsRequestId = 0
-let historyTargetOptionsRequestId = 0
 let terminalLineId = 0
 let modelCheckAbortReason: 'manual' | 'deactivated' | 'unmount' | undefined
 let terminalClockTimer: number | undefined
@@ -535,118 +519,6 @@ async function loadOptions() {
     message.error(extractApiErrorMessage(error, '加载模型检测选项失败'))
   } finally {
     optionsLoading.value = false
-  }
-}
-
-async function loadTargetOptions(keyword = '') {
-  const normalizedKeyword = keyword.trim()
-  const systemAccountId = modelCheckScopeParams.value?.systemAccountId
-  const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword])
-  const requestId = ++targetOptionsRequestId
-  const cachedOptions = targetOptionsCache.get(requestKey)
-  if (cachedOptions) {
-    targetOptionsLoading.value = false
-    targetOptions.value = cachedOptions
-    return
-  }
-  targetOptionsLoading.value = true
-  try {
-    const accounts = await accountsApi.options({
-      systemAccountId,
-      keyword: normalizedKeyword || undefined,
-      status: 'active',
-      schedulable: 'enabled',
-      limit: 50
-    })
-    const nextOptions = accounts
-      .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account))
-      .filter((account) => Boolean(account.name.trim()))
-      .map(accountTargetOption)
-    targetOptionsCache.set(requestKey, nextOptions)
-    if (requestId === targetOptionsRequestId) {
-      targetOptions.value = nextOptions
-    }
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '加载检测目标失败'))
-  } finally {
-    if (requestId === targetOptionsRequestId) {
-      targetOptionsLoading.value = false
-    }
-  }
-}
-
-async function loadComparisonOptions(keyword = '') {
-  const normalizedKeyword = keyword.trim()
-  const systemAccountId = modelCheckScopeParams.value?.systemAccountId
-  const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword, form.targetId])
-  const requestId = ++comparisonOptionsRequestId
-  const cachedOptions = comparisonOptionsCache.get(requestKey)
-  if (cachedOptions) {
-    comparisonOptionsLoading.value = false
-    comparisonOptions.value = cachedOptions
-    return
-  }
-  comparisonOptionsLoading.value = true
-  try {
-    const accounts = await accountsApi.options({
-      systemAccountId,
-      keyword: normalizedKeyword || undefined,
-      status: 'active',
-      schedulable: 'enabled',
-      limit: 50
-    })
-    const nextOptions = accounts
-      .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account) && account.id !== form.targetId)
-      .filter((account) => Boolean(account.name.trim()))
-      .map(accountTargetOption)
-    comparisonOptionsCache.set(requestKey, nextOptions)
-    if (requestId === comparisonOptionsRequestId) {
-      comparisonOptions.value = nextOptions
-    }
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '加载可信对比账户失败'))
-  } finally {
-    if (requestId === comparisonOptionsRequestId) {
-      comparisonOptionsLoading.value = false
-    }
-  }
-}
-
-async function loadHistoryTargetOptions(keyword = '') {
-  const normalizedKeyword = keyword.trim()
-  const systemAccountId = modelCheckScopeParams.value?.systemAccountId
-  const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword])
-  const requestId = ++historyTargetOptionsRequestId
-  const cachedOptions = historyTargetOptionsCache.get(requestKey)
-  if (cachedOptions) {
-    historyTargetOptionsLoading.value = false
-    historyTargetOptions.value = cachedOptions
-    return
-  }
-  historyTargetOptionsLoading.value = true
-  try {
-    const accounts = await accountsApi.options({
-      systemAccountId,
-      keyword: normalizedKeyword || undefined,
-      limit: 50
-    })
-    const nextOptions = accounts
-      .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account))
-      .filter((account) => Boolean(account.name.trim()))
-      .map(accountTargetOption)
-    historyTargetOptionsCache.set(requestKey, nextOptions)
-    if (requestId === historyTargetOptionsRequestId) {
-      historyTargetOptions.value = nextOptions
-    }
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '加载历史账户筛选项失败'))
-  } finally {
-    if (requestId === historyTargetOptionsRequestId) {
-      historyTargetOptionsLoading.value = false
-    }
   }
 }
 
@@ -741,80 +613,16 @@ function handleSystemAccountFilterChange() {
 }
 
 function resetModelCheckScopedState() {
-  form.targetId = ''
-  selectedTargetAccount.value = undefined
-  form.trustedComparison = false
-  form.trustedComparisonAccountId = undefined
-  selectedComparisonAccount.value = undefined
+  resetAccountOptionsState()
   filters.targetId = undefined
-  selectedHistoryTargetAccount.value = undefined
   currentRun.value = undefined
   detailOpen.value = false
-  targetOptions.value = []
-  comparisonOptions.value = []
-  historyTargetOptions.value = []
-  targetOptionsLoading.value = false
-  comparisonOptionsLoading.value = false
-  historyTargetOptionsLoading.value = false
-  targetOptionsCache.clear()
-  comparisonOptionsCache.clear()
-  historyTargetOptionsCache.clear()
-  targetOptionsRequestId += 1
-  comparisonOptionsRequestId += 1
-  historyTargetOptionsRequestId += 1
-}
-
-function handleTargetSearch(value: string) {
-  void loadTargetOptions(value)
-}
-
-function handleTargetValueUpdate(value: SelectValue) {
-  form.targetId = typeof value === 'string' ? value : ''
-  selectedTargetAccount.value = selectedAccountForId(form.targetId, targetOptions.value)
-}
-
-function handleTargetChange() {
-  if (form.trustedComparisonAccountId && form.trustedComparisonAccountId === form.targetId) {
-    form.trustedComparisonAccountId = undefined
-    selectedComparisonAccount.value = undefined
-  }
-  comparisonOptions.value = comparisonOptions.value.filter((item) => item.value !== form.targetId)
-}
-
-function handleTargetDropdownVisibleChange(open: boolean) {
-  if (open && !targetOptions.value.length) {
-    void loadTargetOptions()
-  }
-}
-
-function handleComparisonSearch(value: string) {
-  void loadComparisonOptions(value)
-}
-
-function handleComparisonDropdownVisibleChange(open: boolean) {
-  if (open && !comparisonOptions.value.length) {
-    void loadComparisonOptions()
-  }
-}
-
-function handleHistoryTargetSearch(value: string) {
-  void loadHistoryTargetOptions(value)
-}
-
-function handleHistoryTargetDropdownVisibleChange(open: boolean) {
-  if (open && !historyTargetOptions.value.length) {
-    void loadHistoryTargetOptions()
-  }
 }
 
 function resetRunForm() {
-  form.targetId = ''
-  selectedTargetAccount.value = undefined
+  resetRunAccountSelection()
   form.model = options.value.defaultModel
   form.profile = options.value.defaultProfile
-  form.trustedComparison = false
-  form.trustedComparisonAccountId = undefined
-  selectedComparisonAccount.value = undefined
 }
 
 function resetTerminal() {
@@ -889,24 +697,6 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
   }
 }
 
-function accountTargetOption(account: AccountOptionSummary) {
-  const label = accountSelectOptionLabel(account)
-  rememberAccountLabel(account.id, label)
-  return { label, value: account.id }
-}
-
-function targetOptionText(id: string) {
-  return selectedTargetAccount.value?.id === id
-    ? selectedTargetAccount.value.name
-    : accountNameForId(id, targetOptions.value) ?? '未记录账户名称'
-}
-
-function comparisonOptionText(id: string) {
-  return selectedComparisonAccount.value?.id === id
-    ? selectedComparisonAccount.value.name
-    : accountNameForId(id, comparisonOptions.value) ?? '未记录账户名称'
-}
-
 function knownTargetName(id: string) {
   const targetName = runs.value.find((item) => item.targetId === id)?.targetName?.trim()
   if (targetName) return targetName
@@ -914,14 +704,6 @@ function knownTargetName(id: string) {
     return currentRun.value.targetName?.trim() || undefined
   }
   return undefined
-}
-
-function selectedAccountForId(id: string | undefined, options: AccountSelectOption[]): AccountSelection | undefined {
-  return accountSelectionForId(id, [], options)
-}
-
-function accountNameForId(id: string, options: AccountSelectOption[]): string | undefined {
-  return selectedAccountForId(id, options)?.name || knownTargetName(id) || accountLabelForId(id)
 }
 
 function rememberRunAccountLabels(items: Array<Pick<ModelCheckRunSummary, 'targetId' | 'targetName'>>) {
@@ -943,10 +725,6 @@ function targetDisplayName(run: Pick<ModelCheckRunSummary, 'targetName' | 'targe
 
 function modelText(value: string) {
   return modelCheckModelText(value, options.value.supportedModels)
-}
-
-function selectValueOrUndefined(value?: string) {
-  return value?.trim() || undefined
 }
 
 function updateViewportWidth() {

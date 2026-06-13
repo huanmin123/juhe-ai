@@ -249,7 +249,7 @@ function dirtyRows(): DirtyRow[] {
 }
 
 function assertSourceGuards(): void {
-  const source = readFileSync(resolve('src/storage/usage-stats.repository.ts'), 'utf8')
+  const source = readFileSync(resolve('src/storage/group-account-stats-cache.repository.ts'), 'utf8')
   assert.doesNotMatch(source, /SELECT id, system_account_id FROM groups'\)\.all\(\)/, '分组统计刷新不应一次性加载全部分组')
   assert.match(source, /GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX/, '全量分组统计刷新应使用哨兵游标')
   assert.match(source, /loadGroupAccountStatsGroupsPage/, '全量分组统计刷新应按固定页读取分组')

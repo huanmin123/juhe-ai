@@ -106,7 +106,17 @@
 <script setup lang="ts" generic="T extends Record<string, any>">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import DeferredRender from './DeferredRender.vue'
+import { normalizeResponsiveTableColumns } from './responsiveDataListColumns'
 import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
+import {
+  adjustTableScrollY,
+  buildMobileVirtualItems,
+  buildMobileVirtualWindow,
+  defaultMobileItemHeight,
+  normalizeMobileItemHeightKey,
+  numberFromPagination,
+  type MobileVirtualItem
+} from './responsiveDataListVirtualization'
 import { rowActionColumnWidth } from './rowActions'
 
 type RowKey = string | ((record: T) => string | number)
@@ -198,8 +208,6 @@ const defaultPageSize = 20
 const tableHeaderHeight = 47
 const tablePaginationHeight = 56
 const minTableBodyHeight = 160
-const defaultMobileItemHeight = 148
-const mobileVirtualOverscanItems = 10
 let listResizeObserver: ResizeObserver | undefined
 let tableMutationObserver: MutationObserver | undefined
 let mobileItemResizeObserver: ResizeObserver | undefined
@@ -211,13 +219,6 @@ let tableScrollbarPlaceholderUpdateQueued = false
 let bodyScrollLocked = false
 let viewportListenersAttached = false
 
-type MobileVirtualItem<TRecord> = {
-  record: TRecord
-  index: number
-  key: string | number
-  heightKey: string
-}
-
 const mobileDataSource = computed(() => props.mobileDataSource ?? props.dataSource)
 const mobileScrollTop = ref(0)
 const mobileContainerHeight = ref(0)
@@ -226,7 +227,10 @@ const mobileItemHeightVersion = ref(0)
 const mobileItemHeights = new Map<string, number>()
 const mobileItemElements = new Map<string, HTMLElement>()
 const measuredActionColumnWidth = ref(0)
-const tableColumns = computed(() => normalizeTableColumns(props.columns))
+const tableColumns = computed(() => normalizeResponsiveTableColumns(props.columns, {
+  adaptiveColumnWidth: props.adaptiveColumnWidth,
+  measuredActionColumnWidth: measuredActionColumnWidth.value
+}))
 const tableClassNames = computed(() => [
   'responsive-data-list-table',
   props.tableClass,
@@ -308,62 +312,21 @@ const shouldVirtualizeMobileCards = computed(() => (
 
 const mobileVirtualWindow = computed(() => {
   const records = mobileDataSource.value
-  const total = records.length
-  if (!shouldVirtualizeMobileCards.value || total === 0) {
-    return { start: 0, end: total, topPadding: 0, bottomPadding: 0 }
-  }
-
   void mobileItemHeightVersion.value
-  const viewportHeight = Math.max(mobileContainerHeight.value || listHeight.value || 600, 240)
-  const estimatedItemHeight = Math.max(1, mobileEstimatedItemHeight.value)
-  const overscanHeight = estimatedItemHeight * mobileVirtualOverscanItems
-  const visibleStart = Math.max(0, mobileScrollTop.value - overscanHeight)
-  const visibleEnd = mobileScrollTop.value + viewportHeight + overscanHeight
-
-  let offset = 0
-  let start = 0
-  for (; start < total; start += 1) {
-    const itemHeight = getMobileItemHeight(records[start], start)
-    if (offset + itemHeight >= visibleStart) break
-    offset += itemHeight
-  }
-
-  const topPadding = offset
-  let end = start
-  for (; end < total; end += 1) {
-    offset += getMobileItemHeight(records[end], end)
-    if (offset >= visibleEnd) {
-      end += 1
-      break
-    }
-  }
-  end = Math.min(total, Math.max(start + 1, end))
-
-  let totalHeight = offset
-  for (let index = end; index < total; index += 1) {
-    totalHeight += getMobileItemHeight(records[index], index)
-  }
-
-  return {
-    start,
-    end,
-    topPadding,
-    bottomPadding: Math.max(0, totalHeight - offset)
-  }
+  return buildMobileVirtualWindow({
+    records,
+    shouldVirtualize: shouldVirtualizeMobileCards.value,
+    scrollTop: mobileScrollTop.value,
+    containerHeight: mobileContainerHeight.value,
+    listHeight: listHeight.value,
+    estimatedItemHeight: mobileEstimatedItemHeight.value,
+    getItemHeight: getMobileItemHeight
+  })
 })
 
 const mobileVirtualItems = computed<MobileVirtualItem<T>[]>(() => {
   const { start, end } = mobileVirtualWindow.value
-  return mobileDataSource.value.slice(start, end).map((record, offset) => {
-    const index = start + offset
-    const key = resolveRowKey(record, index)
-    return {
-      record,
-      index,
-      key,
-      heightKey: normalizeMobileItemHeightKey(key)
-    }
-  })
+  return buildMobileVirtualItems(mobileDataSource.value, start, end, resolveRowKey)
 })
 
 function updateViewportState() {
@@ -386,10 +349,6 @@ function resolveRowKey(record: T, index: number): string | number {
   return record[props.rowKey] ?? index
 }
 
-function normalizeMobileItemHeightKey(key: string | number): string {
-  return `${typeof key}:${String(key)}`
-}
-
 function getMobileItemHeight(record: T, index: number): number {
   return mobileItemHeights.get(mobileItemHeightKey(record, index)) ?? mobileEstimatedItemHeight.value
 }
@@ -403,143 +362,6 @@ function updateMobileViewportMetrics() {
   if (!list) return
   mobileContainerHeight.value = list.clientHeight
   mobileScrollTop.value = list.scrollTop
-}
-
-function numberFromPagination(value: unknown): number | undefined {
-  const numberValue = Number(value)
-  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : undefined
-}
-
-function adjustTableScrollY(value: number | string, offset: number): number | string {
-  if (typeof value === 'number') return Math.max(0, value - offset)
-  return `calc(${value} - ${offset}px)`
-}
-
-function normalizeTableColumns(columns: Array<Record<string, any>>): Array<Record<string, any>> {
-  const flexColumnIndex = findFlexColumnIndex(columns)
-  return columns.map((column, index) => normalizeTableColumn(column, index === flexColumnIndex))
-}
-
-function normalizeTableColumn(column: Record<string, any>, isFlexColumn: boolean): Record<string, any> {
-  if (Array.isArray(column.children)) {
-    return {
-      ...column,
-      children: normalizeTableColumns(column.children)
-    }
-  }
-  if (isActionColumn(column)) {
-    const width = resolveActionColumnWidth(column.width, column.actionCount)
-    const { actionCount: _actionCount, ...restColumn } = column
-    return withCellProps({
-      ...restColumn,
-      width,
-      className: mergeClassName(column.className, 'responsive-data-list-actions-column')
-    }, {
-      class: 'responsive-data-list-actions-column'
-    })
-  }
-  if (props.adaptiveColumnWidth && !column.fixed) {
-    const minWidth = resolveColumnMinWidth(column)
-    const { width: _width, ...restColumn } = column
-    return withCellProps({
-      ...restColumn,
-      minWidth,
-      className: mergeClassName(column.className, 'responsive-data-list-auto-column', isFlexColumn ? 'responsive-data-list-flex-column' : undefined)
-    }, {
-      class: mergeClassName('responsive-data-list-auto-column', isFlexColumn ? 'responsive-data-list-flex-column' : undefined),
-      style: { minWidth: `${minWidth}px` }
-    })
-  }
-  return column
-}
-
-function findFlexColumnIndex(columns: Array<Record<string, any>>): number {
-  let bestIndex = -1
-  let bestScore = -1
-  columns.forEach((column, index) => {
-    if (Array.isArray(column.children) || isActionColumn(column) || column.fixed || column.responsiveFlex === false) return
-    const score = column.responsiveFlex === true ? 1000 : flexColumnScore(column, index)
-    if (score > bestScore) {
-      bestScore = score
-      bestIndex = index
-    }
-  })
-  return bestIndex
-}
-
-function flexColumnScore(column: Record<string, any>, index: number): number {
-  const key = String(column.key ?? column.dataIndex ?? '')
-  const title = String(column.title ?? '')
-  if (key === 'description' || title.includes('说明') || title.includes('备注')) return 900
-  if (key === 'notes' || key === 'remark') return 880
-  if (key === 'usage' || key === 'usageTotal' || title.includes('用量')) return 760
-  if (key === 'capabilities' || title.includes('能力')) return 740
-  if (key === 'baseUrl' || key === 'host' || key === 'key') return 720
-  if (key === 'resource' || key === 'group') return 700
-  if (key === 'displayName') return 680
-  if (key === 'name' || title.includes('名称')) return 660
-  if (key === 'systemAccount') return 620
-  return Math.max(1, 200 - index)
-}
-
-function isActionColumn(column: Record<string, any>): boolean {
-  return column.key === 'actions' || column.dataIndex === 'actions' || column.title === '操作'
-}
-
-function resolveActionColumnWidth(value: unknown, actionCount: unknown): number | string {
-  if (measuredActionColumnWidth.value > 0) return measuredActionColumnWidth.value
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
-  if (typeof value === 'string') {
-    const trimmedValue = value.trim()
-    const numericWidth = Number(trimmedValue)
-    if (Number.isFinite(numericWidth) && numericWidth > 0) return numericWidth
-    if (Number.isFinite(Number.parseFloat(trimmedValue)) && Number.parseFloat(trimmedValue) > 0) return trimmedValue
-  }
-  const numericActionCount = typeof actionCount === 'number' ? actionCount : Number.parseFloat(String(actionCount ?? ''))
-  return rowActionColumnWidth(Number.isFinite(numericActionCount) ? numericActionCount : undefined)
-}
-
-function resolveColumnMinWidth(column: Record<string, any>): number {
-  const minWidth = typeof column.minWidth === 'number' ? column.minWidth : Number.parseFloat(String(column.minWidth ?? ''))
-  if (Number.isFinite(minWidth) && minWidth > 0) return minWidth
-  const width = typeof column.width === 'number' ? column.width : Number.parseFloat(String(column.width ?? ''))
-  if (Number.isFinite(width) && width > 0) return width
-  return 160
-}
-
-function withCellProps(column: Record<string, any>, propsToMerge: Record<string, any>): Record<string, any> {
-  return {
-    ...column,
-    customHeaderCell: (...args: any[]) => mergeCellProps(column.customHeaderCell?.(...args), propsToMerge),
-    customCell: (...args: any[]) => mergeCellProps(column.customCell?.(...args), propsToMerge)
-  }
-}
-
-function mergeCellProps(baseProps: Record<string, any> | undefined, propsToMerge: Record<string, any>): Record<string, any> {
-  const base = baseProps ?? {}
-  return {
-    ...base,
-    class: mergeClassName(base.class, propsToMerge.class),
-    style: mergeStyle(base.style, propsToMerge.style)
-  }
-}
-
-function mergeClassName(...values: unknown[]): string {
-  return values.filter(Boolean).map(String).join(' ')
-}
-
-function mergeStyle(baseStyle: unknown, styleToMerge: Record<string, string>): unknown {
-  if (!baseStyle) return styleToMerge
-  if (typeof baseStyle === 'string') {
-    return `${baseStyle};${Object.entries(styleToMerge).map(([key, value]) => `${toKebabCase(key)}:${value}`).join(';')}`
-  }
-  if (Array.isArray(baseStyle)) return [...baseStyle, styleToMerge]
-  if (typeof baseStyle === 'object') return { ...(baseStyle as Record<string, unknown>), ...styleToMerge }
-  return styleToMerge
-}
-
-function toKebabCase(value: string): string {
-  return value.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
 }
 
 function changeBodyScrollLock(delta: number) {

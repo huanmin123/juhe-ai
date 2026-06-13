@@ -1,5 +1,5 @@
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ProviderCode, ResourceAuthorizationSourceType } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountType, GroupType, ProviderCode } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
@@ -8,125 +8,35 @@ import { isAccountAvailabilityScheduleAllowed } from './account-availability-sch
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
+import {
+  gatewayDispatchAccountCandidateLimit,
+  gatewayDispatchAccountCandidateScanLimit
+} from './openai-account-selector.types.js'
+import type {
+  AccountAvailabilityScheduleCandidateFilter,
+  EligibleOpenAIGroupAccountSelection,
+  GroupAccountRow,
+  GroupUsageAccessMetadata,
+  OpenAIAccountAccess,
+  OpenAIAccountRow,
+  OpenAIAccountSecret,
+  OpenAIAccountsForGroupDiagnostics,
+  OpenAIAccountsForGroupResult,
+  OpenAIAccountSecretOptions,
+  OpenAIGroupAccountSelectionRow
+} from './openai-account-selector.types.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { activeResourceAuthorization, activeResourceAuthorizationById, activeResourceAuthorizationsByIds } from './resource-authorization-helpers.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 
-export interface OpenAIAccountSecret {
-  id: string
-  providerCode: ProviderCode
-  providerProtocolProfileId: string
-  protocolCode: string
-  protocolVersion: string
-  systemAccountId: string
-  accountOwnerSystemAccountId: string
-  groupOwnerSystemAccountId: string
-  accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
-  groupAccessType: 'owner' | 'authorized'
-  accountAuthorizationId?: string
-  accountAuthorizationExpiresAt?: string
-  accountAuthorizationQuotaLimited?: boolean
-  accountAuthorizationSourceType?: ResourceAuthorizationSourceType
-  accountAuthorizationSourceTeamId?: string
-  bindingSystemAccountId?: string
-  boundGroupId?: string
-  groupAuthorizationId?: string
-  groupAuthorizationExpiresAt?: string
-  groupAuthorizationQuotaLimited?: boolean
-  groupAuthorizationSourceType?: ResourceAuthorizationSourceType
-  groupAuthorizationSourceTeamId?: string
-  name: string
-  type: AccountType
-  status: AccountStatus
-  concurrencyLimit: number
-  priority: number
-  superPriorityEnabled: boolean
-  fallbackEnabled: boolean
-  clientCompatibility: AccountClientCompatibility
-  supportedModels?: string[]
-  modelMappings?: AccountModelMapping[]
-  lastSuccessfulTestModel?: string
-  qualityScore?: number
-  qualityState?: string
-  qualityEwmaFirstTokenMs?: number
-  currentConcurrency?: number
-  baseUrl: string
-  apiKey: string
-  refreshToken?: string
-  clientId?: string
-  credentialSourceAccountId?: string
-  proxyProfileId?: string
-  proxyUrl?: string
-  proxyProfileUnavailable?: boolean
-  proxyProfileErrorMessage?: string
-  cooldownUntil?: string
-  lastErrorMessage?: string
-  streamFailureCount: number
-  streamFailureWindowStartedAt?: string
-  availabilityScheduleJson?: string
-  accountExpiresAt?: string
-  expiresAt?: string
-  credentials: Record<string, unknown>
-}
-
-export interface GroupUsageAccessMetadata {
-  groupOwnerSystemAccountId: string
-  providerCode: ProviderCode
-  providerProtocolProfileId: string
-  protocolCode: string
-  protocolVersion: string
-  groupAccessType: 'owner' | 'authorized'
-  groupType?: GroupType
-  schedulingPolicy?: GroupSchedulingPolicy
-  groupAuthorizationId?: string
-  groupAuthorizationExpiresAt?: string
-  groupAuthorizationQuotaLimited?: boolean
-  groupAuthorizationSourceType?: ResourceAuthorizationSourceType
-  groupAuthorizationSourceTeamId?: string
-}
-
-interface GroupAccountRow {
-  account_id: string
-  binding_system_account_id?: string | null
-  group_id?: string | null
-  account_authorization_id?: string | null
-  local_priority?: number | null
-  local_super_priority_enabled?: number | null
-  local_fallback_enabled?: number | null
-}
-
-type OpenAIGroupAccountSelectionRow = GroupAccountRow & OpenAIAccountRow
-
-type OpenAIAccountAccess = {
-  accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
-  accountOwnerSystemAccountId?: string
-  accountAuthorizationId?: string
-  accountAuthorizationExpiresAt?: string
-  accountAuthorizationQuotaLimited?: boolean
-  accountAuthorizationSourceType?: ResourceAuthorizationSourceType
-  accountAuthorizationSourceTeamId?: string
-}
-
-type EligibleOpenAIGroupAccountSelection = {
-  row: OpenAIGroupAccountSelectionRow
-  accountAccess: OpenAIAccountAccess
-}
-
-type OpenAIAccountSecretOptions = {
-  enforceSchedulableAuthorization?: boolean
-  accountAuthorizationsByIdOrResourceId?: Map<string, ResourceAuthorizationRow>
-  proxyProfilesById?: Map<string, ProxyProfileUrlResolution>
-  supportedModelsByAccountId?: Map<string, string[]>
-  modelMappingsByAccountId?: Map<string, AccountModelMapping[]>
-  accountAccess?: OpenAIAccountAccess
-}
-
-const gatewayDispatchAccountCandidateLimit = 256
-const gatewayDispatchAccountCandidateScanLimit = gatewayDispatchAccountCandidateLimit * 2
-
-type AccountAvailabilityScheduleCandidateFilter = 'without_schedule' | 'with_schedule'
+export type {
+  GroupUsageAccessMetadata,
+  OpenAIAccountSecret,
+  OpenAIAccountsForGroupDiagnostics,
+  OpenAIAccountsForGroupResult
+} from './openai-account-selector.types.js'
 
 export function selectOpenAIAccountForGroup(groupId: string, systemAccountId: string): OpenAIAccountSecret | undefined {
   return listOpenAIAccountsForGroup(groupId, systemAccountId)[0]
@@ -268,26 +178,6 @@ export function listOpenAIAccountsForGroup(
   options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
 ): OpenAIAccountSecret[] {
   return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options).accounts
-}
-
-export interface OpenAIAccountsForGroupResult {
-  accounts: OpenAIAccountSecret[]
-  hasAccountAvailabilitySchedule: boolean
-  diagnostics?: OpenAIAccountsForGroupDiagnostics
-}
-
-export interface OpenAIAccountsForGroupDiagnostics {
-  scanLimit: number
-  finalLimit: number
-  withoutScheduleRowCount: number
-  withScheduleRowCount: number
-  scannedRowCount: number
-  eligibleRowCount: number
-  hydrationBatchCount: number
-  hydratedAccountCount: number
-  hydrationDroppedCount: number
-  finalAccountCount: number
-  scanLimitReached: boolean
 }
 
 export function runtimeOpenAIAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
@@ -576,55 +466,6 @@ export function hasOpenAIAccountAvailabilityScheduleForGroup(
     `)
     .get(groupId, groupAccess.groupOwnerSystemAccountId, groupAccess.providerProtocolProfileId, groupAccess.providerProtocolProfileId) as unknown
   return Boolean(row)
-}
-
-interface OpenAIAccountRow {
-  id: string
-  system_account_id: string
-  provider_code: ProviderCode
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
-  name: string
-  type: AccountType
-  status: AccountStatus
-  schedulable: number
-  concurrency_limit: number
-  priority: number
-  super_priority_enabled: number
-  fallback_enabled: number
-  client_compatibility: AccountClientCompatibility
-  credentials_encrypted: string
-  proxy_profile_id: string | null
-  cooldown_until: string | null
-  last_error_message: string | null
-  stream_failure_count: number
-  stream_failure_window_started_at: string | null
-  availability_schedule_json: string | null
-  account_expires_at: string | null
-  last_successful_test_model: string | null
-  authorization_instance_source_account_id?: string | null
-  authorization_instance_authorization_id?: string | null
-  authorization_instance_owner_system_account_id?: string | null
-  resource_account_id?: string | null
-  resource_provider_code?: ProviderCode | null
-  resource_provider_protocol_profile_id?: string | null
-  resource_protocol_code?: string | null
-  resource_protocol_version?: string | null
-  resource_type?: AccountType | null
-  resource_status?: AccountStatus | null
-  resource_schedulable?: number | null
-  resource_availability_schedule_json?: string | null
-  resource_account_expires_at?: string | null
-  resource_cooldown_until?: string | null
-  resource_last_error_code?: string | null
-  resource_credentials_encrypted?: string | null
-  resource_proxy_profile_id?: string | null
-  resource_concurrency_limit?: number | null
-  resource_client_compatibility?: AccountClientCompatibility | null
-  quality_score?: number | null
-  quality_state?: string | null
-  quality_ewma_first_token_ms?: number | null
 }
 
 function openAIAccountResourceAccountId(row: OpenAIAccountRow): string {

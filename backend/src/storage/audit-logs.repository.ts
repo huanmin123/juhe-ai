@@ -8,8 +8,6 @@ import {
   auditPayloadBodyDetail,
   cleanupCreatedAuditBlobFiles,
   cleanupCreatedAuditBlobFilesAsync,
-  cleanupUnreferencedAuditPayloadBlobs,
-  cleanupUnreferencedAuditPayloadBlobsAsync,
   persistAuditPayloadBlob,
   persistAuditPayloadBlobAsync,
   prepareAuditPayloadBlobStatements,
@@ -19,7 +17,6 @@ import {
   readAuditHeadersBlobDetail,
   readAuditPayloadBlobWindow,
   writeAuditPayloadBlobFileForPlan,
-  type AuditPayloadBlobStorageStatus,
   type AuditPayloadBlobPersistencePlan,
   type PreparedAuditPayloadBlob
 } from './audit-log-payload-blobs.js'
@@ -31,274 +28,58 @@ import {
   hydrateAuditRows,
   type AuditLogRow
 } from './audit-log-mappers.js'
+import type {
+  AuditErrorGroupListOptions,
+  AuditErrorGroupListResult,
+  AuditErrorGroupSummary,
+  AuditLogAttemptInput,
+  AuditLogDetail,
+  AuditLogInput,
+  AuditLogListOptions,
+  AuditLogListResult,
+  AuditLogPayloadDetail,
+  AuditLogPayloadInput,
+  AuditLogPayloadReadOptions,
+  AuditLogSuccessHotRetentionCleanupResult,
+  AuditLogSummary,
+  AuditPayloadCaptureStatus,
+  AuditPayloadPartType,
+  AuditTrafficSource
+} from './audit-log-types.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
 export { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
+export {
+  cleanupAuditLogsBefore,
+  cleanupAuditLogsBeforeAsync,
+  cleanupAuditLogsByRetention,
+  cleanupAuditLogsByRetentionAsync,
+  cleanupAuditSuccessHotRetentionAsync
+} from './audit-log-retention.repository.js'
 export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
-
-export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'client_aborted'
-export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
-export type AuditPayloadCaptureStatus = 'complete' | 'summary_only' | 'hash_only' | 'expired' | 'overflow' | 'dropped'
-export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest'
-
-export interface AuditLogPayloadInput {
-  id?: string
-  attemptTempId?: string
-  partType: AuditPayloadPartType
-  sequenceIndex?: number
-  contentType?: string
-  contentEncoding?: string
-  headers?: Record<string, string | string[]>
-  body?: Buffer | string
-  bodySha256?: string
-  rawBodySizeBytes?: number
-  captureStatus?: AuditPayloadCaptureStatus
-  createdAt?: string
-}
-
-export interface AuditLogAttemptInput {
-  id?: string
-  tempId?: string
-  attemptIndex: number
-  accountId?: string
-  accountOwnerSystemAccountId?: string
-  groupId?: string
-  proxyUrl?: string
-  providerCode?: string
-  upstreamMethod: string
-  upstreamUrl: string
-  upstreamStatusCode?: number
-  success?: boolean
-  errorPhase?: string
-  errorCode?: string
-  errorMessage?: string
-  startedAt: string
-  endedAt?: string
-  durationMs?: number
-}
-
-export interface AuditLogInput {
-  id?: string
-  traceId: string
-  trafficSource?: AuditTrafficSource
-  systemAccountId?: string
-  apiKeyId?: string
-  groupId?: string
-  accountId?: string
-  providerCode?: string
-  method: string
-  path: string
-  queryString?: string
-  model?: string
-  stream?: boolean
-  clientIp?: string
-  userAgent?: string
-  auditOutcome: AuditOutcome
-  success: boolean
-  finalStatusCode?: number
-  errorPhase?: string
-  errorCode?: string
-  errorMessage?: string
-  sampleBucket: number
-  sampleReason: string
-  captureStatus?: 'complete' | 'dropped' | 'overflow'
-  startedAt: string
-  endedAt: string
-  durationMs?: number
-  firstTokenMs?: number
-  attempts: AuditLogAttemptInput[]
-  payloads: AuditLogPayloadInput[]
-  createdAt?: string
-}
-
-export interface AuditLogSummary {
-  id: string
-  traceId: string
-  trafficSource: AuditTrafficSource
-  systemAccountId?: string
-  systemAccountName?: string
-  apiKeyId?: string
-  apiKeyName?: string
-  groupId?: string
-  groupName?: string
-  accountId?: string
-  accountName?: string
-  providerCode?: string
-  method: string
-  path: string
-  queryString?: string
-  model?: string
-  stream: boolean
-  clientIp?: string
-  userAgent?: string
-  auditOutcome: AuditOutcome
-  success: boolean
-  finalStatusCode?: number
-  errorPhase?: string
-  errorCode?: string
-  errorMessage?: string
-  sampleBucket: number
-  sampleReason: string
-  attemptCount: number
-  payloadCount: number
-  rawPayloadBytes: number
-  compressedPayloadBytes: number
-  compressionSavedBytes: number
-  errorGroupId?: string
-  captureStatus: string
-  startedAt: string
-  endedAt: string
-  durationMs?: number
-  firstTokenMs?: number
-  createdAt: string
-}
-
-export interface AuditLogAttemptSummary {
-  id: string
-  attemptIndex: number
-  accountId?: string
-  accountName?: string
-  accountOwnerSystemAccountId?: string
-  groupId?: string
-  groupName?: string
-  proxyUrl?: string
-  providerCode?: string
-  upstreamMethod: string
-  upstreamUrl: string
-  upstreamStatusCode?: number
-  success: boolean
-  errorPhase?: string
-  errorCode?: string
-  errorMessage?: string
-  startedAt: string
-  endedAt?: string
-  durationMs?: number
-}
-
-export interface AuditLogPayloadSummary {
-  id: string
-  attemptId?: string
-  partType: AuditPayloadPartType
-  sequenceIndex: number
-  contentType?: string
-  contentEncoding?: string
-  headersSha256?: string
-  bodySha256?: string
-  sizeBytes: number
-  compressedSizeBytes: number
-  captureStatus: AuditPayloadCaptureStatus
-  createdAt: string
-  hasHeaders: boolean
-  hasBody: boolean
-}
-
-export interface AuditLogDetail extends AuditLogSummary {
-  attempts: AuditLogAttemptSummary[]
-  errorGroup?: AuditErrorGroupSummary
-  payloads: AuditLogPayloadSummary[]
-}
-
-export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
-  headers?: Record<string, string | string[]>
-  bodyText?: string
-  bodyBase64?: string
-  headersStorageStatus: AuditPayloadBlobStorageStatus
-  bodyStorageStatus: AuditPayloadBlobStorageStatus
-  bodyOffset: number
-  bodyLimit: number
-  bodyBytesReturned: number
-  bodyTotalBytes: number
-  bodyNextOffset?: number
-  bodyTruncated: boolean
-}
-
-export interface AuditLogSuccessHotRetentionCleanupResult {
-  auditLogs: number
-  auditPayloadBlobs: number
-}
-
-export interface AuditLogListOptions {
-  page?: number
-  pageSize?: number
-  traceId?: string
-  outcome?: AuditOutcome | 'all'
-  statusCode?: number
-  path?: string
-  model?: string
-  systemAccountId?: string
-  apiKeyId?: string
-  groupId?: string
-  accountId?: string
-  clientIp?: string
-  errorGroupId?: string
-  trafficSource?: AuditTrafficSource
-}
-
-export interface AuditLogPayloadReadOptions {
-  offset?: number
-  limit?: number
-}
-
-export interface AuditLogListResult {
-  items: AuditLogSummary[]
-  total: number
-  hasMore: boolean
-  page: number
-  pageSize: number
-}
-
-export interface AuditErrorGroupSummary {
-  id: string
-  fingerprint: string
-  windowStartedAt: string
-  windowEndedAt: string
-  systemAccountId?: string
-  systemAccountName?: string
-  apiKeyId?: string
-  apiKeyName?: string
-  groupId?: string
-  groupName?: string
-  accountId?: string
-  accountName?: string
-  providerCode?: string
-  path?: string
-  model?: string
-  statusCode?: number
-  errorPhase?: string
-  errorCode?: string
-  errorType?: string
-  requestFingerprint?: string
-  errorFingerprint?: string
-  count: number
-  firstEventId?: string
-  lastEventId?: string
-  sampleEventId?: string
-  lastMessage?: string
-  createdAt: string
-  updatedAt: string
-}
-
-export interface AuditErrorGroupListOptions {
-  page?: number
-  pageSize?: number
-  path?: string
-  model?: string
-  statusCode?: number
-  systemAccountId?: string
-  apiKeyId?: string
-  groupId?: string
-  accountId?: string
-}
-
-export interface AuditErrorGroupListResult {
-  items: AuditErrorGroupSummary[]
-  total: number
-  hasMore: boolean
-  page: number
-  pageSize: number
-}
+export type {
+  AuditErrorGroupListOptions,
+  AuditErrorGroupListResult,
+  AuditErrorGroupSummary,
+  AuditLogAttemptInput,
+  AuditLogAttemptSummary,
+  AuditLogDetail,
+  AuditLogInput,
+  AuditLogListOptions,
+  AuditLogListResult,
+  AuditLogPayloadDetail,
+  AuditLogPayloadInput,
+  AuditLogPayloadReadOptions,
+  AuditLogPayloadSummary,
+  AuditLogSuccessHotRetentionCleanupResult,
+  AuditLogSummary,
+  AuditOutcome,
+  AuditPayloadCaptureStatus,
+  AuditPayloadPartType,
+  AuditTrafficSource
+} from './audit-log-types.js'
 
 type AuditLogFilterValue = string | number
 
@@ -882,117 +663,6 @@ export async function getAuditLogPayload(
       bodyTruncated: bodyWindow.truncated
     }
   }
-}
-
-export function cleanupAuditLogsBefore(cutoffCreatedAt: string, limit = 1000): number {
-  const deleted = deleteAuditLogsByWhere('created_at < ?', [cutoffCreatedAt], limit)
-  cleanupUnreferencedAuditPayloadBlobs(limit)
-  return deleted
-}
-
-export async function cleanupAuditLogsBeforeAsync(cutoffCreatedAt: string, limit = 1000): Promise<number> {
-  const deleted = deleteAuditLogsByWhere('created_at < ?', [cutoffCreatedAt], limit)
-  await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
-  return deleted
-}
-
-export async function cleanupAuditSuccessHotRetentionAsync(input: {
-  successHotCutoffCreatedAt: string
-  successSampleBucketThreshold?: number
-  limit?: number
-}): Promise<AuditLogSuccessHotRetentionCleanupResult> {
-  const limit = input.limit ?? 1000
-  const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
-  const deletedLogs = deleteAuditLogsByWhere(
-    successHotRetentionDeleteWhereClause,
-    [input.successHotCutoffCreatedAt, successSampleBucketThreshold],
-    limit
-  )
-  const deletedBlobs = await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
-  return {
-    auditLogs: deletedLogs,
-    auditPayloadBlobs: deletedBlobs
-  }
-}
-
-export function cleanupAuditLogsByRetention(input: {
-  successHotCutoffCreatedAt: string
-  successCutoffCreatedAt: string
-  failureCutoffCreatedAt: string
-  errorGroupCutoffUpdatedAt: string
-  successSampleBucketThreshold?: number
-  limit?: number
-}): number {
-  const limit = input.limit ?? 1000
-  const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
-  const deletedLogs = deleteAuditLogsByWhere(
-    `((${successHotRetentionDeleteWhereClause}) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))`,
-    [input.successHotCutoffCreatedAt, successSampleBucketThreshold, input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
-    limit
-  )
-  const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
-  const deletedBlobs = cleanupUnreferencedAuditPayloadBlobs(limit)
-  return deletedLogs + deletedGroups + deletedBlobs
-}
-
-export async function cleanupAuditLogsByRetentionAsync(input: {
-  successHotCutoffCreatedAt: string
-  successCutoffCreatedAt: string
-  failureCutoffCreatedAt: string
-  errorGroupCutoffUpdatedAt: string
-  successSampleBucketThreshold?: number
-  limit?: number
-}): Promise<number> {
-  const limit = input.limit ?? 1000
-  const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
-  const deletedLogs = deleteAuditLogsByWhere(
-    `((${successHotRetentionDeleteWhereClause}) OR (audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))`,
-    [input.successHotCutoffCreatedAt, successSampleBucketThreshold, input.successCutoffCreatedAt, input.failureCutoffCreatedAt],
-    limit
-  )
-  const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
-  const deletedBlobs = await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
-  return deletedLogs + deletedGroups + deletedBlobs
-}
-
-const successHotRetentionDeleteWhereClause = "audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ?"
-
-function normalizeSuccessSampleBucketThreshold(value: number | undefined): number {
-  if (!Number.isFinite(value)) return 1000
-  return Math.min(Math.max(Math.trunc(value ?? 1000), 0), 10000)
-}
-
-function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue[], limit: number): number {
-  const database = getDatasetDatabase()
-  const rows = database
-    .prepare(`SELECT id FROM audit_logs WHERE ${whereClause} ORDER BY created_at ASC, id ASC LIMIT ?`)
-    .all(...params, Math.max(1, Math.trunc(limit))) as AuditLogRow[]
-  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
-  if (ids.length === 0) return 0
-
-  const placeholders = ids.map(() => '?').join(',')
-  const result = database.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders})`).run(...ids)
-  return Number(result.changes ?? 0)
-}
-
-function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit: number): number {
-  const database = getDatasetDatabase()
-  const unreferencedGroupWhere = `
-    updated_at < ?
-    AND NOT EXISTS (
-      SELECT 1
-      FROM audit_logs
-      WHERE audit_logs.error_group_id = audit_error_groups.id
-    )
-  `
-  const rows = database
-    .prepare(`SELECT id FROM audit_error_groups WHERE ${unreferencedGroupWhere} ORDER BY updated_at ASC, id ASC LIMIT ?`)
-    .all(cutoffUpdatedAt, Math.max(1, Math.trunc(limit))) as AuditLogRow[]
-  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
-  if (ids.length === 0) return 0
-  const placeholders = ids.map(() => '?').join(',')
-  const result = database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders})`).run(...ids)
-  return Number(result.changes ?? 0)
 }
 
 function preparePayloadInput(payload: AuditLogPayloadInput, fallbackIndex: number, fallbackCreatedAt: string): PreparedAuditPayload {
