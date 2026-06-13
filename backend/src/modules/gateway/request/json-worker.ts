@@ -24,7 +24,7 @@ const {
 } = await import(resolveNormalizerModuleUrl()) as typeof import('../adapters/gpt-codex/oauth-normalizer.js')
 const {
   extractGatewayJsonBodyMetadata
-} = await import(resolveRequestBodyModuleUrl()) as typeof import('./body.js')
+} = await import(resolveJsonMetadataScannerModuleUrl()) as typeof import('./json-metadata-scanner.js')
 
 workerPort.on('message', (message: GatewayJsonWorkerRequest) => {
   const id = message.id
@@ -65,10 +65,10 @@ function resolveNormalizerModuleUrl(): string {
     : new URL('../adapters/gpt-codex/oauth-normalizer.js', import.meta.url).href
 }
 
-function resolveRequestBodyModuleUrl(): string {
+function resolveJsonMetadataScannerModuleUrl(): string {
   return import.meta.url.endsWith('.ts')
-    ? new URL('./body.ts', import.meta.url).href
-    : new URL('./body.js', import.meta.url).href
+    ? new URL('./json-metadata-scanner.ts', import.meta.url).href
+    : new URL('./json-metadata-scanner.js', import.meta.url).href
 }
 
 function workerErrorResponse(id: number, error: unknown): Record<string, unknown> {

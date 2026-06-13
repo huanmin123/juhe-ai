@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -10,6 +10,8 @@ import type { RecordMaintenanceJob } from '../record-maintenance/record-maintena
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
 import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
+import { auditWorkerMessageMaxBytes, estimateAuditLogBytes, trimAuditLogsForWorkerIpc } from './background-ipc-audit-trim.js'
+import { HeadIndexedQueue } from './ipc-head-queue.js'
 
 export interface BackgroundWorkerQueueRuntime {
   queueLength: number
@@ -115,89 +117,6 @@ interface BackgroundWorkerState {
   failedProcessEventLoopRequestCount: number
 }
 
-class HeadIndexedQueue<T> {
-  private items: T[] = []
-  private headIndex = 0
-
-  get length(): number {
-    return this.items.length - this.headIndex
-  }
-
-  push(item: T): void {
-    this.items.push(item)
-  }
-
-  unshift(item: T): void {
-    if (this.headIndex > 0) {
-      this.headIndex -= 1
-      this.items[this.headIndex] = item
-      return
-    }
-    this.items.unshift(item)
-  }
-
-  shift(): T | undefined {
-    if (this.length <= 0) {
-      return undefined
-    }
-    const item = this.items[this.headIndex]
-    this.headIndex += 1
-    this.compactConsumedItems()
-    return item
-  }
-
-  at(index: number): T | undefined {
-    if (index < 0 || index >= this.length) {
-      return undefined
-    }
-    return this.items[this.headIndex + index]
-  }
-
-  set(index: number, item: T): void {
-    if (index < 0 || index >= this.length) {
-      return
-    }
-    this.items[this.headIndex + index] = item
-  }
-
-  findIndex(predicate: (item: T) => boolean): number {
-    for (let index = 0; index < this.length; index += 1) {
-      const item = this.at(index)
-      if (item !== undefined && predicate(item)) {
-        return index
-      }
-    }
-    return -1
-  }
-
-  removeAt(index: number): T | undefined {
-    if (index < 0 || index >= this.length) {
-      return undefined
-    }
-    const physicalIndex = this.headIndex + index
-    if (physicalIndex === this.headIndex) {
-      return this.shift()
-    }
-    const [item] = this.items.splice(physicalIndex, 1)
-    return item
-  }
-
-  private compactConsumedItems(): void {
-    if (this.headIndex === 0) {
-      return
-    }
-    if (this.headIndex >= this.items.length) {
-      this.items = []
-      this.headIndex = 0
-      return
-    }
-    if (this.headIndex > 64 && this.headIndex * 2 > this.items.length) {
-      this.items = this.items.slice(this.headIndex)
-      this.headIndex = 0
-    }
-  }
-}
-
 let workerProcess: ChildProcess | undefined
 let workerReady = false
 let workerPid: number | undefined
@@ -209,8 +128,6 @@ const usageRecordWorkerMessageMaxBytes = 8 * 1024 * 1024
 const regularWorkerMessageMaxBytes = 8 * 1024 * 1024
 const workerMessageEstimateMaxBytes = Math.max(usageRecordWorkerMessageMaxBytes, regularWorkerMessageMaxBytes) + 1
 const workerMessageEstimateMaxNodes = 20_000
-const auditWorkerMessageMaxBytes = 4 * 1024 * 1024
-const auditWorkerPayloadBodyInlineMaxBytes = 2 * 1024 * 1024
 const usageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 let usageRecordMessageQueueBytes = 0
@@ -823,171 +740,6 @@ function ipcQueueKeys(): IpcQueueKey[] {
   ]
 }
 
-function trimAuditLogsForWorkerIpc(items: AuditLogInput[]): AuditLogInput[] {
-  return items.map(trimAuditLogForWorkerIpc)
-}
-
-function trimAuditLogForWorkerIpc(item: AuditLogInput): AuditLogInput {
-  let next = trimAuditLogTopLevelStringsForWorkerIpc(item)
-  next = trimAuditLogPayloadBodiesForWorkerIpc(next)
-  if (estimateAuditLogBytes(next) <= auditWorkerMessageMaxBytes) {
-    return next
-  }
-  next = trimAuditLogPayloadHeadersForWorkerIpc(next)
-  if (estimateAuditLogBytes(next) <= auditWorkerMessageMaxBytes) {
-    return next
-  }
-  next = trimAuditLogAttemptsForWorkerIpc(next)
-  if (estimateAuditLogBytes(next) <= auditWorkerMessageMaxBytes) {
-    return next
-  }
-  return trimAuditLogPayloadsForWorkerIpc(next)
-}
-
-function trimAuditLogTopLevelStringsForWorkerIpc(item: AuditLogInput): AuditLogInput {
-  return {
-    ...item,
-    path: truncateAuditIpcString(item.path, 2048),
-    queryString: truncateOptionalAuditIpcString(item.queryString, 4096),
-    model: truncateOptionalAuditIpcString(item.model, 512),
-    clientIp: truncateOptionalAuditIpcString(item.clientIp, 256),
-    userAgent: truncateOptionalAuditIpcString(item.userAgent, 2048),
-    errorPhase: truncateOptionalAuditIpcString(item.errorPhase, 256),
-    errorCode: truncateOptionalAuditIpcString(item.errorCode, 512),
-    errorMessage: truncateOptionalAuditIpcString(item.errorMessage, 4096),
-    sampleReason: truncateAuditIpcString(item.sampleReason, 1024)
-  }
-}
-
-function trimAuditLogPayloadBodiesForWorkerIpc(item: AuditLogInput): AuditLogInput {
-  let bytes = 2048 + auditAttemptsBytes(item.attempts)
-  let changed = false
-  const payloads: AuditLogInput['payloads'] = item.payloads.map((payload) => {
-    const headerBytes = payload.headers ? estimateJsonBytes(payload.headers) : 0
-    const bodyBytes = auditPayloadBodyBytes(payload.body)
-    const nextBytes = headerBytes + bodyBytes + 512
-    const shouldDropBody = bodyBytes > auditWorkerPayloadBodyInlineMaxBytes || bytes + nextBytes > auditWorkerMessageMaxBytes
-    bytes += shouldDropBody ? headerBytes + 512 : nextBytes
-    if (!shouldDropBody) {
-      return payload
-    }
-    changed = true
-    return trimAuditPayloadBodyForWorkerIpc(payload, bodyBytes)
-  })
-  return changed ? markAuditLogDroppedForWorkerIpc(item, payloads) : item
-}
-
-function trimAuditLogPayloadHeadersForWorkerIpc(item: AuditLogInput): AuditLogInput {
-  let changed = false
-  const payloads: AuditLogInput['payloads'] = item.payloads.map((payload) => {
-    if (!payload.headers) {
-      return payload
-    }
-    changed = true
-    return {
-      ...payload,
-      headers: undefined,
-      captureStatus: payload.captureStatus === 'complete' || payload.captureStatus === undefined
-        ? 'dropped' as const
-        : payload.captureStatus
-    }
-  })
-  return changed ? markAuditLogDroppedForWorkerIpc(item, payloads) : item
-}
-
-function trimAuditLogAttemptsForWorkerIpc(item: AuditLogInput): AuditLogInput {
-  const attempts = item.attempts.map((attempt) => ({
-    ...attempt,
-    proxyUrl: truncateOptionalAuditIpcString(attempt.proxyUrl, 2048),
-    upstreamUrl: truncateAuditIpcString(attempt.upstreamUrl, 4096),
-    errorPhase: truncateOptionalAuditIpcString(attempt.errorPhase, 256),
-    errorCode: truncateOptionalAuditIpcString(attempt.errorCode, 512),
-    errorMessage: truncateOptionalAuditIpcString(attempt.errorMessage, 4096)
-  }))
-  const maxAttempts = 16
-  const limitedAttempts = attempts.length <= maxAttempts
-    ? attempts
-    : [
-        ...attempts.slice(0, maxAttempts - 1),
-        attempts[attempts.length - 1]
-      ]
-  return limitedAttempts === item.attempts
-    ? item
-    : {
-        ...item,
-        attempts: limitedAttempts,
-        captureStatus: item.captureStatus === 'overflow' ? 'overflow' : 'dropped'
-      }
-}
-
-function trimAuditLogPayloadsForWorkerIpc(item: AuditLogInput): AuditLogInput {
-  const maxPayloads = 32
-  const payloads = item.payloads.map((payload) => trimAuditPayloadForWorkerIpc(payload))
-  const limitedPayloads = payloads.length <= maxPayloads
-    ? payloads
-    : [
-        ...payloads.slice(0, maxPayloads - 1),
-        payloads[payloads.length - 1]
-      ]
-  return markAuditLogDroppedForWorkerIpc(item, limitedPayloads)
-}
-
-function trimAuditPayloadBodyForWorkerIpc(
-  payload: AuditLogInput['payloads'][number],
-  bodyBytes = auditPayloadBodyBytes(payload.body)
-): AuditLogInput['payloads'][number] {
-  const bodySha256 = payload.bodySha256 ?? auditPayloadBodySha256(payload.body)
-  return {
-    ...payload,
-    body: undefined,
-    bodySha256,
-    contentEncoding: undefined,
-    rawBodySizeBytes: payload.rawBodySizeBytes ?? bodyBytes,
-    captureStatus: bodySha256 ? 'hash_only' as const : 'dropped' as const
-  }
-}
-
-function trimAuditPayloadForWorkerIpc(payload: AuditLogInput['payloads'][number]): AuditLogInput['payloads'][number] {
-  return {
-    ...trimAuditPayloadBodyForWorkerIpc(payload),
-    headers: undefined,
-    contentType: truncateOptionalAuditIpcString(payload.contentType, 512),
-    attemptTempId: truncateOptionalAuditIpcString(payload.attemptTempId, 128)
-  }
-}
-
-function markAuditLogDroppedForWorkerIpc(
-  item: AuditLogInput,
-  payloads: AuditLogInput['payloads']
-): AuditLogInput {
-  return {
-    ...item,
-    payloads,
-    captureStatus: item.captureStatus === 'overflow' ? 'overflow' : 'dropped'
-  }
-}
-
-function auditPayloadBodyBytes(body: Buffer | string | undefined): number {
-  if (body === undefined) return 0
-  return Buffer.isBuffer(body) ? body.byteLength : estimateJsonBytes(body)
-}
-
-function auditPayloadBodySha256(body: Buffer | string | undefined): string | undefined {
-  if (body === undefined) return undefined
-  return createHash('sha256').update(Buffer.isBuffer(body) ? body : Buffer.from(body)).digest('hex')
-}
-
-function truncateOptionalAuditIpcString(value: string | undefined, maxBytes: number): string | undefined {
-  return typeof value === 'string' ? truncateAuditIpcString(value, maxBytes) : undefined
-}
-
-function truncateAuditIpcString(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value, 'utf8') <= maxBytes) {
-    return value
-  }
-  return `${Buffer.from(value).subarray(0, Math.max(0, maxBytes - 32)).toString('utf8')}...[truncated]`
-}
-
 function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
   if (typeof message === 'object' && message !== null) {
     const cached = workerMessageBytesCache.get(message)
@@ -1038,53 +790,6 @@ function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
     workerMessageBytesCache.set(message, bytes)
   }
   return bytes
-}
-
-function estimateAuditLogBytes(input: AuditLogInput): number {
-  const payloadBytes = input.payloads.reduce((sum, payload) => {
-    const body = payload.body
-    const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? estimateJsonBytes(body) : 0
-    const headerBytes = payload.headers ? estimateJsonBytes(payload.headers) : 0
-    return Math.min(workerMessageEstimateMaxBytes, sum + bodyBytes + headerBytes + 512)
-  }, 0)
-  return Math.min(workerMessageEstimateMaxBytes, payloadBytes + auditAttemptsBytes(input.attempts) + estimateAuditTopLevelBytes(input) + 2048)
-}
-
-function estimateAuditTopLevelBytes(input: AuditLogInput): number {
-  return estimateJsonBytes({
-    traceId: input.traceId,
-    trafficSource: input.trafficSource,
-    systemAccountId: input.systemAccountId,
-    apiKeyId: input.apiKeyId,
-    groupId: input.groupId,
-    accountId: input.accountId,
-    providerCode: input.providerCode,
-    method: input.method,
-    path: input.path,
-    queryString: input.queryString,
-    model: input.model,
-    stream: input.stream,
-    clientIp: input.clientIp,
-    userAgent: input.userAgent,
-    auditOutcome: input.auditOutcome,
-    success: input.success,
-    finalStatusCode: input.finalStatusCode,
-    errorPhase: input.errorPhase,
-    errorCode: input.errorCode,
-    errorMessage: input.errorMessage,
-    sampleBucket: input.sampleBucket,
-    sampleReason: input.sampleReason,
-    captureStatus: input.captureStatus,
-    startedAt: input.startedAt,
-    endedAt: input.endedAt,
-    durationMs: input.durationMs,
-    firstTokenMs: input.firstTokenMs,
-    createdAt: input.createdAt
-  })
-}
-
-function auditAttemptsBytes(attempts: AuditLogInput['attempts']): number {
-  return attempts.reduce((sum, attempt) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(attempt) + 128), 0)
 }
 
 function estimateJsonBytes(value: unknown): number {

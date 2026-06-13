@@ -71,6 +71,7 @@ import {
   type OpenAIGatewayTrafficSource
 } from './usage/traffic-source.js'
 import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-lane.js'
+import { forgetOpenAIAccountForSession } from './runtime/session-affinity.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -139,14 +140,29 @@ export async function handleOpenAIGatewayRequest(
     trafficSource,
     captureMode: trafficSource === 'cooldown_retest' ? 'metadata_only' : 'default'
   })
+  let activeDownstreamSessionAffinity: { key: string; accountId: string } | undefined
+  const clearActiveDownstreamSessionAffinity = () => {
+    if (!activeDownstreamSessionAffinity) {
+      return
+    }
+    const binding = activeDownstreamSessionAffinity
+    activeDownstreamSessionAffinity = undefined
+    forgetOpenAIAccountForSession(binding.key, binding.accountId)
+  }
   req.once('aborted', () => {
     auditCapture.markClientAborted()
     abortController.abort()
+    clearActiveDownstreamSessionAffinity()
   })
   res.once('close', () => {
-    if (!res.writableEnded && !isGatewayForcedDownstreamClose(res)) {
-      auditCapture.markClientAborted()
-      abortController.abort()
+    if (!isGatewayForcedDownstreamClose(res)) {
+      if (!res.writableEnded) {
+        auditCapture.markClientAborted()
+        abortController.abort()
+      }
+      if (abortController.signal.aborted) {
+        clearActiveDownstreamSessionAffinity()
+      }
     }
   })
 
@@ -338,6 +354,9 @@ export async function handleOpenAIGatewayRequest(
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
 
       try {
+        activeDownstreamSessionAffinity = sessionAffinityKey
+          ? { key: sessionAffinityKey, accountId: account.id }
+          : undefined
         const responseHandlingStartedAt = Date.now()
         const contentType = upstreamResponse.headers.get('content-type') ?? ''
         const shouldHandleAsStream = shouldHandleOpenAIUpstreamResponseAsStream({
@@ -419,6 +438,7 @@ export async function handleOpenAIGatewayRequest(
             throw error
           }
         }
+        activeDownstreamSessionAffinity = undefined
         if (handledResponse.alreadyFinalized) {
           return
         }

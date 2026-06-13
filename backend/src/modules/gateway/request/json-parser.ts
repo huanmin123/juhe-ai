@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { gatewayJsonBodyLargeWarningBytes, type GatewayJsonBodyMetadata } from './body.js'
+import { gatewayJsonBodyLargeWarningBytes } from './body.js'
+import type { GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
 import {
   OpenAIOAuthCodexAdapterError,
   type NormalizedCodexBody,

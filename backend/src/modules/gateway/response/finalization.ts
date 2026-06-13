@@ -38,6 +38,7 @@ import {
 } from '../runtime/session-affinity.service.js'
 import {
   gatewayStreamClientRetryErrorCode,
+  gatewayStreamFailureCode,
   gatewayErrorPayload,
   isOpenAIJsonResponseContentType,
   sendGatewayErrorResponse,
@@ -621,7 +622,7 @@ function preCommitStreamServerRetryErrorCode(
 ): string | undefined {
   return clientStrategy?.allowCodexStreamClientRetry === true
     ? gatewayStreamClientRetryErrorCode
-    : streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode
+    : gatewayStreamFailureCode(streamResult.message)
 }
 
 function shouldExcludeCurrentAccountForStreamServerRetry(decision: ResponseInspectionDecision): boolean {

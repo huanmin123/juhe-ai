@@ -644,7 +644,7 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
       }
       state.responseHitsByUpstreamKey[upstreamKey] = hitCount(state, upstreamKey) + 1
 
-      const scenario = typeof body.input === 'string' ? body.input : 'unknown'
+      const scenario = resolveMockScenario(body)
       const turnMetadata = typeof req.headers['x-codex-turn-metadata'] === 'string'
         ? req.headers['x-codex-turn-metadata']
         : undefined
@@ -757,11 +757,17 @@ async function requestResponsesStreamAndAbortAfterFirstChunk(
     sessionId?: string
   }
 ): Promise<void> {
-  const controller = new AbortController()
+  const url = new URL(`${baseUrl}/v1/responses`)
+  const body = JSON.stringify({
+    model: 'gpt-5.3-codex',
+    input: input.scenario,
+    stream: true
+  })
   const headers: Record<string, string> = {
     authorization: `Bearer ${apiKey}`,
     'content-type': 'application/json',
-    accept: 'text/event-stream'
+    accept: 'text/event-stream',
+    'content-length': String(Buffer.byteLength(body))
   }
   if (input.codex) {
     headers['x-codex-turn-metadata'] = JSON.stringify({
@@ -773,28 +779,58 @@ async function requestResponsesStreamAndAbortAfterFirstChunk(
   if (input.sessionId) {
     headers['x-session-id'] = input.sessionId
   }
-  const response = await fetch(`${baseUrl}/v1/responses`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: 'gpt-5.3-codex',
-      input: input.scenario,
-      stream: true
-    }),
-    signal: controller.signal
+  await new Promise<void>((resolveAbort, rejectAbort) => {
+    let settled = false
+    const settle = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      callback()
+    }
+    const req = http.request(url, {
+      method: 'POST',
+      headers
+    }, (res) => {
+      try {
+        assert.equal(res.statusCode, 200)
+        assert(String(res.headers['content-type'] ?? '').includes('text/event-stream'), '网关应保持 SSE content-type')
+      } catch (error) {
+        settle(() => rejectAbort(error))
+        req.destroy()
+        res.destroy()
+        return
+      }
+      res.once('data', (chunk) => {
+        try {
+          assert(Buffer.isBuffer(chunk) && chunk.byteLength > 0, '测试请求应先收到首段流式数据再关闭下游连接')
+        } catch (error) {
+          settle(() => rejectAbort(error))
+          req.destroy()
+          res.destroy()
+          return
+        }
+        req.destroy()
+        res.destroy()
+        settle(() => {
+          setTimeout(resolveAbort, 500)
+        })
+      })
+      res.once('end', () => {
+        settle(() => rejectAbort(new Error('测试请求在首段数据前已结束')))
+      })
+      res.once('error', (error) => {
+        if (!settled) {
+          settle(() => rejectAbort(error))
+        }
+      })
+    })
+    req.once('error', (error) => {
+      if (!settled) {
+        settle(() => rejectAbort(error))
+      }
+    })
+    req.write(body)
+    req.end()
   })
-  assert.equal(response.status, 200)
-  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
-  const reader = response.body?.getReader()
-  assert(reader, '流式响应应有可读取 body')
-  const firstChunk = await reader.read()
-  assert.equal(firstChunk.done, false, '测试请求应先收到首段流式数据再关闭下游连接')
-  controller.abort()
-  try {
-    await reader.cancel()
-  } catch {
-  }
-  await sleep(500)
 }
 
 async function requestResponsesStreamAndAbortAfterUpstreamRequestStarted(
@@ -958,6 +994,24 @@ function jsonValueContainsString(value: unknown, needle: string): boolean {
     return Object.values(value).some((item) => jsonValueContainsString(item, needle))
   }
   return false
+}
+
+function resolveMockScenario(body: Record<string, unknown>): string {
+  const knownScenarios = [
+    'client-abort-before-upstream-headers',
+    'client-abort-before-terminal',
+    'after-client-abort',
+    'codex-missing-terminal-switch',
+    'context-window-error',
+    'cyber-policy-error',
+    'cyber-policy-after-output-error'
+  ]
+  for (const scenario of knownScenarios) {
+    if (jsonValueContainsString(body, scenario)) {
+      return scenario
+    }
+  }
+  return typeof body.input === 'string' ? body.input : 'unknown'
 }
 
 function seedGatewayAccess(): { systemAccountId: string; role: 'user' } {

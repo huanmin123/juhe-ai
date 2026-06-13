@@ -14,9 +14,9 @@ import {
   isGatewayJsonContentType,
   releaseGatewayRequestBodyInFlightBytes,
   tryAcquireGatewayRequestBodyInFlightBytes,
-  type GatewayJsonBodyMetadata,
   type GatewayRawBodyRequest
 } from './body.js'
+import type { GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
 import { extractGatewayJsonBodyMetadataInWorker, isGatewayJsonWorkerQueueFullError } from './json-parser.js'
 import { resolveOpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 
