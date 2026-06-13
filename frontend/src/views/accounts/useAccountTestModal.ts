@@ -1,8 +1,8 @@
 import axios from 'axios'
 import { message } from '@/lib/antd'
-import { computed, onBeforeUnmount, onDeactivated, reactive, ref, type ComputedRef } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, type ComputedRef } from 'vue'
 
-import { api, type AccountDraftTestPayload } from '@/api/client'
+import { api, apiUrl, type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
 import type { AccountSummary, AccountTestResult, AccountTestTask, ProviderDefinition, ProviderModelPricing } from '@/types/domain'
 import {
   type AccountBatchTestItem,
@@ -32,7 +32,6 @@ interface UseAccountTestModalOptions {
   successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
 }
 
-type AccountTestPayload = ReturnType<typeof buildAccountTestPayload>
 type DraftTestMode = 'create' | 'saved'
 
 export interface SuccessfulDraftActivationTest {
@@ -40,15 +39,11 @@ export interface SuccessfulDraftActivationTest {
   account: AccountDraftTestPayload['account']
 }
 
-const accountBatchTestConcurrency = 3
-const accountTestTaskBatchQuerySize = 100
+const accountBatchTestChunkSize = 10
 const accountTestPollIntervalMs = 1000
-
-interface SubmittedBatchAccountTestTask {
-  account: AccountSummary
-  index: number
-  task: AccountTestTask
-}
+const accountTestSessionHeartbeatIntervalMs = 2000
+const accountDiagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000] as const
+const accountTestTaskMaxWaitMs = accountDiagnosticAttemptTimeoutsMs.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
 
 export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testModalOpen = ref(false)
@@ -85,6 +80,9 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const isOpenAICompatibleTestTarget = computed(() => isOpenAICompatibleTestSelection(testTargetAccountSelection.value))
 
   let accountTestAbortController: AbortController | undefined
+  let activeAccountTestSessionId: string | undefined
+  let activeAccountTestSessionScopeParams: { systemAccountId: string } | undefined
+  let accountTestSessionHeartbeatTimer: number | undefined
   const activeAccountTestTasks = new Map<string, AccountSummary>()
 
   async function loadTestModels() {
@@ -220,8 +218,14 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     const account = testingAccount.value
     const activationDraftPayload = activeActivationDraftTestPayload(account)
     try {
+      const session = await createAccountTestSession(account)
+      startAccountTestSessionHeartbeat(session.id, accountTestTaskScopeParams(account))
+      if (controller.signal.aborted) {
+        await cancelActiveAccountTestSession()
+        throw new DOMException('测试已停止', 'AbortError')
+      }
       const payload = buildAccountSpecificTestPayload(account)
-      const task = await submitAccountTest(account, payload)
+      const task = await submitAccountTest(account, payload, session.id)
       activeSingleTestTask.value = task
       activeAccountTestTasks.set(task.id, account)
       if (controller.signal.aborted) {
@@ -266,6 +270,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       for (const taskId of [...activeAccountTestTasks.keys()]) {
         activeAccountTestTasks.delete(taskId)
       }
+      stopAccountTestSessionHeartbeat()
+      clearActiveAccountTestSession()
       testRunning.value = false
       if (accountTestAbortController === controller) {
         accountTestAbortController = undefined
@@ -281,58 +287,16 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testRunning.value = true
     const controller = new AbortController()
     accountTestAbortController = controller
-    const submittedTasks = new Map<string, SubmittedBatchAccountTestTask>()
     try {
-      await runWithConcurrency(accounts, accountBatchTestConcurrency, async (account, index) => {
-        if (controller.signal.aborted) {
-          updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
-          return
-        }
-        const startedAt = Date.now()
-        updateBatchTestItem(index, { status: 'running', message: '提交后台测试任务', startedAt })
-        const payload = buildAccountSpecificTestPayload(account)
-        try {
-          const task = await submitAccountTest(account, payload)
-          activeAccountTestTasks.set(task.id, account)
-          if (controller.signal.aborted) {
-            await cancelCreatedAccountTestTask(task.id, account)
-            activeAccountTestTasks.delete(task.id)
-            updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
-            return
-          }
-          submittedTasks.set(task.id, { account, index, task })
-          updateBatchTestItem(index, { taskId: task.id, status: 'running', message: task.message ?? '等待后台测试', startedAt })
-        } catch (error) {
-          if (isAbortError(error)) {
-            updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
-            return
-          }
-          console.error(error)
-          const result = failedAccountTestResult({
-            account,
-            error,
-            model: payload.model ?? '',
-            clientCompatibility: testForm.clientCompatibility,
-            startedAt
-          })
-          updateBatchTestItem(index, {
-            status: 'failed',
-            result,
-            message: result.message,
-            finishedAt: Date.now()
-          })
-        }
-      }, controller.signal)
-
-      if (!controller.signal.aborted && submittedTasks.size > 0) {
-        try {
-          await pollBatchAccountTestTasks(submittedTasks, controller.signal)
-        } catch (error) {
-          if (!isAbortError(error)) {
-            throw error
-          }
-        }
+      const session = await createAccountTestSession()
+      startAccountTestSessionHeartbeat(session.id, options.accountScopeParams.value)
+      if (controller.signal.aborted) {
+        await cancelActiveAccountTestSession()
+        throw new DOMException('测试已停止', 'AbortError')
       }
+      await runInFixedBatches(accounts, accountBatchTestChunkSize, async (account, index) => {
+        await runBatchAccountTestItem(account, index, controller, session.id)
+      }, controller.signal)
 
       if (controller.signal.aborted) {
         markPendingBatchTestItemsStopped()
@@ -354,6 +318,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       for (const taskId of [...activeAccountTestTasks.keys()]) {
         activeAccountTestTasks.delete(taskId)
       }
+      stopAccountTestSessionHeartbeat()
+      clearActiveAccountTestSession()
       testRunning.value = false
       if (accountTestAbortController === controller) {
         accountTestAbortController = undefined
@@ -361,13 +327,108 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     }
   }
 
+  async function runBatchAccountTestItem(account: AccountSummary, index: number, controller: AbortController, sessionId: string): Promise<void> {
+    if (controller.signal.aborted) {
+      updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
+      return
+    }
+    const submittedAt = Date.now()
+    updateBatchTestItem(index, { status: 'queued', message: '提交后台测试任务' })
+    const payload = buildAccountSpecificTestPayload(account)
+    let task: AccountTestTask | undefined
+    try {
+      task = await submitAccountTest(account, payload, sessionId)
+      activeAccountTestTasks.set(task.id, account)
+      if (controller.signal.aborted) {
+        await cancelCreatedAccountTestTask(task.id, account)
+        activeAccountTestTasks.delete(task.id)
+        updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
+        return
+      }
+      updateBatchTestItem(index, {
+        taskId: task.id,
+        status: taskStatusToBatchStatus(task),
+        message: task.message ?? '等待后台测试',
+        startedAt: parseTaskTime(task.startedAt)
+      })
+      const result = await waitForAccountTestResult(task, account, controller.signal, (latestTask) => {
+        const latestStartedAt = parseTaskTime(latestTask.startedAt)
+        updateBatchTestItem(index, {
+          taskId: latestTask.id,
+          status: taskStatusToBatchStatus(latestTask),
+          message: latestTask.message ?? latestTask.result?.message,
+          result: latestTask.result,
+          startedAt: latestStartedAt ?? batchTestItems.value[index]?.startedAt,
+          finishedAt: latestTask.finishedAt ? Date.parse(latestTask.finishedAt) : undefined
+        })
+      })
+      updateBatchTestItem(index, {
+        status: result.success ? 'success' : 'failed',
+        result,
+        message: result.message,
+        finishedAt: Date.now()
+      })
+    } catch (error) {
+      if (isAbortError(error)) {
+        if (task) {
+          await cancelCreatedAccountTestTask(task.id, account)
+          activeAccountTestTasks.delete(task.id)
+        }
+        updateBatchTestItem(index, { status: 'stopped', message: '已停止测试', finishedAt: Date.now() })
+        return
+      }
+      console.error(error)
+      const result = failedAccountTestResult({
+        account,
+        error,
+        model: payload.model ?? '',
+        clientCompatibility: testForm.clientCompatibility,
+        startedAt: submittedAt
+      })
+      updateBatchTestItem(index, {
+        status: 'failed',
+        result,
+        message: result.message,
+        finishedAt: Date.now()
+      })
+    } finally {
+      if (task) {
+        activeAccountTestTasks.delete(task.id)
+      }
+    }
+  }
+
   function stopAccountTest() {
     if (!testRunning.value) return
     accountTestAbortController?.abort()
+    stopAccountTestSessionHeartbeat()
+    void cancelActiveAccountTestSession().catch((error) => {
+      console.error(error)
+    })
     for (const [taskId, account] of activeAccountTestTasks) {
       void cancelAccountTestTask(taskId, account).catch((error) => {
         console.error(error)
       })
+    }
+  }
+
+  function cancelActiveAccountTestSessionOnUnload() {
+    const sessionId = activeAccountTestSessionId
+    if (!sessionId) return
+    const path = options.isManagementView.value
+      ? `/accounts/test-sessions/${sessionId}/cancel`
+      : `/my-accounts/test-sessions/${sessionId}/cancel`
+    const url = apiUrl(path, options.isManagementView.value ? activeAccountTestSessionScopeParams : undefined)
+    const body = new Blob(['{}'], { type: 'application/json' })
+    const sent = navigator.sendBeacon?.(url, body) ?? false
+    if (!sent) {
+      void fetch(url, {
+        method: 'POST',
+        body: '{}',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        keepalive: true
+      }).catch(() => {})
     }
   }
 
@@ -378,8 +439,15 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testModalOpen.value = false
   }
 
+  onMounted(() => {
+    window.addEventListener('beforeunload', cancelActiveAccountTestSessionOnUnload)
+  })
   onDeactivated(stopAccountTest)
-  onBeforeUnmount(stopAccountTest)
+  onBeforeUnmount(() => {
+    window.removeEventListener('beforeunload', cancelActiveAccountTestSessionOnUnload)
+    cancelActiveAccountTestSessionOnUnload()
+    stopAccountTest()
+  })
 
   function buildAccountSpecificTestPayload(account: AccountSummary, clientCompatibility = testForm.clientCompatibility) {
     return buildAccountTestPayload({
@@ -396,51 +464,75 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     )
   }
 
-  function submitAccountTest(account: AccountSummary, payload: AccountTestPayload): Promise<AccountTestTask> {
-    const draftPayload = activeDraftTestPayload(account)
-    if (draftPayload) {
-      const requestPayload: AccountDraftTestPayload = { account: draftPayload, ...payload }
-      if (draftTestMode.value === 'saved') {
-        return options.isManagementView.value
-          ? api.accounts.test(account.id, requestPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
-          : api.myAccounts.test(account.id, requestPayload)
-      }
-      return options.isManagementView.value
-        ? api.accounts.testDraft(requestPayload, options.accountScopeParams.value)
-        : api.myAccounts.testDraft(requestPayload)
+  async function createAccountTestSession(account?: AccountSummary) {
+    const scopeParams = account ? accountTestTaskScopeParams(account) : options.accountScopeParams.value
+    return options.isManagementView.value
+      ? api.accounts.createTestSession(scopeParams)
+      : api.myAccounts.createTestSession()
+  }
+
+  function startAccountTestSessionHeartbeat(sessionId: string, scopeParams?: { systemAccountId: string }) {
+    stopAccountTestSessionHeartbeat()
+    activeAccountTestSessionId = sessionId
+    activeAccountTestSessionScopeParams = scopeParams
+    accountTestSessionHeartbeatTimer = window.setInterval(() => {
+      void heartbeatAccountTestSession(sessionId, scopeParams).catch((error) => {
+        console.error(error)
+      })
+    }, accountTestSessionHeartbeatIntervalMs)
+  }
+
+  function stopAccountTestSessionHeartbeat() {
+    if (accountTestSessionHeartbeatTimer !== undefined) {
+      window.clearInterval(accountTestSessionHeartbeatTimer)
+      accountTestSessionHeartbeatTimer = undefined
+    }
+  }
+
+  function clearActiveAccountTestSession() {
+    activeAccountTestSessionId = undefined
+    activeAccountTestSessionScopeParams = undefined
+  }
+
+  function heartbeatAccountTestSession(sessionId: string, scopeParams?: { systemAccountId: string }) {
+    return options.isManagementView.value
+      ? api.accounts.heartbeatTestSession(sessionId, scopeParams)
+      : api.myAccounts.heartbeatTestSession(sessionId)
+  }
+
+  function cancelActiveAccountTestSession() {
+    const sessionId = activeAccountTestSessionId
+    if (!sessionId) {
+      return Promise.resolve()
     }
     return options.isManagementView.value
-      ? api.accounts.test(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
-      : api.myAccounts.test(account.id, payload)
+      ? api.accounts.cancelTestSession(sessionId, activeAccountTestSessionScopeParams)
+      : api.myAccounts.cancelTestSession(sessionId)
+  }
+
+  function submitAccountTest(account: AccountSummary, payload: AccountTestPayload, sessionId: string): Promise<AccountTestTask> {
+    const requestPayload: AccountTestPayload = { ...payload, testSessionId: sessionId }
+    const draftPayload = activeDraftTestPayload(account)
+    if (draftPayload) {
+      const draftRequestPayload: AccountDraftTestPayload = { account: draftPayload, ...requestPayload }
+      if (draftTestMode.value === 'saved') {
+        return options.isManagementView.value
+          ? api.accounts.test(account.id, draftRequestPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
+          : api.myAccounts.test(account.id, draftRequestPayload)
+      }
+      return options.isManagementView.value
+        ? api.accounts.testDraft(draftRequestPayload, options.accountScopeParams.value)
+        : api.myAccounts.testDraft(draftRequestPayload)
+    }
+    return options.isManagementView.value
+      ? api.accounts.test(account.id, requestPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
+      : api.myAccounts.test(account.id, requestPayload)
   }
 
   function fetchAccountTestTask(taskId: string, account: AccountSummary, signal?: AbortSignal): Promise<AccountTestTask> {
     return options.isManagementView.value
       ? api.accounts.testTask(taskId, accountTestTaskScopeParams(account), { signal })
       : api.myAccounts.testTask(taskId, { signal })
-  }
-
-  async function fetchAccountTestTasks(
-    taskIds: string[],
-    submittedTasks: Map<string, SubmittedBatchAccountTestTask>,
-    signal?: AbortSignal
-  ): Promise<AccountTestTask[]> {
-    if (!options.isManagementView.value) {
-      return api.myAccounts.testTasks(taskIds, { signal })
-    }
-    const taskGroups = new Map<string, { params: ReturnType<typeof accountOperationScopeParams>; taskIds: string[] }>()
-    for (const taskId of taskIds) {
-      const account = submittedTasks.get(taskId)?.account
-      const params = account ? accountOperationScopeParams(account, options.accountScopeParams.value) : options.accountScopeParams.value
-      const key = params?.systemAccountId ?? ''
-      const group = taskGroups.get(key) ?? { params, taskIds: [] }
-      group.taskIds.push(taskId)
-      taskGroups.set(key, group)
-    }
-    const taskChunks = await Promise.all([...taskGroups.values()].map((group) => (
-      api.accounts.testTasks(group.taskIds, group.params, { signal })
-    )))
-    return taskChunks.flat()
   }
 
   function cancelAccountTestTask(taskId: string, account?: AccountSummary): Promise<AccountTestTask> {
@@ -500,77 +592,52 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         activeAccountTestTasks.delete(task.id)
         throw new DOMException(task.message ?? '测试已停止', 'AbortError')
       }
-      await waitForPollDelay(signal)
+      const timeoutResult = accountTestTaskTimeoutResult(task, account)
+      if (timeoutResult) {
+        await cancelCreatedAccountTestTask(task.id, account)
+        activeAccountTestTasks.delete(task.id)
+        return timeoutResult
+      }
+      await waitForPollDelay(signal, accountTestTaskRemainingWaitMs(task))
       task = await fetchAccountTestTask(task.id, account, signal)
       onUpdate?.(task)
     }
   }
 
-  async function pollBatchAccountTestTasks(submittedTasks: Map<string, SubmittedBatchAccountTestTask>, signal: AbortSignal): Promise<void> {
-    const pendingTaskIds = new Set(submittedTasks.keys())
-    while (pendingTaskIds.size > 0) {
-      if (signal.aborted) {
-        throw new DOMException('测试已停止', 'AbortError')
-      }
-      await waitForPollDelay(signal)
-      const taskIds = [...pendingTaskIds]
-      for (const taskIdChunk of chunkList(taskIds, accountTestTaskBatchQuerySize)) {
-        const latestTasks = await fetchAccountTestTasks(taskIdChunk, submittedTasks, signal)
-        const latestTaskIds = new Set(latestTasks.map((task) => task.id))
-        for (const task of latestTasks) {
-          const submitted = submittedTasks.get(task.id)
-          if (!submitted || !pendingTaskIds.has(task.id)) continue
-          updateBatchTestItem(submitted.index, {
-            taskId: task.id,
-            status: task.status === 'queued' || task.status === 'running' ? 'running' : taskStatusToBatchStatus(task),
-            message: task.message ?? task.result?.message,
-            result: task.result,
-            finishedAt: task.finishedAt ? Date.parse(task.finishedAt) : undefined
-          })
-          if (task.status === 'success' || task.status === 'failed') {
-            const result = task.result ?? failedAccountTestResult({
-              account: submitted.account,
-              error: new Error(task.message ?? '测试失败'),
-              model: task.model ?? testForm.model,
-              clientCompatibility: testForm.clientCompatibility,
-              startedAt: task.startedAt ? Date.parse(task.startedAt) : Date.now()
-            })
-            updateBatchTestItem(submitted.index, {
-              status: result.success ? 'success' : 'failed',
-              result,
-              message: result.message,
-              finishedAt: task.finishedAt ? Date.parse(task.finishedAt) : Date.now()
-            })
-            pendingTaskIds.delete(task.id)
-            activeAccountTestTasks.delete(task.id)
-          } else if (task.status === 'canceled') {
-            updateBatchTestItem(submitted.index, { status: 'stopped', message: task.message ?? '已停止测试', finishedAt: task.finishedAt ? Date.parse(task.finishedAt) : Date.now() })
-            pendingTaskIds.delete(task.id)
-            activeAccountTestTasks.delete(task.id)
-          }
-        }
-        for (const taskId of taskIdChunk) {
-          if (!pendingTaskIds.has(taskId) || latestTaskIds.has(taskId)) continue
-          const submitted = submittedTasks.get(taskId)
-          if (!submitted) continue
-          const result = failedAccountTestResult({
-            account: submitted.account,
-            error: new Error('测试任务不存在或已过期'),
-            model: testForm.model,
-            clientCompatibility: testForm.clientCompatibility,
-            startedAt: Date.now()
-          })
-          updateBatchTestItem(submitted.index, {
-            status: 'failed',
-            result,
-            message: result.message,
-            finishedAt: Date.now()
-          })
-          pendingTaskIds.delete(taskId)
-          activeAccountTestTasks.delete(taskId)
-        }
-      }
+  function accountTestTaskTimeoutResult(task: AccountTestTask, account: AccountSummary): AccountTestResult | undefined {
+    if (task.status !== 'running') {
+      return undefined
     }
+    const startedAt = parseTaskTime(task.startedAt)
+    if (startedAt === undefined || Date.now() - startedAt < accountTestTaskMaxWaitMs) {
+      return undefined
+    }
+    const maxWaitText = `${Math.ceil(accountTestTaskMaxWaitMs / 1000)}s`
+    const message = `账号测试运行超过 ${maxWaitText} 未完成，已自动停止`
+    return failedAccountTestResult({
+      account,
+      error: new Error(message),
+      model: task.model ?? testForm.model,
+      clientCompatibility: testForm.clientCompatibility,
+      startedAt
+    })
+  }
+
+  function accountTestTaskRemainingWaitMs(task: AccountTestTask): number {
+    if (task.status !== 'running') {
+      return accountTestPollIntervalMs
+    }
+    const startedAt = parseTaskTime(task.startedAt)
+    if (startedAt === undefined) {
+      return accountTestPollIntervalMs
+    }
+    return Math.max(0, accountTestTaskMaxWaitMs - (Date.now() - startedAt))
+  }
+
+  function parseTaskTime(value?: string): number | undefined {
+    if (!value) return undefined
+    const timestamp = Date.parse(value)
+    return Number.isFinite(timestamp) ? timestamp : undefined
   }
 
   function updateBatchTestItem(index: number, patch: Partial<AccountBatchTestItem>) {
@@ -582,7 +649,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   function markPendingBatchTestItemsStopped() {
     batchTestItems.value = batchTestItems.value.map((item) => {
-      if (item.status !== 'pending' && item.status !== 'running') return item
+      if (item.status !== 'pending' && item.status !== 'queued' && item.status !== 'running') return item
       return { ...item, status: 'stopped', message: '已停止测试', finishedAt: Date.now() }
     })
   }
@@ -621,22 +688,17 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 }
 
-async function runWithConcurrency<TItem>(
+async function runInFixedBatches<TItem>(
   items: TItem[],
-  concurrency: number,
+  batchSize: number,
   task: (item: TItem, index: number) => Promise<void>,
   signal: AbortSignal
 ): Promise<void> {
-  let nextIndex = 0
-  const workerCount = Math.min(Math.max(1, concurrency), items.length)
-  async function runWorker(): Promise<void> {
-    while (nextIndex < items.length && !signal.aborted) {
-      const index = nextIndex
-      nextIndex += 1
-      await task(items[index], index)
-    }
+  const size = Math.max(1, Math.trunc(batchSize))
+  for (let startIndex = 0; startIndex < items.length && !signal.aborted; startIndex += size) {
+    const batch = items.slice(startIndex, startIndex + size)
+    await Promise.all(batch.map((item, offset) => task(item, startIndex + offset)))
   }
-  await Promise.all(Array.from({ length: workerCount }, runWorker))
 }
 
 function isAbortError(error: unknown): boolean {
@@ -644,28 +706,23 @@ function isAbortError(error: unknown): boolean {
 }
 
 function taskStatusToBatchStatus(task: AccountTestTask): AccountBatchTestItem['status'] {
+  if (task.status === 'queued') return 'queued'
+  if (task.status === 'running') return 'running'
   if (task.status === 'success') return 'success'
   if (task.status === 'failed') return 'failed'
   if (task.status === 'canceled') return 'stopped'
   return 'running'
 }
 
-function chunkList<TItem>(items: TItem[], size: number): TItem[][] {
-  const chunks: TItem[][] = []
-  const chunkSize = Math.max(1, Math.trunc(size))
-  for (let index = 0; index < items.length; index += chunkSize) {
-    chunks.push(items.slice(index, index + chunkSize))
-  }
-  return chunks
-}
-
-async function waitForPollDelay(signal: AbortSignal): Promise<void> {
+async function waitForPollDelay(signal: AbortSignal, maxDelayMs = accountTestPollIntervalMs): Promise<void> {
   if (signal.aborted) {
     throw new DOMException('测试已停止', 'AbortError')
   }
+  const delayMs = Math.min(accountTestPollIntervalMs, Math.max(0, maxDelayMs))
+  if (delayMs <= 0) return
   await new Promise<void>((resolve, reject) => {
     let settled = false
-    const timer = window.setTimeout(() => finish(), accountTestPollIntervalMs)
+    const timer = window.setTimeout(() => finish(), delayMs)
     const finish = (error?: Error) => {
       if (settled) return
       settled = true

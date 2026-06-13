@@ -83,7 +83,8 @@
     <ResponseInspectionPolicyGuideModal
       v-model:open="guideOpen"
       title="账户响应检查策略配置指南"
-      match-note="支持多值的匹配字段只用英文逗号或中文逗号分隔；同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。输出文本排除只在输出文本已命中后用于降低误杀。"
+      intro="这里配置的是当前账号的专属规则，会和全局响应检查策略一起生效。适合处理某个账号固定返回的广告、私有错误码或异常提示。"
+      match-note="多个值用英文逗号或中文逗号分隔。同一个字段填多个值时，命中任意一个就算这个字段通过；填写了多个字段时，所有字段都要通过。输出文本排除只用于减少误伤。"
     />
   </section>
 </template>
@@ -180,7 +181,7 @@ function conditionSummary(rule: AccountResponseInspectionRuleForm): string {
     responseInspectionFieldSummary('消息', rule.errorMessageIncludes),
     responseInspectionFieldSummary('状态', rule.finishReasons),
     responseInspectionFieldSummary('JSON路径', rule.jsonPathsExists),
-    responseInspectionFieldSummary('原始文本', rule.rawTextIncludes)
+    responseInspectionFieldSummary('SSE 原文', rule.rawTextIncludes)
   ].filter(Boolean)
   return parts.length ? parts.join('；') : '未配置匹配条件'
 }

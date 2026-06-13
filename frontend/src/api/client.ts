@@ -10,6 +10,7 @@ import type {
   AccountGroupOptionSummary,
   AccountOptionSummary,
   AccountTagSummary,
+  AccountTestSession,
   AccountTestTask,
   AccountTrafficMigrationResult,
   AccountTrafficMigrationSourceStatus,
@@ -239,6 +240,7 @@ export interface AccountTestPayload {
   model?: string
   prompt?: string
   clientCompatibility?: AccountClientCompatibility
+  testSessionId?: string
   account?: AccountDraftTestAccountPayload
 }
 
@@ -530,6 +532,16 @@ function normalizeApiBaseUrl(value?: string): string {
   return text.replace(/\/+$/, '') || '/__aisys__/api'
 }
 
+export function apiUrl(path: string, params?: Record<string, string | undefined>): string {
+  const baseUrl = http.defaults.baseURL ?? '/__aisys__/api'
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  const url = new URL(`${baseUrl}${normalizedPath}`, window.location.origin)
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value) url.searchParams.set(key, value)
+  })
+  return url.toString()
+}
+
 function shouldNotifyUnauthorized(url?: string): boolean {
   if (!url) return true
   return !url.startsWith('/auth/')
@@ -746,6 +758,10 @@ export const api = {
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
     test: (id: string, payload?: AccountTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, signal: options?.signal })),
     testDraft: (payload: AccountDraftTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post('/accounts/test-draft', payload, { params, signal: options?.signal })),
+    createTestSession: (params?: ListParams) => unwrap<AccountTestSession>(http.post('/accounts/test-sessions', {}, { params })),
+    testSession: (sessionId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestSession>(http.get(`/accounts/test-sessions/${sessionId}`, { params, signal: options?.signal })),
+    heartbeatTestSession: (sessionId: string, params?: ListParams) => unwrap<AccountTestSession>(http.post(`/accounts/test-sessions/${sessionId}/heartbeat`, {}, { params })),
+    cancelTestSession: (sessionId: string, params?: ListParams) => unwrap<AccountTestSession>(http.post(`/accounts/test-sessions/${sessionId}/cancel`, {}, { params })),
     testTasks: (taskIds: string[], params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask[]>(http.get('/accounts/test-tasks', { params: { ...params, ids: taskIds.join(',') }, signal: options?.signal })),
     testTask: (taskId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.get(`/accounts/test-tasks/${taskId}`, { params, signal: options?.signal })),
     cancelTestTask: (taskId: string, params?: ListParams) => unwrap<AccountTestTask>(http.post(`/accounts/test-tasks/${taskId}/cancel`, {}, { params })),
@@ -769,6 +785,10 @@ export const api = {
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
     test: (id: string, payload?: AccountTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { signal: options?.signal })),
     testDraft: (payload: AccountDraftTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post('/my-accounts/test-draft', payload, { signal: options?.signal })),
+    createTestSession: () => unwrap<AccountTestSession>(http.post('/my-accounts/test-sessions', {})),
+    testSession: (sessionId: string, options?: RequestControlOptions) => unwrap<AccountTestSession>(http.get(`/my-accounts/test-sessions/${sessionId}`, { signal: options?.signal })),
+    heartbeatTestSession: (sessionId: string) => unwrap<AccountTestSession>(http.post(`/my-accounts/test-sessions/${sessionId}/heartbeat`, {})),
+    cancelTestSession: (sessionId: string) => unwrap<AccountTestSession>(http.post(`/my-accounts/test-sessions/${sessionId}/cancel`, {})),
     testTasks: (taskIds: string[], options?: RequestControlOptions) => unwrap<AccountTestTask[]>(http.get('/my-accounts/test-tasks', { params: { ids: taskIds.join(',') }, signal: options?.signal })),
     testTask: (taskId: string, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.get(`/my-accounts/test-tasks/${taskId}`, { signal: options?.signal })),
     cancelTestTask: (taskId: string) => unwrap<AccountTestTask>(http.post(`/my-accounts/test-tasks/${taskId}/cancel`, {})),

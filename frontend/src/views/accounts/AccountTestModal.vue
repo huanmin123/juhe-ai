@@ -176,6 +176,7 @@ const batchSuccessCount = computed(() => props.batchItems.filter((item) => item.
 const batchFailedCount = computed(() => props.batchItems.filter((item) => item.status === 'failed').length)
 const batchStoppedCount = computed(() => props.batchItems.filter((item) => item.status === 'stopped').length)
 const batchCompletedCount = computed(() => props.batchItems.filter((item) => item.status === 'success' || item.status === 'failed' || item.status === 'stopped').length)
+const batchQueuedCount = computed(() => props.batchItems.filter((item) => item.status === 'queued').length)
 const batchRunningCount = computed(() => props.batchItems.filter((item) => item.status === 'running').length)
 const testTargetAccounts = computed(() => isBatchMode.value ? props.accounts : props.account ? [props.account] : [])
 const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some((account) => account.type === 'api_key'))
@@ -186,7 +187,7 @@ const batchSelectedCompatibilityText = computed(() => (
     : fixedOAuthCompatibilityText.value
 ))
 const batchStatusColor = computed(() => {
-  if (props.running || batchRunningCount.value) return 'blue'
+  if (props.running || batchQueuedCount.value || batchRunningCount.value) return 'blue'
   if (batchFailedCount.value) return 'red'
   if (batchStoppedCount.value) return 'orange'
   if (batchSuccessCount.value && batchSuccessCount.value === props.batchItems.length) return 'green'
@@ -194,7 +195,7 @@ const batchStatusColor = computed(() => {
 })
 const batchStatusText = computed(() => {
   const total = props.batchItems.length
-  if (props.running || batchRunningCount.value) return `测试中 ${batchCompletedCount.value} / ${total}`
+  if (props.running || batchQueuedCount.value || batchRunningCount.value) return `测试中 ${batchCompletedCount.value} / ${total}`
   if (!batchCompletedCount.value) return '等待开始'
   if (batchFailedCount.value) return `成功 ${batchSuccessCount.value}，失败 ${batchFailedCount.value}`
   if (batchStoppedCount.value) return `已停止 ${batchStoppedCount.value}`
@@ -315,7 +316,7 @@ function singleRunningOutputLines(account: AccountSummary): TestOutputLine[] {
   const lines: TestOutputLine[] = [
     { text: '正在走账户配置的真实请求流程...', tone: 'warning' },
     { text: `使用模型：${props.model}`, tone: 'success' },
-    { text: `等待策略：10s + 20s + 30s，最大 ${formatAccountTestDuration(diagnosticMaxWaitMs)}`, tone: 'muted' }
+    { text: `等待策略：后台接收后按 10s + 20s + 30s 执行，运行超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)} 会自动失败`, tone: 'muted' }
   ]
   if (task?.id) {
     lines.push({ text: `后台任务：${task.id}（${taskStatusText(task.status)}）`, tone: 'muted' })
@@ -325,8 +326,11 @@ function singleRunningOutputLines(account: AccountSummary): TestOutputLine[] {
   if (task?.message) {
     lines.push({ text: task.message, tone: task.status === 'queued' ? 'muted' : 'info' })
   }
+  if (task?.status === 'queued') {
+    lines.push({ text: '等待后台 worker 接收，尚未开始计时', tone: 'muted' })
+  }
   if (elapsedMs !== undefined) {
-    lines.push({ text: `已等待：${formatAccountTestDuration(elapsedMs)}`, tone: elapsedMs > diagnosticMaxWaitMs ? 'warning' : 'muted' })
+    lines.push({ text: `运行耗时：${formatAccountTestDuration(elapsedMs)}`, tone: elapsedMs > diagnosticMaxWaitMs ? 'warning' : 'muted' })
     lines.push({ text: `当前窗口估计：${diagnosticAttemptWindowText(elapsedMs)}`, tone: 'info' })
   }
   if (account.type === 'oauth') {
@@ -340,22 +344,24 @@ function batchOutputLines(): TestOutputLine[] {
   if (!total) return []
   const lines: TestOutputLine[] = [
     { text: `批量测试账号：${total} 个`, tone: 'info' },
+    { text: '提交策略：每批最多 10 个账户，本批全部结束后再提交下一批', tone: 'muted' },
     { text: `优先测试模型：${props.model}`, tone: 'muted' },
-    { text: `测试兼容：${batchSelectedCompatibilityText.value}`, tone: 'muted' }
+    { text: `测试兼容：${batchSelectedCompatibilityText.value}`, tone: 'muted' },
+    { text: `单个任务运行上限：${formatAccountTestDuration(diagnosticMaxWaitMs)}，后台未接收前不计时`, tone: 'muted' }
   ]
-  if (props.running || batchRunningCount.value) {
-    const runningNames = props.batchItems
-      .filter((item) => item.status === 'running')
+  if (props.running || batchQueuedCount.value || batchRunningCount.value) {
+    const activeNames = props.batchItems
+      .filter((item) => item.status === 'queued' || item.status === 'running')
       .map((item) => item.account.name)
       .slice(0, 3)
       .join('、')
     lines.push({ text: `正在执行：已完成 ${batchCompletedCount.value} / ${total}`, tone: 'warning' })
-    if (runningNames) lines.push({ text: `当前账户：${runningNames}`, tone: 'success' })
-    const runningItems = props.batchItems.filter((item) => item.status === 'running').slice(0, 3)
-    for (const item of runningItems) {
+    if (activeNames) lines.push({ text: `当前账户：${activeNames}`, tone: 'success' })
+    const activeItems = props.batchItems.filter((item) => item.status === 'queued' || item.status === 'running').slice(0, 3)
+    for (const item of activeItems) {
       const elapsedMs = item.startedAt ? Date.now() - item.startedAt : undefined
-      const elapsedText = elapsedMs !== undefined ? `，已等待 ${formatAccountTestDuration(elapsedMs)}` : ''
-      lines.push({ text: `${item.account.name}: ${batchItemMessage(item)}${elapsedText}`, tone: 'info' })
+      const elapsedText = elapsedMs !== undefined ? `，运行 ${formatAccountTestDuration(elapsedMs)}` : '，未开始计时'
+      lines.push({ text: `${item.account.name}: ${batchItemMessage(item)}${elapsedText}`, tone: item.status === 'queued' ? 'muted' : 'info' })
     }
     return lines
   }
@@ -378,6 +384,7 @@ function batchItemStatusColor(item: AccountBatchTestItem): string {
   if (item.status === 'success') return 'green'
   if (item.status === 'failed') return 'red'
   if (item.status === 'running') return 'blue'
+  if (item.status === 'queued') return 'processing'
   if (item.status === 'stopped') return 'orange'
   return 'default'
 }
@@ -386,12 +393,13 @@ function batchItemStatusText(item: AccountBatchTestItem): string {
   if (item.status === 'success') return '通过'
   if (item.status === 'failed') return '失败'
   if (item.status === 'running') return '测试中'
+  if (item.status === 'queued') return '等待接收'
   if (item.status === 'stopped') return '已停止'
   return '等待'
 }
 
 function taskStatusText(status: AccountTestTask['status']): string {
-  if (status === 'queued') return '排队中'
+  if (status === 'queued') return '等待接收'
   if (status === 'running') return '测试中'
   if (status === 'success') return '已通过'
   if (status === 'failed') return '失败'
@@ -399,7 +407,7 @@ function taskStatusText(status: AccountTestTask['status']): string {
 }
 
 function taskElapsedMs(task?: AccountTestTask): number | undefined {
-  const startedAt = parseTaskTime(task?.startedAt) ?? parseTaskTime(task?.queuedAt) ?? parseTaskTime(task?.createdAt)
+  const startedAt = parseTaskTime(task?.startedAt)
   if (startedAt === undefined) return undefined
   return Math.max(0, Date.now() - startedAt)
 }
@@ -419,7 +427,7 @@ function diagnosticAttemptWindowText(elapsedMs: number): string {
       return `第 ${index + 1}/${diagnosticAttemptTimeoutsMs.length} 次，单次最多 ${formatAccountTestDuration(timeoutMs)}`
     }
   }
-  return '已超过 60s，等待后台写入最终结果或停止'
+  return `已超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)}，将自动停止并返回运行超时错误`
 }
 
 function batchItemModelText(item: AccountBatchTestItem): string {
@@ -436,6 +444,7 @@ function batchItemDurationText(item: AccountBatchTestItem): string {
 function batchItemMessage(item: AccountBatchTestItem): string {
   if (item.message) return item.message
   if (item.result?.message) return item.result.message
+  if (item.status === 'queued') return '等待后台 worker 接收'
   if (item.status === 'running') return '正在连接 OpenAI API'
   if (item.status === 'stopped') return '已停止测试'
   return '等待开始测试'

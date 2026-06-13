@@ -21,8 +21,8 @@
     <a-form-item label="JSON字段路径存在">
       <a-input v-model:value="form.jsonPathsExists" :disabled="disabled" placeholder="response.error, choices.0.message.content" />
     </a-form-item>
-    <a-form-item label="原始事件文本包含">
-      <a-textarea v-model:value="form.rawTextIncludes" :disabled="disabled" :rows="1" auto-size placeholder="event: response.failed, data: error" />
+    <a-form-item label="SSE 事件原文包含">
+      <a-textarea v-model:value="form.rawTextIncludes" :disabled="disabled" :rows="1" auto-size placeholder="event: response.failed" />
     </a-form-item>
   </div>
 </template>

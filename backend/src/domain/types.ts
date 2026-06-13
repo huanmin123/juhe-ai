@@ -609,9 +609,22 @@ export interface AccountTestResult {
 }
 
 export type AccountTestTaskStatus = 'queued' | 'running' | 'success' | 'failed' | 'canceled'
+export type AccountTestSessionStatus = 'running' | 'canceled' | 'expired' | 'completed'
+
+export interface AccountTestSession {
+  id: string
+  status: AccountTestSessionStatus
+  message?: string
+  lastHeartbeatAt: string
+  cancelRequestedAt?: string
+  finishedAt?: string
+  createdAt: string
+  updatedAt: string
+}
 
 export interface AccountTestTask {
   id: string
+  sessionId?: string
   accountId: string
   accountName: string
   providerCode: ProviderCode

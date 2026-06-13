@@ -17,7 +17,19 @@ import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerpr
 import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, ownerTarget, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
-import { cancelAccountTestTask, createAccountTestTask, failAccountTestTask, getAccountTestTask, getAccountTestTaskRecord, listAccountTestTasks, type AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
+import {
+  cancelAccountTestSession,
+  cancelAccountTestTask,
+  createAccountTestSession,
+  createAccountTestTask,
+  failAccountTestTask,
+  getAccountTestSession,
+  getAccountTestTask,
+  getAccountTestTaskRecord,
+  heartbeatAccountTestSession,
+  listAccountTestTasks,
+  type AccountTestDraftSnapshot
+} from '../../storage/account-test-tasks.repository.js'
 import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
@@ -102,6 +114,7 @@ const accountTestSchema = z.object({
   model: z.string().trim().optional(),
   prompt: z.string().trim().optional(),
   clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
+  testSessionId: z.string().trim().min(1).optional(),
   account: accountDraftTestAccountSchema.optional()
 }).strict().optional()
 
@@ -109,6 +122,7 @@ const accountDraftTestSchema = z.object({
   account: accountDraftTestAccountSchema,
   model: z.string().trim().optional(),
   prompt: z.string().trim().optional(),
+  testSessionId: z.string().trim().min(1).optional(),
   clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional()
 }).strict()
 
@@ -318,6 +332,72 @@ accountsRouter.get('/test-tasks', (req, res) => {
   res.json(ok(listAccountTestTasks(taskIds, requestAccess)))
 })
 
+accountsRouter.post('/test-sessions', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  if (!requestAccess) {
+    res.status(403).json({ message: '缺少系统账户上下文' })
+    return
+  }
+  try {
+    res.status(201).json(ok(createAccountTestSession(requestAccess)))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '创建账户测试会话失败'))
+  }
+})
+
+accountsRouter.get('/test-sessions/:sessionId', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const session = getAccountTestSession(req.params.sessionId, requestAccess)
+  if (!session) {
+    res.status(404).json({ message: '账户测试会话不存在' })
+    return
+  }
+  res.json(ok(session))
+})
+
+accountsRouter.post('/test-sessions/:sessionId/heartbeat', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const session = heartbeatAccountTestSession(req.params.sessionId, requestAccess)
+  if (!session) {
+    res.status(404).json({ message: '账户测试会话不存在' })
+    return
+  }
+  res.json(ok(session))
+})
+
+accountsRouter.post('/test-sessions/:sessionId/cancel', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const result = cancelAccountTestSession(req.params.sessionId, requestAccess)
+  if (!result) {
+    res.status(404).json({ message: '账户测试会话不存在' })
+    return
+  }
+  for (const taskId of result.taskIds) {
+    dispatchAccountTestCancel(taskId)
+  }
+  res.json(ok(result.session))
+})
+
 accountsRouter.get('/test-tasks/:taskId', (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
@@ -370,11 +450,12 @@ accountsRouter.post('/test-draft', async (req, res) => {
       accountInput: parsed.data.account,
       requestAccess
     })
-    const { prompt: _ignoredPrompt, ...testOptions } = parsed.data
+    const { prompt: _ignoredPrompt, testSessionId, ...testOptions } = parsed.data
     const task = createAccountTestTask({
       account: preparedDraft.account,
       access: requestAccess,
       diagnostics: 'full',
+      sessionId: testSessionId,
       model: testOptions.model,
       clientCompatibility: testOptions.clientCompatibility,
       draftAccount: preparedDraft.draftAccount
@@ -1170,7 +1251,7 @@ accountsRouter.post('/:id/test', async (req, res) => {
   try {
     const diagnostics = isAdminRole(requestAccess?.role) || account.accessType !== 'authorized' ? 'full' : 'limited'
     const testRequest = parsed.data ?? {}
-    const { prompt: _ignoredPrompt, account: accountSnapshot, ...testOptions } = testRequest
+    const { prompt: _ignoredPrompt, account: accountSnapshot, testSessionId, ...testOptions } = testRequest
     const draftAccount = accountSnapshot
       ? savedAccountDraftTestSnapshot(account, accountSnapshot, requestAccess)
       : undefined
@@ -1178,6 +1259,7 @@ accountsRouter.post('/:id/test', async (req, res) => {
       account,
       access: requestAccess,
       diagnostics,
+      sessionId: testSessionId,
       model: testOptions.model,
       clientCompatibility: testOptions.clientCompatibility ?? draftAccount?.clientCompatibility,
       draftAccount

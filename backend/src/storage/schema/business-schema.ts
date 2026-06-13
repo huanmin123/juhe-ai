@@ -347,6 +347,30 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS account_test_sessions (
+      id TEXT PRIMARY KEY,
+      request_system_account_id TEXT NOT NULL,
+      request_role TEXT NOT NULL,
+      request_system_account_filter_id TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      cancel_reason TEXT,
+      last_heartbeat_at TEXT NOT NULL,
+      cancel_requested_at TEXT,
+      finished_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (status IN ('running', 'canceled', 'expired', 'completed'))
+    );
+
+    CREATE TABLE IF NOT EXISTS account_test_session_tasks (
+      session_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (session_id, task_id),
+      FOREIGN KEY (session_id) REFERENCES account_test_sessions(id) ON DELETE CASCADE,
+      FOREIGN KEY (task_id) REFERENCES account_test_tasks(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS system_teams (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -630,6 +654,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_request_updated ON account_test_tasks(request_system_account_id, updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_status_queued ON account_test_tasks(status, queued_at ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_finished_cleanup ON account_test_tasks(finished_at ASC, id ASC) WHERE finished_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_test_sessions_request_updated ON account_test_sessions(request_system_account_id, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_account_test_sessions_status_heartbeat ON account_test_sessions(status, last_heartbeat_at ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_account_test_session_tasks_task ON account_test_session_tasks(task_id, session_id);
+    CREATE INDEX IF NOT EXISTS idx_account_test_session_tasks_session ON account_test_session_tasks(session_id, task_id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_updated ON groups(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_updated ON groups(system_account_id, updated_at DESC, id DESC);

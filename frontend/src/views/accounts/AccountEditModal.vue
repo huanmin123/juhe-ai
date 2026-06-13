@@ -10,11 +10,6 @@
     @cancel="$emit('cancel')"
   >
     <a-form layout="vertical" class="account-form">
-      <a-alert v-if="cloning" class="form-alert" type="info" show-icon :message="cloneAlertMessage" />
-      <a-alert v-else-if="authorizedEditing" class="form-alert" type="info" show-icon message="授权账户的上游配置由授权方维护；你只能调整账户标签、加入分组和分组内优先级。" />
-      <a-alert v-else-if="editing" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；有凭据权限的用户可查看和修改完整凭据。" />
-      <a-alert v-else-if="targetSystemAccountLabel" class="form-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
-
       <AccountFormSelector
         :account-type="form.type"
         :account-type-choices="accountTypeChoices"
@@ -164,6 +159,7 @@ import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
 import { statusText } from './accountFormatters'
+import { defaultAccountClientCompatibility } from './accountFormDefaults'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
@@ -195,7 +191,6 @@ const props = withDefaults(defineProps<{
   baseUrlPlaceholder: string
   confirmLoading: boolean
   credentialTitle: string
-  cloning: boolean
   editing: boolean
   form: AccountFormModel
   groupOptions: SelectOption[]
@@ -219,15 +214,9 @@ const props = withDefaults(defineProps<{
   testButtonDisabled?: boolean
   testLoading?: boolean
   title: string
-  targetSystemAccountLabel?: string
 }>(), {
   testButtonDisabled: false,
   testLoading: false
-})
-
-const cloneAlertMessage = computed(() => {
-  const targetText = props.targetSystemAccountLabel ? `，创建目标：${props.targetSystemAccountLabel}` : ''
-  return `已按源账户预填配置${targetText}；API Key、Access Token 与 Refresh Token 不会复制，请重新填写凭据。`
 })
 
 const publicCredentialItems = computed(() => {
@@ -260,15 +249,14 @@ const advancedConfiguredCount = computed(() => {
   const checks = [
     form.supportedModels.length > 0,
     form.modelMappings.length > 0,
-    form.clientCompatibility !== (props.isOAuthForm ? 'codex_responses' : 'openai_standard'),
+    form.clientCompatibility !== defaultAccountClientCompatibility(form.providerCode),
     form.concurrencyLimit !== DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     form.priority !== 0,
     Boolean(form.proxyProfileId),
     Boolean(form.accountExpiresAt),
     form.availabilitySchedule.enabled,
     errorPolicyRules.value.length > 0,
-    responseInspectionRules.value.length > 0,
-    Boolean(form.notes.trim())
+    responseInspectionRules.value.length > 0
   ]
   return checks.filter(Boolean).length
 })

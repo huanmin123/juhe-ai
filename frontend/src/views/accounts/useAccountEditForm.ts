@@ -30,7 +30,7 @@ import {
   loadAccountResponseInspectionRules
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
-import { defaultAccountForm } from './accountFormDefaults'
+import { defaultAccountClientCompatibility, defaultAccountForm } from './accountFormDefaults'
 import { accountAvailabilityScheduleFormFingerprint, createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import {
   accountTypeDescription,
@@ -125,14 +125,23 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
   const isOpenAIOAuthForm = computed(() => form.providerCode === GPT_VENDOR_CODE && form.type === 'oauth' && isOpenAIProtocolProfile(selectedProtocolProfile.value))
   const editingAuthorizedAccount = computed(() => Boolean(editingId.value && editingAccountDetail.value && isAuthorizedAccount(editingAccountDetail.value)))
+  const editingSystemAccountLabel = computed(() => {
+    if (!options.isManagementView.value) return ''
+    const account = editingAccountDetail.value ?? options.accounts.value.find((item) => item.id === editingId.value)
+    const accountLabel = account?.systemAccountName?.trim()
+    if (accountLabel) return accountLabel
+    const systemAccountId = account?.systemAccountId
+    if (!systemAccountId) return ''
+    return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId)
+  })
   const modalTitle = computed(() => {
-    if (editingAuthorizedAccount.value) return '编辑授权账户'
-    if (editingId.value) return '编辑账户'
+    if (editingAuthorizedAccount.value) return editingModalTitle('编辑授权账户')
+    if (editingId.value) return editingModalTitle('编辑账户')
     if (cloningSourceId.value) return '克隆账户'
-    if (!form.providerCode) return '添加账户'
-    if (!form.providerProtocolProfileId) return `添加 ${providerName(form.providerCode)} 账户`
-    if (!form.type) return `添加 ${providerName(form.providerCode)} 账户`
-    return `添加 ${accountTypeTitle(form.providerCode, form.type)} 账户`
+    if (!form.providerCode) return createModalTitle('添加账户')
+    if (!form.providerProtocolProfileId) return createModalTitle(`添加 ${providerName(form.providerCode)} 账户`)
+    if (!form.type) return createModalTitle(`添加 ${providerName(form.providerCode)} 账户`)
+    return createModalTitle(`添加 ${accountTypeTitle(form.providerCode, form.type)} 账户`)
   })
   const modalConfirmLoading = computed(() => saving.value)
   const modalOkButtonProps = computed(() => ({
@@ -162,6 +171,16 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function accountTypeTitle(providerCode: string, type: AccountType) {
     return buildAccountTypeTitle(providerName(providerCode), type)
+  }
+
+  function createModalTitle(baseTitle: string) {
+    const targetLabel = targetSystemAccountLabel.value
+    return targetLabel ? `${baseTitle}（${targetLabel}）` : baseTitle
+  }
+
+  function editingModalTitle(baseTitle: string) {
+    const accountLabel = editingSystemAccountLabel.value
+    return accountLabel ? `${baseTitle}（系统账户：${accountLabel}）` : baseTitle
   }
 
   function accountTypeSortWeight(type: AccountType): number {
@@ -254,7 +273,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       group: form.group,
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
-      clientCompatibility: providerCode === GPT_VENDOR_CODE && type === 'oauth' ? 'codex_responses' : form.clientCompatibility,
+      clientCompatibility: defaultAccountClientCompatibility(providerCode),
       supportedModels: form.supportedModels,
       modelMappings: form.modelMappings,
       tags: form.tags,
@@ -304,7 +323,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       type: sourceAccount.type,
       concurrencyLimit: sourceAccount.concurrencyLimit,
       priority: sourceAccount.priority,
-      clientCompatibility: sourceAccount.providerCode === GPT_VENDOR_CODE && sourceAccount.type === 'oauth' ? 'codex_responses' : sourceAccount.clientCompatibility ?? 'openai_standard',
+      clientCompatibility: sourceAccount.providerCode === GPT_VENDOR_CODE && sourceAccount.type === 'oauth'
+        ? 'codex_responses'
+        : sourceAccount.clientCompatibility ?? defaultAccountClientCompatibility(sourceAccount.providerCode),
       proxyProfileId: sourceAccount.proxyProfileId,
       accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(sourceAccount.id),
@@ -705,7 +726,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       type: account.type,
       concurrencyLimit: account.concurrencyLimit,
       priority: account.priority,
-      clientCompatibility: account.providerCode === GPT_VENDOR_CODE && account.type === 'oauth' ? 'codex_responses' : account.clientCompatibility ?? 'openai_standard',
+      clientCompatibility: account.providerCode === GPT_VENDOR_CODE && account.type === 'oauth'
+        ? 'codex_responses'
+        : account.clientCompatibility ?? defaultAccountClientCompatibility(account.providerCode),
       proxyProfileId: account.proxyProfileId,
       accountExpiresAt,
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),

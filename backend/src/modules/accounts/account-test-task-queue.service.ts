@@ -15,9 +15,12 @@ import {
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import { getSettings } from '../../storage/settings.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
+  accountTestTaskCancelMessage,
   type AccountTestDraftSnapshot,
+  cancelExpiredAccountTestSessions,
   cleanupExpiredAccountTestTasks,
   completeAccountTestTask,
   failAccountTestTask,
@@ -30,7 +33,6 @@ import {
   updateAccountTestTaskMessage
 } from '../../storage/account-test-tasks.repository.js'
 import { sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
-import { diagnosticTaskBusyMessage, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
@@ -48,15 +50,16 @@ interface AccountTestQueueItem {
   taskId: string
 }
 
-const manualAccountTestConcurrency = 3
-const manualAccountTestRefillBatchSize = 500
+const defaultManualAccountTestConcurrency = 100
+const manualAccountTestRefillBatchSize = Number.MAX_SAFE_INTEGER
 const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
+let accountTestSessionStaleSweepTimer: NodeJS.Timeout | undefined
 
 const manualAccountTestQueue = createRetryQueue<AccountTestQueueItem>({
   name: 'manual-account-test',
   policy: manualAccountTestRetryPolicy,
-  concurrency: manualAccountTestConcurrency,
+  concurrency: defaultManualAccountTestConcurrency,
   run: runAccountTestQueueItem,
   onSuccess: () => {
     refillManualAccountTestQueue()
@@ -122,6 +125,7 @@ export function startAccountTestTaskQueue(): void {
   }
   cleanupExpiredAccountTestTasks()
   requeueInterruptedAccountTestTasks()
+  startAccountTestSessionStaleSweep()
   refillManualAccountTestQueue()
 }
 
@@ -129,9 +133,37 @@ function refillManualAccountTestQueue(): void {
   if (runtimeConfig.processRole !== 'worker') {
     return
   }
+  abortExpiredAccountTestSessions()
+  manualAccountTestQueue.setConcurrency(accountTestTaskConcurrency())
   const taskIds = listRunnableAccountTestTaskIds(manualAccountTestRefillBatchSize)
   for (const taskId of taskIds) {
     enqueueAccountTestTaskLocal(taskId)
+  }
+}
+
+function accountTestTaskConcurrency(): number {
+  const value = getSettings().accountTestTaskConcurrency
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return defaultManualAccountTestConcurrency
+  }
+  return Math.min(1000, Math.max(1, Math.trunc(value)))
+}
+
+function startAccountTestSessionStaleSweep(): void {
+  if (accountTestSessionStaleSweepTimer) {
+    return
+  }
+  accountTestSessionStaleSweepTimer = setInterval(() => {
+    abortExpiredAccountTestSessions()
+  }, 2_000)
+  accountTestSessionStaleSweepTimer.unref()
+}
+
+function abortExpiredAccountTestSessions(): void {
+  const taskIds = cancelExpiredAccountTestSessions()
+  for (const taskId of taskIds) {
+    manualAccountTestQueue.delete(taskId)
+    runningAccountTestControllers.get(taskId)?.abort()
   }
 }
 
@@ -156,7 +188,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
 
   try {
     if (isAccountTestTaskCancelRequested(task.id)) {
-      markAccountTestTaskCanceled(task.id, '已停止测试')
+      markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
       return true
     }
 
@@ -188,37 +220,31 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
           failAccountTestTask(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
           return true
         }
-        const result = await runAccountTestWithDiagnosticSlot(task.id, account, task.model, () => runOpenAIAccountTestWithSideEffects(account, access, {
+        const result = await runOpenAIAccountTestWithSideEffects(account, access, {
           model: task.model,
           clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
           diagnostics: task.diagnostics,
           signal: controller.signal,
           draftAccount: draft,
           onDiagnosticAttemptProgress
-        }))
-        if (!result) {
-          return true
-        }
+        })
         if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
-          markAccountTestTaskCanceled(task.id, '已停止测试')
+          markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
           return true
         }
         completeAccountTestTask(task.id, result)
         return true
       }
 
-      const result = await runAccountTestWithDiagnosticSlot(task.id, draftAccount, task.model, () => runOpenAIDraftAccountTest(draftAccount, draft, {
+      const result = await runOpenAIDraftAccountTest(draftAccount, draft, {
         model: task.model,
         clientCompatibility: task.clientCompatibility ?? draft.clientCompatibility,
         diagnostics: task.diagnostics,
         signal: controller.signal,
         onDiagnosticAttemptProgress
-      }))
-      if (!result) {
-        return true
-      }
+      })
       if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
-        markAccountTestTaskCanceled(task.id, '已停止测试')
+        markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
         return true
       }
       completeAccountTestTask(task.id, result)
@@ -240,19 +266,16 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       return true
     }
 
-    const result = await runAccountTestWithDiagnosticSlot(task.id, account, task.model, () => runOpenAIAccountTestWithSideEffects(account, access, {
+    const result = await runOpenAIAccountTestWithSideEffects(account, access, {
       model: task.model,
       clientCompatibility: task.clientCompatibility,
       diagnostics: task.diagnostics,
       signal: controller.signal,
       onDiagnosticAttemptProgress
-    }))
-    if (!result) {
-      return true
-    }
+    })
 
     if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
-      markAccountTestTaskCanceled(task.id, '已停止测试')
+      markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
       return true
     }
 
@@ -260,7 +283,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
     return true
   } catch (error) {
     if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
-      markAccountTestTaskCanceled(task.id, '已停止测试')
+      markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
       return true
     }
     logger.warn(errorLogFields(error, {
@@ -272,24 +295,6 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
     return true
   } finally {
     runningAccountTestControllers.delete(task.id)
-  }
-}
-
-async function runAccountTestWithDiagnosticSlot(
-  taskId: string,
-  account: AccountSummary,
-  model: string | undefined,
-  action: () => Promise<AccountTestResult>
-): Promise<AccountTestResult | undefined> {
-  const releaseDiagnosticSlot = tryAcquireDiagnosticTaskSlot()
-  if (!releaseDiagnosticSlot) {
-    failAccountTestTask(taskId, diagnosticTaskBusyMessage, failedAccountTestResult(account, diagnosticTaskBusyMessage, model))
-    return undefined
-  }
-  try {
-    return await action()
-  } finally {
-    releaseDiagnosticSlot()
   }
 }
 
