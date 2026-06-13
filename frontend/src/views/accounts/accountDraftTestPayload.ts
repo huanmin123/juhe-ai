@@ -2,6 +2,7 @@ import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import type { AccountSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import { buildAccountSavePayload, validateAccountSaveForm } from './accountSavePayload'
 
@@ -10,6 +11,7 @@ interface AccountDraftTestPayloadInput {
   accounts: AccountSummary[]
   editingId?: string
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  responseInspectionRules: AccountResponseInspectionRuleForm[]
   form: AccountFormModel
 }
 

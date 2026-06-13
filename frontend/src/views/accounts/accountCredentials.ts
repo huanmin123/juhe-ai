@@ -2,7 +2,11 @@ import type { AccountSummary } from '@/types/domain'
 import {
   writeAccountErrorPolicyToCredentials
 } from './accountErrorPolicyPayload'
+import {
+  writeAccountResponseInspectionRulesToCredentials
+} from './accountResponseInspectionPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import { compactAccountCredentials } from './accountFormDefaults'
 
@@ -19,12 +23,14 @@ const oauthCredentialMetadataKeys = [
 export function buildAccountCredentials(input: {
   currentCredentials?: Record<string, unknown>
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  responseInspectionRules: AccountResponseInspectionRuleForm[]
   form: AccountFormModel
 }): Record<string, unknown> {
   const credentials: Record<string, unknown> = input.form.type === 'api_key'
     ? buildApiKeyCredentials(input.form)
     : buildOAuthCredentials(input.form, input.currentCredentials ?? {})
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
+  writeAccountResponseInspectionRulesToCredentials(credentials, input.responseInspectionRules)
   return credentials
 }
 

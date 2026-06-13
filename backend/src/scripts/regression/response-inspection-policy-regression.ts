@@ -12,6 +12,9 @@ import {
   type RuntimeResponseInspectionPolicy
 } from '../../modules/gateway/openai-gateway-response-inspection.js'
 import {
+  validateAccountResponseInspectionRules
+} from '../../modules/accounts/account-response-inspection-policy-validation.js'
+import {
   extractOpenAIJsonSemanticFrames
 } from '../../modules/gateway/openai-gateway-response-semantics.js'
 import { pipeUpstreamStream } from '../../modules/gateway/openai-gateway-stream.js'
@@ -103,6 +106,74 @@ function dataEvent(data: Record<string, unknown>): Buffer {
   assert.equal(result.decision?.retryEnabled, true, '命中 retry 策略时必须允许服务端换号重试')
 }
 
+assert.equal(validateAccountResponseInspectionRules([
+  {
+    enabled: true,
+    name: '账户响应检查',
+    priority: 10,
+    match: {
+      outputTextIncludes: ['污染']
+    },
+    action: 'retry_next_account'
+  }
+]).valid, true, '账户级响应检查规则应接受新响应检查 matcher')
+assert.equal(validateAccountResponseInspectionRules([
+  {
+    enabled: true,
+    name: '只有排除条件',
+    priority: 10,
+    match: {
+      outputTextExcludes: ['正常']
+    },
+    action: 'observe'
+  }
+]).valid, false, '账户级响应检查规则不能只填输出文本排除条件')
+
+{
+  const frames = extractOpenAIJsonSemanticFrames({
+    id: 'chatcmpl_and_semantics',
+    object: 'chat.completion',
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: '这里包含账户污染文本'
+        },
+        finish_reason: 'stop'
+      }
+    ]
+  }, 'chat_completions')
+  const notMatched = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        match: {
+          outputTextIncludes: ['污染文本'],
+          finishReasons: ['length']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json'
+  })
+  assert.equal(notMatched.decision, undefined, '响应检查不同字段必须同时命中，不能只因输出文本命中就提前触发')
+  const matched = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        match: {
+          outputTextIncludes: ['污染文本'],
+          finishReasons: ['stop']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json'
+  })
+  assert.equal(matched.decision?.matchedField, 'outputTextIncludes', '不同字段同时命中后应返回带摘要的输出文本命中')
+}
+
 {
   const frames = extractOpenAIJsonSemanticFrames({
     id: 'resp_regression',
@@ -131,6 +202,58 @@ function dataEvent(data: Record<string, unknown>): Buffer {
 }
 
 {
+  const frames = extractOpenAIJsonSemanticFrames({
+    id: 'raw_json_path_regression',
+    object: 'chat.completion',
+    vendor_payload: {
+      blocked: {
+        reason: 'policy'
+      }
+    }
+  }, 'chat_completions')
+  const result = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        match: {
+          jsonPathsExists: ['vendor_payload.blocked.reason']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json'
+  })
+  assert.equal(result.decision?.matchedField, 'jsonPathsExists', 'jsonPathsExists 必须检查原始 JSON 任意路径，而不是只检查语义帧路径')
+}
+
+{
+  const frames = extractOpenAIJsonSemanticFrames({
+    id: 'raw_json_array_path_regression',
+    object: 'chat.completion',
+    vendor_payload: {
+      blocks: [
+        {
+          reason: 'policy'
+        }
+      ]
+    }
+  }, 'chat_completions')
+  const result = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        match: {
+          jsonPathsExists: ['vendor_payload.blocks.0.reason']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json'
+  })
+  assert.equal(result.decision?.matchedField, 'jsonPathsExists', 'jsonPathsExists 必须支持原始 JSON 数组下标路径')
+}
+
+{
   const defaultRules = listResponseInspectionPolicyDefaultRules()
   assert(defaultRules.some((rule) => rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 OpenAI JSON / SSE error 对象')
   assert(defaultRules.some((rule) => rule.providerCode === GPT_VENDOR_CODE && rule.match.errorCodes?.includes('cyber_policy')), 'GPT cyber_policy 只能作为 GPT provider 规则存在')
@@ -154,6 +277,48 @@ function dataEvent(data: Record<string, unknown>): Buffer {
   })
   assert(gptPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), 'GPT 供应商应加载 cyber_policy 默认规则')
   assert.equal(genericPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, '通用 OpenAI-compatible 供应商不应继承 GPT cyber_policy 规则')
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_account_rule',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
+      credentials: {
+        response_inspection_rules: [
+          {
+            enabled: true,
+            name: '账户级响应检查规则',
+            priority: 100,
+            match: {
+              errorCodes: ['account_level_error']
+            },
+            action: 'retry_next_account'
+          }
+        ]
+      }
+    } as never,
+    managementPolicies: [
+      {
+        id: 'rip_management_preempt',
+        defaultRule: false,
+        editable: true,
+        name: '管理端响应检查规则',
+        enabled: true,
+        priority: 1,
+        scopeType: 'provider',
+        protocolCode: OPENAI_PROTOCOL_CODE,
+        providerCode: GPT_VENDOR_CODE,
+        match: {
+          errorCodes: ['account_level_error']
+        },
+        action: 'observe'
+      }
+    ]
+  })
+  assert.equal(policies[0]?.source, 'account', '账户级响应检查规则必须优先于管理端和默认规则执行')
+  assert.equal(policies[0]?.accountSwitch, 'request_next_account', '账户级响应检查规则应展开新响应检查 action 运行时语义')
 }
 
 {
@@ -209,6 +374,25 @@ function dataEvent(data: Record<string, unknown>): Buffer {
   assert.equal(second.intercepted?.transport, 'sse', 'Responses SSE 跨 chunk 完整后必须命中语义检查')
   assert.equal(second.intercepted?.endpointFamily, 'responses', 'Responses SSE 必须保留端点家族')
   assert.match(Buffer.concat(second.chunks).toString('utf8'), /response\.failed/, 'SSE 命中替换策略时应写出失败事件')
+}
+
+{
+  const buffer = new OpenAIResponseInspectionBuffer({
+    endpointFamily: 'responses',
+    policies: [
+      responsePolicy({
+        match: {
+          jsonPathsExists: ['vendor.flag']
+        }
+      })
+    ]
+  })
+  const result = buffer.pushChunk(sseEvent('vendor.custom_event', {
+    vendor: {
+      flag: true
+    }
+  }))
+  assert.equal(result.intercepted?.matchedField, 'jsonPathsExists', '无标准语义帧的 SSE data JSON 仍应支持原始 JSON 路径匹配')
 }
 
 {

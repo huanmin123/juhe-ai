@@ -21,6 +21,7 @@ import { cancelAccountTestTask, createAccountTestTask, failAccountTestTask, getA
 import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
+import { accountResponseInspectionPolicyValidationMessage, validateAccountCredentialsResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 import { dispatchAccountTestCancel, dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 
@@ -632,6 +633,11 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(errorPolicyValidationMessage))
     return
   }
+  const responseInspectionValidationMessage = accountResponseInspectionPolicyValidationMessage(validateAccountCredentialsResponseInspectionRules(parsed.data.credentials))
+  if (responseInspectionValidationMessage) {
+    res.status(400).json(badRequest(responseInspectionValidationMessage))
+    return
+  }
 
   const providerCode = parsed.data.providerCode
   const provider = listProviders().find((item) => item.code === providerCode)
@@ -1036,6 +1042,11 @@ accountsRouter.patch('/:id', async (req, res) => {
   const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(body.credentials))
   if (errorPolicyValidationMessage) {
     res.status(400).json(badRequest(errorPolicyValidationMessage))
+    return
+  }
+  const responseInspectionValidationMessage = accountResponseInspectionPolicyValidationMessage(validateAccountCredentialsResponseInspectionRules(body.credentials))
+  if (responseInspectionValidationMessage) {
+    res.status(400).json(badRequest(responseInspectionValidationMessage))
     return
   }
   const requestedCredentials = credentialsRecordValue(body.credentials)

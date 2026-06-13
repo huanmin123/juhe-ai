@@ -82,7 +82,6 @@ function providerAccountTypeCount(provider: ProviderDefinition): number {
   justify-content: space-between;
   gap: 16px;
   padding-bottom: 14px;
-  border-bottom: 1px solid #eef2f7;
 }
 
 .account-entry-head {

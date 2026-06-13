@@ -26,6 +26,10 @@ import {
   loadAccountErrorPolicyRules
 } from './accountErrorPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import {
+  loadAccountResponseInspectionRules
+} from './accountResponseInspectionPolicyPayload'
+import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { defaultAccountForm } from './accountFormDefaults'
 import { accountAvailabilityScheduleFormFingerprint, createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import {
@@ -84,6 +88,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const cloningScheduleFingerprint = ref<string>()
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
+  const accountResponseInspectionRules = ref<AccountResponseInspectionRuleForm[]>(loadAccountResponseInspectionRules())
   const providerModelOptions = ref<SelectOption[]>([])
   const mappingTargetModelOptions = ref<SelectOption[]>([])
   const providerModelsLoading = ref(false)
@@ -151,6 +156,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerModelsLoading.value = false
     ensureDefaultGroupSelected(form.providerCode, form.providerProtocolProfileId)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
+    accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
     authResult.value = undefined
   }
 
@@ -271,7 +277,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
     const baseUrl = credentialBaseUrlForForm(sourceAccount.credentials, '账户详情凭据')
     const errorPolicyRules = loadCredentialErrorPolicyRules(sourceAccount.credentials, '账户详情错误处理策略')
-    if (!baseUrl || !errorPolicyRules) return
+    const responseInspectionRules = loadCredentialResponseInspectionRules(sourceAccount.credentials, '账户详情响应检查策略')
+    if (!baseUrl || !errorPolicyRules || !responseInspectionRules) return
     const selectedGroup = sourceAccount.boundGroupId
       ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
       : undefined
@@ -315,6 +322,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
     cloningScheduleFingerprint.value = undefined
     accountErrorPolicyRules.value = errorPolicyRules
+    accountResponseInspectionRules.value = responseInspectionRules
     authResult.value = undefined
     modalOpen.value = true
     void options.loadGroupOptions('', true, {
@@ -432,7 +440,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       editingId: editingId.value,
       form,
       hasAuthSession: Boolean(authResult.value?.sessionId),
-      errorPolicyRules: accountErrorPolicyRules.value
+      errorPolicyRules: accountErrorPolicyRules.value,
+      responseInspectionRules: accountResponseInspectionRules.value
     })
     if (validationMessage) {
       message.warning(validationMessage)
@@ -444,7 +453,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountDetail: editingAccountDetail.value,
       editingId: editingId.value,
       form,
-      errorPolicyRules: accountErrorPolicyRules.value
+      errorPolicyRules: accountErrorPolicyRules.value,
+      responseInspectionRules: accountResponseInspectionRules.value
     })
 
     try {
@@ -551,7 +561,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accounts: options.accounts.value,
       editingId: editingId.value,
       form,
-      errorPolicyRules: accountErrorPolicyRules.value
+      errorPolicyRules: accountErrorPolicyRules.value,
+      responseInspectionRules: accountResponseInspectionRules.value
     })
 
     const payload = buildOAuthCreatePayload({
@@ -578,6 +589,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   return {
     accountErrorPolicyRules,
+    accountResponseInspectionRules,
     accountTagOptions,
     accountTagOptionsLoading,
     accountTypeChoices,
@@ -656,9 +668,20 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
   }
 
+  function loadCredentialResponseInspectionRules(credentials: Record<string, unknown>, label: string): AccountResponseInspectionRuleForm[] | undefined {
+    try {
+      return loadAccountResponseInspectionRules(credentials)
+    } catch (error) {
+      console.error(error)
+      message.error(`${label}配置异常，请先修正已保存的账户凭据`)
+      return undefined
+    }
+  }
+
   function fillCloneForm(account: AccountSummary, credentials: Record<string, unknown>): boolean {
     const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '克隆来源错误处理策略')
-    if (!errorPolicyRules) return false
+    const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '克隆来源响应检查策略')
+    if (!errorPolicyRules || !responseInspectionRules) return false
     const baseUrl = credentialBaseUrlForForm(credentials, '克隆来源凭据')
     if (!baseUrl) return false
     const selectedGroup = account.boundGroupId
@@ -701,6 +724,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
     accountErrorPolicyRules.value = errorPolicyRules
+    accountResponseInspectionRules.value = responseInspectionRules
     authResult.value = undefined
     return true
   }

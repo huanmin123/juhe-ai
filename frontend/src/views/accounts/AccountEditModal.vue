@@ -127,6 +127,11 @@
               v-model:rules="errorPolicyRules"
               :readonly="authorizedEditing"
             />
+
+            <AccountResponseInspectionPolicyCard
+              v-model:rules="responseInspectionRules"
+              :readonly="authorizedEditing"
+            />
           </div>
         </a-collapse-panel>
       </a-collapse>
@@ -156,10 +161,12 @@ import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
+import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
 import { statusText } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
 
 interface AccountTypeChoice {
@@ -176,6 +183,7 @@ interface SelectOption<T = string> {
 
 const open = defineModel<boolean>('open', { required: true })
 const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
+const responseInspectionRules = defineModel<AccountResponseInspectionRuleForm[]>('responseInspectionRules', { required: true })
 const advancedActiveKeys = ref<string[]>([])
 
 const props = withDefaults(defineProps<{
@@ -259,6 +267,7 @@ const advancedConfiguredCount = computed(() => {
     Boolean(form.accountExpiresAt),
     form.availabilitySchedule.enabled,
     errorPolicyRules.value.length > 0,
+    responseInspectionRules.value.length > 0,
     Boolean(form.notes.trim())
   ]
   return checks.filter(Boolean).length
@@ -390,7 +399,19 @@ defineEmits<{
   background: #fff;
 }
 
+.advanced-section-stack :deep(.response-policy-collapse) {
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
 .advanced-section-stack :deep(.error-policy-collapse .ant-collapse-header) {
+  padding: 12px 14px !important;
+}
+
+.advanced-section-stack :deep(.response-policy-collapse .ant-collapse-header) {
   padding: 12px 14px !important;
 }
 
@@ -398,7 +419,15 @@ defineEmits<{
   border-top-color: #eef2f7;
 }
 
+.advanced-section-stack :deep(.response-policy-collapse .ant-collapse-content) {
+  border-top-color: #eef2f7;
+}
+
 .advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content-box) {
+  padding: 12px 14px 14px !important;
+}
+
+.advanced-section-stack :deep(.response-policy-collapse .ant-collapse-content-box) {
   padding: 12px 14px 14px !important;
 }
 

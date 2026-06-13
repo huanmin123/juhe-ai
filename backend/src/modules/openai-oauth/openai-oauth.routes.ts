@@ -12,6 +12,7 @@ import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerpr
 import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
 import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
+import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -27,7 +28,8 @@ export const openAIOAuthRouter = Router()
 
 const authUrlSchema = z.object({}).strict()
 const oauthCredentialsPatchSchema = z.object({
-  error_handling_rules: z.unknown().optional()
+  error_handling_rules: z.unknown().optional(),
+  response_inspection_rules: z.unknown().optional()
 }).strict()
 
 const accountModelMappingSchema = z.object({
@@ -414,6 +416,9 @@ function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchS
   if (patch?.error_handling_rules !== undefined) {
     output.error_handling_rules = patch.error_handling_rules
   }
+  if (patch?.response_inspection_rules !== undefined) {
+    output.response_inspection_rules = patch.response_inspection_rules
+  }
   return output
 }
 
@@ -421,6 +426,10 @@ function oauthCredentialsPatchValidationMessage(patch?: z.infer<typeof oauthCred
   if (patch?.error_handling_rules !== undefined) {
     const accountErrorPolicyMessage = accountErrorPolicyValidationMessage(validateAccountErrorHandlingRules(patch.error_handling_rules))
     if (accountErrorPolicyMessage) return accountErrorPolicyMessage
+  }
+  if (patch?.response_inspection_rules !== undefined) {
+    const responseInspectionMessage = accountResponseInspectionPolicyValidationMessage(validateAccountResponseInspectionRules(patch.response_inspection_rules))
+    if (responseInspectionMessage) return responseInspectionMessage
   }
   return undefined
 }

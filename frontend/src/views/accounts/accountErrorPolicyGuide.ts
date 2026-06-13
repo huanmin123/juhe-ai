@@ -56,7 +56,7 @@ export const accountErrorPolicyGuideFields: AccountErrorPolicyGuideField[] = [
     field: '关键词',
     source: '完整上游响应正文，通常来自 error.message',
     example: 'quota exceeded, 额度不足',
-    note: '适合上游只提供文本错误时使用'
+    note: '多个关键词只用英文逗号或中文逗号分隔'
   }
 ]
 

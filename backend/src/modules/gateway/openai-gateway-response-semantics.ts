@@ -22,6 +22,7 @@ export interface ResponseSemanticFrame {
   finishReason?: string
   status?: string
   usage?: ParsedUsage
+  rawJson?: unknown
   rawJsonPaths?: string[]
   rawText?: string
   eventType?: string
@@ -73,7 +74,8 @@ export function extractOpenAIJsonSemanticFrames(
       rawJsonPaths: ['usage']
     })
   }
-  return frames
+  frames.push(rawJsonFrame(root, endpointFamily, 'json'))
+  return attachRawJson(frames, root)
 }
 
 export function extractOpenAISseSemanticFrames(
@@ -81,9 +83,9 @@ export function extractOpenAISseSemanticFrames(
   endpointFamily: OpenAIResponseEndpointFamily
 ): ResponseSemanticFrame[] {
   const data = event.data
-  const frames: ResponseSemanticFrame[] = []
   const eventType = event.eventType || event.eventName || 'message'
   const rawText = event.rawText ?? event.dataText
+  const frames: ResponseSemanticFrame[] = []
   if (!data) {
     if (eventType === '[DONE]') {
       frames.push(completedFrame(endpointFamily, 'sse', '[DONE]', eventType, rawText))
@@ -115,7 +117,40 @@ export function extractOpenAISseSemanticFrames(
       eventType
     })
   }
-  return frames
+  frames.push(rawJsonFrame(data, endpointFamily, 'sse', eventType, rawText))
+  return attachRawJson(frames, data, rawText, eventType)
+}
+
+function rawJsonFrame(
+  rawJson: Record<string, unknown>,
+  endpointFamily: OpenAIResponseEndpointFamily,
+  transport: OpenAIResponseTransport,
+  eventType?: string,
+  rawText?: string
+): ResponseSemanticFrame {
+  return {
+    frameType: 'raw_json_path',
+    protocol: 'openai_v1',
+    endpointFamily,
+    transport,
+    rawJson,
+    rawText,
+    eventType
+  }
+}
+
+function attachRawJson(
+  frames: ResponseSemanticFrame[],
+  rawJson: Record<string, unknown>,
+  rawText?: string,
+  eventType?: string
+): ResponseSemanticFrame[] {
+  return frames.map((frame) => ({
+    ...frame,
+    rawJson: frame.rawJson ?? rawJson,
+    rawText: frame.rawText ?? rawText,
+    eventType: frame.eventType ?? eventType
+  }))
 }
 
 function extractChatJsonFrames(root: Record<string, unknown>): ResponseSemanticFrame[] {
@@ -126,6 +161,7 @@ function extractChatJsonFrames(root: Record<string, unknown>): ResponseSemanticF
     if (!row) return
     const message = objectValue(row.message)
     const content = textFromOpenAITextValue(message?.content)
+    const finishReason = typeof row.finish_reason === 'string' ? row.finish_reason : undefined
     if (content) {
       frames.push({
         frameType: 'output_text_done',
@@ -133,13 +169,15 @@ function extractChatJsonFrames(root: Record<string, unknown>): ResponseSemanticF
         endpointFamily: 'chat_completions',
         transport: 'json',
         text: content,
+        finishReason,
+        status: finishReason,
         rawJsonPaths: [`choices.${choiceIndex}.message.content`],
         choiceIndex,
         visibleOutput: true
       })
     }
-    if (typeof row.finish_reason === 'string') {
-      frames.push(completedFrame('chat_completions', 'json', row.finish_reason, undefined, undefined, choiceIndex))
+    if (finishReason) {
+      frames.push(completedFrame('chat_completions', 'json', finishReason, undefined, undefined, choiceIndex))
     }
   })
   return frames
@@ -147,6 +185,7 @@ function extractChatJsonFrames(root: Record<string, unknown>): ResponseSemanticF
 
 function extractResponsesJsonFrames(root: Record<string, unknown>): ResponseSemanticFrame[] {
   const frames: ResponseSemanticFrame[] = []
+  const status = typeof root.status === 'string' ? root.status : undefined
   if (typeof root.output_text === 'string' && root.output_text.length > 0) {
     frames.push({
       frameType: 'output_text_done',
@@ -154,6 +193,8 @@ function extractResponsesJsonFrames(root: Record<string, unknown>): ResponseSema
       endpointFamily: 'responses',
       transport: 'json',
       text: root.output_text,
+      finishReason: status,
+      status,
       rawJsonPaths: ['output_text'],
       visibleOutput: true
     })
@@ -172,6 +213,8 @@ function extractResponsesJsonFrames(root: Record<string, unknown>): ResponseSema
         endpointFamily: 'responses',
         transport: 'json',
         text,
+        finishReason: status,
+        status,
         rawJsonPaths: [`output.${outputIndex}.content.${contentIndex}.text`],
         outputIndex,
         contentIndex,
@@ -179,8 +222,8 @@ function extractResponsesJsonFrames(root: Record<string, unknown>): ResponseSema
       })
     })
   })
-  if (typeof root.status === 'string') {
-    frames.push(completedFrame('responses', 'json', root.status))
+  if (status) {
+    frames.push(completedFrame('responses', 'json', status))
   }
   return frames
 }

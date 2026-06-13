@@ -2,6 +2,8 @@ import type { AccountSummary } from '@/types/domain'
 import { formatServerDateTimeInput } from './accountFormatters'
 import { validateAccountErrorPolicyRules } from './accountErrorPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import { validateAccountResponseInspectionRules } from './accountResponseInspectionPolicyPayload'
+import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { buildAccountCredentials, currentAccountCredentials } from './accountCredentials'
 import type { AccountFormModel } from './accountFormTypes'
 import {
@@ -45,7 +47,7 @@ export type AccountOAuthCreateCommonPayload = {
   proxyProfileId?: string
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
-  credentialsPatch?: { error_handling_rules?: unknown }
+  credentialsPatch?: { error_handling_rules?: unknown; response_inspection_rules?: unknown }
   notes?: string
 }
 
@@ -54,6 +56,7 @@ export function validateAccountSaveForm(input: {
   form: AccountFormModel
   hasAuthSession: boolean
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  responseInspectionRules: AccountResponseInspectionRuleForm[]
 }): string | undefined {
   const { editingId, form } = input
   if (!form.providerCode) return '请先选择供应商'
@@ -77,6 +80,8 @@ export function validateAccountSaveForm(input: {
   if (scheduleValidation) return scheduleValidation
   const accountErrorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
   if (!accountErrorPolicyValidation.valid) return accountErrorPolicyValidation.message || '账户错误处理策略配置不完整'
+  const responseInspectionValidation = validateAccountResponseInspectionRules(input.responseInspectionRules)
+  if (!responseInspectionValidation.valid) return responseInspectionValidation.message || '账户响应检查策略配置不完整'
   return validateAccountModelMappings(form.modelMappings)
 }
 
@@ -86,6 +91,7 @@ export function buildAccountSavePayload(input: {
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  responseInspectionRules: AccountResponseInspectionRuleForm[]
 }): AccountSavePayload {
   return {
     providerCode: input.form.providerCode,
@@ -130,6 +136,7 @@ export function buildOAuthCreateCommonPayload(input: {
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  responseInspectionRules: AccountResponseInspectionRuleForm[]
 }): AccountOAuthCreateCommonPayload {
   const credentials = accountCredentials(input)
   const payload: AccountOAuthCreateCommonPayload = {
@@ -149,6 +156,9 @@ export function buildOAuthCreateCommonPayload(input: {
   if (Object.prototype.hasOwnProperty.call(credentials, 'error_handling_rules')) {
     payload.credentialsPatch = { ...(payload.credentialsPatch ?? {}), error_handling_rules: credentials.error_handling_rules }
   }
+  if (Object.prototype.hasOwnProperty.call(credentials, 'response_inspection_rules')) {
+    payload.credentialsPatch = { ...(payload.credentialsPatch ?? {}), response_inspection_rules: credentials.response_inspection_rules }
+  }
   return payload
 }
 
@@ -163,10 +173,12 @@ function accountCredentials(input: {
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  responseInspectionRules: AccountResponseInspectionRuleForm[]
 }): Record<string, unknown> {
   return buildAccountCredentials({
     currentCredentials: input.accountDetail?.credentials ?? currentAccountCredentials(input.accounts, input.editingId),
     errorPolicyRules: input.errorPolicyRules,
+    responseInspectionRules: input.responseInspectionRules,
     form: input.form
   })
 }

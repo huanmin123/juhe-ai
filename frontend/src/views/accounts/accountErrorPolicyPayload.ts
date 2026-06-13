@@ -9,15 +9,30 @@ import {
 import { makeAccountErrorPolicyRule } from './accountErrorPolicyRules'
 
 const listSeparators = /[,;，；\n]/
+const keywordSeparators = /[,，]/
+const unsupportedKeywordSeparators = /[;；\r\n]/
 
 const splitList = (value: unknown): string[] => {
+  return splitDelimitedList(value, listSeparators)
+}
+
+const splitKeywordList = (value: unknown): string[] => {
+  return splitDelimitedList(value, keywordSeparators)
+}
+
+const splitDelimitedList = (value: unknown, separators: RegExp): string[] => {
   if (Array.isArray(value)) {
     return value.map((item) => String(item).trim()).filter(Boolean)
   }
   if (typeof value !== 'string') {
     return value == null ? [] : [String(value).trim()].filter(Boolean)
   }
-  return value.split(listSeparators).map((item) => item.trim()).filter(Boolean)
+  return value.split(separators).map((item) => item.trim()).filter(Boolean)
+}
+
+const hasUnsupportedKeywordSeparators = (value: unknown): boolean => {
+  const values = Array.isArray(value) ? value : [value]
+  return values.some((item) => typeof item === 'string' && unsupportedKeywordSeparators.test(item))
 }
 
 const getStatusCodeItems = (value: unknown): unknown[] => {
@@ -209,7 +224,8 @@ export const validateAccountErrorPolicyRules = (rules: AccountErrorPolicyRuleFor
     if (hasSuccessStatusCodeItems(rule.status_codes)) return { valid: false, message: `第 ${ruleIndex} 条规则的状态码不能填写 2xx 成功状态码，例如 200`, index: ruleIndex }
     if (hasInvalidStatusCodeItems(rule.status_codes)) return { valid: false, message: `第 ${ruleIndex} 条规则的状态码不合法`, index: ruleIndex }
     if (hasSuccessErrorCodeItems(rule.error_codes)) return { valid: false, message: `第 ${ruleIndex} 条规则的错误码不能填写 2xx 成功码，例如 200`, index: ruleIndex }
-    const hasMatcher = statusCodes.length > 0 || splitList(rule.error_codes).length > 0 || splitList(rule.error_types).length > 0 || splitList(rule.keywords).length > 0
+    if (hasUnsupportedKeywordSeparators(rule.keywords)) return { valid: false, message: `第 ${ruleIndex} 条规则关键词只能用英文逗号或中文逗号分隔`, index: ruleIndex }
+    const hasMatcher = statusCodes.length > 0 || splitList(rule.error_codes).length > 0 || splitList(rule.error_types).length > 0 || splitKeywordList(rule.keywords).length > 0
     if (rule.enabled && !hasMatcher) return { valid: false, message: `第 ${ruleIndex} 条规则至少需要一个匹配条件`, index: ruleIndex }
     if (action === 'rate_limited') {
       const resetStrategy = normalizeOptionalRecoveryStrategy(rule.reset_strategy)
@@ -236,10 +252,11 @@ export const buildAccountErrorPolicyPayload = (rules: AccountErrorPolicyRuleForm
     if (hasSuccessStatusCodeItems(rule.status_codes)) throw new Error('状态码不能填写 2xx 成功状态码')
     if (hasInvalidStatusCodeItems(rule.status_codes)) throw new Error('状态码不合法')
     if (hasSuccessErrorCodeItems(rule.error_codes)) throw new Error('错误码不能填写 2xx 成功码')
+    if (hasUnsupportedKeywordSeparators(rule.keywords)) throw new Error('关键词只能用英文逗号或中文逗号分隔')
     const statusCodes = normalizeStatusCodes(rule.status_codes)
     const errorCodes = splitList(rule.error_codes)
     const errorTypes = splitList(rule.error_types)
-    const keywords = splitList(rule.keywords)
+    const keywords = splitKeywordList(rule.keywords)
     const action = payloadAction(rule.action)
     const description = typeof rule.description === 'string' ? rule.description.trim() : ''
     const payload: AccountErrorHandlingRulePayload = {

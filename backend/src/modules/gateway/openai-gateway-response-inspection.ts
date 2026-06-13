@@ -24,6 +24,8 @@ import {
   type ResponseInspectionPolicySource,
   type ResponseInspectionPolicySummary
 } from '../../storage/response-inspection-policy.repository.js'
+import { normalizeAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
+import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 
 export interface RuntimeResponseInspectionPolicy {
   id: string
@@ -115,7 +117,13 @@ export function resolveRuntimeResponseInspectionPolicies(input: {
   const management = (input.managementPolicies ?? [])
     .filter((policy) => policyMatchesAccountScope(policy, input.account))
     .map((policy) => runtimePolicyFromSummary(policy, policy.defaultRule ? 'system_default' : 'management'))
-  return management.sort((a, b) => sourceOrder(a.source) - sourceOrder(b.source) || scopeOrder(a) - scopeOrder(b) || a.priority - b.priority)
+  const accountRules = accountResponseInspectionRules(input.account)
+  return [...accountRules, ...management].sort((a, b) =>
+    sourceOrder(a.source) - sourceOrder(b.source)
+    || scopeOrder(a) - scopeOrder(b)
+    || a.priority - b.priority
+    || a.id.localeCompare(b.id)
+  )
 }
 
 export function inspectResponseSemanticFrames(input: {
@@ -338,31 +346,58 @@ export class OpenAIResponseInspectionBuffer {
 }
 
 function firstPositiveMatch(frame: ResponseSemanticFrame, match: ResponseInspectionPolicyMatch): Pick<ResponseInspectionMatchResult, 'matchedField' | 'matchedValue' | 'snippet'> | undefined {
-  if (frame.text && frame.visibleOutput !== false) {
+  const matched: Array<Pick<ResponseInspectionMatchResult, 'matchedField' | 'matchedValue' | 'snippet'>> = []
+
+  if (match.outputTextIncludes?.length) {
+    if (!frame.text || frame.visibleOutput === false) return undefined
     const outputTextMatch = firstSubstringMatch(frame.text, match.outputTextIncludes)
-    if (outputTextMatch) return { matchedField: 'outputTextIncludes', matchedValue: outputTextMatch, snippet: snippetAround(frame.text, outputTextMatch) }
+    if (!outputTextMatch) return undefined
+    matched.push({ matchedField: 'outputTextIncludes', matchedValue: outputTextMatch, snippet: snippetAround(frame.text, outputTextMatch) })
   }
-  const errorCode = firstExactMatch(frame.errorCode, match.errorCodes)
-  if (errorCode) return { matchedField: 'errorCodes', matchedValue: errorCode, snippet: frame.errorCode }
-  const errorType = firstExactMatch(frame.errorType, match.errorTypes)
-  if (errorType) return { matchedField: 'errorTypes', matchedValue: errorType, snippet: frame.errorType }
-  if (frame.errorMessage) {
+
+  if (match.errorCodes?.length) {
+    const errorCode = firstExactMatch(frame.errorCode, match.errorCodes)
+    if (!errorCode) return undefined
+    matched.push({ matchedField: 'errorCodes', matchedValue: errorCode, snippet: frame.errorCode })
+  }
+
+  if (match.errorTypes?.length) {
+    const errorType = firstExactMatch(frame.errorType, match.errorTypes)
+    if (!errorType) return undefined
+    matched.push({ matchedField: 'errorTypes', matchedValue: errorType, snippet: frame.errorType })
+  }
+
+  if (match.errorMessageIncludes?.length) {
+    if (!frame.errorMessage) return undefined
     const errorMessageMatch = firstSubstringMatch(frame.errorMessage, match.errorMessageIncludes)
-    if (errorMessageMatch) return { matchedField: 'errorMessageIncludes', matchedValue: errorMessageMatch, snippet: snippetAround(frame.errorMessage, errorMessageMatch) }
+    if (!errorMessageMatch) return undefined
+    matched.push({ matchedField: 'errorMessageIncludes', matchedValue: errorMessageMatch, snippet: snippetAround(frame.errorMessage, errorMessageMatch) })
   }
-  const finishReason = firstExactMatch(frame.finishReason ?? frame.status, match.finishReasons)
-  if (finishReason) return { matchedField: 'finishReasons', matchedValue: finishReason, snippet: frame.finishReason ?? frame.status }
-  const jsonPath = firstPathMatch(frame.rawJsonPaths, match.jsonPathsExists)
-  if (jsonPath) return { matchedField: 'jsonPathsExists', matchedValue: jsonPath, snippet: jsonPath }
-  if (frame.rawText) {
+
+  if (match.finishReasons?.length) {
+    const finishReason = firstExactMatch(frame.finishReason ?? frame.status, match.finishReasons)
+    if (!finishReason) return undefined
+    matched.push({ matchedField: 'finishReasons', matchedValue: finishReason, snippet: frame.finishReason ?? frame.status })
+  }
+
+  if (match.jsonPathsExists?.length) {
+    const jsonPath = firstJsonPathMatch(frame, match.jsonPathsExists)
+    if (!jsonPath) return undefined
+    matched.push({ matchedField: 'jsonPathsExists', matchedValue: jsonPath, snippet: jsonPath })
+  }
+
+  if (match.rawTextIncludes?.length) {
+    if (!frame.rawText) return undefined
     const rawTextMatch = firstSubstringMatch(frame.rawText, match.rawTextIncludes)
-    if (rawTextMatch) return { matchedField: 'rawTextIncludes', matchedValue: rawTextMatch, snippet: snippetAround(frame.rawText, rawTextMatch) }
+    if (!rawTextMatch) return undefined
+    matched.push({ matchedField: 'rawTextIncludes', matchedValue: rawTextMatch, snippet: snippetAround(frame.rawText, rawTextMatch) })
   }
-  return undefined
+
+  return matched.find((item) => item.snippet) ?? matched[0]
 }
 
 function outputTextExcluded(frame: ResponseSemanticFrame, match: ResponseInspectionPolicyMatch): boolean {
-  if (!frame.text || !match.outputTextExcludes?.length) return false
+  if (!frame.text || frame.visibleOutput === false || !match.outputTextIncludes?.length || !match.outputTextExcludes?.length) return false
   return Boolean(firstSubstringMatch(frame.text, match.outputTextExcludes))
 }
 
@@ -460,10 +495,13 @@ function runtimePolicyFromSummary(policy: ResponseInspectionPolicySummary, sourc
 }
 
 function sourceOrder(source: ResponseInspectionPolicySource): number {
-  return source === 'management' ? 0 : 1
+  if (source === 'account') return 0
+  if (source === 'management') return 1
+  return 2
 }
 
 function scopeOrder(policy: RuntimeResponseInspectionPolicy): number {
+  if (policy.source === 'account') return 0
   return policy.scopeType === 'provider' ? 0 : 1
 }
 
@@ -479,9 +517,65 @@ function firstSubstringMatch(value: string, needles: string[] | undefined): stri
   return needles.find((needle) => normalized.includes(needle.toLowerCase()))
 }
 
-function firstPathMatch(paths: string[] | undefined, needles: string[] | undefined): string | undefined {
-  if (!paths?.length || !needles?.length) return undefined
-  return needles.find((needle) => paths.includes(needle))
+function firstJsonPathMatch(frame: ResponseSemanticFrame, needles: string[] | undefined): string | undefined {
+  if (!needles?.length) return undefined
+  return needles.find((needle) =>
+    (frame.rawJson !== undefined && jsonPathExists(frame.rawJson, needle))
+    || Boolean(frame.rawJsonPaths?.includes(needle))
+  )
+}
+
+function jsonPathExists(value: unknown, path: string): boolean {
+  const parts = path.split('.').map((part) => part.trim()).filter(Boolean)
+  if (!parts.length) return false
+  let current: unknown = value
+  for (const part of parts) {
+    if (Array.isArray(current)) {
+      const index = Number(part)
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) return false
+      current = current[index]
+      continue
+    }
+    if (typeof current !== 'object' || current === null) return false
+    if (!Object.prototype.hasOwnProperty.call(current, part)) return false
+    current = (current as Record<string, unknown>)[part]
+  }
+  return hasJsonPathMeaningfulValue(current)
+}
+
+function hasJsonPathMeaningfulValue(value: unknown): boolean {
+  if (value === null || value === undefined || value === false) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'object') return hasOwnEnumerableKey(value as Record<string, unknown>)
+  return true
+}
+
+function hasOwnEnumerableKey(value: Record<string, unknown>): boolean {
+  for (const key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return true
+  }
+  return false
+}
+
+function accountResponseInspectionRules(account: UpstreamAccount): RuntimeResponseInspectionPolicy[] {
+  const rules = normalizeAccountResponseInspectionRules(account.credentials.response_inspection_rules)
+  return rules.map((rule, index) => {
+    const runtime = responseInspectionPolicyActionRuntime(rule.action)
+    return {
+      id: `account_rule_${index + 1}`,
+      source: 'account',
+      name: rule.name,
+      enabled: rule.enabled,
+      priority: rule.priority,
+      scopeType: 'provider',
+      protocolCode: account.protocolCode || OPENAI_PROTOCOL_CODE,
+      providerCode: account.providerCode,
+      match: rule.match,
+      action: rule.action,
+      ...runtime
+    }
+  })
 }
 
 function snippetAround(value: string, needle: string): string {

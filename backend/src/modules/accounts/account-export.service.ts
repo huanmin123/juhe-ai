@@ -70,7 +70,8 @@ export interface AccountExportResult {
 const apiKeyExportCredentialKeys = [
   'api_key',
   'base_url',
-  'error_handling_rules'
+  'error_handling_rules',
+  'response_inspection_rules'
 ]
 
 const oauthExportCredentialKeys = [
@@ -84,7 +85,8 @@ const oauthExportCredentialKeys = [
   'email',
   'chatgpt_user_id',
   'plan_type',
-  'error_handling_rules'
+  'error_handling_rules',
+  'response_inspection_rules'
 ]
 
 export function exportAccountsAsImportDocument(options: AccountExportOptions, access: AccessScope): AccountExportResult {

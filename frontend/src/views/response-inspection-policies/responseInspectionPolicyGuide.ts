@@ -25,56 +25,64 @@ export const responseInspectionPolicyGuideFields = [
     field: '输出文本包含',
     source: 'Chat message.content、Responses output_text 或对应 SSE 增量文本',
     example: '公益服务器, subscribe',
-    note: '适合识别广告污染、异常提示或固定污染文案。'
+    required: '否，正向条件之一',
+    note: '可填多个片段，英文逗号或中文逗号分隔；任一片段出现在可见输出中即满足本字段。'
   },
   {
     key: 'finishReasons',
     field: '完成原因 / 状态',
     source: 'Chat choices[].finish_reason、Responses status 或失败事件状态',
     example: 'failed, content_filter, length',
-    note: '适合识别协议内失败、内容过滤或异常结束。'
+    required: '否，正向条件之一',
+    note: '可填多个状态，英文逗号或中文逗号分隔；任一精确匹配即满足本字段。'
   },
   {
     key: 'errorCodes',
     field: 'error.code',
     source: 'Chat / Responses JSON 或 SSE 事件中的 error.code',
     example: 'cyber_policy',
-    note: '适合拦截明确错误码或中转自定义错误码。'
+    required: '否，正向条件之一',
+    note: '可填多个错误码，英文逗号或中文逗号分隔；任一精确匹配即满足本字段。'
   },
   {
     key: 'errorTypes',
     field: 'error.type',
     source: 'Chat / Responses JSON 或 SSE 事件中的 error.type',
     example: 'server_error',
-    note: '错误码不稳定时作为辅助条件。'
+    required: '否，正向条件之一',
+    note: '可填多个错误类型，英文逗号或中文逗号分隔；配置后需与其它已填字段同时满足。'
   },
   {
     key: 'errorMessageIncludes',
     field: '错误消息包含',
     source: 'Chat / Responses JSON 或 SSE 事件中的 error.message',
     example: 'upstream policy blocked',
-    note: '适合错误码缺失但错误文案稳定的上游。'
+    required: '否，正向条件之一',
+    note: '可填多个消息片段，英文逗号或中文逗号分隔；任一片段出现在错误消息中即满足本字段。'
   },
   {
     key: 'rawTextIncludes',
     field: '原始事件文本包含',
     source: '当前单个 SSE 事件原文或受限窗口内的原始 JSON 文本',
     example: 'event: response.failed',
-    note: '只作为兜底排障条件；优先使用语义字段。'
+    required: '否，正向条件之一',
+    note: '可填多个原始文本片段，英文逗号或中文逗号分隔；只作为兜底排障条件。'
   },
   {
     key: 'outputTextExcludes',
     field: '输出文本排除',
     source: '已解析出的输出文本',
     example: '正常业务提示',
-    note: '作为排除条件使用；输出文本包含这些关键词时，本规则不命中。'
+    required: '否，排除条件',
+    note: '可填多个排除片段，英文逗号或中文逗号分隔；任一片段出现在输出文本中，本规则不命中。'
   },
   {
     key: 'jsonPathsExists',
     field: 'JSON字段路径存在',
     source: 'Chat / Responses JSON 或 SSE data JSON 内的字段路径',
-    example: 'response.error, error',
-    note: '只判断路径是否存在，不匹配字段值；适合判断某类错误结构是否出现。'
+    example: 'response.error, choices.0.message.content',
+    required: '否，正向条件之一',
+    note: '可填多个字段路径，英文逗号或中文逗号分隔；支持点路径和数组下标，任一路径存在即满足本字段。'
   }
 ]
 

@@ -154,6 +154,7 @@
       v-if="modalOpen"
       v-model:open="modalOpen"
       v-model:error-policy-rules="accountErrorPolicyRules"
+      v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
       :authorized-editing="editingAuthorizedAccount"
       :auth-loading="authLoading"
@@ -431,6 +432,7 @@ const {
 })
 const {
   accountErrorPolicyRules,
+  accountResponseInspectionRules,
   accountTagOptions,
   accountTagOptionsLoading,
   accountTypeChoices,
@@ -746,7 +748,8 @@ async function testAccountFromEditModal() {
     editingId: editingId.value,
     form,
     hasAuthSession: Boolean(authResult.value?.sessionId),
-    errorPolicyRules: accountErrorPolicyRules.value
+    errorPolicyRules: accountErrorPolicyRules.value,
+    responseInspectionRules: accountResponseInspectionRules.value
   })
   if (validationMessage) {
     message.warning(validationMessage)
@@ -759,7 +762,8 @@ async function testAccountFromEditModal() {
       accountDetail: editingAccountDetail.value,
       editingId: editingId.value,
       form,
-      errorPolicyRules: accountErrorPolicyRules.value
+      errorPolicyRules: accountErrorPolicyRules.value,
+      responseInspectionRules: accountResponseInspectionRules.value
     })
     if (!draftPayload.groupId) {
       message.warning('请选择加入分组')

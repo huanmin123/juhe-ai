@@ -93,7 +93,7 @@
                     <a-input v-model:value="rule.error_types" :disabled="readonly" placeholder="rate_limit_exceeded" />
                   </a-form-item>
                   <a-form-item label="关键词">
-                    <a-textarea v-model:value="rule.keywords" :disabled="readonly" :rows="1" auto-size placeholder="多个关键词用逗号、分号或换行分隔" />
+                    <a-textarea v-model:value="rule.keywords" :disabled="readonly" :rows="1" auto-size placeholder="多个关键词仅用英文或中文逗号分隔" />
                   </a-form-item>
                 </div>
 
@@ -147,7 +147,7 @@
             row-key="key"
             size="small"
           />
-          <p class="guide-note">多个值用逗号、分号或换行分隔；同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。</p>
+          <p class="guide-note">状态码、错误码和错误类型可用逗号、分号或换行分隔；关键词只能用英文逗号或中文逗号分隔。同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。</p>
         </section>
 
         <section class="guide-section">

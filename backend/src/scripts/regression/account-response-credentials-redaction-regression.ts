@@ -88,6 +88,15 @@ try {
     status_codes: [429],
     action: 'temp_unschedulable'
   }], '详情响应应返回账户级错误处理策略供编辑弹窗维护')
+  assert.deepEqual(detail.credentials.response_inspection_rules, [{
+    enabled: true,
+    name: '响应脱敏账户响应检查',
+    priority: 11,
+    match: {
+      outputTextIncludes: ['响应污染']
+    },
+    action: 'retry_next_account'
+  }], '详情响应应返回账户级响应检查策略供编辑弹窗维护')
   assert.equal(detail.credentials.api_key, 'sk-redaction-existing-api-key', '详情响应应返回完整 API Key 供编辑弹窗查看')
 
   const created = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
@@ -204,6 +213,15 @@ function seedData(): {
         priority: 10,
         status_codes: [429],
         action: 'temp_unschedulable'
+      }],
+      response_inspection_rules: [{
+        enabled: true,
+        name: '响应脱敏账户响应检查',
+        priority: 11,
+        match: {
+          outputTextIncludes: ['响应污染']
+        },
+        action: 'retry_next_account'
       }]
     },
     status: 'active',
@@ -305,7 +323,10 @@ function assertNoForbiddenCredentialKeys(value: unknown, label: string, path = '
     return
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    assert(!['api_key', 'access_token', 'refresh_token', 'id_token'].includes(key), `${label} 不应包含凭据字段 ${path}.${key}`)
+    assert(
+      !['api_key', 'access_token', 'refresh_token', 'id_token', 'error_handling_rules', 'response_inspection_rules'].includes(key),
+      `${label} 不应包含凭据字段 ${path}.${key}`
+    )
     assertNoForbiddenCredentialKeys(child, label, `${path}.${key}`)
   }
 }
