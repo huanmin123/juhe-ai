@@ -15,7 +15,7 @@ function Read-DotEnvValue {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
     [Parameter(Mandatory = $true)][string]$Name,
-    [Parameter(Mandatory = $true)][string]$Fallback
+    [AllowEmptyString()][string]$Fallback = ''
   )
 
   if (-not (Test-Path -LiteralPath $Path)) {
