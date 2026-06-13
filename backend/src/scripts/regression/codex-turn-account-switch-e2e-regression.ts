@@ -36,18 +36,18 @@ const [
   codexTurnRetry,
   sessionAffinity
 ] = await Promise.all([
-  import('../../modules/gateway/openai-gateway.routes.js'),
-  import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
+  import('../../modules/gateway/routes.js'),
+  import('../../modules/gateway/request/body-middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/settings.repository.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../../modules/gateway/gateway-account-side-effects.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
-  import('../../modules/gateway/openai-gateway-codex-turn-retry.service.js'),
-  import('../../modules/gateway/openai-gateway-session-affinity.service.js')
+  import('../../modules/gateway/client-profiles/codex-turn-retry.service.js'),
+  import('../../modules/gateway/runtime/session-affinity.service.js')
 ])
 
 interface SeededGateway {

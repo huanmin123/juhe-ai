@@ -45,15 +45,15 @@ const [
   import('../../modules/auth/auth.routes.js'),
   import('../../modules/auth/captcha.service.js'),
   import('../../modules/groups/groups.routes.js'),
-  import('../../modules/gateway/openai-gateway.routes.js'),
+  import('../../modules/gateway/routes.js'),
   import('../../modules/proxies/proxies.routes.js'),
   import('../../modules/usage-records/usage-records.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
 

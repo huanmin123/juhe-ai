@@ -4,7 +4,7 @@ import {
   acquireHighConcurrencyClientIpSlot,
   clearClientIpConcurrency,
   clientIpConcurrencySnapshot
-} from '../../modules/gateway/openai-gateway-client-ip-concurrency.service.js'
+} from '../../modules/gateway/runtime/client-ip-concurrency.service.js'
 
 try {
   clearClientIpConcurrency()

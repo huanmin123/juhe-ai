@@ -35,13 +35,13 @@ import { listActiveResponseInspectionPoliciesForGateway } from '../../storage/re
 import {
   clearGatewayRuntimeCacheLocal,
   readCachedGatewaySettings,
-} from '../gateway/gateway-runtime-cache.service.js'
+} from '../gateway/runtime/runtime-cache.service.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/api-key-group-route-selector.service.js'
-import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-key-quota.service.js'
-import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
-import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
-import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
+import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/routing/api-key-group-route-selector.service.js'
+import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
+import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/quota/authorization-quota.service.js'
+import { applyAccountErrorHandling } from '../gateway/policy/account-error-policy.service.js'
+import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
 import type {
   DbServiceGatewayRuntime,

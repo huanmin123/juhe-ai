@@ -19,6 +19,7 @@ export interface SystemSettings {
   tableMonitorMaxTablesPerRun: number
   accountQualityRefreshIntervalSeconds: number
   accountQualityWindowMinutes: number
+  accountTestTaskConcurrency: number
   cooldownAccountRetestIntervalSeconds: number
   cooldownAccountRetestBatchSize: number
   cooldownAccountRetestMaxBackoffHours: number

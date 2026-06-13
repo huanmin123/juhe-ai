@@ -30,8 +30,8 @@ const [
   { createAccountTestTask }
 ] = await Promise.all([
   import('../../modules/accounts/account-test.service.js'),
-  import('../../modules/gateway/gateway-account-side-effects.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-test-tasks.repository.js')
@@ -90,6 +90,7 @@ try {
     groupId: group.id,
     credentials: { api_key: 'sk-account-test-responses-contract', base_url: mockBaseUrl }
   }, access)
+  assert.equal(account.clientCompatibility, 'codex_responses', 'GPT API Key 账户创建时默认应使用 Codex Responses 兼容')
 
   assert.equal(preferredSystemAccountTestModel(account), 'gpt-5.5', '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
   repositories.recordAccountSuccessfulTestModel(account.id, 'gpt-5.4', access)

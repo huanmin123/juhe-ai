@@ -27,7 +27,7 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/db-service/db-service-ipc.js'),
-  import('../../modules/gateway/gateway-runtime-snapshot.service.js')
+  import('../../modules/gateway/runtime/runtime-snapshot.service.js')
 ])
 
 let serverConcurrency: Record<string, number> = {}

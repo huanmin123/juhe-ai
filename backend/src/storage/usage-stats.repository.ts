@@ -1746,6 +1746,10 @@ function prepareUsageScopeRangeWindowRefreshTempTable(database: DatabaseSync, ta
       PRIMARY KEY (system_account_id, scope_type, scope_id, start_date, end_date)
     )
   `).run()
+  database.prepare(`
+    CREATE INDEX IF NOT EXISTS ${tableName}_range_lookup
+      ON ${tableName}(end_date, start_date)
+  `).run()
 }
 
 function prepareAuthorizationUsageRangeWindowRefreshTempTables(database: DatabaseSync, teamTableName: string, userTableName: string): void {

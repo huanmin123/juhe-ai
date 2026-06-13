@@ -317,19 +317,40 @@ import type {
   ProviderModelUpsertPayload,
   ProviderModelVisibility
 } from '@/types/domain'
-
-const modelCategoryOrder = ['text', 'image', 'audio'] as const
-type ModelCategoryKey = typeof modelCategoryOrder[number]
-type DirectPriceFieldKey =
-  | 'inputUsdPer1M'
-  | 'outputUsdPer1M'
-  | 'cachedInputUsdPer1M'
-  | 'cacheWriteUsdPer1M'
-  | 'imageInputUsdPer1M'
-  | 'imageOutputUsdPer1M'
-  | 'audioInputUsdPer1M'
-  | 'audioOutputUsdPer1M'
-  | 'outputUsdPerImage'
+import {
+  apiProtocolOptions,
+  categoryFromModeOrModel,
+  defaultProtocolsForModelCategory,
+  directPriceFieldKeys,
+  directPriceFieldsByCategory,
+  findFirstModelCategory,
+  formatApiProtocol,
+  formatCapabilitiesSummary,
+  formatModelCategory,
+  formatModelInputTokens,
+  formatModelPriceSummary,
+  formatModelScope,
+  formatModelStatus,
+  formatModelVisibility,
+  formatPrice,
+  formatProviderCapability,
+  formatTokens,
+  formatUnitPrice,
+  getApiProtocolTagColor,
+  getModelCategory,
+  hasAnyNumber,
+  hasDirectModelPrice,
+  modelCategoryLabels,
+  modelCategoryOrder,
+  modelModeOptions,
+  modelScopeColor,
+  modelStatusColor,
+  modelStatusOptions,
+  modelVisibilityOptions,
+  visibleProviderCapabilities,
+  type DirectPriceFieldKey,
+  type ModelCategoryKey
+} from './providerModelFormatters'
 
 interface CustomModelForm {
   id?: string
@@ -372,31 +393,6 @@ const editingCustomModelId = ref<string>()
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canCreateGlobalModel = computed(() => authState.isAdmin.value && isManagementView.value)
 const customModelEditing = computed(() => Boolean(editingCustomModelId.value))
-
-const modelCategoryLabels: Record<ModelCategoryKey, string> = {
-  text: '对话 / 编码',
-  image: '图像',
-  audio: '音频'
-}
-
-const apiProtocolLabels: Record<string, string> = {
-  chat_completions: 'Chat Completions',
-  responses: 'Responses',
-  completions: 'Completions',
-  images: 'Images API',
-  audio: 'Audio API',
-  realtime: 'Realtime API'
-}
-
-const hiddenProviderCapabilities = new Set(['models', 'passthrough', 'stream'])
-
-const providerCapabilityLabels: Record<string, string> = {
-  responses: 'Responses',
-  chat: 'Chat',
-  chat_completions: 'Chat'
-}
-
-const providerCapabilityOrder = ['responses', 'chat'] as const
 
 const managementProviderColumns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 160 },
@@ -454,43 +450,6 @@ const emptyCustomModelForm: CustomModelForm = {
 }
 
 const customModelForm = reactive<CustomModelForm>({ ...emptyCustomModelForm })
-
-const modelStatusOptions = [
-  { label: '启用', value: 'active' },
-  { label: '草稿', value: 'draft' },
-  { label: '停用', value: 'disabled' }
-]
-
-const modelVisibilityOptions = [
-  { label: '公开目录', value: 'public' },
-  { label: '仅映射目标', value: 'mapping_target_only' }
-]
-
-const modelModeOptions = [
-  { label: '对话 / 编码', value: 'text' },
-  { label: '图像', value: 'image' },
-  { label: '音频', value: 'audio' }
-]
-
-const apiProtocolOptions = Object.entries(apiProtocolLabels).map(([value, label]) => ({ value, label }))
-
-const directPriceFieldKeys: DirectPriceFieldKey[] = [
-  'inputUsdPer1M',
-  'outputUsdPer1M',
-  'cachedInputUsdPer1M',
-  'cacheWriteUsdPer1M',
-  'imageInputUsdPer1M',
-  'imageOutputUsdPer1M',
-  'audioInputUsdPer1M',
-  'audioOutputUsdPer1M',
-  'outputUsdPerImage'
-]
-
-const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFieldKey[]> = {
-  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M'],
-  image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage'],
-  audio: ['audioInputUsdPer1M', 'audioOutputUsdPer1M']
-}
 
 const currentCategoryModels = computed(() => {
   const category = selectedModelCategory.value
@@ -570,24 +529,6 @@ const filteredModels = computed(() => {
     return keywordMatches
   })
 })
-
-function hasAnyNumber(...values: Array<number | undefined>) {
-  return values.some((value) => typeof value === 'number')
-}
-
-function hasDirectModelPrice(item: ProviderModelPricing) {
-  return hasAnyNumber(
-    item.inputUsdPer1M,
-    item.outputUsdPer1M,
-    item.cachedInputUsdPer1M,
-    item.cacheWriteUsdPer1M,
-    item.imageInputUsdPer1M,
-    item.imageOutputUsdPer1M,
-    item.audioInputUsdPer1M,
-    item.audioOutputUsdPer1M,
-    item.outputUsdPerImage
-  )
-}
 
 async function loadProviders() {
   loading.value = true
@@ -808,12 +749,6 @@ function clearCustomModelPricesOutsideCategory(category: ModelCategoryKey) {
   }
 }
 
-function defaultProtocolsForModelCategory(category: ModelCategoryKey): ProviderModelApiProtocol[] {
-  if (category === 'image') return ['images']
-  if (category === 'audio') return ['audio']
-  return ['responses', 'chat_completions']
-}
-
 function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
   if (!canMutateModel(record)) return []
   return [
@@ -837,196 +772,6 @@ function canMutateModel(record: ProviderModelPricing): boolean {
   if (activeProvider.value && record.providerCode !== activeProvider.value.code) return false
   if (record.scope === 'global') return canCreateGlobalModel.value
   return record.systemAccountId === authState.currentUser.value?.id
-}
-
-function findFirstModelCategory(models: ProviderModelPricing[]): ModelCategoryKey {
-  for (const key of modelCategoryOrder) {
-    if (models.some((item) => getModelCategory(item) === key)) {
-      return key
-    }
-  }
-  return 'text'
-}
-
-function getModelCategory(item: ProviderModelPricing): ModelCategoryKey {
-  return categoryFromModeOrModel(item.mode, item.model)
-}
-
-function categoryFromModeOrModel(modeValue: string | undefined, modelValue: string): ModelCategoryKey {
-  const model = modelValue.toLowerCase()
-  const mode = (modeValue ?? '').trim().toLowerCase()
-
-  if (isModelCategoryKey(mode)) {
-    return mode
-  }
-
-  if (mode === 'image_generation' || model.startsWith('gpt-image') || model.startsWith('dall-e')) {
-    return 'image'
-  }
-
-  if (
-    mode === 'audio_speech'
-    || mode === 'audio_transcription'
-    || model.includes('audio')
-    || model.includes('realtime')
-    || model.includes('transcribe')
-    || model.includes('tts')
-    || model.includes('whisper')
-  ) {
-    return 'audio'
-  }
-
-  if (
-    mode === 'chat'
-    || mode === 'responses'
-    || mode === 'completion'
-    || model.includes('codex')
-    || model.startsWith('gpt-')
-    || model.startsWith('o')
-  ) {
-    return 'text'
-  }
-
-  return 'text'
-}
-
-function isModelCategoryKey(value: string): value is ModelCategoryKey {
-  return (modelCategoryOrder as readonly string[]).includes(value)
-}
-
-function formatModelCategory(item: ProviderModelPricing) {
-  return modelCategoryLabels[getModelCategory(item)]
-}
-
-function formatModelScope(scope?: string) {
-  if (scope === 'built_in') return '内置'
-  if (scope === 'global') return '全局'
-  if (scope === 'personal') return '个人'
-  return '-'
-}
-
-function modelScopeColor(scope?: string) {
-  if (scope === 'built_in') return 'blue'
-  if (scope === 'global') return 'purple'
-  if (scope === 'personal') return 'green'
-  return 'default'
-}
-
-function formatModelStatus(status?: string) {
-  if (status === 'active') return '启用'
-  if (status === 'draft') return '草稿'
-  if (status === 'disabled') return '停用'
-  return '-'
-}
-
-function modelStatusColor(status?: string) {
-  if (status === 'active') return 'green'
-  if (status === 'draft') return 'gold'
-  if (status === 'disabled') return 'default'
-  return 'default'
-}
-
-function formatModelVisibility(visibility?: string) {
-  if (visibility === 'public') return '公开目录'
-  if (visibility === 'mapping_target_only') return '仅映射目标'
-  return '-'
-}
-
-function formatApiProtocol(protocol?: string) {
-  return apiProtocolLabels[protocol ?? ''] ?? protocol ?? '-'
-}
-
-function getApiProtocolTagColor(protocol?: string) {
-  switch (protocol) {
-    case 'chat_completions':
-      return 'blue'
-    case 'responses':
-      return 'purple'
-    case 'images':
-      return 'cyan'
-    case 'audio':
-      return 'green'
-    case 'realtime':
-      return 'orange'
-    default:
-      return 'default'
-  }
-}
-
-function visibleProviderCapabilities(capabilities: string[]) {
-  const normalized = new Set<string>()
-  for (const capability of capabilities) {
-    if (capability === 'chat_completions' || capability === 'passthrough') {
-      normalized.add('chat')
-      continue
-    }
-    if (!hiddenProviderCapabilities.has(capability)) {
-      normalized.add(capability)
-    }
-  }
-  return [...normalized].sort((left, right) => {
-    const leftIndex = providerCapabilityOrder.indexOf(left as typeof providerCapabilityOrder[number])
-    const rightIndex = providerCapabilityOrder.indexOf(right as typeof providerCapabilityOrder[number])
-    if (leftIndex !== -1 || rightIndex !== -1) {
-      return (leftIndex === -1 ? providerCapabilityOrder.length : leftIndex) - (rightIndex === -1 ? providerCapabilityOrder.length : rightIndex)
-    }
-    return left.localeCompare(right)
-  })
-}
-
-function formatProviderCapability(capability: string) {
-  return providerCapabilityLabels[capability] ?? capability
-}
-
-function formatCapabilitiesSummary(capabilities: string[]) {
-  const visibleCapabilities = visibleProviderCapabilities(capabilities)
-  return visibleCapabilities.length ? visibleCapabilities.map(formatProviderCapability).join(' / ') : '-'
-}
-
-function formatPrice(value?: number) {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '-'
-}
-
-function formatUnitPrice(value?: number) {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '-'
-}
-
-function formatModelPriceSummary(item: ProviderModelPricing) {
-  if (item.pricingModel) return `计价 ${item.pricingModel}`
-  const category = getModelCategory(item)
-  if (category === 'image') {
-    return [
-      `图片输入 ${formatPrice(item.imageInputUsdPer1M)}`,
-      `图片输出 ${formatPrice(item.imageOutputUsdPer1M)}`,
-      `每张 ${formatUnitPrice(item.outputUsdPerImage)}`
-    ].join(' / ')
-  }
-  if (category === 'audio') {
-    return [
-      `音频输入 ${formatPrice(item.audioInputUsdPer1M)}`,
-      `音频输出 ${formatPrice(item.audioOutputUsdPer1M)}`
-    ].join(' / ')
-  }
-  return [
-    `输入 ${formatPrice(item.inputUsdPer1M)}`,
-    `输出 ${formatPrice(item.outputUsdPer1M)}`,
-    `缓存读 ${formatPrice(item.cachedInputUsdPer1M)}`
-  ].join(' / ')
-}
-
-function formatTokens(value?: number) {
-  if (typeof value !== 'number') return '-'
-  if (value >= 1_000_000) return `${trimNumber(value / 1_000_000)}M`
-  if (value >= 1_000) return `${trimNumber(value / 1_000)}K`
-  return String(value)
-}
-
-function formatModelInputTokens(item: ProviderModelPricing) {
-  return formatTokens(item.maxInputTokens ?? item.contextWindowTokens)
-}
-
-function trimNumber(value: number) {
-  return Number(value.toFixed(8)).toString()
 }
 
 function trimToUndefined(value: unknown): string | undefined {

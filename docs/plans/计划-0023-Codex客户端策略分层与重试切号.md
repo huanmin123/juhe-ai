@@ -185,6 +185,6 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 
 - 完成时间：2026-05-18
 - 实际完成内容：完成 Codex 客户端策略分层、turn 级失败状态缓存、3 次失败后第 4 次账号避让、Codex-only 可重试流式失败改写，以及非 Codex 不伪造可重试码的回归覆盖。
-- 主要改动位置：`backend/src/modules/gateway/openai-gateway-client-strategy.ts`、`backend/src/modules/gateway/openai-gateway-codex-turn-retry.service.ts`、`backend/src/modules/gateway/openai-gateway-request-preflight.ts`、`backend/src/modules/gateway/openai-gateway-stream.ts`、`backend/src/scripts/regression/codex-client-strategy-regression.ts`、`docs/plans/计划-0023-Codex客户端策略分层与重试切号.md`、`docs/functions/流式中断与客户端重试调研.md`、`docs/functions/网关异常重试与兜底策略.md`。
+- 主要改动位置：`backend/src/modules/gateway/client-profiles/strategy.ts`、`backend/src/modules/gateway/client-profiles/codex-turn-retry.service.ts`、`backend/src/modules/gateway/request/preflight.ts`、`backend/src/modules/gateway/response/stream.ts`、`backend/src/scripts/regression/codex-client-strategy-regression.ts`、`docs/plans/计划-0023-Codex客户端策略分层与重试切号.md`、`docs/functions/流式中断与客户端重试调研.md`、`docs/functions/网关异常重试与兜底策略.md`。
 - 验证结果：`test:codex-client-strategy`、`test:stream-first-output-timeout`、`test:smoke:mock`、`test:openai-oauth-codex-adapter`、`typecheck` 均通过。
 - 后续建议：后续接入其他客户端时新增独立 profile，并补各自协议的失败事件和回归；不要复用 Codex turn_id 或 `upstream_retryable_error` 语义。

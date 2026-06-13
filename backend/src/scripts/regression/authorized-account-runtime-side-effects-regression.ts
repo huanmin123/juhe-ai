@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
-import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
+import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
 import type { AccountErrorHandlingRule, AccountErrorHandlingRuleAction } from '../../modules/accounts/account-error-policy-validation.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-runtime-side-effects-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -28,7 +28,7 @@ const [
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/account-error-policy.service.js'),
+  import('../../modules/gateway/policy/account-error-policy.service.js'),
   import('../../modules/db-service/db-service-ipc.js')
 ])
 

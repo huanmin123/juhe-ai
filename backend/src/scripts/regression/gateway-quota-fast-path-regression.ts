@@ -6,11 +6,11 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
-import { checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/api-key-quota.service.js'
+import { checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/quota/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaAsync,
   checkGatewayAuthorizationQuotaBatchAsync
-} from '../../modules/gateway/authorization-quota.service.js'
+} from '../../modules/gateway/quota/authorization-quota.service.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-quota-fast-path-${Date.now()}-${Math.random().toString(16).slice(2)}`)

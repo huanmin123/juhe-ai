@@ -326,14 +326,12 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatMillisecondsAsSeconds, formatNumber } from '@/shared/formatters'
-import { providerDisplayName } from '@/shared/providerDisplay'
+import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type {
   AccountOptionSummary,
-  ModelCheckCheckResult,
   ModelCheckLevel,
   ModelCheckModel,
   ModelCheckOptions,
@@ -344,6 +342,30 @@ import type {
   ModelCheckStatus
 } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
+import {
+  checkExtra,
+  checkMessage,
+  checkStatusColor,
+  checkStatusText,
+  checkTitle,
+  formatClockTime,
+  formatModelCheckDuration as formatDuration,
+  formatModelCheckJson as formatJson,
+  hasCheckExtra,
+  levelColor,
+  levelText,
+  modelCheckLevelOptions as levelOptions,
+  modelCheckModelText,
+  modelCheckStatusOptions as statusOptions,
+  progressItemTitle,
+  providerText,
+  runTrustedComparison,
+  statusColor,
+  statusText,
+  targetTypeText,
+  terminalLevelForCheckStatus,
+  type ModelCheckTerminalLineLevel
+} from './modelCheckFormatters'
 
 const fallbackOptions: ModelCheckOptions = {
   supportedModels: [
@@ -358,19 +380,6 @@ const fallbackOptions: ModelCheckOptions = {
   defaultProfile: 'full'
 }
 
-const statusOptions = [
-  { label: '检测中', value: 'running' },
-  { label: '已完成', value: 'completed' },
-  { label: '失败', value: 'failed' },
-  { label: '已取消', value: 'canceled' }
-]
-const levelOptions = [
-  { label: '高可信', value: 'high_confidence' },
-  { label: '较可信', value: 'likely' },
-  { label: '不确定', value: 'uncertain' },
-  { label: '疑似不符', value: 'suspicious' },
-  { label: '不可检测', value: 'unavailable' }
-]
 const columns = [
   { title: '目标', key: 'target', width: 280 },
   { title: '账户类型', key: 'targetType', width: 110 },
@@ -507,11 +516,10 @@ let terminalLineId = 0
 let modelCheckAbortReason: 'manual' | 'deactivated' | 'unmount' | undefined
 let terminalClockTimer: number | undefined
 
-type TerminalLineLevel = 'info' | 'success' | 'warning' | 'error' | 'muted'
 type TerminalLine = {
   id: number
   time: string
-  level: TerminalLineLevel
+  level: ModelCheckTerminalLineLevel
   text: string
 }
 
@@ -831,7 +839,7 @@ function clearTerminal() {
   terminalVisible.value = false
 }
 
-function appendTerminalLine(level: TerminalLineLevel, text: string) {
+function appendTerminalLine(level: ModelCheckTerminalLineLevel, text: string) {
   terminalLines.value.push({
     id: ++terminalLineId,
     time: formatClockTime(new Date()),
@@ -933,130 +941,12 @@ function targetDisplayName(run: Pick<ModelCheckRunSummary, 'targetName' | 'targe
   return name || '未记录账户名称'
 }
 
-function targetTypeText(value: ModelCheckRunSummary['targetType']) {
-  if (value === 'account') return 'AI 账户'
-  return value
-}
-
-function providerText(value: ModelCheckRunSummary['providerCode']) {
-  return providerDisplayName(value)
-}
-
-function runTrustedComparison(run: Pick<ModelCheckRunSummary, 'trustedComparison'>) {
-  return run.trustedComparison
-}
-
-function statusText(value: ModelCheckStatus) {
-  return statusOptions.find((item) => item.value === value)?.label ?? value
-}
-
-function statusColor(value: ModelCheckStatus) {
-  if (value === 'completed') return 'green'
-  if (value === 'failed') return 'red'
-  if (value === 'running') return 'blue'
-  return 'default'
-}
-
-function levelText(value: ModelCheckLevel) {
-  return levelOptions.find((item) => item.value === value)?.label ?? value
-}
-
-function levelColor(value: ModelCheckLevel) {
-  if (value === 'high_confidence') return 'green'
-  if (value === 'likely') return 'blue'
-  if (value === 'uncertain') return 'orange'
-  if (value === 'suspicious') return 'red'
-  return 'default'
-}
-
-function checkStatusText(value: NonNullable<ModelCheckCheckResult['status']>) {
-  if (value === 'passed') return '通过'
-  if (value === 'warning') return '需关注'
-  if (value === 'failed') return '失败'
-  if (value === 'skipped') return '跳过'
-  return value
-}
-
-function checkStatusColor(value: NonNullable<ModelCheckCheckResult['status']>) {
-  if (value === 'passed') return 'green'
-  if (value === 'warning') return 'orange'
-  if (value === 'failed') return 'red'
-  if (value === 'skipped') return 'default'
-  return 'default'
-}
-
 function modelText(value: string) {
-  return options.value.supportedModels.find((item) => item.value === value)?.label ?? value
+  return modelCheckModelText(value, options.value.supportedModels)
 }
 
 function selectValueOrUndefined(value?: string) {
   return value?.trim() || undefined
-}
-
-function formatDuration(value?: number) {
-  return formatMillisecondsAsSeconds(value)
-}
-
-function checkTitle(check: ModelCheckCheckResult) {
-  return checkTitleByType(check.itemType, check.itemKey)
-}
-
-function checkTitleByType(itemType: string, itemKey: string) {
-  const labels: Record<string, string> = {
-    model_catalog: '模型目录',
-    responses_basic: 'Responses 非流式',
-    responses_stream: 'Responses 流式',
-    structured_output: '结构化输出',
-    tool_calling: '工具调用',
-    usage_shape: 'Usage 字段',
-    behavior_probe: '行为探针',
-    long_context: '长上下文找针',
-    stability: '稳定性探针',
-    cross_model: '辅助模型对照',
-    distribution_similarity: '分布相似度对照',
-    trusted_comparison: '可信对比'
-  }
-  return labels[itemType] ?? itemKey
-}
-
-function progressItemTitle(itemKey: string, itemType?: string) {
-  if (itemKey.includes('.distribution.')) return '分布相似度采样'
-  return checkTitleByType(itemType ?? itemKey.split('.').pop() ?? itemKey, itemKey)
-}
-
-function terminalLevelForCheckStatus(status: ModelCheckCheckResult['status']): TerminalLineLevel {
-  if (status === 'passed') return 'success'
-  if (status === 'warning') return 'warning'
-  if (status === 'failed') return 'error'
-  return 'muted'
-}
-
-function checkMessage(check: ModelCheckCheckResult) {
-  const message = check.evidenceSummary.message
-  return typeof message === 'string' && message.trim() ? message.trim() : check.errorMessage
-}
-
-function hasCheckExtra(check: ModelCheckCheckResult) {
-  return Object.keys(check.evidenceSummary).length > 0 || Boolean(check.traceId)
-}
-
-function checkExtra(check: ModelCheckCheckResult) {
-  return {
-    traceId: check.traceId,
-    evidence: check.evidenceSummary,
-    errorCode: check.errorCode,
-    errorMessage: check.errorMessage
-  }
-}
-
-function formatJson(value: unknown) {
-  return JSON.stringify(value, null, 2)
-}
-
-function formatClockTime(value: Date) {
-  return [value.getHours(), value.getMinutes(), value.getSeconds()]
-    .map((item) => String(item).padStart(2, '0'))
-    .join(':')
 }
 
 function updateViewportWidth() {

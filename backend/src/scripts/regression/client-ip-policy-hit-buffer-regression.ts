@@ -7,7 +7,7 @@ import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.reposit
 import {
   getClientIpPolicyCacheRuntime,
   recordClientIpPolicyHitAsync
-} from '../../modules/gateway/client-ip-policy-cache.service.js'
+} from '../../modules/gateway/runtime/client-ip-policy-cache.service.js'
 
 runtimeConfig.processRole = 'server'
 runtimeConfig.log.consoleEnabled = false
@@ -47,7 +47,7 @@ function policyForIndex(index: number): ActiveClientIpPolicy {
 }
 
 function assertClientIpPolicyHitBufferSourceGuards(): void {
-  const source = readFileSync(new URL('../../modules/gateway/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../../modules/gateway/runtime/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
   assert(source.includes('clientIpPolicyLoadMaxPendingEntries'), 'IP 封禁策略查询必须声明固定 pending load 上限')
   assert(source.includes('pendingPolicyLoads.size >= clientIpPolicyLoadMaxPendingEntries'), '新增 IP 封禁策略查询前必须检查 pending load 上限')
   assert(source.includes("event: 'client_ip_policy_load_dropped'"), 'IP 封禁策略查询超过 pending load 上限时必须记录丢弃计数和日志')

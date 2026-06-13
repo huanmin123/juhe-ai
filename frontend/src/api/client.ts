@@ -1,5 +1,3 @@
-import axios from 'axios'
-
 import type {
   AccountSummary,
   AccountClientCompatibility,
@@ -10,6 +8,7 @@ import type {
   AccountGroupOptionSummary,
   AccountOptionSummary,
   AccountTagSummary,
+  AccountTestSession,
   AccountTestTask,
   AccountTrafficMigrationResult,
   AccountTrafficMigrationSourceStatus,
@@ -111,570 +110,78 @@ import type {
   UsageRecordSummary,
   UsageRecordTrafficSource
 } from '@/types/domain'
-import { extractResponseErrorMessage, localizeTransportErrorMessage } from '@/shared/apiError'
-
-interface ApiResponse<T> {
-  data: T
-  message?: string
-}
-
-interface ListParams {
-  systemAccountId?: string
-}
-
-interface GroupListParams extends ListParams {
-  page?: number
-  pageSize?: number
-}
-
-interface GroupOptionParams extends ListParams {
-  ids?: string[]
-  keyword?: string
-  providerCode?: string
-  limit?: number
-  manageableOnly?: boolean
-  preferDefault?: boolean
-}
-
-interface TeamListParams extends ListParams {
-  page?: number
-  pageSize?: number
-  keyword?: string
-}
-
-interface ProxyListParams extends ListParams {
-  page?: number
-  pageSize?: number
-  keyword?: string
-}
-
-interface ProxyOptionParams {
-  keyword?: string
-  limit?: number
-}
-
-interface SystemAccountOptionsParams {
-  ids?: string[]
-  keyword?: string
-  limit?: number
-}
-
-interface SystemAccountListParams {
-  page?: number
-  pageSize?: number
-  keyword?: string
-}
-
-interface RequestControlOptions {
-  signal?: AbortSignal
-}
-
-interface UsageOverviewParams extends ListParams {
-  startDate?: string
-  endDate?: string
-}
-
-interface AccountUsageStatsParams extends ListParams {
-  page?: number
-  pageSize?: number
-  keyword?: string
-  startDate?: string
-  endDate?: string
-  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
-  accountIds?: string[]
-}
-
-interface AiPerformanceParams extends ListParams {
-  startDate?: string
-  endDate?: string
-  accountIds?: string[]
-}
-
-interface AiPerformanceAccountOptionsParams extends ListParams {
-  keyword?: string
-  accountIds?: string[]
-  limit?: number
-}
-
-export type SortDirection = 'asc' | 'desc'
-export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
-
-export interface AccountListSortParam {
-  field: AccountListSortField
-  order: SortDirection
-}
-
-export interface AccountListParams extends ListParams {
-  sorts?: AccountListSortParam[]
-  page?: number
-  pageSize?: number
-  keyword?: string
-  providerCode?: string
-  groupId?: string
-  tagIds?: string[]
-  type?: string
-  status?: string | string[]
-  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
-}
-
-export type AccountExportFilters = Omit<AccountListParams, 'systemAccountId' | 'page' | 'pageSize'>
-export type AccountExportPayload =
-  | { accountIds: string[] }
-  | { filters: AccountExportFilters }
-
-export interface AccountOptionParams extends ListParams {
-  ids?: string[]
-  page?: number
-  limit?: number
-  keyword?: string
-  providerCode?: string
-  groupId?: string
-  tagIds?: string[]
-  type?: string
-  status?: string | string[]
-  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
-}
-
-export interface AccountTestPayload {
-  model?: string
-  prompt?: string
-  clientCompatibility?: AccountClientCompatibility
-  account?: AccountDraftTestAccountPayload
-}
-
-export interface AccountDraftTestAccountPayload {
-  providerCode: string
-  providerProtocolProfileId?: string
-  name: string
-  type: string
-  credentials: Record<string, unknown>
-  concurrencyLimit: number
-  priority: number
-  clientCompatibility: AccountClientCompatibility
-  supportedModels: string[]
-  modelMappings: Array<{ sourceModel: string; upstreamModel: string; enabled: boolean }>
-  proxyProfileId?: string | null
-  groupId: string
-  accountExpiresAt?: string | null
-  availabilitySchedule?: Record<string, unknown> | null
-  notes?: string
-}
-
-export interface AccountDraftTestPayload extends AccountTestPayload {
-  account: AccountDraftTestAccountPayload
-}
-
-export interface ApiKeyListParams extends ListParams {
-  page?: number
-  pageSize?: number
-  keyword?: string
-  status?: 'active' | 'disabled' | 'all'
-  groupId?: string
-}
-
-export interface UsageRecordListParams extends ListParams {
-  page?: number
-  pageSize?: number
-  traceId?: string
-  accountKeyword?: string
-  clientIp?: string
-  result?: 'success' | 'failed' | 'all'
-  statusCode?: number
-  groupId?: string
-  model?: string
-  trafficSource?: UsageRecordTrafficSource
-  startDate?: string
-  endDate?: string
-  sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
-  sortOrder?: SortDirection
-}
-
-export interface AuditLogListParams extends ListParams {
-  page?: number
-  pageSize?: number
-  traceId?: string
-  outcome?: AuditOutcome | 'all'
-  statusCode?: number
-  path?: string
-  apiKeyId?: string
-  groupId?: string
-  accountId?: string
-  errorGroupId?: string
-  trafficSource?: AuditTrafficSource
-}
-
-export interface AuditLogHotSearchParams {
-  keywords?: string
-  limit?: number
-  startAt?: string
-  endAt?: string
-}
-
-export interface AuditLogPayloadParams {
-  offset?: number
-  limit?: number
-}
-
-export interface PublicApiLogListParams {
-  page?: number
-  pageSize?: number
-  traceId?: string
-  sourceRefId?: string
-  path?: string
-  result?: PublicApiLogResultFilter
-  statusCode?: number
-  clientIp?: string
-  startAt?: string
-  endAt?: string
-}
-
-export interface RuntimeLogGrepParams {
-  keywords?: string
-  startAt?: string
-  endAt?: string
-  limit?: number
-}
-
-export interface RuntimeLogListParams {
-  page?: number
-  pageSize?: number
-  traceId?: string
-  level?: RuntimeLogLevel | 'all'
-  event?: string
-  keyword?: string
-  startAt?: string
-  endAt?: string
-}
-
-export interface OperationLogListParams {
-  page?: number
-  pageSize?: number
-  summaryKeyword?: string
-  module?: string
-  action?: string
-  resourceType?: string
-  resourceId?: string
-  traceId?: string
-  startAt?: string
-  endAt?: string
-  actorSystemAccountId?: string
-  affectedSystemAccountId?: string
-  operationScopeSystemAccountId?: string
-}
-
-interface TableMonitorHistoryParams {
-  databaseRole: MonitoredDatabaseRole
-  tableName: string
-  startAt?: string
-  endAt?: string
-  limit?: number
-}
-
-interface TableMonitorOverviewParams {
-  startAt?: string
-  endAt?: string
-  limit?: number
-}
-
-interface TableMonitorDatabaseHistoryParams {
-  startAt?: string
-  endAt?: string
-  limit?: number
-}
-
-interface NonBusinessDataCleanupPayload {
-  cutoffAt: string
-  batchSize?: number
-  maxBatches?: number
-}
-
-export interface ClientIpStatsListParams {
-  page?: number
-  pageSize?: number
-  keyword?: string
-  status?: ClientIpStatus
-  startDate?: string
-  endDate?: string
-  sortField?: ClientIpStatsSortField
-  sortOrder?: SortDirection
-}
-
-export interface ClientIpPolicyPayload {
-  reason?: string
-  durationMinutes?: number
-  durationDays?: number
-}
-
-export interface ExternalIntegrationSourceListParams {
-  page?: number
-  pageSize?: number
-  keyword?: string
-  status?: ExternalIntegrationSourceStatus | 'all'
-}
-
-export interface ResponseInspectionPolicyPayload {
-  name: string
-  enabled: boolean
-  priority: number
-  scopeType: ResponseInspectionPolicyScopeType
-  providerCode?: string
-  match: ResponseInspectionPolicyMatch
-  action: ResponseInspectionPolicyAction
-  notes?: string
-}
-
-export interface ModelCheckScopeParams {
-  systemAccountId?: string
-}
-export type ModelCheckListParams = ModelCheckRunListParams
-
-export interface ModelCheckStreamOptions extends RequestControlOptions {
-  onProgress?: (event: ModelCheckProgressEvent) => void
-  onComplete?: (detail: ModelCheckRunDetail) => void
-  onError?: (error: { message?: string; statusCode?: number }) => void
-}
-
-export interface AuthorizationListParams extends ListParams {
-  keyword?: string
-  resourceType?: AuthorizationResourceType
-  resourceId?: string
-  resourceOwnerSystemAccountId?: string
-  granteeSystemAccountId?: string
-  teamId?: string
-  status?: 'active' | 'paused' | 'expired' | 'revoked' | 'returned' | 'all'
-  direction?: 'all' | 'outbound' | 'inbound'
-  sourceType?: 'all' | 'manual' | 'team'
-  startDate?: string
-  endDate?: string
-  page?: number
-  pageSize?: number
-}
-
-export type AuthorizationScopeParams = ListParams
-
-interface AuthorizationPrincipalOptionsParams {
-  ids?: string[]
-  keyword?: string
-  limit?: number
-}
-
-interface AuthorizationGranteeGroupOptionsParams extends AuthorizationPrincipalOptionsParams {
-  granteeSystemAccountId: string
-  providerCode?: string
-  preferDefault?: boolean
-}
-
-export interface AuthorizationUsageParams extends AuthorizationScopeParams {
-  startDate?: string
-  endDate?: string
-  page?: number
-  pageSize?: number
-}
-
-export interface AuthorizationUsageOverviewParams extends AuthorizationScopeParams {
-  resourceType?: AuthorizationResourceType
-  resourceId?: string
-  granteeSystemAccountId?: string
-  teamId?: string
-  startDate?: string
-  endDate?: string
-  page?: number
-  pageSize?: number
-}
-
-export interface AnnouncementListParams {
-  limit?: number
-}
-
-export interface AnnouncementPayload {
-  title: string
-  content: string
-  level?: AnnouncementLevel
-  status?: AnnouncementStatus
-}
-
-export interface AnnouncementReadResult {
-  readAt: string
-  count: number
-}
-
-const http = axios.create({
-  baseURL: normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined),
-  timeout: 15000,
-  withCredentials: true
-})
-
-let unauthorizedHandler: (() => void) | undefined
-let mustChangePasswordHandler: (() => void) | undefined
-
-export function setUnauthorizedHandler(handler: () => void): void {
-  unauthorizedHandler = handler
-}
-
-export function setMustChangePasswordHandler(handler: () => void): void {
-  mustChangePasswordHandler = handler
-}
-
-http.interceptors.response.use(undefined, (error: unknown) => {
-  if (axios.isAxiosError(error) && error.response?.status === 401 && shouldNotifyUnauthorized(error.config?.url)) {
-    unauthorizedHandler?.()
-  } else if (axios.isAxiosError(error) && error.response?.status === 403 && isMustChangePasswordResponse(error.response.data)) {
-    mustChangePasswordHandler?.()
-  }
-  return Promise.reject(error)
-})
-
-function normalizeApiBaseUrl(value?: string): string {
-  const text = value?.trim()
-  if (!text) return '/__aisys__/api'
-  return text.replace(/\/+$/, '') || '/__aisys__/api'
-}
-
-function shouldNotifyUnauthorized(url?: string): boolean {
-  if (!url) return true
-  return !url.startsWith('/auth/')
-}
-
-function isMustChangePasswordResponse(data: unknown): boolean {
-  return typeof data === 'object'
-    && data !== null
-    && !Array.isArray(data)
-    && (data as { code?: unknown }).code === 'must_change_password'
-}
-
-async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T> {
-  const response = await request
-  return response.data.data
-}
-
-const noTimeout = { timeout: 0 }
-
-async function runModelCheckStream(path: string, payload: ModelCheckRunPayload, streamOptions?: ModelCheckStreamOptions, params?: ModelCheckScopeParams): Promise<ModelCheckRunDetail> {
-  const response = await fetch(`${normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined)}${path}${queryString(params)}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      accept: 'text/event-stream',
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify(payload),
-    signal: streamOptions?.signal
-  })
-  if (!response.ok) {
-    throw new Error(await readFetchErrorMessage(response, path))
-  }
-  if (!response.body) {
-    throw new Error('模型检测进度流不可用')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let completedDetail: ModelCheckRunDetail | undefined
-  const handleMessage = (raw: string): void => {
-    const event = parseServerSentEvent(raw)
-    if (!event.data) return
-    const payload = parseJsonPayload(event.data)
-    if (event.event === 'progress') {
-      streamOptions?.onProgress?.(payload as ModelCheckProgressEvent)
-      return
-    }
-    if (event.event === 'complete') {
-      completedDetail = payload as ModelCheckRunDetail
-      streamOptions?.onComplete?.(completedDetail)
-      return
-    }
-    if (event.event === 'error') {
-      const error = payload as { message?: string; statusCode?: number }
-      streamOptions?.onError?.(error)
-      throw new Error(error.message || '模型检测失败')
-    }
-  }
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    buffer = flushServerSentEvents(buffer, handleMessage)
-  }
-  buffer += decoder.decode()
-  flushServerSentEvents(buffer, handleMessage, true)
-  if (!completedDetail) {
-    throw new Error('模型检测进度流未返回完成结果')
-  }
-  return completedDetail
-}
-
-function flushServerSentEvents(buffer: string, handleMessage: (raw: string) => void, flushRemaining = false): string {
-  let normalized = buffer.replace(/\r\n/g, '\n')
-  let separatorIndex = normalized.indexOf('\n\n')
-  while (separatorIndex >= 0) {
-    const raw = normalized.slice(0, separatorIndex)
-    if (raw.trim()) {
-      handleMessage(raw)
-    }
-    normalized = normalized.slice(separatorIndex + 2)
-    separatorIndex = normalized.indexOf('\n\n')
-  }
-  if (flushRemaining && normalized.trim()) {
-    handleMessage(normalized)
-    return ''
-  }
-  return normalized
-}
-
-function parseServerSentEvent(raw: string): { event: string; data: string } {
-  let event = 'message'
-  const dataLines: string[] = []
-  for (const line of raw.split('\n')) {
-    if (line.startsWith('event:')) {
-      event = line.slice(6).trim()
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart())
-    }
-  }
-  return { event, data: dataLines.join('\n') }
-}
-
-function parseJsonPayload(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown
-  } catch {
-    return { message: text }
-  }
-}
-
-async function readFetchErrorMessage(response: Response, path?: string): Promise<string> {
-  const text = await response.text()
-  notifyAuthFailure(response.status, text, path)
-  if (!text.trim()) return `请求失败：HTTP ${response.status}`
-  try {
-    return extractResponseErrorMessage(JSON.parse(text) as unknown) ?? text
-  } catch {
-    return localizeTransportErrorMessage(text, `请求失败：HTTP ${response.status}`)
-  }
-}
-
-function notifyAuthFailure(status: number, responseText: string, path?: string): void {
-  if (status === 401 && shouldNotifyUnauthorized(path)) {
-    unauthorizedHandler?.()
-    return
-  }
-  if (status === 403 && isMustChangePasswordResponse(parseJsonPayload(responseText))) {
-    mustChangePasswordHandler?.()
-  }
-}
-
-function queryString(params?: object): string {
-  if (!params) return ''
-  const searchParams = new URLSearchParams()
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null || value === '') continue
-    searchParams.set(key, String(value))
-  }
-  const text = searchParams.toString()
-  return text ? `?${text}` : ''
-}
+import { http, noTimeout, unwrap } from './http'
+import { runModelCheckStream } from './modelCheckStream'
+import {
+  accountListParams,
+  accountOptionsParams,
+  accountUsageStatsParams,
+  aiPerformanceAccountOptionsParams,
+  aiPerformanceParams,
+  authorizationGranteeGroupOptionsParams,
+  authorizationPrincipalOptionsParams,
+  boundedAuthorizationListParams,
+  groupListParams,
+  groupOptionParams,
+  modelCheckRunListParams,
+  stripAdminOperationLogParams,
+  stripSystemAccountParam,
+  systemAccountListParams,
+  systemAccountOptionsParams,
+  teamListParams
+} from './params'
+import type {
+  AccountDraftTestPayload,
+  AccountExportPayload,
+  AccountListParams,
+  AccountOptionParams,
+  AccountTestPayload,
+  AccountUsageStatsParams,
+  AiPerformanceAccountOptionsParams,
+  AiPerformanceParams,
+  AnnouncementListParams,
+  AnnouncementPayload,
+  AnnouncementReadResult,
+  ApiKeyListParams,
+  AuditLogHotSearchParams,
+  AuditLogListParams,
+  AuditLogPayloadParams,
+  AuthorizationGranteeGroupOptionsParams,
+  AuthorizationListParams,
+  AuthorizationPrincipalOptionsParams,
+  AuthorizationScopeParams,
+  AuthorizationUsageOverviewParams,
+  AuthorizationUsageParams,
+  ClientIpPolicyPayload,
+  ClientIpStatsListParams,
+  ExternalIntegrationSourceListParams,
+  GroupListParams,
+  GroupOptionParams,
+  ListParams,
+  ModelCheckScopeParams,
+  ModelCheckStreamOptions,
+  NonBusinessDataCleanupPayload,
+  OperationLogListParams,
+  ProxyListParams,
+  ProxyOptionParams,
+  PublicApiLogListParams,
+  ResponseInspectionPolicyPayload,
+  RequestControlOptions,
+  RuntimeLogGrepParams,
+  RuntimeLogListParams,
+  SystemAccountListParams,
+  SystemAccountOptionsParams,
+  TableMonitorDatabaseHistoryParams,
+  TableMonitorHistoryParams,
+  TableMonitorOverviewParams,
+  TeamListParams,
+  UsageOverviewParams,
+  UsageRecordListParams
+} from './contracts'
+
+export { setMustChangePasswordHandler, setUnauthorizedHandler } from './http'
+export { apiUrl } from './http'
+export type * from './contracts'
 
 export const api = {
   auth: {
@@ -746,6 +253,10 @@ export const api = {
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
     test: (id: string, payload?: AccountTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, signal: options?.signal })),
     testDraft: (payload: AccountDraftTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post('/accounts/test-draft', payload, { params, signal: options?.signal })),
+    createTestSession: (params?: ListParams) => unwrap<AccountTestSession>(http.post('/accounts/test-sessions', {}, { params })),
+    testSession: (sessionId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestSession>(http.get(`/accounts/test-sessions/${sessionId}`, { params, signal: options?.signal })),
+    heartbeatTestSession: (sessionId: string, params?: ListParams) => unwrap<AccountTestSession>(http.post(`/accounts/test-sessions/${sessionId}/heartbeat`, {}, { params })),
+    cancelTestSession: (sessionId: string, params?: ListParams) => unwrap<AccountTestSession>(http.post(`/accounts/test-sessions/${sessionId}/cancel`, {}, { params })),
     testTasks: (taskIds: string[], params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask[]>(http.get('/accounts/test-tasks', { params: { ...params, ids: taskIds.join(',') }, signal: options?.signal })),
     testTask: (taskId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.get(`/accounts/test-tasks/${taskId}`, { params, signal: options?.signal })),
     cancelTestTask: (taskId: string, params?: ListParams) => unwrap<AccountTestTask>(http.post(`/accounts/test-tasks/${taskId}/cancel`, {}, { params })),
@@ -769,6 +280,10 @@ export const api = {
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
     test: (id: string, payload?: AccountTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { signal: options?.signal })),
     testDraft: (payload: AccountDraftTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post('/my-accounts/test-draft', payload, { signal: options?.signal })),
+    createTestSession: () => unwrap<AccountTestSession>(http.post('/my-accounts/test-sessions', {})),
+    testSession: (sessionId: string, options?: RequestControlOptions) => unwrap<AccountTestSession>(http.get(`/my-accounts/test-sessions/${sessionId}`, { signal: options?.signal })),
+    heartbeatTestSession: (sessionId: string) => unwrap<AccountTestSession>(http.post(`/my-accounts/test-sessions/${sessionId}/heartbeat`, {})),
+    cancelTestSession: (sessionId: string) => unwrap<AccountTestSession>(http.post(`/my-accounts/test-sessions/${sessionId}/cancel`, {})),
     testTasks: (taskIds: string[], options?: RequestControlOptions) => unwrap<AccountTestTask[]>(http.get('/my-accounts/test-tasks', { params: { ids: taskIds.join(',') }, signal: options?.signal })),
     testTask: (taskId: string, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.get(`/my-accounts/test-tasks/${taskId}`, { signal: options?.signal })),
     cancelTestTask: (taskId: string) => unwrap<AccountTestTask>(http.post(`/my-accounts/test-tasks/${taskId}/cancel`, {})),
@@ -977,192 +492,4 @@ export const api = {
     get: () => unwrap<SystemSettings>(http.get('/settings')),
     update: (payload: SystemSettingsPatch) => unwrap<SystemSettings>(http.patch('/settings', payload))
   }
-}
-
-function stripSystemAccountParam<T extends object>(params?: T): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output = { ...params } as Record<string, unknown>
-  delete output.systemAccountId
-  return Object.keys(output).length ? output : undefined
-}
-
-function boundedAuthorizationListParams<T extends object>(params?: T): Record<string, unknown> {
-  return {
-    ...(params as Record<string, unknown> | undefined),
-    page: (params as { page?: unknown } | undefined)?.page ?? 1,
-    pageSize: (params as { pageSize?: unknown } | undefined)?.pageSize ?? 500
-  }
-}
-
-function stripAdminOperationLogParams(params?: OperationLogListParams): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output = { ...params } as Record<string, unknown>
-  delete output.actorSystemAccountId
-  delete output.affectedSystemAccountId
-  delete output.operationScopeSystemAccountId
-  return Object.keys(output).length ? output : undefined
-}
-
-function accountListParams(params?: AccountListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
-  if (params.page) output.page = params.page
-  if (params.pageSize) output.pageSize = params.pageSize
-  if (params.keyword) output.keyword = params.keyword
-  if (params.providerCode && params.providerCode !== 'all') output.providerCode = params.providerCode
-  if (params.groupId) output.groupId = params.groupId
-  const tagIds = joinedListParam(params.tagIds)
-  if (tagIds) output.tagIds = tagIds
-  if (params.type && params.type !== 'all') output.type = params.type
-  const status = joinedListParam(params.status)
-  if (status) output.status = status
-  if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
-  if (params.sorts?.length) {
-    output.sorts = params.sorts.map((sort) => `${sort.field}:${sort.order}`).join(',')
-  }
-  return output
-}
-
-function accountOptionsParams(params?: AccountOptionParams, includeSystemAccount = true): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
-  if (params.page) output.page = params.page
-  if (params.limit) output.limit = params.limit
-  if (params.ids?.length) output.ids = params.ids.join(',')
-  if (params.keyword) output.keyword = params.keyword
-  if (params.providerCode && params.providerCode !== 'all') output.providerCode = params.providerCode
-  if (params.groupId) output.groupId = params.groupId
-  const tagIds = joinedListParam(params.tagIds)
-  if (tagIds) output.tagIds = tagIds
-  if (params.type && params.type !== 'all') output.type = params.type
-  const status = joinedListParam(params.status)
-  if (status) output.status = status
-  if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
-  return Object.keys(output).length ? output : undefined
-}
-
-function joinedListParam(value?: string | string[]): string | undefined {
-  const values = Array.isArray(value) ? value : value ? [value] : []
-  const normalizedValues = values
-    .flatMap((item) => item.split(','))
-    .map((item) => item.trim())
-    .filter((item) => item && item !== 'all')
-  return normalizedValues.length ? [...new Set(normalizedValues)].join(',') : undefined
-}
-
-function groupListParams(params?: GroupListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
-  if (params.page) output.page = params.page
-  if (params.pageSize) output.pageSize = params.pageSize
-  return Object.keys(output).length ? output : undefined
-}
-
-function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>, includeSystemAccount = true): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (includeSystemAccount && 'systemAccountId' in params && params.systemAccountId) output.systemAccountId = params.systemAccountId
-  if ('ids' in params && params.ids?.length) output.ids = params.ids.join(',')
-  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
-  if (params.limit) output.limit = params.limit
-  if (typeof params.manageableOnly === 'boolean') output.manageableOnly = params.manageableOnly
-  if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
-  return Object.keys(output).length ? output : undefined
-}
-
-function teamListParams(params?: TeamListParams | Omit<TeamListParams, 'systemAccountId'>, includeSystemAccount = true): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (includeSystemAccount && 'systemAccountId' in params && params.systemAccountId) output.systemAccountId = params.systemAccountId
-  if (params.page) output.page = params.page
-  if (params.pageSize) output.pageSize = params.pageSize
-  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  return Object.keys(output).length ? output : undefined
-}
-
-function authorizationPrincipalOptionsParams(params?: AuthorizationPrincipalOptionsParams): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (params.ids?.length) output.ids = params.ids.join(',')
-  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  if (params.limit) output.limit = params.limit
-  return Object.keys(output).length ? output : undefined
-}
-
-function authorizationGranteeGroupOptionsParams(params: AuthorizationGranteeGroupOptionsParams): Record<string, unknown> {
-  const output = authorizationPrincipalOptionsParams(params) ?? {}
-  output.granteeSystemAccountId = params.granteeSystemAccountId
-  if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
-  if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
-  return output
-}
-
-function systemAccountOptionsParams(params?: SystemAccountOptionsParams): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (params.ids?.length) output.ids = params.ids.join(',')
-  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  if (params.limit) output.limit = params.limit
-  return Object.keys(output).length ? output : undefined
-}
-
-function systemAccountListParams(params?: SystemAccountListParams): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (params.page) output.page = params.page
-  if (params.pageSize) output.pageSize = params.pageSize
-  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  return Object.keys(output).length ? output : undefined
-}
-
-function accountUsageStatsParams(params?: AccountUsageStatsParams, includeSystemAccount = true): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
-  if (params.page) output.page = params.page
-  if (params.pageSize) output.pageSize = params.pageSize
-  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  if (params.startDate) output.startDate = params.startDate
-  if (params.endDate) output.endDate = params.endDate
-  if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
-  if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
-  return Object.keys(output).length ? output : undefined
-}
-
-function aiPerformanceParams(params?: AiPerformanceParams, includeSystemAccount = true): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
-  if (params.startDate) output.startDate = params.startDate
-  if (params.endDate) output.endDate = params.endDate
-  if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
-  return Object.keys(output).length ? output : undefined
-}
-
-function aiPerformanceAccountOptionsParams(params?: AiPerformanceAccountOptionsParams, includeSystemAccount = true): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
-  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
-  if (params.limit) output.limit = params.limit
-  return Object.keys(output).length ? output : undefined
-}
-
-function modelCheckRunListParams(params?: ModelCheckRunListParams): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (params.systemAccountId?.trim()) output.systemAccountId = params.systemAccountId.trim()
-  if (params.page) output.page = params.page
-  if (params.pageSize) output.pageSize = params.pageSize
-  if (params.targetType) output.targetType = params.targetType
-  if (params.targetId?.trim()) output.targetId = params.targetId.trim()
-  if (params.model) output.model = params.model
-  if (params.level) output.level = params.level
-  if (params.status) output.status = params.status
-  return Object.keys(output).length ? output : undefined
 }

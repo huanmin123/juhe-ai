@@ -6,11 +6,11 @@ import { dirname, resolve } from 'node:path'
 import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import {
   parseOpenAIUsageFromJsonBuffer
-} from '../../modules/gateway/openai-gateway-usage.js'
+} from '../../modules/gateway/protocols/openai-v1/usage.js'
 import {
   inspectOpenAIStreamText,
   OpenAIStreamInspector
-} from '../../modules/gateway/openai-gateway-stream-inspection.js'
+} from '../../modules/gateway/protocols/openai-v1/stream-inspection.js'
 import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { retryDelayMs, retryAttemptCount, sequenceRetryPolicy } from '../../shared/retry-policy.js'
@@ -411,16 +411,16 @@ assert.deepEqual([
 ], [3000, 10000, 30000])
 await assertRetryQueueRetainsFailedItems()
 
-const gatewayUsageRecordsSource = readSource('modules/gateway/openai-gateway-usage-records.ts')
+const gatewayUsageRecordsSource = readSource('modules/gateway/usage/records.ts')
 assert.match(gatewayUsageRecordsSource, /function recordCompletedUpstreamAttempt/)
 assert.match(gatewayUsageRecordsSource, /recordClientAbortedUpstreamAttempt/)
 
-const gatewayResponseFinalizationSource = readSource('modules/gateway/openai-gateway-response-finalization.ts')
+const gatewayResponseFinalizationSource = readSource('modules/gateway/response/finalization.ts')
 assert.match(gatewayResponseFinalizationSource, /applyOpenAIStreamUsageFallback/)
 assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/)
 assert.match(gatewayResponseFinalizationSource, /errorMessage:\s*'上游响应体为空'/)
 
-const gatewayFailureDispatchSource = readSource('modules/gateway/openai-gateway-failure-dispatch.ts')
+const gatewayFailureDispatchSource = readSource('modules/gateway/response/failure-dispatch.ts')
 assert.match(gatewayFailureDispatchSource, /shouldRecordAbortedUpstreamAttempt/)
 assert.match(gatewayFailureDispatchSource, /suppressGatewayAccountLocally/)
 assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryPolicyAttempt/)
@@ -430,11 +430,11 @@ const retryPolicySource = readSource('shared/retry-policy.ts')
 assert.match(retryPolicySource, /export function retryAttemptCount/)
 assert.match(retryPolicySource, /export function shouldRetryPolicyAttempt/)
 
-const gatewayDispatchHelpersSource = readSource('modules/gateway/openai-gateway-dispatch-helpers.ts')
+const gatewayDispatchHelpersSource = readSource('modules/gateway/dispatch/helpers.ts')
 assert.doesNotMatch(gatewayDispatchHelpersSource, /temporaryUnschedulableRetryPolicy/)
 assert.doesNotMatch(gatewayDispatchHelpersSource, /gateway_temporary_unschedulable_same_account_retry/)
 
-const gatewayUpstreamDispatchSource = readSource('modules/gateway/openai-gateway-upstream-dispatch.ts')
+const gatewayUpstreamDispatchSource = readSource('modules/gateway/dispatch/upstream-dispatch.ts')
 assert.match(gatewayUpstreamDispatchSource, /gateway_temporary_unschedulable_same_account_retry/)
 assert.doesNotMatch(gatewayUpstreamDispatchSource, /temporaryUnschedulableRetryPolicy/)
 assert.match(gatewayUpstreamDispatchSource, /retryAttemptCount\(sameAccountRetryPolicy\)/)
@@ -496,7 +496,7 @@ assert.match(accountTestTaskQueueSource, /testOpenAIDraftAccountWithDiagnosticRe
 assert.match(accountTestTaskQueueSource, /openAIDraftAccountSecret\(draft,\s*attemptSignal\)/, '草稿账号 OAuth 刷新必须纳入单次诊断 attempt 的超时 signal')
 assert.match(accountTestTaskQueueSource, /diagnosticAccountTestGatewaySettingsOverride\(undefined,\s*timeoutMs\)/)
 
-const accountErrorPolicySource = readSource('modules/gateway/account-error-policy.service.ts')
+const accountErrorPolicySource = readSource('modules/gateway/policy/account-error-policy.service.ts')
 assert.match(accountErrorPolicySource, /accountErrorPolicyUpstreamSummary/)
 assert.match(accountErrorPolicySource, /accountErrorPolicyReason\(statusCode,\s*decision,\s*upstreamSummary\)/)
 
@@ -534,7 +534,7 @@ assert.match(cooldownAccountRetestSource, /findRecentOpenAIRequestShapeForAccoun
 assert.match(cooldownAccountRetestSource, /account\.boundGroupId/)
 assert.doesNotMatch(cooldownAccountRetestSource, /waitForRetryDelay/)
 
-const gatewayAccountSideEffectsSource = readSource('modules/gateway/gateway-account-side-effects.service.ts')
+const gatewayAccountSideEffectsSource = readSource('modules/gateway/runtime/account-side-effects.service.ts')
 assert.match(gatewayAccountSideEffectsSource, /runSingleGatewayAccountPrecheck/)
 assert.match(gatewayAccountSideEffectsSource, /diagnostics:\s*'full'/)
 assert.doesNotMatch(gatewayAccountSideEffectsSource, /diagnostics:\s*'limited'/)
@@ -544,7 +544,7 @@ assert.match(gatewayAccountSideEffectsSource, /errorCode\?:\s*string/)
 assert.match(gatewayAccountSideEffectsSource, /precheckMaxAttempts\s*=\s*accountDiagnosticRetryTimeoutMs\.length/)
 assert.match(gatewayAccountSideEffectsSource, /diagnosticAccountTestGatewaySettingsOverride\(state\.settings,\s*timeoutMs\)/)
 assert.doesNotMatch(gatewayAccountSideEffectsSource, /precheckAttemptTimeoutMs|precheckRetryDelayMs|45_000/)
-const codexSwitchProbeSource = readSource('modules/gateway/openai-gateway-codex-switch-probe.ts')
+const codexSwitchProbeSource = readSource('modules/gateway/client-profiles/codex-switch-probe.ts')
 assert.match(codexSwitchProbeSource, /accountDiagnosticRetryTimeoutMs/)
 assert.match(codexSwitchProbeSource, /diagnosticAttemptSignal\(input\.signal,\s*timeoutMs\)/)
 assert.match(codexSwitchProbeSource, /isDiagnosticTimeoutSignal\(attemptSignal\)/)
@@ -732,7 +732,7 @@ assert.match(nonBusinessDataCleanupSchemaSource, /maxBatches:\s*z\.number\(\)\.i
 assert.match(nonBusinessDataCleanupSchemaSource, /\}\)\.strict\(\)/)
 assert.doesNotMatch(nonBusinessDataCleanupSchemaSource, /z\.coerce\.number/)
 
-const gatewayBodySource = readSource('modules/gateway/openai-gateway-body.ts')
+const gatewayBodySource = readSource('modules/gateway/upstream/body.ts')
 assert.match(gatewayBodySource, /responseBackpressureWarnThresholdMs\s*=\s*50/)
 assert.match(gatewayBodySource, /gateway_response_backpressure_slow/)
 assert.match(gatewayBodySource, /gateway_response_backpressure_drained/)
@@ -744,11 +744,11 @@ assert.match(nonStreamPipeSource, /NonStreamUpstreamBodyPipeError/, '非流式�
 const gatewayForcedCloseSource = sourceFunctionBlock(gatewayBodySource, 'export function isGatewayForcedDownstreamClose')
 assert.match(gatewayForcedCloseSource, /gatewayForcedDownstreamCloseReasonKey/, '网关主动打断下游连接必须可被路由 close 监听识别，避免误记为客户端取消')
 
-const gatewayStreamSource = readSource('modules/gateway/openai-gateway-stream.ts')
+const gatewayStreamSource = readSource('modules/gateway/response/stream.ts')
 assert.match(gatewayStreamSource, /writeResult\.logLevel\s*===\s*'warn'/)
 assert.match(gatewayStreamSource, /responseBackpressureWarnThresholdMs/)
 
-const gatewayUpstreamSource = readSource('modules/gateway/openai-gateway-upstream.ts')
+const gatewayUpstreamSource = readSource('modules/gateway/upstream/request.ts')
 const upstreamRequestTimeoutSource = sourceFunctionBlock(gatewayUpstreamSource, 'export function upstreamRequestTimeoutMs')
 assert.match(upstreamRequestTimeoutSource, /settings\.streamRequestTimeoutSeconds/, '首包等待上限应统一用于上游首个响应等待')
 assert.doesNotMatch(upstreamRequestTimeoutSource, /isEffectiveOpenAIStreamRequest|streamCircuitBreakerEnabled/, '非流式请求也必须应用首包等待上限，不能只在流式熔断开启时生效')
@@ -759,7 +759,7 @@ assert.match(releaseStartScriptSource, /JUHE_AI_LOG_CONSOLE_ENABLED="\$\{JUHE_AI
 const oauthRoutesSource = readSource('modules/openai-oauth/openai-oauth.routes.ts')
 assert.doesNotMatch(oauthRoutesSource, /refreshOpenAIOAuthUsageSnapshot/)
 
-const gatewayRoutesSource = readSource('modules/gateway/openai-gateway.routes.ts')
+const gatewayRoutesSource = readSource('modules/gateway/routes.ts')
 assert.match(gatewayRoutesSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*upstreamResponse\.headers,\s*gatewayUsageContext\.trafficSource\)/)
 assert.match(gatewayRoutesSource, /!isGatewayForcedDownstreamClose\(res\)/, '网关主动关闭非流式半截响应时不应被 close 监听误判为客户端取消')
 assert.match(gatewayFailureDispatchSource, /usageContext\.trafficSource === 'gateway' \? 'gateway_error' : usageContext\.trafficSource/)

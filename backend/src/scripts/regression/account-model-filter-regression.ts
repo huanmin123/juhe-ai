@@ -13,9 +13,9 @@ import {
 import {
   filterGatewayAccountsByRequestedModel,
   gatewayModelFilterFailureMessage
-} from '../../modules/gateway/openai-gateway-model-filter.js'
+} from '../../modules/gateway/dispatch/model-filter.js'
 import { logger } from '../../shared/logger.js'
-import type { UpstreamAccount } from '../../modules/gateway/openai-gateway-route-helpers.js'
+import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import type { AccountModelMapping } from '../../domain/types.js'
 
 function account(id: string, supportedModels?: string[], modelMappings?: AccountModelMapping[]): UpstreamAccount {

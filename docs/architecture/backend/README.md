@@ -16,6 +16,7 @@
   - [../../functions/OpenAI账号接入.md](../../functions/OpenAI账号接入.md)
   - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
   - [后台任务使用说明](后台任务使用说明.md)
+  - [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md)
   - [开发运行说明](../../develop/运行说明.md)
   - [开发测试与验证说明](../../develop/测试与验证说明.md)
 
@@ -73,12 +74,12 @@
 | 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
 | API Key | `modules/api-keys/` | 本地网关密钥创建、展示、状态和分组绑定 |
 | 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |
-| 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/account-error-policy.service.ts` | 账户 `credentials.error_handling_rules` 校验、非 2xx 错误匹配、冷却 / 限流 / 异常目标和切号动作 |
+| 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/policy/account-error-policy.service.ts` | 账户 `credentials.error_handling_rules` 校验、非 2xx 错误匹配、冷却 / 限流 / 异常目标和切号动作 |
 | 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
 | 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
 | 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
 | 设置 | `modules/settings/` | 全局设置和系统账户级设置读写 |
-| 网关 | `modules/gateway/openai-gateway.routes.ts` | `/*` / `/v1/*` 入口、账号调度、运行态并发占用、上游转发、使用记录写入和审计上下文捕获 |
+| 网关 | `modules/gateway/routes.ts` | `/*` / `/v1/*` 入口、账号调度、运行态并发占用、上游转发、使用记录写入和审计上下文捕获 |
 
 ## 5. 请求分层
 
@@ -98,7 +99,7 @@ flowchart LR
 - `/__aisys__/api/*` 和 `/__aipublic__/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 / 公开系统 API JSON body，不直接导入管理路由或 repository。代理层只做流式转发，并保留最大 in-flight 请求数和内部超时，避免慢 DB service 把主进程 socket 无限堆积。
 - 独立 public-api 进程方案已评估但暂不实施，见 [公开接口独立进程设计](../../functions/公开接口独立进程设计.md) 和 `PLAN-0036`；当前仍以上述 DB service 代理描述为准。
 - DB service 内部系统 API 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
-- 账户测试、模型检测和代理检测会在 DB service 进程内发起外部网络探测；这些诊断入口共享固定 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
+- 账号测试、模型检测和代理检测都会发起外部网络探测，但账号测试使用后台 worker 的独立任务模型：管理 API 只提交任务和 session，worker 按系统设置 `accountTestTaskConcurrency` 控制全站并发，默认 100，排队时间不计入 60 秒运行超时。模型检测和代理检测继续共享 DB service 诊断任务 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
 - 同一 router 如果同时承载管理列表和登录用户可用的轻量辅助接口，不要把 `requireAdmin` 直接挂在整段 mount 上，应把管理员校验下沉到具体管理路由。例如供应商列表需要管理员权限，但供应商模型目录用于普通用户账户表单，必须允许登录用户读取。
 - 新增普通用户可见页面调用的接口时，必须在 `backend/src/scripts/regression/scope-boundary-regression.ts` 补普通用户可访问断言；新增 `my-*` 命名空间下仍属于管理员能力的例外时，也要补普通用户 403 断言，避免前端误暴露后才发现。
 - routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。
@@ -259,6 +260,7 @@ erDiagram
 
 - 后台任务必须由独立 background worker 进程注册和执行，主 Web 进程不得直接调用 `startBackgroundJobs()` 或导入具体任务实现。
 - 新增或调整后台定时任务、worker IPC 消息、队列 flush 或 worker 生命周期时，先按 [后台任务使用说明](后台任务使用说明.md) 执行。
+- 涉及多 worker、worker 角色、job registry、任务租约、热点隔离或进程拓扑调整时，先按 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md) 执行；worker 数量不设固定上限，但必须有明确隔离域、队列上限、租约边界和健康指标。
 - 主 Web 进程只负责系统 API 代理、网关请求、静态资源和必要的 DB service / worker 启动看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
 - 当前后台任务包括使用记录增量聚合、分组账户统计缓存刷新、授权到期扫描、系统指标采样、小时级指标聚合、OpenAI OAuth Access Token 保活、冷却账号复测、运行日志索引 flush、原始审计日志批量落库和统一表数据保留期清理。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
@@ -288,6 +290,6 @@ erDiagram
 - 涉及管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，同时看 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
 - 涉及敏感字段、凭据展示、请求快照、原始审计日志、日志脱敏、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
 - 涉及 GPT OAuth、API Key 账户、上游请求或账号测试时，同时看 [OpenAI 账号接入](../../functions/OpenAI账号接入.md) 和 [请求处理分层设计](../../functions/请求处理分层设计.md)。
-- 涉及后台定时任务、worker IPC、队列 flush、统计聚合或批量清理时，同时看 [后台任务使用说明](后台任务使用说明.md)。
+- 涉及后台定时任务、worker IPC、队列 flush、统计聚合或批量清理时，同时看 [后台任务使用说明](后台任务使用说明.md)；涉及多 worker 拆分、热点隔离、任务租约或 worker 角色配置时，同时看 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md)。
 - 涉及透传、请求头、SSE、错误切换或网关行为时，同时看 [中转透传机制调研与定位修正](../../functions/中转透传机制调研与定位修正.md)。
 - 涉及运行、联调和验证时，按 [开发运行说明](../../develop/运行说明.md) 和 [开发测试与验证说明](../../develop/测试与验证说明.md) 执行。

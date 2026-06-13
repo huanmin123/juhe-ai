@@ -287,13 +287,13 @@ flowchart TD
 
 ## 实现落点
 
-- 新增 `backend/src/modules/gateway/openai-gateway-client-ip-error-circuit.service.ts`：维护进程内窗口、熔断状态、采样和测试辅助清理。
-- `openai-gateway-request.ts`：认证前检查缺失 Bearer / 重复无效 token 的窄作用域熔断；随机无效 token 只在验证失败后软熔断，不挡有效 token。
-- `openai-gateway-request-preflight.ts`：认证后、账号调度前检查当前来源是否已熔断；命中后返回本地 `429`。
-- `openai-gateway-request-preflight.ts` / `openai-gateway.routes.ts`：本地校验失败和 OAuth/Codex adapter 本地请求校验失败收口时记录来源错误样本。
-- `openai-gateway-response-finalization.ts`：完整成功后降低或清理当前来源错误态。
-- `openai-gateway-upstream-dispatch.ts` / `openai-gateway-failure-dispatch.ts`：账号级、容量级和未知账号池失败都不计入来源错误熔断；普通上游失败必须先走本地账号屏蔽、切号、等待和统一网关错误，不复用 IP 级错误熔断的本地 429。
-- `audit-capture.service.ts`、`openai-gateway-usage.ts`、`usage-record-queue.service.ts`：审计 payload 和使用记录 snapshot 入队 / 落库前不再统一脱敏凭据类 headers、敏感字段和 URL 敏感查询参数；只保留容量和结构边界，不影响真实转发 headers。
+- 新增 `backend/src/modules/gateway/runtime/client-ip-error-circuit.service.ts`：维护进程内窗口、熔断状态、采样和测试辅助清理。
+- `request/pre-auth.ts`：认证前检查缺失 Bearer / 重复无效 token 的窄作用域熔断；随机无效 token 只在验证失败后软熔断，不挡有效 token。
+- `request/preflight.ts`：认证后、账号调度前检查当前来源是否已熔断；命中后返回本地 `429`。
+- `request/preflight.ts` / `routes.ts`：本地校验失败和 OAuth/Codex adapter 本地请求校验失败收口时记录来源错误样本。
+- `response/finalization.ts`：完整成功后降低或清理当前来源错误态。
+- `dispatch/upstream-dispatch.ts` / `response/failure-dispatch.ts`：账号级、容量级和未知账号池失败都不计入来源错误熔断；普通上游失败必须先走本地账号屏蔽、切号、等待和统一网关错误，不复用 IP 级错误熔断的本地 429。
+- `audit/capture.service.ts`、`upstream/headers.ts`、`usage/snapshots.ts`、`usage/record-queue.service.ts`：审计 payload 和使用记录 snapshot 入队 / 落库前不再统一脱敏凭据类 headers、敏感字段和 URL 敏感查询参数；只保留容量和结构边界，不影响真实转发 headers。
 - 回归脚本：新增 `client-ip-error-circuit-regression.ts`，覆盖认证前缺失 Bearer 熔断、重复无效 token 熔断、随机无效 token 不挡有效 token、本地高置信错误熔断、成功恢复、同一 API Key 不同分组共享熔断、不同 IP / API Key / 系统账户隔离、未知上游账号池失败不采样、账号失败不触发、容量失败不触发；在审计保全回归中覆盖审计 payload、审计 queryString 和使用记录 snapshot 的原文保存。
 
 ## 深度思考与风险

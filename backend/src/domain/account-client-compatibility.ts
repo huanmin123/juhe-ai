@@ -16,8 +16,11 @@ export function normalizeOpenAIAccountClientCompatibility(
   fallback: AccountClientCompatibility = 'openai_standard',
   protocolProfile?: { protocolCode?: string; protocolVersion?: string }
 ): AccountClientCompatibility {
-  if (isGptVendorCode(providerCode) && isOpenAIProtocolProfile(protocolProfile) && accountType === 'oauth') {
-    return 'codex_responses'
+  if (isGptVendorCode(providerCode) && isOpenAIProtocolProfile(protocolProfile)) {
+    if (accountType === 'oauth') {
+      return 'codex_responses'
+    }
+    return normalizeAccountClientCompatibility(value, 'codex_responses')
   }
   return normalizeAccountClientCompatibility(value, fallback)
 }

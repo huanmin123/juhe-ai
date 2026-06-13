@@ -29,7 +29,7 @@ const [
   import('../../storage/repositories.js'),
   import('../../modules/db-service/db-service-handlers.js'),
   import('../../modules/db-service/db-service-ipc.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js')
+  import('../../modules/gateway/runtime/runtime-cache.service.js')
 ])
 
 class FakeDbServiceChild extends EventEmitter {

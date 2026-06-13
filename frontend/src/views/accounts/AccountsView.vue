@@ -162,7 +162,6 @@
       :base-url-placeholder="selectedProtocolProfile?.baseUrl || selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
       :confirm-loading="modalConfirmLoading"
       :credential-title="selectedAccountTypeTitle"
-      :cloning="Boolean(cloningSourceId)"
       :editing="Boolean(editingId)"
       :account-detail="editingAccountDetail"
       :form="form"
@@ -187,7 +186,6 @@
       :test-button-disabled="accountEditTestButtonDisabled"
       :test-loading="testRunning"
       :title="modalTitle"
-      :target-system-account-label="targetSystemAccountLabel"
       @cancel="handleModalCancel"
       @copy-auth-url="copyText"
       @delete-tag="deleteAccountTag"
@@ -439,7 +437,6 @@ const {
   authLoading,
   authResult,
   availableProviders,
-  cloningSourceId,
   createScopeParams,
   editingAccountDetail,
   editingId,

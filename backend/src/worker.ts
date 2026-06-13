@@ -36,8 +36,9 @@ import {
   flushUsageRecordQueueForShutdown,
   getUsageRecordQueueRuntime,
   installUsageRecordQueueShutdownHooks
-} from './modules/gateway/usage-record-queue.service.js'
+} from './modules/gateway/usage/record-queue.service.js'
 import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cooldown-account-retest.service.js'
+import { getAccountQualityFailurePrecheckQueueSnapshot } from './modules/background/account-quality-failure-precheck.service.js'
 import {
   cancelAccountTestTaskLocal,
   enqueueAccountTestTaskLocal,
@@ -172,6 +173,7 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     }),
     runtimeLogIndexQueue: runtimeLogQueueRuntime(runtimeLogRuntime),
     cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot(),
+    accountQualityFailurePrecheckQueue: getAccountQualityFailurePrecheckQueueSnapshot(),
     manualAccountTestQueue: getManualAccountTestQueueSnapshot()
   }
 }

@@ -34,8 +34,8 @@ const [
   import('../../modules/model-checks/model-checks.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
-  import('../../modules/gateway/openai-gateway-json-parser.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
+  import('../../modules/gateway/request/json-parser.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/usage-record-shards.js')

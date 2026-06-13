@@ -8,7 +8,7 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'server'
 logger.level = 'silent'
 
-const accountSideEffects = await import('../../modules/gateway/gateway-account-side-effects.service.js')
+const accountSideEffects = await import('../../modules/gateway/runtime/account-side-effects.service.js')
 
 try {
   accountSideEffects.clearGatewayAccountSideEffectQueueForTest()

@@ -32,7 +32,7 @@ const [
   import('../../modules/db-service/db-service-handlers.js'),
   import('../../modules/db-service/db-service-ipc.js'),
   import('../../modules/openai-oauth/openai-oauth-access-token-refresh.service.js'),
-  import('../../modules/gateway/openai-gateway-account-preparation.js')
+  import('../../modules/gateway/dispatch/account-preparation.js')
 ])
 
 class FakeDbServiceChild extends EventEmitter {

@@ -58,6 +58,17 @@ try {
     groupId: group.id,
     status: 'active'
   }, access)
+  const failureCandidateAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '质量刷新频繁失败候选账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-quality-frequent-failure',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id,
+    status: 'active'
+  }, access)
   const batchAccounts = Array.from({ length: 5 }, (_, index) => repositories.createAccount({
     providerCode: 'gpt',
     name: `质量刷新批量账户 ${index}`,
@@ -83,6 +94,16 @@ try {
     `)
     .run(account.id, 'sys_admin', 'gpt', statMinute, now, now, '质量刷新模拟错误', now)
   markAccountQualityDirty(account.id, now)
+  statsDatabase
+    .prepare(`
+      INSERT INTO account_quality_minute_stats (
+        account_id, system_account_id, provider_code, stat_minute,
+        request_count, success_count, error_count, first_token_ms_sum, first_token_ms_count,
+        last_sample_at, last_success_at, last_error_at, last_error_message, updated_at
+      ) VALUES (?, ?, ?, ?, 5, 0, 5, 0, 0, ?, NULL, ?, ?, ?)
+    `)
+    .run(failureCandidateAccount.id, 'sys_admin', 'gpt', statMinute, now, now, '质量刷新模拟频繁错误', now)
+  markAccountQualityDirty(failureCandidateAccount.id, now)
   for (const [index, batchAccount] of batchAccounts.entries()) {
     statsDatabase
       .prepare(`
@@ -133,7 +154,7 @@ try {
   } finally {
     statsDatabase.prepare = originalPrepare
   }
-  assert.equal(result.refreshed, 1 + batchAccounts.length, '账号质量刷新应处理分钟桶样本')
+  assert.equal(result.refreshed, 2 + batchAccounts.length, '账号质量刷新应处理分钟桶样本')
   assert.equal(qualityScoreUpsertPrepares, 1, '账号质量刷新应复用 account_quality_scores upsert statement')
   assert.equal(inactiveQualityMinuteCount(inactiveAccountId), 205, '账号质量刷新应小批清理已失效账户分钟桶，剩余等待后续轮次')
   assert.equal(accountQualityDirtyCount(), 0, '账号质量刷新成功后应删除已消费的 dirty 账号窗口')
@@ -151,6 +172,22 @@ try {
   assert.equal(listedAccount?.effectiveAvailability.status, 'available', '账号质量反馈不应改变可用性筛选语义')
   assert.equal(listedAccount?.qualityRecentErrorCount, 1, '账户列表应返回近窗口失败数，供状态列细分正常状态')
   assert.equal(listedAccount?.qualityLastErrorMessage, '质量刷新模拟错误', '账户列表应返回最后质量错误，供状态 tooltip 解释')
+  const failureCandidates = accountQualityRepository.listAccountQualityFailurePrecheckCandidates(10)
+  const failureCandidate = failureCandidates.find((item) => item.accountId === failureCandidateAccount.id)
+  assert(failureCandidate, '近窗口频繁失败账户应进入后台确认候选')
+  assert.equal(failureCandidate.recentRequestCount, 5)
+  assert.equal(failureCandidate.recentErrorCount, 5)
+  assert.equal(failureCandidate.successRate, 0)
+  assert.equal(
+    failureCandidates.some((item) => item.accountId === account.id),
+    false,
+    '普通单次失败质量反馈不应进入后台确认候选'
+  )
+  assert.equal(
+    repositories.findAccountSummary(failureCandidateAccount.id, access)?.status,
+    'active',
+    '账号质量刷新只生成确认候选，不直接写持久临时不可调用'
+  )
   const staleRow = statsDatabase
     .prepare('SELECT quality_state, recent_request_count FROM account_quality_scores WHERE account_id = ?')
     .get(staleAccount.id) as { quality_state?: string; recent_request_count?: number } | undefined
@@ -202,13 +239,20 @@ function assertSourceGuards(): void {
   const source = readFileSync(resolve('src/storage/account-quality.repository.ts'), 'utf8')
   const schemaSource = readFileSync(resolve('src/storage/schema/stats-schema.ts'), 'utf8')
   const writerSource = readFileSync(resolve('src/storage/usage-stats-writers.ts'), 'utf8')
+  const failurePrecheckSource = readFileSync(resolve('src/modules/background/account-quality-failure-precheck.service.ts'), 'utf8')
   assert.doesNotMatch(source, /SELECT id, system_account_id, provider_code FROM accounts'\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部账号元数据')
   assert.doesNotMatch(source, /SELECT \$\{accountQualitySelectColumns\(\)\} FROM account_quality_scores`\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部质量缓存')
   assert.doesNotMatch(source, /FROM account_quality_minute_stats quality_stats\s+WHERE quality_stats\.stat_minute >= \?\s+GROUP BY quality_stats\.account_id/i, '账号质量刷新不应按近窗口全量 GROUP BY 所有样本账号')
   assert.match(source, /account_quality_dirty_accounts INDEXED BY idx_account_quality_dirty_accounts_updated/, '账号质量刷新应先读取固定 dirty 账号窗口')
+  assert.match(source, /listAccountQualityFailurePrecheckCandidates/, '账号质量刷新应暴露频繁失败确认候选查询')
+  assert.match(source, /account_quality_scores INDEXED BY idx_account_quality_scores_failure_precheck/, '频繁失败确认候选查询应命中专用索引')
+  assert.match(schemaSource, /idx_account_quality_scores_failure_precheck/, '统计库应为账号质量频繁失败确认候选提供索引')
   assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts/, '统计库应保存账号质量 dirty 游标表')
   assert.match(schemaSource, /idx_account_quality_dirty_accounts_updated/, '账号质量 dirty 表应有更新时间窗口索引')
   assert.match(writerSource, /markAccountQualityDirty/, '用量统计写入账号质量分钟桶时应同步打 dirty 标记')
+  assert.match(failurePrecheckSource, /findAccountForTest\(item\.accountId,\s*accountAccess\)/, '频繁失败确认应按质量样本所属系统账户上下文读取账户')
+  assert.match(failurePrecheckSource, /markAccountTestTemporaryUnavailable/, '频繁失败确认落库应复用账户测试临时不可调用语义')
+  assert.match(failurePrecheckSource, /trafficSource:\s*'cooldown_retest'/, '频繁失败确认探针不应写入普通网关质量样本')
   assert.match(source, /loadQualityAccountMetadataByIds/, '账号质量刷新应按样本或固定候选账号批量补业务元数据')
   assert.match(source, /ORDER BY updated_at ASC, account_id ASC\s+LIMIT \?/, '账号质量缓存清理和 stale 推进必须按固定批次')
   assert.match(source, /temp_refreshed_quality_accounts/, '账号质量 stale 推进应避开本轮已刷新账号')

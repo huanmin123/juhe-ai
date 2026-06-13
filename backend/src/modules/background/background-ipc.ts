@@ -5,7 +5,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
-import type { GatewayQuotaSnapshot } from '../gateway/gateway-quota-snapshot-cache.service.js'
+import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
@@ -68,6 +68,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   auditLogQueue: BackgroundWorkerQueueRuntime
   runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
   cooldownAccountRetestQueue?: BackgroundWorkerRetryQueueRuntime
+  accountQualityFailurePrecheckQueue?: BackgroundWorkerRetryQueueRuntime
   manualAccountTestQueue?: BackgroundWorkerRetryQueueRuntime
 }
 
@@ -1163,18 +1164,18 @@ function markParentIpcBroken(error: unknown): void {
 
 async function clearServerGatewayRuntimeCache(): Promise<void> {
   const dbServiceIpc = await import('../db-service/db-service-ipc.js')
-  const gatewayCache = await import('../gateway/gateway-runtime-cache.service.js')
+  const gatewayCache = await import('../gateway/runtime/runtime-cache.service.js')
   gatewayCache.clearGatewayRuntimeCacheLocal()
   dbServiceIpc.clearDbServiceGatewayRuntimeCache()
 }
 
 async function clearServerAccountRuntimeAvailability(target: AccountRuntimeAvailabilityClearTarget): Promise<void> {
-  const gatewaySideEffects = await import('../gateway/gateway-account-side-effects.service.js')
+  const gatewaySideEffects = await import('../gateway/runtime/account-side-effects.service.js')
   gatewaySideEffects.clearGatewayAccountRuntimeAvailability(target)
 }
 
 async function replaceServerGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): Promise<void> {
-  const quotaSnapshotCache = await import('../gateway/gateway-quota-snapshot-cache.service.js')
+  const quotaSnapshotCache = await import('../gateway/quota/quota-snapshot-cache.service.js')
   quotaSnapshotCache.replaceGatewayQuotaSnapshot(snapshot)
 }
 

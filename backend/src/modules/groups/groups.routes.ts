@@ -7,7 +7,7 @@ import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, 
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { applyServerAccountConcurrencyToGroupList } from '../gateway/gateway-runtime-snapshot.service.js'
+import { applyServerAccountConcurrencyToGroupList } from '../gateway/runtime/runtime-snapshot.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const groupsRouter = Router()

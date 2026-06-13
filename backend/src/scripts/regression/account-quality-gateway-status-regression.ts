@@ -33,19 +33,23 @@ const [
   usageRecordQueue,
   auditLogQueue,
   usageStatsRepository,
-  accountQualityRepository
+  accountQualityRepository,
+  accountQualityFailurePrecheckService,
+  cooldownRetestService
 ] = await Promise.all([
-  import('../../modules/gateway/openai-gateway.routes.js'),
-  import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
+  import('../../modules/gateway/routes.js'),
+  import('../../modules/gateway/request/body-middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../../modules/gateway/gateway-account-side-effects.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../storage/usage-stats.repository.js'),
-  import('../../storage/account-quality.repository.js')
+  import('../../storage/account-quality.repository.js'),
+  import('../../modules/background/account-quality-failure-precheck.service.js'),
+  import('../../modules/background/cooldown-account-retest.service.js')
 ])
 
 interface MockUpstreamState {
@@ -135,7 +139,72 @@ try {
     assert.equal(Math.round((listed.qualityRecentSuccessRate ?? 0) * 100), 17, '账户列表应返回真实聚合的近窗口成功率')
     assert.match(listed.qualityLastErrorMessage ?? '', /mock upstream 504/, '账户列表应返回 mock 上游最后失败原因')
 
-    console.log('账号质量状态 mock AI 回归通过：真实网关 5 次 504 后 1 次成功，账户仍 active/available，列表返回近窗口失败反馈')
+    upstreamState.mode = 'failure'
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    const failureGroup = repositories.createGroup({
+      name: '状态质量确认失败 mock AI 分组',
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      enabled: true
+    }, access)
+    const failureAccount = repositories.createAccount({
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      name: '状态质量确认失败 mock AI 账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-quality-precheck-failure',
+        base_url: upstreamBaseUrl
+      },
+      groupId: failureGroup.id,
+      status: 'active',
+      schedulable: true
+    }, access)
+    const failureApiKey = repositories.createApiKeyRecord({
+      name: '状态质量确认失败 mock AI Key',
+      groupBindings: [{ groupId: failureGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(failureApiKey.key, '频繁失败确认回归 API Key 未返回明文密钥')
+
+    const failureHitsBefore = upstreamState.hits
+    for (let index = 0; index < 5; index += 1) {
+      const response = await requestChatCompletion(baseUrl, failureApiKey.key, `mock precheck failure ${index}`)
+      assert.equal(response.status, 503, `频繁失败确认前置请求应由 mock 上游失败触发网关 503，实际 HTTP ${response.status}: ${response.text}`)
+      accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    }
+    assert.equal(upstreamState.hits - failureHitsBefore, 5, '频繁失败确认账号应收到 5 次真实 mock 上游失败请求')
+
+    usageRecordQueue.flushAllUsageRecordQueue()
+    await waitForUsageStatsSafeCursor()
+    assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100), 5, '频繁失败确认账号的真实失败记录应进入统计聚合')
+    accountQualityRepository.refreshAccountQualityFromUsage(10)
+    const failureCandidate = accountQualityRepository
+      .listAccountQualityFailurePrecheckCandidates(10)
+      .find((candidate) => candidate.accountId === failureAccount.id)
+    assert(failureCandidate, '真实 mock AI 频繁失败账号应进入质量失败确认候选')
+    assert.equal(accountQualityFailurePrecheckService.enqueueAccountQualityFailurePrecheck(failureCandidate), true, '频繁失败候选应能进入后台确认队列')
+
+    const temporaryUnavailable = await waitForAccountStatus(failureAccount.id, 'temporary_unavailable')
+    assert(temporaryUnavailable, '后台确认失败后账号应升级为临时不可调用')
+    assert.equal(temporaryUnavailable.effectiveAvailability.status, 'instance_temporary_unavailable', '临时不可调用应改变实际可用性')
+    assert.match(temporaryUnavailable.lastErrorMessage ?? '', /近期质量频繁失败/, '临时不可调用原因应说明来自近期质量频繁失败确认')
+
+    upstreamState.mode = 'success'
+    databaseModule.getBusinessDatabase()
+      .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+      .run(new Date(Date.now() - 1000).toISOString(), failureAccount.id)
+    const dueForRecovery = repositories.findAccountSummary(failureAccount.id, access)
+    assert(dueForRecovery, '冷却复测前应能读取临时不可调用账号')
+    assert.equal(cooldownRetestService.enqueueCooldownAccountRetest(dueForRecovery, {
+      maxPauseMinutes: 10,
+      maxRecoveryHours: 1
+    }), true, '临时不可调用账号应能进入冷却复测队列')
+    const recovered = await waitForAccountStatus(failureAccount.id, 'active')
+    assert(recovered, 'mock 上游恢复后冷却复测应把账号恢复正常')
+    assert.equal(recovered.effectiveAvailability.status, 'available', '冷却复测恢复后账号应重新可用')
+    assert.equal(recovered.cooldownUntil, undefined, '冷却复测恢复后应清理冷却时间')
+    assert.equal(recovered.lastErrorMessage, undefined, '冷却复测恢复后应清理错误原因')
+
+    console.log('账号质量状态 mock AI 回归通过：真实网关失败进入质量标签，后台确认失败升级临时不可调用，mock 上游恢复后冷却复测恢复 active')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -233,6 +302,18 @@ function closeServer(server: http.Server | undefined): Promise<void> {
 
 function waitForUsageStatsSafeCursor(): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, 5_200))
+}
+
+async function waitForAccountStatus(accountId: string, status: string, timeoutMs = 10_000): Promise<ReturnType<typeof repositories.findAccountSummary> | undefined> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const account = repositories.findAccountSummary(accountId, access)
+    if (account?.status === status) {
+      return account
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+  }
+  return repositories.findAccountSummary(accountId, access)
 }
 
 function updateSystemSettingsForTest(settings: Record<string, unknown>): void {

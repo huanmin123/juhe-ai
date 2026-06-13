@@ -4,7 +4,7 @@ import {
   validateAccountCredentialsErrorHandlingRules,
   validateAccountErrorHandlingRules
 } from '../../modules/accounts/account-error-policy-validation.js'
-import { decideAccountErrorPolicy, type GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
+import { decideAccountErrorPolicy, type GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,

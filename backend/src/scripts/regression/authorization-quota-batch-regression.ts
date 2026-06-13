@@ -21,7 +21,7 @@ logger.level = 'silent'
 const [databaseModule, repositories, quotaService] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/authorization-quota.service.js')
+  import('../../modules/gateway/quota/authorization-quota.service.js')
 ])
 
 try {

@@ -6,9 +6,9 @@ import {
   clearHighConcurrencyGroupQueues,
   highConcurrencyGroupQueueSnapshot,
   waitForHighConcurrencyGroupCapacity
-} from '../../modules/gateway/openai-gateway-high-concurrency-queue.service.js'
+} from '../../modules/gateway/runtime/high-concurrency-queue.service.js'
 
-const highConcurrencyQueueSource = readFileSync(new URL('../../modules/gateway/openai-gateway-high-concurrency-queue.service.ts', import.meta.url), 'utf8')
+const highConcurrencyQueueSource = readFileSync(new URL('../../modules/gateway/runtime/high-concurrency-queue.service.ts', import.meta.url), 'utf8')
 assert(
   highConcurrencyQueueSource.includes('const candidates = queueItemsByAccountLane.get(accountLaneIndexKey(accountId, lane))'),
   '账号释放唤醒必须通过账号+通道反向索引定位等待项'

@@ -10,6 +10,7 @@ import {
   cleanupExpiredLogicallyDeletedAccounts,
   expireDueResourceAuthorizations,
   getSettings,
+  listAccountQualityFailurePrecheckCandidates,
   listAccountsDueForCooldownRetest,
   refreshAccountQualityFromUsage,
   syncApiKeyAvailabilityScheduleStatuses
@@ -33,8 +34,8 @@ import { buildGatewayQuotaSnapshot } from '../../storage/gateway-quota-snapshot.
 import { collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
-import { flushUsageRecordQueue, pendingUsageRecordCount } from '../gateway/usage-record-queue.service.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { flushUsageRecordQueue, pendingUsageRecordCount } from '../gateway/usage/record-queue.service.js'
+import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
@@ -43,6 +44,7 @@ import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-clean
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { requestServerProcessEventLoopSamples, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
 import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
+import { enqueueAccountQualityFailurePrecheck, getAccountQualityFailurePrecheckQueueSnapshot } from './account-quality-failure-precheck.service.js'
 import { WorkerScheduler } from './worker-scheduler.js'
 
 let started = false
@@ -56,6 +58,7 @@ const dailyIntervalMs = 24 * 60 * 60 * 1000
 const secondMs = 1000
 const minuteMs = 60 * secondMs
 const usageRecordPreAggregationFlushMaxBatches = 2
+const accountQualityFailurePrecheckBatchSize = 10
 const clientIpStatsAggregationBatchSizeCap = 1000
 const clientIpStatsAggregationMaxBatchesCap = 10
 const clientIpStatsAggregationMaxRunMs = 5000
@@ -402,12 +405,29 @@ async function runAccountQualityRefresh(): Promise<void> {
     await yieldToEventLoop()
     const windowMinutes = settingsNumber('accountQualityWindowMinutes', 1, 60)
     const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)
-    if (realtimeResult.refreshed > 0 || realtimeResult.removed > 0) {
+    const failureCandidates = listAccountQualityFailurePrecheckCandidates(accountQualityFailurePrecheckBatchSize)
+    let failurePrecheckEnqueuedCount = 0
+    let failurePrecheckSkippedQueuedCount = 0
+    for (const candidate of failureCandidates) {
+      if (enqueueAccountQualityFailurePrecheck(candidate)) {
+        failurePrecheckEnqueuedCount += 1
+      } else {
+        failurePrecheckSkippedQueuedCount += 1
+      }
+    }
+    if (realtimeResult.refreshed > 0 || realtimeResult.removed > 0 || failureCandidates.length > 0) {
       clearGatewayRuntimeCache()
+      const queue = getAccountQualityFailurePrecheckQueueSnapshot()
       logger.info({
         event: 'background_account_quality_refresh_completed',
         realtimeRefreshed: realtimeResult.refreshed,
-        realtimeRemoved: realtimeResult.removed
+        realtimeRemoved: realtimeResult.removed,
+        failureCandidateCount: failureCandidates.length,
+        failurePrecheckEnqueuedCount,
+        failurePrecheckSkippedQueuedCount,
+        failurePrecheckQueuePendingCount: queue.pendingCount,
+        failurePrecheckQueueRunningCount: queue.runningCount,
+        failurePrecheckQueueNextRunAt: queue.nextRunAt
       }, '账户质量缓存刷新完成')
     }
   } catch (error) {

@@ -175,6 +175,8 @@
     "test:authorized-account-record-ownership": "tsx src/scripts/regression/authorized-account-record-ownership-regression.ts",
     "test:authorized-account-runtime-side-effects": "tsx src/scripts/regression/authorized-account-runtime-side-effects-regression.ts",
     "test:authorization-return": "tsx src/scripts/regression/authorization-return-regression.ts",
+    "test:account-batch-test-mock-ai": "tsx src/scripts/regression/account-batch-test-mock-ai-regression.ts",
+    "test:account-test-mock-ai-edge": "tsx src/scripts/regression/account-test-mock-ai-edge-regression.ts",
     "test:authorization-quota-batch": "tsx src/scripts/regression/authorization-quota-batch-regression.ts",
     "test:authorization-usage-pagination": "tsx src/scripts/regression/authorization-usage-pagination-regression.ts",
     "test:authorization-list-team-usage-batch": "tsx src/scripts/regression/authorization-list-team-usage-batch-regression.ts",

@@ -1,14 +1,14 @@
 import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
 
-import { requestModel } from '../../modules/gateway/openai-gateway-usage.js'
+import { requestModel } from '../../modules/gateway/request/metadata.js'
 import {
   buildOpenAICodexUpstreamUrls,
   buildUpstreamUrl,
   buildUpstreamUrlsForAccount,
   isOpenAIModelsRequest
-} from '../../modules/gateway/openai-gateway-route-helpers.js'
-import { buildUpstreamHeaders, buildUpstreamRequestBody, buildUpstreamRequestParts, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
+} from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
+import { buildUpstreamHeaders, buildUpstreamRequestBody, buildUpstreamRequestParts, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/upstream/request.js'
 import {
   createGatewayRequestBodyState,
   clearGatewayRequestBodyInFlightForTest,
@@ -19,9 +19,9 @@ import {
   getGatewayRequestBodyInFlightState,
   setGatewayRequestBodyInFlightMaxBytesForTest,
   type GatewayRawBodyRequest
-} from '../../modules/gateway/openai-gateway-request-body.js'
-import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
-import { stopGatewayJsonParseWorker } from '../../modules/gateway/openai-gateway-json-parser.js'
+} from '../../modules/gateway/request/body.js'
+import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
+import { stopGatewayJsonParseWorker } from '../../modules/gateway/request/json-parser.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 
 type TestRequest = GatewayRawBodyRequest

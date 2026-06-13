@@ -17,7 +17,7 @@ import {
 import type { AccessScope } from '../../storage/access-scope.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceOpenAIOAuthRefreshAccount } from '../db-service/db-service-types.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import {
   buildOpenAIOAuthCredentials,
   refreshOpenAIOAuthToken,

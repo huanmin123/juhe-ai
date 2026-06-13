@@ -42,7 +42,7 @@ export const responseInspectionMatchFieldDefinitions: readonly { key: ResponseIn
   { key: 'errorMessageIncludes', label: '错误消息包含' },
   { key: 'finishReasons', label: '完成原因 / 状态' },
   { key: 'jsonPathsExists', label: 'JSON字段路径存在' },
-  { key: 'rawTextIncludes', label: '原始事件文本包含' }
+  { key: 'rawTextIncludes', label: 'SSE 事件原文包含' }
 ]
 
 const listSeparators = /[,，]/

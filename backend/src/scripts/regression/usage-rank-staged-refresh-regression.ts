@@ -98,8 +98,9 @@ try {
   assert.equal(usageScopeRequestCount(today), 5, '成功刷新后 usage scope 范围窗口应发布新数据')
   assert.equal(authorizationTeamRequestCount(today), 7, '成功刷新后授权团队范围窗口应发布新数据')
   assert.equal(authorizationUserRequestCount(today), 11, '成功刷新后授权用户范围窗口应发布新数据')
+  assertUsageScopeTempRangeLookupIndex()
 
-  console.log('用量排行 staged 刷新回归通过：范围窗口分段 yield，临时表失败不会半发布')
+  console.log('用量排行 staged 刷新回归通过：范围窗口分段 yield，临时表失败不会半发布，发布查询具备范围索引')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -197,9 +198,31 @@ function authorizationUserRequestCount(statDate: string): number {
   return Number(row?.requestCount ?? 0)
 }
 
+function assertUsageScopeTempRangeLookupIndex(): void {
+  const indexes = databaseModule.getStatsDatabase()
+    .prepare("PRAGMA index_list('usage_scope_range_windows_refresh_tmp')")
+    .all() as Array<{ name?: string }>
+  assert.ok(
+    indexes.some((row) => row.name === 'usage_scope_range_windows_refresh_tmp_range_lookup'),
+    'usage scope 范围窗口临时刷新表必须按 end_date/start_date 建索引，避免发布阶段反复全表扫描'
+  )
+}
+
 function assertSourceGuards(): void {
   const source = readFileSync(resolve('src/storage/usage-stats.repository.ts'), 'utf8')
   assert.match(source, /maxUsageOverviewSnapshotScopes/, '统计概览 scope 发现必须有固定上限')
   assert.match(source, /FROM usage_stats_totals\s+WHERE scope_type = 'system_account'\s+ORDER BY updated_at DESC, system_account_id ASC, scope_id ASC\s+LIMIT \?/, '统计概览 scope 发现必须按更新时间窗口读取')
   assert.doesNotMatch(source, /FROM usage_stats_totals\s+WHERE scope_type = 'system_account'\s+`\)\.all\(\)/, '统计概览 scope 发现不应无界读取全部 system_account scope')
+  assert.match(
+    source,
+    /CREATE INDEX IF NOT EXISTS \$\{tableName\}_range_lookup\s+ON \$\{tableName\}\(end_date, start_date\)/,
+    'usage scope 范围窗口临时表必须为发布查询建立 end_date/start_date 索引'
+  )
+
+  const schemaSource = readFileSync(resolve('src/storage/schema/stats-schema.ts'), 'utf8')
+  assert.match(
+    schemaSource,
+    /idx_usage_scope_range_windows_end_start ON usage_scope_range_windows\(end_date, start_date\)/,
+    'usage scope 范围窗口正式表必须为分片删除建立 end_date/start_date 索引'
+  )
 }

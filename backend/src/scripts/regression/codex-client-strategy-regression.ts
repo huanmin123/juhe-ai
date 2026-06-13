@@ -4,15 +4,15 @@ import type { Request } from 'express'
 
 import {
   resolveOpenAIGatewayClientStrategy
-} from '../../modules/gateway/openai-gateway-client-strategy.js'
+} from '../../modules/gateway/client-profiles/strategy.js'
 import {
   clearCodexTurnRetryStateForTest,
   getCodexTurnRetryStateForTest,
   orderOpenAIAccountsByCodexTurnAvoidance,
   rememberCodexTurnStreamFailure
-} from '../../modules/gateway/openai-gateway-codex-turn-retry.service.js'
-import type { UpstreamAccount } from '../../modules/gateway/openai-gateway-route-helpers.js'
-import type { GatewayRawBodyRequest } from '../../modules/gateway/openai-gateway-request-body.js'
+} from '../../modules/gateway/client-profiles/codex-turn-retry.service.js'
+import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
+import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
 
 const identity = {
   systemAccountId: 'sys_a',

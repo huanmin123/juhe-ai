@@ -128,9 +128,9 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
-import { accountSelectionForId, rememberAccountLabels, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
-import { mergeSelectedGroupOptions, rememberGroupLabels, type GroupSelection } from '@/shared/groupLabelCache'
-import { rememberPrincipalSelection, systemAccountPrincipalName, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { rememberAccountLabels, rememberAccountSelection } from '@/shared/accountLabelCache'
+import { mergeSelectedGroupOptions, rememberGroupLabels } from '@/shared/groupLabelCache'
+import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
@@ -140,20 +140,40 @@ import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
 import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
 import AuthorizationHelpModal from './AuthorizationHelpModal.vue'
 import AuthorizationList from './AuthorizationList.vue'
-import type { AuthorizationCreateFormModel, AuthorizationExpireFormModel } from './authorizationFormTypes'
-import { createQuotaLimitForm, quotaLimitsPayload } from '../shared/requestQuotaForm'
 import {
   extractApiErrorMessage,
   formatDateTime,
-  formatServerDateTimeInput,
   hasManualSource,
   parseStrictDatePickerValue
 } from './authorizationFormatters'
 import {
-  type AuthorizationDirectionFilter,
-  type AuthorizationFilterResourceType,
-  type AuthorizationSourceFilter,
-  type AuthorizationStatusFilter,
+  authorizationCreatePayload,
+  authorizationExpireFormFromSummary,
+  authorizationExpirePayload,
+  createAuthorizationCreateFormModel,
+  createAuthorizationExpireFormModel,
+  resetAuthorizationCreateForm,
+  type AuthorizationCreateFormModel,
+  type AuthorizationExpireFormModel
+} from './authorizationFormModel'
+import {
+  mergeOptionsById,
+  normalizeSearchKeyword,
+  selectedAccountFromOptions,
+  selectedGroupFromOptions,
+  selectedTeamFromOptions,
+  selectedUserFromOptions
+} from './authorizationOptionHelpers'
+import {
+  authorizationFiltersFromRouteQuery,
+  authorizationRouteFilterValues as routeAuthorizationFilterValues,
+  createDefaultAuthorizationsPageState,
+  hasAuthorizationRouteFilters as hasRouteAuthorizationFilters,
+  sanitizeAuthorizationsPageState,
+  type AuthorizationFilters,
+  type AuthorizationsPageState
+} from './authorizationPageState'
+import {
   authorizationColumns,
   authorizationDirectionOptions,
   authorizationResourceTypeOptions,
@@ -218,71 +238,10 @@ let filterTeamSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let filterUserRequestId = 0
 let filterUserSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 
-type AuthorizationFilters = {
-  direction: AuthorizationDirectionFilter
-  sourceType: AuthorizationSourceFilter
-  status: AuthorizationStatusFilter
-  resourceType: AuthorizationFilterResourceType
-  resourceOwnerSystemAccountId: string
-  resourceOwnerSystemAccount?: PrincipalSelection
-  resourceId?: string
-  resourceAccount?: AccountSelection
-  resourceGroup?: GroupSelection
-  teamId?: string
-  team?: PrincipalSelection
-  granteeSystemAccountId?: string
-  granteeSystemAccount?: PrincipalSelection
-}
-type AuthorizationsPageState = {
-  filters: AuthorizationFilters
-  keywordFilter: string
-  pagination?: { current: number; pageSize: number }
-}
-const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
-  filters: {
-    direction: 'outbound',
-    sourceType: 'all',
-    status: 'active',
-    resourceType: 'all',
-    resourceOwnerSystemAccountId: allSystemAccountsValue,
-    resourceOwnerSystemAccount: undefined,
-    resourceId: undefined,
-    resourceAccount: undefined,
-    resourceGroup: undefined,
-    teamId: undefined,
-    team: undefined,
-    granteeSystemAccountId: undefined,
-    granteeSystemAccount: undefined
-  },
-  keywordFilter: '',
-  pagination: { current: 1, pageSize }
-})
+const defaultAuthorizationsPageState = (): AuthorizationsPageState => createDefaultAuthorizationsPageState(pageSize)
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
   version: 8,
-  sanitize: (value, fallback) => {
-    const state = value as Partial<AuthorizationsPageState>
-    const filters = state.filters && typeof state.filters === 'object'
-      ? state.filters as Partial<AuthorizationFilters> & { direction?: unknown; sourceType?: unknown }
-      : {}
-    const pagination = state.pagination && typeof state.pagination === 'object'
-      ? state.pagination as Partial<{ current: number; pageSize: number }>
-      : {}
-    const keywordFilter = typeof state.keywordFilter === 'string' ? state.keywordFilter : fallback.keywordFilter
-    return {
-      filters: {
-        ...fallback.filters,
-        ...filters,
-        direction: filters.direction === 'inbound' ? 'inbound' : 'outbound',
-        sourceType: filters.sourceType === 'manual' || filters.sourceType === 'team' ? filters.sourceType : 'all',
-        status: normalizeAuthorizationStatusFilter(filters.status)
-      },
-      keywordFilter,
-      pagination: {
-        current: typeof pagination.current === 'number' && Number.isFinite(pagination.current) && pagination.current > 0 ? Math.trunc(pagination.current) : fallback.pagination?.current ?? 1,
-        pageSize: typeof pagination.pageSize === 'number' && Number.isFinite(pagination.pageSize) && pagination.pageSize > 0 ? Math.trunc(pagination.pageSize) : fallback.pagination?.pageSize ?? pageSize
-      }
-    }
-  }
+  sanitize: (value, fallback) => sanitizeAuthorizationsPageState(value, fallback, pageSize)
 })
 const initialPageState = pageStateCache.read()
 
@@ -332,25 +291,9 @@ const {
   }
 })
 
-const createForm = reactive<AuthorizationCreateFormModel>({
-  ownerSystemAccountId: undefined,
-  resourceType: 'account' as 'account' | 'group',
-  resourceId: '' as string,
-  resourceAccount: undefined,
-  resourceGroup: undefined,
-  granteeType: 'system_account' as 'system_account' | 'team',
-  granteeId: '' as string,
-  targetGroupId: '' as string,
-  targetGroup: undefined,
-  remark: '',
-  expiresAt: undefined as Dayjs | undefined,
-  quotaLimits: createQuotaLimitForm()
-})
+const createForm = reactive<AuthorizationCreateFormModel>(createAuthorizationCreateFormModel())
 
-const expireForm = reactive<AuthorizationExpireFormModel>({
-  expiresAt: undefined as Dayjs | undefined,
-  quotaLimits: createQuotaLimitForm()
-})
+const expireForm = reactive<AuthorizationExpireFormModel>(createAuthorizationExpireFormModel())
 
 const directionOptions = authorizationDirectionOptions
 const sourceOptions = authorizationSourceOptions
@@ -573,18 +516,10 @@ function refreshData() {
 }
 
 function openCreateModal() {
-  createForm.ownerSystemAccountId = isManagementView.value ? selectedFilterOwnerSystemAccountId.value : currentSystemAccountId.value
-  createForm.resourceType = filters.resourceType === 'group' ? 'group' : 'account'
-  createForm.resourceId = ''
-  createForm.resourceAccount = undefined
-  createForm.resourceGroup = undefined
-  createForm.granteeType = 'system_account'
-  createForm.granteeId = ''
-  createForm.targetGroupId = ''
-  createForm.targetGroup = undefined
-  createForm.remark = ''
-  createForm.expiresAt = undefined
-  createForm.quotaLimits = createQuotaLimitForm()
+  resetAuthorizationCreateForm(createForm, {
+    ownerSystemAccountId: isManagementView.value ? selectedFilterOwnerSystemAccountId.value : currentSystemAccountId.value,
+    resourceType: filters.resourceType === 'group' ? 'group' : 'account'
+  })
   resetCreateOptionSearchState()
   createModalOpen.value = true
   void loadCreateOwnerOptions()
@@ -1264,37 +1199,6 @@ function syncFilterUserSelection(nextUsers = users.value): void {
   filters.granteeSystemAccount = selectedUserFromOptions(filters.granteeSystemAccountId, nextUsers, filters.granteeSystemAccount)
 }
 
-function selectedGroupFromOptions(id: string | undefined, nextGroups: GroupOptionSummary[], fallback?: GroupSelection): GroupSelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  const group = nextGroups.find((item) => item.id === normalizedId)
-  if (group) return { id: group.id, name: group.name }
-  return fallback?.id === normalizedId ? fallback : undefined
-}
-
-function selectedAccountFromOptions(id: string | undefined, nextAccounts: AccountOptionSummary[], fallback?: AccountSelection): AccountSelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  return accountSelectionForId(normalizedId, nextAccounts) ?? (fallback?.id === normalizedId ? fallback : undefined)
-}
-
-function selectedTeamFromOptions(id: string | undefined, nextTeams: SystemTeamPrincipalSummary[], fallback?: PrincipalSelection): PrincipalSelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  const team = nextTeams.find((item) => item.id === normalizedId)
-  if (team) return { id: team.id, name: team.name, kind: 'team' }
-  return fallback?.kind === 'team' && fallback.id === normalizedId ? fallback : undefined
-}
-
-function selectedUserFromOptions(id: string | undefined, nextUsers: SystemAccountPrincipalSummary[], fallback?: PrincipalSelection): PrincipalSelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  const user = nextUsers.find((item) => item.id === normalizedId)
-  const userName = user ? systemAccountPrincipalName(user).trim() : ''
-  if (user && userName) return { id: user.id, name: userName, kind: 'system_account' }
-  return fallback?.kind === 'system_account' && fallback.id === normalizedId ? fallback : undefined
-}
-
 function resetFilterOptionSearchState() {
   resetFilterOwnerSearch()
   filterResourceSearchKeyword.value = ''
@@ -1303,11 +1207,6 @@ function resetFilterOptionSearchState() {
   clearFilterResourceSearchTimer()
   clearFilterTeamSearchTimer()
   clearFilterUserSearchTimer()
-}
-
-function normalizeSearchKeyword(value?: string): string | undefined {
-  const keyword = value?.trim()
-  return keyword ? keyword : undefined
 }
 
 async function ensureSelectedAccountOption(options: AccountOptionSummary[], selectedId?: string, systemAccountId?: string): Promise<AccountOptionSummary[]> {
@@ -1375,14 +1274,6 @@ async function ensureSelectedTeamOption(options: SystemTeamPrincipalSummary[], s
   }
 }
 
-function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
-  const merged = new Map<string, T>()
-  for (const item of [...leading, ...trailing]) {
-    merged.set(item.id, item)
-  }
-  return [...merged.values()]
-}
-
 const createAuthorization = submitAction('authorizations.create', async () => {
   if (isManagementView.value && !createForm.ownerSystemAccountId) {
     message.warning('请先选择授权人')
@@ -1423,17 +1314,7 @@ const createAuthorization = submitAction('authorizations.create', async () => {
     return
   }
   try {
-    const expiresAt = formatServerDateTimeInput(createForm.expiresAt) ?? undefined
-    const payload = {
-      resourceType: createForm.resourceType,
-      resourceId: createForm.resourceId,
-      granteeType: createForm.granteeType,
-      granteeId: createForm.granteeId,
-      targetGroupId: createTargetGroupVisible.value ? createForm.targetGroupId : undefined,
-      remark: createForm.remark.trim() || undefined,
-      expiresAt,
-      limits: quotaLimitsPayload(createForm.quotaLimits)
-    }
+    const payload = authorizationCreatePayload(createForm, createTargetGroupVisible.value)
     if (isManagementView.value) {
       await api.authorizations.create(payload, createAuthorizationScopeParams.value)
     } else {
@@ -1574,18 +1455,15 @@ async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, sta
 }
 
 function openExpireModal(item: ResourceAuthorizationSummary) {
-  let expiresAt: Dayjs | undefined
-  let quotaLimits: ReturnType<typeof createQuotaLimitForm>
+  let nextForm: AuthorizationExpireFormModel
   try {
-    expiresAt = parseStrictDatePickerValue(item.expiresAt, '授权过期时间')
-    quotaLimits = createQuotaLimitForm(item.limits)
+    nextForm = authorizationExpireFormFromSummary(item)
   } catch (error) {
     message.error(extractApiErrorMessage(error, '授权数据结构异常，请清理后再编辑'))
     return
   }
   expireAuthorization.value = item
-  expireForm.expiresAt = expiresAt
-  expireForm.quotaLimits = quotaLimits
+  Object.assign(expireForm, nextForm)
   expireModalOpen.value = true
 }
 
@@ -1599,10 +1477,7 @@ async function confirmExpireChange() {
     return
   }
   try {
-    const payload = {
-      expiresAt: formatServerDateTimeInput(expireForm.expiresAt),
-      limits: quotaLimitsPayload(expireForm.quotaLimits)
-    }
+    const payload = authorizationExpirePayload(expireForm)
     if (isManagementView.value) {
       const updated = await api.authorizations.updateExpire(authorization.id, payload, authorizationOperationScopeParams(authorization))
       updateAuthorizationItems((item) => item.id === authorization.id, () => updated)
@@ -1632,6 +1507,7 @@ onBeforeUnmount(() => {
 
 function applyRouteFilters() {
   if (!hasAuthorizationRouteFilters()) return
+  const routeFilters = authorizationFiltersFromRouteQuery(route.query)
   filters.resourceType = 'all'
   filters.status = 'all'
   filters.resourceOwnerSystemAccountId = allSystemAccountsValue
@@ -1643,50 +1519,31 @@ function applyRouteFilters() {
   filters.team = undefined
   filters.granteeSystemAccountId = undefined
   filters.granteeSystemAccount = undefined
-  const resourceType = route.query.resourceType === 'group' ? 'group' : route.query.resourceType === 'account' ? 'account' : undefined
-  const resourceId = typeof route.query.resourceId === 'string' ? route.query.resourceId : undefined
-  const status = normalizeAuthorizationStatusFilter(route.query.status)
-  const resourceOwnerSystemAccountId = typeof route.query.resourceOwnerSystemAccountId === 'string' ? route.query.resourceOwnerSystemAccountId : undefined
-  const teamId = typeof route.query.teamId === 'string' ? route.query.teamId : undefined
-  const granteeSystemAccountId = typeof route.query.granteeSystemAccountId === 'string' ? route.query.granteeSystemAccountId : undefined
-  if (resourceType) {
-    filters.resourceType = resourceType
-    createForm.resourceType = resourceType
+  if (routeFilters.resourceType) {
+    filters.resourceType = routeFilters.resourceType
+    createForm.resourceType = routeFilters.resourceType
   }
-  if (resourceId) {
-    filters.resourceId = resourceId
+  if (routeFilters.resourceId) {
+    filters.resourceId = routeFilters.resourceId
   }
-  filters.status = status
-  if (resourceOwnerSystemAccountId) {
-    filters.resourceOwnerSystemAccountId = resourceOwnerSystemAccountId
+  filters.status = routeFilters.status
+  if (routeFilters.resourceOwnerSystemAccountId) {
+    filters.resourceOwnerSystemAccountId = routeFilters.resourceOwnerSystemAccountId
   }
-  if (teamId) {
-    filters.teamId = teamId
+  if (routeFilters.teamId) {
+    filters.teamId = routeFilters.teamId
   }
-  if (granteeSystemAccountId) {
-    filters.granteeSystemAccountId = granteeSystemAccountId
+  if (routeFilters.granteeSystemAccountId) {
+    filters.granteeSystemAccountId = routeFilters.granteeSystemAccountId
   }
 }
 
 function authorizationRouteFilterValues() {
-  return [
-    route.query.resourceType,
-    route.query.resourceId,
-    route.query.status,
-    route.query.resourceOwnerSystemAccountId,
-    route.query.teamId,
-    route.query.granteeSystemAccountId
-  ] as const
+  return routeAuthorizationFilterValues(route.query)
 }
 
 function hasAuthorizationRouteFilters(): boolean {
-  return authorizationRouteFilterValues().some((value) => value !== undefined)
-}
-
-function normalizeAuthorizationStatusFilter(value: unknown): AuthorizationStatusFilter {
-  return value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked' || value === 'returned' || value === 'all'
-    ? value
-    : 'all'
+  return hasRouteAuthorizationFilters(route.query)
 }
 
 function applyAuthorizationsPageState(state: AuthorizationsPageState): void {

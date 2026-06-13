@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { runtimeConfig } from '../../config/runtime.js'
@@ -45,7 +46,7 @@ const [
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js')
 ])
 
@@ -185,6 +186,7 @@ interface RouteAccountCreatePayload {
   type: 'api_key'
   credentials: Record<string, unknown>
   groupId: string
+  clientCompatibility?: AccountSummary['clientCompatibility']
   status?: 'active' | 'pending_test'
   activationTestTaskId?: string
 }
@@ -392,6 +394,13 @@ function createDraftActivationTask(input: {
 }
 
 function draftActivationSnapshot(payload: RouteAccountCreatePayload, ownerSystemAccountId: string): AccountTestDraftSnapshot {
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    payload.providerCode,
+    payload.type,
+    payload.clientCompatibility,
+    'openai_standard',
+    { protocolCode: OPENAI_PROTOCOL_CODE, protocolVersion: OPENAI_PROTOCOL_VERSION }
+  )
   return {
     id: `acctdraft_${payload.name}`,
     ownerSystemAccountId,
@@ -408,7 +417,7 @@ function draftActivationSnapshot(payload: RouteAccountCreatePayload, ownerSystem
     priority: 0,
     superPriorityEnabled: false,
     fallbackEnabled: false,
-    clientCompatibility: 'openai_standard',
+    clientCompatibility,
     supportedModels: [],
     modelMappings: repositories.normalizeAccountModelMappingsForProvider([], payload.providerCode, ownerSystemAccountId) ?? []
   }

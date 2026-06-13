@@ -1,0 +1,610 @@
+import type { Response } from 'express'
+
+import { getRequestLogger } from '../../../shared/request-context.js'
+import {
+  isUpstreamRequestAbortedError,
+  readStreamChunkWithAbort,
+  readStreamChunkWithTimeout,
+  UpstreamRequestAbortedError
+} from './request.js'
+
+export interface NonStreamPipeResult {
+  firstByteMs?: number
+  capturedBody?: Buffer
+  capturedBodyText?: string
+  diagnosticBodyText?: string
+  usageTailText?: string
+  captureTruncated: boolean
+  transferredBytes: number
+}
+
+export interface InspectableNonStreamPipeResult extends NonStreamPipeResult {
+  fullyBuffered: boolean
+  completeBody?: Buffer
+  completeBodyText?: string
+}
+
+export interface LimitedBodyReadResult {
+  body: Buffer
+  bodyText: string
+  diagnosticBodyText: string
+  truncated: boolean
+  readBytes: number
+  firstByteMs?: number
+}
+
+export interface ResponseWriteResult {
+  bytes: number
+  backpressure: boolean
+  drainWaitMs?: number
+  logLevel?: 'debug' | 'warn'
+}
+
+export class NonStreamUpstreamBodyPipeError extends Error {
+  constructor(
+    message: string,
+    readonly partialResult: NonStreamPipeResult,
+    readonly originalError: unknown
+  ) {
+    super(message)
+    this.name = 'NonStreamUpstreamBodyPipeError'
+  }
+}
+
+const gatewayForcedDownstreamCloseReasonKey = 'gatewayForcedDownstreamCloseReason'
+
+export const nonStreamResponseCaptureBytes = 2 * 1024 * 1024
+export const nonStreamUsageTailCaptureBytes = 256 * 1024
+export const upstreamErrorBodyCaptureBytes = 256 * 1024
+export const responseBackpressureWarnThresholdMs = 50
+
+export async function pipeNonStreamUpstreamResponse(
+  upstreamBody: AsyncIterable<Uint8Array>,
+  res: Response,
+  input: {
+    startedAt: number
+    captureBytes?: number
+    usageTailBytes?: number
+    captureBody?: boolean
+    signal?: AbortSignal
+    onFirstByte?: () => void
+    firstByteTimeoutMs?: number
+    prepareDownstream?: () => void
+  }
+): Promise<NonStreamPipeResult> {
+  const iterator = upstreamBody[Symbol.asyncIterator]()
+  const capture = new LimitedBufferCapture(input.captureBody === false ? -1 : input.captureBytes ?? nonStreamResponseCaptureBytes)
+  const usageTailCapture = new RollingBufferCapture(input.usageTailBytes ?? nonStreamUsageTailCaptureBytes)
+  let transferredBytes = 0
+  let firstByteMs: number | undefined
+  let downstreamPrepared = false
+  let clientClosed = false
+  const closeIterator = () => {
+    clientClosed = true
+    void closeAsyncIterator(iterator)
+  }
+  res.once('close', closeIterator)
+
+  try {
+    while (true) {
+      if (clientClosed || res.destroyed) {
+        throw new UpstreamRequestAbortedError('请求已取消', true)
+      }
+
+      const result = firstByteMs === undefined && input.firstByteTimeoutMs !== undefined
+        ? await readStreamChunkWithTimeout(
+          iterator,
+          Math.max(0.001, input.firstByteTimeoutMs / 1000),
+          () => new Error(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`),
+          input.signal
+        )
+        : await readStreamChunkWithAbort(iterator, input.signal)
+      if (result.done) {
+        break
+      }
+
+      const buffer = Buffer.from(result.value)
+      if (firstByteMs === undefined) {
+        firstByteMs = Date.now() - input.startedAt
+        if (!downstreamPrepared) {
+          downstreamPrepared = true
+          input.prepareDownstream?.()
+        }
+        input.onFirstByte?.()
+      }
+      transferredBytes += buffer.length
+      capture.push(buffer)
+      usageTailCapture.push(buffer)
+      await writeResponseChunk(res, buffer)
+    }
+  } catch (error) {
+    await closeAsyncIterator(iterator)
+    if (transferredBytes > 0 || res.headersSent) {
+      if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
+        endResponse(res)
+      } else {
+        const partialResult = buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
+        destroyResponseForUpstreamBodyError(res)
+        throw new NonStreamUpstreamBodyPipeError(
+          error instanceof Error ? error.message : '上游非流式响应正文中断',
+          partialResult,
+          error
+        )
+      }
+    }
+    throw error
+  } finally {
+    res.off('close', closeIterator)
+  }
+
+  if (!downstreamPrepared) {
+    downstreamPrepared = true
+    input.prepareDownstream?.()
+  }
+  endResponse(res)
+  return buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
+}
+
+export async function pipeNonStreamUpstreamResponseForInspection(
+  upstreamBody: AsyncIterable<Uint8Array>,
+  res: Response,
+  input: {
+    startedAt: number
+    inspectBytes: number
+    captureBytes?: number
+    usageTailBytes?: number
+    captureBody?: boolean
+    signal?: AbortSignal
+    onFirstByte?: () => void
+    firstByteTimeoutMs?: number
+    prepareDownstream?: () => void
+  }
+): Promise<InspectableNonStreamPipeResult> {
+  const iterator = upstreamBody[Symbol.asyncIterator]()
+  const inspectBytes = Math.max(0, input.inspectBytes)
+  const capture = new LimitedBufferCapture(input.captureBody === false ? -1 : input.captureBytes ?? nonStreamResponseCaptureBytes)
+  const usageTailCapture = new RollingBufferCapture(input.usageTailBytes ?? nonStreamUsageTailCaptureBytes)
+  const inspectionChunks: Buffer[] = []
+  let inspectionBytes = 0
+  let transferredBytes = 0
+  let firstByteMs: number | undefined
+  let downstreamPrepared = false
+  let downstreamWriting = false
+  let clientClosed = false
+  const closeIterator = () => {
+    clientClosed = true
+    void closeAsyncIterator(iterator)
+  }
+  const prepareDownstreamForWrite = () => {
+    if (downstreamPrepared) return
+    downstreamPrepared = true
+    input.prepareDownstream?.()
+  }
+  const writeBufferedInspectionChunks = async () => {
+    if (inspectionChunks.length === 0) return
+    prepareDownstreamForWrite()
+    for (const chunk of inspectionChunks.splice(0)) {
+      await writeResponseChunk(res, chunk)
+    }
+  }
+  res.once('close', closeIterator)
+
+  try {
+    while (true) {
+      if (clientClosed || res.destroyed) {
+        throw new UpstreamRequestAbortedError('请求已取消', true)
+      }
+
+      const result = firstByteMs === undefined && input.firstByteTimeoutMs !== undefined
+        ? await readStreamChunkWithTimeout(
+          iterator,
+          Math.max(0.001, input.firstByteTimeoutMs / 1000),
+          () => new Error(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`),
+          input.signal
+        )
+        : await readStreamChunkWithAbort(iterator, input.signal)
+      if (result.done) {
+        break
+      }
+
+      const buffer = Buffer.from(result.value)
+      if (firstByteMs === undefined) {
+        firstByteMs = Date.now() - input.startedAt
+        input.onFirstByte?.()
+      }
+      transferredBytes += buffer.length
+      capture.push(buffer)
+      usageTailCapture.push(buffer)
+
+      if (!downstreamWriting && inspectionBytes + buffer.length <= inspectBytes) {
+        inspectionChunks.push(buffer)
+        inspectionBytes += buffer.length
+        continue
+      }
+
+      if (!downstreamWriting) {
+        downstreamWriting = true
+        await writeBufferedInspectionChunks()
+      }
+      prepareDownstreamForWrite()
+      await writeResponseChunk(res, buffer)
+    }
+  } catch (error) {
+    await closeAsyncIterator(iterator)
+    if (transferredBytes > 0 || downstreamWriting || res.headersSent) {
+      if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
+        endResponse(res)
+      } else {
+        const partialResult = buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
+        destroyResponseForUpstreamBodyError(res)
+        throw new NonStreamUpstreamBodyPipeError(
+          error instanceof Error ? error.message : '上游非流式响应正文中断',
+          partialResult,
+          error
+        )
+      }
+    }
+    throw error
+  } finally {
+    res.off('close', closeIterator)
+  }
+
+  if (downstreamWriting) {
+    if (!downstreamPrepared) {
+      prepareDownstreamForWrite()
+    }
+    endResponse(res)
+    return {
+      ...buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes),
+      fullyBuffered: false
+    }
+  }
+
+  const completeBody = inspectionChunks.length > 0
+    ? Buffer.concat(inspectionChunks, inspectionBytes)
+    : Buffer.alloc(0)
+  const pipeResult = buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
+  return {
+    ...pipeResult,
+    fullyBuffered: true,
+    completeBody,
+    completeBodyText: completeBody.toString('utf8')
+  }
+}
+
+export async function readUpstreamBodyLimited(
+  upstreamBody: AsyncIterable<Uint8Array> | null,
+  input: {
+    maxBytes?: number
+    startedAt?: number
+    signal?: AbortSignal
+    onFirstByte?: () => void
+  } = {}
+): Promise<LimitedBodyReadResult> {
+  if (!upstreamBody) {
+    return emptyLimitedBodyReadResult()
+  }
+
+  const maxBytes = Math.max(0, input.maxBytes ?? upstreamErrorBodyCaptureBytes)
+  const iterator = upstreamBody[Symbol.asyncIterator]()
+  const capture = new LimitedBufferCapture(maxBytes)
+  let readBytes = 0
+  let firstByteMs: number | undefined
+  let truncated = false
+
+  try {
+    while (true) {
+      const result = await readStreamChunkWithAbort(iterator, input.signal)
+      if (result.done) {
+        break
+      }
+
+      const buffer = Buffer.from(result.value)
+      if (firstByteMs === undefined && input.startedAt !== undefined) {
+        firstByteMs = Date.now() - input.startedAt
+        input.onFirstByte?.()
+      }
+      readBytes += buffer.length
+      capture.push(buffer)
+
+      if (capture.isTruncated()) {
+        truncated = true
+        await closeAsyncIterator(iterator)
+        break
+      }
+    }
+  } catch (error) {
+    await closeAsyncIterator(iterator)
+    throw error
+  }
+
+  const body = capture.buffer()
+  const bodyText = body.toString('utf8')
+  return {
+    body,
+    bodyText,
+    diagnosticBodyText: truncated ? `${bodyText}\n[truncated]` : bodyText,
+    truncated,
+    readBytes,
+    firstByteMs
+  }
+}
+
+export async function writeResponseChunk(res: Response, buffer: Buffer): Promise<ResponseWriteResult> {
+  if (res.writableEnded || res.destroyed) {
+    throw new UpstreamRequestAbortedError('请求已取消', true)
+  }
+  if (res.write(buffer)) {
+    return { bytes: buffer.length, backpressure: false }
+  }
+  const drainStartedAt = Date.now()
+  const startedWritableLength = res.writableLength
+  const startedWritableHighWaterMark = res.writableHighWaterMark
+  const startedHeadersSent = res.headersSent
+  const startedWritableEnded = res.writableEnded
+  const startedDestroyed = res.destroyed
+  await waitForResponseDrain(res, drainStartedAt)
+  const drainWaitMs = Date.now() - drainStartedAt
+  const logLevel = drainWaitMs >= responseBackpressureWarnThresholdMs ? 'warn' : 'debug'
+  getRequestLogger()[logLevel]({
+    event: logLevel === 'warn' ? 'gateway_response_backpressure_slow' : 'gateway_response_backpressure_drained',
+    bytes: buffer.length,
+    drainWaitMs,
+    startedWritableLength,
+    startedWritableHighWaterMark,
+    startedHeadersSent,
+    startedWritableEnded,
+    startedDestroyed,
+    writableLength: res.writableLength,
+    writableHighWaterMark: res.writableHighWaterMark,
+    headersSent: res.headersSent,
+    writableEnded: res.writableEnded,
+    destroyed: res.destroyed
+  }, logLevel === 'warn' ? '下游响应 backpressure 等待时间过长' : '下游响应短暂 backpressure 已恢复')
+  return { bytes: buffer.length, backpressure: true, drainWaitMs, logLevel }
+}
+
+export function endResponse(res: Response): void {
+  if (!res.writableEnded && !res.destroyed) {
+    res.end()
+  }
+}
+
+export function destroyResponseForUpstreamBodyError(res: Response): void {
+  if (res.writableEnded || res.destroyed) {
+    return
+  }
+  markGatewayForcedDownstreamClose(res, 'upstream_body_interrupted')
+  res.destroy()
+}
+
+export function isGatewayForcedDownstreamClose(res: Response): boolean {
+  return typeof (res.locals as Record<string, unknown>)[gatewayForcedDownstreamCloseReasonKey] === 'string'
+}
+
+function markGatewayForcedDownstreamClose(res: Response, reason: string): void {
+  const locals = res.locals as Record<string, unknown>
+  locals[gatewayForcedDownstreamCloseReasonKey] = reason
+}
+
+export async function closeAsyncIterator(iterator: AsyncIterator<Uint8Array>, timeoutMs = 1000): Promise<void> {
+  if (!iterator.return) {
+    return
+  }
+  let timer: NodeJS.Timeout | undefined
+  try {
+    await Promise.race([
+      Promise.resolve(iterator.return()),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, Math.max(1, timeoutMs))
+        timer.unref()
+      })
+    ])
+  } catch {
+  } finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
+}
+
+export class LimitedBufferCapture {
+  private chunks: Buffer[] = []
+  private size = 0
+  private truncated = false
+
+  constructor(private readonly limitBytes: number) {}
+
+  push(buffer: Buffer): void {
+    if (buffer.length === 0 || this.limitBytes < 0) {
+      return
+    }
+    const remaining = this.limitBytes - this.size
+    if (remaining <= 0) {
+      this.truncated = true
+      return
+    }
+    if (buffer.length > remaining) {
+      this.chunks.push(buffer.subarray(0, remaining))
+      this.size += remaining
+      this.truncated = true
+      return
+    }
+    this.chunks.push(buffer)
+    this.size += buffer.length
+  }
+
+  isTruncated(): boolean {
+    return this.truncated
+  }
+
+  buffer(): Buffer {
+    return Buffer.concat(this.chunks, this.size)
+  }
+
+  completeBuffer(): Buffer | undefined {
+    if (this.truncated || this.chunks.length === 0) {
+      return undefined
+    }
+    return this.buffer()
+  }
+
+  clear(): void {
+    this.chunks = []
+    this.size = 0
+    this.truncated = false
+  }
+
+  toText(): string | undefined {
+    if (this.chunks.length === 0) {
+      return undefined
+    }
+    return this.buffer().toString('utf8')
+  }
+
+  toDiagnosticText(): string | undefined {
+    const text = this.toText()
+    if (text === undefined) {
+      return undefined
+    }
+    return this.truncated ? `${text}\n[truncated]` : text
+  }
+}
+
+class RollingBufferCapture {
+  private chunks: Buffer[] = []
+  private headIndex = 0
+  private size = 0
+
+  constructor(private readonly limitBytes: number) {}
+
+  push(buffer: Buffer): void {
+    if (buffer.length === 0 || this.limitBytes <= 0) {
+      return
+    }
+    if (buffer.length >= this.limitBytes) {
+      this.chunks = [buffer.subarray(buffer.length - this.limitBytes)]
+      this.headIndex = 0
+      this.size = this.limitBytes
+      return
+    }
+
+    this.chunks.push(buffer)
+    this.size += buffer.length
+    this.trimOverflow()
+  }
+
+  toText(): string | undefined {
+    if (this.size === 0) {
+      return undefined
+    }
+    return Buffer.concat(this.activeChunks(), this.size).toString('utf8')
+  }
+
+  private trimOverflow(): void {
+    let overflow = this.size - this.limitBytes
+    while (overflow > 0 && this.headIndex < this.chunks.length) {
+      const first = this.chunks[this.headIndex]
+      if (first.length <= overflow) {
+        this.headIndex += 1
+        this.size -= first.length
+        overflow -= first.length
+      } else {
+        this.chunks[this.headIndex] = first.subarray(overflow)
+        this.size -= overflow
+        overflow = 0
+      }
+    }
+    this.compactConsumedChunks()
+  }
+
+  private activeChunks(): Buffer[] {
+    return this.headIndex === 0 ? this.chunks : this.chunks.slice(this.headIndex)
+  }
+
+  private compactConsumedChunks(): void {
+    if (this.headIndex === 0) {
+      return
+    }
+    if (this.headIndex >= this.chunks.length) {
+      this.chunks = []
+      this.headIndex = 0
+      return
+    }
+    if (this.headIndex > 64 && this.headIndex * 2 > this.chunks.length) {
+      this.chunks = this.chunks.slice(this.headIndex)
+      this.headIndex = 0
+    }
+  }
+}
+
+function buildNonStreamPipeResult(
+  capture: LimitedBufferCapture,
+  usageTailCapture: RollingBufferCapture,
+  firstByteMs: number | undefined,
+  transferredBytes: number
+): NonStreamPipeResult {
+  const capturedBody = capture.completeBuffer()
+  const capturedBodyText = capturedBody ? capturedBody.toString('utf8') : capture.toText()
+  const captureTruncated = capture.isTruncated()
+  return {
+    firstByteMs,
+    capturedBody,
+    capturedBodyText,
+    diagnosticBodyText: capturedBodyText === undefined
+      ? undefined
+      : captureTruncated ? `${capturedBodyText}\n[truncated]` : capturedBodyText,
+    usageTailText: usageTailCapture.toText(),
+    captureTruncated,
+    transferredBytes
+  }
+}
+
+function waitForResponseDrain(res: Response, startedAt: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const waitingLogTimer = setInterval(() => {
+      getRequestLogger().warn({
+        event: 'gateway_response_drain_waiting',
+        waitMs: Date.now() - startedAt,
+        writableLength: res.writableLength,
+        writableHighWaterMark: res.writableHighWaterMark,
+        headersSent: res.headersSent,
+        writableEnded: res.writableEnded,
+        destroyed: res.destroyed
+      }, '下游响应仍在等待 drain')
+    }, 10_000)
+    waitingLogTimer.unref()
+    const cleanup = () => {
+      clearInterval(waitingLogTimer)
+      res.off('drain', onDrain)
+      res.off('close', onClose)
+      res.off('error', onError)
+    }
+    const onDrain = () => {
+      cleanup()
+      resolve()
+    }
+    const onClose = () => {
+      cleanup()
+      reject(new UpstreamRequestAbortedError('请求已取消', true))
+    }
+    const onError = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+
+    res.once('drain', onDrain)
+    res.once('close', onClose)
+    res.once('error', onError)
+  })
+}
+
+function emptyLimitedBodyReadResult(): LimitedBodyReadResult {
+  return {
+    body: Buffer.alloc(0),
+    bodyText: '',
+    diagnosticBodyText: '',
+    truncated: false,
+    readBytes: 0
+  }
+}

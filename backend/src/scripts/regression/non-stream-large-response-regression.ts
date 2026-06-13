@@ -6,7 +6,7 @@ import http from 'node:http'
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { gatewayRawBodyHardLimit } from '../../modules/gateway/openai-gateway-request-body.js'
+import { gatewayRawBodyHardLimit } from '../../modules/gateway/request/body.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-large-response-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -29,11 +29,11 @@ const [
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
-  import('../../modules/gateway/openai-gateway.routes.js'),
+  import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
 

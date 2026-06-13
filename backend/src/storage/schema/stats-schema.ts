@@ -951,6 +951,10 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);
 
+    CREATE INDEX IF NOT EXISTS idx_account_quality_scores_failure_precheck
+      ON account_quality_scores(recent_error_count DESC, success_rate, updated_at DESC, account_id)
+      WHERE recent_request_count >= 5 AND recent_error_count >= 2;
+
     CREATE INDEX IF NOT EXISTS idx_account_quality_dirty_accounts_updated ON account_quality_dirty_accounts(updated_at, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);
@@ -1122,6 +1126,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_last_used ON usage_scope_range_windows(system_account_id, scope_type, start_date, end_date, last_used_at DESC, scope_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_end ON usage_scope_range_windows(end_date);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_end_start ON usage_scope_range_windows(end_date, start_date);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_registry_bucket ON client_ip_registry(bucket_no, ip_hash);
 

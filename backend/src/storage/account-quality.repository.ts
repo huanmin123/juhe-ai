@@ -13,6 +13,19 @@ export interface AccountQualityRealtimeRefreshResult {
   windowEndedAt: string
 }
 
+export interface AccountQualityFailurePrecheckCandidate {
+  accountId: string
+  systemAccountId: string
+  providerCode: string
+  recentRequestCount: number
+  recentSuccessCount: number
+  recentErrorCount: number
+  successRate?: number
+  lastErrorAt?: string
+  lastErrorMessage?: string
+  updatedAt: string
+}
+
 interface AccountQualityRow {
   account_id: string
   system_account_id: string
@@ -54,6 +67,10 @@ const stalePenaltyMs = 5_000
 const qualityCleanupBatchLimit = 1000
 const qualityLookupChunkSize = 500
 const accountQualityDirtyAccountBatchLimit = 500
+const qualityFailurePrecheckMinRequests = 5
+const qualityFailurePrecheckMinErrors = 2
+const qualityFailurePrecheckFrequentErrors = 5
+const qualityFailurePrecheckMaxSuccessRate = 0.5
 
 export function refreshAccountQualityFromUsage(windowMinutes = 10, dirtyAccountLimit = accountQualityDirtyAccountBatchLimit): AccountQualityRealtimeRefreshResult {
   const database = getStatsDatabase()
@@ -135,6 +152,75 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10, dirtyAccountL
     }
     throw error
   }
+}
+
+export function listAccountQualityFailurePrecheckCandidates(limit = 20): AccountQualityFailurePrecheckCandidate[] {
+  const normalizedLimit = Math.max(1, Math.min(Math.trunc(limit), 100))
+  const rows = getStatsDatabase()
+    .prepare(`
+      SELECT
+        account_id,
+        system_account_id,
+        provider_code,
+        recent_request_count,
+        recent_success_count,
+        recent_error_count,
+        success_rate,
+        last_error_at,
+        last_error_message,
+        updated_at
+      FROM account_quality_scores INDEXED BY idx_account_quality_scores_failure_precheck
+      WHERE recent_request_count >= ${qualityFailurePrecheckMinRequests}
+        AND recent_error_count >= ${qualityFailurePrecheckMinErrors}
+        AND (
+          recent_error_count >= ${qualityFailurePrecheckFrequentErrors}
+          OR (success_rate IS NOT NULL AND success_rate <= ${qualityFailurePrecheckMaxSuccessRate})
+        )
+      ORDER BY recent_error_count DESC,
+        COALESCE(success_rate, 1) ASC,
+        updated_at DESC,
+        account_id ASC
+      LIMIT ?
+    `)
+    .all(normalizedLimit) as unknown as Array<{
+      account_id?: string | null
+      system_account_id?: string | null
+      provider_code?: string | null
+      recent_request_count?: number | null
+      recent_success_count?: number | null
+      recent_error_count?: number | null
+      success_rate?: number | null
+      last_error_at?: string | null
+      last_error_message?: string | null
+      updated_at?: string | null
+    }>
+  return rows
+    .map((row): AccountQualityFailurePrecheckCandidate | undefined => {
+      const accountId = row.account_id?.trim()
+      const systemAccountId = row.system_account_id?.trim()
+      const providerCode = row.provider_code?.trim()
+      const updatedAt = row.updated_at?.trim()
+      if (!accountId || !systemAccountId || !providerCode || !updatedAt) {
+        return undefined
+      }
+      const successRate = nullableRate(row.success_rate)
+      const candidate: AccountQualityFailurePrecheckCandidate = {
+        accountId,
+        systemAccountId,
+        providerCode,
+        recentRequestCount: Math.max(0, Math.trunc(Number(row.recent_request_count ?? 0))),
+        recentSuccessCount: Math.max(0, Math.trunc(Number(row.recent_success_count ?? 0))),
+        recentErrorCount: Math.max(0, Math.trunc(Number(row.recent_error_count ?? 0))),
+        lastErrorAt: row.last_error_at?.trim() || undefined,
+        lastErrorMessage: row.last_error_message?.trim() || undefined,
+        updatedAt
+      }
+      if (successRate !== null) {
+        candidate.successRate = successRate
+      }
+      return candidate
+    })
+    .filter((row): row is AccountQualityFailurePrecheckCandidate => Boolean(row))
 }
 
 function loadDirtyAccountQualityIds(database: ReturnType<typeof getStatsDatabase>, limit: number): string[] {

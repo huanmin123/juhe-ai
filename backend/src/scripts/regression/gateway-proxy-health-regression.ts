@@ -10,7 +10,7 @@ import {
   recordGatewayProxySuccess,
   recordGatewayUpstreamBucketFailure,
   setGatewayProxyHealthNowForTest
-} from '../../modules/gateway/openai-gateway-proxy-health.service.js'
+} from '../../modules/gateway/runtime/proxy-health.service.js'
 
 logger.level = 'silent'
 clearGatewayProxyHealthForTest()

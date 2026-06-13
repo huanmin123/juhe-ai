@@ -16,6 +16,7 @@ export interface SystemForm {
   streamIdleTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
+  accountTestTaskConcurrency: number
   cooldownAccountRetestMaxBackoffHours: number
 }
 
@@ -34,6 +35,7 @@ export const defaultSystemSettings: SystemForm = {
   streamIdleTimeoutSeconds: 60,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 10,
+  accountTestTaskConcurrency: 100,
   cooldownAccountRetestMaxBackoffHours: 24
 }
 
@@ -55,6 +57,7 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     streamIdleTimeoutSeconds: integerValue(settings.streamIdleTimeoutSeconds, '输出停顿上限', 1, 3600),
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '失败触发次数', 1, 100),
     streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '失败统计窗口', 1, 1440),
+    accountTestTaskConcurrency: integerValue(settings.accountTestTaskConcurrency, '账号测试后台并发上限', 1, 1000),
     cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '最长自动恢复观察', 1, 720)
   }
 }

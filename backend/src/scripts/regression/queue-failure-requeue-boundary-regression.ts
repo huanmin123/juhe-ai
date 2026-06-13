@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 
 const queueFiles = [
   {
-    path: '../../modules/gateway/usage-record-queue.service.ts',
+    path: '../../modules/gateway/usage/record-queue.service.ts',
     required: ['peekUsageRecordFlushBatch', 'removeUsageRecordFlushBatch']
   },
   {

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
-import { buildUpstreamRequestBody } from '../../modules/gateway/openai-gateway-upstream.js'
-import type { GatewayRawBodyRequest } from '../../modules/gateway/openai-gateway-request-body.js'
+import { buildUpstreamRequestBody } from '../../modules/gateway/upstream/request.js'
+import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
 
 const passthroughReq = {
   method: 'POST',

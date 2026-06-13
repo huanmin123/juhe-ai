@@ -1,4 +1,4 @@
-import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
+import type { GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 
 export const accountDiagnosticRetryTimeoutMs = [10_000, 20_000, 30_000] as const
 export const accountDiagnosticRetryMaxTotalTimeoutMs = accountDiagnosticRetryTimeoutMs.reduce((sum, timeoutMs) => sum + timeoutMs, 0)

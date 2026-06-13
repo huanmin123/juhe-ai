@@ -124,6 +124,6 @@
 
 - 完成时间：2026-05-08
 - 实际完成内容：新增 OAuth Codex 专用 adapter，OAuth 账号上游请求现在会做 body normalize、Header allowlist、上游 session/cache 标识隔离和本地 400 校验；API Key 账号保留原有透传行为。
-- 主要改动位置：`backend/src/modules/gateway/openai-oauth-codex-adapter.ts`、`backend/src/modules/gateway/openai-gateway-upstream.ts`、`backend/src/modules/gateway/openai-gateway.routes.ts`、`backend/src/scripts/regression/openai-oauth-codex-adapter-regression.ts`、`docs/architecture/架构总览.md`。
+- 主要改动位置：`backend/src/modules/gateway/adapters/gpt-codex/oauth-adapter.ts`、`backend/src/modules/gateway/upstream/request.ts`、`backend/src/modules/gateway/routes.ts`、`backend/src/scripts/regression/openai-oauth-codex-adapter-regression.ts`、`docs/architecture/架构总览.md`。
 - 验证结果：`pnpm --filter juhe-ai-backend test:openai-oauth-codex-adapter` 通过；`pnpm --filter juhe-ai-backend typecheck` 通过。
 - 后续建议：如需支持非流式 OAuth 客户端，再补 SSE 聚合到 JSON 的转换层；如需稳定续链，再设计 `previous_response_id` 上下文缓存。主动请求边界以后以 PLAN-0014 的被动快照和恢复性复测口径为准。

@@ -6,7 +6,7 @@ import {
   isOpenAIJsonResponseContentType,
   isOpenAIStreamContentType,
   shouldHandleOpenAIUpstreamResponseAsStream
-} from '../../modules/gateway/openai-gateway-responses.js'
+} from '../../modules/gateway/response/responses.js'
 
 assert.equal(isOpenAIStreamContentType('text/event-stream; charset=utf-8'), true, 'SSE content-type 应识别为流式响应')
 assert.equal(isOpenAIStreamContentType('application/octet-stream'), false, 'octet-stream 不应直接识别为 OpenAI SSE')
@@ -26,7 +26,7 @@ assert.equal(shouldHandleOpenAIUpstreamResponseAsStream({ contentType: '', strea
 assert.equal(shouldHandleOpenAIUpstreamResponseAsStream({ contentType: 'text/plain; charset=utf-8', streamRequest: true }), true, 'stream 请求收到未知文本响应时仍保留流式兜底')
 assert.equal(shouldHandleOpenAIUpstreamResponseAsStream({ contentType: 'application/octet-stream', streamRequest: false }), false, '非 stream 请求收到 octet-stream 时应走非流式 pipe')
 
-const routeSource = readFileSync(new URL('../../modules/gateway/openai-gateway.routes.ts', import.meta.url), 'utf8')
+const routeSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
 assert(routeSource.includes('shouldHandleOpenAIUpstreamResponseAsStream'), '网关路由应使用统一响应分类函数')
 assert(!routeSource.includes('isEffectiveOpenAIStreamRequest(req, account) && !isJsonResponseContentType(contentType)'), '网关路由不应继续用 stream 请求 + 非 JSON 兜底误判二进制响应')
 

@@ -8,7 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
-import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
+import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-compatible-gateway-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -33,13 +33,13 @@ const [
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
-  import('../../modules/gateway/openai-gateway.routes.js'),
+  import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../../modules/gateway/gateway-account-side-effects.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
 

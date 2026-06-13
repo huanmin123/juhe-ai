@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { GatewayRuntimeRequest } from '../../modules/gateway/openai-gateway-request.js'
+import type { GatewayRuntimeRequest } from '../../modules/gateway/request/pre-auth.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-auth-preflight-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -39,11 +39,11 @@ const [
   import('../../modules/db-service/db-service-handlers.js'),
   import('../../modules/db-service/db-service-ipc.js'),
   import('../../shared/request-context.js'),
-  import('../../modules/gateway/openai-gateway-request.js'),
-  import('../../modules/gateway/openai-gateway.routes.js'),
-  import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
-  import('../../modules/gateway/openai-gateway-json-parser.js'),
-  import('../../modules/gateway/openai-gateway-request-body.js')
+  import('../../modules/gateway/request/pre-auth.js'),
+  import('../../modules/gateway/routes.js'),
+  import('../../modules/gateway/request/body-middleware.js'),
+  import('../../modules/gateway/request/json-parser.js'),
+  import('../../modules/gateway/request/body.js')
 ])
 
 class FakeDbServiceChild extends EventEmitter {

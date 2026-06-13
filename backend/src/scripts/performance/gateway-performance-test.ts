@@ -10,7 +10,7 @@ import express, { type NextFunction, type Request, type Response as ExpressRespo
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
-import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes } from '../../modules/gateway/openai-gateway-request-body.js'
+import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes } from '../../modules/gateway/request/body.js'
 
 type ScenarioName = 'models' | 'responses' | 'chat' | 'responses_stream'
 
@@ -172,16 +172,16 @@ const [
   usageRecordShards,
   gatewayAccountSideEffects
 ] = await Promise.all([
-  import('../../modules/gateway/openai-gateway.routes.js'),
-  import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
+  import('../../modules/gateway/routes.js'),
+  import('../../modules/gateway/request/body-middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../maintenance/mockdata-fixtures.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../storage/usage-record-shards.js'),
-  import('../../modules/gateway/gateway-account-side-effects.service.js')
+  import('../../modules/gateway/runtime/account-side-effects.service.js')
 ])
 
 async function main(): Promise<void> {

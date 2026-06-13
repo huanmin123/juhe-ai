@@ -36,17 +36,17 @@ const [
   dbServiceHandlers,
   dbServiceIpc
 ] = await Promise.all([
-  import('../../modules/gateway/openai-gateway.routes.js'),
-  import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
+  import('../../modules/gateway/routes.js'),
+  import('../../modules/gateway/request/body-middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
-  import('../../modules/gateway/openai-gateway-upstream.js'),
-  import('../../modules/gateway/openai-gateway-request-body.js'),
-  import('../../modules/gateway/openai-gateway-json-parser.js'),
+  import('../../modules/gateway/upstream/request.js'),
+  import('../../modules/gateway/request/body.js'),
+  import('../../modules/gateway/request/json-parser.js'),
   import('../../modules/db-service/db-service-handlers.js'),
   import('../../modules/db-service/db-service-ipc.js')
 ])

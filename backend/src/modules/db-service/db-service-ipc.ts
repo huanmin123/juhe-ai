@@ -6,7 +6,7 @@ import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
-import { invalidateGatewayAuthorizationQuotaSnapshot } from '../gateway/gateway-quota-snapshot-cache.service.js'
+import { invalidateGatewayAuthorizationQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type {
   AccountRuntimeAvailabilityClearResult,
   AccountRuntimeAvailabilityClearTarget,
@@ -337,7 +337,7 @@ export async function clearServerAccountRuntimeAvailability(
     return undefined
   }
   if (runtimeConfig.processRole !== 'db-service' || !process.send) {
-    const gatewaySideEffects = await import('../gateway/gateway-account-side-effects.service.js')
+    const gatewaySideEffects = await import('../gateway/runtime/account-side-effects.service.js')
     return gatewaySideEffects.clearGatewayAccountRuntimeAvailability(normalizedTarget)
   }
 
@@ -719,8 +719,8 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     accountConcurrency
   ] = await Promise.all([
     import('../background/background-ipc.js'),
-    import('../gateway/gateway-account-side-effects.service.js'),
-    import('../gateway/audit-capture.service.js'),
+    import('../gateway/runtime/account-side-effects.service.js'),
+    import('../gateway/audit/capture.service.js'),
     import('../../shared/account-concurrency.js')
   ])
   const workerSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined)
@@ -793,7 +793,7 @@ async function respondToServerAccountRuntimeClearRequest(
   }
 
   try {
-    const gatewaySideEffects = await import('../gateway/gateway-account-side-effects.service.js')
+    const gatewaySideEffects = await import('../gateway/runtime/account-side-effects.service.js')
     const result = gatewaySideEffects.clearGatewayAccountRuntimeAvailability(target)
     sendToDbServiceProcess(child, {
       type: 'db_service_server_account_runtime_clear_response',
@@ -856,7 +856,7 @@ async function buildServerAccountConcurrencySnapshot(): Promise<DbServiceServerR
 async function buildServerAccountRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
   const [accountConcurrency, gatewaySideEffects] = await Promise.all([
     import('../../shared/account-concurrency.js'),
-    import('../gateway/gateway-account-side-effects.service.js')
+    import('../gateway/runtime/account-side-effects.service.js')
   ])
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
@@ -866,7 +866,7 @@ async function buildServerAccountRuntimeSnapshot(): Promise<DbServiceServerRunti
 
 async function clearServerGatewayRuntimeCache(): Promise<void> {
   const [gatewayCache, oauthRefresh] = await Promise.all([
-    import('../gateway/gateway-runtime-cache.service.js'),
+    import('../gateway/runtime/runtime-cache.service.js'),
     import('../openai-oauth/openai-oauth-access-token-refresh.service.js')
   ])
   gatewayCache.clearGatewayRuntimeCacheLocal()
@@ -874,12 +874,12 @@ async function clearServerGatewayRuntimeCache(): Promise<void> {
 }
 
 async function clearServerAuthorizationQuotaRuntimeCache(): Promise<void> {
-  const authorizationQuota = await import('../gateway/authorization-quota.service.js')
+  const authorizationQuota = await import('../gateway/quota/authorization-quota.service.js')
   authorizationQuota.clearAuthorizationQuotaCache()
 }
 
 async function clearServerClientIpPolicyCache(): Promise<void> {
-  const policyCache = await import('../gateway/client-ip-policy-cache.service.js')
+  const policyCache = await import('../gateway/runtime/client-ip-policy-cache.service.js')
   policyCache.clearClientIpPolicyCacheLocal()
 }
 

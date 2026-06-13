@@ -36,6 +36,9 @@
           @delete="$emit('delete-tag', $event)"
         />
       </a-form-item>
+      <a-form-item class="notes-form-item" label="说明">
+        <a-textarea v-model:value="form.notes" :rows="2" :disabled="authorizedEditing" placeholder="可填写来源、用途或额度说明" />
+      </a-form-item>
     </div>
   </section>
 </template>
@@ -127,6 +130,10 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
 }
 
 .tag-form-item {
+  grid-column: 1 / -1;
+}
+
+.notes-form-item {
   grid-column: 1 / -1;
 }
 

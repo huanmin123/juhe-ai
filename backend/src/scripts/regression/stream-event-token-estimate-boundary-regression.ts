@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert'
 import {
   classifyOpenAIStreamEvent,
   type ParsedOpenAIStreamEvent
-} from '../../modules/gateway/openai-gateway-stream-events.js'
+} from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 
 const output = buildTrapOutput()
 const classification = classifyOpenAIStreamEvent({

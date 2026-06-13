@@ -2,14 +2,11 @@
   <section class="form-section">
     <div class="form-section-head">
       <div>
-        <h4>其他信息</h4>
+        <h4>有效期</h4>
       </div>
     </div>
     <a-form-item label="账户到期时间">
       <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear :disabled="readonly" style="width: 100%" />
-    </a-form-item>
-    <a-form-item label="说明">
-      <a-textarea v-model:value="form.notes" :rows="2" :disabled="readonly" placeholder="可填写来源、用途或额度说明" />
     </a-form-item>
   </section>
 </template>

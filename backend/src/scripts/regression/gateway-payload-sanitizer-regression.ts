@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
-import { buildDiagnosticUpstreamError } from '../../modules/gateway/openai-gateway-error-helpers.js'
-import { sanitizeAuditPayloadBody, sanitizeDiagnosticPayload } from '../../modules/gateway/payload-sanitizer.js'
+import { buildDiagnosticUpstreamError } from '../../modules/gateway/upstream/error-helpers.js'
+import { sanitizeAuditPayloadBody, sanitizeDiagnosticPayload } from '../../modules/gateway/audit/payload-sanitizer.js'
 
 const diagnostic = buildDiagnosticUpstreamError({
   accountId: 'acct_diagnostic',

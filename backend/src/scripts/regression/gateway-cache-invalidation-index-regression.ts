@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
 const backendSrcRoot = fileURLToPath(new URL('../..', import.meta.url))
 
 const gatewayApiKeyRepositorySource = readSource('storage/gateway-api-key.repository.ts')
-const apiKeyQuotaServiceSource = readSource('modules/gateway/api-key-quota.service.ts')
+const apiKeyQuotaServiceSource = readSource('modules/gateway/quota/api-key-quota.service.ts')
 const appCacheSource = readSource('shared/cache.ts')
 
 assertFunctionDoesNotScanCacheEntries(gatewayApiKeyRepositorySource, 'invalidateGatewayApiKeyCacheById')
@@ -82,7 +82,7 @@ async function assertGatewayCacheInvalidationBehavior(): Promise<void> {
     import('../../storage/database.js'),
     import('../../storage/repositories.js'),
     import('../../storage/gateway-api-key.repository.js'),
-    import('../../modules/gateway/api-key-quota.service.js')
+    import('../../modules/gateway/quota/api-key-quota.service.js')
   ])
   logger.level = 'silent'
 

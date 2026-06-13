@@ -43,7 +43,7 @@ withDefaults(defineProps<{
   matchNote?: string
 }>(), {
   intro: '',
-  matchNote: '支持多值的匹配字段只用英文逗号或中文逗号分隔；同一个字段里的多个值是“任一命中”，不同字段之间是“同时命中”。输出文本排除为负向条件，任一命中即让本规则不命中。'
+  matchNote: '多个值用英文逗号或中文逗号分隔。同一个字段填多个值时，命中任意一个就算这个字段通过；填写了多个字段时，所有字段都要通过。'
 })
 
 const guideSourceColumns = [
@@ -54,15 +54,15 @@ const guideSourceColumns = [
 
 const guideFieldColumns = [
   { title: '字段', key: 'field', dataIndex: 'field', width: 120 },
-  { title: '取值来源', key: 'source', dataIndex: 'source' },
-  { title: '例子', key: 'example', dataIndex: 'example', width: 180 },
-  { title: '说明', key: 'note', dataIndex: 'note' }
+  { title: '它检查什么', key: 'source', dataIndex: 'source' },
+  { title: '填写例子', key: 'example', dataIndex: 'example', width: 180 },
+  { title: '怎么填', key: 'note', dataIndex: 'note' }
 ]
 
 const guideActionColumns = [
   { title: '处置', key: 'action', dataIndex: 'action', width: 150 },
-  { title: '适用场景', key: 'when', dataIndex: 'when' },
-  { title: '说明', key: 'note', dataIndex: 'note' }
+  { title: '什么时候选', key: 'when', dataIndex: 'when' },
+  { title: '会发生什么', key: 'note', dataIndex: 'note' }
 ]
 </script>
 

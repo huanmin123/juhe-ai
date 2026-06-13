@@ -10,15 +10,15 @@ import type { AccountModelMapping } from '../../domain/types.js'
 import {
   buildOpenAIModelMappedJsonBody,
   resolveOpenAIAccountModelMapping
-} from '../../modules/gateway/openai-gateway-model-mapping.js'
-import { recordCompletedUpstreamAttempt } from '../../modules/gateway/openai-gateway-usage-records.js'
-import { requestModel } from '../../modules/gateway/openai-gateway-usage.js'
-import { OpenAIOAuthCodexAdapterError } from '../../modules/gateway/openai-oauth-codex-adapter.js'
-import { flushAllUsageRecordQueue } from '../../modules/gateway/usage-record-queue.service.js'
+} from '../../modules/gateway/protocols/openai-v1/model-mapping.js'
+import { recordCompletedUpstreamAttempt } from '../../modules/gateway/usage/records.js'
+import { requestModel } from '../../modules/gateway/request/metadata.js'
+import { OpenAIOAuthCodexAdapterError } from '../../modules/gateway/adapters/gpt-codex/oauth-adapter.js'
+import { flushAllUsageRecordQueue } from '../../modules/gateway/usage/record-queue.service.js'
 import { previewAccountImport } from '../../modules/accounts/account-import.service.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
-import { createGatewayRequestBodyState, type GatewayRawBodyRequest } from '../../modules/gateway/openai-gateway-request-body.js'
+import { createGatewayRequestBodyState, type GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-model-mapping-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')

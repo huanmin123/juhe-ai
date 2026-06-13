@@ -155,7 +155,7 @@
               <strong>{{ listText(record.match.outputTextExcludes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>原始事件文本包含</span>
+              <span>SSE 事件原文包含</span>
               <strong>{{ listText(record.match.rawTextIncludes) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
@@ -237,7 +237,7 @@
     <ResponseInspectionPolicyGuideModal
       v-model:open="guideOpen"
       title="响应检查策略配置指南"
-      intro="策略作用于 OpenAI v1 Chat / Responses 的 JSON 与 SSE 响应语义；协议层用于 OpenAI v1 全局规则，供应商层用于 GPT 或其他 OpenAI v1 兼容供应商的局部规则。其他供应商协议必须先接入自己的语义适配器。"
+      intro="这类策略检查上游返回的 JSON 或 SSE 流。协议层规则会作用到所有 OpenAI v1 账号；供应商层规则只作用到选中的供应商，例如 GPT。"
     />
   </a-card>
 </template>
@@ -322,7 +322,7 @@ const columns = [
   { title: '错误消息包含', key: 'errorMessageIncludes', width: 220 },
   { title: '完成原因 / 状态', key: 'finishReasons', width: 190 },
   { title: 'JSON字段路径存在', key: 'jsonPathsExists', width: 190 },
-  { title: '原始事件文本包含', key: 'rawTextIncludes', width: 220 },
+  { title: 'SSE 事件原文包含', key: 'rawTextIncludes', width: 240 },
   { title: '处置模板', key: 'action', width: 220 },
   { title: '备注', key: 'notes', width: 220 },
   { title: '更新时间', key: 'updatedAt', width: 180 },
@@ -634,7 +634,7 @@ function matchSummary(policy: ResponseInspectionPolicySummary): string {
     responseInspectionScopedListSummary('type', match.errorTypes),
     responseInspectionScopedListSummary('错误消息', match.errorMessageIncludes),
     responseInspectionScopedListSummary('完成原因', match.finishReasons),
-    responseInspectionScopedListSummary('原始文本', match.rawTextIncludes),
+    responseInspectionScopedListSummary('SSE 原文', match.rawTextIncludes),
     responseInspectionScopedListSummary('JSON路径', match.jsonPathsExists)
   ].filter(Boolean)
   return parts.length ? parts.join('；') : '-'

@@ -30,7 +30,7 @@ import {
 import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { currentSystemAccountId } from '../../storage/access-scope.js'
-import { handleOpenAIGatewayRequest, type OpenAIGatewayRequestIdentity } from '../gateway/openai-gateway.routes.js'
+import { handleOpenAIGatewayRequest, type OpenAIGatewayRequestIdentity } from '../gateway/routes.js'
 import { MemoryGatewayResponse } from '../accounts/account-test.service.js'
 import {
   accountDiagnosticRetryTimeoutMs,
@@ -38,15 +38,45 @@ import {
   diagnosticAttemptSignal,
   isDiagnosticTimeoutSignal
 } from '../accounts/account-diagnostic-retry-policy.js'
+import {
+  defaultModel,
+  defaultProfile,
+  distributionSampleCount,
+  modelsPath,
+  probeSetVersion,
+  responsesPath,
+  supportedModels,
+  type SupportedModel
+} from './model-checks.constants.js'
+import {
+  average,
+  bounded,
+  boundedRatio,
+  buildModelMatchEvidence,
+  describeModelMismatch,
+  extractOpenAIResponseOutputText,
+  hasFunctionCall,
+  hasModelMismatchEvidence,
+  integerValue,
+  modelCheckLevelValue,
+  modelCheckStatusValue,
+  modelFromSse,
+  normalizeModel,
+  numberValue,
+  parseFirstJsonObject,
+  parseJsonRecord,
+  parseOpenAIStreamFailureMessage,
+  parseUpstreamMessage,
+  ratio,
+  recordValue,
+  roundMetric,
+  textSimilarity,
+  textValue,
+  throwIfAborted,
+  totalTokens,
+  usageFromSse
+} from './model-checks-parsing.js'
 
-const supportedModels = ['gpt-5.5', 'gpt-5.4'] as const
-const supportedModelSet = new Set<string>(supportedModels)
-const defaultModel = 'gpt-5.5' as const
-const defaultProfile = 'full' as const
-const probeSetVersion = 'openai-model-check-v2-strong-retry'
-const responsesPath = '/v1/responses'
-const modelsPath = '/v1/models'
-const distributionSampleCount = 5
 const probeMaxAttempts = accountDiagnosticRetryTimeoutMs.length
 const behaviorProbeDefinitions = [
   {
@@ -257,10 +287,7 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
     message: '可信对比默认关闭；选择一个你信任的可用 GPT 账户后，会额外消耗该账户额度'
   }
   return {
-    supportedModels: [
-      { value: 'gpt-5.5', label: 'gpt-5.5' },
-      { value: 'gpt-5.4', label: 'gpt-5.4' }
-    ],
+    supportedModels: supportedModels.map((model) => ({ value: model, label: model })),
     supportedProfiles: [
       {
         value: 'full',
@@ -529,7 +556,7 @@ function resolveTrustedComparisonTarget(accountId: string, access?: AccessScope)
   }
 }
 
-async function executeProbeSuite(target: ProbeTarget, model: 'gpt-5.5' | 'gpt-5.4', prefix: 'target' | 'trusted_comparison', signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ProbeSuiteResult> {
+async function executeProbeSuite(target: ProbeTarget, model: SupportedModel, prefix: 'target' | 'trusted_comparison', signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ProbeSuiteResult> {
   const items: ModelCheckItemCreateInput[] = []
   const catalog = await runGatewayProbe(target, {
     method: 'GET',
@@ -611,8 +638,8 @@ async function executeProbeSuite(target: ProbeTarget, model: 'gpt-5.5' | 'gpt-5.
   return { items, basic, behavior: behaviorObservations[0]?.result, longContext }
 }
 
-async function executeCrossModelComparison(target: ProbeTarget, targetSuite: ProbeSuiteResult, model: 'gpt-5.5' | 'gpt-5.4', signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckItemCreateInput> {
-  const pairedModel = model === 'gpt-5.5' ? 'gpt-5.4' : 'gpt-5.5'
+async function executeCrossModelComparison(target: ProbeTarget, targetSuite: ProbeSuiteResult, model: SupportedModel, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckItemCreateInput> {
+  const pairedModel: SupportedModel = model === 'gpt-5.5' ? 'gpt-5.4' : 'gpt-5.5'
   const pairedBasic = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
@@ -627,7 +654,7 @@ async function executeCrossModelComparison(target: ProbeTarget, targetSuite: Pro
 async function executeDistributionSimilarityComparison(
   target: ProbeTarget,
   comparison: ProbeTarget,
-  model: 'gpt-5.5' | 'gpt-5.4',
+  model: SupportedModel,
   signal?: AbortSignal,
   progress?: ModelCheckProgressReporter
 ): Promise<ModelCheckItemCreateInput> {
@@ -772,7 +799,7 @@ async function runGatewayProbeAttempt(target: ProbeTarget, probe: GatewayProbeIn
     headers: response.headersObject(),
     json,
     outputText,
-    model: textValue(json?.model),
+    model: textValue(json?.model) ?? modelFromSse(bodyText),
     usage: recordValue(json?.usage) ?? usageFromSse(bodyText),
     errorMessage: parseUpstreamMessage(bodyText)
   }
@@ -1566,298 +1593,5 @@ class MemoryGatewayRequest extends EventEmitter {
 
   asRequest(): Request {
     return this as unknown as Request
-  }
-}
-
-function parseJsonRecord(bodyText: string): Record<string, unknown> | undefined {
-  if (!bodyText.trim() || bodyText.trimStart().startsWith('event:')) return undefined
-  try {
-    const parsed = JSON.parse(bodyText) as unknown
-    return recordValue(parsed)
-  } catch {
-    return undefined
-  }
-}
-
-function extractOpenAIResponseOutputText(bodyText: string): string | undefined {
-  const direct = extractTextFromResponsePayload(parseJsonRecord(bodyText))
-  if (direct) return direct
-  const parts: string[] = []
-  for (const event of parseSseEvents(bodyText)) {
-    if (event.type === 'response.output_text.delta' || event.type === 'response.refusal.delta') {
-      const delta = textValue(event.delta)
-      if (delta) parts.push(delta)
-    }
-    if (event.type === 'response.output_text.done') {
-      const text = textValue(event.text)
-      if (text) return text
-    }
-    if (event.type === 'response.completed' || event.type === 'response.done') {
-      const text = extractTextFromResponsePayload(recordValue(event.response))
-      if (text) return text
-    }
-  }
-  const text = parts.join('').trim()
-  return text || undefined
-}
-
-function extractTextFromResponsePayload(payload?: Record<string, unknown>): string | undefined {
-  const direct = textValue(payload?.output_text)
-  if (direct) return direct
-  const output = Array.isArray(payload?.output) ? payload.output : []
-  const parts: string[] = []
-  for (const item of output) {
-    const content = recordValue(item)?.content
-    if (!Array.isArray(content)) continue
-    for (const contentItem of content) {
-      const text = textValue(recordValue(contentItem)?.text)
-      if (text) parts.push(text)
-    }
-  }
-  const text = parts.join('').trim()
-  return text || undefined
-}
-
-function parseOpenAIStreamFailureMessage(bodyText: string): string | undefined {
-  for (const event of parseSseEvents(bodyText)) {
-    const type = textValue(event.type)
-    if (type !== 'response.failed' && type !== 'response.incomplete' && type !== 'error') continue
-    const error = event.error ?? recordValue(event.response)?.error
-    return parseErrorMessage(error) || parseErrorMessage(event) || type
-  }
-  return undefined
-}
-
-function parseSseEvents(bodyText: string): Array<Record<string, unknown>> {
-  const events: Array<Record<string, unknown>> = []
-  let eventName = ''
-  let dataLines: string[] = []
-  const flush = () => {
-    const data = dataLines.join('\n').trim()
-    const type = eventName
-    eventName = ''
-    dataLines = []
-    if (!data || data === '[DONE]') return
-    try {
-      const payload = JSON.parse(data) as Record<string, unknown>
-      if (type && typeof payload.type !== 'string') payload.type = type
-      events.push(payload)
-    } catch {
-    }
-  }
-  for (const line of bodyText.split(/\r?\n/)) {
-    if (!line) {
-      flush()
-    } else if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim()
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart())
-    }
-  }
-  flush()
-  return events
-}
-
-function parseUpstreamMessage(bodyText: string): string | undefined {
-  const json = parseJsonRecord(bodyText)
-  const error = recordValue(json?.error)
-  return textValue(error?.message) || textValue(error?.code) || textValue(json?.message) || parseOpenAIStreamFailureMessage(bodyText)
-}
-
-function parseErrorMessage(value: unknown): string | undefined {
-  if (typeof value === 'string' && value.trim()) return value.trim()
-  const record = recordValue(value)
-  return textValue(record?.message) || textValue(record?.code) || textValue(record?.type)
-}
-
-function parseFirstJsonObject(text?: string): Record<string, unknown> | undefined {
-  if (!text) return undefined
-  const trimmed = text.trim()
-  try {
-    return recordValue(JSON.parse(trimmed))
-  } catch {
-    const match = trimmed.match(/\{[\s\S]*\}/)
-    if (!match) return undefined
-    try {
-      return recordValue(JSON.parse(match[0]))
-    } catch {
-      return undefined
-    }
-  }
-}
-
-function hasFunctionCall(payload: Record<string, unknown> | undefined, name: string): boolean {
-  const output = Array.isArray(payload?.output) ? payload.output : []
-  return output.some((item) => {
-    const record = recordValue(item)
-    return record?.type === 'function_call' && record.name === name
-  })
-}
-
-function usageFromSse(bodyText: string): Record<string, unknown> | undefined {
-  for (const event of parseSseEvents(bodyText)) {
-    const response = recordValue(event.response)
-    const usage = recordValue(response?.usage)
-    if (usage) return usage
-  }
-  return undefined
-}
-
-function modelFromSse(bodyText: string): string | undefined {
-  for (const event of parseSseEvents(bodyText)) {
-    const model = textValue(recordValue(event.response)?.model)
-    if (model) return model
-  }
-  return undefined
-}
-
-function buildModelMatchEvidence(actual: unknown, expected: string): {
-  expectedModel: string
-  responseModel?: string
-  matchedModel: boolean
-  modelMismatch: boolean
-} {
-  const text = textValue(actual)
-  const matchedModel = modelMatches(text, expected)
-  return {
-    expectedModel: expected,
-    responseModel: text,
-    matchedModel,
-    modelMismatch: Boolean(text && !matchedModel)
-  }
-}
-
-function describeModelMismatch(evidence: { expectedModel: string; responseModel?: string; modelMismatch: boolean }): string | undefined {
-  return evidence.modelMismatch && evidence.responseModel
-    ? `上游返回模型 ${evidence.responseModel}，与请求模型 ${evidence.expectedModel} 不一致`
-    : undefined
-}
-
-function hasModelMismatchEvidence(item: ModelCheckItemSummary): boolean {
-  const evidence = recordValue(item.evidenceSummary)
-  if (evidence?.modelMismatch !== true) return false
-  return item.itemKey.startsWith('target.') && item.itemType !== 'cross_model'
-}
-
-function modelMatches(actual: unknown, expected: string): boolean {
-  const text = textValue(actual)
-  if (!text) return false
-  if (text === expected) return true
-  if (!text.startsWith(`${expected}-`)) return false
-  const suffix = text.slice(expected.length + 1)
-  return /^\d{4}-\d{2}-\d{2}(?:$|[._-])/.test(suffix)
-}
-
-function normalizeModel(value: unknown): 'gpt-5.5' | 'gpt-5.4' | undefined {
-  const text = textValue(value)
-  if (!text) return undefined
-  return supportedModelSet.has(text) ? text as 'gpt-5.5' | 'gpt-5.4' : undefined
-}
-
-function modelCheckTargetTypeValue(value: unknown): ModelCheckTargetType | undefined {
-  return value === 'account' ? value : undefined
-}
-
-function modelCheckLevelValue(value: unknown): 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable' | undefined {
-  return value === 'high_confidence' || value === 'likely' || value === 'uncertain' || value === 'suspicious' || value === 'unavailable' ? value : undefined
-}
-
-function modelCheckStatusValue(value: unknown): ModelCheckRunStatus | undefined {
-  return value === 'running' || value === 'completed' || value === 'failed' || value === 'canceled' ? value : undefined
-}
-
-function integerValue(value: unknown): number | undefined {
-  const raw = Array.isArray(value) ? value[0] : value
-  const numeric = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN
-  return Number.isFinite(numeric) ? Math.trunc(numeric) : undefined
-}
-
-function textValue(value: unknown): string | undefined {
-  const raw = Array.isArray(value) ? value[0] : value
-  return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined
-}
-
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function totalTokens(usage: Record<string, unknown> | undefined): number | undefined {
-  return numberValue(usage?.total_tokens)
-    ?? numberValue(usage?.totalTokens)
-    ?? sumDefined([numberValue(usage?.input_tokens), numberValue(usage?.output_tokens)])
-}
-
-function sumDefined(values: Array<number | undefined>): number | undefined {
-  const numbers = values.filter((value): value is number => value !== undefined)
-  return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) : undefined
-}
-
-function average(values: number[]): number {
-  const numbers = values.filter((value) => Number.isFinite(value))
-  return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : 0
-}
-
-function ratio(part: number, total: number): number {
-  return total > 0 ? part / total : 0
-}
-
-function boundedRatio(left: number, right: number): number {
-  if (left <= 0 || right <= 0) return 0
-  return Math.min(left, right) / Math.max(left, right)
-}
-
-function roundMetric(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  return Math.round(value * 1000) / 1000
-}
-
-function textSimilarity(left: string, right: string): number {
-  const normalizedLeft = normalizeComparableText(left)
-  const normalizedRight = normalizeComparableText(right)
-  if (!normalizedLeft || !normalizedRight) return 0
-  if (normalizedLeft === normalizedRight) return 1
-  const leftTokens = comparableTokens(normalizedLeft)
-  const rightTokens = comparableTokens(normalizedRight)
-  if (!leftTokens.size || !rightTokens.size) return 0
-  let intersection = 0
-  for (const token of leftTokens) {
-    if (rightTokens.has(token)) intersection += 1
-  }
-  const union = leftTokens.size + rightTokens.size - intersection
-  const tokenSimilarity = union > 0 ? intersection / union : 0
-  const lengthSimilarity = boundedRatio(normalizedLeft.length, normalizedRight.length)
-  return (tokenSimilarity * 0.75) + (lengthSimilarity * 0.25)
-}
-
-function normalizeComparableText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/[，。！？；：,.!?;:"'`~\-—_[\](){}<>]/g, '')
-    .trim()
-}
-
-function comparableTokens(value: string): Set<string> {
-  if (value.length <= 2) return new Set(value ? [value] : [])
-  const tokens = new Set<string>()
-  for (let index = 0; index < value.length - 1; index += 1) {
-    tokens.add(value.slice(index, index + 2))
-  }
-  return tokens
-}
-
-function bounded(value?: string): string | undefined {
-  if (!value) return undefined
-  const text = value.trim()
-  return text.length > 160 ? `${text.slice(0, 160)}...` : text
-}
-
-function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) {
-    throw new Error('模型检测已取消')
   }
 }

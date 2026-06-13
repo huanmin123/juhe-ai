@@ -80,17 +80,36 @@ assert(
   '后台账号测试任务应在每次 10/20/30s 真实请求 attempt 开始时更新进度消息'
 )
 assert(
-  accountTestTaskQueueSource.includes('const manualAccountTestConcurrency = 3'),
-  '手动账号测试后台队列应有明确并发上限'
+  accountTestTaskQueueSource.includes('const defaultManualAccountTestConcurrency = 100')
+    && accountTestTaskQueueSource.includes('manualAccountTestQueue.setConcurrency(accountTestTaskConcurrency())')
+    && accountTestTaskQueueSource.includes('getSettings().accountTestTaskConcurrency'),
+  '手动账号测试后台 worker 应使用系统设置控制并发，默认 100'
 )
 assert(
   accountTestTaskQueueSource.includes('listRunnableAccountTestTaskIds(manualAccountTestRefillBatchSize)'),
   '手动账号测试队列应持续从 DB 补拉 queued 任务，避免 worker 重启后只执行首批任务'
 )
 assert(
+  accountsRoutesSource.includes("accountsRouter.post('/test-sessions'")
+    && accountsRoutesSource.includes("accountsRouter.post('/test-sessions/:sessionId/heartbeat'")
+    && accountsRoutesSource.includes("accountsRouter.post('/test-sessions/:sessionId/cancel'"),
+  '账号测试应提供 session 创建、心跳和批量取消接口'
+)
+assert(
+  accountTestTaskRepositorySource.includes('account_test_sessions')
+    && accountTestTaskRepositorySource.includes('cancelExpiredAccountTestSessions')
+    && accountTestTaskRepositorySource.includes('前端测试窗口已关闭，任务已取消'),
+  '账号测试任务应支持前端关闭后的 session 过期取消'
+)
+assert(
   accountTestTaskRepositorySource.includes('AND cancel_requested = 1')
     && accountTestTaskRepositorySource.includes('AND cancel_requested = 0'),
   'worker 重启时应保留已请求取消的 running 任务，不应把它们重新排队'
+)
+assert(
+  !accountTestTaskRepositorySource.includes('failTimedOutQueuedAccountTestTasks')
+    && !accountTestTaskRepositorySource.includes('accountTestTaskQueueTimeoutMessage'),
+  '未被 worker 消费的 queued 任务不应计算 60s 运行超时，也不应被查询路径自动失败'
 )
 assert(
   accountTestTaskRepositorySource.includes('draft_account_encrypted')
@@ -130,10 +149,54 @@ assert(
   '前端单账号测试应轮询活动任务并把任务状态传给测试终端'
 )
 assert(
+  frontendAccountTestModalSource.includes('runBatchAccountTestItem(account, index, controller, session.id)')
+    && frontendAccountTestModalSource.includes('const result = await waitForAccountTestResult(task, account, controller.signal,')
+    && frontendAccountTestModalSource.includes('accountTestTaskMaxWaitMs')
+    && frontendAccountTestModalSource.includes('cancelCreatedAccountTestTask(task.id, account)'),
+  '前端批量测试应让每个任务独立完成提交、轮询和运行超时取消'
+)
+assert(
+  frontendAccountTestModalSource.includes('const accountBatchTestChunkSize = 10')
+    && frontendAccountTestModalSource.includes('runInFixedBatches(accounts, accountBatchTestChunkSize'),
+  '前端批量测试应固定每批最多提交 10 个任务，本批全部结束后再提交下一批'
+)
+assert(
+  frontendAccountTestModalSource.includes('createAccountTestSession')
+    && frontendAccountTestModalSource.includes('startAccountTestSessionHeartbeat')
+    && frontendAccountTestModalSource.includes('cancelActiveAccountTestSession'),
+  '前端测试弹窗应创建测试 session、保持心跳，并在停止或关闭时批量取消 session'
+)
+assert(
+  frontendAccountTestModalSource.includes('beforeunload')
+    && frontendAccountTestModalSource.includes('navigator.sendBeacon')
+    && frontendAccountTestModalSource.includes('keepalive: true'),
+  '前端刷新或关闭页面时应使用 sendBeacon / keepalive 兜底取消测试 session'
+)
+assert(
+  frontendAccountTestModalSource.includes("if (task.status !== 'running')")
+    && frontendAccountTestModalSource.includes('parseTaskTime(task.startedAt)')
+    && frontendAccountTestModalSource.includes('账号测试运行超过'),
+  '前端 60s 超时只应从后台任务进入 running 且写入 startedAt 后开始计算'
+)
+assert.equal(
+  frontendAccountTestModalSource.includes('pollBatchAccountTestTasks('),
+  false,
+  '前端批量测试不应保留旧的提交全部任务后统一轮询流程'
+)
+assert(
   frontendAccountTestModalComponentSource.includes('activeTask?: AccountTestTask')
     && frontendAccountTestModalComponentSource.includes('当前窗口估计')
     && frontendAccountTestModalComponentSource.includes('10s + 20s + 30s'),
   '前端测试终端应展示后台任务状态、等待策略和当前等待窗口'
+)
+assert(
+  frontendAccountTestModalComponentSource.includes('等待接收')
+    && frontendAccountTestModalComponentSource.includes("item.status === 'queued'"),
+  '批量测试弹窗应区分等待接收和测试中，避免把 worker 未接任务误展示为真实测试中'
+)
+assert(
+  frontendAccountTestModalComponentSource.includes('每批最多 10 个账户'),
+  '批量测试弹窗应明确展示固定小批次提交策略'
 )
 
 console.log('账号测试任务边界回归通过：手动测试由后台 worker 队列执行，前端通过任务接口查询结果')

@@ -5,7 +5,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import {
   closeGatewayUpstreamAgentsForTest,
   requestUpstream
-} from '../../modules/gateway/openai-gateway-upstream.js'
+} from '../../modules/gateway/upstream/request.js'
 
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 

@@ -7,12 +7,12 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
-import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/api-key-quota.service.js'
-import { checkGatewayAuthorizationQuotaBatchAsync } from '../../modules/gateway/authorization-quota.service.js'
+import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/quota/api-key-quota.service.js'
+import { checkGatewayAuthorizationQuotaBatchAsync } from '../../modules/gateway/quota/authorization-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIds,
   checkGatewayAuthorizationQuotaByIds
-} from '../../modules/gateway/authorization-quota.service.js'
+} from '../../modules/gateway/quota/authorization-quota.service.js'
 import {
   clearGatewayQuotaSnapshot,
   gatewayQuotaSnapshotAuthorizationPageSize,
@@ -20,7 +20,7 @@ import {
   gatewayQuotaSnapshotRuntime,
   invalidateGatewayAuthorizationQuotaSnapshot,
   replaceGatewayQuotaSnapshot
-} from '../../modules/gateway/gateway-quota-snapshot-cache.service.js'
+} from '../../modules/gateway/quota/quota-snapshot-cache.service.js'
 import * as dbServiceIpc from '../../modules/db-service/db-service-ipc.js'
 import { notifyAuthorizationQuotaCacheInvalidation } from '../../shared/gateway-cache-invalidation.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
@@ -313,7 +313,7 @@ try {
 
 function assertGatewayQuotaSnapshotSourcesBounded(): void {
   const repositorySource = readFileSync(new URL('../../storage/gateway-quota-snapshot.repository.ts', import.meta.url), 'utf8')
-  const cacheSource = readFileSync(new URL('../../modules/gateway/gateway-quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
+  const cacheSource = readFileSync(new URL('../../modules/gateway/quota/quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
   const apiKeyRowsBody = sourceFunctionBlock(repositorySource, 'function loadApiKeyQuotaSnapshotRows')
   const authorizationRowsBody = sourceFunctionBlock(repositorySource, 'function loadAuthorizationQuotaSnapshotRows')
   const teamRowsBody = sourceFunctionBlock(repositorySource, 'function loadTeamAuthorizationQuotaSnapshotRows')
@@ -335,8 +335,8 @@ function assertGatewayQuotaSnapshotSourcesBounded(): void {
 function assertAuthorizationQuotaInvalidationSourcesConnected(): void {
   const dbServiceIpcSource = readFileSync(new URL('../../modules/db-service/db-service-ipc.ts', import.meta.url), 'utf8')
   const dbServiceTypesSource = readFileSync(new URL('../../modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
-  const authorizationQuotaSource = readFileSync(new URL('../../modules/gateway/authorization-quota.service.ts', import.meta.url), 'utf8')
-  const cacheSource = readFileSync(new URL('../../modules/gateway/gateway-quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
+  const authorizationQuotaSource = readFileSync(new URL('../../modules/gateway/quota/authorization-quota.service.ts', import.meta.url), 'utf8')
+  const cacheSource = readFileSync(new URL('../../modules/gateway/quota/quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
   assert(dbServiceTypesSource.includes("type: 'authorization_quota_cache_invalidate'"), 'DB service 子进程消息类型必须包含授权配额缓存失效')
   assert(dbServiceIpcSource.includes('registerAuthorizationQuotaCacheInvalidator(notifyServerAuthorizationQuotaCacheInvalidated)'), 'DB service 必须把授权配额失效器注册到跨进程通知链路')
   assert(dbServiceIpcSource.includes("sendDbServiceChildMessage({ type: 'authorization_quota_cache_invalidate' })"), 'DB service 角色必须把授权配额失效转发给 server')
@@ -347,7 +347,7 @@ function assertAuthorizationQuotaInvalidationSourcesConnected(): void {
 }
 
 function assertGatewayQuotaRequestPathUsesAsyncOnly(): void {
-  const preflightSource = readFileSync(new URL('../../modules/gateway/openai-gateway-request-preflight.ts', import.meta.url), 'utf8')
+  const preflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
   assert(!/\bcheckGatewayApiKeyQuota\b/.test(preflightSource), '网关请求预检禁止调用同步 API Key 额度读取')
   assert(!/\bcheckGatewayAuthorizationQuota(?:ByIds|BatchByIds)?\b/.test(preflightSource), '网关请求预检禁止调用同步授权额度读取')
 }

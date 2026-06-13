@@ -73,16 +73,16 @@ try {
     quotaSnapshot,
     upstreamModule
   ] = await Promise.all([
-    import('../../modules/gateway/openai-gateway.routes.js'),
-    import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
+    import('../../modules/gateway/routes.js'),
+    import('../../modules/gateway/request/body-middleware.js'),
     import('../../shared/request-context.js'),
     import('../../modules/db-service/db-service-handlers.js'),
     import('../../modules/db-service/db-service-ipc.js'),
-    import('../../modules/gateway/gateway-runtime-cache.service.js'),
-    import('../../modules/gateway/api-key-quota.service.js'),
-    import('../../modules/gateway/authorization-quota.service.js'),
-    import('../../modules/gateway/gateway-quota-snapshot-cache.service.js'),
-    import('../../modules/gateway/openai-gateway-upstream.js')
+    import('../../modules/gateway/runtime/runtime-cache.service.js'),
+    import('../../modules/gateway/quota/api-key-quota.service.js'),
+    import('../../modules/gateway/quota/authorization-quota.service.js'),
+    import('../../modules/gateway/quota/quota-snapshot-cache.service.js'),
+    import('../../modules/gateway/upstream/request.js')
   ])
   closeGatewayUpstreamAgentsForTest = upstreamModule.closeGatewayUpstreamAgentsForTest
 

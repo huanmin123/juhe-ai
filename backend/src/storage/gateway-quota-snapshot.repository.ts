@@ -4,15 +4,15 @@ import type {
   GatewayAuthorizationQuotaSnapshotEntry,
   GatewayQuotaCostSnapshotEntry,
   GatewayQuotaSnapshot
-} from '../modules/gateway/gateway-quota-snapshot-cache.service.js'
+} from '../modules/gateway/quota/quota-snapshot-cache.service.js'
 import {
   maxGatewayQuotaSnapshotAuthorizationEntries,
   maxGatewayQuotaSnapshotCostEntries
-} from '../modules/gateway/gateway-quota-snapshot-cache.service.js'
+} from '../modules/gateway/quota/quota-snapshot-cache.service.js'
 import type { RequestQuotaLimits } from '../domain/types.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
+import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
 
 interface ApiKeyQuotaSnapshotRow {
   id: string

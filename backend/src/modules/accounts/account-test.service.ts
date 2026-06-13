@@ -15,12 +15,18 @@ import {
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
-import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
-import { sanitizeDiagnosticPayload } from '../gateway/payload-sanitizer.js'
-import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
-import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-effects.service.js'
-import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
-import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
+import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
+import { sanitizeDiagnosticPayload } from '../gateway/audit/payload-sanitizer.js'
+import type { GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
+import { flushGatewayAccountSideEffects } from '../gateway/runtime/account-side-effects.service.js'
+import {
+  extractOpenAIResponseOutputText,
+  parseOpenAIJsonBody,
+  parseOpenAIStreamFailureMessage,
+  parseOpenAIUpstreamMessage
+} from '../gateway/protocols/openai-v1/response-parsing.js'
+import { OpenAIStreamInspector } from '../gateway/protocols/openai-v1/stream-inspection.js'
+import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import {
   type AccountDiagnosticAttemptProgressHandler,
   accountDiagnosticAttemptProgress,
@@ -190,7 +196,7 @@ export async function testOpenAIAccount(
       : findAccountForTest(account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const responseText = response.bodyText()
-    const upstreamMessage = parseUpstreamMessage(responseText)
+    const upstreamMessage = parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
     const upstreamErrorCode = parseUpstreamErrorCode(responseText)
     const streamFailureMessage = parseOpenAIStreamFailureMessage(responseText)
     const outputText = extractOpenAIResponseOutputText(responseText)
@@ -218,7 +224,7 @@ export async function testOpenAIAccount(
       requestUrl,
       requestBody,
       responseHeaders: response.headersObject(),
-      responseBody: parseJsonBody(responseText),
+      responseBody: parseOpenAIJsonBody(responseText),
       responseText,
       responseTruncated,
       outputText,
@@ -671,135 +677,6 @@ function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret
   return Boolean(after && before !== after)
 }
 
-function parseJsonBody(bodyText: string): unknown {
-  if (!bodyText) return undefined
-  try {
-    return JSON.parse(bodyText) as unknown
-  } catch {
-    return undefined
-  }
-}
-
-function extractOpenAIResponseOutputText(bodyText: string): string | undefined {
-  if (!bodyText.trim()) return undefined
-  const jsonOutput = extractTextFromOpenAIResponsePayload(parseJsonBody(bodyText))
-  if (jsonOutput) return jsonOutput
-
-  const outputParts: string[] = []
-  for (const event of parseSseEvents(bodyText)) {
-    if (event.type === 'response.output_text.delta' || event.type === 'response.refusal.delta') {
-      const delta = stringValue(event.delta)
-      if (delta) outputParts.push(delta)
-      continue
-    }
-    if (event.type === 'response.output_text.done') {
-      const text = stringValue(event.text)
-      if (text && outputParts.join('') !== text) {
-        return text
-      }
-      continue
-    }
-    if (event.type === 'response.completed' || event.type === 'response.done') {
-      const responseText = extractTextFromOpenAIResponsePayload(event.response)
-      if (responseText) return responseText
-    }
-  }
-
-  const outputText = outputParts.join('').trim()
-  return outputText || undefined
-}
-
-function extractTextFromOpenAIResponsePayload(payload: unknown): string | undefined {
-  if (typeof payload !== 'object' || payload === null) return undefined
-  const record = payload as Record<string, unknown>
-  const outputText = stringValue(record.output_text)
-  if (outputText) return outputText
-
-  const outputParts: string[] = []
-  const output = Array.isArray(record.output) ? record.output : []
-  for (const item of output) {
-    if (typeof item !== 'object' || item === null) continue
-    const content = (item as Record<string, unknown>).content
-    if (!Array.isArray(content)) continue
-    for (const contentItem of content) {
-      if (typeof contentItem !== 'object' || contentItem === null) continue
-      const contentRecord = contentItem as Record<string, unknown>
-      const text = stringValue(contentRecord.text)
-      if (text) outputParts.push(text)
-    }
-  }
-
-  const text = outputParts.join('').trim()
-  return text || undefined
-}
-
-function parseOpenAIStreamFailureMessage(bodyText: string): string | undefined {
-  if (!bodyText.includes('response.failed') && !bodyText.includes('response.incomplete') && !bodyText.includes('error')) {
-    return undefined
-  }
-  for (const payload of parseSseEvents(bodyText)) {
-    const type = stringValue(payload.type)
-    if (type !== 'response.failed' && type !== 'response.incomplete' && type !== 'error') continue
-    const error = payload.error ?? (payload.response as Record<string, unknown> | undefined)?.error
-    const message = parseErrorMessage(error) || parseErrorMessage(payload)
-    return message || type
-  }
-  return undefined
-}
-
-function parseSseEvents(bodyText: string): Array<Record<string, unknown>> {
-  const events: Array<Record<string, unknown>> = []
-  let eventName = ''
-  let dataLines: string[] = []
-  const flush = () => {
-    const data = dataLines.join('\n').trim()
-    const type = eventName
-    eventName = ''
-    dataLines = []
-    if (!data || data === '[DONE]') return
-    try {
-      const payload = JSON.parse(data) as Record<string, unknown>
-      if (type && typeof payload.type !== 'string') payload.type = type
-      events.push(payload)
-    } catch {
-    }
-  }
-  for (const line of bodyText.split(/\r?\n/)) {
-    if (!line) {
-      flush()
-      continue
-    }
-    if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim()
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart())
-    }
-  }
-  flush()
-  return events
-}
-
-function parseUpstreamMessage(bodyText: string): string | undefined {
-  if (!bodyText) return undefined
-  try {
-    const payload = JSON.parse(bodyText) as Record<string, unknown>
-    const error = payload.error
-    if (typeof error === 'object' && error !== null) {
-      const message = (error as Record<string, unknown>).message
-      if (typeof message === 'string' && message.trim()) {
-        return message.trim()
-      }
-    }
-    const message = payload.message
-    if (typeof message === 'string' && message.trim()) {
-      return message.trim()
-    }
-  } catch {
-    return bodyText.slice(0, 240)
-  }
-  return undefined
-}
-
 function parseUpstreamErrorCode(bodyText: string): string | undefined {
   if (!bodyText) return undefined
   try {
@@ -814,13 +691,6 @@ function parseUpstreamErrorCode(bodyText: string): string | undefined {
   } catch {
     return undefined
   }
-}
-
-function parseErrorMessage(value: unknown): string | undefined {
-  if (typeof value === 'string' && value.trim()) return value.trim()
-  if (typeof value !== 'object' || value === null) return undefined
-  const payload = value as Record<string, unknown>
-  return stringValue(payload.message) || stringValue(payload.code) || stringValue(payload.type)
 }
 
 function stringValue(value: unknown): string {

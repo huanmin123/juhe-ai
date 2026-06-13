@@ -1,24 +1,23 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountModelMapping, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
-import { normalizeAccountResponseInspectionRules } from '../modules/accounts/account-response-inspection-policy-validation.js'
-import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
+import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { cleanupDeletedAccountDetachedStats, cleanupDeletedAccountRelatedRecordData as cleanupDeletedAccountRelatedRecordDataTarget, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
 import { deleteAccountTagBindingsForAccounts, loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags } from './account-tags.repository.js'
-import { normalizeAccountModelMappingsInput, replaceAccountModelMappings } from './account-model-mappings.repository.js'
-import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
+import { normalizeAccountModelMappingsForProvider, normalizeAccountSupportedModelsForProvider } from './account-model-normalization.js'
+export { normalizeAccountModelMappingsForProvider, normalizeAccountSupportedModelsForProvider } from './account-model-normalization.js'
+import { replaceAccountModelMappings } from './account-model-mappings.repository.js'
+import { loadSupportedModelsByAccountIds, replaceAccountSupportedModels } from './account-supported-models.repository.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson,
@@ -45,7 +44,7 @@ import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders
 import { defaultProviderProtocolProfile, findProviderProtocolProfile, listOpenAIProtocolProfileIds, listProviders } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
+import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
 import {
   accountSystemAccountId,
   activeAccountAuthorization,
@@ -203,6 +202,7 @@ interface OpenAIOAuthRefreshCandidateRow {
 }
 
 export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
+export { normalizeAccountCredentialsForWrite } from './account-credentials-normalization.js'
 
 export class DefaultGroupReadonlyError extends Error {
   constructor() {
@@ -498,7 +498,9 @@ export {
   type ModelCheckRunListOptions
 } from './model-checks.repository.js'
 export {
+  listAccountQualityFailurePrecheckCandidates,
   refreshAccountQualityFromUsage,
+  type AccountQualityFailurePrecheckCandidate,
   type AccountQualityRealtimeRefreshResult
 } from './account-quality.repository.js'
 function ownerPermissions(): ResourcePermissions {
@@ -1046,202 +1048,6 @@ function requiredTextInput(value: unknown, label: string): string {
     throw new Error(`${label}不能为空`)
   }
   return value.trim()
-}
-
-const apiKeyAccountCredentialKeys = new Set([
-  'api_key',
-  'base_url',
-  'error_handling_rules',
-  'response_inspection_rules'
-])
-
-const oauthAccountCredentialKeys = new Set([
-  'access_token',
-  'refresh_token',
-  'expires_at',
-  'client_id',
-  'id_token',
-  'email',
-  'account_id',
-  'chatgpt_user_id',
-  'plan_type',
-  'base_url',
-  'error_handling_rules',
-  'response_inspection_rules'
-])
-
-const accountCredentialBaseUrlMaxBytes = 2048
-const accountCredentialSecretMaxBytes = 16 * 1024
-const accountCredentialMetadataMaxBytes = 4096
-const accountCredentialsJsonMaxBytes = 32 * 1024
-
-export function normalizeAccountCredentialsForWrite(accountType: string, value: unknown): Record<string, unknown> {
-  const input = accountCredentialsRecord(value)
-  assertKnownInputKeys(input, accountCredentialAllowedKeys(accountType), '账户凭据')
-  if (accountType === 'api_key') {
-    return normalizeApiKeyAccountCredentials(input)
-  }
-  if (accountType === 'oauth') {
-    return normalizeOAuthAccountCredentials(input)
-  }
-  throw new Error(`账户类型 ${accountType} 不支持凭据写入`)
-}
-
-function accountCredentialsRecord(value: unknown): Record<string, unknown> {
-  if (value === undefined) return {}
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('账户凭据必须是对象')
-  }
-  return value as Record<string, unknown>
-}
-
-function accountCredentialAllowedKeys(accountType: string): ReadonlySet<string> {
-  if (accountType === 'api_key') return apiKeyAccountCredentialKeys
-  if (accountType === 'oauth') return oauthAccountCredentialKeys
-  throw new Error(`账户类型 ${accountType} 不支持凭据写入`)
-}
-
-function normalizeApiKeyAccountCredentials(input: Record<string, unknown>): Record<string, unknown> {
-  const baseUrl = requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes)
-  assertSafeUpstreamBaseUrl(baseUrl)
-  const credentials: Record<string, unknown> = {
-    api_key: requiredCredentialTextInput(input.api_key, 'API Key', accountCredentialSecretMaxBytes),
-    base_url: baseUrl
-  }
-  normalizeAccountCredentialPolicies(input, credentials)
-  assertAccountCredentialsJsonSize(credentials)
-  return credentials
-}
-
-function normalizeOAuthAccountCredentials(input: Record<string, unknown>): Record<string, unknown> {
-  const accessToken = optionalCredentialText(input.access_token, 'Access Token', accountCredentialSecretMaxBytes)
-  const refreshToken = optionalCredentialText(input.refresh_token, 'Refresh Token', accountCredentialSecretMaxBytes)
-  if (!refreshToken && !accessToken) {
-    throw new Error('OAuth 凭据不能为空')
-  }
-
-  const credentials: Record<string, unknown> = {
-    base_url: requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes)
-  }
-  assertSafeUpstreamBaseUrl(String(credentials.base_url))
-  if (accessToken) credentials.access_token = accessToken
-  if (refreshToken) credentials.refresh_token = refreshToken
-  const expiresAt = optionalCredentialDateTime(input.expires_at, 'Access Token 到期时间')
-  if (expiresAt) credentials.expires_at = expiresAt
-  copyOptionalCredentialText(input, credentials, 'client_id', 'OAuth client_id', accountCredentialMetadataMaxBytes)
-  copyOptionalCredentialText(input, credentials, 'id_token', 'OAuth id_token', accountCredentialSecretMaxBytes)
-  copyOptionalCredentialText(input, credentials, 'email', 'OAuth email', accountCredentialMetadataMaxBytes)
-  copyOptionalCredentialText(input, credentials, 'account_id', 'OpenAI account_id', accountCredentialMetadataMaxBytes)
-  copyOptionalCredentialText(input, credentials, 'chatgpt_user_id', 'OpenAI chatgpt_user_id', accountCredentialMetadataMaxBytes)
-  copyOptionalCredentialText(input, credentials, 'plan_type', 'OpenAI plan_type', accountCredentialMetadataMaxBytes)
-  normalizeAccountCredentialPolicies(input, credentials)
-  assertAccountCredentialsJsonSize(credentials)
-  return credentials
-}
-
-function normalizeAccountCredentialPolicies(input: Record<string, unknown>, credentials: Record<string, unknown>): void {
-  if (Object.prototype.hasOwnProperty.call(input, 'error_handling_rules')) {
-    credentials.error_handling_rules = normalizeAccountErrorHandlingRules(input.error_handling_rules)
-  }
-  if (Object.prototype.hasOwnProperty.call(input, 'response_inspection_rules')) {
-    credentials.response_inspection_rules = normalizeAccountResponseInspectionRules(input.response_inspection_rules)
-  }
-}
-
-function requiredCredentialTextInput(value: unknown, label: string, maxBytes: number): string {
-  const text = requiredTextInput(value, label)
-  assertCredentialTextByteLength(text, label, maxBytes)
-  return text
-}
-
-function optionalCredentialText(value: unknown, label: string, maxBytes: number): string | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${label}不能为空`)
-  }
-  const text = value.trim()
-  assertCredentialTextByteLength(text, label, maxBytes)
-  return text
-}
-
-function optionalCredentialDateTime(value: unknown, label: string): string | undefined {
-  if (value === undefined) return undefined
-  const normalized = optionalServerDateTimeIso(value)
-  if (!normalized) {
-    throw new Error(`${label}必须是有效时间字符串`)
-  }
-  return normalized
-}
-
-function copyOptionalCredentialText(input: Record<string, unknown>, output: Record<string, unknown>, key: string, label: string, maxBytes: number): void {
-  const value = optionalCredentialText(input[key], label, maxBytes)
-  if (value) output[key] = value
-}
-
-function assertCredentialTextByteLength(value: string, label: string, maxBytes: number): void {
-  if (Buffer.byteLength(value, 'utf8') > maxBytes) {
-    throw new Error(`${label}不能超过 ${maxBytes} 字节`)
-  }
-}
-
-function assertAccountCredentialsJsonSize(credentials: Record<string, unknown>): void {
-  const bytes = Buffer.byteLength(JSON.stringify(credentials), 'utf8')
-  if (bytes > accountCredentialsJsonMaxBytes) {
-    throw new Error(`账户凭据整体大小不能超过 ${accountCredentialsJsonMaxBytes} 字节`)
-  }
-}
-
-function requiredAccountCredentialSource(accountType: string, credentials: Record<string, unknown>): string {
-  if (accountType === 'oauth') {
-    return requiredTextInput(credentials.refresh_token ?? credentials.access_token, 'OAuth 凭据')
-  }
-  if (accountType === 'api_key') {
-    return requiredTextInput(credentials.api_key, 'API Key')
-  }
-  return requiredTextInput(credentials.api_key ?? credentials.refresh_token ?? credentials.access_token, '账户凭据')
-}
-
-export function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string, systemAccountId: string): string[] | undefined {
-  const models = normalizeAccountSupportedModelsInput(value)
-  if (!models?.length) return models
-
-  const providerModels = new Set(listProviderModelCatalog({
-    providerCode,
-    systemAccountId
-  }).map((item) => item.model))
-  const invalidModels = models.filter((model) => !providerModels.has(model))
-  if (invalidModels.length > 0) {
-    throw new Error(`账户支持模型不在供应商模型目录中：${invalidModels.slice(0, 5).join('、')}`)
-  }
-  return models
-}
-
-export function normalizeAccountModelMappingsForProvider(value: unknown, providerCode: string, systemAccountId: string): AccountModelMapping[] | undefined {
-  const mappings = normalizeAccountModelMappingsInput(value)
-  if (!mappings?.length) return mappings
-
-  const requestableModels = new Set(listProviderModelCatalog({
-    providerCode,
-    systemAccountId
-  }).map((item) => item.model))
-  const mappingTargetModels = new Set(listProviderModelCatalog({
-    providerCode,
-    systemAccountId,
-    includeMappingTargets: true
-  }).map((item) => item.model))
-  const invalidSourceModels = mappings
-    .map((mapping) => mapping.sourceModel)
-    .filter((model) => !requestableModels.has(model))
-  if (invalidSourceModels.length > 0) {
-    throw new Error(`映射下游模型不在可请求模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
-  }
-  const invalidUpstreamModels = mappings
-    .map((mapping) => mapping.upstreamModel)
-    .filter((model) => !mappingTargetModels.has(model))
-  if (invalidUpstreamModels.length > 0) {
-    throw new Error(`映射上游模型不在可用模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
-  }
-  return mappings
 }
 
 function isDuplicateAccountNameError(error: unknown): boolean {

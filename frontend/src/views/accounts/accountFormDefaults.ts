@@ -4,6 +4,10 @@ import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySche
 import type { AccountFormModel } from './accountFormTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
 
+export function defaultAccountClientCompatibility(providerCode: string) {
+  return providerCode === GPT_VENDOR_CODE ? 'codex_responses' : 'openai_standard'
+}
+
 export function defaultAccountForm(
   providerCode = '',
   type: AccountType = '',
@@ -34,7 +38,7 @@ export function defaultAccountForm(
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
-    clientCompatibility: resolvedProviderCode === GPT_VENDOR_CODE && resolvedType === 'oauth' ? 'codex_responses' : 'openai_standard',
+    clientCompatibility: defaultAccountClientCompatibility(resolvedProviderCode),
     supportedModels: [],
     modelMappings: [],
     tags: [],

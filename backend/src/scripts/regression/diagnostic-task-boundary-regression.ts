@@ -28,9 +28,8 @@ assert.ok(reusableRelease, '释放槽位后应允许新的诊断任务进入')
 reusableRelease()
 
 const accountTaskQueueSource = readFileSync(resolve('src/modules/accounts/account-test-task-queue.service.ts'), 'utf8')
-assert.match(accountTaskQueueSource, /tryAcquireDiagnosticTaskSlot/, '账户测试后台 worker 必须接入诊断任务并发闸门')
-assert.match(accountTaskQueueSource, /diagnosticTaskBusyMessage/, '账户测试后台 worker 过载时必须快速失败任务')
-assert.match(accountTaskQueueSource, /failAccountTestTask/, '账户测试后台 worker 过载时必须写入任务失败结果')
+assert.doesNotMatch(accountTaskQueueSource, /tryAcquireDiagnosticTaskSlot/, '账户测试后台 worker 不应接入共享诊断任务并发闸门')
+assert.doesNotMatch(accountTaskQueueSource, /diagnosticTaskBusyMessage/, '账户测试后台 worker 不应因为共享诊断闸门繁忙而快速失败')
 
 for (const relativePath of [
   'src/modules/model-checks/model-checks.routes.ts',
@@ -42,4 +41,4 @@ for (const relativePath of [
   assert.match(source, /Retry-After/, `${relativePath} 过载响应必须带 Retry-After`)
 }
 
-console.log('诊断任务并发边界回归通过：账户测试、模型检测和代理检测超过上限时快速拒绝，不在 DB service 事件循环排队')
+console.log('诊断任务并发边界回归通过：模型检测和代理检测超过上限时快速拒绝；账户测试由后台 worker 独立异步消费')

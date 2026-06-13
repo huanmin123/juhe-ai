@@ -20,7 +20,7 @@ logger.level = 'silent'
 const [databaseModule, repositories, gatewayCache] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/gateway-runtime-cache.service.js')
+  import('../../modules/gateway/runtime/runtime-cache.service.js')
 ])
 
 try {

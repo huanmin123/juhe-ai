@@ -5,7 +5,7 @@ import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProto
 export type AccountTestClientCompatibility = 'account_default' | AccountClientCompatibility
 export type AccountTestMode = 'single' | 'batch'
 
-export type AccountBatchTestStatus = 'pending' | 'running' | 'success' | 'failed' | 'stopped'
+export type AccountBatchTestStatus = 'pending' | 'queued' | 'running' | 'success' | 'failed' | 'stopped'
 
 export type AccountTestForm = {
   model: string

@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 import type { Request } from 'express'
 
 import { extractClientIp as extractRequestContextClientIp } from '../../shared/request-context.js'
-import { extractClientIp as extractGatewayClientIp } from '../../modules/gateway/openai-gateway-usage.js'
+import { extractClientIp as extractGatewayClientIp } from '../../modules/gateway/request/metadata.js'
 
 const spoofedForwardedForRequest = {
   header: (name: string) => name.toLowerCase() === 'x-forwarded-for' ? '203.0.113.250' : undefined,

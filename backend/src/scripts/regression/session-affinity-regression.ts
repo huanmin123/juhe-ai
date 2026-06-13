@@ -10,7 +10,7 @@ import {
   orderOpenAIAccountsBySessionAffinity,
   rememberOpenAIAccountForSession,
   resolveOpenAIGatewaySessionAffinityKey
-} from '../../modules/gateway/openai-gateway-session-affinity.service.js'
+} from '../../modules/gateway/runtime/session-affinity.service.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 
@@ -36,7 +36,7 @@ async function main(): Promise<void> {
 }
 
 function testSessionAffinityMigrationUsesReverseIndex(): void {
-  const source = readFileSync(new URL('../../modules/gateway/openai-gateway-session-affinity.service.ts', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../../modules/gateway/runtime/session-affinity.service.ts', import.meta.url), 'utf8')
   assert(source.includes('sessionAffinityKeysByAccountId'), '会话亲和迁移应维护按账号反查的索引')
   assert(source.includes('sessionAffinityKeysByAccountSystemScope'), '会话亲和迁移应维护按账号+系统账户反查的索引')
   assert(!source.includes('for (const [key, binding] of sessionAffinityCache.entries())'), '迁移会话亲和不能扫描全部亲和缓存')

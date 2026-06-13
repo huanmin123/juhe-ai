@@ -26,7 +26,7 @@ const [
   usageRecordShards,
   databaseModule
 ] = await Promise.all([
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/repositories.js'),
   import('../../storage/usage-record-shards.js'),
   import('../../storage/database.js')

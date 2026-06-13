@@ -21,7 +21,7 @@ logger.level = 'silent'
 const [databaseModule, repositories, usageRecordQueue, usageRecordShards] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/usage-record-shards.js')
 ])
 

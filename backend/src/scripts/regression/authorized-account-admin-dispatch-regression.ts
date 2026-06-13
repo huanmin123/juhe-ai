@@ -36,7 +36,7 @@ const [
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../modules/accounts/account-test.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')

@@ -18,7 +18,7 @@ const [
   auditLogQueue,
   runtimeLogIndexQueue
 ] = await Promise.all([
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../modules/record-maintenance/record-maintenance-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
@@ -188,7 +188,7 @@ function runtimeLogLine(index: number): string {
 
 function assertQueueShutdownFlushIsBounded(): void {
   const queueFiles = [
-    '../../modules/gateway/usage-record-queue.service.ts',
+    '../../modules/gateway/usage/record-queue.service.ts',
     '../../modules/operation-logs/operation-log-queue.service.ts',
     '../../modules/record-maintenance/record-maintenance-queue.service.ts',
     '../../modules/runtime-logs/runtime-log-index-queue.service.ts',

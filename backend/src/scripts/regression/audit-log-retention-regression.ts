@@ -25,10 +25,10 @@ const [databaseModule, repositories, backgroundIpc, usageRecordQueue, usageRecor
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/background/background-ipc.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/usage-record-shards.js')
 ])
-const auditCapture = await import('../../modules/gateway/audit-capture.service.js')
+const auditCapture = await import('../../modules/gateway/audit/capture.service.js')
 const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
 
 assertAuditPayloadCleanupUsesAsyncFiles()

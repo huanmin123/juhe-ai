@@ -131,6 +131,6 @@
 
 - 完成时间：2026-05-08
 - 实际完成内容：完成 API Key 透传细节比较文档；保留 raw body 透传；收敛 Header 过滤策略；撤回账号级 OpenAI 组织、项目和 Beta 配置；补充前端表单纠偏和回归脚本。
-- 主要改动位置：`backend/src/modules/gateway/openai-gateway-upstream.ts`、`backend/src/scripts/regression/openai-api-key-passthrough-regression.ts`、`frontend/src/views/accounts/AccountApiKeySection.vue`、`docs/functions/OpenAI API Key透传细节统计与比较.md`。
+- 主要改动位置：`backend/src/modules/gateway/upstream/request.ts`、`backend/src/scripts/regression/openai-api-key-passthrough-regression.ts`、`frontend/src/views/accounts/AccountApiKeySection.vue`、`docs/functions/OpenAI API Key透传细节统计与比较.md`。
 - 验证结果：API Key 回归、OAuth 回归、后端类型检查和全项目类型检查均通过。
 - 后续建议：如后续实现跨账号自动重试，先单独设计 `Idempotency-Key` 策略；如重点支持文件上传或图片编辑，再补 multipart raw body 边界测试。

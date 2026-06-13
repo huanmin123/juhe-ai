@@ -174,11 +174,11 @@ API Key 绑定多个分组并触发 fallback 切组时，待提交列表只能�
 
 ## 实现落点
 
-- 新增 `backend/src/modules/gateway/openai-gateway-client-ip-account-avoidance.service.ts`：维护短 TTL 状态、候选排序、待提交失败提交和测试辅助清理。
+- 新增 `backend/src/modules/gateway/runtime/client-ip-account-avoidance.service.ts`：维护短 TTL 状态、候选排序、待提交失败提交和测试辅助清理。
 - `ClientIpAccountAvoidanceTracker`：维护 `pendingFailures` 和 `pendingFailureIndexByAccountId`，保证同请求失败按账号去重、固定上限和 fallback 切组有界转移。
-- `openai-gateway-request-preflight.ts`：在全局本地账号屏蔽后、Codex turn 避让前应用 IP 级账号回避排序，并写入审计 metadata。
-- `openai-gateway-upstream-dispatch.ts` / `openai-gateway-failure-dispatch.ts`：在上游失败并决定跳账号后登记本请求待提交 IP 失败；没有后续成功样本时不提交为 IP 回避。
-- `openai-gateway-response-finalization.ts`：只有完整成功后清理当前账号回避，并提交前序待确认 IP 失败；流式失败不提前清理。
+- `request/preflight.ts`：在全局本地账号屏蔽后、Codex turn 避让前应用 IP 级账号回避排序，并写入审计 metadata。
+- `dispatch/upstream-dispatch.ts` / `response/failure-dispatch.ts`：在上游失败并决定跳账号后登记本请求待提交 IP 失败；没有后续成功样本时不提交为 IP 回避。
+- `response/finalization.ts`：只有完整成功后清理当前账号回避，并提交前序待确认 IP 失败；流式失败不提前清理。
 - 回归脚本：新增 `gateway-client-ip-account-avoidance-regression.ts`，覆盖同 IP 自动切号、不同 IP 不互相影响、同一 API Key 不同分组共享回避、不同 API Key 隔离、账号仍 active、全部候选回避时旁路。
 
 ## 验收标准

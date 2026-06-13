@@ -8,8 +8,8 @@ import { logger } from '../../shared/logger.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
-import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
-import type { GatewayUsageContext } from '../../modules/gateway/openai-gateway-usage-records.js'
+import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
+import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
 import type { AccountErrorHandlingRule, AccountErrorHandlingRuleAction } from '../../modules/accounts/account-error-policy-validation.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-precheck-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -32,11 +32,11 @@ const [
   repositories,
   { handleDbServiceOperation }
 ] = await Promise.all([
-  import('../../modules/gateway/gateway-account-side-effects.service.js'),
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../shared/account-concurrency.js'),
-  import('../../modules/gateway/openai-gateway-account-preparation.js'),
+  import('../../modules/gateway/dispatch/account-preparation.js'),
   import('../../storage/database.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/repositories.js'),
   import('../../modules/db-service/db-service-handlers.js')
 ])

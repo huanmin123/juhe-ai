@@ -9,11 +9,11 @@ import {
   recordClientIpErrorCircuitSample,
   recordClientIpErrorCircuitSuccess,
   recordGatewayPreAuthFailure
-} from '../../modules/gateway/openai-gateway-client-ip-error-circuit.service.js'
+} from '../../modules/gateway/runtime/client-ip-error-circuit.service.js'
 
 try {
   clearGatewayClientIpErrorCircuitForTest()
-  const circuitSource = readFileSync(new URL('../../modules/gateway/openai-gateway-client-ip-error-circuit.service.ts', import.meta.url), 'utf8')
+  const circuitSource = readFileSync(new URL('../../modules/gateway/runtime/client-ip-error-circuit.service.ts', import.meta.url), 'utf8')
   assert.equal(circuitSource.includes('[...entry.samples'), false, '认证失败样本维护不能展开复制整个 samples 数组')
   assert.equal(circuitSource.includes('[...existing[1]'), false, '认证后签名样本维护不能展开复制整个 samples 数组')
   assert.equal(circuitSource.includes('sample) => now - sample'), false, '认证失败样本维护不能在热路径 filter 扫描样本数组')
@@ -143,7 +143,7 @@ try {
 
   const snapshot = getGatewayClientIpSecuritySnapshotForTest()
   assert.equal(snapshot.clientIpErrors.length, 0, '成功恢复后认证后错误运行态应清空')
-  const gatewayRoutesSource = readFileSync(new URL('../../modules/gateway/openai-gateway.routes.ts', import.meta.url), 'utf8')
+  const gatewayRoutesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
   assert.equal(gatewayRoutesSource.includes('request_failure_signature'), false, '未知上游账号池失败不应作为来源错误熔断采样原因')
 
   console.log('IP 级错误熔断回归通过：认证前探测保护、认证后错误风暴熔断、来源隔离和成功恢复均符合预期')

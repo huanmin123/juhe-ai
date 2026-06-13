@@ -1,0 +1,357 @@
+import type { Request } from 'express'
+
+import type {
+  GroupUsageAccessMetadata,
+  OpenAIAccountSecret
+} from '../../../storage/repositories.js'
+import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
+import { parseErrorPayload } from '../policy/account-error-policy.service.js'
+import { enqueueUsageRecord } from './record-queue.service.js'
+import {
+  estimateCatalogCacheReadCostUsd,
+  estimateCatalogCostUsd,
+  resolveCatalogPricingModel
+} from '../../model-pricing/model-catalog.service.js'
+import { resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
+import {
+  buildGatewayErrorResponseSnapshot,
+  buildUsageRequestSnapshot,
+  buildUsageResponseSnapshot,
+  type UsageRequestSnapshot
+} from './snapshots.js'
+import {
+  emptyUsage,
+  type ParsedUsage
+} from './types.js'
+import {
+  requestModel,
+  requestStream
+} from '../request/metadata.js'
+import type { GatewayErrorPayload } from '../response/responses.js'
+import { downstreamConnectionClosedMessage } from '../response/client-abort.js'
+import type { OpenAIGatewayTrafficSource } from './traffic-source.js'
+import { GPT_VENDOR_CODE } from '../../../domain/provider-protocol.js'
+
+type UpstreamAccount = OpenAIAccountSecret
+
+export type UsageAccessFields = Pick<OpenAIAccountSecret,
+  'accountOwnerSystemAccountId'
+  | 'groupOwnerSystemAccountId'
+  | 'accountAccessType'
+  | 'groupAccessType'
+  | 'accountAuthorizationId'
+  | 'accountAuthorizationSourceType'
+  | 'accountAuthorizationSourceTeamId'
+  | 'groupAuthorizationId'
+  | 'groupAuthorizationSourceType'
+  | 'groupAuthorizationSourceTeamId'
+>
+
+export interface GatewayUsageContext {
+  traceId: string
+  trafficSource: OpenAIGatewayTrafficSource
+  clientIp?: string
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+  endpoint: string
+  requestSnapshot: UsageRequestSnapshot
+}
+
+export interface GatewayFailureUsageContext extends GatewayUsageContext {
+  providerCode?: string
+  groupOwnerSystemAccountId?: string
+  groupAccessType?: GroupUsageAccessMetadata['groupAccessType']
+  groupAuthorizationId?: string
+  groupAuthorizationSourceType?: GroupUsageAccessMetadata['groupAuthorizationSourceType']
+  groupAuthorizationSourceTeamId?: string
+}
+
+export function accountUsageMetadata(account: UpstreamAccount): UsageAccessFields {
+  return {
+    accountOwnerSystemAccountId: account.accountOwnerSystemAccountId,
+    groupOwnerSystemAccountId: account.groupOwnerSystemAccountId,
+    accountAccessType: account.accountAccessType,
+    groupAccessType: account.groupAccessType,
+    accountAuthorizationId: account.accountAuthorizationId,
+    accountAuthorizationSourceType: account.accountAuthorizationSourceType,
+    accountAuthorizationSourceTeamId: account.accountAuthorizationSourceTeamId,
+    groupAuthorizationId: account.groupAuthorizationId,
+    groupAuthorizationSourceType: account.groupAuthorizationSourceType,
+    groupAuthorizationSourceTeamId: account.groupAuthorizationSourceTeamId
+  }
+}
+
+export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
+  return {
+    providerCode: groupAccess.providerCode,
+    groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
+    groupAccessType: groupAccess.groupAccessType,
+    groupAuthorizationId: groupAccess.groupAuthorizationId,
+    groupAuthorizationSourceType: groupAccess.groupAuthorizationSourceType,
+    groupAuthorizationSourceTeamId: groupAccess.groupAuthorizationSourceTeamId
+  }
+}
+
+export function recordFailedUpstreamAttempt(
+  req: Request,
+  usageContext: GatewayUsageContext,
+  account: UpstreamAccount,
+  input: {
+    upstreamUrl: string
+    startedAt: number
+    statusCode?: number
+    headers?: Headers | Record<string, string>
+    bodyText?: string
+    errorMessage?: string
+  }
+): void {
+  const model = requestModel(req)
+  const modelMapping = resolveOpenAIAccountModelMapping(account, model)
+  const upstreamModel = modelMapping?.upstreamModel ?? model
+  const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
+  const pricingModel = resolveCatalogPricingModel({
+    providerCode: account.providerCode,
+    systemAccountId: catalogSystemAccountId,
+    model: upstreamModel
+  })
+  const errorPayload = input.bodyText && input.headers instanceof Headers
+    ? parseErrorPayload(input.bodyText, input.headers)
+    : {}
+  const errorCode = sanitizeOptionalDiagnosticMessage(typeof errorPayload.code === 'string' ? errorPayload.code : undefined)
+  const errorMessage = input.errorMessage
+    ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
+    ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
+
+  logGatewayAttemptFailure(usageContext, {
+    event: 'gateway_upstream_attempt_failed',
+    upstreamUrl: sanitizeUrlCredentialsForLog(input.upstreamUrl) ?? 'unknown',
+    accountId: account.id,
+    accountName: account.name,
+    statusCode: input.statusCode,
+    durationMs: Date.now() - input.startedAt,
+    errorCode,
+    errorMessage,
+    apiKeyId: usageContext.apiKeyId,
+    groupId: usageContext.groupId,
+    endpoint: usageContext.endpoint
+  }, '网关上游尝试失败')
+
+  enqueueUsageRecord({
+    traceId: usageContext.traceId,
+    trafficSource: usageContext.trafficSource,
+    clientIp: usageContext.clientIp,
+    systemAccountId: usageContext.systemAccountId,
+    apiKeyId: usageContext.apiKeyId,
+    groupId: usageContext.groupId,
+    accountId: account.id,
+    ...accountUsageMetadata(account),
+    endpoint: usageContext.endpoint,
+    providerCode: account.providerCode,
+    model,
+    upstreamModel,
+    pricingModel,
+    modelMappingApplied: Boolean(modelMapping),
+    modelMappingSource: modelMapping ? 'account' : undefined,
+    stream: requestStream(req),
+    statusCode: input.statusCode,
+    success: false,
+    durationMs: Date.now() - input.startedAt,
+    errorCode,
+    errorMessage,
+    requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
+    responseSnapshot: usageRecordSnapshot(usageContext, buildUsageResponseSnapshot({
+      upstreamUrl: input.upstreamUrl,
+      statusCode: input.statusCode,
+      headers: input.headers,
+      bodyText: input.bodyText,
+      errorMessage
+    }))
+  })
+}
+
+export function recordCompletedUpstreamAttempt(
+  req: Request,
+  input: {
+    traceId: string
+    trafficSource: OpenAIGatewayTrafficSource
+    clientIp?: string
+    systemAccountId: string
+    apiKeyId?: string
+    groupId: string
+    account: UpstreamAccount
+    endpoint: string
+    statusCode?: number
+    success: boolean
+    stream: boolean
+    firstTokenMs?: number
+    startedAt: number
+    usage: ParsedUsage
+    errorCode?: string
+    errorMessage?: string
+    requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
+    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
+  }
+): void {
+  const model = requestModel(req)
+  const modelMapping = resolveOpenAIAccountModelMapping(input.account, model)
+  const upstreamModel = modelMapping?.upstreamModel ?? model
+  const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
+  const pricingModel = resolveCatalogPricingModel({
+    providerCode: input.account.providerCode,
+    systemAccountId: catalogSystemAccountId,
+    model: upstreamModel
+  })
+  enqueueUsageRecord({
+    traceId: input.traceId,
+    trafficSource: input.trafficSource,
+    clientIp: input.clientIp,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    accountId: input.account.id,
+    ...accountUsageMetadata(input.account),
+    endpoint: input.endpoint,
+    providerCode: input.account.providerCode,
+    model,
+    upstreamModel,
+    pricingModel,
+    modelMappingApplied: Boolean(modelMapping),
+    modelMappingSource: modelMapping ? 'account' : undefined,
+    stream: input.stream,
+    statusCode: input.statusCode,
+    success: input.success,
+    firstTokenMs: input.firstTokenMs,
+    durationMs: Date.now() - input.startedAt,
+    inputTokens: input.usage.inputTokens,
+    outputTokens: input.usage.outputTokens,
+    cacheReadTokens: input.usage.cacheReadTokens,
+    inputImageTokens: input.usage.inputImageTokens,
+    outputImageTokens: input.usage.outputImageTokens,
+    cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
+      providerCode: input.account.providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: upstreamModel,
+      cacheReadTokens: input.usage.cacheReadTokens
+    }),
+    costUsd: estimateCatalogCostUsd({
+      providerCode: input.account.providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: upstreamModel,
+      inputTokens: input.usage.inputTokens,
+      outputTokens: input.usage.outputTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      inputImageTokens: input.usage.inputImageTokens,
+      outputImageTokens: input.usage.outputImageTokens,
+      inputAudioTokens: input.usage.inputAudioTokens,
+      outputAudioTokens: input.usage.outputAudioTokens,
+      outputImageCount: input.usage.outputImageCount
+    }),
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    requestSnapshot: usageRecordSnapshot(input, input.requestSnapshot),
+    responseSnapshot: usageRecordSnapshot(input, input.responseSnapshot)
+  })
+}
+
+export function recordClientAbortedUpstreamAttempt(
+  req: Request,
+  input: {
+    traceId: string
+    trafficSource: OpenAIGatewayTrafficSource
+    clientIp?: string
+    systemAccountId: string
+    apiKeyId?: string
+    groupId: string
+    account: UpstreamAccount
+    endpoint: string
+    statusCode?: number
+    stream: boolean
+    firstTokenMs?: number
+    startedAt: number
+    requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
+    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
+  }
+): void {
+  recordCompletedUpstreamAttempt(req, {
+    ...input,
+    success: false,
+    usage: emptyUsage(),
+    errorCode: 'client_aborted',
+    errorMessage: downstreamConnectionClosedMessage
+  })
+}
+
+export function recordGatewayFailure(
+  req: Request,
+  usageContext: GatewayFailureUsageContext,
+  input: {
+    statusCode: number
+    startedAt: number
+    responsePayload: GatewayErrorPayload
+    errorMessage?: string
+  }
+): void {
+  const errorMessage = input.errorMessage ?? input.responsePayload.error.message
+  logGatewayAttemptFailure(usageContext, {
+    event: 'gateway_request_failed',
+    statusCode: input.statusCode,
+    durationMs: Date.now() - input.startedAt,
+    errorMessage,
+    apiKeyId: usageContext.apiKeyId,
+    groupId: usageContext.groupId,
+    endpoint: usageContext.endpoint
+  }, '网关请求失败')
+
+  enqueueUsageRecord({
+    traceId: usageContext.traceId,
+    trafficSource: usageContext.trafficSource,
+    clientIp: usageContext.clientIp,
+    systemAccountId: usageContext.systemAccountId,
+    apiKeyId: usageContext.apiKeyId,
+    groupId: usageContext.groupId,
+    groupOwnerSystemAccountId: usageContext.groupOwnerSystemAccountId,
+    groupAccessType: usageContext.groupAccessType,
+    groupAuthorizationId: usageContext.groupAuthorizationId,
+    groupAuthorizationSourceType: usageContext.groupAuthorizationSourceType,
+    groupAuthorizationSourceTeamId: usageContext.groupAuthorizationSourceTeamId,
+    endpoint: usageContext.endpoint,
+    providerCode: usageContext.providerCode ?? GPT_VENDOR_CODE,
+    model: requestModel(req),
+    stream: requestStream(req),
+    statusCode: input.statusCode,
+    success: false,
+    durationMs: Date.now() - input.startedAt,
+    errorMessage,
+    requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
+    responseSnapshot: usageRecordSnapshot(usageContext, buildGatewayErrorResponseSnapshot(input.statusCode, input.responsePayload))
+  })
+}
+
+function usageRecordSnapshot(
+  usageContext: Pick<GatewayUsageContext, 'trafficSource'>,
+  snapshot: unknown
+): unknown {
+  return usageContext.trafficSource === 'cooldown_retest' ? undefined : snapshot
+}
+
+function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
+  return value
+}
+
+function logGatewayAttemptFailure(
+  usageContext: GatewayUsageContext,
+  fields: Record<string, unknown>,
+  message: string
+): void {
+  const logger = getRequestLogger()
+  const enrichedFields = {
+    ...fields,
+    trafficSource: usageContext.trafficSource
+  }
+  if (usageContext.trafficSource === 'cooldown_retest') {
+    logger.debug(enrichedFields, message)
+    return
+  }
+  logger.warn(enrichedFields, message)
+}

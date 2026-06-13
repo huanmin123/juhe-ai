@@ -25,7 +25,7 @@ const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpP
   import('../../storage/repositories.js'),
   import('../../storage/client-ip-stats.repository.js'),
   import('../../storage/usage-stats-helpers.js'),
-  import('../../modules/gateway/client-ip-policy-cache.service.js')
+  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js')
 ])
 
 try {
@@ -529,7 +529,7 @@ function assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot(): void {
   const readRuntimeBody = sourceFunctionBlock(handlersSource, 'function readGatewayRuntime')
   assert(!readRuntimeBody.includes('listActiveClientIpPolicies'), '网关 runtime 读取不能携带全量 active IP 封禁策略')
   assert(!readRuntimeBody.includes('clientIpPolicies'), '网关 runtime 响应不能携带全量 IP 封禁策略数组')
-  const cacheSource = readFileSync(new URL('../../modules/gateway/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
+  const cacheSource = readFileSync(new URL('../../modules/gateway/runtime/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
   assert(cacheSource.includes("type: 'find_active_client_ip_policy'"), '网关 IP 封禁缓存未命中时应使用按 ip_hash 精确查询')
   assert(!cacheSource.includes("type: 'list_active_client_ip_policies'"), '网关 IP 封禁请求路径不能加载全量 active IP 封禁策略')
 }

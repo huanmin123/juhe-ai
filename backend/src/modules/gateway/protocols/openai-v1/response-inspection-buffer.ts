@@ -1,0 +1,419 @@
+import { buildGatewayStreamFailureEvent } from '../../response/responses.js'
+import {
+  inspectResponseSemanticFrames,
+  responseInspectionFailurePayloadForDecision,
+  type ResponseInspectionDecision,
+  type RuntimeResponseInspectionPolicy
+} from '../../response/inspection.js'
+import {
+  parseOpenAISseEventText,
+  type ParsedOpenAIStreamEvent
+} from './stream-events.js'
+import {
+  extractOpenAISseSemanticFrames,
+  type OpenAIResponseEndpointFamily
+} from './response-semantics.js'
+
+export interface ResponseInspectionSseResult {
+  chunks: Buffer[]
+  intercepted?: ResponseInspectionDecision
+  observations?: ResponseInspectionDecision[]
+  parserSkipped: boolean
+}
+
+export interface OpenAIResponseInspectionBufferOptions {
+  clientRetryEnabled?: boolean
+  policies?: RuntimeResponseInspectionPolicy[]
+  endpointFamily: OpenAIResponseEndpointFamily
+}
+
+const maxBufferedSseEventBytes = 256 * 1024
+
+export class OpenAIResponseInspectionBuffer {
+  private readonly pendingBuffer = new PendingSseEventBuffer()
+  private readonly clientRetryEnabled: boolean
+  private readonly policies: RuntimeResponseInspectionPolicy[]
+  private readonly endpointFamily: OpenAIResponseEndpointFamily
+  private readonly deferredLeadingNoopChunks: Buffer[] = []
+  private parserSkipped = false
+  private downstreamWritten = false
+
+  constructor(options: OpenAIResponseInspectionBufferOptions) {
+    this.clientRetryEnabled = options.clientRetryEnabled === true
+    this.policies = options.policies ?? []
+    this.endpointFamily = options.endpointFamily
+  }
+
+  markDownstreamWrite(): void {
+    if (!this.clientRetryEnabled && this.policies.length === 0) return
+    this.downstreamWritten = true
+  }
+
+  pushChunk(chunk: Buffer): ResponseInspectionSseResult {
+    if (!this.clientRetryEnabled && this.policies.length === 0) {
+      return { chunks: [chunk], parserSkipped: false }
+    }
+    if (this.parserSkipped) {
+      return { chunks: [...this.drainDeferredLeadingNoopChunks(), chunk], parserSkipped: true }
+    }
+
+    this.pendingBuffer.push(chunk)
+    if (this.pendingBuffer.length > maxBufferedSseEventBytes) {
+      const buffered = this.pendingBuffer.drain()
+      this.parserSkipped = true
+      return { chunks: [...this.drainDeferredLeadingNoopChunks(), buffered], parserSkipped: true }
+    }
+
+    const chunks: Buffer[] = []
+    const observations: ResponseInspectionDecision[] = []
+
+    while (true) {
+      const rawBuffer = this.pendingBuffer.shiftEvent()
+      if (!rawBuffer) break
+      const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
+      if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
+        this.deferredLeadingNoopChunks.push(rawBuffer)
+        continue
+      }
+      const frames = extractOpenAISseSemanticFrames(event, this.endpointFamily)
+      const inspection = inspectResponseSemanticFrames({
+        frames,
+        policies: this.policies,
+        downstreamWritten: this.downstreamWritten,
+        transport: 'sse'
+      })
+      if (inspection.observations) observations.push(...inspection.observations)
+      if (inspection.decision) {
+        const decision = inspection.decision
+        if (decision.action === 'discard_event') {
+          continue
+        }
+        this.clearDeferredLeadingNoopChunks()
+        if (!this.downstreamWritten) {
+          chunks.length = 0
+        }
+        const failureEvent = failureEventForDecision(decision, this.clientRetryEnabled)
+        if (failureEvent) {
+          chunks.push(failureEvent)
+        }
+        return {
+          chunks,
+          intercepted: decision,
+          observations: observations.length > 0 ? observations : undefined,
+          parserSkipped: this.parserSkipped
+        }
+      }
+      chunks.push(...this.drainDeferredLeadingNoopChunks())
+      chunks.push(rawBuffer)
+    }
+
+    return {
+      chunks,
+      observations: observations.length > 0 ? observations : undefined,
+      parserSkipped: this.parserSkipped
+    }
+  }
+
+  flushPendingOnEof(): ResponseInspectionSseResult {
+    if (!this.clientRetryEnabled && this.policies.length === 0) {
+      return { chunks: [], parserSkipped: false }
+    }
+    if (this.parserSkipped || this.pendingBuffer.length === 0) {
+      return {
+        chunks: this.parserSkipped ? this.drainDeferredLeadingNoopChunks() : [],
+        parserSkipped: this.parserSkipped
+      }
+    }
+    const rawBuffer = this.pendingBuffer.drainEnsuringBoundary()
+    return this.inspectRawEventBuffer(rawBuffer, true)
+  }
+
+  private inspectRawEventBuffer(rawBuffer: Buffer, eofPendingFlush = false): ResponseInspectionSseResult {
+    const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
+    if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
+      this.deferredLeadingNoopChunks.push(rawBuffer)
+      this.clearDeferredLeadingNoopChunks()
+      return { chunks: [], parserSkipped: this.parserSkipped }
+    }
+    const frames = extractOpenAISseSemanticFrames(event, this.endpointFamily)
+    const inspection = inspectResponseSemanticFrames({
+      frames,
+      policies: this.policies,
+      downstreamWritten: this.downstreamWritten,
+      transport: 'sse'
+    })
+    if (!inspection.decision) {
+      return {
+        chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
+        observations: inspection.observations,
+        parserSkipped: this.parserSkipped
+      }
+    }
+    const decision = inspection.decision
+    if (decision.action === 'discard_event') {
+      return {
+        chunks: [],
+        observations: inspection.observations,
+        parserSkipped: this.parserSkipped
+      }
+    }
+    this.clearDeferredLeadingNoopChunks()
+    const failureEvent = failureEventForDecision(decision, this.clientRetryEnabled)
+    return {
+      chunks: failureEvent ? [failureEvent] : [],
+      intercepted: decision,
+      observations: inspection.observations,
+      parserSkipped: this.parserSkipped
+    }
+  }
+
+  private drainDeferredLeadingNoopChunks(): Buffer[] {
+    if (this.deferredLeadingNoopChunks.length === 0) return []
+    const chunks = [...this.deferredLeadingNoopChunks]
+    this.deferredLeadingNoopChunks.length = 0
+    return chunks
+  }
+
+  private clearDeferredLeadingNoopChunks(): void {
+    this.deferredLeadingNoopChunks.length = 0
+  }
+}
+
+
+function failureEventForDecision(decision: ResponseInspectionDecision, clientRetryEnabled: boolean): Buffer | undefined {
+  if (decision.action === 'discard_event' || decision.action === 'dry_run') return undefined
+  const { errorCode, message } = responseInspectionFailurePayloadForDecision(decision, clientRetryEnabled)
+  return buildGatewayStreamFailureEvent(message, errorCode)
+}
+
+
+function isDeferrableLeadingChatCompletionNoopEvent(event: ParsedOpenAIStreamEvent): boolean {
+  const data = event.data
+  if (!data || data.object !== 'chat.completion.chunk') return false
+  if (data.error !== undefined || data.usage !== undefined) return false
+  const choices = Array.isArray(data.choices) ? data.choices : []
+  if (choices.length === 0) return false
+  return choices.every(isNoopChatCompletionChoice)
+}
+
+function isNoopChatCompletionChoice(value: unknown): boolean {
+  const choice = objectValue(value)
+  if (!choice) return false
+  if (choice.finish_reason !== undefined && choice.finish_reason !== null) return false
+  if (typeof choice.text === 'string' && choice.text.length > 0) return false
+  if (choice.message !== undefined) return false
+  const delta = objectValue(choice.delta)
+  if (!delta) return false
+  for (const key of Object.keys(delta)) {
+    const value = delta[key]
+    if (key === 'role' && typeof value === 'string') continue
+    if (key === 'content' && (value === '' || value === null || value === undefined)) continue
+    return false
+  }
+  return true
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+class PendingSseEventBuffer {
+  private chunks: Buffer[] = []
+  private headIndex = 0
+  private size = 0
+  private nextBoundaryEndIndex: number | undefined
+
+  get length(): number {
+    return this.size
+  }
+
+  push(chunk: Buffer): void {
+    if (chunk.length === 0) return
+    const previousSize = this.size
+    const previousTail = this.tail(3)
+    this.chunks.push(chunk)
+    this.size += chunk.length
+    if (this.nextBoundaryEndIndex === undefined) {
+      this.nextBoundaryEndIndex = findBoundaryEndAfterAppend(previousSize, previousTail, chunk)
+    }
+  }
+
+  shiftEvent(): Buffer | undefined {
+    if (this.nextBoundaryEndIndex === undefined) return undefined
+    const event = this.consumePrefix(this.nextBoundaryEndIndex)
+    this.nextBoundaryEndIndex = this.findBoundaryEndFromStart()
+    return event
+  }
+
+  drain(): Buffer {
+    const buffered = this.consumePrefix(this.size)
+    this.nextBoundaryEndIndex = undefined
+    return buffered
+  }
+
+  drainEnsuringBoundary(): Buffer {
+    if (this.size === 0) return Buffer.alloc(0)
+    const hasBoundary = this.endsWithBoundary()
+    const drained = this.drain()
+    return hasBoundary
+      ? drained
+      : Buffer.concat([drained, sseEventBoundarySuffix], drained.length + sseEventBoundarySuffix.length)
+  }
+
+  private consumePrefix(length: number): Buffer {
+    if (length <= 0 || this.size === 0) return Buffer.alloc(0)
+    const boundedLength = Math.min(length, this.size)
+    const first = this.chunks[this.headIndex]
+    if (first && boundedLength < first.length) {
+      const output = first.subarray(0, boundedLength)
+      this.chunks[this.headIndex] = first.subarray(boundedLength)
+      this.size -= boundedLength
+      return output
+    }
+    if (first && boundedLength === first.length) {
+      this.headIndex += 1
+      this.size -= boundedLength
+      this.compactConsumedChunks()
+      return first
+    }
+
+    const parts: Buffer[] = []
+    let remaining = boundedLength
+    while (remaining > 0) {
+      const current = this.chunks[this.headIndex]
+      if (!current) break
+      if (current.length <= remaining) {
+        parts.push(current)
+        remaining -= current.length
+        this.headIndex += 1
+      } else {
+        parts.push(current.subarray(0, remaining))
+        this.chunks[this.headIndex] = current.subarray(remaining)
+        remaining = 0
+      }
+    }
+
+    this.size -= boundedLength - remaining
+    this.compactConsumedChunks()
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts, boundedLength - remaining)
+  }
+
+  private findBoundaryEndFromStart(): number | undefined {
+    let offset = 0
+    let tail: Buffer = Buffer.alloc(0)
+    for (let index = this.headIndex; index < this.chunks.length; index += 1) {
+      const chunk = this.chunks[index]
+      const boundary = findBoundaryEndInChunk(offset, tail, chunk)
+      if (boundary !== undefined) return boundary
+      offset += chunk.length
+      tail = trailingBytes(tail, chunk, 3)
+    }
+    return undefined
+  }
+
+  private tail(length: number): Buffer {
+    if (length <= 0 || this.size === 0) return Buffer.alloc(0)
+    const parts: Buffer[] = []
+    const targetLength = Math.min(length, this.size)
+    let remaining = targetLength
+    for (let index = this.chunks.length - 1; index >= this.headIndex && remaining > 0; index -= 1) {
+      const chunk = this.chunks[index]
+      const partLength = Math.min(chunk.length, remaining)
+      parts.unshift(chunk.subarray(chunk.length - partLength))
+      remaining -= partLength
+    }
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts, targetLength - remaining)
+  }
+
+  private endsWithBoundary(): boolean {
+    const suffix = this.tail(4)
+    return bufferEndsWith(suffix, crlfcrlfBoundary)
+      || bufferEndsWith(suffix, lflfBoundary)
+      || bufferEndsWith(suffix, crcrBoundary)
+  }
+
+  private compactConsumedChunks(): void {
+    if (this.headIndex === 0) return
+    if (this.headIndex >= this.chunks.length) {
+      this.chunks = []
+      this.headIndex = 0
+      return
+    }
+    if (this.headIndex > 64 && this.headIndex * 2 > this.chunks.length) {
+      this.chunks = this.chunks.slice(this.headIndex)
+      this.headIndex = 0
+    }
+  }
+}
+
+const crlfcrlfBoundary = Buffer.from('\r\n\r\n', 'utf8')
+const lflfBoundary = Buffer.from('\n\n', 'utf8')
+const crcrBoundary = Buffer.from('\r\r', 'utf8')
+const sseEventBoundarySuffix = lflfBoundary
+
+function findBoundaryEndAfterAppend(previousSize: number, previousTail: Buffer, chunk: Buffer): number | undefined {
+  return findBoundaryEndInChunk(previousSize, previousTail, chunk)
+}
+
+function findBoundaryEndInChunk(chunkOffset: number, previousTail: Buffer, chunk: Buffer): number | undefined {
+  const crossBoundary = findCrossChunkBoundaryEnd(chunkOffset, previousTail, chunk)
+  const inChunkBoundary = findSseEventBoundary(chunk)
+  const inChunkBoundaryEnd = inChunkBoundary ? chunkOffset + inChunkBoundary.endIndex : undefined
+  if (crossBoundary === undefined) return inChunkBoundaryEnd
+  if (inChunkBoundaryEnd === undefined) return crossBoundary
+  return Math.min(crossBoundary, inChunkBoundaryEnd)
+}
+
+function findCrossChunkBoundaryEnd(chunkOffset: number, previousTail: Buffer, chunk: Buffer): number | undefined {
+  if (previousTail.length === 0 || chunk.length === 0) return undefined
+  const prefix = chunk.subarray(0, Math.min(3, chunk.length))
+  const combined = Buffer.concat([previousTail, prefix], previousTail.length + prefix.length)
+  const boundary = findSseEventBoundary(combined)
+  if (!boundary || boundary.index >= previousTail.length || boundary.endIndex <= previousTail.length) return undefined
+  return chunkOffset - previousTail.length + boundary.endIndex
+}
+
+function findSseEventBoundary(buffer: Buffer): { index: number; endIndex: number } | undefined {
+  const first = earliestBoundaryCandidate(
+    boundaryCandidate(buffer, sseCrLfBoundary),
+    boundaryCandidate(buffer, sseLfBoundary),
+    boundaryCandidate(buffer, sseCrBoundary)
+  )
+  if (!first) return undefined
+  return { index: first.index, endIndex: first.index + first.length }
+}
+
+function earliestBoundaryCandidate(
+  ...candidates: Array<{ index: number; length: number } | undefined>
+): { index: number; length: number } | undefined {
+  let first: { index: number; length: number } | undefined
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if (!first || candidate.index < first.index || (candidate.index === first.index && candidate.length < first.length)) {
+      first = candidate
+    }
+  }
+  return first
+}
+
+function boundaryCandidate(buffer: Buffer, tokenBuffer: Buffer): { index: number; length: number } | undefined {
+  const index = buffer.indexOf(tokenBuffer)
+  return index >= 0 ? { index, length: tokenBuffer.length } : undefined
+}
+
+function trailingBytes(previousTail: Buffer, chunk: Buffer, length: number): Buffer {
+  if (chunk.length >= length) return chunk.subarray(chunk.length - length)
+  const combinedLength = Math.min(length, previousTail.length + chunk.length)
+  return Buffer.concat([previousTail, chunk], previousTail.length + chunk.length).subarray(previousTail.length + chunk.length - combinedLength)
+}
+
+function bufferEndsWith(buffer: Buffer, suffix: Buffer): boolean {
+  return buffer.length >= suffix.length && buffer.subarray(buffer.length - suffix.length).equals(suffix)
+}
+
+const sseCrLfBoundary = Buffer.from('\r\n\r\n', 'utf8')
+const sseLfBoundary = Buffer.from('\n\n', 'utf8')
+const sseCrBoundary = Buffer.from('\r\r', 'utf8')
+

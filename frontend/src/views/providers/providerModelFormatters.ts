@@ -1,0 +1,298 @@
+import type {
+  ProviderModelApiProtocol,
+  ProviderModelMode,
+  ProviderModelPricing,
+  ProviderModelStatus,
+  ProviderModelVisibility
+} from '@/types/domain'
+
+export const modelCategoryOrder = ['text', 'image', 'audio'] as const
+
+export type ModelCategoryKey = typeof modelCategoryOrder[number]
+export type DirectPriceFieldKey =
+  | 'inputUsdPer1M'
+  | 'outputUsdPer1M'
+  | 'cachedInputUsdPer1M'
+  | 'cacheWriteUsdPer1M'
+  | 'imageInputUsdPer1M'
+  | 'imageOutputUsdPer1M'
+  | 'audioInputUsdPer1M'
+  | 'audioOutputUsdPer1M'
+  | 'outputUsdPerImage'
+
+export const modelCategoryLabels: Record<ModelCategoryKey, string> = {
+  text: '对话 / 编码',
+  image: '图像',
+  audio: '音频'
+}
+
+export const apiProtocolLabels: Record<string, string> = {
+  chat_completions: 'Chat Completions',
+  responses: 'Responses',
+  completions: 'Completions',
+  images: 'Images API',
+  audio: 'Audio API',
+  realtime: 'Realtime API'
+}
+
+export const modelStatusOptions: Array<{ label: string; value: ProviderModelStatus }> = [
+  { label: '启用', value: 'active' },
+  { label: '草稿', value: 'draft' },
+  { label: '停用', value: 'disabled' }
+]
+
+export const modelVisibilityOptions: Array<{ label: string; value: ProviderModelVisibility }> = [
+  { label: '公开目录', value: 'public' },
+  { label: '仅映射目标', value: 'mapping_target_only' }
+]
+
+export const modelModeOptions: Array<{ label: string; value: ProviderModelMode }> = [
+  { label: '对话 / 编码', value: 'text' },
+  { label: '图像', value: 'image' },
+  { label: '音频', value: 'audio' }
+]
+
+export const apiProtocolOptions: Array<{ label: string; value: ProviderModelApiProtocol }> = Object.entries(apiProtocolLabels)
+  .map(([value, label]) => ({ value: value as ProviderModelApiProtocol, label }))
+
+export const directPriceFieldKeys: DirectPriceFieldKey[] = [
+  'inputUsdPer1M',
+  'outputUsdPer1M',
+  'cachedInputUsdPer1M',
+  'cacheWriteUsdPer1M',
+  'imageInputUsdPer1M',
+  'imageOutputUsdPer1M',
+  'audioInputUsdPer1M',
+  'audioOutputUsdPer1M',
+  'outputUsdPerImage'
+]
+
+export const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFieldKey[]> = {
+  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M'],
+  image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage'],
+  audio: ['audioInputUsdPer1M', 'audioOutputUsdPer1M']
+}
+
+const hiddenProviderCapabilities = new Set(['models', 'passthrough', 'stream'])
+
+const providerCapabilityLabels: Record<string, string> = {
+  responses: 'Responses',
+  chat: 'Chat',
+  chat_completions: 'Chat'
+}
+
+const providerCapabilityOrder = ['responses', 'chat'] as const
+
+export function hasAnyNumber(...values: Array<number | undefined>): boolean {
+  return values.some((value) => typeof value === 'number')
+}
+
+export function hasDirectModelPrice(item: ProviderModelPricing): boolean {
+  return hasAnyNumber(
+    item.inputUsdPer1M,
+    item.outputUsdPer1M,
+    item.cachedInputUsdPer1M,
+    item.cacheWriteUsdPer1M,
+    item.imageInputUsdPer1M,
+    item.imageOutputUsdPer1M,
+    item.audioInputUsdPer1M,
+    item.audioOutputUsdPer1M,
+    item.outputUsdPerImage
+  )
+}
+
+export function defaultProtocolsForModelCategory(category: ModelCategoryKey): ProviderModelApiProtocol[] {
+  if (category === 'image') return ['images']
+  if (category === 'audio') return ['audio']
+  return ['responses', 'chat_completions']
+}
+
+export function findFirstModelCategory(models: ProviderModelPricing[]): ModelCategoryKey {
+  for (const key of modelCategoryOrder) {
+    if (models.some((item) => getModelCategory(item) === key)) {
+      return key
+    }
+  }
+  return 'text'
+}
+
+export function getModelCategory(item: ProviderModelPricing): ModelCategoryKey {
+  return categoryFromModeOrModel(item.mode, item.model)
+}
+
+export function categoryFromModeOrModel(modeValue: string | undefined, modelValue: string): ModelCategoryKey {
+  const model = modelValue.toLowerCase()
+  const mode = (modeValue ?? '').trim().toLowerCase()
+
+  if (isModelCategoryKey(mode)) {
+    return mode
+  }
+
+  if (mode === 'image_generation' || model.startsWith('gpt-image') || model.startsWith('dall-e')) {
+    return 'image'
+  }
+
+  if (
+    mode === 'audio_speech'
+    || mode === 'audio_transcription'
+    || model.includes('audio')
+    || model.includes('realtime')
+    || model.includes('transcribe')
+    || model.includes('tts')
+    || model.includes('whisper')
+  ) {
+    return 'audio'
+  }
+
+  if (
+    mode === 'chat'
+    || mode === 'responses'
+    || mode === 'completion'
+    || model.includes('codex')
+    || model.startsWith('gpt-')
+    || model.startsWith('o')
+  ) {
+    return 'text'
+  }
+
+  return 'text'
+}
+
+export function isModelCategoryKey(value: string): value is ModelCategoryKey {
+  return (modelCategoryOrder as readonly string[]).includes(value)
+}
+
+export function formatModelCategory(item: ProviderModelPricing): string {
+  return modelCategoryLabels[getModelCategory(item)]
+}
+
+export function formatModelScope(scope?: string): string {
+  if (scope === 'built_in') return '内置'
+  if (scope === 'global') return '全局'
+  if (scope === 'personal') return '个人'
+  return '-'
+}
+
+export function modelScopeColor(scope?: string): string {
+  if (scope === 'built_in') return 'blue'
+  if (scope === 'global') return 'purple'
+  if (scope === 'personal') return 'green'
+  return 'default'
+}
+
+export function formatModelStatus(status?: string): string {
+  if (status === 'active') return '启用'
+  if (status === 'draft') return '草稿'
+  if (status === 'disabled') return '停用'
+  return '-'
+}
+
+export function modelStatusColor(status?: string): string {
+  if (status === 'active') return 'green'
+  if (status === 'draft') return 'gold'
+  if (status === 'disabled') return 'default'
+  return 'default'
+}
+
+export function formatModelVisibility(visibility?: string): string {
+  if (visibility === 'public') return '公开目录'
+  if (visibility === 'mapping_target_only') return '仅映射目标'
+  return '-'
+}
+
+export function formatApiProtocol(protocol?: string): string {
+  return apiProtocolLabels[protocol ?? ''] ?? protocol ?? '-'
+}
+
+export function getApiProtocolTagColor(protocol?: string): string {
+  switch (protocol) {
+    case 'chat_completions':
+      return 'blue'
+    case 'responses':
+      return 'purple'
+    case 'images':
+      return 'cyan'
+    case 'audio':
+      return 'green'
+    case 'realtime':
+      return 'orange'
+    default:
+      return 'default'
+  }
+}
+
+export function visibleProviderCapabilities(capabilities: string[]): string[] {
+  const normalized = new Set<string>()
+  for (const capability of capabilities) {
+    if (capability === 'chat_completions' || capability === 'passthrough') {
+      normalized.add('chat')
+      continue
+    }
+    if (!hiddenProviderCapabilities.has(capability)) {
+      normalized.add(capability)
+    }
+  }
+  return [...normalized].sort((left, right) => {
+    const leftIndex = providerCapabilityOrder.indexOf(left as typeof providerCapabilityOrder[number])
+    const rightIndex = providerCapabilityOrder.indexOf(right as typeof providerCapabilityOrder[number])
+    if (leftIndex !== -1 || rightIndex !== -1) {
+      return (leftIndex === -1 ? providerCapabilityOrder.length : leftIndex) - (rightIndex === -1 ? providerCapabilityOrder.length : rightIndex)
+    }
+    return left.localeCompare(right)
+  })
+}
+
+export function formatProviderCapability(capability: string): string {
+  return providerCapabilityLabels[capability] ?? capability
+}
+
+export function formatCapabilitiesSummary(capabilities: string[]): string {
+  const visibleCapabilities = visibleProviderCapabilities(capabilities)
+  return visibleCapabilities.length ? visibleCapabilities.map(formatProviderCapability).join(' / ') : '-'
+}
+
+export function formatPrice(value?: number): string {
+  return typeof value === 'number' ? `$${trimNumber(value)}` : '-'
+}
+
+export function formatUnitPrice(value?: number): string {
+  return typeof value === 'number' ? `$${trimNumber(value)}` : '-'
+}
+
+export function formatModelPriceSummary(item: ProviderModelPricing): string {
+  if (item.pricingModel) return `计价 ${item.pricingModel}`
+  const category = getModelCategory(item)
+  if (category === 'image') {
+    return [
+      `图片输入 ${formatPrice(item.imageInputUsdPer1M)}`,
+      `图片输出 ${formatPrice(item.imageOutputUsdPer1M)}`,
+      `每张 ${formatUnitPrice(item.outputUsdPerImage)}`
+    ].join(' / ')
+  }
+  if (category === 'audio') {
+    return [
+      `音频输入 ${formatPrice(item.audioInputUsdPer1M)}`,
+      `音频输出 ${formatPrice(item.audioOutputUsdPer1M)}`
+    ].join(' / ')
+  }
+  return [
+    `输入 ${formatPrice(item.inputUsdPer1M)}`,
+    `输出 ${formatPrice(item.outputUsdPer1M)}`,
+    `缓存读 ${formatPrice(item.cachedInputUsdPer1M)}`
+  ].join(' / ')
+}
+
+export function formatTokens(value?: number): string {
+  if (typeof value !== 'number') return '-'
+  if (value >= 1_000_000) return `${trimNumber(value / 1_000_000)}M`
+  if (value >= 1_000) return `${trimNumber(value / 1_000)}K`
+  return String(value)
+}
+
+export function formatModelInputTokens(item: ProviderModelPricing): string {
+  return formatTokens(item.maxInputTokens ?? item.contextWindowTokens)
+}
+
+export function trimNumber(value: number): string {
+  return Number(value.toFixed(8)).toString()
+}

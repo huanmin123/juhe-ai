@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import type { Response } from 'express'
 import type { Logger } from 'pino'
 
-import { writeResponseChunk } from '../../modules/gateway/openai-gateway-body.js'
+import { writeResponseChunk } from '../../modules/gateway/upstream/body.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 
 interface LogEntry {

@@ -6,23 +6,23 @@ import {
   buildOpenAIOAuthCodexRequestParts,
   isolateOpenAIOAuthCodexSessionId,
   OpenAIOAuthCodexAdapterError
-} from '../../modules/gateway/openai-oauth-codex-adapter.js'
+} from '../../modules/gateway/adapters/gpt-codex/oauth-adapter.js'
 import {
   buildUpstreamRequestBody,
   buildUpstreamHeaders,
   isEffectiveOpenAIStreamRequest
-} from '../../modules/gateway/openai-gateway-upstream.js'
+} from '../../modules/gateway/upstream/request.js'
 import {
   gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
-} from '../../modules/gateway/openai-gateway-request-body.js'
-import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
+} from '../../modules/gateway/request/body.js'
+import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import {
   parseGatewayJsonBodyInWorker,
   stopGatewayJsonParseWorker
-} from '../../modules/gateway/openai-gateway-json-parser.js'
+} from '../../modules/gateway/request/json-parser.js'
 
 type TestRequest = GatewayRawBodyRequest
 

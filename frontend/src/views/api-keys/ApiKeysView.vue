@@ -355,31 +355,43 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd, parseStrictDatePickerValue } from '@/shared/formatters'
-import { displayGroupName, rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
+import { formatDateTime, formatNumber, formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
+import { displayGroupName, rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import {
-  localSelectStorageKey,
-  readLocalSelectOptionWindow,
-  removeLocalSelectOptionWindowValues,
-  removeLocalSelectPreferenceValues,
-  writeLocalSelectOptionWindow
-} from '@/shared/selectLocalPreferenceCache'
-import type { AccountUsageSummary, ApiKeyAvailabilitySchedule, ApiKeyGroupBindingSummary, ApiKeyGroupRouteStrategy, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
-import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import type { ApiKeyAvailabilitySchedule, ApiKeyGroupRouteStrategy, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import TimeScheduleSection from '@/views/shared/TimeScheduleSection.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 import {
   buildTimeSchedulePayload,
-  createTimeScheduleForm,
-  timeScheduleSummary,
-  timeScheduleTagColor,
-  validateTimeScheduleForm,
-  type TimeScheduleForm
+  validateTimeScheduleForm
 } from '@/views/shared/timeSchedule'
+import {
+  createApiKeyTimeScheduleForm,
+  createExistingGroupBindingFormRow,
+  createGroupBindingFormRow,
+  normalizedGroupBindingPayload,
+  type ApiKeyAvailabilityScheduleForm,
+  type ApiKeyGroupBindingFormRow
+} from './apiKeyFormModel'
+import {
+  apiKeyGroupBindingTagColor,
+  apiKeyGroupBindingTagText,
+  apiKeyGroupBindings,
+  apiKeyGroupRouteText,
+  apiKeyScheduleLabel,
+  apiKeyScheduleSummary,
+  apiKeyScheduleTagColor,
+  apiKeyStatusTagColor,
+  apiKeyStatusTagLabel,
+  apiKeySystemAccountText,
+  formatKeyPreview,
+  formatUsageSummary,
+  keyDisplayTitle
+} from './apiKeyFormatters'
+import { useApiKeyGroupOptions, type ApiKeyScopeParams } from './useApiKeyGroupOptions'
 
 const modalOpen = ref(false)
 const createdKeyOpen = ref(false)
@@ -403,23 +415,6 @@ type ApiKeysPageState = {
   systemAccountFilter: string
   systemAccountFilterSelection?: PrincipalSelection
 }
-type ApiKeyGroupBindingFormStatus = 'active' | 'disabled'
-interface ApiKeyGroupBindingFormRow {
-  key: string
-  groupId: string
-  group?: GroupSelection
-  providerCode?: string
-  providerProtocolProfileId?: string
-  groupEnabled?: boolean
-  weight: number
-  status: ApiKeyGroupBindingFormStatus
-}
-type ApiKeyAvailabilityScheduleForm = TimeScheduleForm<ApiKeyAvailabilitySchedule>
-type ApiKeyScopeParams = { systemAccountId: string } | undefined
-interface ApiKeyGroupOptionsScope {
-  systemAccountId?: string
-  selectedIds?: string[]
-}
 const defaultApiKeysPageState = (): ApiKeysPageState => ({
   groupFilter: undefined,
   keywordFilter: '',
@@ -433,20 +428,10 @@ const initialPageState = pageStateCache.read()
 const keywordFilter = ref(initialPageState.keywordFilter)
 const statusFilter = ref<'all' | 'active' | 'disabled'>(initialPageState.statusFilter)
 const groupFilterSelection = ref<GroupSelection | undefined>(initialPageState.groupFilter)
-const groupFilter = computed({
-  get: () => groupFilterSelection.value?.id,
-  set: (id: string | undefined) => {
-    groupFilterSelection.value = selectedGroupSelection(id)
-  }
-})
-const groups = ref<GroupOptionSummary[]>([])
-const groupOptionsLoading = ref(false)
-const apiKeyOptionsLoaded = ref(false)
-const apiKeyOptionsScopeKey = ref('')
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
-const apiKeyScheduleLabel = 'API Key 时间计划'
-const apiKeyScheduleWindowKeyPrefix = 'api_key_schedule_window'
+const apiKeyOptionsLoaded = ref(false)
+const apiKeyOptionsScopeKey = ref('')
 const form = reactive({
   name: '',
   groupRouteStrategy: 'priority_failover' as ApiKeyGroupRouteStrategy,
@@ -457,10 +442,51 @@ const form = reactive({
   quotaLimits: createQuotaLimitForm(),
   availabilitySchedule: createApiKeyTimeScheduleForm()
 })
-let groupBindingFormKeySeed = 0
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const apiKeysApi = useScopedApiKeysApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
+const apiKeyScopeParams = computed(() => {
+  const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
+  return systemAccountId ? { systemAccountId } : undefined
+})
+const apiKeyFormScopeParams = computed<ApiKeyScopeParams>(() => {
+  const systemAccountId = editingSystemAccountId.value || apiKeyScopeParams.value?.systemAccountId
+  return systemAccountId ? { systemAccountId } : undefined
+})
+const formGroupBindingIds = computed(() => form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
+const formGroupBindingSelections = computed(() => form.groupBindings.map((binding) => binding.group))
+const {
+  clearGroupOptionsSearchTimer,
+  groups,
+  groupOptionsLoading,
+  handleFormGroupOptionsDropdown,
+  handleFormGroupOptionsSearch,
+  handleGroupOptionsDropdown,
+  handleGroupOptionsSearch,
+  loadGroupOptions,
+  resetGroupOptionsSearch,
+  selectedGroupSelection,
+  syncSelectedGroupSelections
+} = useApiKeyGroupOptions({
+  groupsApi,
+  isManagementView,
+  isFormContext: () => modalOpen.value || Boolean(editingId.value),
+  listScopeParams: apiKeyScopeParams,
+  formScopeParams: apiKeyFormScopeParams,
+  groupFilterSelection,
+  formGroupBindings: () => form.groupBindings,
+  formGroupBindingIds,
+  onGroupFilterCleared: () => {
+    resetPagination()
+    void loadData({ forceOptions: true })
+  }
+})
+const groupFilter = computed({
+  get: () => groupFilterSelection.value?.id,
+  set: (id: string | undefined) => {
+    groupFilterSelection.value = selectedGroupSelection(id)
+  }
+})
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -481,12 +507,6 @@ const {
   },
   selectedIds: () => [systemAccountFilter.value]
 })
-let groupOptionsRequestId = 0
-let groupOptionsLoadingKey: string | undefined
-let groupOptionsLoadingPromise: Promise<void> | undefined
-let groupOptionsKeyword = ''
-let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
-const groupOptionsCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
 const {
   items: apiKeys,
   loading,
@@ -571,16 +591,6 @@ const groupRouteStrategyOptions = [
 
 const filteredApiKeys = computed(() => apiKeys.value)
 const mobileApiKeys = computed(() => apiKeys.value)
-const formGroupBindingIds = computed(() => form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
-const formGroupBindingSelections = computed(() => form.groupBindings.map((binding) => binding.group))
-const apiKeyScopeParams = computed(() => {
-  const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
-  return systemAccountId ? { systemAccountId } : undefined
-})
-const apiKeyFormScopeParams = computed<ApiKeyScopeParams>(() => {
-  const systemAccountId = editingSystemAccountId.value || apiKeyScopeParams.value?.systemAccountId
-  return systemAccountId ? { systemAccountId } : undefined
-})
 const groupFilterDisabled = computed(() => false)
 const formGroupSelectDisabled = computed(() => isManagementView.value && !apiKeyFormScopeParams.value?.systemAccountId)
 const activeFilterCount = computed(() => [
@@ -610,98 +620,6 @@ const addGroupBindingDisabledReason = computed(() => {
   return undefined
 })
 const canAddGroupBinding = computed(() => !addGroupBindingDisabledReason.value)
-
-function selectedGroupSelection(id: string | undefined): GroupSelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  const group = groups.value.find((item) => item.id === normalizedId)
-  if (group) return { id: group.id, name: group.name }
-  if (groupFilterSelection.value?.id === normalizedId) return groupFilterSelection.value
-  const selectedBinding = form.groupBindings.find((binding) => binding.group?.id === normalizedId)
-  if (selectedBinding?.group) return selectedBinding.group
-  return undefined
-}
-
-function apiKeyGroupBindings(apiKey: ApiKeySummary): ApiKeyGroupBindingSummary[] {
-  return apiKey.groupBindings
-}
-
-function apiKeyGroupBindingTagColor(binding: ApiKeyGroupBindingSummary): string {
-  if (binding.status === 'disabled') return 'default'
-  if (!binding.groupEnabled) return 'orange'
-  return binding.priority === 1 ? 'purple' : 'blue'
-}
-
-function apiKeyGroupBindingTagText(apiKey: ApiKeySummary, binding: ApiKeyGroupBindingSummary, index = 0): string {
-  const name = displayGroupName(binding.groupName, binding.groupId)
-  const suffix = binding.status === 'disabled'
-    ? '停用'
-    : binding.groupEnabled ? undefined : '分组不可用'
-  const routeLabel = groupBindingLabelByStrategy(apiKey.groupRouteStrategy, binding, index)
-  const text = suffix ? `${routeLabel}：${name}（${suffix}）` : `${routeLabel}：${name}`
-  if (apiKey.groupRouteStrategy !== 'weighted_round_robin' || binding.status !== 'active') {
-    return text
-  }
-  return typeof binding.weight === 'number' && Number.isInteger(binding.weight) && binding.weight > 0
-    ? `${text} 权重 ${binding.weight}`
-    : `${text}（权重数据异常）`
-}
-
-function apiKeyGroupRouteText(apiKey: ApiKeySummary): string {
-  return apiKeyGroupBindings(apiKey)
-    .map((binding, index) => apiKeyGroupBindingTagText(apiKey, binding, index))
-    .join(' / ')
-}
-
-function groupBindingLabelByStrategy(strategy: ApiKeyGroupRouteStrategy | undefined, binding: ApiKeyGroupBindingSummary, index: number): string {
-  if (strategy === 'round_robin') return `轮询 ${index + 1}`
-  if (strategy === 'weighted_round_robin') return `权重 ${index + 1}`
-  return groupBindingPriorityTextByPriority(binding.priority)
-}
-
-function apiKeyStatusTagLabel(apiKey: ApiKeySummary): string {
-  return apiKey.status === 'active' ? '启用' : '停用'
-}
-
-function apiKeyStatusTagColor(apiKey: ApiKeySummary): string {
-  return apiKey.status === 'active' ? 'green' : 'default'
-}
-
-function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule, active?: boolean): string {
-  return timeScheduleSummary(schedule, {
-    active,
-    label: apiKeyScheduleLabel,
-    showActiveState: true
-  })
-}
-
-function apiKeyScheduleTagColor(apiKey: ApiKeySummary): string {
-  return timeScheduleTagColor(apiKey.availabilitySchedule, {
-    active: apiKey.availabilityScheduleActive,
-    label: apiKeyScheduleLabel,
-    showActiveState: true
-  })
-}
-
-function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>) {
-  return maskSecretPreview(apiKey.key, apiKey.keyPrefix, apiKey.keySuffix, '密钥未返回')
-}
-
-function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix' | 'keySuffix'>) {
-  if (apiKey.key) return apiKey.key
-  return apiKey.keyPrefix ? '列表仅显示密钥标识，点击复制按钮复制完整密钥' : '密钥未返回'
-}
-
-function maskSecretPreview(value: string | undefined, prefix: string | undefined, suffix: string | undefined, fallback: string): string {
-  if (value) {
-    return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value
-  }
-  const head = prefix?.slice(0, 8) ?? ''
-  const tail = suffix?.slice(-8) ?? ''
-  if (head && tail) return `${head}...${tail}`
-  if (head) return `${head}...`
-  return fallback
-}
 
 async function copyKeyPreview(apiKey: ApiKeySummary): Promise<void> {
   if (keyCopyingId.value) return
@@ -783,227 +701,6 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
   apiKeyOptionsScopeKey.value = scopeKey
 }
 
-async function loadGroupOptions(keyword = groupOptionsKeyword, force = false, scopeOverride?: ApiKeyGroupOptionsScope): Promise<void> {
-  groupOptionsKeyword = keyword
-  const scope = normalizedGroupOptionsScope(scopeOverride)
-  const requestKeyword = normalizeOptionKeyword(keyword)
-  const requestKey = JSON.stringify([
-    isManagementView.value ? `management:${scope.systemAccountId || 'all'}` : 'self',
-    requestKeyword ?? '',
-    scope.selectedIds
-  ])
-  if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
-    return groupOptionsLoadingPromise
-  }
-  const requestId = ++groupOptionsRequestId
-  const optionWindowKey = groupOptionWindowKey(scope.systemAccountId, requestKeyword)
-  const localWindowGroups = !force ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
-  if (localWindowGroups?.length) {
-    groupOptionsLoading.value = false
-    rememberGroupLabels(localWindowGroups)
-    syncSelectedGroupSelections(localWindowGroups)
-    groups.value = localWindowGroups
-  }
-  if (!force) {
-    const cachedGroups = groupOptionsCache.get(requestKey)
-    if (cachedGroups) {
-      groupOptionsLoadingKey = undefined
-      groupOptionsLoadingPromise = undefined
-      groupOptionsLoading.value = false
-      rememberGroupLabels(cachedGroups)
-      syncSelectedGroupSelections(cachedGroups)
-      writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
-      groups.value = cachedGroups
-      return
-    }
-  }
-  groupOptionsLoading.value = !localWindowGroups?.length
-  groupOptionsLoadingKey = requestKey
-  groupOptionsLoadingPromise = (async () => {
-    try {
-      let nextGroups = await groupsApi.options({ systemAccountId: scope.systemAccountId || undefined, keyword: requestKeyword, limit: 50, preferDefault: true })
-      nextGroups = await ensureSelectedGroupOptions(nextGroups, scope, optionWindowKey)
-      rememberGroupLabels(nextGroups)
-      syncSelectedGroupSelections(nextGroups)
-      groupOptionsCache.set(requestKey, nextGroups)
-      writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
-      if (requestId !== groupOptionsRequestId) return
-      groups.value = nextGroups
-    } catch (error) {
-      if (requestId !== groupOptionsRequestId) return
-      console.error(error)
-      message.error(extractApiErrorMessage(error, '加载分组选项失败'))
-    } finally {
-      if (groupOptionsLoadingKey === requestKey) {
-        groupOptionsLoadingKey = undefined
-        groupOptionsLoadingPromise = undefined
-      }
-      if (requestId === groupOptionsRequestId) {
-        groupOptionsLoading.value = false
-      }
-    }
-  })()
-  return groupOptionsLoadingPromise
-}
-
-function normalizedGroupOptionsScope(scopeOverride?: ApiKeyGroupOptionsScope): Required<ApiKeyGroupOptionsScope> {
-  const systemAccountId = scopeOverride?.systemAccountId
-    ?? ((modalOpen.value || editingId.value) ? apiKeyFormScopeParams.value?.systemAccountId : apiKeyScopeParams.value?.systemAccountId)
-    ?? ''
-  const selectedIds = scopeOverride?.selectedIds ?? ((modalOpen.value || editingId.value) ? [groupFilter.value, ...formGroupBindingIds.value] : [groupFilter.value])
-  return {
-    systemAccountId: systemAccountId.trim(),
-    selectedIds: [...new Set(selectedIds.filter((id): id is string => Boolean(id?.trim())).map((id) => id.trim()).sort())]
-  }
-}
-
-function handleGroupOptionsDropdown(open: boolean): void {
-  if (open) {
-    void loadGroupOptions()
-  }
-}
-
-function handleGroupOptionsSearch(value: string): void {
-  groupOptionsKeyword = value
-  clearGroupOptionsSearchTimer()
-  groupOptionsSearchTimer = window.setTimeout(() => {
-    groupOptionsSearchTimer = undefined
-    void loadGroupOptions(groupOptionsKeyword)
-  }, 250)
-}
-
-function handleFormGroupOptionsDropdown(open: boolean): void {
-  if (open) {
-    void loadGroupOptions(groupOptionsKeyword, false, {
-      systemAccountId: apiKeyFormScopeParams.value?.systemAccountId,
-      selectedIds: formGroupBindingIds.value
-    })
-  }
-}
-
-function handleFormGroupOptionsSearch(value: string): void {
-  groupOptionsKeyword = value
-  clearGroupOptionsSearchTimer()
-  groupOptionsSearchTimer = window.setTimeout(() => {
-    groupOptionsSearchTimer = undefined
-    void loadGroupOptions(groupOptionsKeyword, false, {
-      systemAccountId: apiKeyFormScopeParams.value?.systemAccountId,
-      selectedIds: formGroupBindingIds.value
-    })
-  }, 250)
-}
-
-function resetGroupOptionsSearch(): void {
-  groupOptionsKeyword = ''
-  clearGroupOptionsSearchTimer()
-}
-
-function clearGroupOptionsSearchTimer(): void {
-  if (groupOptionsSearchTimer && typeof window !== 'undefined') {
-    window.clearTimeout(groupOptionsSearchTimer)
-    groupOptionsSearchTimer = undefined
-  }
-}
-
-async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], scope: Required<ApiKeyGroupOptionsScope>, optionWindowKey: string): Promise<GroupOptionSummary[]> {
-  const missingIds = scope.selectedIds.filter((id) => !nextGroups.some((group) => group.id === id))
-  if (!missingIds.length) return nextGroups
-  const selectedGroups = await Promise.all(missingIds.map(async (id) => {
-    try {
-      return await groupsApi.options({ systemAccountId: scope.systemAccountId || undefined, ids: [id], limit: 1, preferDefault: true })
-    } catch {
-      return []
-    }
-  }))
-  const foundIds = new Set(selectedGroups.flat().map((group) => group.id))
-  handleMissingGroupOptions(missingIds.filter((id) => !foundIds.has(id)), optionWindowKey)
-  return mergeOptionsById(selectedGroups.flat(), nextGroups)
-}
-
-function handleMissingGroupOptions(ids: string[], optionWindowKey: string): void {
-  const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
-  if (!missingIds.length) return
-  let clearedFilter = false
-  let clearedFilterId: string | undefined
-  if (groupFilter.value && missingIds.includes(groupFilter.value)) {
-    clearedFilterId = groupFilter.value
-    groupFilterSelection.value = undefined
-    clearedFilter = true
-  }
-  const clearedBindingIds: string[] = []
-  for (const binding of form.groupBindings) {
-    if (!missingIds.includes(binding.groupId)) continue
-    if (binding.group?.id === binding.groupId) continue
-    const bindingId = binding.groupId
-    binding.groupId = ''
-    binding.group = undefined
-    binding.providerCode = undefined
-    binding.providerProtocolProfileId = undefined
-    binding.groupEnabled = undefined
-    clearedBindingIds.push(bindingId)
-  }
-  const removableIds = [...new Set([...clearedBindingIds, ...(clearedFilterId ? [clearedFilterId] : [])])]
-  if (removableIds.length) {
-    removeLocalSelectOptionWindowValues(optionWindowKey, removableIds)
-    removeLocalSelectPreferenceValues('groups', removableIds)
-  }
-  if (clearedFilter || clearedBindingIds.length) {
-    message.warning('已移除不存在或无权访问的分组，请重新选择')
-  }
-  if (clearedFilter) {
-    resetPagination()
-    void loadData({ forceOptions: true })
-  }
-}
-
-function groupOptionWindowKey(systemAccountId: string | undefined, requestKeyword: string | undefined): string {
-  return localSelectStorageKey([
-    'group-options',
-    isManagementView.value ? 'management' : 'self',
-    systemAccountId ?? 'all',
-    'api-keys',
-    requestKeyword ?? ''
-  ])
-}
-
-function syncSelectedGroupSelections(nextGroups = groups.value): void {
-  if (groupFilter.value) {
-    groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
-  }
-  for (const binding of form.groupBindings) {
-    if (binding.groupId) {
-      const groupOption = nextGroups.find((group) => group.id === binding.groupId)
-      if (groupOption) {
-        binding.providerCode = groupOption.providerCode
-        binding.providerProtocolProfileId = groupOption.providerProtocolProfileId
-        binding.groupEnabled = groupOption.enabled
-      }
-      binding.group = selectedGroupFromOptions(binding.groupId, nextGroups, binding.group)
-    }
-  }
-}
-
-function selectedGroupFromOptions(id: string | undefined, nextGroups: GroupOptionSummary[], fallback?: GroupSelection): GroupSelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  const group = nextGroups.find((item) => item.id === normalizedId)
-  if (group) return { id: group.id, name: group.name }
-  return fallback?.id === normalizedId ? fallback : undefined
-}
-
-function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
-  const merged = new Map<string, T>()
-  for (const item of [...leading, ...trailing]) {
-    merged.set(item.id, item)
-  }
-  return [...merged.values()]
-}
-
-function normalizeOptionKeyword(value?: string): string | undefined {
-  const keyword = value?.trim()
-  return keyword ? keyword : undefined
-}
-
 function resetFilters() {
   const defaults = defaultApiKeysPageState()
   keywordFilter.value = defaults.keywordFilter
@@ -1073,22 +770,6 @@ function apiKeyListParams(systemAccountId: string | undefined, pageState: { curr
     status: statusFilter.value,
     groupId: groupFilter.value
   }
-}
-
-function apiKeySystemAccountText(apiKey: ApiKeySummary) {
-  return systemAccountDisplayText(apiKey)
-}
-
-function formatUsageSummary(usage: AccountUsageSummary): string {
-  return `${formatNumber(usage.requestCount)}req / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
-}
-
-function formatUsageAmount(value?: number): string {
-  return formatCompactUsageAmount(value)
-}
-
-function formatCost(value?: number): string {
-  return formatUsd(value)
 }
 
 async function openCreate() {
@@ -1171,68 +852,6 @@ async function openEdit(apiKey: ApiKeySummary) {
   modalOpen.value = true
 }
 
-function normalizeGroupBindingWeight(value: unknown): number {
-  if (value === undefined || value === null) return 1
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100) {
-    throw new Error('API Key 分组权重必须是 1-100 之间的整数')
-  }
-  return value
-}
-
-function normalizeExistingGroupBindingWeight(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100) {
-    throw new Error('API Key 分组权重必须是 1-100 之间的整数')
-  }
-  return value
-}
-
-function normalizeGroupBindingStatus(value: unknown): ApiKeyGroupBindingFormStatus {
-  if (value === 'active' || value === 'disabled') return value
-  throw new Error('API Key 分组绑定状态异常，请清理后再编辑')
-}
-
-function createGroupBindingFormRow(
-  group?: GroupSelection,
-  status: ApiKeyGroupBindingFormStatus = 'active',
-  weight = 1,
-  metadata: { providerCode?: string; providerProtocolProfileId?: string; groupEnabled?: boolean } = {}
-): ApiKeyGroupBindingFormRow {
-  return {
-    key: `binding_${Date.now()}_${groupBindingFormKeySeed += 1}`,
-    groupId: group?.id ?? '',
-    group,
-    providerCode: metadata.providerCode,
-    providerProtocolProfileId: metadata.providerProtocolProfileId,
-    groupEnabled: metadata.groupEnabled,
-    weight: normalizeGroupBindingWeight(weight),
-    status: normalizeGroupBindingStatus(status)
-  }
-}
-
-function createExistingGroupBindingFormRow(binding: ApiKeyGroupBindingSummary): ApiKeyGroupBindingFormRow {
-  const group = {
-    id: binding.groupId,
-    name: displayGroupName(binding.groupName, binding.groupId)
-  }
-  return {
-    key: `binding_${Date.now()}_${groupBindingFormKeySeed += 1}`,
-    groupId: group.id,
-    group,
-    providerCode: binding.providerCode,
-    providerProtocolProfileId: binding.providerProtocolProfileId,
-    groupEnabled: binding.groupEnabled,
-    weight: normalizeExistingGroupBindingWeight(binding.weight),
-    status: normalizeGroupBindingStatus(binding.status)
-  }
-}
-
-function createApiKeyTimeScheduleForm(schedule?: ApiKeyAvailabilitySchedule): ApiKeyAvailabilityScheduleForm {
-  return createTimeScheduleForm<ApiKeyAvailabilitySchedule>(schedule, {
-    label: apiKeyScheduleLabel,
-    keyPrefix: apiKeyScheduleWindowKeyPrefix
-  })
-}
-
 function addGroupBinding() {
   if (addGroupBindingDisabledReason.value) {
     message.warning(addGroupBindingDisabledReason.value)
@@ -1296,15 +915,6 @@ function moveGroupBinding(index: number, offset: -1 | 1) {
   form.groupBindings.splice(nextIndex, 0, item)
 }
 
-function normalizedGroupBindingPayload(): Array<{ groupId: string; priority: number; weight: number; status: ApiKeyGroupBindingFormStatus }> {
-  return form.groupBindings.map((binding, index) => ({
-    groupId: binding.groupId.trim(),
-    priority: index + 1,
-    weight: normalizeGroupBindingWeight(binding.weight),
-    status: normalizeGroupBindingStatus(binding.status)
-  }))
-}
-
 function nextAvailableGroupForNewBinding(): GroupOptionSummary | undefined {
   const selectedIds = new Set(form.groupBindings.map((binding) => binding.groupId.trim()).filter(Boolean))
   const providerProtocolProfileId = selectedGroupBindingProviderProfileId()
@@ -1320,13 +930,6 @@ function groupBindingPriorityText(index: number): string {
   if (form.groupRouteStrategy === 'round_robin') return `轮询 ${index + 1}`
   if (form.groupRouteStrategy === 'weighted_round_robin') return `权重 ${index + 1}`
   return index === 0 ? '主号池' : `备 ${index}`
-}
-
-function groupBindingPriorityTextByPriority(priority: number | undefined): string {
-  const normalizedPriority = typeof priority === 'number' && Number.isFinite(priority)
-    ? Math.max(1, Math.trunc(priority))
-    : 1
-  return normalizedPriority === 1 ? '主号池' : `备 ${normalizedPriority - 1}`
 }
 
 function groupOptionsForBinding(index: number): GroupOptionSummary[] {
@@ -1443,7 +1046,7 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     return
   }
   try {
-    const groupBindings = normalizedGroupBindingPayload()
+    const groupBindings = normalizedGroupBindingPayload(form.groupBindings)
     if (!groupBindings.length) {
       message.warning('请至少选择一个绑定分组')
       return

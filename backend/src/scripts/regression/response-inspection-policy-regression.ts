@@ -4,20 +4,22 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { GatewaySettings } from '../../modules/gateway/account-error-policy.service.js'
+import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
 import {
-  OpenAIResponseInspectionBuffer,
   inspectResponseSemanticFrames,
   resolveRuntimeResponseInspectionPolicies,
   type RuntimeResponseInspectionPolicy
-} from '../../modules/gateway/openai-gateway-response-inspection.js'
+} from '../../modules/gateway/response/inspection.js'
+import {
+  OpenAIResponseInspectionBuffer
+} from '../../modules/gateway/protocols/openai-v1/response-inspection-buffer.js'
 import {
   validateAccountResponseInspectionRules
 } from '../../modules/accounts/account-response-inspection-policy-validation.js'
 import {
   extractOpenAIJsonSemanticFrames
-} from '../../modules/gateway/openai-gateway-response-semantics.js'
-import { pipeUpstreamStream } from '../../modules/gateway/openai-gateway-stream.js'
+} from '../../modules/gateway/protocols/openai-v1/response-semantics.js'
+import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
 import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { closeStorageDatabases, getBusinessDatabase } from '../../storage/database.js'
 import {
@@ -484,11 +486,11 @@ assert.equal(validateAccountResponseInspectionRules([
 
 {
   const repositorySource = readFileSync(new URL('../../storage/response-inspection-policy.repository.ts', import.meta.url), 'utf8')
-  const responseFinalizationSource = readFileSync(new URL('../../modules/gateway/openai-gateway-response-finalization.ts', import.meta.url), 'utf8')
+  const responseFinalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
   const routeSource = readFileSync(new URL('../../modules/response-inspection-policies/response-inspection-policies.routes.ts', import.meta.url), 'utf8')
   const schemaSource = readFileSync(new URL('../../storage/schema/business-schema.ts', import.meta.url), 'utf8')
-  const gatewayPreflightSource = readFileSync(new URL('../../modules/gateway/openai-gateway-request-preflight.ts', import.meta.url), 'utf8')
-  const fallbackCandidateSource = readFileSync(new URL('../../modules/gateway/openai-gateway-api-key-group-fallback-candidate.ts', import.meta.url), 'utf8')
+  const gatewayPreflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
+  const fallbackCandidateSource = readFileSync(new URL('../../modules/gateway/dispatch/api-key-group-fallback-candidate.ts', import.meta.url), 'utf8')
   assert(repositorySource.includes('maxManagementResponseInspectionPolicies'), '管理端响应检查策略必须有固定数量上限')
   assert(repositorySource.includes('SELECT id FROM response_inspection_policies LIMIT ?'), '创建管理端响应检查策略容量预检必须使用固定窗口')
   assert(!repositorySource.includes('COUNT(*) AS total FROM response_inspection_policies'), '创建管理端响应检查策略不能用 COUNT(*) 容量预检')

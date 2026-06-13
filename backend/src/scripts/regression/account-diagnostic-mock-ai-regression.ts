@@ -36,10 +36,10 @@ const [
   repositories
 ] = await Promise.all([
   import('../../modules/accounts/account-test.service.js'),
-  import('../../modules/gateway/openai-gateway-codex-switch-probe.js'),
-  import('../../modules/gateway/account-error-policy.service.js'),
-  import('../../modules/gateway/gateway-account-side-effects.service.js'),
-  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/gateway/client-profiles/codex-switch-probe.js'),
+  import('../../modules/gateway/policy/account-error-policy.service.js'),
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
