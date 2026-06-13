@@ -73,6 +73,23 @@
         <section class="settings-section">
           <div class="section-heading">
             <div>
+              <h3>账号测试</h3>
+              <p>控制后台账号测试任务的系统级并发防护；单个用户批量测试仍按每批最多 10 个账号提交。</p>
+            </div>
+          </div>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="后台并发上限" extra="默认 100；用于防止异常批量或恶意请求把账号测试任务全部同时打到上游。">
+                <a-input-number v-model:value="systemForm.accountTestTaskConcurrency" :min="1" :max="1000" style="width: 100%" />
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-heading">
+            <div>
               <h3>账户调度默认值</h3>
               <p>这些配置是系统级运行策略，保存后会影响网关调度和后台任务。</p>
             </div>

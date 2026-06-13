@@ -36,7 +36,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `system_accounts`、`system_sessions`
 - `global_settings`、`system_settings`
 - `providers`、`protocols`、`protocol_endpoint_families`、`provider_protocol_profiles`、`provider_protocol_profile_families`、`proxy_profiles`
-- `accounts`、`account_supported_models`、`account_model_mappings`、`account_tags`、`account_tag_bindings`、`account_test_tasks`、`custom_provider_models`、`groups`、`group_authorization_settings`、`group_accounts`、`group_account_stats_dirty`、`api_keys`、`api_key_group_bindings`
+- `accounts`、`account_supported_models`、`account_model_mappings`、`account_tags`、`account_tag_bindings`、`account_test_tasks`、`account_test_sessions`、`account_test_session_tasks`、`custom_provider_models`、`groups`、`group_authorization_settings`、`group_accounts`、`group_account_stats_dirty`、`api_keys`、`api_key_group_bindings`
 - `system_teams`、`system_team_members`
 - `resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`
 - `external_integration_sources`、`external_integration_source_tokens`
@@ -120,7 +120,8 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `accounts.availability_schedule_json` 保存账户时间计划；为空表示不限制时段。该字段只作为网关账号候选过滤和列表展示事实，不驱动 `accounts.status` 自动改写。时段外账户不进入网关候选，系统时区由后端统一默认值决定，前端不暴露用户时区配置。
 - `accounts.last_error_code` 保存账户异常子类型；顶层状态仍统一使用 `status = error` 表示“异常”，可读细节继续放在 `accounts.last_error_message`。
 - `accounts.last_successful_test_model` 保存该账户最近一次手动账户测试通过时使用的模型；后台系统复测优先使用该模型，没有手动成功记录时使用供应商协议档案 `provider_protocol_profiles.default_test_model`。
-- `account_test_tasks` 保存手动 AI 账户测试任务的轻量状态，任务由管理 API 创建并投递给 background worker 执行；表内只保留任务发起人、管理筛选作用域、账户摘要、状态、取消标记和最终脱敏结果，创建 / 编辑弹窗发起的未保存账户测试会额外保存加密草稿快照 `draft_account_encrypted`，默认只保留已完成任务 24 小时。前端手动测试和批量测试只能查询该表的任务状态，不在管理 API 请求链路等待上游测试完成。
+- `account_test_tasks` 保存手动 AI 账户测试任务的轻量状态，任务由管理 API 创建并投递给 background worker 执行；表内只保留任务发起人、管理筛选作用域、账户摘要、状态、取消标记和最终脱敏结果，创建 / 编辑弹窗发起的未保存账户测试会额外保存加密草稿快照 `draft_account_encrypted`，默认只保留已完成任务 24 小时。前端手动测试和批量测试只能查询该表的任务状态，不在管理 API 请求链路等待上游测试完成。任务运行超时只从 `started_at` 开始计算，`queued` 或等待 worker 接收阶段不参与 60 秒运行超时。
+- `account_test_sessions` 保存一次测试窗口或批量测试的会话租约，包括发起作用域、状态、最后心跳、取消原因和完成时间；`account_test_session_tasks` 关联 session 与 task。单测和批测都先创建 session，停止、关闭窗口或心跳过期时按 session 批量取消未完成任务，避免前端离开后后台继续消费已提交任务。
 - `accounts.cooldown_retest_failure_count`、`cooldown_retest_observation_started_at`、`cooldown_retest_last_at` 和 `cooldown_retest_last_status_code` 保存 `temporary_unavailable` / `rate_limited` 后台复测的连续失败次数、本轮自动恢复观察起点、最近复测时间和最近 HTTP 状态；复测失败时 `last_error_code/last_error_message` 记录本次上游真实错误摘要，复测成功、手动恢复、停用或到期时清空。进入慢速恢复后仍继续自动退避复测；超过 `cooldownAccountRetestMaxBackoffHours` 表达的最长自动恢复观察窗口后写入 `status = error` 和 `last_error_code = cooldown_retest_max_recovery_exceeded`，停止自动复测并等待人工“恢复异常”。
 - `account_supported_models` 保存账号显式支持的模型列表；账号没有任何模型行表示不限制。网关账号池缓存 miss 时按账号 ID 批量读取这些行，并把结果放入运行时账号快照，正常请求只做内存过滤，不逐次查询该表。授权实例调度和列表补数只读取来源账户的模型列表，实例行不保存模型快照。
 - `account_tags` 保存系统账户维度的标签字典，`account_tag_bindings` 保存账户与标签的多对多绑定。标签名在同一系统账户内大小写不敏感唯一；账户列表按 `tagIds` 通过绑定索引筛选，返回时按当前页账户 ID 批量读取绑定标签；删除标签前必须确认没有任何未删除账户仍绑定该标签。
@@ -244,6 +245,8 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `account_test_tasks(request_system_account_id, updated_at, id)`：账号测试任务按发起人和更新时间查询；读取时还要校验同一管理筛选作用域，避免跨用户作用域读取任务状态。
 - `account_test_tasks(status, queued_at, id)`：background worker 按排队时间读取可执行测试任务。
 - `account_test_tasks(finished_at, id) WHERE finished_at IS NOT NULL`：清理已完成的短期测试任务记录。
+- `account_test_sessions(status, last_heartbeat_at, id)`：后台过期清理按 session 心跳和状态取消失联测试窗口。
+- `account_test_session_tasks(session_id, task_id)`、`account_test_session_tasks(task_id)`：按 session 批量取消任务，以及按 task 反查 session 租约。
 - `groups(system_account_id, provider_protocol_profile_id, lower(name))`：保证同一用户同一供应商协议档案下分组名称唯一。
 - `groups(name, id)`、`groups(system_account_id, name, id)`：账户绑定分组和分组选项按分组名前缀定位。
 - 当前未为 `group_type` 单独增加索引；分组列表和网关候选快照仍复用所有者、供应商协议档案和名称相关索引读取，只有出现明确查询瓶颈时再补 `groups(system_account_id, provider_protocol_profile_id, group_type, id)` 这类定向索引。
@@ -928,6 +931,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `operationLogMaxChangesPerRecord = 100`：单条操作日志最多保存 100 个字段差异，超过后折叠摘要。
 - `accountQualityRefreshIntervalSeconds = 600`：账号质量缓存默认每 10 分钟刷新一次。
 - `accountQualityWindowMinutes = 10`：真实网关请求首 token 统计窗口默认 10 分钟。
+- `accountTestTaskConcurrency = 100`：手动账号测试 worker 系统级并发上限，合法范围 `1..1000`；前端批量测试仍按每批最多 10 个账号提交。
 - 账号质量主动探测相关默认设置已删除，不允许通过系统配置恢复。
 - `cooldownAccountRetestMaxBackoffHours = 24`：冷却账号后台复测最长自动恢复观察窗口，默认 24 小时；进入慢速恢复后仍继续自动退避复测，超过该窗口后转为 `cooldown_retest_max_recovery_exceeded` 异常并停止自动复测。后台冷却复测固定启用，只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
 - `cooldownAccountRetestIntervalSeconds = 3`：冷却账号后台复测默认扫描间隔，用于承接 3 秒起步的快速恢复通道。

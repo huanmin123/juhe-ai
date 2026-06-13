@@ -42,6 +42,7 @@ export interface RetryQueue<T> {
   enqueue(key: string, item: T): boolean
   delete(key: string): void
   clear(): void
+  setConcurrency(concurrency: number): void
   snapshot(): RetryQueueSnapshot
 }
 
@@ -62,7 +63,7 @@ interface RetryQueueItem<T> {
 
 export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T> {
   const items = new Map<string, RetryQueueItem<T>>()
-  const concurrency = Math.max(1, Math.trunc(options.concurrency ?? 1))
+  let concurrency = normalizedConcurrency(options.concurrency)
   let timer: NodeJS.Timeout | undefined
   let timerDueAtMs: number | undefined
 
@@ -237,6 +238,10 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
         timerDueAtMs = undefined
       }
     },
+    setConcurrency: (nextConcurrency) => {
+      concurrency = normalizedConcurrency(nextConcurrency)
+      scheduleNext()
+    },
     snapshot: () => {
       const nextRunAtMs = nextPendingRunAtMs()
       return {
@@ -247,6 +252,13 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
       }
     }
   }
+}
+
+function normalizedConcurrency(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 1
+  }
+  return Math.max(1, Math.trunc(value))
 }
 
 function compareRetryQueueItems<T>(left: RetryQueueItem<T>, right: RetryQueueItem<T>): number {

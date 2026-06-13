@@ -18,7 +18,7 @@
 | 账户类型 | 上游链路 | 当前路径策略 | 主要限制 |
 | --- | --- | --- | --- |
 | 通用 OpenAI 兼容 API Key | 任意 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 只支持 `api_key`；请求体默认 raw passthrough；本地过滤危险 header 和本地认证 header；不启用 GPT OAuth、Codex adapter 或 Codex 专属客户端策略。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
-| GPT API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传，例如 `/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions`。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 请求体默认 raw passthrough；可选 `codex_responses` 兼容模式只改写 `/responses` 请求；本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
+| GPT API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传，例如 `/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions`。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 账户默认 `codex_responses` 兼容模式，只改写 `/responses` 请求；如需公开 OpenAI-compatible API 原样透传，可显式切换为 `openai_standard`。本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
 | GPT OAuth | ChatGPT / Codex backend 的 `openai_oauth_codex` adapter | 只为 `POST /responses`、`POST /v1/responses`、`POST /responses/compact` 和 `POST /v1/responses/compact` 构造 Codex 上游请求；`GET /models` / `/v1/models` 由本地模型目录返回。 | 账户兼容模式固定为 `codex_responses`，不提供用户侧切换；不等价于公开 OpenAI API Key；不承诺 `/chat/completions` 到 Responses 的重型协议翻译，也不承诺公开 Responses API 全字段原样进入 Codex backend。OAuth-only 分组请求不支持的路径时不会落到公开 OpenAI API。 |
 
 混合分组中如果同时存在 API Key 账号和 OAuth 账号，某条路径是否可用取决于调度命中的账号类型：OAuth 账号不支持的路径会跳过该账号，仍可由同分组内可用的 API Key 账号承接；如果当前 API Key 还绑定了后续号池，且当前分组没有任何账号类型能承接该路径，网关应继续尝试下一号池；如果所有号池都没有可用账号，则返回“没有可用的上游账户”一类网关错误，而不是自动协议翻译。多号池混合规则见 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
@@ -121,7 +121,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - 时间计划不改写账户 `status`；时段外只退出网关账号候选，进入允许时段后自动重新参与调度。时区跟随系统默认值，用户表单不提供时区配置。
 - 可手动启用 / 停用
 
-透传策略：GPT 账户默认按供应商网关策略透传，用户侧不提供通用透传开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。API Key 账号默认原样使用客户端 `rawBody`，只有显式选择 `codex_responses` 时才对 `POST /responses` / `POST /v1/responses` 按 Codex Responses 形态补齐请求体和必要流式请求头；Header 会过滤本地认证、代理链路、SDK / tracing 噪声和客户端传入的 `OpenAI-Organization` / `OpenAI-Project`，不从账号凭据生成这些上游账号上下文头。`OpenAI-Beta` 保留客户端显式传入值，服务端不做账号级覆盖。OAuth 账号固定进入 `openai_oauth_codex` adapter，不读取也不接受用户侧客户端兼容模式覆盖。
+透传策略：GPT 账户默认按供应商网关策略透传，用户侧不提供通用透传开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。GPT API Key 账号默认使用 `codex_responses`，对 `POST /responses` / `POST /v1/responses` 按 Codex Responses 形态补齐请求体和必要流式请求头，其他路径继续使用客户端 `rawBody`；如需所有路径都按公开 OpenAI-compatible API 原样透传，可显式切换为 `openai_standard`。Header 会过滤本地认证、代理链路、SDK / tracing 噪声和客户端传入的 `OpenAI-Organization` / `OpenAI-Project`，不从账号凭据生成这些上游账号上下文头。`OpenAI-Beta` 保留客户端显式传入值，服务端不做账号级覆盖。OAuth 账号固定进入 `openai_oauth_codex` adapter，不读取也不接受用户侧客户端兼容模式覆盖。
 
 ### 账户支持模型限制
 

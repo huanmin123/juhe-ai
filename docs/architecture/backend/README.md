@@ -98,7 +98,7 @@ flowchart LR
 - `/__aisys__/api/*` 和 `/__aipublic__/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 / 公开系统 API JSON body，不直接导入管理路由或 repository。代理层只做流式转发，并保留最大 in-flight 请求数和内部超时，避免慢 DB service 把主进程 socket 无限堆积。
 - 独立 public-api 进程方案已评估但暂不实施，见 [公开接口独立进程设计](../../functions/公开接口独立进程设计.md) 和 `PLAN-0036`；当前仍以上述 DB service 代理描述为准。
 - DB service 内部系统 API 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
-- 账户测试、模型检测和代理检测会在 DB service 进程内发起外部网络探测；这些诊断入口共享固定 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
+- 账号测试、模型检测和代理检测都会发起外部网络探测，但账号测试使用后台 worker 的独立任务模型：管理 API 只提交任务和 session，worker 按系统设置 `accountTestTaskConcurrency` 控制全站并发，默认 100，排队时间不计入 60 秒运行超时。模型检测和代理检测继续共享 DB service 诊断任务 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
 - 同一 router 如果同时承载管理列表和登录用户可用的轻量辅助接口，不要把 `requireAdmin` 直接挂在整段 mount 上，应把管理员校验下沉到具体管理路由。例如供应商列表需要管理员权限，但供应商模型目录用于普通用户账户表单，必须允许登录用户读取。
 - 新增普通用户可见页面调用的接口时，必须在 `backend/src/scripts/regression/scope-boundary-regression.ts` 补普通用户可访问断言；新增 `my-*` 命名空间下仍属于管理员能力的例外时，也要补普通用户 403 断言，避免前端误暴露后才发现。
 - routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。

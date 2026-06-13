@@ -140,6 +140,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['tableMonitorMaxTablesPerRun', 4],
   ['accountQualityRefreshIntervalSeconds', 600],
   ['accountQualityWindowMinutes', 10],
+  ['accountTestTaskConcurrency', 100],
   ['cooldownAccountRetestIntervalSeconds', 3],
   ['cooldownAccountRetestBatchSize', 10],
   ['cooldownAccountRetestMaxBackoffHours', 24],
