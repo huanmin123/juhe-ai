@@ -755,6 +755,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           jobs: workerSnapshot.jobs.map((job) => ({ ...job })),
           usageRecordQueue: { ...workerSnapshot.usageRecordQueue },
           operationLogQueue: { ...workerSnapshot.operationLogQueue },
+          publicApiLogQueue: { ...workerSnapshot.publicApiLogQueue },
           recordMaintenanceQueue: { ...workerSnapshot.recordMaintenanceQueue },
           auditLogQueue: { ...workerSnapshot.auditLogQueue },
           runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue },
@@ -801,6 +802,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           jobs: ingestWorkerSnapshot.jobs.map((job) => ({ ...job })),
           usageRecordQueue: { ...ingestWorkerSnapshot.usageRecordQueue },
           operationLogQueue: { ...ingestWorkerSnapshot.operationLogQueue },
+          publicApiLogQueue: { ...ingestWorkerSnapshot.publicApiLogQueue },
           auditLogQueue: { ...ingestWorkerSnapshot.auditLogQueue },
           runtimeLogIndexQueue: { ...ingestWorkerSnapshot.runtimeLogIndexQueue }
         }

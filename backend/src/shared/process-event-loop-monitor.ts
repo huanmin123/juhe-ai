@@ -43,9 +43,12 @@ export function buildProcessEventLoopSample(processRole: ProcessEventLoopRole = 
 }
 
 function currentProcessEventLoopRole(): ProcessEventLoopRole {
-  return runtimeConfig.processRole === 'worker'
+  if (runtimeConfig.processRole !== 'worker') {
+    return runtimeConfig.processRole
+  }
+  return runtimeConfig.workerRole === 'metrics-worker' || runtimeConfig.workerRole === 'ingest-worker'
     ? runtimeConfig.workerRole
-    : runtimeConfig.processRole
+    : 'worker'
 }
 
 function roundMetricMs(value: number): number | undefined {

@@ -509,6 +509,16 @@ export {
   type OpenAIAccountsForGroupResult
 } from './openai-account-selector.repository.js'
 export {
+  acquireBackgroundJobLease,
+  createBackgroundTaskRun,
+  finishBackgroundTaskRun,
+  getBackgroundTaskRun,
+  heartbeatBackgroundTaskRun,
+  tryStartBackgroundTaskRun,
+  type BackgroundTaskRunSummary
+} from './background-task-runs.repository.js'
+
+export {
   createModelCheckItems,
   createModelCheckRun,
   finishModelCheckRun,

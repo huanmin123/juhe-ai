@@ -1,15 +1,14 @@
 import { Router } from 'express'
-import { z } from 'zod'
 
 import { isAdminRole, type AccountStatus, type AccountSummary } from '../../domain/types.js'
 import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { queryTextList } from '../../shared/query-values.js'
-import { AccountTagInUseError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountTag, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountTags, listAccountsPage, listProviders, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAccountTags, updateAuthorizedAccountBindingDispatch, type AccountListOptions } from '../../storage/repositories.js'
+import { AccountTagInUseError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountTag, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountTags, listAccountsPage, listProviders, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAccountTags, updateAuthorizedAccountBindingDispatch } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
-import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
+import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/runtime/session-affinity.service.js'
 import { diffSafeFields, operationMode, ownerTarget, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
@@ -29,7 +28,6 @@ import {
   prepareAccountDraftTestSnapshot,
   savedAccountDraftTestSnapshot
 } from './account-draft-test.service.js'
-import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import {
@@ -43,53 +41,14 @@ import {
   accountUpdateSchema,
   authorizedAccountDispatchSchema
 } from './account-request.schemas.js'
-import {
-  accountListSortFieldValues,
-  parseAccountListOptions,
-  parseAccountOptionsQuery,
-  schedulableQueryValue,
-  statusQueryValue
-} from './account-list-query.js'
+import { parseAccountListOptions, parseAccountOptionsQuery } from './account-list-query.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountCredentialsResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 import { dispatchAccountTestCancel, dispatchAccountTestTasks } from './account-test-task-queue.service.js'
+import { accountCredentialFingerprint, credentialsRecordValue, mergeAccountCredentialsForUpdate } from './account-credential-update.js'
+import { accountExportRequestSchema, exportAccountsForRequest } from './account-export-request.js'
 
 export const accountsRouter = Router()
-
-const accountExportFilterSchema = z.object({
-  sorts: z.array(z.object({
-    field: z.enum(accountListSortFieldValues),
-    order: z.enum(['asc', 'desc'])
-  }).strict()).max(accountListSortFieldValues.length).optional(),
-  keyword: z.string().trim().max(200).optional(),
-  providerCode: z.string().trim().max(80).optional(),
-  groupId: z.string().trim().max(120).optional(),
-  tagIds: z.union([
-    z.string().trim(),
-    z.array(z.string().trim()).max(100)
-  ]).optional(),
-  type: z.string().trim().max(80).optional(),
-  status: z.union([
-    z.string().trim(),
-    z.array(z.string().trim()).max(20)
-  ]).optional(),
-  schedulable: z.enum(['all', 'enabled', 'disabled', 'cooling']).optional()
-}).strict()
-
-const accountExportByIdsRequestSchema = z.object({
-  accountIds: z.array(z.string().trim().min(1)).min(1).max(accountImportMaxAccounts)
-}).strict()
-
-const accountExportByFiltersRequestSchema = z.object({
-  filters: accountExportFilterSchema
-}).strict()
-
-const accountExportRequestSchema = z.union([
-  accountExportByIdsRequestSchema,
-  accountExportByFiltersRequestSchema
-])
-
-type AccountExportRequest = z.infer<typeof accountExportRequestSchema>
 
 accountsRouter.get('/', async (req, res, next) => {
   try {
@@ -388,48 +347,6 @@ accountsRouter.get('/:id', async (req, res, next) => {
 
 function serverTimingMetric(name: string, durationMs: number): string {
   return `${name};dur=${Math.max(0, durationMs).toFixed(1)}`
-}
-
-function exportAccountsForRequest(request: AccountExportRequest, access: RequestAccessScope) {
-  if ('accountIds' in request) {
-    return exportAccountsAsImportDocument({ accountIds: request.accountIds }, access)
-  }
-
-  const page = listAccountsPage(access, accountExportListOptions(request.filters))
-  const accountIds = page.items.map((account) => account.id)
-  if (!accountIds.length) {
-    throw new Error('当前筛选条件下没有匹配的 AI 账户')
-  }
-  return exportAccountsAsImportDocument({
-    accountIds,
-    matchedAccounts: page.total,
-    truncated: page.hasMore
-  }, access)
-}
-
-function accountExportListOptions(filters: z.infer<typeof accountExportFilterSchema>): AccountListOptions {
-  return {
-    sorts: filters.sorts,
-    page: 1,
-    pageSize: accountImportMaxAccounts,
-    keyword: accountExportTextFilter(filters.keyword),
-    providerCode: accountExportAllFilter(filters.providerCode),
-    groupId: accountExportTextFilter(filters.groupId),
-    tagIds: queryTextList(filters.tagIds, 100),
-    type: accountExportAllFilter(filters.type),
-    status: statusQueryValue(filters.status),
-    schedulable: schedulableQueryValue(filters.schedulable)
-  }
-}
-
-function accountExportTextFilter(value: string | undefined): string | undefined {
-  const text = value?.trim()
-  return text || undefined
-}
-
-function accountExportAllFilter(value: string | undefined): string | undefined {
-  const text = accountExportTextFilter(value)
-  return text && text !== 'all' ? text : undefined
 }
 
 accountsRouter.post('/import/preview', (req, res) => {
@@ -1201,80 +1118,3 @@ accountsRouter.delete('/:id', (req, res) => {
   }
   res.status(204).send()
 })
-
-function accountCredentialFingerprint(credentials: unknown): string {
-  if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) {
-    return ''
-  }
-  const record = credentials as Record<string, unknown>
-  return sensitiveFingerprint(
-    apiKeyCredentialFingerprintSource(record)
-      ?? record.refresh_token
-      ?? record.access_token
-      ?? record.email
-      ?? record.account_id
-      ?? ''
-  )
-}
-
-function credentialsRecordValue(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
-}
-
-function mergeAccountCredentialsForUpdate(account: AccountSummary, requested: Record<string, unknown>): Record<string, unknown> {
-  const credentials = { ...requested }
-  preserveCredentialText(credentials, account.credentials, 'base_url')
-  if (account.type === 'api_key') {
-    preserveCredentialText(credentials, account.credentials, 'api_key')
-    preserveCredentialArray(credentials, account.credentials, 'api_keys')
-    preserveCredentialText(credentials, account.credentials, 'api_key_strategy')
-    preserveCredentialArray(credentials, account.credentials, 'api_key_weights')
-  } else if (account.type === 'oauth') {
-    for (const key of [
-      'access_token',
-      'refresh_token',
-      'expires_at',
-      'client_id',
-      'id_token',
-      'email',
-      'account_id',
-      'chatgpt_user_id',
-      'plan_type'
-    ]) {
-      preserveCredentialText(credentials, account.credentials, key)
-    }
-  }
-  return credentials
-}
-
-function preserveCredentialText(output: Record<string, unknown>, source: Record<string, unknown>, key: string): void {
-  if (hasCredentialText(output[key])) return
-  const value = source[key]
-  if (hasCredentialText(value)) {
-    output[key] = value
-  }
-}
-
-function preserveCredentialArray(output: Record<string, unknown>, source: Record<string, unknown>, key: string): void {
-  if (Array.isArray(output[key]) && (output[key] as unknown[]).length > 0) return
-  const value = source[key]
-  if (Array.isArray(value) && value.length > 0) {
-    output[key] = value
-  }
-}
-
-function hasCredentialText(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0
-}
-
-function apiKeyCredentialFingerprintSource(record: Record<string, unknown>): string | undefined {
-  if (Array.isArray(record.api_keys)) {
-    const keys = record.api_keys
-      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-      .map((value) => value.trim())
-    if (keys.length) return keys.join('\n')
-  }
-  return typeof record.api_key === 'string' ? record.api_key : undefined
-}

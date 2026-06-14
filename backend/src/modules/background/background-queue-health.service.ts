@@ -43,7 +43,7 @@ export interface BackgroundQueueHealthSnapshot {
 interface WorkerQueueSpec {
   key: string
   label: string
-  snapshotKey: 'usageRecordQueue' | 'auditLogQueue' | 'operationLogQueue' | 'recordMaintenanceQueue' | 'runtimeLogIndexQueue'
+  snapshotKey: 'usageRecordQueue' | 'auditLogQueue' | 'operationLogQueue' | 'publicApiLogQueue' | 'recordMaintenanceQueue' | 'runtimeLogIndexQueue'
 }
 
 type WorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['worker']>['snapshot']>
@@ -56,6 +56,7 @@ interface IpcQueueSpec {
     | 'usageRecords'
     | 'auditLogs'
     | 'operationLogs'
+    | 'publicApiLogs'
     | 'recordMaintenance'
     | 'runtimeLogLines'
     | 'statusRequests'
@@ -72,6 +73,7 @@ const workerQueueSpecs: WorkerQueueSpec[] = [
   { key: 'usageRecords', label: '使用记录', snapshotKey: 'usageRecordQueue' },
   { key: 'auditLogs', label: '审计日志', snapshotKey: 'auditLogQueue' },
   { key: 'operationLogs', label: '操作日志', snapshotKey: 'operationLogQueue' },
+  { key: 'publicApiLogs', label: '公开接口日志', snapshotKey: 'publicApiLogQueue' },
   { key: 'recordMaintenance', label: '数据维护', snapshotKey: 'recordMaintenanceQueue' },
   { key: 'runtimeLogIndex', label: '运行日志索引', snapshotKey: 'runtimeLogIndexQueue' }
 ]
@@ -80,6 +82,7 @@ const ipcQueueSpecs: IpcQueueSpec[] = [
   { key: 'usageRecords', label: '使用记录 IPC', snapshotKey: 'usageRecords' },
   { key: 'auditLogs', label: '审计日志 IPC', snapshotKey: 'auditLogs' },
   { key: 'operationLogs', label: '操作日志 IPC', snapshotKey: 'operationLogs' },
+  { key: 'publicApiLogs', label: '公开接口日志 IPC', snapshotKey: 'publicApiLogs' },
   { key: 'recordMaintenance', label: '数据维护 IPC', snapshotKey: 'recordMaintenance' },
   { key: 'runtimeLogLines', label: '运行日志 IPC', snapshotKey: 'runtimeLogLines' },
   { key: 'statusRequests', label: '后台快照请求 IPC', snapshotKey: 'statusRequests' },

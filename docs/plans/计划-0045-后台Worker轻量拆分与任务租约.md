@@ -285,8 +285,8 @@
 | 1 | 完成后台 job / 队列盘点并做角色配置设计 | 已完成 | 阶段 0 发布后进入下一步 | 所有定时 job 和异步队列都有明确 worker 归属、并发边界和单 owner 说明 |
 | 2 | 新增 `metrics-worker` 固定角色 | 已完成 | 阶段 1 完成 | `system-metrics-sample` 独立运行在 metrics-worker，运行态和系统指标接口可区分 `metrics-worker` |
 | 3 | 拆分 append-only 写入队列 worker | 进行中（首批已完成） | 阶段 2 完成后，确认日志 / 使用记录队列不应被统计重活拖住 | 使用记录、审计、操作日志、运行日志索引等队列不受窗口刷新阻塞；公开接口日志后续再迁入独立 log / ingest 角色 |
-| 4 | 新增 `temporary-maintenance-worker` | 待开始 | 阶段 1 完成，且表管理 / 维护任务已登记生命周期 | 表监控 `non_business_data_cleanup` 等一次性清理可按任务启动、跑完退出并记录状态 |
-| 5 | 新增 `background_job_leases` | 待开始 | 需要为后续分片任务或并发临时任务提供互斥基础 | 同一任务分片不会重复执行，worker 崩溃后可接管 |
+| 4 | 新增 `temporary-maintenance-worker` | 已完成 | 阶段 1 完成，且表管理 / 维护任务已登记生命周期 | 表监控 `non_business_data_cleanup` 等一次性清理可按任务启动、跑完退出并记录状态 |
+| 5 | 新增 `background_job_leases` | 进行中 | 需要为后续分片任务或并发临时任务提供互斥基础 | 同一任务分片不会重复执行，worker 崩溃后可接管 |
 | 6 | 增加少量 usage shard 聚合 worker | 待开始 | 阶段 5 已完成，并确认瓶颈在可分片聚合阶段 | 聚合滞后下降，SQLite 锁错误不增加 |
 | 7 | 更新部署与运维文档 | 进行中（阶段 2 / 3 已同步） | 任一阶段进入实现 | 发布包、启动脚本、健康检查和回滚说明同步 |
 
@@ -308,7 +308,7 @@
 | 回归场景 | 后台任务不可重入 | 后续新增租约回归脚本 | 同一 `job_name + shard_key` 同时只有一个 owner | 未执行 | 阶段 5 执行 |
 | 回归场景 | 系统指标不断采样 | 压住统计 worker 后观察 `system_metrics_samples` | 采样间隔不超过配置间隔的 2 倍，异常时有可观测告警 | 未执行 | 阶段 2 代码隔离已完成，生产或仿真压测观察随上线执行 |
 | 回归场景 | append-only 队列隔离 | `pnpm --filter juhe-ai-backend test:background-ipc-protected-queue`、`test:background-ipc-payload-boundary`、`test:worker-local-queue-limit`、`test:usage-record-byte-batch`、`test:audit-log-async-flush`、`test:operation-log-queue` | 使用记录、审计、操作日志和运行日志索引队列进入 `ingest-worker`，默认 worker 队列满不影响 ingest，ingest 队列满时快速拒绝并计数 | 已执行 | 2026-06-14 通过；公开接口日志仍在既有 DB service 本地队列，未纳入本轮 |
-| 回归场景 | 临时维护 worker 生命周期 | 投递表监控非业务数据清理任务 | 临时 worker 启动、执行、记录完成状态后退出，常驻 worker 不被长期占用 | 未执行 | 阶段 4 执行 |
+| 回归场景 | 临时维护 worker 生命周期 | `pnpm --filter juhe-ai-backend test:temporary-maintenance-worker` | 临时 worker 启动、执行、记录完成状态后退出，常驻 worker 不被长期占用 | 已执行 | 2026-06-14 通过，`deletedRows=1`，租约完成后释放 |
 | 回归场景 | SQLite 锁竞争 | 压测 usage 聚合和窗口刷新 | `database is locked` 不增加，统计滞后下降 | 未执行 | 阶段 6 执行 |
 | 部署验证 | 生产进程守护 | 检查 launchd / supervisor 配置和健康接口 | server、db-service、默认 worker、metrics-worker 和 ingest-worker 都能被守护和重启 | 未执行 | 阶段 2 / 3 部署文档已同步，生产验证随上线执行 |
 
@@ -329,6 +329,7 @@
 | 2026-06-14 | 进行中 | AI | 扩大阶段 2 风险复查：管理页运行态告警补齐 `metricsWorkerSnapshotAvailable`，模拟监控数据补齐 `metrics-worker` 样本，接口契约 / SQLite 存储 / 核心功能文档统一为阶段 2 四进程口径，避免监控 worker 缺失时页面误判为正常；阶段 3 已继续扩展到 `ingest-worker`。 |
 | 2026-06-14 | 进行中 | AI | 完成阶段 3 首批 append-only 写入隔离：supervisor 增加 `ingest-worker`；使用记录、审计、操作日志和运行日志索引 IPC 改投递 ingest；默认 worker 继续承载统计、维护和探测；统计聚合读取事实前检查 ingest drain 状态，避免日用量统计读到未落地使用记录。 |
 | 2026-06-14 | 进行中 | AI | 补齐阶段 3 稳定性复查：运行态、队列健康、系统指标接口和前端趋势图补 `ingestWorkerSnapshotAvailable` / `ingest-worker`；IPC 队列回归覆盖默认 worker 队列满不影响 ingest、ingest 队列满快速拒绝、审计大 payload 裁剪和 snapshot current-only。 |
+| 2026-06-14 | 进行中 | AI | 完成阶段 4 临时维护 worker 落地：新增 `background_task_runs` 和 `background_job_leases`，`usage_records_cleanup` / `non_business_data_cleanup` 进入临时维护进程执行；补 `test:temporary-maintenance-worker`，回归确认临时 worker 退出前实际删除符合条件的使用记录并释放租约。 |
 
 ## 决策记录
 
@@ -347,8 +348,8 @@
 - [x] 阶段 1：所有定时 job、后台异步队列和维护入口都有明确 worker 归属、并发边界和单 owner 说明。
 - [x] 阶段 2：重统计任务运行时，系统指标采样仍稳定写入，不再出现分钟级或小时级采样断档。代码隔离和回归已完成，生产采样连续性随上线观察。
 - [~] 阶段 3：append-only 写入队列不被窗口刷新或统计重活阻塞。首批使用记录、审计、操作日志、运行日志索引已迁入 `ingest-worker`；公开接口日志仍保持既有本地队列，后续按热点再迁。
-- [ ] 阶段 4：表管理手动清理、非业务数据硬清理和一次性修复可由临时 worker 执行，完成 / 失败 / 超时后退出并可追踪状态。
-- [ ] 阶段 5：任务租约能防止同一分片重复执行，worker 崩溃后能在租约过期后接管。
+- [x] 阶段 4：表管理手动清理、非业务数据硬清理和一次性修复可由临时 worker 执行，完成 / 失败 / 超时后退出并可追踪状态。
+- [~] 阶段 5：任务租约能防止同一分片重复执行，worker 崩溃后能在租约过期后接管。
 - [ ] 阶段 6：如果引入分片 worker，统计滞后下降且 SQLite 锁错误没有增加。
 - [ ] 热点隔离：使用记录写入、日志 / 审计写入、系统采样、重型窗口刷新、外部探测和维护清理之间互不共享会被大任务长期占满的事件循环。
 - [ ] 文档、部署说明、测试说明和生产回滚步骤同步完成。
@@ -400,7 +401,7 @@
   - 发布产物启动 smoke：临时端口启动 `backend/dist/server.js`，确认 3 个 worker 子进程、1 个 DB service 子进程、健康接口和五类进程事件循环样本。
 - 阶段 2 上线后还需要在生产或仿真环境观察长任务压测下的系统指标采样连续性。
 - 后续若实现阶段 5 / 6，需要补充租约抢占、租约过期接管、分片重复执行保护和 SQLite 锁竞争回归。
-- 后续若实现临时维护 worker，需要补充表监控 `non_business_data_cleanup` 投递、任务状态、进程退出、失败重试和超时取消回归。
+- 后续若继续扩展临时维护 worker 以外的并发任务，需要补充表监控 `non_business_data_cleanup` 以外的租约抢占、任务状态、进程退出、失败重试和超时取消回归。
 
 ## 风险与注意事项
 
@@ -421,8 +422,8 @@
 
 ## 完成总结
 
-- 完成时间：计划整体未完成；阶段 1 和阶段 2 于 2026-06-14 完成。
-- 实际完成内容：已完成 job registry 归属保护、`metrics-worker` 固定角色隔离，以及阶段 3 首批 `ingest-worker` 写入隔离。默认 worker 继续承载统计、维护、探测和账号测试；metrics-worker 只承载系统采样与事件循环采样协调；ingest-worker 承载使用记录、审计、操作日志和运行日志索引四类 append-only 写入。
+- 完成时间：计划整体未完成；阶段 1、阶段 2、阶段 3 首批和阶段 4 于 2026-06-14 完成。
+- 实际完成内容：已完成 job registry 归属保护、`metrics-worker` 固定角色隔离、阶段 3 首批 `ingest-worker` 写入隔离，以及阶段 4 临时维护 worker 落地。默认 worker 继续承载统计、维护、探测和账号测试；metrics-worker 只承载系统采样与事件循环采样协调；ingest-worker 承载使用记录、审计、操作日志和运行日志索引四类 append-only 写入；临时维护 worker 承接 `usage_records_cleanup` 和 `non_business_data_cleanup` 这类一次性维护任务。
 - 主要改动位置：`backend/src/modules/background/`、`backend/src/worker.ts`、`backend/src/config/runtime.ts`、`backend/src/shared/process-event-loop-monitor.ts`、`backend/src/storage/`、`backend/src/modules/db-service/`、`backend/src/modules/stats/stats.routes.ts`、`backend/src/scripts/regression/`、`backend/src/scripts/maintenance/`、`frontend/src/views/stats/`、`frontend/src/types/domain/`、`docs/plans/计划-0045-后台Worker轻量拆分与任务租约.md`、`docs/architecture/架构总览.md`、`docs/architecture/backend/后台Worker多角色拆分设计.md`、`docs/architecture/backend/后台任务使用说明.md`、`docs/develop/运行说明.md`、`docs/deploy/部署指南.md`、`docs/functions/`
-- 验证结果：阶段 2 / 阶段 3 首批相关后端回归、后端类型检查、后端构建、前端类型检查、前端构建和发布产物三 worker 启动 smoke 已通过；生产采样连续性和 ingest 队列积压需要随上线观察。
-- 后续建议：继续把公开接口日志、Client IP 命中 flush 等剩余 append-only / ingest 候选按热点纳入后续拆分，再进入阶段 4 临时维护 worker 和阶段 5 任务租约；不要按 CPU 核数复制同构 worker。
+- 验证结果：阶段 2 / 阶段 3 首批相关后端回归、后端类型检查、后端构建、前端类型检查、前端构建、发布产物三 worker 启动 smoke，以及 `test:temporary-maintenance-worker` 已通过；生产采样连续性和 ingest 队列积压需要随上线观察。
+- 后续建议：继续把公开接口日志、Client IP 命中 flush 等剩余 append-only / ingest 候选按热点纳入后续拆分，再推进阶段 5 任务租约；不要按 CPU 核数复制同构 worker。

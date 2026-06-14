@@ -1,3 +1,8 @@
+import { fork } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
@@ -9,12 +14,19 @@ import {
 } from '../../storage/data-retention.repository.js'
 import { newId, nowIso } from '../../storage/database.js'
 import {
+  createBackgroundTaskRun,
   cleanupDeletedAccountRelatedRecordDataAsync,
   cleanupDeletedApiKeyRelatedRecordDataAsync,
   upsertAccountUsageSnapshots,
   type AccountUsageSnapshotUpsertInput
 } from '../../storage/repositories.js'
 import { sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
+
+const currentModulePath = fileURLToPath(import.meta.url)
+const sourceRoot = resolve(dirname(currentModulePath), '../..')
+const backendRoot = resolve(sourceRoot, '..')
+const temporaryMaintenanceWorkerSourcePath = resolve(sourceRoot, 'temporary-maintenance-worker.ts')
+const temporaryMaintenanceWorkerDistPath = resolve(sourceRoot, 'temporary-maintenance-worker.js')
 
 export type RecordMaintenanceJob =
   | {
@@ -287,6 +299,27 @@ function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): boolean {
 }
 
 async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<void> {
+  if (isTemporaryRecordMaintenanceJob(job)) {
+    const run = createBackgroundTaskRun({
+      jobName: `record-maintenance:${job.type}`,
+      jobType: job.type,
+      workerRole: 'temporary-maintenance-worker',
+      leaseKey: `record-maintenance:${job.type}`,
+      params: { job }
+    })
+    spawnTemporaryMaintenanceWorker(run.runId, job)
+    logger.info({
+      event: 'record_maintenance_temporary_worker_submitted',
+      jobType: job.type,
+      jobId: job.id,
+      runId: run.runId
+    }, '数据维护任务已提交临时 worker')
+    return
+  }
+  await runRecordMaintenanceJobOnce(job)
+}
+
+export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Promise<Record<string, unknown>> {
   switch (job.type) {
     case 'api_key_related_cleanup': {
       const result = await cleanupDeletedApiKeyRelatedRecordDataAsync({
@@ -299,7 +332,7 @@ async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<v
         jobId: job.id,
         ...result
       }, deferred ? 'API Key 关联数据清理等待统计游标追平' : 'API Key 关联数据清理完成')
-      return
+      return result as unknown as Record<string, unknown>
     }
     case 'account_related_cleanup': {
       const result = await cleanupDeletedAccountRelatedRecordDataAsync({
@@ -315,7 +348,7 @@ async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<v
         jobId: job.id,
         ...result
       }, deferred ? 'AI 账户关联数据清理等待统计游标追平' : 'AI 账户关联数据清理完成')
-      return
+      return result as unknown as Record<string, unknown>
     }
     case 'usage_records_cleanup': {
       const result = cleanupUsageRecordsBefore({
@@ -328,7 +361,7 @@ async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<v
         jobId: job.id,
         ...result
       }, '使用记录后台清理完成')
-      return
+      return result
     }
     case 'non_business_data_cleanup': {
       const result = await cleanupNonBusinessDataBefore({
@@ -341,14 +374,73 @@ async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<v
         jobId: job.id,
         ...result
       }, '非业务数据后台硬清理完成')
-      return
+      return result as unknown as Record<string, unknown>
     }
     case 'account_usage_snapshot_upsert':
       processAccountUsageSnapshotUpsertJobs([job])
-      return
+      return { upsertedCount: 1 }
     default:
       assertNever(job)
   }
+}
+
+function spawnTemporaryMaintenanceWorker(runId: string, job: RecordMaintenanceJob): void {
+  const entry = resolveTemporaryMaintenanceWorkerEntry()
+  const child = fork(entry.modulePath, [runId], {
+    cwd: backendRoot,
+    env: {
+      ...process.env,
+      JUHE_AI_PROCESS_ROLE: 'worker',
+      JUHE_AI_WORKER_ROLE: 'temporary-maintenance-worker',
+      JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath,
+      JUHE_AI_DATASET_DATABASE_PATH: runtimeConfig.datasetDatabasePath,
+      JUHE_AI_STATS_DATABASE_PATH: runtimeConfig.statsDatabasePath,
+      JUHE_AI_USAGE_SHARD_ROOT: runtimeConfig.usageShardRoot
+    },
+    execArgv: entry.execArgv,
+    serialization: 'advanced',
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+  })
+  child.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk))
+  child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk))
+  child.once('error', (error) => {
+    logger.error(errorLogFields(error, {
+      event: 'temporary_maintenance_worker_spawn_failed',
+      runId,
+      jobType: job.type,
+      jobId: job.id
+    }), '临时维护 worker 启动失败')
+  })
+  child.once('exit', (code, signal) => {
+    logger.info({
+      event: 'temporary_maintenance_worker_exited',
+      runId,
+      jobType: job.type,
+      jobId: job.id,
+      pid: child.pid,
+      code,
+      signal
+    }, '临时维护 worker 已退出')
+  })
+}
+
+function resolveTemporaryMaintenanceWorkerEntry(): { modulePath: string; execArgv: string[] } {
+  if (existsSync(temporaryMaintenanceWorkerDistPath)) {
+    return {
+      modulePath: temporaryMaintenanceWorkerDistPath,
+      execArgv: []
+    }
+  }
+  return {
+    modulePath: temporaryMaintenanceWorkerSourcePath,
+    execArgv: process.execArgv.some((arg) => arg.includes('tsx'))
+      ? process.execArgv.filter((arg) => !arg.startsWith('--inspect'))
+      : ['--import', 'tsx']
+  }
+}
+
+function isTemporaryRecordMaintenanceJob(job: RecordMaintenanceJob): boolean {
+  return job.type === 'usage_records_cleanup' || job.type === 'non_business_data_cleanup'
 }
 
 type AccountUsageSnapshotUpsertJob = Extract<RecordMaintenanceJob, { type: 'account_usage_snapshot_upsert' }>

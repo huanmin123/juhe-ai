@@ -9,12 +9,11 @@
       <template #label>
         <div class="api-key-label">
           <span>API Key</span>
-          <a-radio-group
-            v-if="showApiKeyStrategy"
-            v-model:value="form.apiKeyStrategy"
-            button-style="solid"
-            size="small"
-          >
+          <div class="api-key-label-spacer"></div>
+          <a-button v-if="showBatchDeleteApiKeys" type="link" size="small" class="api-key-batch-delete-button" @click="batchDeleteApiKeys">
+            批量删除
+          </a-button>
+          <a-radio-group v-if="showApiKeyStrategy" v-model:value="form.apiKeyStrategy" button-style="solid" size="small">
             <a-radio-button value="round_robin">轮询</a-radio-button>
             <a-radio-button value="weighted_round_robin">权重</a-radio-button>
           </a-radio-group>
@@ -67,7 +66,6 @@
             </a-tooltip>
           </div>
         </div>
-        <div v-if="filledApiKeyCount > 1" class="api-key-batch-summary">将保存为 1 个账户，账户内 {{ filledApiKeyCount }} 个 API Key 按策略分配请求</div>
       </div>
     </a-form-item>
     <a-form-item label="Base URL" required extra="填写服务根地址或 /v1 版本根地址，例如 https://api.openai.com/v1；不要填写 /responses 等具体接口路径。">
@@ -98,8 +96,9 @@ const props = defineProps<{
 }>()
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)
-const showApiKeyStrategy = computed(() => !props.editing && filledApiKeyCount.value > 1)
+const showApiKeyStrategy = computed(() => !props.editing && props.form.apiKeys.length > 1)
 const showWeightInputs = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'weighted_round_robin')
+const showBatchDeleteApiKeys = computed(() => !props.editing && props.form.apiKeys.some((value) => value.trim()))
 
 watch(
   [() => props.form.apiKeys.length, () => props.form.apiKeyStrategy],
@@ -126,6 +125,12 @@ function removeApiKeyInput(index: number): void {
   if (props.form.apiKeys.length <= 1) return
   props.form.apiKeys.splice(index, 1)
   props.form.apiKeyWeights.splice(index, 1)
+}
+
+function batchDeleteApiKeys(): void {
+  props.form.apiKey = ''
+  props.form.apiKeys = ['']
+  props.form.apiKeyWeights = [1]
 }
 
 function handleApiKeyPaste(index: number, event: ClipboardEvent): void {
@@ -213,10 +218,26 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 }
 
 .api-key-label {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  display: flex;
+  width: 100%;
+  gap: 12px;
   align-items: center;
+}
+
+.api-key-label :deep(.ant-radio-group) {
+  margin-left: 0;
+}
+
+.api-key-label-spacer {
+  flex: 1;
+}
+
+.api-key-batch-delete-button {
+  padding-inline: 0;
+}
+
+:deep(.ant-form-item-label > label:has(.api-key-label)) {
+  width: 100%;
 }
 
 .api-key-input-list {
@@ -239,11 +260,16 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 }
 
 .api-key-credential-controls.has-weight {
-  grid-template-columns: minmax(0, 1fr) 96px;
+  grid-template-columns: minmax(0, 1fr) 64px;
 }
 
 .api-key-weight-input {
-  width: 96px;
+  width: 64px;
+}
+
+.api-key-weight-input :deep(.ant-input-number-input) {
+  height: 30px;
+  padding-inline: 8px;
 }
 
 .api-key-row-actions {
@@ -252,22 +278,17 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   gap: 2px;
 }
 
-.api-key-batch-summary {
-  color: #64748b;
-  font-size: 12px;
-}
-
 @media (max-width: 640px) {
   .api-key-input-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .api-key-credential-controls.has-weight {
-    grid-template-columns: minmax(0, 1fr) 88px;
+    grid-template-columns: minmax(0, 1fr) 58px;
   }
 
   .api-key-weight-input {
-    width: 88px;
+    width: 58px;
   }
 
   .api-key-row-actions {

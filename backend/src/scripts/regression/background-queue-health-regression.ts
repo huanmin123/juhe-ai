@@ -82,6 +82,7 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
         usageRecords: queue({ queueLength: 1, queueBytes: 1024 }),
         auditLogs: queue(),
         operationLogs: queue(),
+        publicApiLogs: queue(),
         recordMaintenance: queue(),
         runtimeLogLines: queue(),
         statusRequests: queue(),
@@ -98,6 +99,7 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
         usageRecordQueue: queue(),
         auditLogQueue: queue(),
         operationLogQueue: queue(),
+        publicApiLogQueue: queue(),
         recordMaintenanceQueue: queue(),
         runtimeLogIndexQueue: {
           ...queue(),
@@ -114,6 +116,7 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
         usageRecords: queue(),
         auditLogs: queue(),
         operationLogs: queue(),
+        publicApiLogs: queue(),
         recordMaintenance: queue(),
         runtimeLogLines: queue(),
         statusRequests: queue(),
@@ -130,6 +133,7 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
         usageRecordQueue: queue({ queueLength: 2, queueBytes: 2048 }),
         auditLogQueue: queue(),
         operationLogQueue: queue(),
+        publicApiLogQueue: queue(),
         runtimeLogIndexQueue: {
           ...queue(),
           retentionDays: 30

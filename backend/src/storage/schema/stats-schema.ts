@@ -781,6 +781,48 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (scope_type, scope_id, job_name)
         );
 
+    CREATE TABLE IF NOT EXISTS background_task_runs (
+          run_id TEXT PRIMARY KEY,
+          job_name TEXT NOT NULL,
+          job_type TEXT NOT NULL,
+          worker_role TEXT NOT NULL,
+          status TEXT NOT NULL,
+          lease_key TEXT NOT NULL,
+          owner_id TEXT,
+          params_json TEXT NOT NULL DEFAULT '{}',
+          result_json TEXT NOT NULL DEFAULT '{}',
+          error_message TEXT,
+          submitted_at TEXT NOT NULL,
+          started_at TEXT,
+          heartbeat_at TEXT,
+          finished_at TEXT,
+          duration_ms INTEGER,
+          exit_code INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+    CREATE TABLE IF NOT EXISTS background_job_leases (
+          lease_key TEXT PRIMARY KEY,
+          job_name TEXT NOT NULL,
+          shard_key TEXT NOT NULL DEFAULT '',
+          owner_id TEXT NOT NULL,
+          run_id TEXT,
+          lease_until TEXT NOT NULL,
+          heartbeat_at TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+    CREATE INDEX IF NOT EXISTS idx_background_task_runs_status_updated
+      ON background_task_runs(status, updated_at DESC, run_id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_background_task_runs_job_created
+      ON background_task_runs(job_name, created_at DESC, run_id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_background_job_leases_job
+      ON background_job_leases(job_name, shard_key, lease_until);
+
     CREATE TABLE IF NOT EXISTS usage_record_cleanup_deductions (
           usage_id TEXT NOT NULL,
           api_key_id TEXT NOT NULL,

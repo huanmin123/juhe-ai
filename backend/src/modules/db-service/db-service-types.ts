@@ -90,6 +90,7 @@ export interface DbServiceServerRuntimeSnapshot {
       }>
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
       operationLogQueue: DbServiceRuntimeQueueSnapshot
+      publicApiLogQueue: DbServiceRuntimeQueueSnapshot
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
       auditLogQueue: DbServiceRuntimeQueueSnapshot
       runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
@@ -166,6 +167,7 @@ export interface DbServiceServerRuntimeSnapshot {
       }>
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
       operationLogQueue: DbServiceRuntimeQueueSnapshot
+      publicApiLogQueue: DbServiceRuntimeQueueSnapshot
       auditLogQueue: DbServiceRuntimeQueueSnapshot
       runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
     }

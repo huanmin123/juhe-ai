@@ -18,6 +18,12 @@ import {
   installOperationLogQueueShutdownHooks
 } from './modules/operation-logs/operation-log-queue.service.js'
 import {
+  enqueuePublicApiLogsLocal,
+  flushPublicApiLogQueueForTest,
+  getPublicApiLogQueueRuntime,
+  installPublicApiLogQueueShutdownHooks
+} from './modules/public-api-logs/public-api-log-queue.service.js'
+import {
   enqueueRecordMaintenanceJobsLocal,
   flushRecordMaintenanceQueueForShutdown,
   getRecordMaintenanceQueueRuntime,
@@ -54,6 +60,7 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_usage_records'; items: unknown[] }
   | { type: 'background_worker_audit_logs'; items: unknown[] }
   | { type: 'background_worker_operation_logs'; items: unknown[] }
+  | { type: 'background_worker_public_api_logs'; items: unknown[] }
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
@@ -73,6 +80,7 @@ if (isIngestWorker()) {
   installOperationLogQueueShutdownHooks()
   installRuntimeLogIndexQueueShutdownHooks()
   installAuditLogQueueShutdownHooks()
+  installPublicApiLogQueueShutdownHooks()
   setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
   startRuntimeLogFileImport()
 } else if (isDefaultWorker()) {
@@ -107,6 +115,9 @@ process.on('message', (message: unknown) => {
       break
     case 'background_worker_operation_logs':
       enqueueOperationLogsLocal(message.items as Parameters<typeof enqueueOperationLogsLocal>[0])
+      break
+    case 'background_worker_public_api_logs':
+      enqueuePublicApiLogsLocal(message.items as Parameters<typeof enqueuePublicApiLogsLocal>[0])
       break
     case 'background_worker_record_maintenance':
       enqueueRecordMaintenanceJobsLocal(message.items.filter(isRecordMaintenanceJob))
@@ -170,14 +181,18 @@ logger.info({
 function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
   const auditRuntime = getAuditLogQueueRuntime()
   const runtimeLogRuntime = getRuntimeLogIndexRuntime()
+  const workerRole = runtimeConfig.workerRole === 'metrics-worker' || runtimeConfig.workerRole === 'ingest-worker'
+    ? runtimeConfig.workerRole
+    : 'worker'
   return {
     pid: process.pid,
     ready: true,
     processRole: 'worker',
-    workerRole: runtimeConfig.workerRole,
+    workerRole,
     jobs: getBackgroundJobRuntimeSnapshots(),
     usageRecordQueue: queueRuntime(getUsageRecordQueueRuntime()),
     operationLogQueue: queueRuntime(getOperationLogQueueRuntime()),
+    publicApiLogQueue: queueRuntime(getPublicApiLogQueueRuntime()),
     recordMaintenanceQueue: queueRuntime(getRecordMaintenanceQueueRuntime()),
     auditLogQueue: queueRuntime({
       queueLength: auditRuntime.queueLength,
@@ -282,6 +297,7 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
   if (isIngestWorker()) {
     flushUsageRecordQueueForShutdown()
     flushOperationLogQueueForShutdown()
+    flushPublicApiLogQueueForTest()
     flushRuntimeLogIndexQueueForShutdown()
     await flushAuditLogQueueForShutdown()
     return
@@ -311,6 +327,7 @@ function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_usage_records'
     || message.type === 'background_worker_audit_logs'
     || message.type === 'background_worker_operation_logs'
+    || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_runtime_log_line'
 }
 

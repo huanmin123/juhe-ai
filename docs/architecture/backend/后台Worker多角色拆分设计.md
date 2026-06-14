@@ -208,6 +208,13 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 - 常驻 `maintenance-worker` 只负责投递、状态记录和小批协调，不直接长期执行硬清理。
 - 临时 worker 必须暴露任务状态、结束原因、耗时、处理行数 / 文件数和是否还有剩余。
 
+当前落地方式：
+
+- `record-maintenance-queue.service.ts` 仍由默认 `worker` 消费维护队列；遇到 `usage_records_cleanup` 或 `non_business_data_cleanup` 时，只创建 `background_task_runs` 运行记录并 fork `temporary-maintenance-worker`。
+- `temporary-maintenance-worker` 使用独立 Node 子进程执行单个 `runId`，通过 `background_task_runs` 保存参数快照、状态、结果、耗时、退出码和错误摘要；完成后退出，不进入 supervisor 常驻看护列表。
+- `background_job_leases` 先作为临时任务单 owner 保护使用，当前 lease key 绑定单次 run，完成后释放；后续阶段 5 若要支持同一 `jobName + shardKey` 多 worker 竞争，需要继续补租约抢占、续约和过期接管回归。
+- 临时 worker 会继承业务库、数据集库、统计库和 usage shard 根目录配置，保证在开发和发布产物中操作同一组数据库；源码运行时会通过 `tsx` loader 启动，发布产物优先使用 `dist/temporary-maintenance-worker.js`。
+
 ### 阶段 5：任务租约
 
 - 新增 `background_job_leases` 或等价本机 SQLite 租约表。

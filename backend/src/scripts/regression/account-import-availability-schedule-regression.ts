@@ -128,7 +128,7 @@ try {
     ]
   }, {}, access)
   assert.equal(unknownCredentialPreview.canImport, false, '凭据旧字段应阻止账户导入')
-  assert.match(unknownCredentialPreview.accounts[0]?.messages.join('\n') ?? '', /账户凭据包含未知字段：apiKey/, '凭据旧字段应在预览阶段返回明确错误')
+  assert.match(unknownCredentialPreview.accounts[0]?.messages.join('\n') ?? '', /账户凭据包含不支持的字段：apiKey/, '凭据旧字段应在预览阶段返回明确错误')
 
   const unknownRootPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,

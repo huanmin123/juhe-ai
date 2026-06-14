@@ -5,6 +5,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
@@ -52,6 +53,7 @@ export interface BackgroundWorkerIpcQueuesRuntime {
   usageRecords: BackgroundWorkerIpcQueueRuntime
   auditLogs: BackgroundWorkerIpcQueueRuntime
   operationLogs: BackgroundWorkerIpcQueueRuntime
+  publicApiLogs: BackgroundWorkerIpcQueueRuntime
   recordMaintenance: BackgroundWorkerIpcQueueRuntime
   runtimeLogLines: BackgroundWorkerIpcQueueRuntime
   statusRequests: BackgroundWorkerIpcQueueRuntime
@@ -69,6 +71,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   jobs: WorkerScheduledJobRuntimeSnapshot[]
   usageRecordQueue: BackgroundWorkerQueueRuntime
   operationLogQueue: BackgroundWorkerQueueRuntime
+  publicApiLogQueue: BackgroundWorkerQueueRuntime
   recordMaintenanceQueue: BackgroundWorkerQueueRuntime
   auditLogQueue: BackgroundWorkerQueueRuntime
   runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
@@ -101,6 +104,7 @@ type BackgroundWorkerMessage =
   | { type: 'background_worker_usage_records'; items: UsageRecordInput[] }
   | { type: 'background_worker_audit_logs'; items: AuditLogInput[] }
   | { type: 'background_worker_operation_logs'; items: OperationLogInput[] }
+  | { type: 'background_worker_public_api_logs'; items: PublicApiLogInput[] }
   | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: string[] }
   | { type: 'background_worker_account_test_cancel'; taskId: string }
@@ -301,6 +305,13 @@ export function sendAuditLogsToWorker(items: AuditLogInput[]): boolean {
 export function sendOperationLogsToWorker(items: OperationLogInput[]): boolean {
   return sendBackgroundWorkerMessageToWorker({
     type: 'background_worker_operation_logs',
+    items
+  })
+}
+
+export function sendPublicApiLogsToWorker(items: PublicApiLogInput[]): boolean {
+  return sendBackgroundWorkerMessageToWorker({
+    type: 'background_worker_public_api_logs',
     items
   })
 }
@@ -735,6 +746,7 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
     case 'background_worker_usage_records':
     case 'background_worker_audit_logs':
     case 'background_worker_operation_logs':
+    case 'background_worker_public_api_logs':
     case 'background_worker_runtime_log_line':
       if (runtimeConfig.processRole === 'server') {
         queueWorkerMessage(record as BackgroundWorkerMessage)
@@ -915,6 +927,11 @@ function canQueueWorkerMessage(targetRole: 'worker' | 'ingest-worker', message: 
       && messageBytes <= auditWorkerMessageMaxBytes
       && regularQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
   }
+  if (message.type === 'background_worker_public_api_logs') {
+    return regularQueueLength < regularWorkerMessageQueueMaxMessages
+      && messageBytes <= regularWorkerMessageMaxBytes
+      && regularQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
+  }
   return regularQueueLength < regularWorkerMessageQueueMaxMessages
     && messageBytes <= regularWorkerMessageMaxBytes
     && regularQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
@@ -925,6 +942,7 @@ function workerMessageTargetRole(message: BackgroundWorkerMessage): 'worker' | '
     case 'background_worker_usage_records':
     case 'background_worker_audit_logs':
     case 'background_worker_operation_logs':
+    case 'background_worker_public_api_logs':
     case 'background_worker_runtime_log_line':
       return 'ingest-worker'
     default:
@@ -1105,6 +1123,7 @@ function clonePendingQueueRuntime(input: BackgroundWorkerIpcQueuesRuntime): Back
     usageRecords: { ...input.usageRecords },
     auditLogs: { ...input.auditLogs },
     operationLogs: { ...input.operationLogs },
+    publicApiLogs: { ...input.publicApiLogs },
     recordMaintenance: { ...input.recordMaintenance },
     runtimeLogLines: { ...input.runtimeLogLines },
     statusRequests: { ...input.statusRequests },
@@ -1125,6 +1144,8 @@ function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueueKey {
       return 'auditLogs'
     case 'background_worker_operation_logs':
       return 'operationLogs'
+    case 'background_worker_public_api_logs':
+      return 'publicApiLogs'
     case 'background_worker_record_maintenance':
       return 'recordMaintenance'
     case 'background_worker_account_test_tasks':
@@ -1160,6 +1181,7 @@ function emptyIpcQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
     usageRecords: emptyQueueRuntime(),
     auditLogs: emptyQueueRuntime(),
     operationLogs: emptyQueueRuntime(),
+    publicApiLogs: emptyQueueRuntime(),
     recordMaintenance: emptyQueueRuntime(),
     runtimeLogLines: emptyQueueRuntime(),
     statusRequests: emptyQueueRuntime(),
@@ -1175,6 +1197,7 @@ function ipcQueueKeys(): IpcQueueKey[] {
     'usageRecords',
     'auditLogs',
     'operationLogs',
+    'publicApiLogs',
     'recordMaintenance',
     'runtimeLogLines',
     'statusRequests',
@@ -1208,6 +1231,9 @@ function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
       bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateAuditLogBytes(item)), 128)
       break
     case 'background_worker_operation_logs':
+      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
+      break
+    case 'background_worker_public_api_logs':
       bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
       break
     case 'background_worker_record_maintenance':

@@ -185,23 +185,16 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
-import { rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
+import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import {
-  localSelectStorageKey,
-  readLocalSelectOptionWindow,
-  removeLocalSelectOptionWindowValues,
-  removeLocalSelectPreferenceValues,
-  writeLocalSelectOptionWindow
-} from '@/shared/selectLocalPreferenceCache'
-import type { GroupOptionSummary, ProviderModelOption, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
+import type { ProviderModelOption, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
 import UsageRecordResultCell from './UsageRecordResultCell.vue'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
+import { useUsageRecordGroupOptions } from './useUsageRecordGroupOptions'
 import {
   accountDisplayText,
   displayName,
@@ -283,8 +276,6 @@ const groupFilter = computed({
   }
 })
 const groupFilterDisabled = computed(() => false)
-const groups = ref<GroupOptionSummary[]>([])
-const groupOptionsLoading = ref(false)
 const modelOptions = ref<ProviderModelOption[]>([])
 const modelOptionsLoading = ref(false)
 const {
@@ -307,15 +298,30 @@ const {
   },
   selectedIds: () => [systemAccountFilter.value]
 })
-let groupOptionsRequestId = 0
-let groupOptionsLoadingKey: string | undefined
-let groupOptionsLoadingPromise: Promise<void> | undefined
-let groupOptionsKeyword = ''
-let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let modelOptionsLoaded = false
 let modelOptionsLoadingPromise: Promise<void> | undefined
 let skipNextRouteTraceRestore = false
-const groupOptionsCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
+const {
+  clearSearchTimer: clearGroupOptionsSearchTimer,
+  groups,
+  handleDropdown: handleGroupOptionsDropdown,
+  handleSearch: handleGroupOptionsSearch,
+  load: loadGroupOptions,
+  loading: groupOptionsLoading,
+  resetSearch: resetGroupOptionsSearch,
+  selectedGroupSelection,
+  syncSelectedGroupSelection
+} = useUsageRecordGroupOptions({
+  groupFilterSelection,
+  groupsApi,
+  isManagementView,
+  onSelectedGroupMissing: () => {
+    resetPagination()
+    void loadData({ forceOptions: true })
+  },
+  selectedGroupId: () => groupFilter.value,
+  systemAccountId: () => scopedSystemAccountId(systemAccountFilter.value)
+})
 const {
   items: records,
   loading,

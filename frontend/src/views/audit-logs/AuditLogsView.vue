@@ -159,7 +159,6 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type {
-  AccountOptionSummary,
   AuditLogDetail,
   AuditLogHotSearchResult,
   AuditLogPayloadDetail,
@@ -175,10 +174,9 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
-import { accountSelectionForId, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
+import { rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -201,6 +199,7 @@ import {
   mergeAuditPayloadWindow
 } from './auditPayloadDetails'
 import AuditLogDetailDrawer from './AuditLogDetailDrawer.vue'
+import { useAuditLogAccountOptions } from './useAuditLogAccountOptions'
 
 type AuditLogViewMode = 'list' | 'search'
 
@@ -224,43 +223,8 @@ const {
 } = useRemoteSystemAccountOptions({
   selectedIds: () => [systemAccountFilter.value]
 })
-const accountOptions = ref<AccountOptionSummary[]>([])
-const accountOptionsLoading = ref(false)
-const accountOptionsKeyword = ref('')
-const accountOptionsCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
-let accountOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
-let accountOptionsRequestSeq = 0
-let accountOptionsLoadingKey: string | undefined
-let accountOptionsLoadingPromise: Promise<void> | undefined
 let auditRuntimeRequestSeq = 0
 let hotSearchRequestSeq = 0
-
-function handleAccountOptionsSearch(value: string): void {
-  accountOptionsKeyword.value = value
-  clearAccountOptionsSearchTimer()
-  accountOptionsSearchTimer = window.setTimeout(() => {
-    accountOptionsSearchTimer = undefined
-    void loadAccountOptions(accountOptionsKeyword.value)
-  }, 250)
-}
-
-function handleAccountOptionsDropdown(open: boolean): void {
-  if (open) {
-    void loadAccountOptions()
-  }
-}
-
-function resetAccountOptionsSearch(): void {
-  accountOptionsKeyword.value = ''
-  clearAccountOptionsSearchTimer()
-}
-
-function clearAccountOptionsSearchTimer(): void {
-  if (accountOptionsSearchTimer && typeof window !== 'undefined') {
-    window.clearTimeout(accountOptionsSearchTimer)
-    accountOptionsSearchTimer = undefined
-  }
-}
 
 const pageSize = 100
 const auditPayloadFullReadWindowBytes = 768 * 1024
@@ -312,6 +276,18 @@ const systemAccountFilter = ref(effectiveInitialPageState.systemAccountFilter)
 const systemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.systemAccountSelection)
 const trafficSourceFilter = ref<AuditTrafficSource | 'all'>(effectiveInitialPageState.trafficSourceFilter)
 const viewMode = ref<AuditLogViewMode>(effectiveInitialPageState.viewMode === 'search' ? 'search' : 'list')
+const {
+  clearSearchTimer: clearAccountOptionsSearchTimer,
+  handleDropdown: handleAccountOptionsDropdown,
+  handleSearch: handleAccountOptionsSearch,
+  load: loadAccountOptions,
+  loading: accountOptionsLoading,
+  options: accountOptions,
+  resetSearch: resetAccountOptionsSearch
+} = useAuditLogAccountOptions({
+  accountSelection,
+  selectedAccountId: () => accountIdFilter.value
+})
 const {
   items: records,
   loading,
@@ -635,81 +611,6 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
     systemAccountId,
     trafficSource: trafficSourceFilter.value === 'all' ? undefined : trafficSourceFilter.value
   })
-}
-
-async function loadAccountOptions(keyword = accountOptionsKeyword.value, force = false): Promise<void> {
-  accountOptionsKeyword.value = keyword
-  const requestKeyword = keyword.trim() || undefined
-  const selectedIds = [accountIdFilter.value].filter(Boolean)
-  const requestKey = JSON.stringify([requestKeyword ?? '', selectedIds])
-  if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
-    return accountOptionsLoadingPromise
-  }
-  const requestSeq = ++accountOptionsRequestSeq
-  if (!force) {
-    const cachedOptions = accountOptionsCache.get(requestKey)
-    if (cachedOptions) {
-      accountOptionsLoadingKey = undefined
-      accountOptionsLoadingPromise = undefined
-      accountOptionsLoading.value = false
-      accountOptions.value = cachedOptions
-      syncSelectedAccountFromOptions(cachedOptions)
-      return
-    }
-  }
-  accountOptionsLoading.value = true
-  accountOptionsLoadingKey = requestKey
-  accountOptionsLoadingPromise = (async () => {
-    try {
-      let nextOptions = await api.accounts.options({ keyword: requestKeyword, limit: 50 })
-      nextOptions = await ensureSelectedAccountOption(nextOptions)
-      accountOptionsCache.set(requestKey, nextOptions)
-      if (requestSeq !== accountOptionsRequestSeq) return
-      accountOptions.value = nextOptions
-      syncSelectedAccountFromOptions(nextOptions)
-    } catch (error) {
-      if (requestSeq !== accountOptionsRequestSeq) return
-      console.error(error)
-      message.error('AI账户筛选项加载失败')
-    } finally {
-      if (accountOptionsLoadingKey === requestKey) {
-        accountOptionsLoadingKey = undefined
-        accountOptionsLoadingPromise = undefined
-      }
-      if (requestSeq === accountOptionsRequestSeq) {
-        accountOptionsLoading.value = false
-      }
-    }
-  })()
-  return accountOptionsLoadingPromise
-}
-
-async function ensureSelectedAccountOption(options: AccountOptionSummary[]): Promise<AccountOptionSummary[]> {
-  const selectedIds = [accountIdFilter.value].filter(Boolean)
-  const missingIds = selectedIds.filter((id) => !options.some((account) => account.id === id))
-  if (!missingIds.length) return options
-  try {
-    const selectedOptions = await api.accounts.options({ ids: missingIds, limit: 50 })
-    return mergeOptionsById(selectedOptions, options)
-  } catch {
-    return options
-  }
-}
-
-function syncSelectedAccountFromOptions(options: AccountOptionSummary[]): void {
-  if (!accountIdFilter.value || accountSelection.value) return
-  accountSelection.value = accountSelectionForId(accountIdFilter.value, options)
-}
-
-function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
-  const seen = new Set<string>()
-  const output: T[] = []
-  for (const item of [...leading, ...trailing]) {
-    if (seen.has(item.id)) continue
-    seen.add(item.id)
-    output.push(item)
-  }
-  return output
 }
 
 function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {

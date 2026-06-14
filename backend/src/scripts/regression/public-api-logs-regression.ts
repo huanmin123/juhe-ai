@@ -12,6 +12,7 @@ Object.assign(process.env, {
   JUHE_AI_STATS_DATABASE_PATH: join(tempRoot, 'stats.sqlite3'),
   JUHE_AI_USAGE_SHARD_ROOT: join(tempRoot, 'usage-shards'),
   JUHE_AI_PROCESS_ROLE: 'worker',
+  JUHE_AI_WORKER_ROLE: 'ingest-worker',
   JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
   JUHE_AI_LOG_FILE_ENABLED: 'false'
 })

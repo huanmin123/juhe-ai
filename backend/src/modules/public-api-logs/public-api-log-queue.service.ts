@@ -1,5 +1,7 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { createPublicApiLogsBatch, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
+import { sendPublicApiLogsToWorker } from '../background/background-ipc.js'
 
 const publicApiLogQueueMaxSize = 5000
 const publicApiLogFlushBatchSize = 50
@@ -14,6 +16,22 @@ let droppedPublicApiLogCount = 0
 let publicApiLogFlushFailureCount = 0
 
 export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
+  if (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'db-service') {
+    return sendPublicApiLogsToWorker([input])
+  }
+  return enqueuePublicApiLogsLocal([input])
+}
+
+export function enqueuePublicApiLogsLocal(inputs: PublicApiLogInput[]): boolean {
+  assertLocalPublicApiLogWriteAllowed('enqueuePublicApiLogsLocal')
+  let queued = true
+  for (const input of inputs) {
+    queued = enqueuePublicApiLogLocal(input) && queued
+  }
+  return queued
+}
+
+function enqueuePublicApiLogLocal(input: PublicApiLogInput): boolean {
   if (publicApiLogQueue.length >= publicApiLogQueueMaxSize) {
     droppedPublicApiLogCount += 1
     if (droppedPublicApiLogCount === 1 || droppedPublicApiLogCount % publicApiLogDropWarnInterval === 0) {
@@ -31,6 +49,24 @@ export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
   publicApiLogQueue.push(input)
   schedulePublicApiLogFlush(0)
   return true
+}
+
+export function getPublicApiLogQueueRuntime(): {
+  queueLength: number
+  droppedCount: number
+  flushFailureCount: number
+} {
+  return {
+    queueLength: publicApiLogQueue.length,
+    droppedCount: droppedPublicApiLogCount,
+    flushFailureCount: publicApiLogFlushFailureCount
+  }
+}
+
+export function installPublicApiLogQueueShutdownHooks(): void {
+  process.once('beforeExit', () => {
+    flushPublicApiLogQueueForTest()
+  })
 }
 
 export function flushPublicApiLogQueueForTest(): void {
@@ -102,5 +138,11 @@ function flushPublicApiLogQueueBatch(): boolean {
       traceId: first?.traceId
     }), '公开接口日志批量写入失败，已保留批次等待重试')
     return false
+  }
+}
+
+function assertLocalPublicApiLogWriteAllowed(operation: string): void {
+  if (runtimeConfig.processRole !== 'worker' || runtimeConfig.workerRole !== 'ingest-worker') {
+    throw new Error(`${operation} 只能在 ingest-worker 本地执行`)
   }
 }
