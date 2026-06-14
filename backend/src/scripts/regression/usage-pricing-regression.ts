@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { getExternalPublicApiCatalog } from '../../modules/external-integrations/external-public-api-catalog.js'
 import {
   parseOpenAIUsageFromJsonBuffer
 } from '../../modules/gateway/protocols/openai-v1/usage.js'
@@ -14,6 +15,7 @@ import {
 import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { retryDelayMs, retryAttemptCount, sequenceRetryPolicy } from '../../shared/retry-policy.js'
+import { externalIntegrationScopeOptions } from '../../storage/external-integration-source-constants.js'
 import { usageSummaryFromAggregate } from '../../storage/usage-stats-helpers.js'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
@@ -516,7 +518,9 @@ assert.doesNotMatch(backgroundJobsSource, /temporaryUnschedulableRetryAttempts:\
 assert.doesNotMatch(backgroundJobsSource, /temporaryUnschedulableRetryIntervalSeconds:\s*0/)
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestAttemptTimeoutMs/)
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestRunBudgetMs/)
-assert.match(backgroundJobsSource, /flushUsageRecordQueue\(\{\s*drain:\s*true/)
+assert.match(backgroundJobsSource, /await ensureUsageRecordsIngestedBeforeStatsAggregation\(\)/)
+assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(1000\)/)
+assert.match(backgroundJobsSource, /使用记录 ingest 队列仍有/)
 assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestIntervalSeconds', 1, 3600\)/)
 assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestBatchSize', 1, 100\)/)
 assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestMaxBackoffHours', 1, 24 \* 30\)/)
@@ -586,12 +590,14 @@ const openAIAccountSelectorSource = readSource('storage/openai-account-selector.
 assert.doesNotMatch(openAIAccountSelectorSource, /COALESCE\(source_accounts\.type, accounts\.type\)/)
 assert.match(openAIAccountSelectorSource, /accountAccess\.accountAccessType === 'account_authorized' && !row\.resource_account_id/)
 
+const accountRequestSchemasSource = readSource('modules/accounts/account-request.schemas.ts')
+assert.match(accountRequestSchemasSource, /const accountUpdateSchema = z\.object/)
+assert.match(accountRequestSchemasSource, /concurrencyLimit:\s*z\.number\(\)\.int\(\)\.min\(1\)\.optional\(\)/)
+assert.match(accountRequestSchemasSource, /status:\s*z\.enum\(\['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'\]\)\.optional\(\)/)
+assert.match(accountRequestSchemasSource, /\}\)\.strict\(\)/)
+
 const accountsRoutesSource = readSource('modules/accounts/accounts.routes.ts')
-assert.match(accountsRoutesSource, /const accountUpdateSchema = z\.object/)
-assert.match(accountsRoutesSource, /concurrencyLimit:\s*z\.number\(\)\.int\(\)\.min\(1\)\.optional\(\)/)
-assert.match(accountsRoutesSource, /status:\s*z\.enum\(\['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'\]\)\.optional\(\)/)
 assert.match(accountsRoutesSource, /accountUpdateSchema\.safeParse\(req\.body\)/)
-assert.match(accountsRoutesSource, /\}\)\.strict\(\)/)
 
 const repositoriesSource = readSource('storage/repositories.ts')
 assert.doesNotMatch(repositoriesSource, /SET type = \?,\s*credentials_encrypted = \?/s)
@@ -621,7 +627,12 @@ const proxiesRoutesSource = readSource('modules/proxies/proxies.routes.ts')
 assert.match(proxiesRoutesSource, /const proxyUpdateSchema = proxySchema\.partial\(\)\.strict\(\)/)
 assert.match(proxiesRoutesSource, /proxyUpdateSchema\.safeParse\(req\.body\)/)
 
-const externalPublicApiCatalogSource = readSource('modules/external-integrations/external-public-api-catalog.ts')
+const externalPublicApiCatalogSource = [
+  readSource('modules/external-integrations/external-public-api-catalog.items.ts'),
+  readSource('modules/external-integrations/external-public-api-response-fields.ts'),
+  readSource('modules/external-integrations/external-public-api-scopes.ts'),
+  readSource('modules/external-integrations/external-public-api-catalog.ts')
+].join('\n')
 assert.match(externalPublicApiCatalogSource, /id: 'api-key-delete'[\s\S]+groupRouteStrategy:\s*'priority_failover'[\s\S]+groupBindings: \[\{[^}]*groupId: 'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /apiKey:\s*\{[^\n]*groupId:\s*'grp_xxx'/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /新的主绑定分组 ID/)
@@ -645,7 +656,41 @@ assert.match(externalPublicAccountDeleteCatalogSource, /name: 'targetUsername'[\
 assert.match(externalPublicAccountDeleteCatalogSource, /name: 'providerCode'[\s\S]+required: false/)
 assert.doesNotMatch(externalPublicApiCatalogSource, /externalId/)
 
+const externalPublicApiCatalog = getExternalPublicApiCatalog()
+assert.deepEqual(externalPublicApiCatalog.items.map((item) => item.id), [
+  'source-auth-demo',
+  'ip-usage',
+  'consumption-ranking',
+  'account-usage',
+  'access-info',
+  'group-list',
+  'api-key-list',
+  'account-list',
+  'group-add',
+  'group-update',
+  'group-delete',
+  'api-key-add',
+  'api-key-update',
+  'api-key-delete',
+  'account-add',
+  'account-update',
+  'account-delete'
+])
+const externalIntegrationScopeValues = new Set<string>(externalIntegrationScopeOptions.map((item) => item.value))
+for (const item of externalPublicApiCatalog.items) {
+  const scope = item.scope
+  if (typeof scope !== 'string') {
+    throw new Error(`public API catalog item ${item.id} should expose a scope`)
+  }
+  assert.ok(scope.length > 0, `public API catalog item ${item.id} should expose a scope`)
+  assert.ok(externalIntegrationScopeValues.has(scope), `public API catalog item ${item.id} should use a registered scope`)
+  assert.ok(Array.isArray(item.responseFields), `public API catalog item ${item.id} should expose responseFields`)
+  assert.ok(item.responseFields.length > 0, `public API catalog item ${item.id} should document response fields`)
+  assert.notEqual(item.responseExample, undefined, `public API catalog item ${item.id} should expose a response example`)
+}
+
 const externalIntegrationsRoutesSource = readSource('modules/external-integrations/external-integrations.routes.ts')
+assert.match(externalIntegrationsRoutesSource, /from '\.\/external-public-account-push\.mock\.js'/)
 const accountPushSchemaSource = sourceBetween(externalIntegrationsRoutesSource, 'const accountPushSchema', 'const accountDeleteSchema')
 assert.match(accountPushSchemaSource, /providerCode:\s*providerCodeSchema/)
 assert.match(accountPushSchemaSource, /type:\s*publicAccountTypeSchema/)
@@ -677,10 +722,15 @@ assert.match(apiKeyGroupBindingSchemaSource, /\}\)\.strict\(\)/)
 assert.doesNotMatch(apiKeyGroupBindingSchemaSource, /z\.coerce\.number/)
 
 const externalPublicAccountPushSource = readSource('modules/external-integrations/external-public-account-push.service.ts')
+const externalPublicAccountPushMockSource = readSource('modules/external-integrations/external-public-account-push.mock.ts')
 const externalPublicBoundedIntegerSource = sourceFunctionBlock(externalPublicAccountPushSource, 'function boundedInteger')
 assert.match(externalPublicBoundedIntegerSource, /typeof value !== 'number'/)
 assert.doesNotMatch(externalPublicBoundedIntegerSource, /Number\(value\)/)
 assert.doesNotMatch(externalPublicAccountPushSource, /normalizedText\(input\.providerCode\)\s*\|\|\s*'openai'/)
+assert.doesNotMatch(externalPublicAccountPushSource, /export function mockPublic/)
+assert.doesNotMatch(externalPublicAccountPushSource, /mock_system_account_huanmin/)
+assert.match(externalPublicAccountPushMockSource, /export function mockPublicWelfareAccountPush/)
+assert.match(externalPublicAccountPushMockSource, /mock_system_account_huanmin/)
 
 const apiKeyRepositorySource = readSource('storage/api-key.repository.ts')
 assert.doesNotMatch(apiKeyRepositorySource, /'scopes_json'/)

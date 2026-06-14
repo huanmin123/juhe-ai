@@ -4,7 +4,7 @@ import { validateAccountErrorPolicyRules } from './accountErrorPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import { validateAccountResponseInspectionRules } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
-import { buildAccountCredentials, currentAccountCredentials } from './accountCredentials'
+import { buildAccountCredentials, currentAccountCredentials, normalizedAccountApiKeys } from './accountCredentials'
 import type { AccountFormModel } from './accountFormTypes'
 import {
   buildAccountAvailabilitySchedulePayload,
@@ -13,6 +13,8 @@ import {
 } from './accountAvailabilitySchedule'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
 import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
+
+export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
 export type AccountSavePayload = {
   providerCode: AccountFormModel['providerCode']
@@ -64,7 +66,9 @@ export function validateAccountSaveForm(input: {
   if (!form.type) return '请先选择账户类型'
   if ((editingId || form.type === 'api_key') && !form.name.trim()) return '请填写账户名称'
   if (!form.groupId) return '请选择加入分组'
-  if (!editingId && form.type === 'api_key' && !form.apiKey.trim()) return '请填写 API Key'
+  const apiKeyCount = normalizedAccountApiKeys(form).length
+  if (!editingId && form.type === 'api_key' && apiKeyCount === 0) return '请填写 API Key'
+  if (!editingId && form.type === 'api_key' && apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
   if (form.type === 'api_key' && !form.baseUrl.trim()) return '请填写 Base URL'
   if (form.type === 'api_key') {
     const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)

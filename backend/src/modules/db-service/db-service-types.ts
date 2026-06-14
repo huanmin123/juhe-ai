@@ -71,6 +71,7 @@ export interface DbServiceServerRuntimeSnapshot {
     snapshot?: {
       pid: number
       ready: boolean
+      workerRole?: string
       jobs?: Array<{
         name: string
         intervalMs: number
@@ -104,6 +105,69 @@ export interface DbServiceServerRuntimeSnapshot {
         runningCount: number
         nextRunAt?: string
       }
+    }
+  }
+  metricsWorker?: {
+    pid?: number
+    ready: boolean
+    pendingSnapshotRequestCount?: number
+    timedOutSnapshotRequestCount?: number
+    rejectedSnapshotRequestCount?: number
+    snapshot?: {
+      pid: number
+      ready: boolean
+      workerRole?: string
+      jobs?: Array<{
+        name: string
+        intervalMs: number
+        running: boolean
+        lastStartedAt?: string
+        lastFinishedAt?: string
+        lastSuccessAt?: string
+        lastErrorAt?: string
+        lastError?: string
+        lastDurationMs?: number
+        maxDurationMs?: number
+        runCount: number
+        successCount: number
+        failureCount: number
+        skippedCount: number
+      }>
+    }
+  }
+  ingestWorker?: {
+    pid?: number
+    ready: boolean
+    pendingMessageCount?: number
+    pendingMessageBytes?: number
+    pendingQueues?: Record<string, DbServiceRuntimeQueueSnapshot>
+    pendingSnapshotRequestCount?: number
+    timedOutSnapshotRequestCount?: number
+    rejectedSnapshotRequestCount?: number
+    snapshot?: {
+      pid: number
+      ready: boolean
+      workerRole?: string
+      jobs?: Array<{
+        name: string
+        intervalMs: number
+        running: boolean
+        lastStartedAt?: string
+        lastFinishedAt?: string
+        lastSuccessAt?: string
+        lastErrorAt?: string
+        lastError?: string
+        lastDurationMs?: number
+        maxDurationMs?: number
+        runCount: number
+        successCount: number
+        failureCount: number
+        skippedCount: number
+      }>
+      usageRecordQueue: DbServiceRuntimeQueueSnapshot
+      operationLogQueue: DbServiceRuntimeQueueSnapshot
+      auditLogQueue: DbServiceRuntimeQueueSnapshot
+      runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
     }
   }
   dbService?: {

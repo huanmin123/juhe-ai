@@ -184,9 +184,22 @@ export interface SystemMetricsOverview {
   }>
   runtimeSnapshotAvailable: boolean
   workerSnapshotAvailable: boolean
+  metricsWorkerSnapshotAvailable?: boolean
+  ingestWorkerSnapshotAvailable?: boolean
+  metricsWorker?: {
+    pid: number | null
+    ready: boolean
+    snapshotAvailable: boolean
+  } | null
+  ingestWorker?: {
+    pid: number | null
+    ready: boolean
+    snapshotAvailable: boolean
+  } | null
   backgroundJobsAvailable: boolean
   backgroundJobs: Array<{
     name: string
+    workerRole?: ProcessRole
     intervalMs: number
     running: boolean
     lastStartedAt?: string

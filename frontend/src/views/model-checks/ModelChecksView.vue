@@ -109,200 +109,52 @@
       </div>
     </a-card>
 
-    <a-card class="page-card model-checks-history-card" title="历史检测">
-      <div class="history-toolbar">
-        <a-space wrap>
-          <SystemPrincipalSelect
-            v-if="isManagementView"
-            v-model:value="systemAccountFilter"
-            v-model:selected-principal="systemAccountFilterSelection"
-            :accounts="systemAccounts"
-            :active-only="false"
-            include-all
-            allow-clear
-            class="history-filter history-system-account-filter"
-            :filter-option="false"
-            :loading="systemAccountOptionsLoading"
-            placeholder="请选择系统账户"
-            @change="handleSystemAccountFilterChange"
-            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
-            @search="handleSystemAccountOptionsSearch"
-          />
-          <a-select v-model:value="filters.model" allow-clear class="history-filter" :options="modelOptions" placeholder="全部模型" @change="reloadRuns" />
-          <a-select v-model:value="filters.status" allow-clear class="history-filter" :options="statusOptions" placeholder="全部状态" @change="reloadRuns" />
-          <a-select v-model:value="filters.level" allow-clear class="history-filter" :options="levelOptions" placeholder="全部级别" @change="reloadRuns" />
-          <AccountSelect
-            v-model:value="filters.targetId"
-            v-model:selected-account="selectedHistoryTargetAccount"
-            show-search
-            allow-clear
-            class="history-target-filter"
-            :disabled="submitting"
-            :filter-option="false"
-            :loading="historyTargetOptionsLoading"
-            :options="historyTargetOptions"
-            :placeholder="historyAccountSelectPlaceholder"
-            @change="() => reloadRuns()"
-            @dropdown-visible-change="handleHistoryTargetDropdownVisibleChange"
-            @search="handleHistoryTargetSearch"
-          />
-        </a-space>
-        <a-button :loading="runsLoading" @click="reloadRuns">
-          <template #icon>
-            <ReloadOutlined />
-          </template>
-          刷新
-        </a-button>
-      </div>
+    <ModelCheckRunHistoryList
+      :filters="filters"
+      :history-target-options="historyTargetOptions"
+      :history-target-options-loading="historyTargetOptionsLoading"
+      :is-management-view="isManagementView"
+      :loading="runsLoading"
+      :mobile-has-more="runsMobileHasMore"
+      :mobile-loading-more="runsMobileLoadingMore"
+      :model-options="modelOptions"
+      :runs="runs"
+      :selected-history-target-account="selectedHistoryTargetAccount"
+      :submitting="submitting"
+      :supported-models="options.supportedModels"
+      :system-account-filter="systemAccountFilter"
+      :system-account-filter-selection="systemAccountFilterSelection"
+      :system-account-options-loading="systemAccountOptionsLoading"
+      :system-accounts="systemAccounts"
+      :table-pagination="runsTablePagination"
+      :target-display-name="targetDisplayName"
+      @history-target-dropdown-visible-change="handleHistoryTargetDropdownVisibleChange"
+      @history-target-search="handleHistoryTargetSearch"
+      @mobile-load-more="loadMoreMobileRuns"
+      @mobile-refresh="refreshMobileRuns"
+      @reload="reloadRuns"
+      @system-account-change="handleSystemAccountFilterChange"
+      @system-account-dropdown-visible-change="handleSystemAccountOptionsDropdown"
+      @system-account-search="handleSystemAccountOptionsSearch"
+      @table-change="handleRunsTableChange"
+      @update:level="filters.level = $event"
+      @update:model="filters.model = $event"
+      @update:selected-history-target-account="selectedHistoryTargetAccount = $event"
+      @update:status="filters.status = $event"
+      @update:system-account-filter="systemAccountFilter = $event || allSystemAccountsValue"
+      @update:system-account-filter-selection="systemAccountFilterSelection = $event"
+      @update:target-id="filters.targetId = $event"
+      @view-detail="loadRunDetail"
+    />
 
-      <ResponsiveDataList
-        class="model-checks-responsive-list"
-        table-class="model-checks-table"
-        size="middle"
-        row-key="id"
-        :columns="columns"
-        :data-source="runs"
-        :mobile-data-source="runs"
-        :loading="runsLoading"
-        :pagination="runsTablePagination"
-        :scroll-x="1360"
-        :loading-more="runsMobileLoadingMore"
-        :mobile-has-more="runsMobileHasMore"
-        mobile-pagination
-        pull-refresh-enabled
-        :refreshing="runsLoading"
-        @change="handleRunsTableChange"
-        @mobile-load-more="loadMoreMobileRuns"
-        @mobile-refresh="refreshMobileRuns"
-      >
-        <template #emptyText>
-          <a-empty :description="modelCheckHistoryEmptyText" />
-        </template>
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'target'">
-            <div class="target-cell">
-              <span class="target-name-cell">{{ targetDisplayName(record) }}</span>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'targetType'">
-            <a-tag>{{ targetTypeText(record.targetType) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'providerCode'">
-            <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'status'">
-            <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'level'">
-            <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'model'">
-            {{ modelText(record.model) }}
-          </template>
-          <template v-else-if="column.key === 'createdAt'">
-            {{ formatDateTime(record.createdAt) }}
-          </template>
-          <template v-else-if="column.key === 'summary'">
-            <span class="summary-cell">{{ record.message || record.errorMessage || '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'actions'">
-            <a-button type="link" size="small" @click="loadRunDetail(record.id)">查看</a-button>
-          </template>
-        </template>
-        <template #card="{ record }">
-          <article class="model-check-mobile-card">
-            <div class="model-check-mobile-head">
-              <div>
-                <div class="model-check-mobile-title">{{ targetDisplayName(record) }}</div>
-              </div>
-              <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
-            </div>
-            <div class="model-check-mobile-tags">
-              <a-tag>{{ targetTypeText(record.targetType) }}</a-tag>
-              <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
-              <a-tag>{{ modelText(record.model) }}</a-tag>
-              <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
-              <a-tag v-if="runTrustedComparison(record)" color="blue">可信对比</a-tag>
-            </div>
-            <div class="model-check-mobile-grid">
-              <div class="model-check-mobile-metric">
-                <span>得分</span>
-                <strong>{{ record.score }} / {{ record.maxScore }}</strong>
-              </div>
-              <div class="model-check-mobile-metric">
-                <span>耗时</span>
-                <strong>{{ formatDuration(record.durationMs) }}</strong>
-              </div>
-              <div class="model-check-mobile-metric model-check-mobile-wide">
-                <span>创建时间</span>
-                <strong>{{ formatDateTime(record.createdAt) }}</strong>
-              </div>
-              <div class="model-check-mobile-metric model-check-mobile-wide">
-                <span>结论</span>
-                <strong>{{ record.message || record.errorMessage || '-' }}</strong>
-              </div>
-            </div>
-            <div class="model-check-mobile-actions">
-              <a-button size="small" type="primary" @click="loadRunDetail(record.id)">查看</a-button>
-            </div>
-          </article>
-        </template>
-      </ResponsiveDataList>
-    </a-card>
-
-    <a-drawer
+    <ModelCheckRunDetailDrawer
       v-model:open="detailOpen"
-      class="model-checks-detail-drawer"
-      title="检测结果详情"
-      width="720px"
-      :body-style="{ padding: '16px' }"
-    >
-      <a-skeleton v-if="detailLoading" active :paragraph="{ rows: 5 }" />
-      <a-empty v-else-if="!currentRun" description="尚未选择检测记录" />
-      <div v-else class="run-detail">
-        <div class="run-detail-head">
-          <div>
-            <div class="run-detail-title">{{ targetDisplayName(currentRun) }}</div>
-            <div class="run-detail-subtitle">
-              检测目标：AI 账户
-            </div>
-          </div>
-          <a-space wrap>
-            <a-tag :color="statusColor(currentRun.status)">{{ statusText(currentRun.status) }}</a-tag>
-            <a-tag :color="levelColor(currentRun.level)">{{ levelText(currentRun.level) }}</a-tag>
-            <a-tag v-if="runTrustedComparison(currentRun)" color="blue">可信对比</a-tag>
-            <a-tag>{{ currentRun.score }} / {{ currentRun.maxScore }}</a-tag>
-          </a-space>
-        </div>
-
-        <a-descriptions bordered size="small" :column="detailDescriptionColumns" class="run-descriptions">
-          <a-descriptions-item label="检测 ID">{{ currentRun.id }}</a-descriptions-item>
-          <a-descriptions-item label="账户名称">{{ targetDisplayName(currentRun) }}</a-descriptions-item>
-          <a-descriptions-item label="模型">{{ modelText(currentRun.model) }}</a-descriptions-item>
-          <a-descriptions-item label="创建时间">{{ formatDateTime(currentRun.createdAt) }}</a-descriptions-item>
-          <a-descriptions-item label="完成时间">{{ formatDateTime(currentRun.finishedAt) }}</a-descriptions-item>
-          <a-descriptions-item label="耗时">{{ formatDuration(currentRun.durationMs) }}</a-descriptions-item>
-          <a-descriptions-item label="结论">{{ currentRun.message || currentRun.errorMessage || '-' }}</a-descriptions-item>
-          <a-descriptions-item label="Trace ID">{{ currentRun.traceId || '-' }}</a-descriptions-item>
-        </a-descriptions>
-
-        <div v-if="currentRun.checks.length" class="check-list">
-          <div v-for="check in currentRun.checks" :key="check.id" class="check-item">
-            <div class="check-item-head">
-              <span>{{ checkTitle(check) }}</span>
-              <a-space wrap>
-                <a-tag :color="checkStatusColor(check.status)">{{ checkStatusText(check.status) }}</a-tag>
-                <a-tag>{{ check.score }} / {{ check.maxScore }}</a-tag>
-              </a-space>
-            </div>
-            <div v-if="checkMessage(check)" class="check-message">{{ checkMessage(check) }}</div>
-            <pre v-if="hasCheckExtra(check)" class="json-block">{{ formatJson(checkExtra(check)) }}</pre>
-          </div>
-        </div>
-
-        <pre class="json-block">{{ formatJson({ request: currentRun.requestSummary, result: currentRun.resultSummary }) }}</pre>
-      </div>
-    </a-drawer>
+      :description-columns="detailDescriptionColumns"
+      :loading="detailLoading"
+      :run="currentRun"
+      :supported-models="options.supportedModels"
+      :target-display-name="targetDisplayName"
+    />
   </div>
 </template>
 
@@ -312,7 +164,6 @@ import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import AccountSelect from '@/components/AccountSelect.vue'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -323,7 +174,7 @@ import {
   rememberAccountLabel
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { formatNumber } from '@/shared/formatters'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   ModelCheckLevel,
@@ -337,33 +188,19 @@ import type {
 } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import {
-  checkExtra,
-  checkMessage,
-  checkStatusColor,
   checkStatusText,
-  checkTitle,
   formatClockTime,
   formatModelCheckDuration as formatDuration,
-  formatModelCheckJson as formatJson,
-  hasCheckExtra,
-  levelColor,
   levelText,
-  modelCheckLevelOptions as levelOptions,
-  modelCheckModelText,
-  modelCheckStatusOptions as statusOptions,
   progressItemTitle,
-  providerText,
-  runTrustedComparison,
-  statusColor,
   statusText,
-  targetTypeText,
   terminalLevelForCheckStatus,
   type ModelCheckTerminalLineLevel
 } from './modelCheckFormatters'
-import { modelCheckFallbackOptions, modelCheckHistoryColumns, modelCheckPageSize } from './modelCheckPageConfig'
+import { modelCheckFallbackOptions, modelCheckPageSize } from './modelCheckPageConfig'
+import ModelCheckRunHistoryList from './ModelCheckRunHistoryList.vue'
+import ModelCheckRunDetailDrawer from './ModelCheckRunDetailDrawer.vue'
 import { useModelCheckAccountOptions } from './useModelCheckAccountOptions'
-
-const columns = modelCheckHistoryColumns
 
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
@@ -460,7 +297,6 @@ const modelCheckScopeParams = computed(() => {
 const accountSelectDisabled = computed(() => submitting.value)
 const accountSelectPlaceholder = computed(() => '输入账户名称搜索')
 const comparisonSelectPlaceholder = computed(() => '可信对比账户（可选）')
-const historyAccountSelectPlaceholder = computed(() => '全部账户')
 const {
   comparisonOptions,
   comparisonOptionsLoading,
@@ -490,7 +326,6 @@ const {
   modelCheckScopeParams,
   knownTargetName
 })
-const modelCheckHistoryEmptyText = computed(() => '暂无模型检测历史')
 const viewportWidth = ref(window.innerWidth)
 const detailDescriptionColumns = computed(() => (viewportWidth.value < 900 ? 1 : 2))
 const terminalStatusText = computed(() => submitting.value ? '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
@@ -723,10 +558,6 @@ function targetDisplayName(run: Pick<ModelCheckRunSummary, 'targetName' | 'targe
   return name || '未记录账户名称'
 }
 
-function modelText(value: string) {
-  return modelCheckModelText(value, options.value.supportedModels)
-}
-
 function updateViewportWidth() {
   viewportWidth.value = window.innerWidth
 }
@@ -768,38 +599,12 @@ onBeforeUnmount(() => {
 
 .model-checks-run-card {
   flex: 0 0 auto;
-}
-
-.model-checks-run-card,
-.model-checks-history-card {
   border: 1px solid #e8edf5;
   border-radius: 16px;
 }
 
-.model-checks-history-card {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-}
-
-.model-checks-history-card :deep(.ant-card-body) {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-}
-
 .model-checks-form :deep(.ant-form-item) {
   margin-bottom: 0;
-}
-
-.history-toolbar,
-.run-detail-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
 }
 
 .model-checks-control-panel {
@@ -943,204 +748,10 @@ onBeforeUnmount(() => {
   }
 }
 
-.run-detail {
-  display: grid;
-  gap: 14px;
-}
-
-.run-detail-title {
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.run-detail-subtitle {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.run-descriptions {
-  background: #fff;
-}
-
-.check-list {
-  display: grid;
-  gap: 10px;
-}
-
-.check-item {
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fbfdff;
-}
-
-.check-item-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  color: #0f172a;
-  font-weight: 700;
-}
-
-.check-message {
-  margin-top: 6px;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.json-block {
-  max-height: 320px;
-  margin: 10px 0 0;
-  padding: 12px;
-  overflow: auto;
-  color: #dbeafe;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 18px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: #0f172a;
-  border-radius: 8px;
-}
-
-.history-toolbar {
-  flex: 0 0 auto;
-  margin-bottom: 14px;
-}
-
-.model-checks-responsive-list {
-  min-height: 0;
-  flex: 1 1 auto;
-}
-
-.history-filter {
-  width: 140px;
-}
-
-.history-target-filter {
-  width: 240px;
-}
-
-.history-system-account-filter {
-  width: 220px;
-}
-
-.target-cell {
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-  gap: 8px;
-}
-
-.target-name-cell {
-  display: block;
-  min-width: 0;
-  max-width: 240px;
-  overflow: hidden;
-  color: #0f172a;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.summary-cell {
-  display: block;
-  max-width: 360px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-checks-table :deep(.ant-table-cell) {
-  white-space: nowrap;
-}
-
-.model-check-mobile-card {
-  display: grid;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.model-check-mobile-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.model-check-mobile-title {
-  color: #0f172a;
-  font-weight: 400;
-  line-height: 1.35;
-}
-
-.model-check-mobile-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.model-check-mobile-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.model-check-mobile-metric {
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.model-check-mobile-wide {
-  grid-column: 1 / -1;
-}
-
-.model-check-mobile-metric span {
-  display: block;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.model-check-mobile-metric strong {
-  display: block;
-  margin-top: 4px;
-  overflow: hidden;
-  color: #0f172a;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-check-mobile-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.model-checks-detail-drawer :deep(.ant-drawer-content-wrapper) {
-  max-width: 100vw;
-}
-
 @media (max-width: 900px) {
   .model-checks-page {
     height: auto;
     min-height: calc(100dvh - 108px);
-  }
-
-  .history-toolbar,
-  .run-detail-head,
-  .check-item-head {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .model-checks-control-panel,
@@ -1178,12 +789,6 @@ onBeforeUnmount(() => {
 
   .model-check-terminal {
     height: 320px;
-  }
-
-  .history-filter,
-  .history-system-account-filter,
-  .history-target-filter {
-    width: 100%;
   }
 }
 </style>

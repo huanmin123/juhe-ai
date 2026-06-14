@@ -4,8 +4,8 @@ import { z } from 'zod'
 import { isAdminRole, type AccountStatus, type AccountSummary } from '../../domain/types.js'
 import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { AccountTagInUseError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountTag, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountTags, listAccountsPage, listProviders, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAccountTags, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountOptionListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { queryTextList } from '../../shared/query-values.js'
+import { AccountTagInUseError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountTag, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountTags, listAccountsPage, listProviders, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAccountTags, updateAuthorizedAccountBindingDispatch, type AccountListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
@@ -32,144 +32,29 @@ import {
 import { exportAccountsAsImportDocument } from './account-export.service.js'
 import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
+import {
+  accountCreateSchema,
+  accountDraftTestSchema,
+  accountGroupSchema,
+  accountImportRequestSchema,
+  accountTagsUpdateSchema,
+  accountTestSchema,
+  accountTrafficMigrationSchema,
+  accountUpdateSchema,
+  authorizedAccountDispatchSchema
+} from './account-request.schemas.js'
+import {
+  accountListSortFieldValues,
+  parseAccountListOptions,
+  parseAccountOptionsQuery,
+  schedulableQueryValue,
+  statusQueryValue
+} from './account-list-query.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountCredentialsResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 import { dispatchAccountTestCancel, dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 
 export const accountsRouter = Router()
-
-const accountModelMappingSchema = z.object({
-  sourceModel: z.string().trim().min(1),
-  upstreamModel: z.string().trim().min(1),
-  enabled: z.boolean().optional()
-}).strict()
-
-const accountCreateSchema = z.object({
-  providerCode: z.string().trim().min(1),
-  providerProtocolProfileId: z.string().trim().min(1).optional(),
-  name: z.string().trim().min(1),
-  type: z.string().trim().min(1),
-  credentials: z.record(z.unknown()).optional(),
-  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
-  modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
-  tags: z.array(z.string().trim()).max(24).optional(),
-  status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
-  activationTestTaskId: z.string().trim().min(1).optional(),
-  concurrencyLimit: z.number().int().min(1).optional(),
-  priority: z.number().int().optional(),
-  superPriorityEnabled: z.boolean().optional(),
-  fallbackEnabled: z.boolean().optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
-  proxyProfileId: z.string().optional(),
-  schedulable: z.boolean().optional(),
-  groupId: z.string().nullable().optional(),
-  accountExpiresAt: z.string().nullable().optional(),
-  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
-  notes: z.string().optional()
-}).strict()
-
-const accountUpdateSchema = z.object({
-  name: z.string().trim().min(1).optional(),
-  credentials: z.record(z.unknown()).optional(),
-  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
-  modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
-  tags: z.array(z.string().trim()).max(24).optional(),
-  status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
-  concurrencyLimit: z.number().int().min(1).optional(),
-  priority: z.number().int().min(0).optional(),
-  superPriorityEnabled: z.boolean().optional(),
-  fallbackEnabled: z.boolean().optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
-  proxyProfileId: z.string().nullable().optional(),
-  schedulable: z.boolean().optional(),
-  groupId: z.string().trim().min(1, '账户分组不能为空').optional(),
-  accountExpiresAt: z.string().nullable().optional(),
-  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
-  notes: z.string().optional(),
-  clearFailureState: z.boolean().optional()
-}).strict()
-
-const accountDraftTestAccountSchema = z.object({
-  providerCode: z.string().trim().min(1),
-  providerProtocolProfileId: z.string().trim().min(1).optional(),
-  name: z.string().trim().min(1),
-  type: z.string().trim().min(1),
-  credentials: z.record(z.unknown()).optional(),
-  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
-  modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
-  concurrencyLimit: z.number().int().min(1).optional(),
-  priority: z.number().int().min(0).optional(),
-  superPriorityEnabled: z.boolean().optional(),
-  fallbackEnabled: z.boolean().optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
-  proxyProfileId: z.string().nullable().optional(),
-  groupId: z.string().trim().min(1),
-  accountExpiresAt: z.string().nullable().optional(),
-  availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
-  notes: z.string().optional()
-}).strict()
-
-const accountTestSchema = z.object({
-  model: z.string().trim().optional(),
-  prompt: z.string().trim().optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
-  testSessionId: z.string().trim().min(1).optional(),
-  account: accountDraftTestAccountSchema.optional()
-}).strict().optional()
-
-const accountDraftTestSchema = z.object({
-  account: accountDraftTestAccountSchema,
-  model: z.string().trim().optional(),
-  prompt: z.string().trim().optional(),
-  testSessionId: z.string().trim().min(1).optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional()
-}).strict()
-
-const accountGroupSchema = z.object({
-  groupId: z.string().trim().min(1, '分组不能为空')
-}).strict()
-
-const accountTagsUpdateSchema = z.object({
-  tags: z.array(z.string().trim()).max(24)
-}).strict()
-
-const accountTrafficMigrationSchema = z.object({
-  targetAccountId: z.string().trim().min(1, '目标账户不能为空'),
-  sourceStatus: z.enum(['temporary_unavailable', 'disabled']).optional()
-}).strict()
-
-const authorizedAccountDispatchSchema = z.object({
-  status: z.enum(['active', 'disabled']).optional(),
-  priority: z.number().int().min(0).optional(),
-  superPriorityEnabled: z.boolean().optional(),
-  fallbackEnabled: z.boolean().optional(),
-  clearFailureState: z.boolean().optional()
-}).strict()
-
-const accountImportRequestSchema = z.object({
-  data: z.unknown(),
-  options: z.object({
-    createMissingGroups: z.boolean().optional(),
-    createMissingProxies: z.boolean().optional(),
-    skipDuplicates: z.boolean().optional()
-  }).strict().optional()
-}).strict()
-
-const accountListSortFieldValues = [
-  'priority',
-  'superPriority',
-  'fallback',
-  'qualityScore',
-  'name',
-  'type',
-  'providerCode',
-  'systemAccount',
-  'concurrency',
-  'status',
-  'accountExpiresAt',
-  'lastUsedAt'
-] as const
-const accountListSortFields = new Set<AccountListSortField>(accountListSortFieldValues)
 
 const accountExportFilterSchema = z.object({
   sorts: z.array(z.object({
@@ -500,72 +385,6 @@ accountsRouter.get('/:id', async (req, res, next) => {
     next(error)
   }
 })
-
-function parseAccountOptionsQuery(query: Record<string, unknown>): AccountOptionListOptions {
-  return {
-    ids: queryTextList(query.ids, 50),
-    page: integerQueryValue(query.page),
-    limit: optionLimitValue(integerQueryValue(query.limit)),
-    keyword: optionalQueryText(query.keyword),
-    providerCode: optionalQueryText(query.providerCode),
-    groupId: optionalQueryText(query.groupId),
-    tagIds: queryTextList(query.tagIds, 100),
-    type: optionalQueryText(query.type),
-    status: statusQueryValue(query.status),
-    schedulable: schedulableQueryValue(query.schedulable)
-  }
-}
-
-function optionLimitValue(value: number | undefined): number {
-  return typeof value === 'number' ? Math.min(50, Math.max(1, value)) : 50
-}
-
-function parseAccountListOptions(query: Record<string, unknown>): AccountListOptions {
-  const sorts = stringValues(query.sorts)
-    .flatMap((value) => value.split(','))
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .map(parseAccountListSort)
-    .filter((sort): sort is NonNullable<ReturnType<typeof parseAccountListSort>> => Boolean(sort))
-  return {
-    sorts,
-    page: integerQueryValue(query.page),
-    pageSize: integerQueryValue(query.pageSize),
-    keyword: optionalQueryText(query.keyword),
-    providerCode: optionalQueryText(query.providerCode),
-    groupId: optionalQueryText(query.groupId),
-    tagIds: queryTextList(query.tagIds, 100),
-    type: optionalQueryText(query.type),
-    status: statusQueryValue(query.status),
-    schedulable: schedulableQueryValue(query.schedulable)
-  }
-}
-
-function parseAccountListSort(value: string): { field: AccountListSortField; order: AccountListSortDirection } | undefined {
-  const [field, order] = value.split(':').map((item) => item.trim())
-  if (!accountListSortFields.has(field as AccountListSortField)) return undefined
-  if (order !== 'asc' && order !== 'desc') return undefined
-  return { field: field as AccountListSortField, order }
-}
-
-function stringValues(value: unknown): string[] {
-  if (typeof value === 'string') return [value]
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string')
-  return []
-}
-
-function statusQueryValue(value: unknown): string | undefined {
-  const statuses = stringValues(value)
-    .flatMap((item) => item.split(','))
-    .map((item) => item.trim())
-    .filter((item) => item && item !== 'all')
-  return statuses.length ? [...new Set(statuses)].join(',') : undefined
-}
-
-function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | undefined {
-  const text = optionalQueryText(value)
-  return text === 'all' || text === 'enabled' || text === 'disabled' || text === 'cooling' ? text : undefined
-}
 
 function serverTimingMetric(name: string, durationMs: number): string {
   return `${name};dur=${Math.max(0, durationMs).toFixed(1)}`
@@ -1389,7 +1208,7 @@ function accountCredentialFingerprint(credentials: unknown): string {
   }
   const record = credentials as Record<string, unknown>
   return sensitiveFingerprint(
-    record.api_key
+    apiKeyCredentialFingerprintSource(record)
       ?? record.refresh_token
       ?? record.access_token
       ?? record.email
@@ -1409,6 +1228,9 @@ function mergeAccountCredentialsForUpdate(account: AccountSummary, requested: Re
   preserveCredentialText(credentials, account.credentials, 'base_url')
   if (account.type === 'api_key') {
     preserveCredentialText(credentials, account.credentials, 'api_key')
+    preserveCredentialArray(credentials, account.credentials, 'api_keys')
+    preserveCredentialText(credentials, account.credentials, 'api_key_strategy')
+    preserveCredentialArray(credentials, account.credentials, 'api_key_weights')
   } else if (account.type === 'oauth') {
     for (const key of [
       'access_token',
@@ -1435,6 +1257,24 @@ function preserveCredentialText(output: Record<string, unknown>, source: Record<
   }
 }
 
+function preserveCredentialArray(output: Record<string, unknown>, source: Record<string, unknown>, key: string): void {
+  if (Array.isArray(output[key]) && (output[key] as unknown[]).length > 0) return
+  const value = source[key]
+  if (Array.isArray(value) && value.length > 0) {
+    output[key] = value
+  }
+}
+
 function hasCredentialText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function apiKeyCredentialFingerprintSource(record: Record<string, unknown>): string | undefined {
+  if (Array.isArray(record.api_keys)) {
+    const keys = record.api_keys
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim())
+    if (keys.length) return keys.join('\n')
+  }
+  return typeof record.api_key === 'string' ? record.api_key : undefined
 }

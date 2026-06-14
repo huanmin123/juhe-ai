@@ -723,9 +723,15 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     import('../gateway/audit/capture.service.js'),
     import('../../shared/account-concurrency.js')
   ])
-  const workerSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined)
+  const [workerSnapshot, metricsWorkerSnapshot, ingestWorkerSnapshot] = await Promise.all([
+    backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined),
+    backgroundIpc.requestMetricsWorkerSnapshot(1000).catch(() => undefined),
+    backgroundIpc.requestIngestWorkerSnapshot(1000).catch(() => undefined)
+  ])
   const workerState = backgroundIpc.getBackgroundWorkerState()
   const dbServiceState = getDbServiceState()
+  const metricsWorkerState = workerState.metricsWorker
+  const ingestWorkerState = workerState.ingestWorker
 
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
@@ -745,6 +751,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
         ? {
           pid: workerSnapshot.pid,
           ready: workerSnapshot.ready,
+          workerRole: workerSnapshot.workerRole,
           jobs: workerSnapshot.jobs.map((job) => ({ ...job })),
           usageRecordQueue: { ...workerSnapshot.usageRecordQueue },
           operationLogQueue: { ...workerSnapshot.operationLogQueue },
@@ -757,6 +764,45 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           manualAccountTestQueue: workerSnapshot.manualAccountTestQueue
             ? { ...workerSnapshot.manualAccountTestQueue }
             : undefined
+        }
+        : undefined
+    },
+    metricsWorker: {
+      pid: metricsWorkerSnapshot?.pid ?? metricsWorkerState?.pid,
+      ready: metricsWorkerSnapshot?.ready ?? metricsWorkerState?.ready ?? false,
+      pendingSnapshotRequestCount: metricsWorkerState?.pendingSnapshotRequestCount,
+      timedOutSnapshotRequestCount: metricsWorkerState?.timedOutSnapshotRequestCount,
+      rejectedSnapshotRequestCount: metricsWorkerState?.rejectedSnapshotRequestCount,
+      snapshot: metricsWorkerSnapshot
+        ? {
+          pid: metricsWorkerSnapshot.pid,
+          ready: metricsWorkerSnapshot.ready,
+          workerRole: metricsWorkerSnapshot.workerRole,
+          jobs: metricsWorkerSnapshot.jobs.map((job) => ({ ...job }))
+        }
+        : undefined
+    },
+    ingestWorker: {
+      pid: ingestWorkerSnapshot?.pid ?? ingestWorkerState?.pid,
+      ready: ingestWorkerSnapshot?.ready ?? ingestWorkerState?.ready ?? false,
+      pendingMessageCount: ingestWorkerState?.pendingMessageCount,
+      pendingMessageBytes: ingestWorkerState?.pendingMessageBytes,
+      pendingQueues: ingestWorkerState?.pendingQueues
+        ? backgroundPendingQueuesSnapshot(ingestWorkerState.pendingQueues)
+        : undefined,
+      pendingSnapshotRequestCount: ingestWorkerState?.pendingSnapshotRequestCount,
+      timedOutSnapshotRequestCount: ingestWorkerState?.timedOutSnapshotRequestCount,
+      rejectedSnapshotRequestCount: ingestWorkerState?.rejectedSnapshotRequestCount,
+      snapshot: ingestWorkerSnapshot
+        ? {
+          pid: ingestWorkerSnapshot.pid,
+          ready: ingestWorkerSnapshot.ready,
+          workerRole: ingestWorkerSnapshot.workerRole,
+          jobs: ingestWorkerSnapshot.jobs.map((job) => ({ ...job })),
+          usageRecordQueue: { ...ingestWorkerSnapshot.usageRecordQueue },
+          operationLogQueue: { ...ingestWorkerSnapshot.operationLogQueue },
+          auditLogQueue: { ...ingestWorkerSnapshot.auditLogQueue },
+          runtimeLogIndexQueue: { ...ingestWorkerSnapshot.runtimeLogIndexQueue }
         }
         : undefined
     },

@@ -40,9 +40,41 @@ export function currentAccountCredentials(accounts: AccountSummary[], editingId?
 }
 
 function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown> {
-  return compactAccountCredentials({
-    api_key: form.apiKey,
+  const apiKeys = normalizedAccountApiKeys(form)
+  const apiKey = apiKeys[0] ?? form.apiKey
+  const credentials = compactAccountCredentials({
+    api_key: apiKey,
     base_url: form.baseUrl
+  })
+  if (apiKeys.length > 1) {
+    credentials.api_keys = apiKeys
+    credentials.api_key_strategy = form.apiKeyStrategy === 'weighted_round_robin'
+      ? 'weighted_round_robin'
+      : 'round_robin'
+    if (credentials.api_key_strategy === 'weighted_round_robin') {
+      credentials.api_key_weights = normalizedAccountApiKeyWeights(form, apiKeys.length)
+    }
+  }
+  return credentials
+}
+
+export function normalizedAccountApiKeys(form: AccountFormModel): string[] {
+  const values = form.apiKeys?.length ? form.apiKeys : [form.apiKey]
+  const output: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const key = value.trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    output.push(key)
+  }
+  return output
+}
+
+export function normalizedAccountApiKeyWeights(form: AccountFormModel, count = normalizedAccountApiKeys(form).length): number[] {
+  return Array.from({ length: count }, (_, index) => {
+    const value = Number(form.apiKeyWeights?.[index] ?? 1)
+    return Number.isInteger(value) ? Math.min(100, Math.max(1, value)) : 1
   })
 }
 

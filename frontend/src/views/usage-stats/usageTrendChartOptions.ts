@@ -4,8 +4,9 @@ import { formatDateShortLabel } from '@/shared/dateRange'
 import type { AccountUsageStatsOverview, AccountUsageStatsRow } from '@/types/domain'
 import { axisNumberLabel, formatCost, formatInteger } from '@/views/stats/statsFormatters'
 import { chartColors as aiPerformanceChartColors } from '@/views/ai-performance/aiPerformanceChartOptions'
+import { metricValue, type UsageTrendMetric } from './usageTrendMetrics'
 
-export type UsageTrendMetric = 'cost' | 'tokens' | 'requests'
+export type { UsageTrendMetric } from './usageTrendMetrics'
 export const chartColors = aiPerformanceChartColors
 
 export function buildAccountUsageTrendOption(overview: AccountUsageStatsOverview, metric: UsageTrendMetric, visibleRows?: AccountUsageStatsRow[]): EChartsOption {
@@ -61,12 +62,6 @@ export function orderedUsageRows(rows: AccountUsageStatsRow[]): AccountUsageStat
     if (tokenDelta !== 0) return tokenDelta
     return left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id)
   })
-}
-
-function metricValue(point: { requestCount: number; totalTokens: number; totalCost: number }, metric: UsageTrendMetric) {
-  if (metric === 'cost') return point.totalCost
-  if (metric === 'tokens') return point.totalTokens
-  return point.requestCount
 }
 
 function normalizedMetricValue(point: { requestCount: number; totalTokens: number; totalCost: number }, metric: UsageTrendMetric) {

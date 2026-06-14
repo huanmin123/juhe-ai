@@ -36,16 +36,12 @@ import {
   adminUsername,
   apiKeyAuthorizedGroupBindingRule,
   boundedInteger,
-  buildModelCheckItems,
   dayMs,
   defaultDailyRequests,
   defaultDays,
   idPrefix,
   minuteMs,
   mockPassword,
-  modelCheckLevelForRun,
-  modelCheckRunMessage,
-  modelCheckRunStatusForIndex,
   namePrefix,
   providerCode,
   tracePrefix,
@@ -61,8 +57,6 @@ import {
   type MockGroups,
   type MockSystemAccounts,
   type MockTeams,
-  type ModelCheckMockdataCounts,
-  type ModelCheckTargetSeed,
   type RecordCleanupMockdataCounts,
   type UsageRecordSeed
 } from './mockdata-shared.js'
@@ -74,6 +68,7 @@ import {
   createPublicApiLogMockdata,
   createRuntimeLogMockdata
 } from './mockdata-logs.js'
+import { createModelCheckMockdata, type ModelCheckMockdataCounts } from './mockdata-model-checks.js'
 import { createMonitoringMockdata } from './mockdata-monitoring.js'
 import { createStorageMockdata } from './mockdata-storage.js'
 import { createUsageMockdata } from './mockdata-usage.js'
@@ -1459,118 +1454,6 @@ function tuneGroupAccountBindings(groups: MockGroups, accounts: MockAccounts): v
           updated_at = ?
       WHERE group_id = ? AND account_id = ?
     `).run(localSuper, localFallback, now, group.id, account.id)
-  }
-}
-
-function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOptions): ModelCheckMockdataCounts {
-  const devPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.dev)
-  const testerPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.tester)
-  const opsProxiedInstance = authorizationInstanceAccount(created.accounts.proxied, created.users.ops)
-  const financeOauthInstance = authorizationInstanceAccount(created.accounts.oauth, created.users.finance)
-  const viewerBurstImageInstance = authorizationInstanceAccount(created.accounts.burstImage, created.users.viewer)
-  const targets: ModelCheckTargetSeed[] = [
-    { account: created.accounts.primary, group: created.groups.main, apiKey: created.apiKeys.adminMain, actor: created.users.admin, comparisonAccount: created.accounts.oauth },
-    { account: created.accounts.burstFast, group: created.groups.highConcurrency, apiKey: created.apiKeys.adminHighConcurrency, actor: created.users.admin, comparisonAccount: created.accounts.burstImage },
-    { account: devPrimaryInstance, group: created.groups.devDefault, apiKey: created.apiKeys.devGroupAuthorized, actor: created.users.dev },
-    { account: created.accounts.normal, group: created.groups.main, apiKey: created.apiKeys.adminHighFrequency, actor: created.users.admin, comparisonAccount: created.accounts.burstFast },
-    { account: testerPrimaryInstance, group: created.groups.testerDefault, apiKey: created.apiKeys.testerTeamAuthorized, actor: created.users.tester },
-    { account: opsProxiedInstance, group: created.groups.opsDefault, apiKey: created.apiKeys.opsAccountAuthorized, actor: created.users.ops },
-    { account: created.accounts.oauth, group: created.groups.oauth, apiKey: created.apiKeys.adminOAuth, actor: created.users.admin, comparisonAccount: created.accounts.oauthBackup },
-    { account: created.accounts.oauthBackup, group: created.groups.oauth, apiKey: created.apiKeys.adminOAuth, actor: created.users.admin, comparisonAccount: created.accounts.oauth },
-    { account: financeOauthInstance, group: created.groups.financeDefault, apiKey: created.apiKeys.financeAuthorized, actor: created.users.finance },
-    { account: viewerBurstImageInstance, group: created.groups.viewerDefault, apiKey: created.apiKeys.viewerAuthorized, actor: created.users.viewer },
-    { account: created.accounts.rateLimited, group: created.groups.backup, apiKey: created.apiKeys.adminBackup, actor: created.users.admin, comparisonAccount: created.accounts.primary },
-    { account: created.accounts.temporary, group: created.groups.experiment, apiKey: created.apiKeys.adminExpired, actor: created.users.admin, comparisonAccount: created.accounts.normal }
-  ]
-  const runCount = Math.min(120, Math.max(36, options.days))
-  let itemCount = 0
-
-  for (let index = 0; index < runCount; index += 1) {
-    const target = targets[index % targets.length]
-    const model = index % 3 === 0 ? 'gpt-5.5' : 'gpt-5.4'
-    const runStatus = modelCheckRunStatusForIndex(index)
-    const trustedComparison = Boolean(target.comparisonAccount) && index % 3 === 0
-    const startedAtMs = Date.now() - 20 * minuteMs - Math.floor((index / Math.max(1, runCount - 1)) * options.days * dayMs)
-    const startedAt = new Date(startedAtMs).toISOString()
-    const runId = `${idPrefix}model_check_run_${String(index + 1).padStart(4, '0')}`
-    const traceId = `${tracePrefix}model-check-${String(index + 1).padStart(4, '0')}`
-    const checks = buildModelCheckItems({
-      runIndex: index,
-      runId,
-      model,
-      startedAtMs,
-      trustedComparison,
-      runStatus
-    })
-    const level = modelCheckLevelForRun(index, runStatus, checks.score, checks.maxScore)
-    const message = modelCheckRunMessage(runStatus, level, checks.score, checks.maxScore)
-
-    repositories.createModelCheckRun({
-      id: runId,
-      systemAccountId: target.actor.id,
-      actorSystemAccountId: target.actor.id,
-      providerCode,
-      targetType: 'account',
-      targetId: target.account.id,
-      targetName: target.account.name,
-      targetOwnerSystemAccountId: target.account.ownerSystemAccountId ?? target.account.systemAccountId ?? created.users.admin.id,
-      accountId: target.account.id,
-      groupId: target.group.id,
-      apiKeyId: target.apiKey.id,
-      model,
-      profile: 'full',
-      trustedComparison,
-      trustedComparisonAvailable: trustedComparison && index % 4 !== 0,
-      traceId,
-      probeSetVersion: 'openai-model-check-v1',
-      startedAt,
-      requestSummary: {
-        targetType: 'account',
-        targetId: target.account.id,
-        targetName: target.account.name,
-        model,
-        profile: 'full',
-        trustedComparison,
-        trustedComparisonAccountId: trustedComparison ? target.comparisonAccount?.id : undefined,
-        trustedComparisonAccountName: trustedComparison ? target.comparisonAccount?.name : undefined,
-        groupId: target.group.id,
-        groupName: target.group.name,
-        apiKeyId: target.apiKey.id,
-        actorSystemAccountId: target.actor.id,
-        generatedBy: 'mockdata'
-      }
-    })
-    repositories.createModelCheckItems(runId, checks.items)
-    itemCount += checks.items.length
-
-    if (runStatus !== 'running') {
-      const durationMs = checks.items.reduce((sum, item) => sum + (item.durationMs ?? 0), 0)
-      repositories.finishModelCheckRun(runId, {
-        level,
-        score: checks.score,
-        maxScore: checks.maxScore,
-        status: runStatus,
-        message,
-        finishedAt: new Date(startedAtMs + durationMs + 800).toISOString(),
-        durationMs: durationMs + 800,
-        resultSummary: {
-          verdict: message,
-          passedItems: checks.items.filter((item) => item.status === 'passed').length,
-          warningItems: checks.items.filter((item) => item.status === 'warning').length,
-          failedItems: checks.items.filter((item) => item.status === 'failed').length,
-          skippedItems: checks.items.filter((item) => item.status === 'skipped').length,
-          trustedComparison,
-          generatedBy: 'mockdata'
-        },
-        errorCode: runStatus === 'failed' ? 'mockdata_model_check_failed' : undefined,
-        errorMessage: runStatus === 'failed' ? 'Mockdata 模拟上游探针失败' : undefined
-      })
-    }
-  }
-
-  return {
-    runs: runCount,
-    items: itemCount
   }
 }
 

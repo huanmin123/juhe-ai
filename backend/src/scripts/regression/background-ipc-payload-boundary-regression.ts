@@ -112,7 +112,7 @@ state = backgroundIpc.getBackgroundWorkerState()
 assert.equal(state.pendingQueues.usageRecords.rejectedCount, 1, '过大 usage IPC 消息应记录拒绝指标')
 
 const fakeWorker = new FakeWorkerProcess()
-backgroundIpc.attachBackgroundWorkerProcess(fakeWorker as unknown as ChildProcess)
+backgroundIpc.attachBackgroundWorkerProcess(fakeWorker as unknown as ChildProcess, { role: 'ingest-worker' })
 fakeWorker.ready()
 fakeWorker.sentMessages = []
 assert.equal(backgroundIpc.sendAuditLogsToWorker([buildMediumAudit()]), true, '2MB 内的审计 body 应保留原文投递给 worker')

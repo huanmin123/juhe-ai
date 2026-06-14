@@ -13,6 +13,7 @@ runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.log.directory = logDir
 runtimeConfig.log.fileEnabled = true
 runtimeConfig.log.consoleEnabled = false

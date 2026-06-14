@@ -9,6 +9,7 @@ import { logger } from '../../shared/logger.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-snapshot-sanitize-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 
 runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.databasePath = join(tempRoot, 'usage-snapshot-sanitize.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')

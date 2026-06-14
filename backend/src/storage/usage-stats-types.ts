@@ -1,5 +1,5 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
-import type { ProcessRole } from '../config/runtime.js'
+import type { ProcessEventLoopRole } from '../shared/process-event-loop-monitor.js'
 
 export const GLOBAL_STATS_SYSTEM_ACCOUNT_ID = 'global'
 export const GLOBAL_STATS_SCOPE_ID = 'global'
@@ -157,7 +157,7 @@ export interface SystemMetricsSampleInput {
 }
 
 export interface ProcessEventLoopSampleInput {
-  processRole: ProcessRole
+  processRole: ProcessEventLoopRole
   processPid?: number
   sampledAt?: string
   eventLoopLagMs?: number
@@ -212,14 +212,14 @@ export interface SystemMetricsOverview {
     statsLagSecondsMax?: number
   }>
   processEventLoopLatestStatus: Array<{
-    processRole: ProcessRole
+    processRole: ProcessEventLoopRole
     sampleAvailable: boolean
     processPid: number | null
     sampledAt: string | null
     eventLoopLagMs: number | null
   }>
   processEventLoopPeakStatus: Array<{
-    processRole: ProcessRole
+    processRole: ProcessEventLoopRole
     sampleAvailable: boolean
     processPid: number | null
     sampledAt: string | null
@@ -228,7 +228,7 @@ export interface SystemMetricsOverview {
   processEventLoopTrend: Array<{
     statHour: string
     statMinute: string
-    processRole: ProcessRole
+    processRole: ProcessEventLoopRole
     sampleCount: number
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number

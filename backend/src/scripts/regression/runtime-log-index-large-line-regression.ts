@@ -10,6 +10,7 @@ runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 
 const [databaseModule, runtimeLogIndexQueue, runtimeLogsRepository] = await Promise.all([
   import('../../storage/database.js'),

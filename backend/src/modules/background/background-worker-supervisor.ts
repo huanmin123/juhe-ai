@@ -5,11 +5,18 @@ import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { attachBackgroundWorkerProcess } from './background-ipc.js'
+import { attachBackgroundWorkerProcess, type BackgroundWorkerProcessRole } from './background-ipc.js'
 
-let workerProcess: ChildProcess | undefined
-let restartTimer: NodeJS.Timeout | undefined
-let restartAttempts = 0
+interface SupervisedWorkerState {
+  process?: ChildProcess
+  restartTimer?: NodeJS.Timeout
+  restartAttempts: number
+}
+
+const supervisedWorkerRoles: BackgroundWorkerProcessRole[] = ['worker', 'metrics-worker', 'ingest-worker']
+const supervisedWorkers = new Map<BackgroundWorkerProcessRole, SupervisedWorkerState>(
+  supervisedWorkerRoles.map((role) => [role, { restartAttempts: 0 }])
+)
 let stopping = false
 let shutdownHooksInstalled = false
 
@@ -22,70 +29,82 @@ const workerRestartBaseDelayMs = 1000
 const workerRestartMaxDelayMs = 30_000
 
 export function startBackgroundWorkerSupervisor(): void {
-  if (runtimeConfig.processRole !== 'server' || workerProcess) {
+  if (runtimeConfig.processRole !== 'server') {
     return
   }
 
   stopping = false
-  startWorkerProcess()
+  for (const role of supervisedWorkerRoles) {
+    startWorkerProcess(role)
+  }
   installSupervisorShutdownHooks()
 }
 
-function startWorkerProcess(): void {
+function startWorkerProcess(role: BackgroundWorkerProcessRole): void {
+  const state = supervisedWorkerState(role)
+  if (state.process) {
+    return
+  }
+
   const entry = resolveWorkerEntry()
   const child = fork(entry.modulePath, [], {
     cwd: backendRoot,
     env: {
       ...process.env,
-      JUHE_AI_PROCESS_ROLE: 'worker'
+      JUHE_AI_PROCESS_ROLE: 'worker',
+      JUHE_AI_WORKER_ROLE: role
     },
     execArgv: entry.execArgv,
     serialization: 'advanced',
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   })
 
-  workerProcess = child
+  state.process = child
   attachBackgroundWorkerProcess(child, {
+    role,
     onReady: () => {
-      restartAttempts = 0
+      state.restartAttempts = 0
     }
   })
   pipeWorkerOutput(child)
 
   logger.info({
     event: 'background_worker_spawned',
+    workerRole: role,
     pid: child.pid,
     modulePath: entry.modulePath,
     execArgv: entry.execArgv
-  }, '后台 worker 已创建')
+  }, backgroundWorkerRoleMessage(role, '已创建'))
 
   child.once('exit', (code, signal) => {
     logger.warn({
       event: 'background_worker_exited',
+      workerRole: role,
       pid: child.pid,
       code,
       signal,
       stopping
-    }, '后台 worker 已退出')
-    if (workerProcess !== child) {
+    }, backgroundWorkerRoleMessage(role, '已退出'))
+    if (state.process !== child) {
       return
     }
-    workerProcess = undefined
+    state.process = undefined
     if (!stopping) {
-      scheduleWorkerRestart()
+      scheduleWorkerRestart(role)
     }
   })
 
   child.once('error', (error) => {
     logger.error(errorLogFields(error, {
-      event: 'background_worker_spawn_failed'
-    }), '后台 worker 启动失败')
-    if (workerProcess !== child) {
+      event: 'background_worker_spawn_failed',
+      workerRole: role
+    }), backgroundWorkerRoleMessage(role, '启动失败'))
+    if (state.process !== child) {
       return
     }
-    workerProcess = undefined
+    state.process = undefined
     if (!stopping) {
-      scheduleWorkerRestart()
+      scheduleWorkerRestart(role)
     }
   })
 }
@@ -113,18 +132,19 @@ function pipeWorkerOutput(child: ChildProcess): void {
   })
 }
 
-function scheduleWorkerRestart(): void {
-  if (restartTimer) {
+function scheduleWorkerRestart(role: BackgroundWorkerProcessRole): void {
+  const state = supervisedWorkerState(role)
+  if (state.restartTimer) {
     return
   }
 
-  restartAttempts += 1
-  const delayMs = Math.min(workerRestartMaxDelayMs, workerRestartBaseDelayMs * 2 ** Math.min(restartAttempts - 1, 5))
-  restartTimer = setTimeout(() => {
-    restartTimer = undefined
-    startWorkerProcess()
+  state.restartAttempts += 1
+  const delayMs = Math.min(workerRestartMaxDelayMs, workerRestartBaseDelayMs * 2 ** Math.min(state.restartAttempts - 1, 5))
+  state.restartTimer = setTimeout(() => {
+    state.restartTimer = undefined
+    startWorkerProcess(role)
   }, delayMs)
-  restartTimer.unref()
+  state.restartTimer.unref()
 }
 
 function installSupervisorShutdownHooks(): void {
@@ -140,16 +160,32 @@ function installSupervisorShutdownHooks(): void {
 
 function stopWorkerProcess(): void {
   stopping = true
-  if (restartTimer) {
-    clearTimeout(restartTimer)
-    restartTimer = undefined
-  }
-  if (workerProcess && !workerProcess.killed) {
-    workerProcess.kill('SIGTERM')
+  for (const state of supervisedWorkers.values()) {
+    if (state.restartTimer) {
+      clearTimeout(state.restartTimer)
+      state.restartTimer = undefined
+    }
+    if (state.process && !state.process.killed) {
+      state.process.kill('SIGTERM')
+    }
   }
 }
 
 function exitAfterWorkerStop(exitCode: number): never {
   stopWorkerProcess()
   process.exit(exitCode)
+}
+
+function supervisedWorkerState(role: BackgroundWorkerProcessRole): SupervisedWorkerState {
+  const state = supervisedWorkers.get(role)
+  if (!state) {
+    throw new Error(`未知后台 worker 角色：${role}`)
+  }
+  return state
+}
+
+function backgroundWorkerRoleMessage(role: BackgroundWorkerProcessRole, action: string): string {
+  if (role === 'metrics-worker') return `后台 metrics-worker ${action}`
+  if (role === 'ingest-worker') return `后台 ingest-worker ${action}`
+  return `后台 worker ${action}`
 }

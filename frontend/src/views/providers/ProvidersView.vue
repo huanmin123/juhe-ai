@@ -307,22 +307,19 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { authState } from '@/composables/useAuth'
-import type {
-  CustomProviderModelScope,
-  ProviderDefinition,
-  ProviderModelApiProtocol,
-  ProviderModelMode,
-  ProviderModelPricing,
-  ProviderModelStatus,
-  ProviderModelUpsertPayload,
-  ProviderModelVisibility
-} from '@/types/domain'
+import type { ProviderDefinition, ProviderModelPricing, ProviderModelUpsertPayload } from '@/types/domain'
+import {
+  applyPricingTemplateToCustomModelForm,
+  buildCustomModelPayload as buildCustomModelUpsertPayload,
+  clearCustomModelPricesOutsideCategory,
+  createCustomModelFormFromPricing,
+  emptyCustomModelForm,
+  type CustomModelForm
+} from './customProviderModelForm'
 import {
   apiProtocolOptions,
   categoryFromModeOrModel,
   defaultProtocolsForModelCategory,
-  directPriceFieldKeys,
-  directPriceFieldsByCategory,
   findFirstModelCategory,
   formatApiProtocol,
   formatCapabilitiesSummary,
@@ -338,44 +335,26 @@ import {
   formatUnitPrice,
   getApiProtocolTagColor,
   getModelCategory,
-  hasAnyNumber,
-  hasDirectModelPrice,
-  modelCategoryLabels,
-  modelCategoryOrder,
   modelModeOptions,
   modelScopeColor,
   modelStatusColor,
   modelStatusOptions,
   modelVisibilityOptions,
   visibleProviderCapabilities,
-  type DirectPriceFieldKey,
   type ModelCategoryKey
 } from './providerModelFormatters'
-
-interface CustomModelForm {
-  id?: string
-  model: string
-  scope: CustomProviderModelScope
-  status: ProviderModelStatus
-  visibility: ProviderModelVisibility
-  displayName?: string
-  mode: ProviderModelMode
-  supportedApiProtocols: ProviderModelApiProtocol[]
-  pricingTemplateModel?: string
-  releaseDate?: string
-  shutdownDate?: string
-  contextWindowTokens?: number
-  maxOutputTokens?: number
-  inputUsdPer1M?: number
-  outputUsdPer1M?: number
-  cachedInputUsdPer1M?: number
-  cacheWriteUsdPer1M?: number
-  imageInputUsdPer1M?: number
-  imageOutputUsdPer1M?: number
-  audioInputUsdPer1M?: number
-  audioOutputUsdPer1M?: number
-  outputUsdPerImage?: number
-}
+import {
+  buildModelCategoryTabs,
+  buildPricingTemplateOptions,
+  buildProviderModelColumns,
+  filterProviderModelsByKeyword
+} from './providerModelTableState'
+import {
+  providerActionsForScope,
+  providerColumnsForScope,
+  providerEmptyDescriptionForScope,
+  providerScrollXForScope
+} from './providerTableConfig'
 
 const route = useRoute()
 const loading = ref(false)
@@ -394,60 +373,10 @@ const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canCreateGlobalModel = computed(() => authState.isAdmin.value && isManagementView.value)
 const customModelEditing = computed(() => Boolean(editingCustomModelId.value))
 
-const managementProviderColumns = [
-  { title: '名称', dataIndex: 'name', key: 'name', width: 160 },
-  { title: '状态', key: 'status', width: 90 },
-  { title: '账户类型', key: 'accountTypes', width: 180 },
-  { title: '接口能力', key: 'capabilities', width: 280 },
-  { title: '默认 Base URL', dataIndex: 'baseUrl', key: 'baseUrl', width: 240 },
-  { title: '默认测试模型', dataIndex: 'defaultTestModel', key: 'defaultTestModel', width: 160 },
-  { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', fixed: 'right' }
-]
-
-const selfProviderColumns = [
-  { title: '模型目录', dataIndex: 'name', key: 'name', width: 180 },
-  { title: '状态', key: 'status', width: 90 },
-  { title: '接口能力', key: 'capabilities', width: 260 },
-  { title: '说明', dataIndex: 'description', key: 'description', width: 260 },
-  { title: '操作', key: 'actions', fixed: 'right' }
-]
-
-const providerColumns = computed(() => isManagementView.value ? managementProviderColumns : selfProviderColumns)
-const providerScrollX = computed(() => isManagementView.value ? 1320 : 850)
-const providerEmptyDescription = computed(() => isManagementView.value
-  ? '当前内置 OpenAI 兼容与 GPT 供应商，后续新供应商会在这里扩展。'
-  : '当前没有可用模型目录。'
-)
-const providerActions = computed<RowActionItem[]>(() => [
-  { key: 'models', label: isManagementView.value ? '模型目录' : '查看模型', icon: 'detail', tone: 'info' }
-])
-
-const baseModelColumns = [
-  { title: '模型', key: 'model', width: 260 },
-  { title: '范围', key: 'scope', width: 100 },
-  { title: '状态', key: 'status', width: 90 },
-  { title: '可见性', key: 'visibility', width: 130 },
-  { title: '发布时间', key: 'releaseDate', width: 120 },
-  { title: '用途', key: 'category', width: 120 },
-  { title: '接口协议', key: 'protocols', width: 230 },
-  { title: '计费', key: 'prices', width: 230 },
-  { title: '缓存写入', key: 'cacheWrite', width: 180 },
-  { title: '图片 token 价格', key: 'imageTokenPrice', width: 180 },
-  { title: '音频 token 价格', key: 'audioTokenPrice', width: 180 },
-  { title: '每张价格', key: 'imageUnitPrice', width: 130 },
-  { title: '上下文', key: 'context', width: 180 },
-  { title: '操作', key: 'actions', width: 86, fixed: 'right' }
-]
-
-const emptyCustomModelForm: CustomModelForm = {
-  model: '',
-  scope: 'personal',
-  status: 'active',
-  visibility: 'public',
-  mode: 'text',
-  supportedApiProtocols: ['responses', 'chat_completions']
-}
+const providerColumns = computed(() => providerColumnsForScope(isManagementView.value))
+const providerScrollX = computed(() => providerScrollXForScope(isManagementView.value))
+const providerEmptyDescription = computed(() => providerEmptyDescriptionForScope(isManagementView.value))
+const providerActions = computed<RowActionItem[]>(() => providerActionsForScope(isManagementView.value))
 
 const customModelForm = reactive<CustomModelForm>({ ...emptyCustomModelForm })
 
@@ -456,27 +385,7 @@ const currentCategoryModels = computed(() => {
   return providerModels.value.filter((item) => getModelCategory(item) === category)
 })
 
-const modelColumns = computed(() => {
-  const rows = currentCategoryModels.value
-  const visibleKeys = new Set(['model', 'scope', 'status', 'visibility', 'releaseDate', 'category', 'protocols', 'actions'])
-
-  if (selectedModelCategory.value === 'text') {
-    visibleKeys.add('prices')
-    visibleKeys.add('cacheWrite')
-  }
-  if (selectedModelCategory.value === 'image') {
-    visibleKeys.add('imageTokenPrice')
-    visibleKeys.add('imageUnitPrice')
-  }
-  if (selectedModelCategory.value === 'audio') {
-    visibleKeys.add('audioTokenPrice')
-  }
-  if (rows.some((item) => hasAnyNumber(item.maxInputTokens, item.contextWindowTokens, item.maxOutputTokens))) {
-    visibleKeys.add('context')
-  }
-
-  return baseModelColumns.filter((column) => visibleKeys.has(column.key))
-})
+const modelColumns = computed(() => buildProviderModelColumns(selectedModelCategory.value, currentCategoryModels.value))
 
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型目录` : '模型目录')
 const customModelModalTitle = computed(() => customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
@@ -490,45 +399,15 @@ const modelScopeOptions = computed(() => {
   return options
 })
 
-const pricingTemplateOptions = computed(() => providerModels.value
-  .filter((item) => item.model.toLowerCase() !== customModelForm.model.trim().toLowerCase())
-  .filter((item) => getModelCategory(item) === customModelPricingCategory.value)
-  .filter((item) => (item.status ?? 'active') === 'active')
-  .filter((item) => !item.pricingModel && hasDirectModelPrice(item))
-  .map((item) => ({
-    value: item.model,
-    label: `${item.model}${item.scope === 'built_in' ? '（内置）' : item.scope === 'global' ? '（全局）' : '（个人）'}`
-  })))
+const pricingTemplateOptions = computed(() => buildPricingTemplateOptions(
+  providerModels.value,
+  customModelForm.model,
+  customModelPricingCategory.value
+))
 
-const modelCategoryTabs = computed(() => {
-  const counts = new Map<ModelCategoryKey, number>()
-  for (const key of modelCategoryOrder) {
-    counts.set(key, 0)
-  }
+const modelCategoryTabs = computed(() => buildModelCategoryTabs(providerModels.value))
 
-  for (const item of providerModels.value) {
-    const key = getModelCategory(item)
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-
-  return modelCategoryOrder
-    .filter((key) => (counts.get(key) ?? 0) > 0)
-    .map((key) => ({
-      key,
-      label: `${modelCategoryLabels[key]} (${counts.get(key) ?? 0})`
-    }))
-})
-
-const filteredModels = computed(() => {
-  const keyword = modelKeyword.value.trim().toLowerCase()
-  return currentCategoryModels.value.filter((item) => {
-    const keywordMatches = !keyword
-      || item.model.toLowerCase().includes(keyword)
-      || formatModelCategory(item).toLowerCase().includes(keyword)
-      || (item.supportedApiProtocols ?? []).some((protocol) => formatApiProtocol(protocol).toLowerCase().includes(keyword))
-    return keywordMatches
-  })
-})
+const filteredModels = computed(() => filterProviderModelsByKeyword(currentCategoryModels.value, modelKeyword.value))
 
 async function loadProviders() {
   loading.value = true
@@ -591,37 +470,13 @@ function openEditCustomModel(record: ProviderModelPricing) {
   if (!record.id || record.scope === 'built_in') return
   resetCustomModelForm()
   editingCustomModelId.value = record.id
-  customModelForm.id = record.id
-  customModelForm.model = record.model
-  customModelForm.scope = record.scope === 'global' ? 'global' : 'personal'
-  customModelForm.status = record.status ?? 'active'
-  customModelForm.visibility = record.visibility ?? 'public'
-  customModelForm.displayName = record.displayName
-  customModelForm.mode = categoryFromModeOrModel(record.mode, record.model)
-  customModelForm.supportedApiProtocols = [...(record.supportedApiProtocols ?? [])]
-  customModelForm.releaseDate = record.releaseDate
-  customModelForm.shutdownDate = record.shutdownDate
-  customModelForm.contextWindowTokens = record.contextWindowTokens
-  customModelForm.maxOutputTokens = record.maxOutputTokens
-  customModelForm.inputUsdPer1M = record.inputUsdPer1M
-  customModelForm.outputUsdPer1M = record.outputUsdPer1M
-  customModelForm.cachedInputUsdPer1M = record.cachedInputUsdPer1M
-  customModelForm.cacheWriteUsdPer1M = record.cacheWriteUsdPer1M
-  customModelForm.imageInputUsdPer1M = record.imageInputUsdPer1M
-  customModelForm.imageOutputUsdPer1M = record.imageOutputUsdPer1M
-  customModelForm.audioInputUsdPer1M = record.audioInputUsdPer1M
-  customModelForm.audioOutputUsdPer1M = record.audioOutputUsdPer1M
-  customModelForm.outputUsdPerImage = record.outputUsdPerImage
-  clearCustomModelPricesOutsideCategory(customModelPricingCategory.value)
-  if (record.pricingModel) {
-    applyPricingTemplate(record.pricingModel)
-  }
+  Object.assign(customModelForm, createCustomModelFormFromPricing(record, providerModels.value))
   customModelModalOpen.value = true
 }
 
 async function saveCustomModel() {
   if (!activeProvider.value) return
-  const payload = buildCustomModelPayload()
+  const payload = buildCurrentCustomModelPayload()
   if (!payload) return
   customModelSaving.value = true
   try {
@@ -677,76 +532,24 @@ function resetCustomModelForm() {
   })
 }
 
-function buildCustomModelPayload(): ProviderModelUpsertPayload | undefined {
-  const model = customModelForm.model.trim()
-  if (!model) {
+function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefined {
+  const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value)
+  if (!payload) {
     message.warning('请填写模型 ID')
     return undefined
   }
-  return {
-    model,
-    scope: customModelForm.scope,
-    status: customModelForm.status,
-    visibility: customModelForm.visibility,
-    displayName: trimToNull(customModelForm.displayName),
-    mode: customModelForm.mode,
-    supportedApiProtocols: [...customModelForm.supportedApiProtocols],
-    pricingModel: null,
-    releaseDate: trimToNull(customModelForm.releaseDate),
-    shutdownDate: trimToNull(customModelForm.shutdownDate),
-    contextWindowTokens: numberToNull(customModelForm.contextWindowTokens),
-    maxOutputTokens: numberToNull(customModelForm.maxOutputTokens),
-    ...buildCustomModelDirectPricePayload(customModelPricingCategory.value)
-  }
+  return payload
 }
 
 function handleCustomModelModeChange() {
   const category = customModelPricingCategory.value
   customModelForm.supportedApiProtocols = defaultProtocolsForModelCategory(category)
   customModelForm.pricingTemplateModel = undefined
-  clearCustomModelPricesOutsideCategory(category)
+  clearCustomModelPricesOutsideCategory(customModelForm, category)
 }
 
 function handlePricingTemplateChange(value?: string) {
-  applyPricingTemplate(value)
-}
-
-function buildCustomModelDirectPricePayload(category: ModelCategoryKey) {
-  const visibleFields = new Set(directPriceFieldsByCategory[category])
-  const payload: Partial<Record<DirectPriceFieldKey, number | null>> = {}
-  for (const field of directPriceFieldKeys) {
-    payload[field] = !visibleFields.has(field)
-      ? null
-      : numberToNull(customModelForm[field])
-  }
-  return payload
-}
-
-function applyPricingTemplate(model?: string) {
-  const templateModel = trimToUndefined(model)
-  if (!templateModel) return
-  const template = findProviderModelByName(templateModel)
-  if (!template) return
-  const category = customModelPricingCategory.value
-  if (getModelCategory(template) !== category) return
-  const visibleFields = new Set(directPriceFieldsByCategory[category])
-  for (const field of directPriceFieldKeys) {
-    customModelForm[field] = visibleFields.has(field) ? template[field] : undefined
-  }
-}
-
-function findProviderModelByName(model: string): ProviderModelPricing | undefined {
-  const normalized = model.trim().toLowerCase()
-  return providerModels.value.find((item) => item.model.trim().toLowerCase() === normalized)
-}
-
-function clearCustomModelPricesOutsideCategory(category: ModelCategoryKey) {
-  const visibleFields = new Set(directPriceFieldsByCategory[category])
-  for (const field of directPriceFieldKeys) {
-    if (!visibleFields.has(field)) {
-      customModelForm[field] = undefined
-    }
-  }
+  applyPricingTemplateToCustomModelForm(customModelForm, providerModels.value, value)
 }
 
 function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
@@ -772,18 +575,6 @@ function canMutateModel(record: ProviderModelPricing): boolean {
   if (activeProvider.value && record.providerCode !== activeProvider.value.code) return false
   if (record.scope === 'global') return canCreateGlobalModel.value
   return record.systemAccountId === authState.currentUser.value?.id
-}
-
-function trimToUndefined(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-function trimToNull(value: unknown): string | null {
-  return trimToUndefined(value) ?? null
-}
-
-function numberToNull(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function extractModelErrorMessage(error: unknown, fallback: string) {

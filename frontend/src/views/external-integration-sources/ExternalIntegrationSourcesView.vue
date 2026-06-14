@@ -149,100 +149,29 @@
 
     <ExternalSourceApiDocsModal v-model:open="apiDocsOpen" />
 
-    <a-modal
+    <ExternalSourceFormModal
       v-model:open="sourceModalOpen"
-      :title="editingSourceId ? '编辑来源授权' : '新增授权'"
-      width="760px"
-      :confirm-loading="sourceSaving"
-      ok-text="保存"
-      cancel-text="取消"
-      :ok-button-props="{ disabled: sourceSaving }"
-      @ok="saveSource"
-    >
-      <a-form layout="vertical">
-        <a-form-item label="授权名称" required>
-          <a-input v-model:value="sourceForm.name" placeholder="例如 公益站生产授权" />
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select v-model:value="sourceForm.status" :options="sourceStatusOptions" />
-        </a-form-item>
-        <a-form-item label="接口资源授权">
-          <a-select v-model:value="sourceForm.scopes" mode="multiple" :options="scopeOptions" placeholder="选择允许调用的公开接口" />
-        </a-form-item>
-        <a-form-item label="到期时间">
-          <a-date-picker v-model:value="sourceForm.expiresAt" class="full-control" show-time allow-clear />
-        </a-form-item>
-        <a-form-item label="限频规则">
-          <div class="rate-limit-list">
-            <div v-for="(rule, index) in sourceForm.rateLimits" :key="index" class="rate-limit-row">
-              <a-input-number v-model:value="rule.windowSeconds" :min="1" :max="86400" :precision="0" addon-after="秒内" />
-              <a-input-number v-model:value="rule.maxRequests" :min="1" :max="100000" :precision="0" addon-after="次" />
-              <a-button danger @click="removeRateLimit(index)">删除</a-button>
-            </div>
-            <a-button @click="addRateLimit">新增限频规则</a-button>
-            <span v-if="!sourceForm.rateLimits.length" class="muted-cell">默认不限制。</span>
-          </div>
-        </a-form-item>
-        <a-form-item label="备注">
-          <a-textarea v-model:value="sourceForm.notes" :rows="3" :maxlength="500" show-count />
-        </a-form-item>
-      </a-form>
-    </a-modal>
+      :editing="Boolean(editingSourceId)"
+      :form="sourceForm"
+      :saving="sourceSaving"
+      :scope-options="scopeOptions"
+      @add-rate-limit="addRateLimit"
+      @remove-rate-limit="removeRateLimit"
+      @save="saveSource"
+    />
 
-    <a-modal
-      v-model:open="createdTokenOpen"
-      title="来源授权已创建"
-      width="600px"
-      :footer="null"
-      :mask-closable="false"
-      @cancel="closeCreatedTokenModal"
-    >
-      <div class="created-token-guide">
-        <a-alert
-          class="created-token-alert"
-          type="success"
-          show-icon
-          message="生产 Token 已生成"
-          description="请复制后保存到外部系统后端；后续可在列表按权限复制完整 Token，不要放进前端包或公开文档。"
-        />
-        <div class="created-token-guide-section">
-          <span class="created-token-step-title">1. 复制 Base URL</span>
-          <div class="created-token-copy-row">
-            <span class="created-token-label">Base URL</span>
-            <code class="created-token-value">{{ publicApiBaseUrl }}</code>
-            <a-button type="text" size="small" @click="copyPublicApiBaseUrl">
-              <template #icon><copy-outlined /></template>
-              复制
-            </a-button>
-          </div>
-        </div>
-        <div class="created-token-guide-section">
-          <span class="created-token-step-title">2. 保存生产 Token</span>
-          <a-input-group compact class="created-token-input">
-            <a-input :value="createdTokenPlain" readonly />
-            <a-button type="primary" @click="copyCreatedToken">复制</a-button>
-          </a-input-group>
-        </div>
-        <div class="created-token-guide-section">
-          <span class="created-token-step-title">3. 配置请求头</span>
-          <pre class="created-token-code">{{ createdTokenAuthHeader }}</pre>
-          <a-button size="small" @click="copyCreatedTokenAuthHeader">
-            <template #icon><copy-outlined /></template>
-            复制认证头
-          </a-button>
-        </div>
-        <div class="created-token-actions">
-          <a-button @click="openApiDocs">查看接入文档</a-button>
-          <a-button type="primary" @click="closeCreatedTokenModal">我已保存</a-button>
-        </div>
-      </div>
-    </a-modal>
+    <ExternalSourceCreatedTokenModal
+      :open="createdTokenOpen"
+      :public-api-base-url="publicApiBaseUrl"
+      :token="createdTokenPlain"
+      @close="closeCreatedTokenModal"
+      @open-docs="openApiDocs"
+    />
   </a-card>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import type { Dayjs } from 'dayjs'
 import { BookOutlined, CopyOutlined } from '@ant-design/icons-vue'
 
 import { api, type ExternalIntegrationSourceListParams } from '@/api/client'
@@ -253,19 +182,27 @@ import type { RowActionItem } from '@/components/rowActions'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import { formatDateTime, formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
+import { formatDateTime } from '@/shared/formatters'
 import type {
-  ExternalIntegrationRateLimitRule,
   ExternalIntegrationScopeOption,
   ExternalIntegrationSourceStatus,
   ExternalIntegrationSourceSummary,
   ExternalIntegrationSourceTokenSummary
 } from '@/types/domain'
 import ExternalSourceApiDocsModal from './ExternalSourceApiDocsModal.vue'
+import ExternalSourceCreatedTokenModal from './ExternalSourceCreatedTokenModal.vue'
+import ExternalSourceFormModal from './ExternalSourceFormModal.vue'
 import { resolvePublicApiBaseUrl } from './externalSourceApiDocs'
+import {
+  buildSourcePayload,
+  createDefaultRateLimit,
+  createEmptySourceForm,
+  createSourceFormFromRecord,
+  formatRateLimits,
+  type ExternalSourceForm
+} from './externalSourceFormModel'
 
 const pageSize = 20
-const sourceAuthDemoScope = 'external_integrations:source_auth_demo:read'
 const loading = ref(false)
 const keyword = ref('')
 const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>('all')
@@ -282,35 +219,15 @@ const createdTokenOpen = ref(false)
 const sourceSaving = ref(false)
 const generatingTokenSourceId = ref('')
 const editingSourceId = ref<string>()
-const sourceForm = reactive<{
-  name: string
-  status: ExternalIntegrationSourceStatus
-  scopes: string[]
-  rateLimits: ExternalIntegrationRateLimitRule[]
-  expiresAt: Dayjs | null
-  notes: string
-}>({
-  name: '',
-  status: 'active',
-  scopes: [],
-  rateLimits: [],
-  expiresAt: null,
-  notes: ''
-})
+const sourceForm = reactive<ExternalSourceForm>(createEmptySourceForm())
 
 const createdTokenPlain = ref('')
 const tokenCopyingKey = ref('')
-const createdTokenAuthHeader = computed(() => `Authorization: Bearer ${createdTokenPlain.value || '<source_token>'}`)
 const builtInSourceShortDescription = '系统内置联调用来源'
 const builtInSourceDescription = '系统内置联调用来源，已授权全部公开接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
-  { label: '启用', value: 'active' },
-  { label: '停用', value: 'disabled' }
-]
-
-const sourceStatusOptions = [
   { label: '启用', value: 'active' },
   { label: '停用', value: 'disabled' }
 ]
@@ -408,29 +325,14 @@ function openCreateSource(): void {
   editingSourceId.value = undefined
   createdTokenPlain.value = ''
   createdTokenOpen.value = false
-  Object.assign(sourceForm, {
-    name: '',
-    status: 'active',
-    scopes: defaultCreateSourceScopes(),
-    rateLimits: [],
-    expiresAt: null,
-    notes: ''
-  })
+  Object.assign(sourceForm, createEmptySourceForm(scopeOptions.value))
   sourceModalOpen.value = true
 }
 
-function defaultCreateSourceScopes(): string[] {
-  return scopeOptions.value.some((item) => item.value === sourceAuthDemoScope)
-    ? [sourceAuthDemoScope]
-    : []
-}
-
 function openEditSource(record: ExternalIntegrationSourceSummary): void {
-  let rateLimits: ExternalIntegrationRateLimitRule[]
-  let expiresAt: Dayjs | null
+  let nextForm: ExternalSourceForm
   try {
-    rateLimits = normalizeRateLimits(record.rateLimits)
-    expiresAt = parseStrictDatePickerValue(record.expiresAt, '来源授权过期时间') ?? null
+    nextForm = createSourceFormFromRecord(record)
   } catch (error) {
     message.error(extractApiErrorMessage(error, '来源授权数据异常，请清理后再编辑'))
     return
@@ -438,14 +340,7 @@ function openEditSource(record: ExternalIntegrationSourceSummary): void {
   editingSourceId.value = record.id
   createdTokenPlain.value = ''
   createdTokenOpen.value = false
-  Object.assign(sourceForm, {
-    name: record.name,
-    status: record.status,
-    scopes: [...record.scopes],
-    rateLimits,
-    expiresAt,
-    notes: record.notes ?? ''
-  })
+  Object.assign(sourceForm, nextForm)
   sourceModalOpen.value = true
 }
 
@@ -456,14 +351,7 @@ async function saveSource(): Promise<void> {
   }
   sourceSaving.value = true
   try {
-    const payload = {
-      name: sourceForm.name.trim(),
-      status: sourceForm.status,
-      scopes: [...sourceForm.scopes],
-      rateLimits: normalizeRateLimits(sourceForm.rateLimits),
-      expiresAt: formatServerDateTimeInput(sourceForm.expiresAt),
-      notes: sourceForm.notes.trim() || null
-    }
+    const payload = buildSourcePayload(sourceForm)
     if (editingSourceId.value) {
       await api.externalIntegrationSources.update(editingSourceId.value, payload)
       message.success('来源授权已更新')
@@ -484,7 +372,7 @@ async function saveSource(): Promise<void> {
 }
 
 function addRateLimit(): void {
-  sourceForm.rateLimits.push({ windowSeconds: 60, maxRequests: 10 })
+  sourceForm.rateLimits.push(createDefaultRateLimit())
 }
 
 function removeRateLimit(index: number): void {
@@ -605,18 +493,6 @@ async function generateSourceToken(record: ExternalIntegrationSourceSummary): Pr
   }
 }
 
-function copyCreatedToken(): void {
-  void copyTextToClipboard(createdTokenPlain.value, 'Token 已复制')
-}
-
-function copyCreatedTokenAuthHeader(): void {
-  void copyTextToClipboard(createdTokenAuthHeader.value, '认证头已复制')
-}
-
-function copyPublicApiBaseUrl(): void {
-  void copyTextToClipboard(publicApiBaseUrl.value, 'Base URL 已复制')
-}
-
 function closeCreatedTokenModal(): void {
   createdTokenOpen.value = false
   createdTokenPlain.value = ''
@@ -638,27 +514,6 @@ async function copyTokenPreview(record: ExternalIntegrationSourceSummary): Promi
       tokenCopyingKey.value = ''
     }
   }
-}
-
-function normalizeRateLimits(rules: ExternalIntegrationRateLimitRule[]): ExternalIntegrationRateLimitRule[] {
-  return rules.map((rule, index) => ({
-    windowSeconds: normalizeRateLimitInteger(rule.windowSeconds, 1, 86400, `第 ${index + 1} 条限频窗口`),
-    maxRequests: normalizeRateLimitInteger(rule.maxRequests, 1, 100000, `第 ${index + 1} 条限频次数`)
-  }))
-}
-
-function normalizeRateLimitInteger(value: unknown, min: number, max: number, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value)) {
-    throw new Error(`${label}必须是整数`)
-  }
-  if (value < min || value > max) {
-    throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)
-  }
-  return value
-}
-
-function formatRateLimits(rules: ExternalIntegrationRateLimitRule[]): string {
-  return rules.length ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join('，') : '不限制'
 }
 
 function sourceNotes(record: ExternalIntegrationSourceSummary): string {
@@ -817,115 +672,6 @@ function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
   cursor: pointer;
 }
 
-.full-control {
-  width: 100%;
-}
-
-.rate-limit-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.rate-limit-row {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto;
-  gap: 8px;
-}
-
-.modal-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.created-token-alert {
-  margin-bottom: 0;
-}
-
-.created-token-guide {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.created-token-guide-section {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 12px;
-  background: #fbfdff;
-}
-
-.created-token-step-title {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.created-token-copy-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.created-token-label {
-  flex: none;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.created-token-value {
-  min-width: 0;
-  flex: 1;
-  padding: 4px 10px;
-  overflow: hidden;
-  color: #0f766e;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border-radius: 6px;
-  background: #ecfeff;
-}
-
-.created-token-input {
-  display: flex;
-  margin-top: 2px;
-}
-
-.created-token-input :deep(.ant-input) {
-  flex: 1;
-  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
-}
-
-.created-token-code {
-  margin: 0;
-  padding: 10px 12px;
-  overflow-x: auto;
-  color: #334155;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.created-token-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 .token-preview-cell {
   display: flex;
   align-items: center;
@@ -964,20 +710,4 @@ function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
   background: #eff6ff;
 }
 
-@media (max-width: 720px) {
-  .rate-limit-row {
-    grid-template-columns: 1fr;
-  }
-
-  .modal-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .created-token-copy-row,
-  .created-token-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-}
 </style>

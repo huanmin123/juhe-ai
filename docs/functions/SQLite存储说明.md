@@ -84,7 +84,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 新增 `JUHE_AI_USAGE_SHARD_ROOT`，未配置或留空时默认跟随数据集目录库所在目录生成 `usage-shards`；生产也可以显式配置为 `./data/usage-shards` 或其他独立目录。
 - 新增 `JUHE_AI_USAGE_SHARD_COUNT`，默认 `16`。
 - 新写入的 `usage_records` 按 `bucket_date + stable_hash(id) % shardCount` 路由到多个 SQLite shard 文件。
-- 当前实现复用 background worker usage 队列，在 worker 内按 shard 分组并对每个 shard 执行短事务；独立 child writer pool 作为后续性能增强。
+- 当前实现由 `ingest-worker` 承接 background worker usage 队列，在 ingest-worker 内按 shard 分组并对每个 shard 执行短事务；独立 child writer pool 作为后续性能增强。
 - 统计结果库仍不分片；统计 worker 改为按 shard 独立游标读取 usage，再在统计结果库同事务写结果和推进水位。
 - 使用记录详情通过 usage id 中的日期和 shard 信息直接定位；usage id 必须携带可定位 shard 的日期信息。
 - 使用记录列表由 repository 内部跨 shard 有界读取并稳定合并，不做全 shard 精确 `COUNT(*)`。
@@ -104,12 +104,12 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 系统管理 API、登录态校验、管理面 CRUD、客户请求链路中的高频 SQLite 读写、公开设置读取、运行日志索引查询、账号错误状态副作用、OAuth Access Token 刷新持久化和 OAuth Codex 额度快照写入，都通过独立本地 DB service 进程完成；主 Web 进程只代理 `/__aisys__/api/*`，不解析管理 API JSON body，不直接导入管理路由或 repository。DB service 不改变 SQLite 单写者模型，DB service 不可用时请求返回可读错误，不能回退到主 Web 进程本地同步执行。
 - IP 封禁命中计数只在 server 进程内做短暂有界聚合后投递 DB service：待写 distinct `ip_hash + policy_id` 最多 `5000` 个，单次 flush 最多 `1000` 条，满载时丢弃新的 distinct 命中并计数，不能让恶意多来源封禁流量形成无界 Map 或一次大 IPC。
 - 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；数据集目录库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开。三类入口都使用 WAL，并且三个路径必须互不相同。
-- 使用记录按每次上游尝试写入 usage shard；`usage_records.client_ip` 只保存规范化 IPv4，非 IPv4 来源写空。server 角色只把使用记录投递给 background worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
+- 使用记录按每次上游尝试写入 usage shard；`usage_records.client_ip` 只保存规范化 IPv4，非 IPv4 来源写空。server 角色只把使用记录投递给 ingest-worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 公开接口日志使用 `public_api_logs` 保存 `/__aipublic__` 外部来源系统调用元数据、状态码、耗时、客户端 IP、trace ID、有限请求 / 响应快照和错误摘要；请求 / 响应快照按原文保存并在超限时截断，最大保留 7 天，由后台数据保留任务分批清理。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志；防重复提交缓存属于进程内易失状态，过期维护固定小批量轮转，容量淘汰不全量展开排序。
-- 原始审计日志使用独立表保存最近 1 小时完全成功请求热窗口、超过热窗口后的 10% 稳定成功样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 background worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
-- 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集目录库表 `runtime_logs`，后台 worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配，完整日志正文搜索交给 `grep 模式`。
+- 原始审计日志使用独立表保存最近 1 小时完全成功请求热窗口、超过热窗口后的 10% 稳定成功样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 ingest-worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
+- 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集目录库表 `runtime_logs`，ingest-worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配，完整日志正文搜索交给 `grep 模式`。
 - 系统团队、团队成员和统一资源授权使用独立表记录；账户授权会为被授权用户创建独立授权实例账户，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `protocols` 保存协议族和版本，当前为 `openai/v1`；`protocol_endpoint_families` 保存协议下的端点族，当前包含 `chat_completions` 和 `responses`；`providers` 保存供应商身份和父子关系，当前为通用 `openai` 供应商和 `gpt.parent_code = openai` 子供应商；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、默认测试模型、账户类型和能力，当前默认档案为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`；`provider_protocol_profile_families` 保存档案启用的端点族能力。
 - `accounts.provider_protocol_profile_id`、`groups.provider_protocol_profile_id` 和 `account_test_tasks.provider_protocol_profile_id` 保存供应商协议档案；`protocol_code` / `protocol_version` 从档案冗余写入，用于运行时策略、审计和排障。账户只能加入同 `provider_protocol_profile_id` 的分组；分组名称唯一和默认分组唯一都按协议档案维度判断，不能只按 `provider_code` 判断。当前 API Key 号池绑定兼容性仍要求同一 `provider_protocol_profile_id`；模型路由方案落地后，API Key 可绑定多个供应商协议档案分组，但请求链路必须先按全系统唯一 `model` 筛出目标档案。
@@ -204,7 +204,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后；`event_loop_lag_ms` 保存后台 worker 采样值，用于主机级概览。多进程事件循环趋势以 `process_event_loop_samples` 为准。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
 - `system_metrics_trend_windows`：按统计概览日期范围预生成系统性能 / 网络吞吐趋势，接口只按范围窗口直读。
-- `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟，当前角色为 `server`、`worker`、`db-service`，用于区分主 Web 进程、后台 worker 和本地 DB service 哪个进程卡顿。
+- `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟，当前角色为 `server`、`worker`、`metrics-worker`、`ingest-worker`、`db-service`，用于区分主 Web 进程、默认后台 worker、监控 worker、写入 worker 和本地 DB service 哪个进程卡顿。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟样本数、平均值和最大值，作为长期粗粒度排障缓存。
 - `process_event_loop_trend_windows`：统计概览范围窗口缓存；管理侧事件循环趋势展示固定读取最近 24 小时 `process_event_loop_samples` 并按分钟聚合，避免长范围窗口膨胀，也避免把卡顿尖峰压成天级趋势。
 - `database_storage_snapshots`：按采样时间保存业务库、数据集目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
@@ -405,8 +405,8 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - API Key 生命周期分为停用、业务删除和记录物理清理：停用只改状态并立即拒绝后续调用；业务删除同步移除业务库记录并让后续请求立即无法再使用该 Key；该 Key 关联的历史使用记录由 usage shard 清理，原始审计日志、审计尝试、payload 引用和审计错误组由数据集目录库清理，API Key 维度统计缓存、额度窗口、排行 / 范围窗口以及调用方、账户、分组、授权、模型和错误等相关聚合缓存由统计结果库反向扣减。usage shard 与统计结果库不能共享强事务，因此清理任务先通过去重 shard 目录锁定当前 Key 仍有记录的有限 shard 窗口，再在统计结果库用 `usage_record_cleanup_deductions` 保证每条 usage 只扣减一次，最后删除对应 shard 行；如果 shard 删除或后续步骤失败，后台重试只补删或继续收尾，不重复扣减统计。未被任何审计引用继续使用的 payload blob 由后续无引用 blob 清理任务删除。
 - AI 账户生命周期分为逻辑删除和过期物理清理：删除操作只面向真实来源账户，只写 `accounts.deleted_at / deleted_by`，并把账户置为停用、不可调度、清空冷却；列表、options、授权使用、网关调度、账户测试、后台 OAuth 刷新和冷却复测都必须排除 `deleted_at IS NOT NULL` 的账户。删除来源账户时，同步逻辑删除该来源下所有授权实例，授权操作记录和运行时授权改为 `revoked`；授权实例账户不接受删除，被授权人归还个人直授权时个人授权改为 `returned`。逻辑删除阶段不删除 `usage_records`、审计、模型检测、质量分、额度快照和统计缓存。独立 background worker 每天扫描 `deleted_at` 已超过 1 个月的账户，先按统计安全游标分批清理 usage shard、数据集目录库和统计结果库，再物理删除账户、分组绑定、支持模型、授权来源、授权主记录、授权 grant 和所有相关统计窗口；如果游标未追平或 SQLite 写锁冲突，保留清理目标等待下次重试。
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
-- 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属；`event_loop_lag_ms` 来自 worker 内独立事件循环直方图，记录上个采样窗口内去除采样分辨率基线后的额外最大延迟。多进程事件循环延迟单独写入 `process_event_loop_samples`：worker 本地采样自身，server 通过 IPC 返回主进程样本，并通过专用诊断 IPC 读取 DB service 样本；诊断 IPC 不进入 DB service 业务请求计数，也不触发不可用熔断。采样频率跟随系统监控间隔，只有少量 IPC 和一次直方图读取，不扫描业务数据。概览接口的最新进程采样状态和最近 24 小时峰值状态都固定返回 `server`、`worker`、`db-service` 三个角色；缺少样本时用 `sampleAvailable = false` 和 `null` 字段表达未知，不用缺项、0 或默认时间伪装正常。事件循环趋势固定展示最近 24 小时分钟峰值桶，不跟随概览日期范围，单次读取被原始采样 7 天保留期和 24 小时窗口硬限制住。
-- 后台 worker 是一个固定常驻子进程，不是每个后台任务临时创建一个进程；内部各定时任务由同一个调度器注册、不可重入执行并记录运行快照。管理侧系统监控可查看每个后台任务的最近耗时、最长耗时、运行中状态、成功次数、失败次数、跳过次数和最近错误，用于判断具体是哪一个任务拖慢 worker；worker snapshot 不可用时接口必须返回显式可用性标记和 `null`，不能把未知状态压成空任务数组。
+- `metrics-worker` 按系统监控间隔写入 `system_metrics_samples`，不写用户级业务归属；`event_loop_lag_ms` 来自 `metrics-worker` 内独立事件循环直方图，记录上个采样窗口内去除采样分辨率基线后的额外最大延迟。多进程事件循环延迟单独写入 `process_event_loop_samples`：metrics-worker 本地采样自身，server 通过 IPC 返回主进程样本，默认 worker 通过专用控制 IPC 返回业务 worker 样本，并通过专用诊断 IPC 读取 DB service 样本；诊断 IPC 不进入 DB service 业务请求计数，也不触发不可用熔断。采样频率跟随系统监控间隔，只有少量 IPC 和一次直方图读取，不扫描业务数据。概览接口的最新进程采样状态和最近 24 小时峰值状态都固定返回 `server`、`worker`、`metrics-worker`、`db-service` 四个角色；缺少样本时用 `sampleAvailable = false` 和 `null` 字段表达未知，不用缺项、0 或默认时间伪装正常。事件循环趋势固定展示最近 24 小时分钟峰值桶，不跟随概览日期范围，单次读取被原始采样 7 天保留期和 24 小时窗口硬限制住。
+- 默认后台 worker 和 `metrics-worker` 都是固定常驻子进程，不是每个后台任务临时创建一个进程；内部各定时任务由对应 worker 内的调度器注册、不可重入执行并记录运行快照。管理侧系统监控可查看每个后台任务的所属 worker、最近耗时、最长耗时、运行中状态、成功次数、失败次数、跳过次数和最近错误，用于判断具体是哪一个任务拖慢哪个 worker；worker snapshot 不可用时接口必须返回显式可用性标记和 `null`，不能把未知状态压成空任务数组。
 - 系统采样的 `memory_used_percent` 表示主机实际内存压力口径，不是所有平台都等同于 `totalmem - freemem`。macOS 会把可回收文件缓存、inactive 和 speculative 页面排除在已用内存外，按 `vm_stat` 的 `Anonymous pages + Pages wired down + Pages occupied by compressor` 计算，避免把系统缓存误报为应用内存占用；读取失败时才回退到 Node 默认口径。
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
@@ -447,7 +447,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 | `system_metrics_samples` | 主机监控原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只用于最新状态和短期排障 |
 | `system_metrics_hourly` | 主机监控小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 供 worker 刷新 `system_metrics_trend_windows`；API 不在请求时聚合这些小时桶 |
 | `system_metrics_trend_windows` | 系统监控窗口趋势缓存 | 默认最近 31 天窗口 | 是，`data-retention-cleanup` 每天在 worker 内清理；刷新任务会覆盖当前窗口 | 供概览接口直读 |
-| `process_event_loop_samples` | 进程事件循环原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 按 `server`、`worker`、`db-service` 分进程角色保存，用于短期定位哪个进程卡顿 |
+| `process_event_loop_samples` | 进程事件循环原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在默认 worker 内清理 | 按 `server`、`worker`、`metrics-worker`、`ingest-worker`、`db-service` 分进程角色保存，用于短期定位哪个进程卡顿 |
 | `process_event_loop_hourly` | 进程事件循环小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 长期粗粒度排障缓存；管理页趋势不再用小时桶 |
 | `process_event_loop_trend_windows` | 进程事件循环窗口趋势缓存 | 默认最近 31 天窗口 | 是，`data-retention-cleanup` 每天在 worker 内清理；刷新任务会覆盖当前窗口 | 供进程事件循环趋势接口直读；管理页固定展示最近 24 小时分钟桶 |
 | `database_storage_snapshots`、`table_storage_snapshots` | 表监控采样历史 | 默认最近一月，最多最近一月 | 是，`data-retention-cleanup` 每天在 worker 内清理，采样写入时也会轻量兜底清理 | 用于管理员表监控页面展示业务库、数据集目录库和统计结果库容量趋势，不纳入默认业务备份 |

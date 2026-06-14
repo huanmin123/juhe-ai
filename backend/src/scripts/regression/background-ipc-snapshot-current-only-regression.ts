@@ -3,7 +3,6 @@ import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { OperationLogInput } from '../../storage/repositories.js'
 import type { BackgroundWorkerRuntimeSnapshot } from '../../modules/background/background-ipc.js'
 
 runtimeConfig.log.consoleEnabled = false
@@ -88,12 +87,12 @@ const saturatedWorker = new FakeWorkerProcess(41004)
 backgroundIpc.attachBackgroundWorkerProcess(saturatedWorker as unknown as ChildProcess)
 let acceptedFillCount = 0
 for (let index = 0; index < 6000; index += 1) {
-  if (!backgroundIpc.sendOperationLogsToWorker([operationLog(index)])) {
+  if (!backgroundIpc.sendRecordMaintenanceJobsToWorker([recordMaintenanceJob(index)])) {
     break
   }
   acceptedFillCount += 1
 }
-assert(acceptedFillCount > 0, '队列饱和前应至少接受一条操作日志')
+assert(acceptedFillCount > 0, '队列饱和前应至少接受一条维护任务')
 assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, 'regular IPC 队列应填充到当前保护上限')
 const rejectedSnapshotRequestCountBeforeSaturation = backgroundIpc.getBackgroundWorkerState().rejectedSnapshotRequestCount
 const queuedSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(10)
@@ -116,6 +115,7 @@ function buildWorkerSnapshot(pid: number): BackgroundWorkerRuntimeSnapshot {
     pid,
     ready: true,
     processRole: 'worker',
+    workerRole: 'worker',
     jobs: [],
     usageRecordQueue: { ...queue },
     operationLogQueue: { ...queue },
@@ -125,14 +125,12 @@ function buildWorkerSnapshot(pid: number): BackgroundWorkerRuntimeSnapshot {
   }
 }
 
-function operationLog(index: number): OperationLogInput {
+function recordMaintenanceJob(index: number) {
   return {
-    actorSystemAccountId: 'sys_admin',
-    actorRole: 'admin',
-    module: 'regression',
-    action: 'snapshot_current_only',
-    operationKey: 'regression.background_ipc_snapshot_current_only',
-    resourceType: 'background_worker',
-    summary: `后台 worker snapshot current-only 队列填充 ${index}`
+    type: 'usage_records_cleanup' as const,
+    id: `snapshot_current_only_${index}`,
+    cutoffAt: '2000-01-01T00:00:00.000Z',
+    batchSize: 100,
+    maxBatches: 1
   }
 }

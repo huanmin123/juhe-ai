@@ -35,8 +35,8 @@ function testNormalRuntime(): void {
 
 function testBackloggedRuntime(): void {
   const runtime = buildRuntimeSnapshot()
-  runtime.worker!.snapshot!.usageRecordQueue.queueLength = 1000
-  runtime.worker!.snapshot!.usageRecordQueue.queueBytes = 256 * 1024
+  runtime.ingestWorker!.snapshot!.usageRecordQueue.queueLength = 1000
+  runtime.ingestWorker!.snapshot!.usageRecordQueue.queueBytes = 256 * 1024
   const health = buildBackgroundQueueHealthSnapshot(runtime)
   const usageQueue = health.workerQueues.find((queue) => queue.key === 'usageRecords')
   assert.equal(health.status, 'backlogged')
@@ -47,9 +47,9 @@ function testBackloggedRuntime(): void {
 
 function testDegradedRuntime(): void {
   const runtime = buildRuntimeSnapshot()
-  runtime.worker!.snapshot!.auditLogQueue.droppedFailureCount = 2
-  runtime.worker!.snapshot!.auditLogQueue.flushFailureCount = 1
-  runtime.worker!.snapshot!.auditLogQueue.flushLastError = 'SQLITE_BUSY'
+  runtime.ingestWorker!.snapshot!.auditLogQueue.droppedFailureCount = 2
+  runtime.ingestWorker!.snapshot!.auditLogQueue.flushFailureCount = 1
+  runtime.ingestWorker!.snapshot!.auditLogQueue.flushLastError = 'SQLITE_BUSY'
   runtime.worker!.pendingQueues!.usageRecords.rejectedCount = 3
 
   const health = buildBackgroundQueueHealthSnapshot(runtime)
@@ -93,11 +93,43 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
       snapshot: {
         pid: 1002,
         ready: true,
+        workerRole: 'worker',
+        jobs: [],
+        usageRecordQueue: queue(),
+        auditLogQueue: queue(),
+        operationLogQueue: queue(),
+        recordMaintenanceQueue: queue(),
+        runtimeLogIndexQueue: {
+          ...queue(),
+          retentionDays: 30
+        }
+      }
+    },
+    ingestWorker: {
+      pid: 1003,
+      ready: true,
+      pendingMessageCount: 0,
+      pendingMessageBytes: 0,
+      pendingQueues: {
+        usageRecords: queue(),
+        auditLogs: queue(),
+        operationLogs: queue(),
+        recordMaintenance: queue(),
+        runtimeLogLines: queue(),
+        statusRequests: queue(),
+        processEventLoopRequests: queue(),
+        processEventLoopResponses: queue(),
+        gatewayRuntimeCacheInvalidations: queue(),
+        other: queue()
+      },
+      snapshot: {
+        pid: 1004,
+        ready: true,
+        workerRole: 'ingest-worker',
         jobs: [],
         usageRecordQueue: queue({ queueLength: 2, queueBytes: 2048 }),
         auditLogQueue: queue(),
         operationLogQueue: queue(),
-        recordMaintenanceQueue: queue(),
         runtimeLogIndexQueue: {
           ...queue(),
           retentionDays: 30

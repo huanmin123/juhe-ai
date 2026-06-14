@@ -34,7 +34,6 @@ import { buildGatewayQuotaSnapshot } from '../../storage/gateway-quota-snapshot.
 import { collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
-import { flushUsageRecordQueue, pendingUsageRecordCount } from '../gateway/usage/record-queue.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
@@ -42,9 +41,10 @@ import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/ac
 import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
 import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-cleanup.service.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
-import { requestServerProcessEventLoopSamples, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
+import { requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
 import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
 import { enqueueAccountQualityFailurePrecheck, getAccountQualityFailurePrecheckQueueSnapshot } from './account-quality-failure-precheck.service.js'
+import { backgroundScheduledJobName } from './background-job-registry.js'
 import { WorkerScheduler } from './worker-scheduler.js'
 
 let started = false
@@ -57,7 +57,6 @@ let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 const dailyIntervalMs = 24 * 60 * 60 * 1000
 const secondMs = 1000
 const minuteMs = 60 * secondMs
-const usageRecordPreAggregationFlushMaxBatches = 2
 const accountQualityFailurePrecheckBatchSize = 10
 const clientIpStatsAggregationBatchSizeCap = 1000
 const clientIpStatsAggregationMaxBatchesCap = 10
@@ -81,29 +80,36 @@ export function startBackgroundJobs(): void {
   if (started) return
   started = true
 
-  scheduler.schedule({ name: 'usage-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, task: runUsageStatsAggregation })
-  scheduler.schedule({ name: 'client-ip-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
-  scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
-  scheduler.schedule({ name: 'usage-rank-snapshots-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh('usage-rank-snapshots-refresh', usageRankSnapshotCoreStageNames) })
-  scheduler.schedule({ name: 'system-metrics-trend-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, task: () => runUsageRankSnapshotsRefresh('system-metrics-trend-windows-refresh', systemMetricsTrendStageNames) })
-  scheduler.schedule({ name: 'usage-overview-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh('usage-overview-windows-refresh', usageOverviewWindowStageNames) })
-  scheduler.schedule({ name: 'usage-scope-range-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs, task: () => runUsageRankSnapshotsRefresh('usage-scope-range-windows-refresh', usageScopeRangeWindowStageNames) })
-  scheduler.schedule({ name: 'authorization-usage-range-windows-refresh', intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs + 50 * secondMs, task: () => runUsageRankSnapshotsRefresh('authorization-usage-range-windows-refresh', authorizationUsageRangeWindowStageNames) })
-  scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
-  scheduler.schedule({ name: 'api-key-record-cleanup-retry', intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
-  scheduler.schedule({ name: 'api-key-availability-schedule-status-sync', intervalMs: 10 * secondMs, initialDelayMs: secondMs, task: runApiKeyAvailabilityScheduleStatusSync })
-  scheduler.schedule({ name: 'account-record-cleanup-retry', intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
-  scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
-  scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
-  scheduler.schedule({ name: 'table-storage-monitor', intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runTableStorageMonitor })
-  scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
-  scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: runAccountQualityRefresh })
-  scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
-  scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: runCooldownAccountRetest })
-  scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
-  scheduler.schedule({ name: 'audit-hot-retention-cleanup', intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
-  scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, initialDelayMs: 13 * minuteMs, task: runDataRetentionCleanup })
-  scheduler.schedule({ name: 'expired-deleted-account-cleanup', intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
+  if (runtimeConfig.workerRole === 'metrics-worker') {
+    scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
+    return
+  }
+  if (runtimeConfig.workerRole === 'ingest-worker') {
+    scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
+    return
+  }
+
+  scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, task: runUsageStatsAggregation })
+  scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
+  scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
+  scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-rank-snapshots-refresh'), usageRankSnapshotCoreStageNames) })
+  scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-trend-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('system-metrics-trend-windows-refresh'), systemMetricsTrendStageNames) })
+  scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-overview-windows-refresh'), usageOverviewWindowStageNames) })
+  scheduler.schedule({ name: backgroundScheduledJobName('usage-scope-range-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-scope-range-windows-refresh'), usageScopeRangeWindowStageNames) })
+  scheduler.schedule({ name: backgroundScheduledJobName('authorization-usage-range-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs + 50 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('authorization-usage-range-windows-refresh'), authorizationUsageRangeWindowStageNames) })
+  scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
+  scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
+  scheduler.schedule({ name: backgroundScheduledJobName('api-key-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: secondMs, task: runApiKeyAvailabilityScheduleStatusSync })
+  scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
+  scheduler.schedule({ name: backgroundScheduledJobName('resource-authorization-expiry-sweep'), intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
+  scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runTableStorageMonitor })
+  scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
+  scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: runAccountQualityRefresh })
+  scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
+  scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: runCooldownAccountRetest })
+  scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
+  scheduler.schedule({ name: backgroundScheduledJobName('data-retention-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 13 * minuteMs, task: runDataRetentionCleanup })
+  scheduler.schedule({ name: backgroundScheduledJobName('expired-deleted-account-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
 }
 
 export function getBackgroundJobRuntimeSnapshots() {
@@ -114,7 +120,7 @@ async function runUsageStatsAggregation(): Promise<void> {
   if (usageStatsAggregationRunning) return
   usageStatsAggregationRunning = true
   try {
-    flushUsageRecordsBeforeStatsAggregation()
+    await ensureUsageRecordsIngestedBeforeStatsAggregation()
     await yieldToEventLoop()
     const batchSize = settingsNumber('statsAggregationBatchSize', 100, 10000)
     const maxBatches = settingsNumber('statsAggregationMaxBatchesPerRun', 1, 100)
@@ -138,7 +144,7 @@ async function runClientIpStatsAggregation(): Promise<void> {
   if (clientIpStatsAggregationRunning) return
   clientIpStatsAggregationRunning = true
   try {
-    flushUsageRecordsBeforeStatsAggregation()
+    await ensureUsageRecordsIngestedBeforeStatsAggregation()
     await yieldToEventLoop()
     const batchSize = Math.min(settingsNumber('statsAggregationBatchSize', 100, 10000), clientIpStatsAggregationBatchSizeCap)
     const maxBatches = Math.min(settingsNumber('statsAggregationMaxBatchesPerRun', 1, 100), clientIpStatsAggregationMaxBatchesCap)
@@ -159,15 +165,19 @@ async function runClientIpStatsAggregation(): Promise<void> {
   }
 }
 
-function flushUsageRecordsBeforeStatsAggregation(): void {
-  flushUsageRecordQueue({
-    drain: true,
-    retryOnFailure: false,
-    maxBatches: usageRecordPreAggregationFlushMaxBatches
-  })
-  const pendingCount = pendingUsageRecordCount()
-  if (pendingCount > 0) {
-    throw new Error(`使用记录队列仍有 ${pendingCount} 条未落库，本轮跳过统计聚合，避免统计游标越过排队记录`)
+async function ensureUsageRecordsIngestedBeforeStatsAggregation(): Promise<void> {
+  const status = await requestIngestWorkerDrainStatus(1000)
+  const serverPendingCount = status?.pendingQueues.usageRecords.queueLength ?? 0
+  const workerPendingCount = status?.snapshot?.usageRecordQueue.queueLength ?? 0
+  const flushFailureCount = status?.snapshot?.usageRecordQueue.flushFailureCount ?? 0
+  if (!status?.ready || !status.snapshot) {
+    throw new Error('ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录')
+  }
+  if (serverPendingCount > 0 || workerPendingCount > 0) {
+    throw new Error(`使用记录 ingest 队列仍有 ${serverPendingCount + workerPendingCount} 条未落库，本轮跳过统计聚合，避免统计游标越过排队记录`)
+  }
+  if (flushFailureCount > 0) {
+    throw new Error(`使用记录 ingest 队列已有 ${flushFailureCount} 次写入失败，本轮跳过统计聚合，等待写入队列恢复`)
   }
 }
 
@@ -268,7 +278,7 @@ async function runSystemMetricsSample(): Promise<void> {
     missingRemoteProcessEventLoopSampleWarningCount = 0
   }
   const processEventLoopSamples = remoteProcessSamples ?? []
-  const workerEventLoopSample = buildProcessEventLoopSample('worker')
+  const localProcessEventLoopSample = buildProcessEventLoopSample()
   try {
     insertSystemMetricsSample({
       cpuPercent: currentCpuPercent(),
@@ -278,12 +288,12 @@ async function runSystemMetricsSample(): Promise<void> {
       processRssBytes: memoryUsage.rss,
       processHeapUsedBytes: memoryUsage.heapUsed,
       processHeapTotalBytes: memoryUsage.heapTotal,
-      eventLoopLagMs: workerEventLoopSample.eventLoopLagMs,
+      eventLoopLagMs: localProcessEventLoopSample.eventLoopLagMs,
       ...networkMetrics,
       dbFileBytes: await databaseFileBytes(),
       statsLagSeconds: latestUsageStatsLagSeconds()
     })
-    for (const sample of [workerEventLoopSample, ...processEventLoopSamples]) {
+    for (const sample of [localProcessEventLoopSample, ...processEventLoopSamples]) {
       insertProcessEventLoopSample(sample)
     }
   } catch (error) {
@@ -397,11 +407,7 @@ async function runProxyLatencyRefresh(): Promise<void> {
 
 async function runAccountQualityRefresh(): Promise<void> {
   try {
-    flushUsageRecordQueue({
-      drain: true,
-      retryOnFailure: false,
-      maxBatches: usageRecordPreAggregationFlushMaxBatches
-    })
+    await ensureUsageRecordsIngestedBeforeStatsAggregation()
     await yieldToEventLoop()
     const windowMinutes = settingsNumber('accountQualityWindowMinutes', 1, 60)
     const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)

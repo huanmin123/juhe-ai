@@ -738,7 +738,6 @@ async function testAccountFromEditModal() {
     await openTestModal(editingAccountDetail.value)
     return
   }
-
   const validationMessage = validateAccountDraftTestForm({
     accounts: accounts.value,
     accountDetail: editingAccountDetail.value,

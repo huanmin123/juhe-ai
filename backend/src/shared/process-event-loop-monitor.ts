@@ -2,8 +2,10 @@ import { monitorEventLoopDelay } from 'node:perf_hooks'
 
 import { runtimeConfig, type ProcessRole } from '../config/runtime.js'
 
+export type ProcessEventLoopRole = ProcessRole | 'metrics-worker' | 'ingest-worker'
+
 export interface ProcessEventLoopSample {
-  processRole: ProcessRole
+  processRole: ProcessEventLoopRole
   processPid: number
   sampledAt: string
   eventLoopLagMs?: number
@@ -31,13 +33,19 @@ export function currentProcessEventLoopLagMs(): number | undefined {
   return roundMetricMs((maxNs - minNs) / 1_000_000)
 }
 
-export function buildProcessEventLoopSample(processRole: ProcessRole = runtimeConfig.processRole): ProcessEventLoopSample {
+export function buildProcessEventLoopSample(processRole: ProcessEventLoopRole = currentProcessEventLoopRole()): ProcessEventLoopSample {
   return {
     processRole,
     processPid: process.pid,
     sampledAt: new Date().toISOString(),
     eventLoopLagMs: currentProcessEventLoopLagMs()
   }
+}
+
+function currentProcessEventLoopRole(): ProcessEventLoopRole {
+  return runtimeConfig.processRole === 'worker'
+    ? runtimeConfig.workerRole
+    : runtimeConfig.processRole
 }
 
 function roundMetricMs(value: number): number | undefined {

@@ -30,11 +30,12 @@ const [
 
 try {
   runtimeConfig.processRole = 'worker'
+  runtimeConfig.workerRole = 'ingest-worker'
   operationLogQueue.enqueueOperationLogsLocal([buildOperationLog('worker_local')])
-  assert.equal(operationLogQueue.getOperationLogQueueRuntime().queueLength, 1, 'worker 角色应进入本地操作日志队列')
+  assert.equal(operationLogQueue.getOperationLogQueueRuntime().queueLength, 1, 'ingest-worker 角色应进入本地操作日志队列')
   operationLogQueue.flushAllOperationLogQueue()
   assert.equal(operationLogQueue.getOperationLogQueueRuntime().queueLength, 0, 'worker flush 后队列应清空')
-  assert.equal(operationLogCount(), 1, 'worker flush 应把操作日志写入数据集目录库')
+  assert.equal(operationLogCount(), 1, 'ingest-worker flush 应把操作日志写入数据集目录库')
 
   runtimeConfig.processRole = 'server'
   const pendingBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
@@ -51,6 +52,7 @@ try {
   assert.equal(operationLogQueue.getOperationLogQueueRuntime().droppedCount, droppedBefore + 1, '无父进程 IPC 的 db-service 测试态应记录投递失败计数')
 
   runtimeConfig.processRole = 'worker'
+  runtimeConfig.workerRole = 'ingest-worker'
   const countBeforeBatch = {
     logs: operationLogCount(),
     targets: operationLogTargetCount(),

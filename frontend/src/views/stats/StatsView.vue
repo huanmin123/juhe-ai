@@ -105,7 +105,7 @@
       <a-col :xs="24" :xl="14">
         <StatsChartCard
           :title="`进程事件循环延迟（${currentWindowLabel}）`"
-          description="主进程、后台 worker 和 DB service 独立采样，按后台窗口缓存展示峰值；上方为最近 24 小时最大值。单位为秒。"
+          description="主进程、后台 worker、监控 worker、写入 worker 和 DB service 独立采样，按后台窗口缓存展示峰值；上方为最近 24 小时最大值。单位为秒。"
           :loading="systemInitialLoading"
           :has-data="hasProcessEventLoopData"
           :empty-description="processEventLoopEmptyDescription"
@@ -124,7 +124,7 @@
       <a-col :xs="24" :xl="10">
         <StatsChartCard
           title="后台任务运行状态"
-          description="展示后台 worker 内各定时任务的最近耗时、失败和跳过情况。"
+          description="展示默认 worker、监控 worker 和写入 worker 内各定时任务的最近耗时、失败和跳过情况。"
           :loading="systemInitialLoading"
           :has-data="hasBackgroundJobs"
           :empty-description="backgroundJobEmptyDescription"
@@ -142,7 +142,7 @@
             :pagination="backgroundJobPagination"
             row-key="name"
             size="small"
-            :scroll-x="760"
+            :scroll-x="860"
             :table-scroll-y="240"
             :table-scroll-enabled="false"
             :lock-body-scroll="false"
@@ -170,6 +170,9 @@
                 <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
                   {{ record.running ? '运行中' : '空闲' }}
                 </a-tag>
+              </template>
+              <template v-else-if="column.key === 'workerRole'">
+                <a-tag>{{ processRoleLabel(record.workerRole || 'worker') }}</a-tag>
               </template>
               <template v-else-if="column.key === 'lastDurationMs'">
                 {{ formatJobDuration(record.lastDurationMs) }}
@@ -206,6 +209,10 @@
                   </a-tag>
                 </div>
                 <div class="mobile-list-meta-grid">
+                  <div class="mobile-list-meta-item">
+                    <span>所属 worker</span>
+                    <strong>{{ processRoleLabel(record.workerRole || 'worker') }}</strong>
+                  </div>
                   <div class="mobile-list-meta-item">
                     <span>最近耗时</span>
                     <strong>{{ formatJobDuration(record.lastDurationMs) }}</strong>
@@ -336,7 +343,7 @@ const hasVisibleSystemTrend = computed(() => showAdminDetailCharts.value && hasS
 const hasProcessEventLoopTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend.length ?? 0) > 0)
 const processEventLoopPeakRows = computed(() => {
   const statusRows = systemMetrics.value?.processEventLoopPeakStatus
-  const order = new Map([['server', 0], ['worker', 1], ['db-service', 2]])
+  const order = new Map([['server', 0], ['worker', 1], ['metrics-worker', 2], ['ingest-worker', 3], ['db-service', 4]])
   if (statusRows?.length) {
     return [...statusRows].sort((left, right) => (order.get(left.processRole) ?? 99) - (order.get(right.processRole) ?? 99))
   }
@@ -362,6 +369,8 @@ const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgr
 const systemRuntimeAlertVisible = computed(() => Boolean(systemMetrics.value && (
   !systemMetrics.value.runtimeSnapshotAvailable
   || !systemMetrics.value.workerSnapshotAvailable
+  || systemMetrics.value.metricsWorkerSnapshotAvailable === false
+  || systemMetrics.value.ingestWorkerSnapshotAvailable === false
   || !systemMetrics.value.backgroundJobsAvailable
 )))
 const systemRuntimeAlertDescription = computed(() => {
@@ -372,6 +381,8 @@ const systemRuntimeAlertDescription = computed(() => {
     reasons.push('服务运行态不可用')
   } else {
     if (!metrics.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
+    if (metrics.metricsWorkerSnapshotAvailable === false) reasons.push('监控 worker 快照不可用')
+    if (metrics.ingestWorkerSnapshotAvailable === false) reasons.push('写入 worker 快照不可用')
     if (!metrics.backgroundJobsAvailable) reasons.push('后台任务状态不可用')
   }
   return `${reasons.join('；') || '运行态状态未知'}。`
@@ -394,6 +405,7 @@ const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.val
 const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
 const backgroundJobColumns = [
   { title: '任务', dataIndex: 'name', key: 'name', width: 220 },
+  { title: '所属 worker', key: 'workerRole', width: 112 },
   { title: '状态', key: 'running', width: 86 },
   { title: '最近耗时', key: 'lastDurationMs', width: 96 },
   { title: '最长耗时', key: 'maxDurationMs', width: 96 },

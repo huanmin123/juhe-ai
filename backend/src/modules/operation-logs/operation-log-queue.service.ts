@@ -37,9 +37,9 @@ interface OperationLogFlushOptions {
 
 export function enqueueOperationLog(input: OperationLogInput): void {
   const queuedInput = normalizeOperationLogInput(input)
-  if (runtimeConfig.processRole === 'server') {
+  if (shouldDispatchOperationLogToIngestWorker()) {
     if (!sendOperationLogsToWorker([queuedInput])) {
-      recordOperationLogDispatchFailure(new Error('后台 worker IPC 不可用'), queuedInput)
+      recordOperationLogDispatchFailure(new Error('ingest-worker IPC 不可用'), queuedInput)
     }
     return
   }
@@ -75,7 +75,7 @@ export function enqueueOperationLogsLocal(inputs: OperationLogInput[]): void {
 }
 
 export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): void {
-  if (runtimeConfig.processRole !== 'worker') {
+  if (!isOperationLogIngestWorker()) {
     return
   }
   if (flushing || pendingOperationLogs.length === 0) {
@@ -185,7 +185,7 @@ function enqueueOperationLogLocal(input: OperationLogInput): void {
 }
 
 function scheduleOperationLogFlush(delayMs: number): void {
-  if (runtimeConfig.processRole !== 'worker') {
+  if (!isOperationLogIngestWorker()) {
     return
   }
   if (flushTimer || flushing) {
@@ -291,7 +291,16 @@ function recordOperationLogLocalDrop(item: QueuedOperationLog, reason: 'overflow
 }
 
 function assertLocalOperationLogWriteAllowed(operation: string): void {
-  if (runtimeConfig.processRole !== 'worker') {
-    throw new Error(`${runtimeConfig.processRole} 角色禁止直接同步写入操作日志：${operation} 必须投递 background worker`)
+  if (!isOperationLogIngestWorker()) {
+    throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入操作日志：${operation} 必须投递 ingest-worker`)
   }
+}
+
+function isOperationLogIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function shouldDispatchOperationLogToIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'server'
+    || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
 }

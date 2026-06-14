@@ -42,9 +42,9 @@ interface UsageRecordFlushOptions {
 
 export function enqueueUsageRecord(input: UsageRecordInput): void {
   const queuedInput = normalizeUsageRecordInput(input)
-  if (runtimeConfig.processRole === 'server') {
+  if (shouldDispatchUsageRecordToIngestWorker()) {
     if (!sendUsageRecordsToWorker([queuedInput])) {
-      recordUsageRecordDispatchFailure(new Error('后台 worker IPC 不可用'), queuedInput)
+      recordUsageRecordDispatchFailure(new Error('ingest-worker IPC 不可用'), queuedInput)
     }
     return
   }
@@ -80,7 +80,7 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
 }
 
 export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): void {
-  if (runtimeConfig.processRole === 'server') {
+  if (!isUsageRecordIngestWorker()) {
     return
   }
   if (flushing || pendingUsageRecords.length === 0) {
@@ -169,7 +169,7 @@ export function installUsageRecordQueueShutdownHooks(): void {
 }
 
 function scheduleUsageRecordFlush(delayMs: number): void {
-  if (runtimeConfig.processRole === 'server') {
+  if (!isUsageRecordIngestWorker()) {
     return
   }
   if (flushTimer || flushing) {
@@ -443,7 +443,16 @@ function recordUsageRecordLocalDrop(item: QueuedUsageRecord, reason: 'overflow' 
 }
 
 function assertLocalUsageRecordWriteAllowed(operation: string): void {
-  if (runtimeConfig.processRole === 'server') {
-    throw new Error(`server 角色禁止直接同步写入 SQLite：${operation} 必须投递 background worker`)
+  if (!isUsageRecordIngestWorker()) {
+    throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入使用记录：${operation} 必须投递 ingest-worker`)
   }
+}
+
+function isUsageRecordIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function shouldDispatchUsageRecordToIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'server'
+    || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
 }

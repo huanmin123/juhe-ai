@@ -125,19 +125,56 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   const overview = getSystemMetricsOverview(normalizeStatsDateRange(parsed.data))
   const runtime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
   const workerSnapshot = runtime?.worker?.snapshot
-  const backgroundJobs = workerSnapshot?.jobs?.map((job) => {
+  const metricsWorkerSnapshot = runtime?.metricsWorker?.snapshot
+  const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
+  const workerJobs = workerSnapshot?.jobs?.map((job) => {
+    const roleAwareJob = {
+      ...job,
+      workerRole: workerSnapshot.workerRole
+    }
     if (job.name !== 'cooldown-account-retest' || !workerSnapshot.cooldownAccountRetestQueue) {
-      return job
+      return roleAwareJob
     }
     return {
-      ...job,
+      ...roleAwareJob,
       retryQueue: workerSnapshot.cooldownAccountRetestQueue
     }
   })
+  const metricsWorkerJobs = metricsWorkerSnapshot?.jobs?.map((job) => ({
+    ...job,
+    workerRole: metricsWorkerSnapshot.workerRole
+  }))
+  const ingestWorkerJobs = ingestWorkerSnapshot?.jobs?.map((job) => ({
+    ...job,
+    workerRole: ingestWorkerSnapshot.workerRole
+  }))
+  const backgroundJobs = workerJobs || metricsWorkerJobs || ingestWorkerJobs
+    ? [
+      ...(workerJobs ?? []),
+      ...(metricsWorkerJobs ?? []),
+      ...(ingestWorkerJobs ?? [])
+    ]
+    : undefined
   res.json(ok({
     ...overview,
     runtimeSnapshotAvailable: Boolean(runtime),
     workerSnapshotAvailable: Boolean(workerSnapshot),
+    metricsWorkerSnapshotAvailable: Boolean(metricsWorkerSnapshot),
+    ingestWorkerSnapshotAvailable: Boolean(ingestWorkerSnapshot),
+    metricsWorker: runtime?.metricsWorker
+      ? {
+        pid: runtime.metricsWorker.pid ?? null,
+        ready: runtime.metricsWorker.ready,
+        snapshotAvailable: Boolean(metricsWorkerSnapshot)
+      }
+      : null,
+    ingestWorker: runtime?.ingestWorker
+      ? {
+        pid: runtime.ingestWorker.pid ?? null,
+        ready: runtime.ingestWorker.ready,
+        snapshotAvailable: Boolean(ingestWorkerSnapshot)
+      }
+      : null,
     backgroundJobsAvailable: Array.isArray(backgroundJobs),
     backgroundJobs: backgroundJobs ?? null
   }))

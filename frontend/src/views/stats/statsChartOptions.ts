@@ -278,7 +278,7 @@ export function buildSystemMetricsOption(trend: SystemMetricsOverview['hourlyTre
 export function buildProcessEventLoopOption(trend: SystemMetricsOverview['processEventLoopTrend']): EChartsOption {
   const roles = processEventLoopRoles(trend)
   return {
-    color: ['#faad14', '#eb2f96', '#2f54eb'],
+    color: ['#faad14', '#eb2f96', '#13c2c2', '#2f54eb', '#52c41a'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => processEventLoopTooltip(params)
@@ -385,7 +385,7 @@ function processEventLoopTooltip(params: unknown) {
 
 function processEventLoopRoles(trend: SystemMetricsOverview['processEventLoopTrend']) {
   const roles = new Set(trend.map((item) => item.processRole))
-  return (['server', 'worker', 'db-service'] as const).filter((role) => roles.has(role))
+  return (['server', 'worker', 'metrics-worker', 'ingest-worker', 'db-service'] as const).filter((role) => roles.has(role))
 }
 
 function processEventLoopBuckets(trend: SystemMetricsOverview['processEventLoopTrend']) {
@@ -404,6 +404,8 @@ function processEventLoopBucketKey(row: SystemMetricsOverview['processEventLoopT
 export function processRoleLabel(processRole: string) {
   if (processRole === 'server') return '主进程'
   if (processRole === 'worker') return '后台 worker'
+  if (processRole === 'metrics-worker') return '监控 worker'
+  if (processRole === 'ingest-worker') return '写入 worker'
   if (processRole === 'db-service') return 'DB service'
   return processRole
 }

@@ -136,17 +136,28 @@ import { useResponsivePagedList, type ResponsivePagedListResult } from '@/compos
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
-import { formatDateTime } from '@/shared/formatters'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
-import { formatCompactInteger, formatCost, formatInteger, formatPercent, formatSeconds } from '@/views/stats/statsFormatters'
+import { formatInteger } from '@/views/stats/statsFormatters'
 import AccountUsageStatsTable from './AccountUsageStatsTable.vue'
+import {
+  aggregateUsageSummaries,
+  authorizationAccountTagText,
+  buildAccountUsageSummaryCards,
+  cacheReadRate,
+  dedupeRowsById,
+  mergeOptionsById,
+  metricText,
+  metricValue,
+  placeholderTrendRow,
+  usageTrendDateKeys
+} from './usageStatsHelpers'
 import { buildAccountUsageTrendOption, chartColors, orderedUsageRows, type UsageTrendMetric } from './usageTrendChartOptions'
 
 interface UsageStatsFilters {
@@ -288,8 +299,13 @@ const defaultTrendRows = computed(() => (overview.value?.defaultTrendAccountIds 
 const defaultTrendAccountIdSet = computed(() => new Set(overview.value?.defaultTrendAccountIds ?? defaultTrendRows.value.map((account) => account.id)))
 const addedTrendAccountIdSet = computed(() => new Set(addedTrendAccountIds.value))
 const addedTrendRows = computed(() => {
+  const dateKeys = usageTrendDateKeys(selectedRange.value)
   return addedTrendAccountIds.value
-    .map((id) => rowsById.value.get(id) ?? placeholderTrendRow(id))
+    .map((id) => rowsById.value.get(id) ?? placeholderTrendRow(id, {
+      accountOptionById: accountOptionById.value,
+      addedTrendSelectionById: addedTrendSelectionById.value,
+      dateKeys
+    }))
     .filter((row): row is AccountUsageStatsRow => Boolean(row))
 })
 const trendAccountRows = computed(() => dedupeRowsById([...defaultTrendRows.value, ...addedTrendRows.value]))
@@ -348,39 +364,11 @@ const accountFilterItems = computed(() => {
   }))
 })
 const summaryCards = computed(() => {
-  const summary = displaySummary.value
-  return [
-    { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
-    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读取 ${formatCompactInteger(summary?.cacheReadTokens)}` },
-    { key: 'cacheRate', label: '缓存率', value: formatPercent(cacheReadRate(summary)), extra: `缓存成本 ${formatCost(summary?.cacheReadCost)}` },
-    { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: `最后使用 ${formatDateTime(summary?.lastUsedAt)}` }
-  ]
+  return buildAccountUsageSummaryCards({
+    summary: displaySummary.value,
+    statsLagSeconds: overview.value?.statsLagSeconds
+  })
 })
-
-function cacheReadRate(summary?: AccountUsageSummary) {
-  const inputTokens = summary?.inputTokens ?? 0
-  if (inputTokens <= 0) return 0
-  return ((summary?.cacheReadTokens ?? 0) / inputTokens) * 100
-}
-
-function aggregateUsageSummaries(summaries: AccountUsageSummary[]): AccountUsageSummary {
-  const summary = zeroUsageSummary()
-  let lastUsedAt: string | undefined
-  for (const item of summaries) {
-    summary.requestCount += item.requestCount
-    summary.inputTokens += item.inputTokens
-    summary.outputTokens += item.outputTokens
-    summary.cacheReadTokens += item.cacheReadTokens
-    summary.cacheReadCost += item.cacheReadCost
-    summary.totalCost += item.totalCost
-    if (item.lastUsedAt && (!lastUsedAt || item.lastUsedAt > lastUsedAt)) {
-      lastUsedAt = item.lastUsedAt
-    }
-  }
-  summary.totalTokens = summary.inputTokens + summary.outputTokens
-  summary.lastUsedAt = lastUsedAt
-  return summary
-}
 
 async function loadUsageStatsOptions(force = false): Promise<void> {
   const scopeKey = isManagementView.value ? 'management' : 'self'
@@ -630,11 +618,6 @@ function trendAccountLabel(account: AccountUsageStatsRow) {
   return `${account.name}（${suffix}）`
 }
 
-function authorizationAccountTagText(account: Pick<AccountUsageStatsRow, 'ownerSystemAccountName'>) {
-  const ownerName = account.ownerSystemAccountName?.trim()
-  return ownerName ? `来自：${ownerName}` : '来自授权'
-}
-
 function renderUsageTrendChart() {
   if (!overview.value || !hasTrendData.value) {
     disposeChart(trendChart)
@@ -675,86 +658,6 @@ function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: strin
 
 function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
   return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
-}
-
-function metricText(metric: UsageTrendMetric) {
-  if (metric === 'cost') return '成本'
-  if (metric === 'tokens') return 'Token'
-  return '请求'
-}
-
-function metricValue(point: { requestCount: number; totalTokens: number; totalCost: number }, metric: UsageTrendMetric) {
-  if (metric === 'cost') return point.totalCost
-  if (metric === 'tokens') return point.totalTokens
-  return point.requestCount
-}
-
-function zeroUsageSummary(): AccountUsageSummary {
-  return {
-    requestCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheReadCost: 0,
-    totalTokens: 0,
-    totalCost: 0
-  }
-}
-
-function trendDateKeys(): string[] {
-  const [startDate, endDate] = selectedRange.value
-  const start = parseDateKey(startDate)
-  const end = parseDateKey(endDate)
-  if (!start || !end || start.isAfter(end, 'day')) return []
-  const keys: string[] = []
-  for (let current = start.startOf('day'); current.isSame(end, 'day') || current.isBefore(end, 'day'); current = current.add(1, 'day')) {
-    keys.push(formatDateKey(current))
-  }
-  return keys
-}
-
-function placeholderTrendRow(id: string): AccountUsageStatsRow | undefined {
-  const option = accountOptionById.value.get(id)
-  if (!option?.name?.trim() || !option.providerCode || !option.type || !option.status) return undefined
-  const ownerSystemAccountId = option.ownerSystemAccountId ?? option.systemAccountId
-  if (!ownerSystemAccountId) return undefined
-  const selection = addedTrendSelectionById.value.get(id)
-  return {
-    id,
-    systemAccountId: option?.systemAccountId,
-    systemAccountName: option?.systemAccountName,
-    ownerSystemAccountId,
-    ownerSystemAccountName: option?.ownerSystemAccountName ?? selection?.ownerSystemAccountName,
-    providerCode: option.providerCode,
-    name: option.name.trim(),
-    type: option.type,
-    status: option.status,
-    accessType: option?.accessType ?? selection?.accessType,
-    rangeUsage: zeroUsageSummary(),
-    dailyUsage: trendDateKeys().map((statDate) => ({ ...zeroUsageSummary(), statDate })),
-    authorizationUsageAvailable: false,
-    authorizationCount: 0,
-    authorizationTeamCount: 0
-  }
-}
-
-function dedupeRowsById(items: AccountUsageStatsRow[]): AccountUsageStatsRow[] {
-  const seen = new Set<string>()
-  const result: AccountUsageStatsRow[] = []
-  for (const item of items) {
-    if (seen.has(item.id)) continue
-    seen.add(item.id)
-    result.push(item)
-  }
-  return result
-}
-
-function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
-  const merged = new Map<string, T>()
-  for (const item of [...leading, ...trailing]) {
-    merged.set(item.id, item)
-  }
-  return [...merged.values()]
 }
 
 function pruneSelectedTrendAccounts(currentRows: AccountUsageStatsRow[]) {

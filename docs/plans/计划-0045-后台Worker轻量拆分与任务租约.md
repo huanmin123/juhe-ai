@@ -3,9 +3,9 @@
 ## 基本信息
 
 - 编号：PLAN-0045
-- 状态：待开始
+- 状态：进行中
 - 创建时间：2026-06-13
-- 更新时间：2026-06-13
+- 更新时间：2026-06-14
 - 需求来源：用户对话 / 生产排障
 - 执行者：AI / 维护者待定
 - 关联模块：后端 / 后台任务 / 统计 / 系统监控 / SQLite / 部署 / 文档 / 验证
@@ -282,27 +282,35 @@
 | 阶段 | 任务 | 状态 | 进入条件 | 完成标准 |
 | --- | --- | --- | --- | --- |
 | 0 | 修复当前慢 SQL / 缺失索引 | 待执行 / 另行随修复提交 | 当前生产已复现 worker 长时间满 CPU | 统计滞后回落，系统采样不再长时间断档 |
-| 1 | 完成后台 job / 队列盘点并做角色配置设计 | 待开始 | 阶段 0 发布后进入下一步 | 所有定时 job 和异步队列都有明确 worker 归属、并发边界和单 owner 说明 |
-| 2 | 新增 `metrics-worker` 固定角色 | 待开始 | 阶段 1 完成 | 重统计运行时系统指标采样仍能稳定写入 |
-| 3 | 拆分 append-only 写入队列 worker | 待开始 | 阶段 2 完成后，确认日志 / 使用记录队列不应被统计重活拖住 | 使用记录、审计、操作日志、运行日志索引等队列不受窗口刷新阻塞 |
+| 1 | 完成后台 job / 队列盘点并做角色配置设计 | 已完成 | 阶段 0 发布后进入下一步 | 所有定时 job 和异步队列都有明确 worker 归属、并发边界和单 owner 说明 |
+| 2 | 新增 `metrics-worker` 固定角色 | 已完成 | 阶段 1 完成 | `system-metrics-sample` 独立运行在 metrics-worker，运行态和系统指标接口可区分 `metrics-worker` |
+| 3 | 拆分 append-only 写入队列 worker | 进行中（首批已完成） | 阶段 2 完成后，确认日志 / 使用记录队列不应被统计重活拖住 | 使用记录、审计、操作日志、运行日志索引等队列不受窗口刷新阻塞；公开接口日志后续再迁入独立 log / ingest 角色 |
 | 4 | 新增 `temporary-maintenance-worker` | 待开始 | 阶段 1 完成，且表管理 / 维护任务已登记生命周期 | 表监控 `non_business_data_cleanup` 等一次性清理可按任务启动、跑完退出并记录状态 |
 | 5 | 新增 `background_job_leases` | 待开始 | 需要为后续分片任务或并发临时任务提供互斥基础 | 同一任务分片不会重复执行，worker 崩溃后可接管 |
 | 6 | 增加少量 usage shard 聚合 worker | 待开始 | 阶段 5 已完成，并确认瓶颈在可分片聚合阶段 | 聚合滞后下降，SQLite 锁错误不增加 |
-| 7 | 更新部署与运维文档 | 待开始 | 任一阶段进入实现 | 发布包、启动脚本、健康检查和回滚说明同步 |
+| 7 | 更新部署与运维文档 | 进行中（阶段 2 / 3 已同步） | 任一阶段进入实现 | 发布包、启动脚本、健康检查和回滚说明同步 |
 
 ## 测试项
 
 | 测试类型 | 测试项 | 验证方式 / 命令 | 预期结果 | 状态 | 实际结果或备注 |
 | --- | --- | --- | --- | --- | --- |
-| 命令类验证 | 后端类型检查 | `pnpm --filter juhe-ai-backend typecheck` | 类型检查通过 | 未执行 | 本计划仅新增文档 |
-| 命令类验证 | 后端构建 | `pnpm --filter juhe-ai-backend build` | 构建生成 server / worker 产物 | 未执行 | 后续实现 worker 角色时执行 |
-| 回归场景 | job 归属完整性 | 新增角色配置回归脚本 | 每个 `scheduler.schedule` job 和 worker IPC 队列都有唯一或明确多 owner 归属 | 未执行 | 阶段 1 执行 |
+| 命令类验证 | 后端类型检查 | `pnpm --filter juhe-ai-backend typecheck` | 类型检查通过 | 已执行 | 2026-06-14 通过 |
+| 命令类验证 | 后端构建 | `pnpm --filter juhe-ai-backend build` | 构建生成 server / worker 产物 | 已执行 | 2026-06-14 通过 |
+| 命令类验证 | 后台 worker 性能回归 | `pnpm --filter juhe-ai-backend test:background-worker-performance` | 后台长任务让出事件循环，不影响既有性能保护 | 已执行 | 2026-06-14 通过，`durationMs=35114.9`，`maxEventLoopGapMs=694.7` |
+| 回归场景 | job 归属完整性 | `pnpm --filter juhe-ai-backend test:background-job-registry` | 每个 `scheduler.schedule` job 和 worker IPC 队列都有唯一或明确多 owner 归属 | 已执行 | 2026-06-14 通过 |
+| 回归场景 | metrics-worker 角色隔离 | `pnpm --filter juhe-ai-backend test:background-metrics-worker-role` | supervisor 固定拉起默认 worker 和 metrics-worker，metrics-worker 只注册系统采样且不启动业务队列 | 已执行 | 2026-06-14 通过 |
+| 回归场景 | 后台 worker 启动拓扑 | `pnpm --filter juhe-ai-backend test:background-worker-topology-smoke` | 临时后端启动后由 server 拉起默认 worker、metrics-worker、ingest-worker 和 DB service，并写入五类进程事件循环样本 | 已执行 | 2026-06-14 通过，`workerChildren=3`，角色包含 `ingest-worker` |
+| 回归场景 | 系统指标进程角色最新样本 | `pnpm --filter juhe-ai-backend test:system-metrics-process-latest` | 进程最新样本和峰值状态包含 `metrics-worker` 与 `ingest-worker` | 已执行 | 2026-06-14 通过 |
+| 回归场景 | runtime snapshot 不可用契约 | `pnpm --filter juhe-ai-backend test:runtime-snapshot-unavailable-contract` | metrics-worker / ingest-worker 不可用时接口仍能以 `sampleAvailable=false` 和 snapshot available 字段表达未知 | 已执行 | 2026-06-14 通过 |
+| 命令类验证 | 前端类型检查 | `pnpm --filter juhe-ai-frontend typecheck` | 管理页系统指标类型包含 `metrics-worker` 和 `ingest-worker`，无类型错误 | 已执行 | 2026-06-14 通过 |
+| 命令类验证 | 前端构建 | `pnpm --filter juhe-ai-frontend build` | 管理页系统指标和后台任务表可打包 | 已执行 | 2026-06-14 通过；Vite 仍提示既有大 chunk 警告 |
+| 启动 smoke | 发布产物多进程启动 | 临时端口启动 `backend/dist/server.js`，访问 `/__aisys__/health` 和 `/__aisys__/api/health`，检查子进程和 `process_event_loop_samples` | server 拉起 3 个 worker 子进程和 1 个 DB service 子进程，事件循环样本包含 `server`、`worker`、`metrics-worker`、`ingest-worker`、`db-service` | 已执行 | 2026-06-14 通过，`workerChildren=3`，`dbServiceChildren=1`，五类角色样本齐全 |
 | 回归场景 | 后台任务不可重入 | 后续新增租约回归脚本 | 同一 `job_name + shard_key` 同时只有一个 owner | 未执行 | 阶段 5 执行 |
-| 回归场景 | 系统指标不断采样 | 压住统计 worker 后观察 `system_metrics_samples` | 采样间隔不超过配置间隔的 2 倍，异常时有可观测告警 | 未执行 | 阶段 2 执行 |
-| 回归场景 | append-only 队列隔离 | 压住窗口刷新后提交使用记录 / 日志 | 使用记录、审计、操作日志和运行日志索引队列仍能按自身 worker flush | 未执行 | 阶段 3 执行 |
+| 回归场景 | 系统指标不断采样 | 压住统计 worker 后观察 `system_metrics_samples` | 采样间隔不超过配置间隔的 2 倍，异常时有可观测告警 | 未执行 | 阶段 2 代码隔离已完成，生产或仿真压测观察随上线执行 |
+| 回归场景 | append-only 队列隔离 | `pnpm --filter juhe-ai-backend test:background-ipc-protected-queue`、`test:background-ipc-payload-boundary`、`test:worker-local-queue-limit`、`test:usage-record-byte-batch`、`test:audit-log-async-flush`、`test:operation-log-queue` | 使用记录、审计、操作日志和运行日志索引队列进入 `ingest-worker`，默认 worker 队列满不影响 ingest，ingest 队列满时快速拒绝并计数 | 已执行 | 2026-06-14 通过；公开接口日志仍在既有 DB service 本地队列，未纳入本轮 |
 | 回归场景 | 临时维护 worker 生命周期 | 投递表监控非业务数据清理任务 | 临时 worker 启动、执行、记录完成状态后退出，常驻 worker 不被长期占用 | 未执行 | 阶段 4 执行 |
 | 回归场景 | SQLite 锁竞争 | 压测 usage 聚合和窗口刷新 | `database is locked` 不增加，统计滞后下降 | 未执行 | 阶段 6 执行 |
-| 部署验证 | 生产进程守护 | 检查 launchd / supervisor 配置和健康接口 | server、db-service 和拆出的各类 worker 都能被守护和重启 | 未执行 | 阶段 2 起执行 |
+| 部署验证 | 生产进程守护 | 检查 launchd / supervisor 配置和健康接口 | server、db-service、默认 worker、metrics-worker 和 ingest-worker 都能被守护和重启 | 未执行 | 阶段 2 / 3 部署文档已同步，生产验证随上线执行 |
 
 ## 进度记录
 
@@ -312,6 +320,15 @@
 | 2026-06-13 | 待开始 | AI | 根据用户反馈调整为“索引修复先上线，多 worker 后续仍要做”。执行顺序保持轻量：先 `metrics-worker`，再任务租约，再少量分片 worker；仍不按 CPU 核数复制同构 worker。 |
 | 2026-06-13 | 待开始 | AI | 根据用户进一步反馈调整为“先把所有 job 和后台异步队列拿出来归类，再决定拆多少 worker”。补充当前定时 job、异步队列盘点表和基于任务分类的 worker 分组建议。 |
 | 2026-06-13 | 待开始 | AI | 新增 `docs/architecture/backend/后台Worker多角色拆分设计.md` 作为本期开发设计入口；后续 worker 拆分实现必须先按设计文档推进 job registry、热点隔离和角色配置。 |
+| 2026-06-14 | 进行中 | AI | 完成阶段 1 代码级 job registry：新增 `background-job-registry.ts`，定时任务名统一从 registry 获取，新增 `test:background-job-registry` 回归保护定时任务、worker IPC、内部队列和数据维护子任务登记完整性。 |
+| 2026-06-14 | 进行中 | AI | 完成阶段 2 metrics-worker 隔离：server supervisor 固定拉起默认 worker 和 metrics-worker；默认 worker 承载业务后台任务和队列，metrics-worker 只承载 `system-metrics-sample` 与事件循环采样协调；运行态、系统指标进程角色、部署文档和后台任务说明已同步。 |
+| 2026-06-14 | 进行中 | AI | 复查阶段 2 时修正 `system-metrics-sample` 本地事件循环样本角色误标：采样函数改为按当前 `JUHE_AI_WORKER_ROLE` 生成本地样本，避免 metrics-worker 样本被写成默认 `worker`；已补 `test:background-metrics-worker-role` 保护。 |
+| 2026-06-14 | 进行中 | AI | 补充阶段 2 启动 / 管理稳定性复查：新增 `test:background-worker-topology-smoke`，用临时端口和临时 SQLite 启动真实后端，确认 server 只作为外部守护入口，内部拉起默认 worker、metrics-worker 和 DB service，且当时四类进程事件循环样本均可写入；阶段 3 后该 smoke 已扩展为五类角色。 |
+| 2026-06-14 | 进行中 | AI | 补充管理可观测性复查：前端系统指标类型、事件循环趋势图、峰值卡片和后台任务表均补齐 `metrics-worker`；后台任务接口为默认 worker 和 metrics-worker 任务统一返回 `workerRole`，便于排查具体哪个 worker 卡住。 |
+| 2026-06-14 | 进行中 | AI | 补做阶段 2 启动 / 管理 / 稳定性复查：metrics-worker 不再主动打开数据集目录库，减少无用 SQLite 连接；发布产物启动 smoke 已确认 server 下有默认 worker、metrics-worker 和 DB service 三个子进程，健康接口可用，当时四类进程事件循环样本均能写入。 |
+| 2026-06-14 | 进行中 | AI | 扩大阶段 2 风险复查：管理页运行态告警补齐 `metricsWorkerSnapshotAvailable`，模拟监控数据补齐 `metrics-worker` 样本，接口契约 / SQLite 存储 / 核心功能文档统一为阶段 2 四进程口径，避免监控 worker 缺失时页面误判为正常；阶段 3 已继续扩展到 `ingest-worker`。 |
+| 2026-06-14 | 进行中 | AI | 完成阶段 3 首批 append-only 写入隔离：supervisor 增加 `ingest-worker`；使用记录、审计、操作日志和运行日志索引 IPC 改投递 ingest；默认 worker 继续承载统计、维护和探测；统计聚合读取事实前检查 ingest drain 状态，避免日用量统计读到未落地使用记录。 |
+| 2026-06-14 | 进行中 | AI | 补齐阶段 3 稳定性复查：运行态、队列健康、系统指标接口和前端趋势图补 `ingestWorkerSnapshotAvailable` / `ingest-worker`；IPC 队列回归覆盖默认 worker 队列满不影响 ingest、ingest 队列满快速拒绝、审计大 payload 裁剪和 snapshot current-only。 |
 
 ## 决策记录
 
@@ -327,9 +344,9 @@
 ## 验收标准
 
 - [ ] 阶段 0：当前统计慢点已修复，生产不再出现 `usage-scope-range-windows-refresh` 长时间卡住。
-- [ ] 阶段 1：所有定时 job、后台异步队列和维护入口都有明确 worker 归属、并发边界和单 owner 说明。
-- [ ] 阶段 2：重统计任务运行时，系统指标采样仍稳定写入，不再出现分钟级或小时级采样断档。
-- [ ] 阶段 3：append-only 写入队列不被窗口刷新或统计重活阻塞。
+- [x] 阶段 1：所有定时 job、后台异步队列和维护入口都有明确 worker 归属、并发边界和单 owner 说明。
+- [x] 阶段 2：重统计任务运行时，系统指标采样仍稳定写入，不再出现分钟级或小时级采样断档。代码隔离和回归已完成，生产采样连续性随上线观察。
+- [~] 阶段 3：append-only 写入队列不被窗口刷新或统计重活阻塞。首批使用记录、审计、操作日志、运行日志索引已迁入 `ingest-worker`；公开接口日志仍保持既有本地队列，后续按热点再迁。
 - [ ] 阶段 4：表管理手动清理、非业务数据硬清理和一次性修复可由临时 worker 执行，完成 / 失败 / 超时后退出并可追踪状态。
 - [ ] 阶段 5：任务租约能防止同一分片重复执行，worker 崩溃后能在租约过期后接管。
 - [ ] 阶段 6：如果引入分片 worker，统计滞后下降且 SQLite 锁错误没有增加。
@@ -338,12 +355,50 @@
 
 ## 验证记录
 
-- 当前仅完成方案文档，未执行代码验证。
-- 后续若实现阶段 1 / 2，需要执行：
+- 2026-06-14 完成阶段 1 job registry 代码落地，已执行：
+  - `pnpm --filter juhe-ai-backend test:background-job-registry`
+  - `pnpm --filter juhe-ai-backend typecheck`
+  - `pnpm --filter juhe-ai-backend test:background-worker-performance`
+- 2026-06-14 完成阶段 2 metrics-worker 代码落地，已执行：
+  - `pnpm --filter juhe-ai-backend test:background-metrics-worker-role`
+  - `pnpm --filter juhe-ai-backend test:background-worker-topology-smoke`
+  - `pnpm --filter juhe-ai-backend test:system-metrics-process-latest`
+  - `pnpm --filter juhe-ai-backend test:background-job-registry`
+  - `pnpm --filter juhe-ai-backend test:runtime-snapshot-unavailable-contract`
   - `pnpm --filter juhe-ai-backend typecheck`
   - `pnpm --filter juhe-ai-backend build`
-  - 新增或更新后台 worker 角色回归
-  - 生产或仿真环境长任务压测下的系统指标采样观察
+  - `pnpm --filter juhe-ai-backend test:background-worker-performance`
+  - `pnpm --filter juhe-ai-frontend typecheck`
+  - `pnpm --filter juhe-ai-frontend build`
+  - 发布产物启动 smoke：临时端口启动 `backend/dist/server.js`，确认阶段 2 的 2 个 worker 子进程、1 个 DB service 子进程、健康接口和四类进程事件循环样本；阶段 3 已复验 3 个 worker 子进程和五类进程事件循环样本。
+- 2026-06-14 完成阶段 3 首批 append-only ingest-worker 代码落地，已执行：
+  - `pnpm --filter juhe-ai-backend typecheck`
+  - `pnpm --filter juhe-ai-backend build`
+  - `pnpm --filter juhe-ai-frontend typecheck`
+  - `pnpm --filter juhe-ai-frontend build`
+  - `pnpm --filter juhe-ai-backend test:background-worker-topology-smoke`
+  - `pnpm --filter juhe-ai-backend test:background-metrics-worker-role`
+  - `pnpm --filter juhe-ai-backend test:background-job-registry`
+  - `pnpm --filter juhe-ai-backend test:system-metrics-process-latest`
+  - `pnpm --filter juhe-ai-backend test:runtime-snapshot-unavailable-contract`
+  - `pnpm --filter juhe-ai-backend test:background-queue-health`
+  - `pnpm --filter juhe-ai-backend test:background-ipc-protected-queue`
+  - `pnpm --filter juhe-ai-backend test:background-ipc-payload-boundary`
+  - `pnpm --filter juhe-ai-backend test:background-ipc-snapshot-current-only`
+  - `pnpm --filter juhe-ai-backend test:worker-local-queue-limit`
+  - `pnpm --filter juhe-ai-backend test:operation-log-queue`
+  - `pnpm --filter juhe-ai-backend test:usage-record-byte-batch`
+  - `pnpm --filter juhe-ai-backend test:usage-record-batch-lookup`
+  - `pnpm --filter juhe-ai-backend test:usage-record-snapshot-sanitize-boundary`
+  - `pnpm --filter juhe-ai-backend test:usage-pricing`
+  - `pnpm --filter juhe-ai-backend test:audit-log-async-flush`
+  - `pnpm --filter juhe-ai-backend test:runtime-log-index-large-line`
+  - `pnpm --filter juhe-ai-backend test:runtime-log-keyword-only-sql`
+  - `pnpm --filter juhe-ai-backend test:runtime-log-search-guard`
+  - `pnpm --filter juhe-ai-backend test:runtime-log-file-import-source`
+  - `pnpm --filter juhe-ai-backend test:background-worker-performance`
+  - 发布产物启动 smoke：临时端口启动 `backend/dist/server.js`，确认 3 个 worker 子进程、1 个 DB service 子进程、健康接口和五类进程事件循环样本。
+- 阶段 2 上线后还需要在生产或仿真环境观察长任务压测下的系统指标采样连续性。
 - 后续若实现阶段 5 / 6，需要补充租约抢占、租约过期接管、分片重复执行保护和 SQLite 锁竞争回归。
 - 后续若实现临时维护 worker，需要补充表监控 `non_business_data_cleanup` 投递、任务状态、进程退出、失败重试和超时取消回归。
 
@@ -354,13 +409,20 @@
 - 临时 worker 不是常驻队列消费者；不能把系统采样、使用记录写入、日志索引或外部复测放进去。
 - 全局窗口刷新任务默认保持单 owner；这些任务的优化方向是索引、分段、短事务和跳过无变化数据。
 - `metrics-worker` 拆出后，需要避免把重统计任务又挂进去，否则隔离失效。
+- 启动风险：外部 supervisor 仍只守护 server，server 内部 fork 默认 worker、metrics-worker、ingest-worker 和 DB service；上线验证必须看子进程 PID、ready 状态和重启日志，不能只看 Web 端口打开。
+- 重启风险：worker 崩溃后必须退避重启，不能秒级死循环拉满 CPU；如果某个角色反复退出，管理页必须能看到对应 snapshot 不可用，而不是空任务数组。
+- IPC 风险：统计、维护、探测类业务 IPC 投递默认 worker；使用记录、审计、操作日志和运行日志索引投递 ingest-worker；metrics-worker 只接收状态和事件循环采样控制。任何新增消息类型都要登记 owner、队列上限、超时和丢弃策略。
+- 观测风险：系统性能 / 网络吞吐趋势、进程事件循环趋势、后台任务表和模拟数据必须覆盖 `server`、`worker`、`metrics-worker`、`ingest-worker`、`db-service` 五类角色；缺样本必须显示未知，不能用 0、空数组或默认时间伪装正常。
+- 资源风险：每新增一个常驻 worker 都会增加 Node heap、SQLite 连接、文件句柄和日志输出；轻任务 worker 要避免打开无关数据库和启动无关队列。
+- 数据一致性风险：统计游标、窗口发布、清理任务和历史重建在没有租约前只能单 owner；临时 worker 必须记录 runId、参数快照、状态、超时和退出结果。
+- 部署风险：Mac / Linux / Windows 的子进程退出信号、路径、日志目录和打包产物入口不同，发布验证要覆盖构建产物启动 smoke；回滚方案不能依赖临时数据库 schema。
 - 阶段 0 可以单独先发布止血，但不能因此关闭后续多 worker 计划；阶段 1 以后按本计划分批实施。
 - 如果未来进入多服务器部署，应另开计划处理跨机器锁、进程发现、部署拓扑和故障转移；本计划只覆盖本机多进程。
 
 ## 完成总结
 
-- 完成时间：未完成
-- 实际完成内容：当前仅完成方案落地文档。
-- 主要改动位置：`docs/plans/计划-0045-后台Worker轻量拆分与任务租约.md`
-- 验证结果：未执行代码验证；本计划未修改运行时代码。
-- 后续建议：先发布当前慢 SQL / 索引修复，随后把 job / 队列归属做成代码级角色配置和回归；再按热点隔离优先级推进 `metrics-worker`、append-only 队列 worker、外部探测 worker、任务租约和分片统计 worker，数量按实测扩展。
+- 完成时间：计划整体未完成；阶段 1 和阶段 2 于 2026-06-14 完成。
+- 实际完成内容：已完成 job registry 归属保护、`metrics-worker` 固定角色隔离，以及阶段 3 首批 `ingest-worker` 写入隔离。默认 worker 继续承载统计、维护、探测和账号测试；metrics-worker 只承载系统采样与事件循环采样协调；ingest-worker 承载使用记录、审计、操作日志和运行日志索引四类 append-only 写入。
+- 主要改动位置：`backend/src/modules/background/`、`backend/src/worker.ts`、`backend/src/config/runtime.ts`、`backend/src/shared/process-event-loop-monitor.ts`、`backend/src/storage/`、`backend/src/modules/db-service/`、`backend/src/modules/stats/stats.routes.ts`、`backend/src/scripts/regression/`、`backend/src/scripts/maintenance/`、`frontend/src/views/stats/`、`frontend/src/types/domain/`、`docs/plans/计划-0045-后台Worker轻量拆分与任务租约.md`、`docs/architecture/架构总览.md`、`docs/architecture/backend/后台Worker多角色拆分设计.md`、`docs/architecture/backend/后台任务使用说明.md`、`docs/develop/运行说明.md`、`docs/deploy/部署指南.md`、`docs/functions/`
+- 验证结果：阶段 2 / 阶段 3 首批相关后端回归、后端类型检查、后端构建、前端类型检查、前端构建和发布产物三 worker 启动 smoke 已通过；生产采样连续性和 ingest 队列积压需要随上线观察。
+- 后续建议：继续把公开接口日志、Client IP 命中 flush 等剩余 append-only / ingest 候选按热点纳入后续拆分，再进入阶段 4 临时维护 worker 和阶段 5 任务租约；不要按 CPU 核数复制同构 worker。

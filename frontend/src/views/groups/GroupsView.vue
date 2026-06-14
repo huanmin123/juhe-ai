@@ -160,52 +160,24 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modalOpen" :title="groupModalTitle" width="640px" :confirm-loading="groupSaving" :ok-button-props="{ type: 'primary', disabled: groupSaving }" @ok="saveGroup">
-      <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
-      <a-form layout="vertical">
-        <a-form-item label="分组名称" required>
-          <a-input v-model:value="form.name" :disabled="editingAuthorizedGroup" />
-        </a-form-item>
-        <a-form-item label="所属供应商" required>
-          <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked || editingAuthorizedGroup" @change="handleGroupProviderChange" />
-          <div class="form-help">供应商决定这个分组后续可绑定的账户范围。</div>
-        </a-form-item>
-        <a-form-item label="分组类型" required>
-          <a-radio-group v-model:value="form.groupType" button-style="solid">
-            <a-radio-button value="personal">个人分组</a-radio-button>
-            <a-radio-button value="high_concurrency">高并发分组</a-radio-button>
-          </a-radio-group>
-        </a-form-item>
-        <div v-if="form.groupType === 'high_concurrency'" class="scheduling-policy-grid">
-          <a-form-item label="最大单账户排队阈值">
-            <a-input-number v-model:value="form.schedulingPolicy.defaultSoftConcurrency" :min="1" :max="1000000" />
-            <div class="form-help">达到该阈值后优先切到其他账户；实际值不会超过账户并发上限。</div>
-          </a-form-item>
-          <a-form-item label="最大等待时间（秒）">
-            <a-input-number :value="formMaxQueueWaitSeconds" :min="1" :max="3600" @update:value="setFormMaxQueueWaitSeconds" />
-            <div class="form-help">所有账户硬并发都满时，请求最多在分组短队列等待这么久；超时后返回 429。</div>
-          </a-form-item>
-          <a-form-item class="scheduling-policy-wide" label="限制单 IP 并发">
-            <a-switch v-model:checked="clientIpLimitEnabled" checked-children="开启" un-checked-children="关闭" />
-            <div class="form-help">默认关闭；开启后限制同一 IP 在当前分组和 API Key 下同时占用的请求数。</div>
-          </a-form-item>
-          <a-form-item label="单 IP 并发上限">
-            <a-input-number :value="formClientIpConcurrencyLimit" :min="1" :max="1000000" :disabled="!clientIpLimitEnabled" @update:value="setFormClientIpConcurrencyLimit" />
-            <div class="form-help">开启限制时默认 5 个并发；关闭后不限制。</div>
-          </a-form-item>
-          <a-form-item label="超过限制时">
-            <a-segmented v-model:value="form.schedulingPolicy.clientIpConcurrencyOverflowMode" :options="clientIpOverflowModeOptions" :disabled="!clientIpLimitEnabled" block />
-            <div class="form-help">立即拒绝会返回 429；排队等待会先等同 IP 请求释放，再进入分组调度。</div>
-          </a-form-item>
-        </div>
-        <a-form-item label="说明">
-          <a-textarea v-model:value="form.description" :rows="3" :disabled="editingAuthorizedGroup" />
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-switch v-model:checked="form.enabled" checked-children="启用" un-checked-children="停用" />
-        </a-form-item>
-      </a-form>
-    </a-modal>
+    <GroupEditModal
+      v-model:open="modalOpen"
+      v-model:client-ip-limit-enabled="clientIpLimitEnabled"
+      :client-ip-concurrency-limit="formClientIpConcurrencyLimit"
+      :editing-authorized-group="editingAuthorizedGroup"
+      :form="form"
+      :max-queue-wait-seconds="formMaxQueueWaitSeconds"
+      :provider-locked="providerLocked"
+      :provider-options="providerOptions"
+      :saving="groupSaving"
+      :show-target-alert="!editingId && isManagementView"
+      :target-system-account-label="targetSystemAccountLabel"
+      :title="groupModalTitle"
+      @client-ip-concurrency-limit-change="setFormClientIpConcurrencyLimit"
+      @max-queue-wait-seconds-change="setFormMaxQueueWaitSeconds"
+      @provider-change="handleGroupProviderChange"
+      @save="saveGroup"
+    />
 
   </a-card>
 </template>
@@ -213,7 +185,7 @@
 <script setup lang="ts">
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -222,7 +194,6 @@ import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
-import type { RowActionItem } from '@/components/rowActions'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
@@ -235,22 +206,26 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import { defaultProviderProtocolProfileId as resolveDefaultProviderProtocolProfileId, preferredDefaultProviderCode } from '@/shared/providerProtocol'
-import type { AccountUsageSummary, GroupAccountStats, GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
+import type { AccountUsageSummary, GroupAccountStats, GroupSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
-import { FALLBACK_PROVIDERS, GPT_PROVIDER, GPT_VENDOR_CODE } from '../accounts/accountOptions'
+import { FALLBACK_PROVIDERS } from '../accounts/accountOptions'
 import {
-  clientIpOverflowModeOptions,
-  cloneHighConcurrencySchedulingPolicy,
-  defaultClientIpConcurrencyLimit,
-  defaultHighConcurrencySchedulingPolicy,
   groupPolicySummary,
   groupTypeColor,
-  groupTypeText,
-  normalizeClientIpConcurrencyLimit
+  groupTypeText
 } from './groupSchedulingPolicy'
+import GroupEditModal from './GroupEditModal.vue'
+import { useGroupFormModel } from './groupFormModel'
+import {
+  canDeleteGroup,
+  canEditGroup,
+  canReturnAuthorizedGroup,
+  groupMoreActions,
+  groupRowActions,
+  isAuthorizedGroup
+} from './groupRowActions'
 
 const pageSize = 50
 const modalOpen = ref(false)
@@ -258,6 +233,7 @@ const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
 const providers = ref<ProviderDefinition[]>([])
+const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
 type GroupsPageState = {
@@ -274,26 +250,18 @@ const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGrou
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
-const form = reactive({
-  name: '',
-  providerCode: GPT_VENDOR_CODE,
-  providerProtocolProfileId: GPT_PROVIDER.defaultProtocolProfileId,
-  description: '',
-  enabled: true,
-  groupType: 'personal' as GroupType,
-  schedulingPolicy: cloneHighConcurrencySchedulingPolicy()
-})
-const formMaxQueueWaitSeconds = computed(() => Math.max(1, Math.round((form.schedulingPolicy.maxQueueWaitMs ?? defaultHighConcurrencySchedulingPolicy.maxQueueWaitMs) / 1000)))
-const clientIpLimitEnabled = computed({
-  get: () => normalizeClientIpConcurrencyLimit(form.schedulingPolicy.clientIpConcurrencyLimit) > 0,
-  set: (enabled: boolean) => {
-    form.schedulingPolicy.clientIpConcurrencyLimit = enabled
-      ? normalizeClientIpConcurrencyLimit(form.schedulingPolicy.clientIpConcurrencyLimit) || defaultClientIpConcurrencyLimit
-      : 0
-    form.schedulingPolicy.clientIpConcurrencyOverflowMode = form.schedulingPolicy.clientIpConcurrencyOverflowMode === 'queue' ? 'queue' : 'reject'
-  }
-})
-const formClientIpConcurrencyLimit = computed(() => normalizeClientIpConcurrencyLimit(form.schedulingPolicy.clientIpConcurrencyLimit) || defaultClientIpConcurrencyLimit)
+const {
+  clientIpLimitEnabled,
+  form,
+  formClientIpConcurrencyLimit,
+  formMaxQueueWaitSeconds,
+  applyGroupToForm,
+  groupFormPayload,
+  handleGroupProviderChange,
+  resetGroupFormForCreate,
+  setFormClientIpConcurrencyLimit,
+  setFormMaxQueueWaitSeconds
+} = useGroupFormModel(availableProviders)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const groupsApi = useScopedGroupsApi(isManagementView)
 const {
@@ -366,7 +334,6 @@ const {
   minVisible: 1
 })
 
-const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -442,16 +409,6 @@ function groupAccountStatsTooltip(group: GroupSummary): string {
   ].join('\n')
 }
 
-function setFormMaxQueueWaitSeconds(value: unknown) {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 3600) return
-  form.schedulingPolicy.maxQueueWaitMs = value * 1000
-}
-
-function setFormClientIpConcurrencyLimit(value: unknown) {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 1_000_000) return
-  form.schedulingPolicy.clientIpConcurrencyLimit = value
-}
-
 function groupConcurrencyAvailable(group: GroupSummary): boolean {
   return groupStats(group).currentConcurrencyAvailable !== false
 }
@@ -487,21 +444,8 @@ function providerName(providerCode?: string) {
   return providerDisplayName(providerCode, availableProviders.value)
 }
 
-function defaultProviderProtocolProfileId(providerCode = form.providerCode): string {
-  const provider = availableProviders.value.find((item) => item.code === providerCode)
-  return resolveDefaultProviderProtocolProfileId(provider)
-}
-
-function handleGroupProviderChange(providerCode: string) {
-  form.providerProtocolProfileId = defaultProviderProtocolProfileId(providerCode)
-}
-
 function groupSystemAccountText(group: GroupSummary) {
   return systemAccountDisplayText(group)
-}
-
-function isAuthorizedGroup(group: GroupSummary): boolean {
-  return group.accessType === 'authorized'
 }
 
 function authorizedGroupTooltip(group: GroupSummary): string {
@@ -570,66 +514,6 @@ function isAuthorizationExpiringSoon(group: GroupSummary): boolean {
   return remainingMs > 0 && remainingMs <= 3 * 24 * 60 * 60 * 1000
 }
 
-function canEditGroup(group: GroupSummary): boolean {
-  return !group.isDefault && group.permissions?.canEdit !== false
-}
-
-function canDeleteGroup(group: GroupSummary): boolean {
-  return !group.isDefault && group.permissions?.canDelete !== false
-}
-
-function canReturnAuthorizedGroup(group: GroupSummary): boolean {
-  return isAuthorizedGroup(group) && group.permissions?.canReturnAuthorization === true
-}
-
-function groupRowActions(group: GroupSummary): RowActionItem[] {
-  const actions: RowActionItem[] = []
-  if (isAuthorizedGroup(group)) {
-    if (canEditGroup(group)) {
-      actions.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
-    }
-    if (canReturnAuthorizedGroup(group)) {
-      actions.push(returnAuthorizedGroupAction(group))
-    }
-    return actions
-  }
-  if (canDeleteGroup(group)) {
-    actions.push(deleteGroupAction(group))
-  }
-  return actions
-}
-
-function groupMoreActions(group: GroupSummary): RowActionItem[] {
-  if (isAuthorizedGroup(group)) return []
-  const actions: RowActionItem[] = []
-  if (canEditGroup(group)) {
-    actions.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
-  }
-  return actions
-}
-
-function deleteGroupAction(group: GroupSummary): RowActionItem {
-  return {
-    key: 'delete',
-    label: '删除',
-    icon: 'delete',
-    tone: 'danger',
-    confirmTitle: `确认删除分组 ${group.name}？`,
-    confirmOkText: '删除'
-  }
-}
-
-function returnAuthorizedGroupAction(group: GroupSummary): RowActionItem {
-  return {
-    key: 'return-authorization',
-    label: '归还',
-    icon: 'revoke',
-    tone: 'danger',
-    confirmTitle: `确认归还授权分组「${group.name}」？归还后你将不再看到或使用它，不影响授权方原分组。`,
-    confirmOkText: '归还'
-  }
-}
-
 function handleGroupAction(key: string, group: GroupSummary) {
   if (key === 'edit') {
     openEdit(group)
@@ -661,12 +545,6 @@ function formatUsageAmount(value?: number): string {
 
 function formatCost(value?: number): string {
   return formatUsd(value)
-}
-
-function defaultProviderCode() {
-  const providerCode = preferredDefaultProviderCode(availableProviders.value)
-  if (!providerCode) throw new Error('没有可用供应商')
-  return providerCode
 }
 
 function groupListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -727,16 +605,7 @@ function openCreate() {
   }
   editingId.value = undefined
   void loadGroupOptions()
-  const providerCode = defaultProviderCode()
-  Object.assign(form, {
-    name: '',
-    providerCode,
-    providerProtocolProfileId: defaultProviderProtocolProfileId(providerCode),
-    description: '',
-    enabled: true,
-    groupType: 'personal' as GroupType,
-    schedulingPolicy: cloneHighConcurrencySchedulingPolicy()
-  })
+  resetGroupFormForCreate()
   modalOpen.value = true
 }
 
@@ -745,26 +614,14 @@ function openEdit(group: GroupSummary) {
     message.warning(group.isDefault ? '默认分组不允许编辑' : '当前分组不能编辑')
     return
   }
-  let schedulingPolicy: Required<GroupSchedulingPolicy>
   try {
-    schedulingPolicy = group.groupType === 'high_concurrency'
-      ? cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy, { requireComplete: true })
-      : cloneHighConcurrencySchedulingPolicy()
+    applyGroupToForm(group)
   } catch (error) {
     message.error(extractApiErrorMessage(error, '分组调度策略数据异常，请清理后再编辑'))
     return
   }
   editingId.value = group.id
   void loadGroupOptions()
-  Object.assign(form, {
-    name: group.name,
-    providerCode: group.providerCode,
-    providerProtocolProfileId: group.providerProtocolProfileId ?? defaultProviderProtocolProfileId(group.providerCode),
-    description: group.description ?? '',
-    enabled: group.enabled,
-    groupType: group.groupType,
-    schedulingPolicy
-  })
   modalOpen.value = true
 }
 
@@ -798,35 +655,6 @@ const saveGroup = submitAction('groups.save', async () => {
     message.error(extractApiErrorMessage(error, '保存分组失败'))
   }
 })
-
-function groupFormPayload(targetGroup?: GroupSummary): Record<string, unknown> {
-  const schedulingPolicy = cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy, { requireComplete: true })
-  const localSettings = {
-    enabled: form.enabled,
-    groupType: form.groupType,
-    schedulingPolicy: form.groupType === 'high_concurrency'
-      ? {
-          defaultSoftConcurrency: schedulingPolicy.defaultSoftConcurrency,
-          maxQueueWaitMs: schedulingPolicy.maxQueueWaitMs,
-          clientIpConcurrencyLimit: clientIpLimitEnabled.value ? formClientIpConcurrencyLimit.value : 0,
-          clientIpConcurrencyOverflowMode: clientIpLimitEnabled.value
-            ? schedulingPolicy.clientIpConcurrencyOverflowMode
-            : 'reject',
-          imageLaneMaxConcurrency: schedulingPolicy.imageLaneMaxConcurrency
-        }
-      : undefined
-  }
-  if (targetGroup && isAuthorizedGroup(targetGroup)) {
-    return localSettings
-  }
-  return {
-    name: form.name,
-    providerCode: form.providerCode,
-    providerProtocolProfileId: form.providerProtocolProfileId,
-    description: form.description,
-    ...localSettings
-  }
-}
 
 async function removeGroup(id: string) {
   const group = groups.value.find((item) => item.id === id)
@@ -907,25 +735,6 @@ onMounted(() => {
   color: #334155;
   font-size: 13px;
   font-weight: 600;
-}
-
-.form-help {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.scheduling-policy-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 16px;
-}
-
-.scheduling-policy-grid :deep(.ant-input-number) {
-  width: 100%;
-}
-
-.scheduling-policy-wide {
-  grid-column: 1 / -1;
 }
 
 .groups-table :deep(.ant-table-cell) {
@@ -1044,12 +853,6 @@ onMounted(() => {
 
 .authorized-tooltip-text {
   white-space: pre-line;
-}
-
-@media (max-width: 640px) {
-  .scheduling-policy-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 </style>

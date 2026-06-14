@@ -1,0 +1,760 @@
+export type BackgroundJobKind =
+  | 'sample'
+  | 'ingest'
+  | 'stats'
+  | 'snapshot'
+  | 'probe'
+  | 'maintenance'
+  | 'log'
+  | 'control'
+
+export type BackgroundJobLifecycle = 'persistent' | 'temporary' | 'hybrid'
+
+export type BackgroundWorkerRole =
+  | 'metrics-worker'
+  | 'ingest-worker'
+  | 'usage-ingest-worker'
+  | 'log-worker'
+  | 'stats-worker'
+  | 'snapshot-worker'
+  | 'probe-worker'
+  | 'maintenance-worker'
+  | 'temporary-maintenance-worker'
+  | 'worker-control'
+
+export type BackgroundJobCategory =
+  | 'scheduled'
+  | 'ipc-queue'
+  | 'control-ipc'
+  | 'local-queue'
+  | 'entrypoint'
+  | 'maintenance-task'
+
+export interface BackgroundJobRegistryEntry {
+  jobName: string
+  category: BackgroundJobCategory
+  kind: BackgroundJobKind
+  lifecycle: BackgroundJobLifecycle
+  defaultRole: BackgroundWorkerRole
+  hotspot: boolean
+  singleOwner: boolean
+  shardable: boolean
+  leaseRequired: boolean
+  blocksUserVisibleFreshness: boolean
+  writes: readonly string[]
+  notes?: string
+}
+
+const scheduled = <const T extends BackgroundJobRegistryEntry>(entry: T & { category: 'scheduled' }) => entry
+const entry = <const T extends BackgroundJobRegistryEntry>(value: T) => value
+
+export const backgroundScheduledJobs = [
+  scheduled({
+    jobName: 'system-metrics-sample',
+    category: 'scheduled',
+    kind: 'sample',
+    lifecycle: 'persistent',
+    defaultRole: 'metrics-worker',
+    hotspot: true,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:system_metrics_samples', 'stats:process_event_loop_samples'],
+    notes: '系统采样必须独立，不能被统计窗口或维护清理拖住'
+  }),
+  scheduled({
+    jobName: 'system-metrics-trend-windows-refresh',
+    category: 'scheduled',
+    kind: 'snapshot',
+    lifecycle: 'persistent',
+    defaultRole: 'snapshot-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:system_metrics_trend_windows']
+  }),
+  scheduled({
+    jobName: 'usage-stats-aggregation',
+    category: 'scheduled',
+    kind: 'stats',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:usage_stats_*', 'stats:usage_model_*', 'stats:usage_error_*', 'stats:usage_latency_*']
+  }),
+  scheduled({
+    jobName: 'client-ip-stats-aggregation',
+    category: 'scheduled',
+    kind: 'stats',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:client_ip_stats_daily', 'stats:client_ip_usage_range_windows']
+  }),
+  scheduled({
+    jobName: 'group-account-stats-refresh',
+    category: 'scheduled',
+    kind: 'stats',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:groups', 'stats:group_account_stats_cache']
+  }),
+  scheduled({
+    jobName: 'usage-rank-snapshots-refresh',
+    category: 'scheduled',
+    kind: 'snapshot',
+    lifecycle: 'persistent',
+    defaultRole: 'snapshot-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:usage_rank_snapshots', 'stats:ai_performance_summary_windows']
+  }),
+  scheduled({
+    jobName: 'usage-overview-windows-refresh',
+    category: 'scheduled',
+    kind: 'snapshot',
+    lifecycle: 'persistent',
+    defaultRole: 'snapshot-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:usage_overview_summary_windows', 'stats:usage_overview_trend_windows']
+  }),
+  scheduled({
+    jobName: 'usage-scope-range-windows-refresh',
+    category: 'scheduled',
+    kind: 'snapshot',
+    lifecycle: 'persistent',
+    defaultRole: 'snapshot-worker',
+    hotspot: true,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:usage_scope_range_windows']
+  }),
+  scheduled({
+    jobName: 'authorization-usage-range-windows-refresh',
+    category: 'scheduled',
+    kind: 'snapshot',
+    lifecycle: 'persistent',
+    defaultRole: 'snapshot-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:authorization_team_usage_range_windows', 'stats:authorization_user_usage_range_windows']
+  }),
+  scheduled({
+    jobName: 'usage-stats-consistency-check',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: []
+  }),
+  scheduled({
+    jobName: 'api-key-record-cleanup-retry',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:api_key_record_cleanup_targets', 'stats:usage_record_cleanup_deductions', 'usage-shards:usage_records']
+  }),
+  scheduled({
+    jobName: 'account-record-cleanup-retry',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:account_record_cleanup_targets', 'stats:usage_record_cleanup_deductions', 'usage-shards:usage_records']
+  }),
+  scheduled({
+    jobName: 'api-key-availability-schedule-status-sync',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:api_keys']
+  }),
+  scheduled({
+    jobName: 'resource-authorization-expiry-sweep',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:resource_authorizations']
+  }),
+  scheduled({
+    jobName: 'table-storage-monitor',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['stats:database_storage_snapshots', 'stats:table_storage_snapshots']
+  }),
+  scheduled({
+    jobName: 'proxy-latency-refresh',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['business:proxies']
+  }),
+  scheduled({
+    jobName: 'account-quality-refresh',
+    category: 'scheduled',
+    kind: 'stats',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:account_quality_*']
+  }),
+  scheduled({
+    jobName: 'openai-oauth-access-token-refresh',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts']
+  }),
+  scheduled({
+    jobName: 'cooldown-account-retest',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
+  }),
+  scheduled({
+    jobName: 'runtime-log-index-maintenance',
+    category: 'scheduled',
+    kind: 'log',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:runtime_logs']
+  }),
+  scheduled({
+    jobName: 'audit-hot-retention-cleanup',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:audit_logs', 'dataset:audit_payload_refs', 'dataset:audit_payload_blobs']
+  }),
+  scheduled({
+    jobName: 'data-retention-cleanup',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:*', 'stats:*', 'usage-shards:usage_records']
+  }),
+  scheduled({
+    jobName: 'expired-deleted-account-cleanup',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['business:accounts', 'business:resource_authorizations']
+  })
+] as const
+
+export type BackgroundScheduledJobName = typeof backgroundScheduledJobs[number]['jobName']
+
+export const backgroundWorkerRegistry = [
+  ...backgroundScheduledJobs,
+  entry({
+    jobName: 'background_worker_usage_records',
+    category: 'ipc-queue',
+    kind: 'ingest',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['usage-shards:usage_records']
+  }),
+  entry({
+    jobName: 'background_worker_audit_logs',
+    category: 'ipc-queue',
+    kind: 'log',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:audit_logs', 'dataset:audit_payload_refs', 'dataset:audit_payload_blobs']
+  }),
+  entry({
+    jobName: 'background_worker_operation_logs',
+    category: 'ipc-queue',
+    kind: 'log',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:operation_logs']
+  }),
+  entry({
+    jobName: 'background_worker_record_maintenance',
+    category: 'ipc-queue',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:*', 'stats:*', 'usage-shards:usage_records'],
+    notes: '队列内任务需要继续按具体 job type 判断是否交给 temporary-maintenance-worker'
+  }),
+  entry({
+    jobName: 'background_worker_account_test_tasks',
+    category: 'ipc-queue',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:account_test_tasks']
+  }),
+  entry({
+    jobName: 'background_worker_account_test_cancel',
+    category: 'control-ipc',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:account_test_tasks']
+  }),
+  entry({
+    jobName: 'background_worker_runtime_log_line',
+    category: 'ipc-queue',
+    kind: 'log',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:runtime_logs']
+  }),
+  entry({
+    jobName: 'background_worker_status_request',
+    category: 'control-ipc',
+    kind: 'control',
+    lifecycle: 'persistent',
+    defaultRole: 'worker-control',
+    hotspot: false,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: []
+  }),
+  entry({
+    jobName: 'background_worker_ready',
+    category: 'control-ipc',
+    kind: 'control',
+    lifecycle: 'persistent',
+    defaultRole: 'worker-control',
+    hotspot: false,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: []
+  }),
+  entry({
+    jobName: 'background_worker_status_response',
+    category: 'control-ipc',
+    kind: 'control',
+    lifecycle: 'persistent',
+    defaultRole: 'worker-control',
+    hotspot: false,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: []
+  }),
+  entry({
+    jobName: 'background_worker_ingest_status_request',
+    category: 'control-ipc',
+    kind: 'control',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: []
+  }),
+  entry({
+    jobName: 'background_worker_ingest_status_response',
+    category: 'control-ipc',
+    kind: 'control',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: []
+  }),
+  entry({
+    jobName: 'background_worker_process_event_loop_request',
+    category: 'control-ipc',
+    kind: 'sample',
+    lifecycle: 'persistent',
+    defaultRole: 'metrics-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: []
+  }),
+  entry({
+    jobName: 'background_worker_process_event_loop_response',
+    category: 'control-ipc',
+    kind: 'sample',
+    lifecycle: 'persistent',
+    defaultRole: 'metrics-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: []
+  }),
+  entry({
+    jobName: 'server_account_runtime_clear',
+    category: 'control-ipc',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['server:gateway_runtime_cache']
+  }),
+  entry({
+    jobName: 'gateway_runtime_cache_invalidate',
+    category: 'control-ipc',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['server:gateway_runtime_cache']
+  }),
+  entry({
+    jobName: 'gateway_quota_snapshot_update',
+    category: 'control-ipc',
+    kind: 'stats',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['server:gateway_quota_snapshot_cache']
+  }),
+  entry({
+    jobName: 'runtime-log-file-import',
+    category: 'entrypoint',
+    kind: 'log',
+    lifecycle: 'persistent',
+    defaultRole: 'log-worker',
+    hotspot: true,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:runtime_logs', 'dataset:runtime_log_file_cursors']
+  }),
+  entry({
+    jobName: 'manual-account-test-queue',
+    category: 'local-queue',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:account_test_tasks']
+  }),
+  entry({
+    jobName: 'cooldown-account-retest-queue',
+    category: 'local-queue',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
+  }),
+  entry({
+    jobName: 'account-quality-failure-precheck-queue',
+    category: 'local-queue',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts']
+  }),
+  entry({
+    jobName: 'public-api-log-queue',
+    category: 'local-queue',
+    kind: 'log',
+    lifecycle: 'persistent',
+    defaultRole: 'log-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:public_api_logs']
+  }),
+  entry({
+    jobName: 'client-ip-policy-hit-buffer',
+    category: 'local-queue',
+    kind: 'ingest',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['stats:client_ip_policy_hits']
+  }),
+  entry({
+    jobName: 'gateway-account-side-effects',
+    category: 'local-queue',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts']
+  }),
+  entry({
+    jobName: 'record-maintenance:api_key_related_cleanup',
+    category: 'maintenance-task',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:api_key_record_cleanup_targets', 'stats:usage_record_cleanup_deductions', 'usage-shards:usage_records']
+  }),
+  entry({
+    jobName: 'record-maintenance:account_related_cleanup',
+    category: 'maintenance-task',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:account_record_cleanup_targets', 'stats:usage_record_cleanup_deductions', 'usage-shards:usage_records']
+  }),
+  entry({
+    jobName: 'record-maintenance:usage_records_cleanup',
+    category: 'maintenance-task',
+    kind: 'maintenance',
+    lifecycle: 'temporary',
+    defaultRole: 'temporary-maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['usage-shards:usage_records']
+  }),
+  entry({
+    jobName: 'record-maintenance:non_business_data_cleanup',
+    category: 'maintenance-task',
+    kind: 'maintenance',
+    lifecycle: 'temporary',
+    defaultRole: 'temporary-maintenance-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:*', 'stats:*', 'usage-shards:usage_records', 'audit-payload-files:*']
+  }),
+  entry({
+    jobName: 'record-maintenance:account_usage_snapshot_upsert',
+    category: 'maintenance-task',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'maintenance-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:account_usage_snapshots'],
+    notes: '同账号同来源任务可合并为最新快照'
+  })
+] as const
+
+export type BackgroundRegisteredJobName = typeof backgroundWorkerRegistry[number]['jobName']
+
+const scheduledJobNames = new Set<string>(backgroundScheduledJobs.map((job) => job.jobName))
+const registeredJobNames = new Set<string>(backgroundWorkerRegistry.map((job) => job.jobName))
+
+export function backgroundScheduledJobName(name: BackgroundScheduledJobName): BackgroundScheduledJobName {
+  if (!scheduledJobNames.has(name)) {
+    throw new Error(`未登记的后台定时任务：${name}`)
+  }
+  return name
+}
+
+export function backgroundRegisteredJobName(name: BackgroundRegisteredJobName): BackgroundRegisteredJobName {
+  if (!registeredJobNames.has(name)) {
+    throw new Error(`未登记的后台任务或队列：${name}`)
+  }
+  return name
+}
+
+export function getBackgroundJobRegistryEntry(name: string): BackgroundJobRegistryEntry | undefined {
+  return backgroundWorkerRegistry.find((job) => job.jobName === name)
+}

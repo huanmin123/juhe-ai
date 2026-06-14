@@ -57,9 +57,9 @@ auditLogsRouter.get('/search-hot', async (req, res, next) => {
 
 auditLogsRouter.get('/runtime', async (_req, res) => {
   const serverRuntime = await requestServerRuntimeSnapshot()
-  const workerSnapshot = serverRuntime?.worker?.snapshot
+  const workerSnapshot = serverRuntime?.ingestWorker?.snapshot
   const auditLogQueue = workerSnapshot?.auditLogQueue
-  const workerRuntime = serverRuntime?.worker
+  const workerRuntime = serverRuntime?.ingestWorker
   const runtimeAvailable = Boolean(serverRuntime)
   const workerSnapshotAvailable = Boolean(workerSnapshot)
   const auditLogQueueAvailable = Boolean(auditLogQueue)

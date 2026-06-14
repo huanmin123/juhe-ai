@@ -64,7 +64,7 @@ export interface RuntimeLogIndexRuntime {
 }
 
 export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): void {
-  if (runtimeConfig.processRole === 'server') {
+  if (shouldDispatchRuntimeLogToIngestWorker()) {
     sendRuntimeLogLineToWorker(rawLine, options)
     return
   }
@@ -73,6 +73,7 @@ export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIn
 }
 
 export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogLineIndexOptions = {}): void {
+  assertLocalRuntimeLogIndexAllowed('enqueueRuntimeLogLineLocal')
   const input = runtimeLogInputFromLine(rawLine, options)
   if (!input) return
 
@@ -95,6 +96,9 @@ export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogL
 }
 
 export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}): boolean {
+  if (!isRuntimeLogIngestWorker()) {
+    return true
+  }
   if (flushing || pendingRuntimeLogs.length === 0) {
     return true
   }
@@ -300,6 +304,9 @@ function normalizeMaxBatches(value: number | undefined): number {
 }
 
 function scheduleRuntimeLogFlush(delayMs: number): void {
+  if (!isRuntimeLogIngestWorker()) {
+    return
+  }
   if (delayMs <= 0 && flushTimer && (flushTimerDelayMs ?? 0) > 0) {
     clearTimeout(flushTimer)
     flushTimer = undefined
@@ -319,6 +326,21 @@ function scheduleRuntimeLogFlush(delayMs: number): void {
 
 function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
+}
+
+function assertLocalRuntimeLogIndexAllowed(operation: string): void {
+  if (!isRuntimeLogIngestWorker()) {
+    throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入运行日志索引：${operation} 必须投递 ingest-worker`)
+  }
+}
+
+function isRuntimeLogIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function shouldDispatchRuntimeLogToIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'server'
+    || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
 }
 
 function estimateRuntimeLogBytes(input: RuntimeLogIndexInput): number {

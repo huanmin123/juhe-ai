@@ -44,8 +44,8 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
       requestDbService({ type: 'get_runtime_log_facets' }),
       getRuntimeLogGrepRuntime()
     ])
-    const workerSnapshot = serverRuntime?.worker?.snapshot
-    const workerRuntime = serverRuntime?.worker
+    const workerSnapshot = serverRuntime?.ingestWorker?.snapshot
+    const workerRuntime = serverRuntime?.ingestWorker
     const runtimeLogIndexQueue = workerSnapshot?.runtimeLogIndexQueue
     const dbServiceState = serverRuntime?.dbService
     const gatewayAccountSideEffects = serverRuntime?.gatewayAccountSideEffects

@@ -6,6 +6,7 @@ import { parse } from 'dotenv'
 
 export interface RuntimeConfig {
   processRole: ProcessRole
+  workerRole: WorkerRuntimeRole
   host: string
   port: number
   httpSecurity: {
@@ -57,6 +58,7 @@ export interface RuntimeConfig {
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent'
 export type ProcessRole = 'server' | 'worker' | 'db-service'
+export type WorkerRuntimeRole = 'worker' | 'metrics-worker' | 'ingest-worker'
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
@@ -71,6 +73,7 @@ const localEnv = loadLocalEnv(localEnvPath)
 
 export const runtimeConfig: RuntimeConfig = {
   processRole: processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server'),
+  workerRole: workerRoleConfig('JUHE_AI_WORKER_ROLE', 'worker'),
   host: stringConfig('JUHE_AI_HOST', '127.0.0.1'),
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
@@ -162,6 +165,13 @@ function processRoleConfig(name: string, fallback: ProcessRole): ProcessRole {
   const value = stringConfig(name, '').toLowerCase()
   if (value === 'worker') return 'worker'
   if (value === 'db-service') return 'db-service'
+  return fallback
+}
+
+function workerRoleConfig(name: string, fallback: WorkerRuntimeRole): WorkerRuntimeRole {
+  const value = stringConfig(name, '').toLowerCase()
+  if (value === 'metrics-worker') return 'metrics-worker'
+  if (value === 'ingest-worker') return 'ingest-worker'
   return fallback
 }
 

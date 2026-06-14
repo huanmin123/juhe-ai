@@ -116,7 +116,7 @@ function sanitizeDroppedAuditUrl(path?: string, queryString?: string): { path: s
 
 export function enqueueAuditLog(input: AuditLogInput): void {
   const queuedInput = normalizeAuditLogInput(input)
-  if (runtimeConfig.processRole === 'server') {
+  if (shouldDispatchAuditLogToIngestWorker()) {
     if (!sendAuditLogsToWorker([queuedInput])) {
       recordDrop({
         input: queuedInput,
@@ -160,7 +160,7 @@ function enqueueAuditLogLocal(input: AuditLogInput): void {
 }
 
 export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
-  if (runtimeConfig.processRole === 'server') {
+  if (!isAuditLogIngestWorker()) {
     return
   }
   if (flushing || pendingAuditLogs.length === 0) return
@@ -228,7 +228,7 @@ export async function flushAuditLogQueueAsync(options: AuditLogFlushOptions = {}
 }
 
 async function flushAuditLogQueueAsyncInner(options: AuditLogFlushOptions = {}): Promise<void> {
-  if (runtimeConfig.processRole === 'server') {
+  if (!isAuditLogIngestWorker()) {
     return
   }
   if (flushing || pendingAuditLogs.length === 0) return
@@ -492,7 +492,16 @@ function normalizeAuditLogInput(input: AuditLogInput): AuditLogInput {
 }
 
 function assertLocalAuditLogWriteAllowed(operation: string): void {
-  if (runtimeConfig.processRole === 'server') {
-    throw new Error(`server 角色禁止直接同步写入 SQLite：${operation} 必须投递 background worker`)
+  if (!isAuditLogIngestWorker()) {
+    throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入审计日志：${operation} 必须投递 ingest-worker`)
   }
+}
+
+function isAuditLogIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function shouldDispatchAuditLogToIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'server'
+    || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
 }

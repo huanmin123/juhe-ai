@@ -127,7 +127,7 @@ try {
       apiKey: 'legacy-field'
     },
     groupId: accountGroup.id
-  }, access), /账户凭据包含未知字段：apiKey/, '创建账户不应静默保留 credentials 内的旧字段')
+  }, access), /账户凭据包含不支持的字段：apiKey/, '创建账户不应静默保留 credentials 内的旧字段')
 
   assert.throws(() => repositories.updateAccount(account.id, {
     credentials: {
@@ -135,7 +135,7 @@ try {
       base_url: 'https://api.openai.com/v1',
       legacyToken: 'old-token'
     }
-  }, access), /账户凭据包含未知字段：legacyToken/, '更新账户不应静默保留 credentials 内的旧字段')
+  }, access), /账户凭据包含不支持的字段：legacyToken/, '更新账户不应静默保留 credentials 内的旧字段')
 
   assert.throws(() => repositories.createAccount({
     providerCode: 'gpt',
@@ -178,7 +178,7 @@ try {
       accountId: 'legacy-account-id'
     },
     groupId: accountGroup.id
-  }, access), /账户凭据包含未知字段：accountId/, 'OAuth 凭据不应接收 camelCase 旧字段')
+  }, access), /账户凭据包含不支持的字段：accountId/, 'OAuth 凭据不应接收 camelCase 旧字段')
 
   assert.throws(() => repositories.createAccount({
     providerCode: 'gpt',

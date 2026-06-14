@@ -47,7 +47,7 @@ import {
 } from './modules/accounts/account-test-task-queue.service.js'
 import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
-import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
+import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 
 type WorkerIncomingMessage =
@@ -59,28 +59,42 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
   | { type: 'background_worker_runtime_log_line'; line: unknown; sourceKey?: unknown; logFile?: unknown; logOffset?: unknown; lineNumber?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
+  | { type: 'background_worker_process_event_loop_request'; requestId: unknown }
 
 getBusinessDatabase()
-getDatasetDatabase()
 getStatsDatabase()
 installProcessLogHandlers()
 startProcessEventLoopMonitor()
-startLogMaintenance()
-installUsageRecordQueueShutdownHooks()
-installOperationLogQueueShutdownHooks()
-installRecordMaintenanceQueueShutdownHooks()
-installRuntimeLogIndexQueueShutdownHooks()
-installAuditLogQueueShutdownHooks()
 installWorkerSignalShutdownHooks()
-setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
-startRuntimeLogFileImport()
+if (isIngestWorker()) {
+  getDatasetDatabase()
+  startLogMaintenance()
+  installUsageRecordQueueShutdownHooks()
+  installOperationLogQueueShutdownHooks()
+  installRuntimeLogIndexQueueShutdownHooks()
+  installAuditLogQueueShutdownHooks()
+  setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
+  startRuntimeLogFileImport()
+} else if (isDefaultWorker()) {
+  getDatasetDatabase()
+  installRecordMaintenanceQueueShutdownHooks()
+  startAccountTestTaskQueue()
+}
 startBackgroundJobs()
-startAccountTestTaskQueue()
 
 let workerSignalShutdownInProgress = false
 
 process.on('message', (message: unknown) => {
   if (!isWorkerIncomingMessage(message)) {
+    return
+  }
+  if (isMetricsWorker() && !isWorkerControlMessage(message)) {
+    return
+  }
+  if (isIngestWorker() && !isIngestWorkerMessage(message)) {
+    return
+  }
+  if (isDefaultWorker() && isIngestWorkerMessage(message) && !isWorkerControlMessage(message)) {
     return
   }
 
@@ -123,6 +137,15 @@ process.on('message', (message: unknown) => {
         })
       }
       break
+    case 'background_worker_process_event_loop_request':
+      if (typeof message.requestId === 'string') {
+        sendWorkerMessage({
+          type: 'background_worker_process_event_loop_response',
+          requestId: message.requestId,
+          samples: [buildProcessEventLoopSample()]
+        })
+      }
+      break
     default:
       break
   }
@@ -130,17 +153,19 @@ process.on('message', (message: unknown) => {
 
 sendWorkerMessage({
   type: 'background_worker_ready',
-  pid: process.pid
+  pid: process.pid,
+  workerRole: runtimeConfig.workerRole
 })
 
 logger.info({
   event: 'background_worker_started',
   pid: process.pid,
   processRole: runtimeConfig.processRole,
+  workerRole: runtimeConfig.workerRole,
   databasePath: runtimeConfig.databasePath,
   datasetDatabasePath: datasetDatabasePath(),
   statsDatabasePath: statsDatabasePath()
-}, '后台 worker 已启动')
+}, workerStartedMessage())
 
 function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
   const auditRuntime = getAuditLogQueueRuntime()
@@ -149,6 +174,7 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     pid: process.pid,
     ready: true,
     processRole: 'worker',
+    workerRole: runtimeConfig.workerRole,
     jobs: getBackgroundJobRuntimeSnapshots(),
     usageRecordQueue: queueRuntime(getUsageRecordQueueRuntime()),
     operationLogQueue: queueRuntime(getOperationLogQueueRuntime()),
@@ -250,11 +276,48 @@ async function exitAfterWorkerQueueFlush(exitCode: number): Promise<never> {
 }
 
 async function flushWorkerQueuesForShutdown(): Promise<void> {
-  flushUsageRecordQueueForShutdown()
-  flushOperationLogQueueForShutdown()
+  if (isMetricsWorker()) {
+    return
+  }
+  if (isIngestWorker()) {
+    flushUsageRecordQueueForShutdown()
+    flushOperationLogQueueForShutdown()
+    flushRuntimeLogIndexQueueForShutdown()
+    await flushAuditLogQueueForShutdown()
+    return
+  }
   await flushRecordMaintenanceQueueForShutdown()
-  flushRuntimeLogIndexQueueForShutdown()
-  await flushAuditLogQueueForShutdown()
+}
+
+function isMetricsWorker(): boolean {
+  return runtimeConfig.workerRole === 'metrics-worker'
+}
+
+function isIngestWorker(): boolean {
+  return runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function isDefaultWorker(): boolean {
+  return runtimeConfig.workerRole === 'worker'
+}
+
+function isWorkerControlMessage(message: WorkerIncomingMessage): boolean {
+  return message.type === 'background_worker_status_request'
+    || message.type === 'background_worker_process_event_loop_request'
+}
+
+function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
+  return isWorkerControlMessage(message)
+    || message.type === 'background_worker_usage_records'
+    || message.type === 'background_worker_audit_logs'
+    || message.type === 'background_worker_operation_logs'
+    || message.type === 'background_worker_runtime_log_line'
+}
+
+function workerStartedMessage(): string {
+  if (isMetricsWorker()) return '后台 metrics-worker 已启动'
+  if (isIngestWorker()) return '后台 ingest-worker 已启动'
+  return '后台 worker 已启动'
 }
 
 function runtimeLogLineOptionsFromMessage(message: Extract<WorkerIncomingMessage, { type: 'background_worker_runtime_log_line' }>): Parameters<typeof enqueueRuntimeLogLineLocal>[1] {

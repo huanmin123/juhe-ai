@@ -331,6 +331,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       groupId: selectedGroup?.id ?? options.groupIdForAccount(sourceAccount.id),
       group: selectedGroup,
       apiKey: asString(sourceAccount.credentials.api_key) ?? '',
+      apiKeys: accountApiKeysForForm(sourceAccount.credentials),
+      apiKeyStrategy: sourceAccount.credentials.api_key_strategy === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin',
+      apiKeyWeights: accountApiKeyWeightsForForm(sourceAccount.credentials),
       baseUrl,
       accessToken: asString(sourceAccount.credentials.access_token) ?? '',
       refreshToken: asString(sourceAccount.credentials.refresh_token) ?? '',
@@ -491,14 +494,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         await createOAuthAccountFromUnifiedForm()
         message.success('OAuth 账户已创建，需测试通过后参与调度')
       } else {
-        const createPayload = accountCreatePayloadWithActivationTest(payload)
-        let created: AccountSummary
-        if (options.isManagementView.value) {
-          created = await api.accounts.create(createPayload, createScopeParams.value)
-        } else {
-          created = await api.myAccounts.create(createPayload)
-        }
-        message.success(created.status === 'active' ? '账户已创建并启用' : '账户已创建，需测试通过后参与调度')
+        const created = await createApiKeyAccount(accountCreatePayloadWithActivationTest(payload))
+        message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，需测试通过后参与调度')
       }
       clearSuccessfulDraftActivationTest()
       modalOpen.value = false
@@ -606,6 +603,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     } else {
       await api.myOpenaiOAuth.createFromRefreshToken(payload)
     }
+  }
+
+  async function createApiKeyAccount(payload: AccountSavePayload): Promise<AccountSummary> {
+    return options.isManagementView.value
+      ? api.accounts.create(payload, createScopeParams.value)
+      : api.myAccounts.create(payload)
   }
 
   return {
@@ -734,6 +737,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
       group: selectedGroup,
       apiKey: '',
+      apiKeys: [''],
+      apiKeyStrategy: 'round_robin',
+      apiKeyWeights: [1],
       baseUrl,
       accessToken: '',
       refreshToken: '',
@@ -853,6 +859,23 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function accountTagOperationScopeParams(): AccountScopeParams {
     return editingId.value ? editingAccountScopeParams() : createScopeParams.value
+  }
+
+  function accountApiKeysForForm(credentials: Record<string, unknown>): string[] {
+    const values = Array.isArray(credentials.api_keys)
+      ? credentials.api_keys
+      : [credentials.api_key]
+    const keys = values.map((value) => asString(value) ?? '').filter(Boolean)
+    return keys.length ? keys : ['']
+  }
+
+  function accountApiKeyWeightsForForm(credentials: Record<string, unknown>): number[] {
+    const keys = accountApiKeysForForm(credentials)
+    const rawWeights = Array.isArray(credentials.api_key_weights) ? credentials.api_key_weights : []
+    return keys.map((_, index) => {
+      const value = Number(rawWeights[index] ?? 1)
+      return Number.isInteger(value) ? Math.min(100, Math.max(1, value)) : 1
+    })
   }
 
   function accountCreatePayloadWithActivationTest(payload: AccountSavePayload): AccountSavePayload & { status?: 'active'; activationTestTaskId?: string } {

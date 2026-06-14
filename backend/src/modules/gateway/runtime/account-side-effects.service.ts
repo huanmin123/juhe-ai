@@ -1,6 +1,6 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { requestDbService } from '../../db-service/db-service-ipc.js'
-import type { AccountRuntimeAvailability, DbServiceOperation } from '../../db-service/db-service-types.js'
+import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
 import type { AccountErrorPolicyDecision, GatewaySettings } from '../policy/account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../../shared/retry-policy.js'
@@ -24,18 +24,12 @@ import {
   type GatewayAccountRuntimeClearTarget,
   type SuppressibleGatewayAccount
 } from './account-runtime-keys.js'
-
-type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
-type StreamFailureOperation = Extract<DbServiceOperation, { type: 'record_account_stream_failure' }>
-type AccountSideEffectOperation = AccountErrorHandlingOperation | StreamFailureOperation
-
-interface QueuedAccountSideEffect {
-  operation: AccountSideEffectOperation
-  attempts: number
-  enqueuedAtMs: number
-  nextAttemptAtMs: number
-  expiresAtMs: number
-}
+import {
+  AccountSideEffectQueue,
+  type AccountErrorHandlingOperation,
+  type AccountSideEffectOperation,
+  type StreamFailureOperation
+} from './account-side-effect-queue.js'
 
 interface LocalAccountSuppression {
   accountId: string
@@ -157,7 +151,7 @@ const precheckConcurrencyDrainPollMs = 1_000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 const maxSideEffectQueueLength = 5000
 
-const sideEffectQueue: QueuedAccountSideEffect[] = []
+const sideEffectQueue = new AccountSideEffectQueue()
 const localAccountSuppressions = new Map<string, LocalAccountSuppression>()
 const failureStorms = new Map<string, FailureStormEntry>()
 const precheckStates = new Map<string, PrecheckState>()
@@ -446,7 +440,7 @@ export function filterLocallySuppressedGatewayAccounts<T extends SuppressibleGat
 
 export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectState {
   cleanupExpiredLocalSuppressions()
-  const nextAttemptAtMs = peekSideEffect()?.nextAttemptAtMs
+  const nextAttemptAtMs = sideEffectQueue.peek()?.nextAttemptAtMs
   return {
     queueLength: sideEffectQueue.length,
     processing: processingSideEffects,
@@ -469,7 +463,7 @@ export async function flushGatewayAccountSideEffectsForTest(): Promise<void> {
 }
 
 export function clearGatewayAccountSideEffectQueueForTest(): void {
-  sideEffectQueue.splice(0)
+  sideEffectQueue.clear()
   if (drainTimer) {
     clearTimeout(drainTimer)
     drainTimer = undefined
@@ -551,7 +545,6 @@ function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
     nextAttemptAtMs: now,
     expiresAtMs: now + sideEffectRetentionMs
   })
-  heapifySideEffectUp(sideEffectQueue.length - 1)
   enqueuedCount += 1
   scheduleSideEffectDrain(0)
 }
@@ -566,40 +559,23 @@ function coalesceQueuedAccountErrorHandlingSideEffect(operation: AccountErrorHan
     return false
   }
   const now = Date.now()
-  sideEffectQueue[index] = {
+  sideEffectQueue.replaceAt(index, {
     operation,
     attempts: 0,
     enqueuedAtMs: now,
     nextAttemptAtMs: now,
     expiresAtMs: now + sideEffectRetentionMs
-  }
+  })
   coalescedCount += 1
-  heapifySideEffectQueue()
   scheduleSideEffectDrain(0)
   return true
 }
 
 function cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey: string): number {
-  let writeIndex = 0
-  let removed = 0
-  for (let index = 0; index < sideEffectQueue.length; index += 1) {
-    const item = sideEffectQueue[index]
-    if (
-      item.operation.type === 'apply_account_error_handling'
-      && gatewayAccountRuntimeKey(item.operation.account) === runtimeKey
-    ) {
-      removed += 1
-      continue
-    }
-    sideEffectQueue[writeIndex] = item
-    writeIndex += 1
-  }
-  if (removed === 0) {
-    return 0
-  }
-  sideEffectQueue.length = writeIndex
-  heapifySideEffectQueue()
-  return removed
+  return sideEffectQueue.removeWhere((item) => (
+    item.operation.type === 'apply_account_error_handling'
+    && gatewayAccountRuntimeKey(item.operation.account) === runtimeKey
+  ))
 }
 
 function logDroppedAccountSideEffect(operation: AccountSideEffectOperation): void {
@@ -655,7 +631,7 @@ async function drainSideEffectQueue(): Promise<void> {
     while (sideEffectQueue.length > 0) {
       const now = Date.now()
       dropExpiredSideEffects(now)
-      const item = peekSideEffect()
+      const item = sideEffectQueue.peek()
       if (!item) {
         break
       }
@@ -663,7 +639,7 @@ async function drainSideEffectQueue(): Promise<void> {
         scheduleSideEffectDrain(item.nextAttemptAtMs - now)
         break
       }
-      popSideEffect()
+      sideEffectQueue.pop()
       try {
         await executeAccountSideEffect(item.operation)
         completedCount += 1
@@ -681,7 +657,7 @@ async function drainSideEffectQueue(): Promise<void> {
         }
         item.attempts += 1
         item.nextAttemptAtMs = retryDueAtMs(sideEffectRetryPolicy, item.attempts)
-        pushSideEffect(item)
+        sideEffectQueue.push(item)
         logger.warn(errorLogFields(error, {
           event: 'gateway_account_side_effect_retry_scheduled',
           operationType: item.operation.type,
@@ -721,104 +697,18 @@ function scheduleNextDrainIfNeeded(): void {
   if (processingSideEffects || drainTimer || sideEffectQueue.length === 0) {
     return
   }
-  const nextAttemptAtMs = peekSideEffect()?.nextAttemptAtMs
+  const nextAttemptAtMs = sideEffectQueue.peek()?.nextAttemptAtMs
   if (nextAttemptAtMs !== undefined) {
     scheduleSideEffectDrain(Math.max(0, nextAttemptAtMs - Date.now()))
   }
 }
 
 function dropExpiredSideEffects(now: number): void {
-  let writeIndex = 0
-  let removed = 0
-  for (let index = 0; index < sideEffectQueue.length; index += 1) {
-    const item = sideEffectQueue[index]
-    if (item.expiresAtMs <= now) {
-      removed += 1
-      continue
-    }
-    sideEffectQueue[writeIndex] = item
-    writeIndex += 1
-  }
+  const removed = sideEffectQueue.removeWhere((item) => item.expiresAtMs <= now)
   if (removed === 0) {
     return
   }
-  sideEffectQueue.length = writeIndex
   expiredCount += removed
-  heapifySideEffectQueue()
-}
-
-function pushSideEffect(item: QueuedAccountSideEffect): void {
-  sideEffectQueue.push(item)
-  heapifySideEffectUp(sideEffectQueue.length - 1)
-}
-
-function peekSideEffect(): QueuedAccountSideEffect | undefined {
-  return sideEffectQueue[0]
-}
-
-function popSideEffect(): QueuedAccountSideEffect | undefined {
-  if (sideEffectQueue.length === 0) return undefined
-  const first = sideEffectQueue[0]
-  const last = sideEffectQueue.pop()
-  if (last && sideEffectQueue.length > 0) {
-    sideEffectQueue[0] = last
-    heapifySideEffectDown(0)
-  }
-  return first
-}
-
-function heapifySideEffectQueue(): void {
-  for (let index = Math.floor(sideEffectQueue.length / 2) - 1; index >= 0; index -= 1) {
-    heapifySideEffectDown(index)
-  }
-}
-
-function heapifySideEffectUp(startIndex: number): void {
-  let index = startIndex
-  while (index > 0) {
-    const parentIndex = Math.floor((index - 1) / 2)
-    if (compareSideEffectQueueItems(sideEffectQueue[parentIndex], sideEffectQueue[index]) <= 0) {
-      return
-    }
-    swapSideEffects(index, parentIndex)
-    index = parentIndex
-  }
-}
-
-function heapifySideEffectDown(startIndex: number): void {
-  let index = startIndex
-  while (true) {
-    const leftIndex = index * 2 + 1
-    const rightIndex = leftIndex + 1
-    let smallestIndex = index
-    if (
-      leftIndex < sideEffectQueue.length
-      && compareSideEffectQueueItems(sideEffectQueue[leftIndex], sideEffectQueue[smallestIndex]) < 0
-    ) {
-      smallestIndex = leftIndex
-    }
-    if (
-      rightIndex < sideEffectQueue.length
-      && compareSideEffectQueueItems(sideEffectQueue[rightIndex], sideEffectQueue[smallestIndex]) < 0
-    ) {
-      smallestIndex = rightIndex
-    }
-    if (smallestIndex === index) {
-      return
-    }
-    swapSideEffects(index, smallestIndex)
-    index = smallestIndex
-  }
-}
-
-function compareSideEffectQueueItems(left: QueuedAccountSideEffect, right: QueuedAccountSideEffect): number {
-  return left.nextAttemptAtMs - right.nextAttemptAtMs || left.enqueuedAtMs - right.enqueuedAtMs
-}
-
-function swapSideEffects(leftIndex: number, rightIndex: number): void {
-  const left = sideEffectQueue[leftIndex]
-  sideEffectQueue[leftIndex] = sideEffectQueue[rightIndex]
-  sideEffectQueue[rightIndex] = left
 }
 
 function suppressLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): GatewayAccountLocalSuppressionResult {

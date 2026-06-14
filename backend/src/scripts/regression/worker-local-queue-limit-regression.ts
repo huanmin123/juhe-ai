@@ -7,6 +7,7 @@ import { logger } from '../../shared/logger.js'
 assertQueueShutdownFlushIsBounded()
 
 runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 logger.level = 'silent'
@@ -38,6 +39,7 @@ try {
   assert.equal(usageAfterOverflow.droppedOverflowCount, 1, '使用记录 worker 本地队列满后应记录溢出丢弃')
   usageRecordQueue.clearUsageRecordQueueForTest()
 
+  runtimeConfig.workerRole = 'ingest-worker'
   operationLogQueue.clearOperationLogQueueForTest()
   for (let index = 0; index < 5000; index += 1) {
     operationLogQueue.enqueueOperationLogsLocal([buildOperationLog(index)])
@@ -49,6 +51,7 @@ try {
   assert.equal(operationAfterOverflow.droppedOverflowCount, 1, '操作日志 worker 本地队列满后应记录溢出丢弃')
   operationLogQueue.clearOperationLogQueueForTest()
 
+  runtimeConfig.workerRole = 'worker'
   recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
   for (let index = 0; index < 5000; index += 1) {
     const result = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildRecordMaintenanceJob(index))
@@ -69,6 +72,7 @@ try {
   assert.equal(mergedSnapshotRuntime.queueLength, 1, '同账号同来源用量快照维护任务应在 worker 本地队列内合并')
   recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
 
+  runtimeConfig.workerRole = 'ingest-worker'
   auditLogQueue.clearAuditLogQueueForTest()
   for (let index = 0; index < 5000; index += 1) {
     auditLogQueue.enqueueAuditLogsLocal([buildAuditLog(index, true)])
