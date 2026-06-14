@@ -8,6 +8,7 @@ import { isAccountAvailabilityScheduleAllowed } from './account-availability-sch
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
+import { accountApiKeyEntries } from './account-api-key-rotation.js'
 import {
   gatewayDispatchAccountCandidateLimit,
   gatewayDispatchAccountCandidateScanLimit
@@ -183,6 +184,8 @@ export function listOpenAIAccountsForGroup(
 export function runtimeOpenAIAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   copyRuntimeCredentialText(credentials, output, 'account_id')
+  copyRuntimeCredentialText(credentials, output, 'api_key_strategy')
+  copyRuntimeCredentialValue(credentials, output, 'api_key_weights')
   copyRuntimeCredentialValue(credentials, output, 'error_handling_rules')
   copyRuntimeCredentialValue(credentials, output, 'response_inspection_rules')
   return output
@@ -534,10 +537,13 @@ function openAIAccountSecretFromRow(
   }
   const apiKey = resourceType === 'oauth'
     ? typeof credentials.access_token === 'string' ? credentials.access_token : ''
-    : typeof credentials.api_key === 'string' ? credentials.api_key : ''
+    : accountApiKeyEntries(credentials)[0]?.key ?? ''
   if (!apiKey) {
     return undefined
   }
+  const apiKeys = resourceType === 'api_key'
+    ? accountApiKeyEntries(credentials).map((entry) => entry.key)
+    : undefined
   const resourceAccountId = openAIAccountResourceAccountId(row)
   const resourceProxyProfileId = openAIAccountResourceProxyProfileId(row)
   const proxyProfile = resolveOpenAIAccountProxyUrl(resourceProxyProfileId, options.proxyProfilesById)
@@ -593,6 +599,7 @@ function openAIAccountSecretFromRow(
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
     baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
     apiKey,
+    apiKeys,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
     clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
     credentialSourceAccountId: resourceAccountId !== row.id ? resourceAccountId : undefined,

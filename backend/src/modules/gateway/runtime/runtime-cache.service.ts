@@ -1,5 +1,6 @@
 import { createAppCache } from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds } from '../../../shared/account-concurrency.js'
+import { selectAccountRuntimeApiKey } from '../../../storage/account-api-key-rotation.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { isDynamicApiKeyGroupRouteStrategy } from '../../../domain/api-key-routing.js'
@@ -351,6 +352,7 @@ function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAcc
     ...account,
     currentConcurrency: undefined,
     supportedModels: [...(account.supportedModels ?? [])],
+    apiKeys: account.apiKeys ? [...account.apiKeys] : undefined,
     modelMappings: (account.modelMappings ?? []).map((mapping) => ({ ...mapping })),
     credentials: { ...account.credentials }
   }
@@ -359,9 +361,24 @@ function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAcc
 function cloneOpenAIAccountsWithCurrentConcurrency(accounts: OpenAIAccountSecret[]): OpenAIAccountSecret[] {
   const concurrency = loadAccountCurrentConcurrencyByIds(accounts.map((account) => account.id))
   return accounts.map((account) => ({
-    ...cloneStaticOpenAIAccountSecret(account),
+    ...cloneOpenAIAccountSecretForDispatch(account),
     currentConcurrency: concurrency.get(account.id) ?? 0
   }))
+}
+
+function cloneOpenAIAccountSecretForDispatch(account: OpenAIAccountSecret): OpenAIAccountSecret {
+  const cloned = cloneStaticOpenAIAccountSecret(account)
+  if (cloned.type === 'api_key') {
+    cloned.apiKey = selectAccountRuntimeApiKey({
+      accountId: cloned.credentialSourceAccountId ?? cloned.id,
+      credentials: {
+        ...cloned.credentials,
+        api_key: cloned.apiKey,
+        ...(cloned.apiKeys?.length ? { api_keys: cloned.apiKeys } : {})
+      }
+    }) ?? cloned.apiKey
+  }
+  return cloned
 }
 
 function cloneGroupUsageAccessMetadata(value: GroupUsageAccessMetadata): GroupUsageAccessMetadata {

@@ -69,6 +69,9 @@ export interface AccountExportResult {
 
 const apiKeyExportCredentialKeys = [
   'api_key',
+  'api_keys',
+  'api_key_strategy',
+  'api_key_weights',
   'base_url',
   'error_handling_rules',
   'response_inspection_rules'

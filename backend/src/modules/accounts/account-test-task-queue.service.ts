@@ -15,6 +15,7 @@ import {
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import { accountApiKeyEntries, selectAccountRuntimeApiKey } from '../../storage/account-api-key-rotation.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
@@ -497,7 +498,7 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
   }
   const apiKey = draft.type === 'oauth'
     ? stringCredential(credentials.access_token)
-    : stringCredential(credentials.api_key)
+    : selectAccountRuntimeApiKey({ accountId: draft.id, credentials })
   if (!apiKey) {
     throw new DraftAccountConfigurationError(draft.type === 'oauth' ? 'OAuth 草稿缺少 Access Token' : '账户草稿缺少 API Key')
   }
@@ -526,6 +527,7 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     modelMappings: draft.modelMappings ?? [],
     baseUrl,
     apiKey,
+    apiKeys: draft.type === 'api_key' ? accountApiKeyEntries(credentials).map((entry) => entry.key) : undefined,
     refreshToken: stringCredential(credentials.refresh_token) || undefined,
     clientId: stringCredential(credentials.client_id) || undefined,
     proxyProfileId: draft.proxyProfileId,

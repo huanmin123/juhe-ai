@@ -1,0 +1,95 @@
+export type AccountApiKeyStrategy = 'round_robin' | 'weighted_round_robin'
+
+interface AccountApiKeyEntry {
+  id: string
+  key: string
+  weight: number
+}
+
+interface RoundRobinState {
+  nextIndex: number
+}
+
+interface WeightedState {
+  currentWeights: Map<string, number>
+}
+
+const roundRobinStates = new Map<string, RoundRobinState>()
+const weightedStates = new Map<string, WeightedState>()
+
+export function selectAccountRuntimeApiKey(input: {
+  accountId: string
+  credentials: Record<string, unknown>
+}): string | undefined {
+  const entries = accountApiKeyEntries(input.credentials)
+  if (!entries.length) return undefined
+  if (entries.length === 1) return entries[0].key
+  const strategy = accountApiKeyStrategy(input.credentials)
+  return strategy === 'weighted_round_robin'
+    ? selectWeightedApiKey(input.accountId, entries)
+    : selectRoundRobinApiKey(input.accountId, entries)
+}
+
+export function accountApiKeyEntries(credentials: Record<string, unknown>): AccountApiKeyEntry[] {
+  const rawKeys = Array.isArray(credentials.api_keys) && credentials.api_keys.length
+    ? credentials.api_keys
+    : [credentials.api_key]
+  const weights = Array.isArray(credentials.api_key_weights) ? credentials.api_key_weights : []
+  const entries: AccountApiKeyEntry[] = []
+  const seen = new Set<string>()
+  for (const [index, value] of rawKeys.entries()) {
+    if (typeof value !== 'string') continue
+    const key = value.trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    entries.push({
+      id: `${index}:${key}`,
+      key,
+      weight: normalizeApiKeyWeight(weights[index])
+    })
+  }
+  return entries
+}
+
+function accountApiKeyStrategy(credentials: Record<string, unknown>): AccountApiKeyStrategy {
+  return credentials.api_key_strategy === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin'
+}
+
+function selectRoundRobinApiKey(accountId: string, entries: AccountApiKeyEntry[]): string {
+  const state = roundRobinStates.get(accountId) ?? { nextIndex: 0 }
+  const index = state.nextIndex % entries.length
+  roundRobinStates.set(accountId, { nextIndex: (index + 1) % entries.length })
+  return entries[index].key
+}
+
+function selectWeightedApiKey(accountId: string, entries: AccountApiKeyEntry[]): string {
+  const state = weightedStates.get(accountId) ?? { currentWeights: new Map<string, number>() }
+  cleanupWeightedState(state, entries)
+  const totalWeight = entries.reduce((sum, entry) => sum + entry.weight, 0)
+  let selected = entries[0]
+  let selectedCurrentWeight = Number.NEGATIVE_INFINITY
+  for (const entry of entries) {
+    const current = (state.currentWeights.get(entry.id) ?? 0) + entry.weight
+    state.currentWeights.set(entry.id, current)
+    if (current > selectedCurrentWeight || (current === selectedCurrentWeight && entry.id.localeCompare(selected.id) < 0)) {
+      selected = entry
+      selectedCurrentWeight = current
+    }
+  }
+  state.currentWeights.set(selected.id, (state.currentWeights.get(selected.id) ?? 0) - totalWeight)
+  weightedStates.set(accountId, state)
+  return selected.key
+}
+
+function cleanupWeightedState(state: WeightedState, entries: AccountApiKeyEntry[]): void {
+  const activeIds = new Set(entries.map((entry) => entry.id))
+  for (const id of state.currentWeights.keys()) {
+    if (!activeIds.has(id)) {
+      state.currentWeights.delete(id)
+    }
+  }
+}
+
+function normalizeApiKeyWeight(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 1
+}

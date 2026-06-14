@@ -16,7 +16,8 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'model-check-user-authorized-resource-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'db-service'
+runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -104,7 +105,7 @@ try {
   const baseUrl = `http://127.0.0.1:${address.port}`
   const seed = seedData(upstreamBaseUrl)
 
-  const detail = await withDbServiceRole(() => postEnvelope<ModelCheckDetail>(
+  const detail = await postEnvelope<ModelCheckDetail>(
     baseUrl,
     `/__aisys__/api/my-model-checks/run?systemAccountId=${seed.ownerId}`,
     seed.granteeCookie,
@@ -115,7 +116,7 @@ try {
       profile: 'full',
       trustedComparison: false
     }
-  ))
+  )
 
   assert.equal(detail.status, 'completed')
   assert.equal(detail.targetType, 'account')
@@ -146,7 +147,7 @@ try {
     `使用记录应保留账号授权 ID，actual=${JSON.stringify(upstreamRows.slice(0, 3))}`
   )
 
-  const intruderResponse = await withDbServiceRole(() => postRaw(
+  const intruderResponse = await postRaw(
     baseUrl,
     '/__aisys__/api/my-model-checks/run',
     seed.intruderCookie,
@@ -157,7 +158,7 @@ try {
       profile: 'full',
       trustedComparison: false
     }
-  ))
+  )
   assert.equal(intruderResponse.status, 404, '未授权用户不能检测别人账户')
   assert.match(await intruderResponse.text(), /账户不存在或无权检测/, '未授权检测应返回中文无权提示')
 
@@ -214,7 +215,9 @@ function seedData(upstreamBaseUrl: string): SeedState {
       api_key: 'sk-user-authorized-model-check',
       base_url: upstreamBaseUrl
     },
-    groupId: ownerSourceGroup.id
+    groupId: ownerSourceGroup.id,
+    status: 'active',
+    schedulable: true
   }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '模型检测授权用户分组',
@@ -381,16 +384,6 @@ async function postRaw(baseUrl: string, path: string, cookie: string, body: Reco
     headers: { cookie, 'content-type': 'application/json' },
     body: JSON.stringify(body)
   })
-}
-
-async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {
-  const previousProcessRole = runtimeConfig.processRole
-  try {
-    runtimeConfig.processRole = 'db-service'
-    return await action()
-  } finally {
-    runtimeConfig.processRole = previousProcessRole
-  }
 }
 
 function sendJson(res: http.ServerResponse, body: unknown): void {

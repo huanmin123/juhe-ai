@@ -210,9 +210,10 @@ function assertUsageScopeTempRangeLookupIndex(): void {
 
 function assertSourceGuards(): void {
   const source = readFileSync(resolve('src/storage/usage-stats.repository.ts'), 'utf8')
-  assert.match(source, /maxUsageOverviewSnapshotScopes/, '统计概览 scope 发现必须有固定上限')
-  assert.match(source, /FROM usage_stats_totals\s+WHERE scope_type = 'system_account'\s+ORDER BY updated_at DESC, system_account_id ASC, scope_id ASC\s+LIMIT \?/, '统计概览 scope 发现必须按更新时间窗口读取')
-  assert.doesNotMatch(source, /FROM usage_stats_totals\s+WHERE scope_type = 'system_account'\s+`\)\.all\(\)/, '统计概览 scope 发现不应无界读取全部 system_account scope')
+  const overviewWindowSource = readFileSync(resolve('src/storage/usage-overview-windows.repository.ts'), 'utf8')
+  assert.match(overviewWindowSource, /maxUsageOverviewSnapshotScopes/, '统计概览 scope 发现必须有固定上限')
+  assert.match(overviewWindowSource, /FROM usage_stats_totals\s+WHERE scope_type = 'system_account'\s+ORDER BY updated_at DESC, system_account_id ASC, scope_id ASC\s+LIMIT \?/, '统计概览 scope 发现必须按更新时间窗口读取')
+  assert.doesNotMatch(overviewWindowSource, /FROM usage_stats_totals\s+WHERE scope_type = 'system_account'\s+`\)\.all\(\)/, '统计概览 scope 发现不应无界读取全部 system_account scope')
   assert.match(
     source,
     /CREATE INDEX IF NOT EXISTS \$\{tableName\}_range_lookup\s+ON \$\{tableName\}\(end_date, start_date\)/,

@@ -13,7 +13,8 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'model-check-cross-paired-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'db-service'
+runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 

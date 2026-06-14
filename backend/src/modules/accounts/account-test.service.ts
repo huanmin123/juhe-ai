@@ -495,6 +495,7 @@ export class MemoryGatewayResponse extends EventEmitter {
   statusCode = 200
   writableEnded = false
   destroyed = false
+  locals: Record<string, unknown> = {}
   private readonly headers = new Map<string, string | string[]>()
   private readonly body = new BoundedBufferCollector(accountTestResponsePreviewBytes)
   private readonly streamInspector = new OpenAIStreamInspector()

@@ -7,6 +7,9 @@ export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
 
 export interface AccountCredentials {
   api_key?: string
+  api_keys?: string[]
+  api_key_strategy?: 'round_robin' | 'weighted_round_robin'
+  api_key_weights?: number[]
   base_url?: string
   access_token?: string
   refresh_token?: string

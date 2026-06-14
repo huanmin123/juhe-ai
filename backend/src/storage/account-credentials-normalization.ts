@@ -5,6 +5,9 @@ import { optionalServerDateTimeIso } from './value-utils.js'
 
 const apiKeyAccountCredentialKeys = new Set([
   'api_key',
+  'api_keys',
+  'api_key_strategy',
+  'api_key_weights',
   'base_url',
   'error_handling_rules',
   'response_inspection_rules'
@@ -29,6 +32,7 @@ const accountCredentialBaseUrlMaxBytes = 2048
 const accountCredentialSecretMaxBytes = 16 * 1024
 const accountCredentialMetadataMaxBytes = 4096
 const accountCredentialsJsonMaxBytes = 32 * 1024
+const accountApiKeyListMaxItems = 50
 
 export function normalizeAccountCredentialsForWrite(accountType: string, value: unknown): Record<string, unknown> {
   const input = accountCredentialsRecord(value)
@@ -47,7 +51,7 @@ export function requiredAccountCredentialSource(accountType: string, credentials
     return requiredTextInput(credentials.refresh_token ?? credentials.access_token, 'OAuth 凭据')
   }
   if (accountType === 'api_key') {
-    return requiredTextInput(credentials.api_key, 'API Key')
+    return requiredTextInput(accountApiKeys(credentials)[0], 'API Key')
   }
   return requiredTextInput(credentials.api_key ?? credentials.refresh_token ?? credentials.access_token, '账户凭据')
 }
@@ -66,16 +70,69 @@ function accountCredentialAllowedKeys(accountType: string): ReadonlySet<string> 
   throw new Error(`账户类型 ${accountType} 不支持凭据写入`)
 }
 
+function accountApiKeys(credentials: Record<string, unknown>): string[] {
+  if (Array.isArray(credentials.api_keys)) {
+    return credentials.api_keys.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  }
+  return typeof credentials.api_key === 'string' ? [credentials.api_key] : []
+}
+
 function normalizeApiKeyAccountCredentials(input: Record<string, unknown>): Record<string, unknown> {
   const baseUrl = requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes)
   assertSafeUpstreamBaseUrl(baseUrl)
+  const apiKeys = normalizeApiKeyCredentialList(input)
   const credentials: Record<string, unknown> = {
-    api_key: requiredCredentialTextInput(input.api_key, 'API Key', accountCredentialSecretMaxBytes),
+    api_key: apiKeys[0],
     base_url: baseUrl
+  }
+  if (apiKeys.length > 1) {
+    credentials.api_keys = apiKeys
+    credentials.api_key_strategy = normalizeApiKeyStrategy(input.api_key_strategy)
+    if (credentials.api_key_strategy === 'weighted_round_robin') {
+      credentials.api_key_weights = normalizeApiKeyWeights(input.api_key_weights, apiKeys.length)
+    }
   }
   normalizeAccountCredentialPolicies(input, credentials)
   assertAccountCredentialsJsonSize(credentials)
   return credentials
+}
+
+function normalizeApiKeyCredentialList(input: Record<string, unknown>): string[] {
+  const sourceValues = Array.isArray(input.api_keys) && input.api_keys.length
+    ? input.api_keys
+    : [input.api_key]
+  if (sourceValues.length > accountApiKeyListMaxItems) {
+    throw new Error(`单个账户最多配置 ${accountApiKeyListMaxItems} 个 API Key`)
+  }
+  const output: string[] = []
+  const seen = new Set<string>()
+  for (const value of sourceValues) {
+    const key = requiredCredentialTextInput(value, 'API Key', accountCredentialSecretMaxBytes)
+    if (seen.has(key)) continue
+    seen.add(key)
+    output.push(key)
+  }
+  if (!output.length) {
+    throw new Error('API Key不能为空')
+  }
+  return output
+}
+
+function normalizeApiKeyStrategy(value: unknown): 'round_robin' | 'weighted_round_robin' {
+  return value === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin'
+}
+
+function normalizeApiKeyWeights(value: unknown, count: number): number[] {
+  const input = Array.isArray(value) ? value : []
+  return Array.from({ length: count }, (_, index) => normalizeApiKeyWeight(input[index]))
+}
+
+function normalizeApiKeyWeight(value: unknown): number {
+  if (value === undefined) return 1
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100) {
+    throw new Error('API Key 权重必须是 1-100 之间的整数')
+  }
+  return value
 }
 
 function normalizeOAuthAccountCredentials(input: Record<string, unknown>): Record<string, unknown> {
